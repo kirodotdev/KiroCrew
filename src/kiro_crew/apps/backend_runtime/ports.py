@@ -10,6 +10,7 @@ never by the port merely being open.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import socket
 import time
@@ -19,7 +20,13 @@ from kiro_crew import platform_compat
 from kiro_crew.apps.backend_runtime import _FACADE
 from kiro_crew.apps.backend_runtime.pidfile import _proc_start_time, _read_pidfile
 from kiro_crew.apps.backend_runtime.probe import _health_probe
-from kiro_crew.apps.backend_runtime.tracking import _lock, _processes, _spawn_publication_owner
+from kiro_crew.apps.backend_runtime.tracking import (
+    AppBackendIdentity,
+    _health_reconcile_lock,
+    _lock,
+    _processes,
+    _spawn_publication_owner,
+)
 from kiro_crew.apps.manager import get_app_manifest
 
 logger = logging.getLogger(_FACADE)
@@ -213,7 +220,117 @@ def _capture_adopted_owners(
             owners_recheck,
         )
         return None
+    start_times_recheck = {pid: _proc_start_time(pid) for pid in owners_recheck}
+    if start_times_recheck != start_times:
+        logger.warning(
+            "App %s: port %d owner start identities changed while ownership was "
+            "being recorded — skipping adoption",
+            app_name,
+            port,
+        )
+        return None
     return owners, start_times
+
+
+def _backend_identity_digest(parts: list[str]) -> str:
+    digest = hashlib.sha256()
+    for part in parts:
+        encoded = part.encode("utf-8", "surrogatepass")
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+    return digest.hexdigest()
+
+
+def get_app_backend_identity(app_name: str) -> AppBackendIdentity | None:
+    """Return one verified identity for a gateway-spawned app backend.
+
+    A stored acceptance pass must identify the code process that answered it, not
+    merely the app metadata around that process. The record is accepted only while
+    its live ``Popen`` and current process start identity still match.
+
+    An adopted listener returns ``None`` even when it is healthy. The proxy HMAC
+    authenticates the gateway's request to that listener, but an adopted process
+    does not authenticate its response to the gateway. It therefore cannot supply
+    a machine-authoritative acceptance verdict.
+
+    Missing or incomplete identity returns ``None``. This is the migration contract:
+    runtime records created by older code cannot authorize new contributed passes,
+    and a caller retries after a gateway-spawned backend is running on this build.
+    """
+    with _health_reconcile_lock:
+        with _lock:
+            ap = _processes.get(app_name)
+            if (
+                ap is None
+                or not ap.gateway_started
+                or not ap.healthy
+                or ap.port <= 0
+                or ap.starting
+                or ap.proc is None
+            ):
+                return None
+            port = ap.port
+            proc = ap.proc
+            pid = ap.pid
+            pid_start_time = ap.pid_start_time
+            spawn_instance = ap.spawn_instance
+
+        if (
+            pid <= 0
+            or getattr(proc, "pid", None) != pid
+            or not pid_start_time
+            or not spawn_instance
+            or proc.poll() is not None
+        ):
+            return None
+        if _proc_start_time(pid) != pid_start_time:
+            return None
+        try:
+            owners = sorted(
+                set(platform_compat.loopback_owner_pids(platform_compat.find_port_listeners(port)))
+            )
+            if not owners or not all(_pid_is_self_or_descendant_of(owner, pid) for owner in owners):
+                return None
+            owner_identities: list[tuple[int, str]] = []
+            for owner in owners:
+                owner_start_time = _proc_start_time(owner)
+                if not owner_start_time:
+                    return None
+                owner_identities.append((owner, owner_start_time))
+            owners_after = sorted(
+                set(platform_compat.loopback_owner_pids(platform_compat.find_port_listeners(port)))
+            )
+            if owners_after != owners or not all(
+                _pid_is_self_or_descendant_of(owner, pid) for owner in owners_after
+            ):
+                return None
+            if any(
+                _proc_start_time(owner) != owner_start_time
+                for owner, owner_start_time in owner_identities
+            ):
+                return None
+        except Exception:  # noqa: BLE001 — an unverifiable listener must fail closed
+            return None
+        identity = ["spawned", str(pid), pid_start_time, spawn_instance]
+        for owner, owner_start_time in owner_identities:
+            identity.extend(("listener", str(owner), owner_start_time))
+
+        with _lock:
+            if (
+                _processes.get(app_name) is not ap
+                or not ap.healthy
+                or ap.port != port
+                or ap.proc is not proc
+                or proc.poll() is not None
+                or _proc_start_time(pid) != pid_start_time
+            ):
+                return None
+            admitted_builtin = ap.admitted_builtin
+        return AppBackendIdentity(
+            port=port,
+            generation=_backend_identity_digest(identity),
+            admitted_builtin=admitted_builtin,
+        )
 
 
 def _pid_is_self_or_descendant_of(pid: int, ancestor: int) -> bool:

@@ -1873,7 +1873,27 @@ _SESSION_TYPES: tuple[EntryType, ...] = (
                 JSON_STRING,
                 enum=WORK_VERDICTS,
                 enum_closed=True,
-                note="The acceptance verdict, set by verdict.",
+                note="The acceptance verdict, set by verdict or host evaluation.",
+            ),
+            Field(
+                "evaluation",
+                JSON_OBJECT,
+                fields=(
+                    Field("provider", JSON_STRING),
+                    Field("kind", JSON_STRING),
+                    Field("version", JSON_STRING),
+                    Field("manifest_digest", JSON_STRING),
+                    Field("backend_generation", JSON_STRING),
+                    Field("acceptance_digest", JSON_STRING),
+                    Field("authority", JSON_STRING),
+                    Field("endpoint", JSON_STRING),
+                    Field("evidence", JSON_STRING),
+                    Field("evaluated_at", JSON_STRING),
+                ),
+                note=(
+                    "Host-recorded provenance for an app-contributed verdict. A caller "
+                    "cannot provide this object through work_ledger_record."
+                ),
             ),
             Field("decision", JSON_STRING, note="The conductor's decision text, set by decide."),
             Field(

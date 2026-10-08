@@ -32,7 +32,7 @@ def doc_text() -> str:
 
 
 def test_the_doc_names_every_work_tool_and_no_other(doc_text: str) -> None:
-    """All five tool names appear, and the doc invents none.
+    """All six tool names appear, and the doc invents none.
 
     A worker reads this page at runtime, so a name that is not on the server is a
     call that fails. The reverse direction matters too: a tool added to the server
@@ -167,10 +167,14 @@ def test_the_doc_lists_every_acceptance_kind_the_evaluator_handles(doc_text: str
     }
     assert "cmd" in handled, "the cmd branch is what refuses a command-shaped spec"
     offered = handled - {"cmd"}
-    paragraph = doc_text.split("It is one of", 1)[1].split("\n\n", 1)[0]
+    normalized = " ".join(doc_text.split())
+    paragraph = normalized.split("Built-in conditions are ", 1)[1].split(
+        ". An enabled App Kit app", 1
+    )[0]
     advertised = set(re.findall(r"`([a-z_]+)`", paragraph))
     assert advertised == offered, (
-        f"the page offers acceptance kinds {sorted(advertised)} but the evaluator "
-        f"handles {sorted(offered)}; an invented kind returns 'unknown accept kind'"
+        f"the page offers built-in acceptance kinds {sorted(advertised)} but the "
+        f"script handles {sorted(offered)}; an invented kind returns 'unknown accept kind'"
     )
-    assert 'no "run this command" kind' in doc_text
+    assert "`<app-id>:<kind-id>`" in doc_text
+    assert 'no built-in "run this command" kind' in doc_text

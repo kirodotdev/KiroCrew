@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import functools
 import hashlib
-import hmac as _hmac
 import importlib
 import json
 import logging
@@ -19,7 +18,6 @@ import re
 import shutil
 import stat
 import sys
-import time
 from email.utils import formatdate
 from functools import partial
 from pathlib import Path
@@ -89,6 +87,7 @@ from kiro_crew.apps.official_category_order import forget_cache as forget_catego
 from kiro_crew.apps.official_category_order import load_category_order
 from kiro_crew.apps.official_editorial import forget_cache as forget_editorial_cache
 from kiro_crew.apps.official_editorial import load_sections
+from kiro_crew.apps.proxy_auth import sign_proxy_request
 from kiro_crew.apps.registry import (
     _ART_IMAGE_EXTENSIONS,
     _ART_MANIFEST_FIELDS,
@@ -4422,11 +4421,12 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
                 {"error": f"app {name!r} has no secret — cannot authenticate proxy request"},
                 status=502,
             )
-        ts = str(int(time.time()))
-        body_hash = hashlib.sha256(body or b"").hexdigest()
-        msg = f"{ts}:{request.method}:{wire_target}:{body_hash}"
-        sig = _hmac.new(secret.encode(), msg.encode(), hashlib.sha256).hexdigest()
-        headers["X-KiroCrew-Proxy"] = f"{ts}:{sig}"
+        headers["X-KiroCrew-Proxy"] = sign_proxy_request(
+            method=request.method,
+            target=wire_target,
+            body=body or b"",
+            secret=secret,
+        )
     except OSError as exc:
         logger.warning("Failed to read app secret for %s: %s", name, exc)
         return web.json_response(

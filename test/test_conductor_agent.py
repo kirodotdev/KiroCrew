@@ -413,6 +413,7 @@ class TestConductorInstaller:
         assert "@kirocrew-work" in data["tools"]
         assert "kirocrew-work" in data["mcpServers"]
         assert "@kirocrew-work/work_ledger_read" in data["allowedTools"]
+        assert "@kirocrew-work/work_ledger_evaluate" in data["allowedTools"]
         assert "@kirocrew-work/work_ledger_record" in data["allowedTools"]
         assert "@kirocrew-work/work_brief" in data["allowedTools"]
         match = data["permissions"]["rules"][0]["match"]
@@ -468,11 +469,13 @@ class TestConductorInstaller:
         closed under itself. Both the prompt and the skill have to state the
         filter, because the agent copies whichever it read last.
         """
-        prompt = self._install(tmp_path, monkeypatch)["prompt"]
-        assert "Filter the `accept_batch`" in prompt
-        assert "whose status is `done`" in prompt
+        prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
+        assert "filter `accept_batch` down to `done`, non-namespaced items" in prompt
+        assert "work_ledger_evaluate" in prompt
         body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
-        assert "keep only the entries whose item is currently `status: done`" in body
+        assert "keep only entries whose item is currently `status: done`" in body
+        assert "whose kind is not namespaced" in body
+        assert "`work_ledger_evaluate(item_id)`" in body
         assert "Never pipe the unfiltered document" in body
 
     def test_prompt_and_skill_make_a_nested_conductor_report_upward(self, tmp_path, monkeypatch):
@@ -686,6 +689,7 @@ class TestConductorInstaller:
             "@kirocrew-dashboard/session_read_message",
             "@kirocrew-dashboard/session_status",
             "@kirocrew-work/work_ledger_read",
+            "@kirocrew-work/work_ledger_evaluate",
             "@kirocrew-work/work_ledger_record",
             "@kirocrew-work/work_ledger_rebuild",
             "@kirocrew-work/work_brief",
@@ -729,6 +733,7 @@ class TestConductorInstaller:
         ]
         work_resources = [
             "kirocrew-work/work_brief",
+            "kirocrew-work/work_ledger_evaluate",
             "kirocrew-work/work_ledger_read",
             "kirocrew-work/work_ledger_rebuild",
             "kirocrew-work/work_ledger_record",
@@ -880,6 +885,7 @@ class TestConductorInstaller:
             "@kirocrew-dashboard/session_read_message",
             "@kirocrew-dashboard/session_status",
             "@kirocrew-work/work_ledger_read",
+            "@kirocrew-work/work_ledger_evaluate",
             "@kirocrew-work/work_ledger_record",
             "@kirocrew-work/work_ledger_rebuild",
             "@kirocrew-work/work_brief",

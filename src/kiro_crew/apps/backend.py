@@ -553,6 +553,7 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
                     # shipped one is stopped and respawned BY the gateway, which vets
                     # its execution path and classifies it correctly on that path.
                     admitted_builtin=False,
+                    health_path=manifest.backend.healthCheck,
                 )
                 # Adopted (externally-managed) backends are deliberately NOT
                 # recorded for the startup stale-reap: the reap SIGTERMs a whole
@@ -1298,6 +1299,7 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
         log_path=str(log_path),
         gateway_started=True,
         admitted_builtin=_admitted_builtin,
+        health_path=manifest.backend.healthCheck,
         spawn_instance=spawn_instance,
         forking_sandbox_launcher=_forking_sandbox_launcher,
     )
@@ -1502,11 +1504,13 @@ if _typing.TYPE_CHECKING:
         _PORT_PROBE_TIMEOUT,
         _SPAWN_SURVIVAL_CHECKS,
         _SPAWN_SURVIVAL_INTERVAL,
+        _backend_identity_digest,
         _find_free_port,
         _listening_pids,
         _pid_is_self_or_descendant_of,
         _port_is_listening,
         _spawn_owns_listener,
+        get_app_backend_identity,
         recorded_backend_port,
         spawned_backend_owns_pid,
         unstopped_backend_port,
@@ -1631,10 +1635,12 @@ if _typing.TYPE_CHECKING:
     from kiro_crew.apps.backend_runtime.tracking import (  # noqa: F401
         _FACADE,
         _LIFECYCLE_STOP,
+        AppBackendIdentity,
         ContextVar,
         Iterator,
         _lifecycle_generation,
         _restart_attempts,
+        app_backend_acceptance_fence,
         contextlib,
         dataclass,
         field,

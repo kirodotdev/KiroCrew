@@ -63,6 +63,7 @@ from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import is_incognito_transcript
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.validation import (
+    WORK_LEDGER_EVALUATE_SCHEMA,
     WORK_LEDGER_READ_SCHEMA,
     WORK_LEDGER_RECORD_SCHEMA,
     WORK_REPORT_SCHEMA,
@@ -70,7 +71,7 @@ from kiro_crew.validation import (
     validate_tool_args,
 )
 from kiro_crew.work_ledger import WorkLedgerError
-from kiro_crew.work_vocab import WORK_CONDUCTOR_FIELDS
+from kiro_crew.work_vocab import WORK_CONDUCTOR_FIELDS, split_app_acceptance_kind
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,8 @@ logger = logging.getLogger(__name__)
 _CODE_STATUS: dict[str, int] = {
     work_ledger.CODE_CREW_LOG_INCOMPLETE: 409,
     work_ledger.CODE_CACHE_DIRTY: 409,
+    work_ledger.CODE_ACCEPTANCE_CHANGED: 409,
+    work_ledger.CODE_PROVIDER_VERDICT_REQUIRED: 409,
     work_ledger.CODE_NO_LEDGER: 404,
     work_ledger.CODE_UNKNOWN_ITEM: 404,
     work_ledger.CODE_ALREADY_BOUND: 409,
@@ -906,6 +909,7 @@ def _baseline_fields(item: Any, header: Any) -> dict[str, Any]:
         "acceptance": item.acceptance,
         "state": item.state,
         "verdict": item.verdict,
+        **({"evaluation": item.evaluation} if item.evaluation else {}),
         "decision": item.decision or None,
         "worker_session_key": item.worker_session_key or None,
         "round": item.round,
@@ -1156,9 +1160,10 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
     events, and a ready-to-pipe ``accept_batch`` built from ``acceptance`` ALONE —
     never from a worker's claimed ``pr``, which is surfaced beside the item instead.
 
-    ``accept_batch`` holds only the items whose bar is concrete, so an item still
-    carrying a ``"TBD"`` pull request number is absent from it; ``acceptance_concrete``
-    on the item row is why. Each entry carries the item's ``status`` so the conductor
+    ``accept_batch`` holds only concrete built-in bars. An item still carrying a
+    ``"TBD"`` pull request number is absent because ``acceptance_concrete`` is false;
+    a concrete namespaced item is absent because it routes through
+    ``work_ledger_evaluate`` instead. Each built-in entry carries the item's ``status``
     can apply its own "``done`` only" filter without a second lookup — the filter stays
     the conductor's to apply.
 
@@ -1432,6 +1437,229 @@ def _slot_open(state: DashboardState, key: str) -> bool:
         return False
 
 
+async def api_work_ledger_evaluate(request: web.Request) -> web.Response:
+    """POST /api/work-ledger/evaluate — evaluate one stored app acceptance bar.
+
+    The body carries only ``item_id``. Acceptance input, provider identity, endpoint,
+    version, and manifest digest are all loaded by the gateway. The app lifecycle lock
+    is held to snapshot the provider, released for the provider's HTTP request, and
+    retaken to revalidate the provider and commit the ledger record, so the provider's
+    own lifecycle-locked routes and an operator disable or update never wait on that
+    request. The board lock is taken only for the short read and commit phases, so one
+    slow provider does not block unrelated worker reports.
+    """
+    key, refusal = await _caller_key(request, "work_ledger_evaluate")
+    if refusal is not None:
+        return refusal
+    assert key is not None
+    body, bad = await _json_object(request)
+    if bad is not None:
+        return bad
+    assert body is not None
+    try:
+        cleaned = validate_tool_args(body, WORK_LEDGER_EVALUATE_SCHEMA)
+    except ValidationError as exc:
+        return _refuse_400(_validation_code(exc), str(exc), exc.field)
+    item_id = str(cleaned["item_id"])
+
+    state: DashboardState = request.app["state"]
+    unit, urefusal = _acting_unit(state, key, "work_ledger_evaluate", item_id)
+    if urefusal is not None:
+        return urefusal
+    assert unit is not None
+    async with _board_lock(key):
+        dirty = await _refuse_if_dirty(key, key, "work_ledger_evaluate")
+        if dirty is not None:
+            return dirty
+        _record, lrefusal = await _own_ledger(key, "work_ledger_evaluate")
+        if lrefusal is not None:
+            return lrefusal
+        item = await asyncio.to_thread(work_ledger.read_work_item, key, item_id)
+        if item is None:
+            return _refuse_404(
+                work_ledger.CODE_UNKNOWN_ITEM,
+                f"unknown item {item_id!r}",
+                "item_id",
+            )
+        if item.is_terminal:
+            return _refuse_409(
+                work_ledger.CODE_ITEM_CLOSED,
+                f"item {item_id!r} is {item.state}",
+                "item_id",
+            )
+        expected_acceptance = item.acceptance
+
+    from kiro_crew.apps import acceptance as app_acceptance
+    from kiro_crew.apps.manager import app_lifecycle_lock
+
+    parts = split_app_acceptance_kind(expected_acceptance.get("kind"))
+    if parts is None:
+        return _refuse_400(
+            work_ledger.CODE_INVALID_VALUE,
+            "work_ledger_evaluate accepts only a kind named <app-id>:<kind-id>",
+            "acceptance",
+        )
+    app_name, _kind_id = parts
+
+    async with app_acceptance.evaluation(
+        expected_acceptance,
+        caller=key,
+        lifecycle_lock=app_lifecycle_lock(app_name),
+    ) as result:
+        app_acceptance.audit_evaluation(key, result)
+        try:
+            safe_evaluation: dict[str, str] = crew_log_emit.safe_work_fields(
+                {"evaluation": result.provenance()}
+            )["evaluation"]
+        except crew_log_emit.WorkFieldError as exc:
+            return _refuse_400(work_ledger.CODE_INVALID_VALUE, str(exc), "evaluation")
+
+        probe_item, probe_header = await asyncio.to_thread(_current_item_and_board, key, item_id)
+        probe_evaluation = {**safe_evaluation, "evaluated_at": _WIDEST_STAMP}
+        probe, invalid = _entry_probe_with_baseline(
+            key,
+            probe_item,
+            probe_header,
+            actor="conductor",
+            by=key,
+            action="evaluate",
+            item_id=item_id,
+            generation=_WIDEST_HEX_ID,
+            round=_WIDEST_COUNTER,
+            depth=work_ledger.MAX_DEPTH,
+            parent_item=_WIDEST_ITEM_ID,
+            verdict=result.verdict,
+            evaluation=probe_evaluation,
+            fails=_WIDEST_COUNTER,
+            event=_WIDEST_EVENT_TEXT,
+            event_kind="verdict",
+            event_id=_WIDEST_HEX_ID,
+            event_ts=_WIDEST_STAMP,
+        )
+        if invalid is not None:
+            return invalid
+        assert probe is not None
+        if not crew_log_emit.work_entry_fits(probe):
+            if _baseline_overflows(
+                key,
+                probe_item,
+                probe_header,
+                skip=WORK_CONDUCTOR_FIELDS["evaluate"],
+                actor="conductor",
+                by=key,
+                action="evaluate",
+                item_id=item_id,
+                generation=_WIDEST_HEX_ID,
+                round=_WIDEST_COUNTER,
+                depth=work_ledger.MAX_DEPTH,
+                parent_item=_WIDEST_ITEM_ID,
+                fails=_WIDEST_COUNTER,
+                event=_WIDEST_EVENT_TEXT,
+                event_kind="verdict",
+                event_id=_WIDEST_HEX_ID,
+                event_ts=_WIDEST_STAMP,
+            ):
+                return _refuse_item_too_large(key, "work_ledger_evaluate", item_id)
+            return _refuse_400(
+                "work_entry_too_large",
+                "the evaluation's crew-log record does not fit one log line",
+            )
+
+        async def _commit() -> web.Response:
+            dirty = await _refuse_if_dirty(key, key, "work_ledger_evaluate")
+            if dirty is not None:
+                return dirty
+            snapshot = await asyncio.to_thread(work_ledger.snapshot_item_for_write, key, item_id)
+            try:
+                stored = await asyncio.to_thread(
+                    functools.partial(
+                        _apply_provider_evaluation_fenced,
+                        key,
+                        item_id,
+                        expected_acceptance=expected_acceptance,
+                        verdict=result.verdict,
+                        evaluation=safe_evaluation,
+                        caller=key,
+                    )
+                )
+            except WorkLedgerError as exc:
+                _audit(
+                    key,
+                    "work_ledger_evaluate",
+                    "denied",
+                    resources=item_id,
+                    error=exc.code,
+                )
+                return _refuse_store_error(exc)
+            except OSError:
+                logger.warning("work ledger evaluation write failed for %s", item_id, exc_info=True)
+                return _refuse_503("ledger_write_failed", "ledger write failed; try again")
+
+            stored_item = stored["item"]
+            header = await asyncio.to_thread(work_ledger.read_conductor, key)
+            established, header = await _board_header(key, header)
+            if not established:
+                return await _refuse_unrecorded(
+                    key,
+                    "work_ledger_evaluate",
+                    item_id,
+                    key,
+                    snapshot,
+                )
+            event = stored["event"]
+            landed = await asyncio.to_thread(
+                crew_log_emit.on_work_recorded,
+                unit,
+                _entry_with_baseline(
+                    key,
+                    stored_item,
+                    header,
+                    actor="conductor",
+                    by=key,
+                    action="evaluate",
+                    item_id=item_id,
+                    generation=getattr(header, "generation", None) or None,
+                    round=stored_item.round,
+                    depth=getattr(header, "depth", None),
+                    parent_item=getattr(header, "parent_item", None),
+                    verdict=stored_item.verdict,
+                    evaluation=stored_item.evaluation,
+                    fails=stored_item.fails,
+                    event=event.text,
+                    event_kind=event.kind,
+                    event_id=event.id or None,
+                    event_ts=event.ts or None,
+                ),
+            )
+            if not landed:
+                return await _refuse_unrecorded(
+                    key,
+                    "work_ledger_evaluate",
+                    item_id,
+                    key,
+                    snapshot,
+                )
+            await asyncio.to_thread(_mark_recorded, key, item_id)
+            _audit(
+                key,
+                "work_ledger_evaluate",
+                "ok",
+                resources=f"{item_id} verdict={stored_item.verdict}",
+            )
+            return web.json_response(
+                {
+                    "ok": True,
+                    "item_id": item_id,
+                    "verdict": stored_item.verdict,
+                    "fails": stored_item.fails,
+                    "evaluation": stored_item.evaluation,
+                }
+            )
+
+        async with _board_lock(key):
+            return await _drain_before_cancelling(_commit())
+
+
 async def api_work_ledger_record(request: web.Request) -> web.Response:
     """POST /api/work-ledger/record — one conductor-owned write.
 
@@ -1487,11 +1715,42 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
     probe_item, probe_header = await asyncio.to_thread(
         _current_item_and_board, key, cleaned.get("item_id")
     )
+    accepted_close = action == "close" and cleaned.get("state") == "accepted"
+    if accepted_close and probe_item is None:
+        item_id = str(cleaned.get("item_id") or "")
+        _audit(
+            key,
+            "work_ledger_record",
+            "denied",
+            resources=f"close {item_id}".strip(),
+            error=work_ledger.CODE_UNKNOWN_ITEM,
+        )
+        return _refuse_404(
+            work_ledger.CODE_UNKNOWN_ITEM,
+            f"unknown item {item_id!r}",
+            "item_id",
+        )
+    close_acceptance = dict(probe_item.acceptance) if accepted_close else None
     # ``close`` logs the item's decision whether or not this request set one, so
     # the probe carries the committed value when the request carries none.
     probe_decision = cleaned.get("decision")
     if probe_decision is None and "decision" in WORK_CONDUCTOR_FIELDS.get(action, ()):
         probe_decision = getattr(probe_item, "decision", None)
+    prior_kind = probe_item.acceptance.get("kind") if probe_item is not None else None
+    close_parts = split_app_acceptance_kind(prior_kind) if accepted_close else None
+    close_app_name = close_parts[0] if close_parts is not None else ""
+    validated_close: tuple[dict[str, Any], dict[str, str], str | None] | None = None
+    next_acceptance = cleaned.get("acceptance")
+    next_kind = next_acceptance.get("kind") if isinstance(next_acceptance, dict) else None
+    probe_invalidates_evaluation = (
+        action == "verdict" and split_app_acceptance_kind(prior_kind) is not None
+    ) or (
+        action == "accept"
+        and (
+            split_app_acceptance_kind(prior_kind) is not None
+            or split_app_acceptance_kind(next_kind) is not None
+        )
+    )
     probe, invalid = _entry_probe_with_baseline(
         key,
         probe_item if action != "create" else None,
@@ -1510,6 +1769,7 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
         worker_session_key=cleaned.get("worker_session_key"),
         decision=probe_decision,
         verdict=cleaned.get("verdict"),
+        evaluation={} if probe_invalidates_evaluation else None,
         state="abandoned",
         fails=_WIDEST_COUNTER,
         event=_WIDEST_EVENT_TEXT,
@@ -1556,6 +1816,36 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
         dirty = await _refuse_if_dirty(key, key, "work_ledger_record")
         if dirty is not None:
             return dirty
+        if close_acceptance is not None:
+            current_close = await asyncio.to_thread(
+                work_ledger.read_work_item, key, str(cleaned.get("item_id") or "")
+            )
+            if current_close is None:
+                return _refuse_404(
+                    work_ledger.CODE_UNKNOWN_ITEM,
+                    f"unknown item {cleaned.get('item_id')!r}",
+                    "item_id",
+                )
+            if current_close.acceptance != close_acceptance:
+                return _refuse_409(
+                    work_ledger.CODE_PROVIDER_VERDICT_REQUIRED,
+                    "the acceptance changed after accepted-close preflight",
+                    "item_id",
+                )
+            if (
+                validated_close is not None
+                and (
+                    current_close.acceptance,
+                    current_close.evaluation,
+                    current_close.verdict,
+                )
+                != validated_close
+            ):
+                return _refuse_409(
+                    work_ledger.CODE_PROVIDER_VERDICT_REQUIRED,
+                    "the current provider proof changed before the accepted close",
+                    "item_id",
+                )
         # The worker key is folded through ``session_ledger.ledger_key`` before the
         # store writes the binding (see the module note); the snapshot names the
         # same path, or a failed bind's binding would escape the undo.
@@ -1565,14 +1855,21 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
             if isinstance(raw_worker, str) and raw_worker
             else None
         )
-        snapshot = await asyncio.to_thread(
-            functools.partial(
-                work_ledger.snapshot_for_write,
+        if close_app_name:
+            snapshot = await asyncio.to_thread(
+                work_ledger.snapshot_item_for_write,
                 key,
-                item_id=cleaned.get("item_id"),
-                worker_session_key=folded_worker,
+                str(cleaned.get("item_id") or ""),
             )
-        )
+        else:
+            snapshot = await asyncio.to_thread(
+                functools.partial(
+                    work_ledger.snapshot_for_write,
+                    key,
+                    item_id=cleaned.get("item_id"),
+                    worker_session_key=folded_worker,
+                )
+            )
         if action in ("goal", "create"):
             bootstrapped = await _bootstrap(key)
             if isinstance(bootstrapped, web.Response):
@@ -1583,7 +1880,20 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
                 return lrefusal
 
         try:
-            result = await asyncio.to_thread(_write, key, action, cleaned)
+            if close_app_name and current_close is not None:
+                result = await asyncio.to_thread(
+                    functools.partial(
+                        _write_accepted_close_fenced,
+                        key,
+                        action,
+                        cleaned,
+                        acceptance=current_close.acceptance,
+                        evaluation=current_close.evaluation,
+                        caller=key,
+                    )
+                )
+            else:
+                result = await asyncio.to_thread(_write, key, action, cleaned)
         except WorkLedgerError as exc:
             _audit(key, "work_ledger_record", "denied", resources=action, error=exc.code)
             return _refuse_store_error(exc)
@@ -1641,6 +1951,11 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
                 ),
                 decision=getattr(item, "decision", None) if "decision" in sets else None,
                 verdict=getattr(item, "verdict", None) if "verdict" in sets else None,
+                evaluation=(
+                    getattr(item, "evaluation", None)
+                    if "evaluation" in sets and result.get("evaluation_invalidated")
+                    else None
+                ),
                 state=getattr(item, "state", None) if "state" in sets else None,
                 fails=getattr(item, "fails", None) if "fails" in sets else None,
                 event=getattr(event, "text", None),
@@ -1708,8 +2023,52 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
     # cancellation is re-raised and the board lock is released. Without this a
     # cancelled request leaves a committed cache write the log never saw, and
     # the lock goes back with that divergence visible to the next reader.
-    async with _board_lock(key):
-        return await _drain_before_cancelling(_under_board())
+    async def _commit_with_board_lock() -> web.Response:
+        async with _board_lock(key):
+            return await _drain_before_cancelling(_under_board())
+
+    if close_app_name:
+        from kiro_crew.apps import acceptance as app_acceptance
+        from kiro_crew.apps.manager import app_lifecycle_lock
+
+        async with app_lifecycle_lock(close_app_name):
+            current_close = await asyncio.to_thread(
+                work_ledger.read_work_item, key, str(cleaned.get("item_id") or "")
+            )
+            proof_current = bool(
+                current_close is not None
+                and probe_item is not None
+                and current_close.acceptance == probe_item.acceptance
+                and current_close.verdict == "pass"
+                and await asyncio.to_thread(
+                    app_acceptance.provider_pass_is_current,
+                    current_close.acceptance,
+                    current_close.evaluation,
+                    caller=key,
+                )
+            )
+            if not proof_current:
+                _audit(
+                    key,
+                    "work_ledger_record",
+                    "denied",
+                    resources=f"close {cleaned.get('item_id') or ''}".strip(),
+                    error=work_ledger.CODE_PROVIDER_VERDICT_REQUIRED,
+                )
+                return _refuse_409(
+                    work_ledger.CODE_PROVIDER_VERDICT_REQUIRED,
+                    "the contributed acceptance has no current authorized provider pass",
+                    "item_id",
+                )
+            assert current_close is not None
+            validated_close = (
+                dict(current_close.acceptance),
+                dict(current_close.evaluation),
+                current_close.verdict,
+            )
+            return await _commit_with_board_lock()
+
+    return await _commit_with_board_lock()
 
 
 async def api_work_ledger_rebuild(request: web.Request) -> web.Response:
@@ -1952,7 +2311,13 @@ def _ensure(key: str, depth: int, parent_item: str | None) -> work_ledger.Conduc
     return work_ledger.ensure_conductor(key, depth=depth, parent_item=parent_item)
 
 
-def _write(key: str, action: str, cleaned: dict[str, Any]) -> dict[str, Any]:
+def _write(
+    key: str,
+    action: str,
+    cleaned: dict[str, Any],
+    *,
+    capture_rollback: bool = False,
+) -> dict[str, Any]:
     """Route one validated action to the store call that owns it."""
     if action == "accept":
         return work_ledger.apply_acceptance_update(
@@ -1978,7 +2343,109 @@ def _write(key: str, action: str, cleaned: dict[str, Any]) -> dict[str, Any]:
         goal=cleaned.get("goal"),
         round_number=cleaned.get("round"),
         fails=cleaned.get("fails"),
+        _capture_rollback=capture_rollback,
     )
+
+
+def _apply_provider_evaluation_fenced(
+    key: str,
+    item_id: str,
+    *,
+    expected_acceptance: dict[str, Any],
+    verdict: str,
+    evaluation: dict[str, str],
+    caller: str,
+) -> dict[str, Any]:
+    """Validate a passing provider identity around one fenced commit."""
+    from kiro_crew.apps import acceptance as app_acceptance
+    from kiro_crew.apps.backend import app_backend_acceptance_fence
+
+    with app_backend_acceptance_fence():
+        if verdict == "pass" and not app_acceptance.provider_pass_is_current(
+            expected_acceptance,
+            evaluation,
+            caller=caller,
+        ):
+            raise WorkLedgerError(
+                "the acceptance provider changed before its evaluation was committed",
+                code=work_ledger.CODE_PROVIDER_VERDICT_REQUIRED,
+                field="item_id",
+            )
+        result = work_ledger.apply_provider_evaluation(
+            key,
+            item_id,
+            expected_acceptance=expected_acceptance,
+            verdict=verdict,
+            evaluation=evaluation,
+            _capture_rollback=True,
+        )
+        rollback_preimage = result.pop("_rollback_preimage")
+        rollback_postimage = result.pop("_rollback_postimage")
+        if verdict == "pass" and not app_acceptance.provider_pass_is_current(
+            expected_acceptance,
+            result["item"].evaluation,
+            caller=caller,
+        ):
+            work_ledger.restore_snapshot(
+                key,
+                rollback_preimage,
+                item_id=item_id,
+                expected=rollback_postimage,
+            )
+            raise WorkLedgerError(
+                "the acceptance provider changed while its evaluation was committed",
+                code=work_ledger.CODE_PROVIDER_VERDICT_REQUIRED,
+                field="item_id",
+            )
+        return result
+
+
+def _write_accepted_close_fenced(
+    key: str,
+    action: str,
+    cleaned: dict[str, Any],
+    *,
+    acceptance: dict[str, Any],
+    evaluation: dict[str, str],
+    caller: str,
+) -> dict[str, Any]:
+    """Revalidate a contributed pass around one fenced accepted close."""
+    from kiro_crew.apps import acceptance as app_acceptance
+    from kiro_crew.apps.backend import app_backend_acceptance_fence
+
+    with app_backend_acceptance_fence():
+        if not app_acceptance.provider_pass_is_current(
+            acceptance,
+            evaluation,
+            caller=caller,
+        ):
+            raise WorkLedgerError(
+                "the contributed acceptance provider changed before accepted close",
+                code=work_ledger.CODE_PROVIDER_VERDICT_REQUIRED,
+                field="item_id",
+            )
+        result = _write(key, action, cleaned, capture_rollback=True)
+        rollback_preimage = result.pop("_rollback_preimage")
+        rollback_postimage = result.pop("_rollback_postimage")
+        item = result["item"]
+        if not app_acceptance.provider_pass_is_current(
+            item.acceptance,
+            item.evaluation,
+            caller=caller,
+        ):
+            item_id = str(cleaned.get("item_id") or "")
+            work_ledger.restore_snapshot(
+                key,
+                rollback_preimage,
+                item_id=item_id,
+                expected=rollback_postimage,
+            )
+            raise WorkLedgerError(
+                "the contributed acceptance provider changed while accepted close committed",
+                code=work_ledger.CODE_PROVIDER_VERDICT_REQUIRED,
+                field="item_id",
+            )
+        return result
 
 
 # ── shared request plumbing ───────────────────────────────────────────────

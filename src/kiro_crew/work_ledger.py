@@ -9,19 +9,25 @@ conductor learns what a worker did as DATA instead of reading its transcript.
 This module is the STORAGE layer only. Its one importer is
 ``dashboard/handlers/work_ledger.py``, which serves the ``/api/work-ledger``
 routes; the MCP tools in :mod:`kiro_crew.mcp_work` (``work_brief``,
-``work_report``, ``work_ledger_read``, ``work_ledger_record``) reach it only
-through those routes. Every write therefore passes the two entry points below,
+``work_report``, ``work_ledger_read``, ``work_ledger_evaluate``,
+``work_ledger_rebuild``, ``work_ledger_record``) reach it only through those
+routes. Every write therefore passes one of the three entry points below,
 so the writer-ownership rule is enforced in one place.
 
-WRITER OWNERSHIP is the whole design, and it is expressed as two entry points rather
+WRITER OWNERSHIP is the whole design, and it is expressed as three entry points rather
 than one update function with a field allowlist:
 
   * :func:`apply_conductor_action` writes ``title``, ``acceptance``, ``state``,
-    ``verdict``, ``decision``, ``worker_session_key``, ``round`` and ``fails``.
+    ``verdict`` except a passing contributed verdict, ``decision``,
+    ``worker_session_key``, ``round`` and ``fails``.
+  * :func:`apply_provider_evaluation` is the only path that writes a passing
+    namespaced verdict and its provider proof.
   * :func:`apply_worker_report` writes ``status``, ``summary``, ``artifacts``,
     ``pr`` and ``last_report_at``.
 
-The two field sets are disjoint. Phase 2 mounts one tool on each, so a worker cannot
+The conductor and worker field sets are disjoint. The host evaluator intersects
+only the conductor's verdict field and adds proof the conductor API cannot supply.
+Phase 2 mounts one caller tool on each party, so a worker cannot
 reach a conductor field because the function it can call takes no parameter that
 names one — an absent parameter outlives an allowlist that must be kept correct as
 fields are added. Phase 1 performs NO identity resolution; that is Phase 2's job at
@@ -36,10 +42,10 @@ from inside it, because "this worker holds no other open item" is a property of
 the binding file, not of the item. So: **conductor -> item -> binding(worker)**.
 No path anywhere takes any two of these in the other relative order, so the order
 is total and two conductors cannot deadlock. Every other write takes exactly one
-lock: the conductor lock for ``goal``, the item lock for ``decide``/``verdict``/
-``close`` and for a worker report. File locks on fresh descriptors do NOT nest, so
-each locked body has a ``_locked`` twin that a holder calls directly rather than
-re-acquiring.
+lock: the conductor lock for ``goal``; the item lock for
+``decide``/``verdict``/``close``, a host provider evaluation, and a worker report.
+File locks on fresh descriptors do NOT nest, so each locked body has a ``_locked``
+twin that a holder calls directly rather than re-acquiring.
 
 CAPS REFUSE, THEY DO NOT TRUNCATE. Every bound on a STORED field is validated
 before the first write, so a refusal leaves every file byte-identical. A truncated
@@ -84,6 +90,8 @@ from kiro_crew.work_vocab import (
     WORK_STORED_ITEM_LIMIT,
     WORK_VERDICTS,
     WORK_WORKER_STATUSES,
+    canonical_json_digest,
+    split_app_acceptance_kind,
     work_event_id,
 )
 
@@ -198,6 +206,10 @@ MAX_TITLE_CHARS = 200
 MAX_DECISION_CHARS = 2000
 MAX_SUMMARY_CHARS = 500
 MAX_EVENT_TEXT_CHARS = 500
+MAX_EVALUATION_EVIDENCE_CHARS = 500
+MAX_EVALUATION_ENDPOINT_CHARS = 240
+MAX_EVALUATION_VERSION_CHARS = 128
+MAX_EVALUATION_AUTHORITY_CHARS = 160
 
 MAX_ARTIFACT_KEYS = 16
 MAX_ARTIFACT_KEY_CHARS = 64
@@ -235,6 +247,8 @@ CODE_INVALID_ACTION = "invalid_action"
 CODE_INVALID_STATUS = "invalid_status"
 CODE_INVALID_VALUE = "invalid_value"
 CODE_LEDGER_NOT_FINISHED = "ledger_not_finished"
+CODE_ACCEPTANCE_CHANGED = "acceptance_changed"
+CODE_PROVIDER_VERDICT_REQUIRED = "provider_verdict_required"
 
 
 class WorkLedgerError(Exception):
@@ -356,6 +370,7 @@ class WorkItem:
     acceptance: dict[str, Any] = field(default_factory=dict)
     state: str = "open"
     verdict: str | None = None
+    evaluation: dict[str, str] = field(default_factory=dict)
     decision: str = ""
     worker_session_key: str | None = None
     round: int = 0
@@ -385,6 +400,7 @@ class WorkItem:
             "acceptance": self.acceptance,
             "state": self.state,
             "verdict": self.verdict,
+            "evaluation": self.evaluation,
             "decision": self.decision,
             "worker_session_key": self.worker_session_key,
             "round": self.round,
@@ -413,12 +429,21 @@ class WorkItem:
         artifacts: dict[str, str] = {}
         if isinstance(artifacts_raw, dict):
             artifacts = {str(k): v for k, v in artifacts_raw.items() if isinstance(v, str)}
+        evaluation_raw = raw.get("evaluation")
+        evaluation: dict[str, str] = {}
+        if isinstance(evaluation_raw, dict):
+            evaluation = {
+                str(key): value
+                for key, value in evaluation_raw.items()
+                if isinstance(key, str) and isinstance(value, str)
+            }
         return cls(
             item_id=_as_str(raw.get("item_id")),
             title=_as_str(raw.get("title")),
             acceptance=raw["acceptance"] if isinstance(raw.get("acceptance"), dict) else {},
             state=state if state in ITEM_STATES else "open",
             verdict=verdict if verdict in VERDICTS else None,
+            evaluation=evaluation,
             decision=_as_str(raw.get("decision")),
             worker_session_key=_as_opt_str(raw.get("worker_session_key")),
             round=_as_int(raw.get("round"), 0),
@@ -1219,7 +1244,7 @@ def _require_acceptance(value: Any) -> dict[str, Any]:
             "acceptance must be an object", code=CODE_INVALID_VALUE, field="acceptance"
         )
     try:
-        serialized = json.dumps(value, ensure_ascii=False)
+        serialized = json.dumps(value, ensure_ascii=False, allow_nan=False)
     except (TypeError, ValueError) as exc:
         raise WorkLedgerError(
             f"acceptance must be JSON-serialisable: {exc}",
@@ -1233,6 +1258,127 @@ def _require_acceptance(value: Any) -> dict[str, Any]:
             field="acceptance",
         )
     return value
+
+
+_EVALUATION_FIELDS = frozenset(
+    {
+        "provider",
+        "kind",
+        "version",
+        "manifest_digest",
+        "backend_generation",
+        "acceptance_digest",
+        "authority",
+        "endpoint",
+        "evidence",
+    }
+)
+
+
+def _is_sha256_digest(value: str) -> bool:
+    return len(value) == 64 and all(ch in "0123456789abcdef" for ch in value)
+
+
+def _require_evaluation(
+    value: Any,
+    *,
+    acceptance: dict[str, Any],
+    verdict: str,
+) -> dict[str, str]:
+    """Validate provenance supplied only by the host-owned evaluation route."""
+    if not isinstance(value, dict) or set(value) != _EVALUATION_FIELDS:
+        raise WorkLedgerError(
+            "provider evaluation has an invalid field set",
+            code=CODE_INVALID_VALUE,
+            field="evaluation",
+        )
+    if any(not isinstance(key, str) or not isinstance(item, str) for key, item in value.items()):
+        raise WorkLedgerError(
+            "provider evaluation fields must be strings",
+            code=CODE_INVALID_VALUE,
+            field="evaluation",
+        )
+    checked: dict[str, str] = dict(value)
+    parts = split_app_acceptance_kind(checked["kind"])
+    if parts is None or checked["provider"] != parts[0]:
+        raise WorkLedgerError(
+            "provider evaluation kind does not match its provider",
+            code=CODE_INVALID_VALUE,
+            field="evaluation",
+        )
+    expected_digest = canonical_json_digest(acceptance)
+    if not expected_digest or checked["acceptance_digest"] != expected_digest:
+        raise WorkLedgerError(
+            "provider evaluation does not describe the stored acceptance",
+            code=CODE_ACCEPTANCE_CHANGED,
+            field="acceptance",
+        )
+    for name in ("manifest_digest", "backend_generation", "acceptance_digest"):
+        digest = checked[name]
+        if digest and not _is_sha256_digest(digest):
+            raise WorkLedgerError(
+                f"provider evaluation {name} is not a SHA-256 digest",
+                code=CODE_INVALID_VALUE,
+                field="evaluation",
+            )
+    for name, cap in (
+        ("version", MAX_EVALUATION_VERSION_CHARS),
+        ("authority", MAX_EVALUATION_AUTHORITY_CHARS),
+        ("endpoint", MAX_EVALUATION_ENDPOINT_CHARS),
+        ("evidence", MAX_EVALUATION_EVIDENCE_CHARS),
+    ):
+        if len(checked[name]) > cap:
+            raise WorkLedgerError(
+                f"provider evaluation {name} exceeds its {cap}-character cap",
+                code=CODE_FIELD_TOO_LONG,
+                field="evaluation",
+            )
+    if verdict == "pass":
+        required = (
+            "provider",
+            "kind",
+            "version",
+            "manifest_digest",
+            "backend_generation",
+            "acceptance_digest",
+            "authority",
+            "endpoint",
+        )
+        missing = [name for name in required if not checked[name]]
+        if missing:
+            raise WorkLedgerError(
+                f"passing provider evaluation is missing {missing!r}",
+                code=CODE_INVALID_VALUE,
+                field="evaluation",
+            )
+    return checked
+
+
+def _provider_pass_matches(item: WorkItem) -> bool:
+    """Whether this contributed item carries a host-recorded pass for its current bar."""
+    parts = split_app_acceptance_kind(item.acceptance.get("kind"))
+    evaluation = item.evaluation
+    if (
+        parts is None
+        or item.verdict != "pass"
+        or set(evaluation) != _EVALUATION_FIELDS | {"evaluated_at"}
+    ):
+        return False
+    manifest_hash = evaluation.get("manifest_digest", "")
+    backend_generation = evaluation.get("backend_generation", "")
+    acceptance_hash = evaluation.get("acceptance_digest", "")
+    return bool(
+        evaluation.get("provider") == parts[0]
+        and evaluation.get("kind") == item.acceptance.get("kind")
+        and evaluation.get("version")
+        and _is_sha256_digest(manifest_hash)
+        and _is_sha256_digest(backend_generation)
+        and _is_sha256_digest(acceptance_hash)
+        and acceptance_hash == canonical_json_digest(item.acceptance)
+        and evaluation.get("authority")
+        and evaluation.get("endpoint")
+        and parse_stamp(evaluation.get("evaluated_at", "")) is not None
+    )
 
 
 def _require_artifacts(value: Any) -> dict[str, str]:
@@ -1477,7 +1623,18 @@ def is_acceptance_concrete(acceptance: Any) -> bool:
     if not isinstance(acceptance, dict) or not acceptance:
         return False
     kind = acceptance.get("kind")
-    if not isinstance(kind, str) or kind not in ACCEPTANCE_KINDS:
+    if not isinstance(kind, str):
+        return False
+    if split_app_acceptance_kind(kind) is not None:
+        # A contributed spec is deliberately exact. The manifest's inputSchema owns
+        # the fields inside ``input`` at evaluation time; no sibling key can supply a
+        # command, URL, executable, MCP server, or tool selector beside it.
+        return (
+            set(acceptance) == {"kind", "input"}
+            and isinstance(acceptance.get("input"), dict)
+            and bool(canonical_json_digest(acceptance))
+        )
+    if kind not in ACCEPTANCE_KINDS:
         return False
     for name in ACCEPTANCE_READ_FIELDS[kind]:
         # An ABSENT read field is not a placeholder: ``repo`` and ``exists`` are both
@@ -1726,6 +1883,7 @@ def apply_conductor_action(
     goal: Any = None,
     round_number: Any = None,
     fails: Any = None,
+    _capture_rollback: bool = False,
 ) -> dict[str, Any]:
     """Write the fields the CONDUCTOR owns, and append the one event that explains it.
 
@@ -1778,6 +1936,7 @@ def apply_conductor_action(
         state=state,
         round_number=round_number,
         fails=fails,
+        capture_rollback=_capture_rollback,
     )
 
 
@@ -1993,6 +2152,7 @@ def _write_item_action(
     state: Any,
     round_number: Any,
     fails: Any,
+    capture_rollback: bool,
 ) -> dict[str, Any]:
     """``bind``, ``decide``, ``verdict`` and ``close``, each one item lock deep.
 
@@ -2043,6 +2203,9 @@ def _write_item_action(
         checked_round = _require_count(round_number, "round")
 
     with item_lock(slot_key, checked_id, create=False):
+        rollback_preimage = (
+            snapshot_item_for_write(slot_key, checked_id) if capture_rollback else None
+        )
         item = read_work_item(slot_key, checked_id)
         if item is None:
             raise WorkLedgerError(
@@ -2084,18 +2247,117 @@ def _write_item_action(
             event = _commit_item_locked(slot_key, item, "decision", checked_decision)
         elif action == "verdict":
             assert checked_verdict is not None
+            contributed = split_app_acceptance_kind(item.acceptance.get("kind")) is not None
+            if contributed and checked_verdict == "pass":
+                raise WorkLedgerError(
+                    "a passing contributed verdict can be written only by " "work_ledger_evaluate",
+                    code=CODE_PROVIDER_VERDICT_REQUIRED,
+                    field="verdict",
+                )
             item.verdict = checked_verdict
+            if contributed:
+                item.evaluation = {}
             if checked_fails is not None:
                 item.fails = checked_fails
             event = _commit_item_locked(slot_key, item, "verdict", checked_verdict)
         else:
             assert checked_state is not None
+            if (
+                checked_state == "accepted"
+                and split_app_acceptance_kind(item.acceptance.get("kind")) is not None
+                and not _provider_pass_matches(item)
+            ):
+                raise WorkLedgerError(
+                    "an app-contributed item can close as accepted only after its "
+                    "current acceptance receives a host-recorded pass",
+                    code=CODE_PROVIDER_VERDICT_REQUIRED,
+                    field="state",
+                )
             item.state = checked_state
             if checked_decision is not None:
                 item.decision = checked_decision
             item.closed_at = _now_iso()
             event = _commit_item_locked(slot_key, item, "close", checked_decision or checked_state)
-        return {"conductor": record, "item": item, "event": event}
+        result = {
+            "conductor": record,
+            "item": item,
+            "event": event,
+            "evaluation_invalidated": (
+                action == "verdict"
+                and split_app_acceptance_kind(item.acceptance.get("kind")) is not None
+            ),
+        }
+        if rollback_preimage is not None:
+            result["_rollback_preimage"] = rollback_preimage
+            result["_rollback_postimage"] = current_bytes(rollback_preimage)
+        return result
+
+
+# --------------------------------------------------------------------------- #
+# Host-owned app-provider evaluations
+# --------------------------------------------------------------------------- #
+
+
+def apply_provider_evaluation(
+    slot_key: str,
+    item_id: str,
+    *,
+    expected_acceptance: dict[str, Any],
+    verdict: Any,
+    evaluation: Any,
+    _capture_rollback: bool = False,
+) -> dict[str, Any]:
+    """Record a host-computed contributed verdict against an unchanged bar.
+
+    The caller-facing tool supplies only ``item_id``. The gateway resolves and validates
+    the acceptance, invokes the app, and hands this function its result. Keeping this as
+    a separate entry point makes a passing provider verdict unrepresentable through
+    :func:`apply_conductor_action`.
+    """
+    checked_id = _require_item_id(item_id)
+    checked_acceptance = _require_acceptance(expected_acceptance)
+    if split_app_acceptance_kind(checked_acceptance.get("kind")) is None:
+        raise WorkLedgerError(
+            "work_ledger_evaluate requires an app-contributed acceptance kind",
+            code=CODE_INVALID_VALUE,
+            field="acceptance",
+        )
+    checked_verdict = _require_choice(verdict, VERDICTS, "verdict", CODE_INVALID_VALUE)
+    checked_evaluation = _require_evaluation(
+        evaluation,
+        acceptance=checked_acceptance,
+        verdict=checked_verdict,
+    )
+
+    with item_lock(slot_key, checked_id, create=False):
+        rollback_preimage = (
+            snapshot_item_for_write(slot_key, checked_id) if _capture_rollback else None
+        )
+        item = read_work_item(slot_key, checked_id)
+        if item is None:
+            raise WorkLedgerError(
+                f"unknown item {checked_id!r}", code=CODE_UNKNOWN_ITEM, field="item_id"
+            )
+        if item.is_terminal:
+            raise WorkLedgerError(f"item {checked_id!r} is {item.state}", code=CODE_ITEM_CLOSED)
+        if canonical_json_digest(item.acceptance) != checked_evaluation["acceptance_digest"]:
+            raise WorkLedgerError(
+                "acceptance changed while its provider was evaluating it",
+                code=CODE_ACCEPTANCE_CHANGED,
+                field="acceptance",
+            )
+        item.verdict = checked_verdict
+        item.evaluation = {**checked_evaluation, "evaluated_at": _now_iso()}
+        if checked_verdict == "fail":
+            item.fails += 1
+        evidence = checked_evaluation.get("evidence", "")
+        event_text = f"{checked_verdict}: {evidence}"[:MAX_EVENT_TEXT_CHARS]
+        event = _commit_item_locked(slot_key, item, "verdict", event_text)
+        result: dict[str, Any] = {"item": item, "event": event}
+        if rollback_preimage is not None:
+            result["_rollback_preimage"] = rollback_preimage
+            result["_rollback_postimage"] = current_bytes(rollback_preimage)
+        return result
 
 
 # --------------------------------------------------------------------------- #
@@ -2187,12 +2449,13 @@ def accept_batch(items: list[WorkItem]) -> dict[str, Any]:
     skill performs by hand into a visible field without moving control of the bar.
 
     An item whose bar is not yet concrete — a ``"TBD"`` pull request number, a blank
-    field — is left out, which is the other half of that same two-phase shape: the
-    skill promises the omission, and doing it here is what makes the promise true.
-    :func:`is_acceptance_concrete` is the test, and the read surfaces it per item so a
-    conductor can see WHY an item is missing from the batch.
+    field — is left out. Namespaced App Kit kinds are also left out because they are
+    evaluated only through ``work_ledger_evaluate`` and must never enter the bundled
+    script. :func:`is_acceptance_concrete` remains the structural test surfaced per
+    item, so a conductor can distinguish an incomplete bar from a concrete bar routed
+    to an app provider.
 
-    ``status`` rides along on each entry, and the batch is deliberately NOT filtered by
+    ``status`` rides along on each built-in entry, and the batch is deliberately NOT filtered by
     it. The conductor applies the "only ``done`` items" filter — that judgement is its
     own, and the seam is load-bearing — but it should not need a second lookup to
     apply it. ``accept_eval.py`` reads ``id`` and ``accept`` and ignores the rest.
@@ -2205,7 +2468,9 @@ def accept_batch(items: list[WorkItem]) -> dict[str, Any]:
             # vocabulary.
             {"id": item.item_id, "accept": item.acceptance, "status": item.status}
             for item in items
-            if not item.is_terminal and is_acceptance_concrete(item.acceptance)
+            if not item.is_terminal
+            and split_app_acceptance_kind(item.acceptance.get("kind")) is None
+            and is_acceptance_concrete(item.acceptance)
         ]
     }
 
@@ -2256,11 +2521,20 @@ def apply_acceptance_update(
             )
         if item.is_terminal:
             raise WorkLedgerError(f"item {checked_id!r} is {item.state}", code=CODE_ITEM_CLOSED)
+        had_contributed_kind = split_app_acceptance_kind(item.acceptance.get("kind")) is not None
+        has_contributed_kind = split_app_acceptance_kind(checked_acceptance.get("kind")) is not None
         item.acceptance = checked_acceptance
+        if had_contributed_kind or has_contributed_kind:
+            item.verdict = None
+            item.evaluation = {}
         event = _commit_item_locked(
             slot_key, item, "decision", "acceptance promoted by the conductor"
         )
-        return {"item": item, "event": event}
+        return {
+            "item": item,
+            "event": event,
+            "evaluation_invalidated": had_contributed_kind or has_contributed_kind,
+        }
 
 
 # --------------------------------------------------------------------------- #
@@ -3477,6 +3751,24 @@ def snapshot_for_write(
         # The same spelling `bind` stores under: `_require_text` keeps the key as
         # given, so the path is derived from the request's key unchanged.
         paths.append(binding_path(worker_session_key))
+    snapshot: dict[str, bytes | None] = {}
+    for path in paths:
+        try:
+            snapshot[str(path)] = path.read_bytes()
+        except FileNotFoundError:
+            snapshot[str(path)] = None
+    return snapshot
+
+
+def snapshot_item_for_write(slot_key: str, item_id: str) -> dict[str, bytes | None]:
+    """The item record and event log touched by one item-only transaction.
+
+    Provider evaluation and accepted close never write the conductor header or key.
+    Excluding those files prevents their rollback from claiming a concurrent header
+    commit made by another gateway while the item transaction was in flight.
+    """
+    checked_id = _require_item_id(item_id)
+    paths = [item_path(slot_key, checked_id), item_events_path(slot_key, checked_id)]
     snapshot: dict[str, bytes | None] = {}
     for path in paths:
         try:

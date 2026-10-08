@@ -56,6 +56,29 @@ def proxy_secret() -> str:
     return os.environ.get(_ENV_KEY, "")
 
 
+def sign_proxy_request(
+    *,
+    method: str,
+    target: str,
+    body: bytes,
+    secret: str,
+    now: float | None = None,
+) -> str:
+    """Build the ``X-KiroCrew-Proxy`` value for one fixed app request target.
+
+    The caller supplies the exact bytes it sends and the exact relative request target
+    the backend receives. An empty secret cannot authenticate anything and returns an
+    empty header rather than signing with an empty key.
+    """
+    if not secret:
+        return ""
+    timestamp = str(int(time.time() if now is None else now))
+    body_hash = hashlib.sha256(body or b"").hexdigest()
+    message = f"{timestamp}:{method}:{target}:{body_hash}"
+    signature = hmac.new(secret.encode(), message.encode(), hashlib.sha256).hexdigest()
+    return f"{timestamp}:{signature}"
+
+
 def verify_proxy_request(
     header_value: str,
     *,

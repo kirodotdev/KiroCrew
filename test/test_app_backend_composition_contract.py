@@ -86,6 +86,7 @@ PARTS: tuple[ModuleType, ...] = (
 FROZEN_NAMES: tuple[str, ...] = (
     "ActivationVerdict",
     "Any",
+    "AppBackendIdentity",
     "AppProcess",
     "ContextVar",
     "DEV_FLEET_APP_NAME",
@@ -150,6 +151,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "_app_enabled_state",
     "_audit_provision_failure",
     "_await_inflight_spawn",
+    "_backend_identity_digest",
     "_capped_spill",
     "_capture_adopted_owners",
     "_claim_port",
@@ -234,6 +236,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "_write_staging_marker",
     "annotations",
     "app_admission_denied",
+    "app_backend_acceptance_fence",
     "app_backend_lifecycle_flock",
     "app_backend_visible_targets",
     "app_deps_dir",
@@ -249,6 +252,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "dataclass",
     "field",
     "file_entry_point_refusal",
+    "get_app_backend_identity",
     "get_app_backend_port",
     "get_app_manifest",
     "get_app_process",
@@ -836,6 +840,140 @@ class TestAPatchOnTheFacadeReachesEveryCallSite:
         assert backend.spawned_backend_names() == []  # an unspawned record
         for module in _holders("_processes"):
             assert vars(module)["_processes"] is table
+
+    def test_spawned_identity_revalidates_liveness_and_start_identity(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        status: dict[str, int | None] = {"value": None}
+        live_start = {"value": "start-1"}
+        proc = SimpleNamespace(
+            pid=_UNALLOCATABLE_PID,
+            poll=lambda: status["value"],
+        )
+        spawned = backend.AppProcess(
+            app_name="identity-app",
+            port=9111,
+            pid=_UNALLOCATABLE_PID,
+            proc=proc,
+            healthy=True,
+            pid_start_time="start-1",
+            spawn_instance="spawn-1",
+            gateway_started=True,
+            admitted_builtin=True,
+            health_path="/health",
+        )
+        monkeypatch.setattr(backend, "_processes", {"identity-app": spawned})
+        listener_one = _UNALLOCATABLE_PID + 10
+        listener_two = _UNALLOCATABLE_PID + 20
+        owner_start_times = {
+            listener_one: "listener-one-start",
+            listener_two: "listener-two-start",
+        }
+        monkeypatch.setattr(
+            backend,
+            "_proc_start_time",
+            lambda pid: (
+                live_start["value"] if pid == _UNALLOCATABLE_PID else owner_start_times.get(pid)
+            ),
+        )
+        owned_pids = {_UNALLOCATABLE_PID, listener_one, listener_two}
+        monkeypatch.setattr(
+            backend,
+            "_pid_is_self_or_descendant_of",
+            lambda owner, root: root == _UNALLOCATABLE_PID and owner in owned_pids,
+        )
+        listeners = {
+            "value": [backend.platform_compat.PortListener(_UNALLOCATABLE_PID, "127.0.0.1", "4")]
+        }
+        monkeypatch.setattr(
+            backend.platform_compat,
+            "find_port_listeners",
+            lambda port: listeners["value"],
+        )
+
+        first = backend.get_app_backend_identity("identity-app")
+        assert first is not None
+        assert first.port == 9111
+        assert len(first.generation) == 64
+        assert "spawn-1" not in first.generation
+        assert first.admitted_builtin is True
+
+        listeners["value"] = [backend.platform_compat.PortListener(listener_one, "127.0.0.1", "4")]
+        listener_one_identity = backend.get_app_backend_identity("identity-app")
+        assert listener_one_identity is not None
+        listeners["value"] = [backend.platform_compat.PortListener(listener_two, "127.0.0.1", "4")]
+        listener_two_identity = backend.get_app_backend_identity("identity-app")
+        assert listener_two_identity is not None
+        assert listener_two_identity.generation != listener_one_identity.generation
+
+        listeners["value"] = [
+            backend.platform_compat.PortListener(_UNALLOCATABLE_PID, "::", "6"),
+            backend.platform_compat.PortListener(_UNALLOCATABLE_PID + 1, "127.0.0.1", "4"),
+        ]
+        assert backend.get_app_backend_identity("identity-app") is None
+        listeners["value"] = [
+            backend.platform_compat.PortListener(_UNALLOCATABLE_PID, "127.0.0.1", "4")
+        ]
+        live_start["value"] = "replacement-start"
+        assert backend.get_app_backend_identity("identity-app") is None
+        live_start["value"] = "start-1"
+        status["value"] = None
+        captures = {"value": 0}
+
+        def listeners_then_root_exits(port: int):
+            captures["value"] += 1
+            if captures["value"] == 2:
+                status["value"] = 1
+            return listeners["value"]
+
+        monkeypatch.setattr(
+            backend.platform_compat,
+            "find_port_listeners",
+            listeners_then_root_exits,
+        )
+        assert backend.get_app_backend_identity("identity-app") is None
+
+    def test_adopted_backend_has_no_machine_acceptance_identity(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def unexpected_capture(*args: Any, **kwargs: Any):
+            raise AssertionError("adopted listener was probed for acceptance identity")
+
+        monkeypatch.setattr(backend, "_capture_adopted_owners", unexpected_capture)
+        adopted_record = backend.AppProcess(
+            app_name="identity-app",
+            port=9111,
+            healthy=True,
+            adopted_pids=[_UNALLOCATABLE_PID],
+            adopted_start_times={_UNALLOCATABLE_PID: "adopted-1"},
+            gateway_started=True,
+            admitted_builtin=True,
+            health_path="/health",
+        )
+        monkeypatch.setattr(backend, "_processes", {"identity-app": adopted_record})
+
+        assert backend.get_app_backend_identity("identity-app") is None
+
+    def test_adopted_capture_rejects_same_pid_with_a_new_start_identity(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        starts = iter(("owner-start", "replacement-start"))
+        listeners = [
+            backend.platform_compat.PortListener(
+                _UNALLOCATABLE_PID,
+                "127.0.0.1",
+                "4",
+            )
+        ]
+        monkeypatch.setattr(
+            backend.platform_compat,
+            "find_port_listeners",
+            lambda port: listeners,
+        )
+        monkeypatch.setattr(backend, "_proc_start_time", lambda pid: next(starts))
+        monkeypatch.setattr(backend, "_probe_adoption_health", lambda port, path: True)
+
+        assert backend._capture_adopted_owners("identity-app", 9111, "/health") is None
 
     @pytest.mark.skipif(
         sys.platform == "win32", reason="only the POSIX drain arm polls member liveness"

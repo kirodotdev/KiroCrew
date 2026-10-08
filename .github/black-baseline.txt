@@ -126,7 +126,6 @@ src/kiro_crew/apps/dependency_ledger.py
 src/kiro_crew/apps/dev_mode.py
 src/kiro_crew/apps/execution.py
 src/kiro_crew/apps/manager.py
-src/kiro_crew/apps/manifest.py
 src/kiro_crew/apps/module_loader.py
 src/kiro_crew/apps/permissions.py
 src/kiro_crew/apps/route_registry.py
@@ -308,7 +307,6 @@ test/test_app_manager.py
 test/test_app_manifest.py
 test/test_app_mcp_scoping.py
 test/test_app_permissions.py
-test/test_app_proxy_auth.py
 test/test_app_routes.py
 test/test_app_scaffold.py
 test/test_app_storage.py

@@ -4534,6 +4534,18 @@ WORK_LEDGER_READ_SCHEMA = ToolSchema(
     ],
 )
 WORK_LEDGER_REBUILD_SCHEMA = ToolSchema(tool_name="work_ledger_rebuild")
+WORK_LEDGER_EVALUATE_SCHEMA = ToolSchema(
+    tool_name="work_ledger_evaluate",
+    fields=[
+        FieldSpec(
+            "item_id",
+            str,
+            required=True,
+            max_len=16,
+            pattern=re.compile(r"^it_[0-9a-f]{8}$"),
+        )
+    ],
+)
 
 WORK_LEDGER_RECORD_SCHEMA = ToolSchema(
     tool_name="work_ledger_record",
@@ -4584,6 +4596,7 @@ MCP_WORK_SCHEMAS: dict[str, ToolSchema] = {
     "work_brief": WORK_BRIEF_SCHEMA,
     "work_report": WORK_REPORT_SCHEMA,
     "work_ledger_read": WORK_LEDGER_READ_SCHEMA,
+    "work_ledger_evaluate": WORK_LEDGER_EVALUATE_SCHEMA,
     "work_ledger_record": WORK_LEDGER_RECORD_SCHEMA,
     "work_ledger_rebuild": WORK_LEDGER_REBUILD_SCHEMA,
 }

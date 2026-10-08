@@ -2,7 +2,7 @@
 conductor that dispatched it, and the conductor's structured read of its own fleet.
 
 A conductor session dispatches work to child sessions and otherwise learns what
-happened by reading their transcripts. These five tools replace that inference
+happened by reading their transcripts. These six tools replace that inference
 with a record: a worker writes a schema-bounded status against the ONE work item
 it was bound to, and the conductor reads that record as data.
 
@@ -28,15 +28,15 @@ approved inside kiro-cli and emits no permission request, so ``hooks.on_tool_cal
 governance ceiling — is never reached for it. A store that writes agent-authored
 text into a record the user reads is not the place to break that.
 
-All five tools are advertised to every caller and DISPATCH BY RESOLVED IDENTITY at
+All six tools are advertised to every caller and DISPATCH BY RESOLVED IDENTITY at
 call time, because a session can be a worker to its parent and a conductor to its
 own children:
 
 * a binding file, no ledger directory → the worker pair answers, the conductor
-  trio returns ``no_ledger``
-* a ledger directory, no binding file → the conductor trio answers, the worker
+  quartet returns ``no_ledger``
+* a ledger directory, no binding file → the conductor quartet answers, the worker
   pair returns ``not_bound``
-* both — a second-level conductor → all five answer
+* both — a second-level conductor → all six answer
 * neither → ``not_bound`` / ``no_ledger``
 
 Splitting the worker half onto a server of its own would express the same rule in
@@ -86,7 +86,12 @@ SERVER_VERSION = "1.0.0"
 WORKER_TOOLS: tuple[str, ...] = ("work_brief", "work_report")
 
 #: The conductor half.
-CONDUCTOR_TOOLS: tuple[str, ...] = ("work_ledger_read", "work_ledger_rebuild", "work_ledger_record")
+CONDUCTOR_TOOLS: tuple[str, ...] = (
+    "work_ledger_read",
+    "work_ledger_evaluate",
+    "work_ledger_rebuild",
+    "work_ledger_record",
+)
 
 #: Read off the schema that ENFORCES it rather than spelled again here. The
 #: ``work_report`` reply and the tool description both quote this number back to
@@ -100,6 +105,11 @@ WORK_TOOLS: tuple[str, ...] = WORKER_TOOLS + CONDUCTOR_TOOLS
 _BRIEF_PATH = "/api/work-ledger/brief"
 _REPORT_PATH = "/api/work-ledger/report"
 _READ_PATH = "/api/work-ledger"
+_EVALUATE_PATH = "/api/work-ledger/evaluate"
+#: Provider I/O alone may consume 30 seconds; leave room for lifecycle/board lock
+#: waits and the drained cache-plus-log commit so a landed verdict is not reported
+#: as an ambiguous transport failure.
+_EVALUATE_TIMEOUT_SECS = 90.0
 _RECORD_PATH = "/api/work-ledger/record"
 _REBUILD_PATH = "/api/work-ledger/rebuild"
 
@@ -461,6 +471,30 @@ def _tool_definitions() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "work_ledger_evaluate",
+            "description": (
+                "Evaluate one app-contributed acceptance condition from this conductor's "
+                "own ledger. The caller supplies only item_id. The gateway loads the stored "
+                "acceptance, resolves the currently enabled and trusted app contribution, "
+                "validates its input, invokes the declaration's fixed app-relative endpoint, "
+                "and records the verdict plus provider version and manifest digest itself. "
+                "Disabled, missing, changed, timed-out, or malformed providers fail closed. "
+                "Use this instead of action=verdict for a kind named <app-id>:<kind-id>; a "
+                "caller-authored passing verdict for such a kind is refused."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "item_id": {
+                        "type": "string",
+                        "description": "The server-minted it_<8 hex> item id.",
+                    }
+                },
+                "required": ["item_id"],
+                "additionalProperties": False,
+            },
+        },
+        {
             "name": "work_ledger_rebuild",
             "description": (
                 "Rebuild the work ledger this conductor session owns from the crew log: "
@@ -667,6 +701,25 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # patrol cycle re-reads it into context every round: redacted, and fitted
         # under the runtime's tool-result cut so a cut never tears the JSON.
         return _fit_ledger(resp)
+
+    if name == "work_ledger_evaluate":
+        resp = _post(
+            _EVALUATE_PATH,
+            {"item_id": args.get("item_id")},
+            timeout=_EVALUATE_TIMEOUT_SECS,
+            session_key=caller_key,
+        )
+        if resp.get("error"):
+            return _refusal("could not evaluate the work item", resp)
+        evaluation = resp.get("evaluation") or {}
+        return _render(
+            {
+                "item_id": resp.get("item_id"),
+                "verdict": resp.get("verdict"),
+                "fails": resp.get("fails"),
+                "evaluation": evaluation,
+            }
+        )
 
     if name == "work_ledger_rebuild":
         resp = _post(_REBUILD_PATH, {}, session_key=caller_key)

@@ -1230,6 +1230,20 @@ def test_acceptance_must_be_json_serialisable():
     assert caught.value.field == "acceptance"
 
 
+@pytest.mark.parametrize("number", [float("nan"), float("inf"), float("-inf")])
+def test_acceptance_refuses_non_finite_numbers(number):
+    wl.ensure_conductor(CONDUCTOR)
+    with pytest.raises(wl.WorkLedgerError) as caught:
+        wl.apply_conductor_action(
+            CONDUCTOR,
+            "create",
+            title="t",
+            acceptance={"kind": "manual", "value": number},
+        )
+    assert caught.value.code == wl.CODE_INVALID_VALUE
+    assert caught.value.field == "acceptance"
+
+
 def test_an_oversized_acceptance_is_refused(monkeypatch):
     wl.ensure_conductor(CONDUCTOR)
     # Above the header's own size (the header must still read back), below the blob's.
@@ -3308,6 +3322,33 @@ def test_a_writer_lock_still_creates_the_store():
 
 
 # ── the undo holds the locks the writers of its files hold ────────────────
+
+
+def test_item_only_snapshot_names_only_the_files_the_transaction_writes():
+    item_id = _new_item()
+
+    snapshot = wl.snapshot_item_for_write(CONDUCTOR, item_id)
+
+    assert set(snapshot) == {
+        str(wl.item_path(CONDUCTOR, item_id)),
+        str(wl.item_events_path(CONDUCTOR, item_id)),
+    }
+
+
+def test_item_only_snapshot_does_not_turn_a_read_error_into_absence(monkeypatch):
+    item_id = _new_item()
+    target = wl.item_path(CONDUCTOR, item_id)
+    read_bytes = Path.read_bytes
+
+    def fail_target(path: Path) -> bytes:
+        if path == target:
+            raise PermissionError("transient replacement")
+        return read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", fail_target)
+
+    with pytest.raises(PermissionError, match="transient replacement"):
+        wl.snapshot_item_for_write(CONDUCTOR, item_id)
 
 
 def test_the_undo_waits_for_a_writer_holding_the_item_it_rewrites():

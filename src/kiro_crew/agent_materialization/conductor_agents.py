@@ -161,19 +161,22 @@ _HISTORY_DASHBOARD_VERBS: frozenset[str] = frozenset(
 # ``work_brief`` when it took the alias's spec over; they are the base every
 # conductor ships; ``work_report`` is the
 # WORKER's verb and no conductor has ever shipped it, so it is nobody's to drop.
-_HISTORY_WORK_VERBS: frozenset[str] = frozenset(
+# ``_HISTORY_BASE_WORK_VERBS`` is that base, the history half of
+# ``agent._CONDUCTOR_BASE_WORK_GRANTS``, shared by all four conductor rows.
+_HISTORY_BASE_WORK_VERBS: frozenset[str] = frozenset(
     {
         "@kirocrew-work/work_ledger_read",
+        "@kirocrew-work/work_ledger_evaluate",
         "@kirocrew-work/work_ledger_record",
-        "@kirocrew-work/work_brief",
     }
 )
+_HISTORY_WORK_VERBS: frozenset[str] = _HISTORY_BASE_WORK_VERBS | {"@kirocrew-work/work_brief"}
 #: Spec name -> every ``allowedTools`` grant any release has shipped on it. Retired
 #: today: the goal conductor's bare ``@kirocrew-core``. Beyond each spec's current
 #: tuple the table holds exactly that entry (pinned by test), so an entry can join
 #: it only as a grant some release is shown to have shipped. The pipeline
 #: conductor's two work-ledger verbs were shipped for one release, retired, and are
-#: shipped again as the base every conductor holds.
+#: shipped again in the base every conductor holds.
 _SHIPPED_GRANT_HISTORY: dict[str, frozenset[str]] = {
     "kirocrew-conductor": (
         frozenset({"session", "report", "tool_search", "@kirocrew-core"})
@@ -197,14 +200,14 @@ _SHIPPED_GRANT_HISTORY: dict[str, frozenset[str]] = {
         frozenset({"session", "report", "tool_search"})
         | _HISTORY_CORE_VERBS
         | _HISTORY_DASHBOARD_VERBS
-        | {"@kirocrew-work/work_ledger_read", "@kirocrew-work/work_ledger_record"}
+        | _HISTORY_BASE_WORK_VERBS
     ),
     "kirocrew-security-conductor": (
         frozenset({"session", "report", "tool_search"})
         | _HISTORY_CORE_VERBS
         | _HISTORY_DASHBOARD_VERBS
         | {"@kirocrew-dashboard/chat_folder_file_self"}
-        | {"@kirocrew-work/work_ledger_read", "@kirocrew-work/work_ledger_record"}
+        | _HISTORY_BASE_WORK_VERBS
     ),
 }
 

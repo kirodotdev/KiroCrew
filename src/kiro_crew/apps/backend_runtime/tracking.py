@@ -43,6 +43,15 @@ logger = logging.getLogger(_FACADE)
 _health_reconcile_lock = threading.RLock()
 
 
+@dataclass(frozen=True)
+class AppBackendIdentity:
+    """A verified execution identity for one currently serving app backend."""
+
+    port: int
+    generation: str
+    admitted_builtin: bool
+
+
 @dataclass
 class AppProcess:
     """Tracks a running app backend process."""
@@ -98,6 +107,11 @@ class AppProcess:
     # app can write. False denies, so anything unclassified is judged third-party.
     # Deliberately absent from to_dict(): internal bookkeeping.
     admitted_builtin: bool = False
+    # The health path admitted with this process record. Adopted backend identity
+    # reads re-run the listener/health consistency sandwich on every read, so they
+    # must use the path that established this record rather than mutable manifest
+    # metadata. Spawned records carry it for one uniform record shape.
+    health_path: str = ""
     # True only when this gateway placed a FORKING sandbox launcher between its Popen
     # handle and the real server: on Linux ``wrap_argv`` inserts the namespace launcher,
     # whose ``sandbox_launcher_program.main`` does one ``os.fork()`` so the
@@ -333,6 +347,19 @@ def health_reconcile_lock() -> Any:
     the reverse — so the two families of writer cannot deadlock against each other.
     """
     return _health_reconcile_lock
+
+
+@contextlib.contextmanager
+def app_backend_acceptance_fence() -> Iterator[None]:
+    """Fence final acceptance identity validation and its durable mutation.
+
+    Backend lifecycle transitions and health-driven restarts take this same lock
+    before changing the tracked record. Provider HTTP is never made under this
+    fence; callers take it only around the final identity read and store commit.
+    """
+
+    with _health_reconcile_lock:
+        yield
 
 
 @contextlib.contextmanager

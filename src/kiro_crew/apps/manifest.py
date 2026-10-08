@@ -12,6 +12,7 @@ app-specific fields.
 from __future__ import annotations
 
 import json
+import math
 import os
 import posixpath
 import re
@@ -23,6 +24,11 @@ from typing import Any
 
 from kiro_crew.constants import WINDOWS_DEVICE_STEMS
 from kiro_crew.cron import is_valid_skip_date, is_valid_timezone
+from kiro_crew.work_vocab import (
+    APP_ACCEPTANCE_APP_ID_MAX_CHARS,
+    APP_ACCEPTANCE_KIND_ID_MAX_CHARS,
+    app_acceptance_kind,
+)
 
 # ---------------------------------------------------------------------------
 # Nested manifest types
@@ -394,9 +400,7 @@ class CronEntry:
             agent_sequence=[
                 str(a) for a in _list_or_empty("agent_sequence", data.get("agent_sequence"))
             ],
-            env={
-                str(k): str(v) for k, v in _dict_or_empty("env", data.get("env")).items()
-            },
+            env={str(k): str(v) for k, v in _dict_or_empty("env", data.get("env")).items()},
             timezone=_str_or_flagged("timezone", data.get("timezone")),
             skip_dates=[str(d) for d in _list_or_empty("skip_dates", data.get("skip_dates"))],
             folder=_str_or_empty(data.get("folder")),
@@ -1004,9 +1008,7 @@ class Dependencies:
             # it must degrade to "empty", never crash. Both lines, since the
             # pre-existing `commands` had the identical shape.
             commands=[str(c) for c in (data.get("commands") or [])],
-            optionalCommands=[  # noqa: N815
-                str(c) for c in (data.get("optionalCommands") or [])
-            ],
+            optionalCommands=[str(c) for c in (data.get("optionalCommands") or [])],  # noqa: N815
         )
 
 
@@ -1344,6 +1346,43 @@ FILE_MENU_SURFACES = frozenset({"file-overflow", "tree-context", "folder-row"})
 #: The node kinds a `when.kinds` filter may name.
 _FILE_MENU_KINDS = frozenset({"file", "dir"})
 
+#: App-provided acceptance checks are intentionally small, flat declarations. The
+#: gateway validates every stored input before invoking an app, so these caps bound
+#: both manifest parsing and each evaluation request.
+MAX_ACCEPTANCE_KINDS_PER_APP = 8
+MAX_ACCEPTANCE_INPUT_FIELDS = 16
+MAX_ACCEPTANCE_ENUM_VALUES = 32
+MAX_ACCEPTANCE_STRING_CHARS = 4096
+MAX_ACCEPTANCE_ENDPOINT_CHARS = 240
+_ACCEPTANCE_INPUT_TYPES = frozenset({"string", "integer", "number", "boolean"})
+_ACCEPTANCE_FIELD_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_ACCEPTANCE_ENDPOINT_RE = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._~-]*(?:/[A-Za-z0-9][A-Za-z0-9._~-]*)*$"
+)
+
+#: Inputs describe data to check, never a way to execute code or select another host
+#: capability. Matching is separator-insensitive so `tool_name`, `tool-name`, and
+#: `toolName` do not become three policy spellings.
+_FORBIDDEN_ACCEPTANCE_INPUT_NAMES = frozenset(
+    {
+        "arg",
+        "args",
+        "argv",
+        "cmd",
+        "command",
+        "endpoint",
+        "executable",
+        "executablepath",
+        "mcp",
+        "mcpserver",
+        "path",
+        "server",
+        "tool",
+        "toolname",
+        "url",
+    }
+)
+
 
 #: First path segments under ``/api/apps/<app>/`` that CORE owns rather than the app.
 #: Being inside the app's own namespace is therefore NOT sufficient for an app-declared
@@ -1590,9 +1629,11 @@ class CommandArgument:
             placeholder=str(data.get("placeholder", "")),
             hint=str(data.get("hint", "")),
             kind=str(data.get("kind", "text")),
-            hosts=[str(h).strip().lower() for h in hosts_raw if str(h).strip()]
-            if isinstance(hosts_raw, list)
-            else [],
+            hosts=(
+                [str(h).strip().lower() for h in hosts_raw if str(h).strip()]
+                if isinstance(hosts_raw, list)
+                else []
+            ),
             patternError=str(data.get("patternError", "")),
             saw_pattern="pattern" in data,
             # A `hosts` that is present but not a list would otherwise coerce to the
@@ -1708,9 +1749,7 @@ class CommandContribution:
             # argument declared", which is a DIFFERENT command rather than an invalid
             # one. An explicit ``null`` is treated as absent, matching the host.
             bad_argument=(
-                "argument" in data
-                and arg_raw is not None
-                and not isinstance(arg_raw, dict)
+                "argument" in data and arg_raw is not None and not isinstance(arg_raw, dict)
             ),
         )
 
@@ -1729,14 +1768,12 @@ class CommandContribution:
             # Mirrors `MAX_KEYWORDS` in `contributedCommands.ts`, which drops the overflow
             # -- refused here so the author is told rather than silently trimmed.
             errors.append(
-                f"{where}: {len(self.keywords)} keywords exceeds the limit of "
-                f"{_MAX_KEYWORDS}"
+                f"{where}: {len(self.keywords)} keywords exceeds the limit of " f"{_MAX_KEYWORDS}"
             )
         for kw in self.keywords:
             if _mirrored_len(kw) > _MAX_KEYWORD:
                 errors.append(
-                    f"{where}: keyword exceeds {_MAX_KEYWORD} characters "
-                    f"({_mirrored_len(kw)})"
+                    f"{where}: keyword exceeds {_MAX_KEYWORD} characters " f"({_mirrored_len(kw)})"
                 )
                 break
         if not self.title:
@@ -1747,8 +1784,7 @@ class CommandContribution:
             # the frontend -- the command vanished from the launcher with the app author
             # having seen no error on install, the worst of both validators.
             errors.append(
-                f"{where}: title exceeds {_MAX_TITLE} characters "
-                f"({_mirrored_len(self.title)})"
+                f"{where}: title exceeds {_MAX_TITLE} characters " f"({_mirrored_len(self.title)})"
             )
         if self.subtitle and _mirrored_len(self.subtitle) > _MAX_TITLE:
             # Mirrors the frontend's cap. The subtitle is SEARCHED -- `rankRootRows` runs
@@ -1800,8 +1836,7 @@ class CommandContribution:
                 # The reader is asked for a value the command then ignores -- always a
                 # mistake, and a confusing one, because the command still runs.
                 errors.append(
-                    f"{where}: declares an argument but the prompt never uses "
-                    f"{ARGUMENT_TOKEN}"
+                    f"{where}: declares an argument but the prompt never uses " f"{ARGUMENT_TOKEN}"
                 )
             errors.extend(self._validate_matcher(where))
         return errors
@@ -2103,6 +2138,352 @@ class FileMenuItemConfig:
 
 
 @dataclass
+class AcceptanceInputField:
+    """One scalar field in an app acceptance kind's host-validated input schema."""
+
+    type: str = ""
+    enum: list[Any] = field(default_factory=list)
+    minLength: Any = None  # noqa: N815
+    maxLength: Any = None  # noqa: N815
+    minimum: Any = None
+    maximum: Any = None
+    bad_enum: bool = False
+    unknown_fields: tuple[str, ...] = ()
+
+    _KNOWN = frozenset({"type", "enum", "minLength", "maxLength", "minimum", "maximum"})
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> AcceptanceInputField:
+        raw_enum = data.get("enum", [])
+        return cls(
+            type=data.get("type", "") if isinstance(data.get("type", ""), str) else "",
+            enum=list(raw_enum) if isinstance(raw_enum, list) else [],
+            minLength=data.get("minLength"),  # noqa: N815
+            maxLength=data.get("maxLength"),  # noqa: N815
+            minimum=data.get("minimum"),
+            maximum=data.get("maximum"),
+            bad_enum="enum" in data and not isinstance(raw_enum, list),
+            unknown_fields=tuple(sorted(str(key) for key in data if key not in cls._KNOWN)),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {"type": self.type}
+        if self.enum:
+            out["enum"] = list(self.enum)
+        if self.minLength is not None:
+            out["minLength"] = self.minLength
+        if self.maxLength is not None:
+            out["maxLength"] = self.maxLength
+        if self.minimum is not None:
+            out["minimum"] = self.minimum
+        if self.maximum is not None:
+            out["maximum"] = self.maximum
+        return out
+
+    def validate(self, where: str) -> list[str]:
+        errors: list[str] = []
+        if self.unknown_fields:
+            errors.append(f"{where}: unsupported schema fields {list(self.unknown_fields)!r}")
+        if self.type not in _ACCEPTANCE_INPUT_TYPES:
+            errors.append(f"{where}: type must be one of {sorted(_ACCEPTANCE_INPUT_TYPES)}")
+            return errors
+        if self.bad_enum:
+            errors.append(f"{where}: enum must be an array")
+        if len(self.enum) > MAX_ACCEPTANCE_ENUM_VALUES:
+            errors.append(
+                f"{where}: enum has {len(self.enum)} values; the limit is "
+                f"{MAX_ACCEPTANCE_ENUM_VALUES}"
+            )
+        for value in self.enum:
+            if not self._value_has_type(value):
+                errors.append(f"{where}: enum value {value!r} does not match type {self.type}")
+        try:
+            encoded_enum = [
+                json.dumps(value, allow_nan=False, sort_keys=True) for value in self.enum
+            ]
+        except (TypeError, ValueError, RecursionError):
+            errors.append(f"{where}: enum values must be finite JSON scalars")
+        else:
+            if len(set(encoded_enum)) != len(encoded_enum):
+                errors.append(f"{where}: enum values must be unique")
+
+        lengths = (self.minLength, self.maxLength)
+        numeric_bounds = (self.minimum, self.maximum)
+        if self.type == "string":
+            if self.maxLength is None:
+                errors.append(
+                    f"{where}: string fields require maxLength so every request is bounded"
+                )
+            for label, value in zip(("minLength", "maxLength"), lengths):
+                if isinstance(value, bool) or not isinstance(value, int):
+                    if value is not None:
+                        errors.append(f"{where}: {label} must be an integer")
+                elif not 0 <= value <= MAX_ACCEPTANCE_STRING_CHARS:
+                    errors.append(
+                        f"{where}: {label} must be between 0 and " f"{MAX_ACCEPTANCE_STRING_CHARS}"
+                    )
+            if self.minimum is not None or self.maximum is not None:
+                errors.append(f"{where}: minimum/maximum apply only to numeric fields")
+        elif self.type in ("integer", "number"):
+            if self.minLength is not None or self.maxLength is not None:
+                errors.append(f"{where}: minLength/maxLength apply only to string fields")
+            for label, value in zip(("minimum", "maximum"), numeric_bounds):
+                if value is not None and not self._finite_number(value):
+                    errors.append(f"{where}: {label} must be a finite number")
+            if not self.enum and (self.minimum is None or self.maximum is None):
+                errors.append(
+                    f"{where}: numeric fields require minimum and maximum unless "
+                    "a finite enum bounds the values"
+                )
+        elif any(value is not None for value in (*lengths, *numeric_bounds)):
+            errors.append(f"{where}: boolean fields do not take range constraints")
+
+        if (
+            isinstance(self.minLength, int)
+            and not isinstance(self.minLength, bool)
+            and isinstance(self.maxLength, int)
+            and not isinstance(self.maxLength, bool)
+            and self.minLength > self.maxLength
+        ):
+            errors.append(f"{where}: minLength must not exceed maxLength")
+        if (
+            self._finite_number(self.minimum)
+            and self._finite_number(self.maximum)
+            and self.minimum > self.maximum
+        ):
+            errors.append(f"{where}: minimum must not exceed maximum")
+        for value in self.enum:
+            if self._value_has_type(value):
+                errors.extend(self.validate_value(value, f"{where}.enum"))
+        return errors
+
+    @staticmethod
+    def _finite_number(value: Any) -> bool:
+        if isinstance(value, bool):
+            return False
+        if isinstance(value, int):
+            return True
+        return isinstance(value, float) and math.isfinite(value)
+
+    def _value_has_type(self, value: Any) -> bool:
+        if self.type == "string":
+            return isinstance(value, str)
+        if self.type == "integer":
+            return isinstance(value, int) and not isinstance(value, bool)
+        if self.type == "number":
+            return self._finite_number(value)
+        if self.type == "boolean":
+            return isinstance(value, bool)
+        return False
+
+    def validate_value(self, value: Any, where: str) -> list[str]:
+        errors: list[str] = []
+        if not self._value_has_type(value):
+            return [f"{where}: expected {self.type}"]
+        if self.enum and value not in self.enum:
+            errors.append(f"{where}: value is not in the declared enum")
+        if isinstance(value, str):
+            minimum = self.minLength if isinstance(self.minLength, int) else 0
+            maximum = (
+                self.maxLength if isinstance(self.maxLength, int) else MAX_ACCEPTANCE_STRING_CHARS
+            )
+            if len(value) < minimum:
+                errors.append(f"{where}: shorter than minLength {minimum}")
+            if len(value) > maximum:
+                errors.append(f"{where}: longer than maxLength {maximum}")
+        elif self._finite_number(value):
+            if self._finite_number(self.minimum) and value < self.minimum:
+                errors.append(f"{where}: below minimum {self.minimum}")
+            if self._finite_number(self.maximum) and value > self.maximum:
+                errors.append(f"{where}: above maximum {self.maximum}")
+        return errors
+
+
+@dataclass
+class AcceptanceInputSchema:
+    """The fixed JSON-schema subset accepted for contributed acceptance inputs.
+
+    Flat scalar objects are deliberate. Nested schemas, regular expressions, references,
+    and executable selectors would make a manifest a program the gateway has to run.
+    """
+
+    type: str = "object"
+    properties: dict[str, AcceptanceInputField] = field(default_factory=dict)
+    required: list[str] = field(default_factory=list)
+    additionalProperties: Any = False  # noqa: N815
+    bad_properties: bool = False
+    bad_required: bool = False
+    unknown_fields: tuple[str, ...] = ()
+    dropped_properties: int = 0
+    dropped_required: int = 0
+
+    _KNOWN = frozenset({"type", "properties", "required", "additionalProperties"})
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> AcceptanceInputSchema:
+        raw_properties = data.get("properties", {})
+        raw_required = data.get("required", [])
+        properties: dict[str, AcceptanceInputField] = {}
+        dropped = 0
+        if isinstance(raw_properties, dict):
+            for key, value in raw_properties.items():
+                if isinstance(key, str) and isinstance(value, dict):
+                    properties[key] = AcceptanceInputField.from_dict(value)
+                else:
+                    dropped += 1
+        required = (
+            [value for value in raw_required if isinstance(value, str)]
+            if isinstance(raw_required, list)
+            else []
+        )
+        return cls(
+            type=data.get("type", "") if isinstance(data.get("type", ""), str) else "",
+            properties=properties,
+            required=required,
+            additionalProperties=data.get("additionalProperties"),  # noqa: N815
+            bad_properties="properties" in data and not isinstance(raw_properties, dict),
+            bad_required="required" in data and not isinstance(raw_required, list),
+            unknown_fields=tuple(sorted(str(key) for key in data if key not in cls._KNOWN)),
+            dropped_properties=dropped,
+            dropped_required=(
+                len(raw_required) - len(required) if isinstance(raw_required, list) else 0
+            ),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {name: spec.to_dict() for name, spec in self.properties.items()},
+            "required": list(self.required),
+            "additionalProperties": False,
+        }
+
+    def validate(self, where: str) -> list[str]:
+        errors: list[str] = []
+        if self.unknown_fields:
+            errors.append(f"{where}: unsupported schema fields {list(self.unknown_fields)!r}")
+        if self.type != "object":
+            errors.append(f"{where}: type must be 'object'")
+        if self.bad_properties:
+            errors.append(f"{where}: properties must be an object")
+        if self.bad_required:
+            errors.append(f"{where}: required must be an array")
+        if self.dropped_required:
+            errors.append(f"{where}: required entries must be strings")
+        if self.additionalProperties is not False:
+            errors.append(f"{where}: additionalProperties must be false")
+        if self.dropped_properties:
+            errors.append(f"{where}: every property must map to an object schema")
+        if len(self.properties) > MAX_ACCEPTANCE_INPUT_FIELDS:
+            errors.append(
+                f"{where}: {len(self.properties)} properties exceeds the limit of "
+                f"{MAX_ACCEPTANCE_INPUT_FIELDS}"
+            )
+        required = set(self.required)
+        if len(required) != len(self.required):
+            errors.append(f"{where}: required entries must be unique")
+        unknown_required = required - set(self.properties)
+        if unknown_required:
+            errors.append(
+                f"{where}: required names undeclared properties {sorted(unknown_required)!r}"
+            )
+        for name, spec in self.properties.items():
+            field_where = f"{where}.properties[{name!r}]"
+            if not _ACCEPTANCE_FIELD_NAME_RE.fullmatch(name):
+                errors.append(f"{field_where}: name must be a lowercase snake identifier")
+            normalized = "".join(ch for ch in name.casefold() if ch.isalnum())
+            if normalized in _FORBIDDEN_ACCEPTANCE_INPUT_NAMES:
+                errors.append(
+                    f"{field_where}: capability-shaped input name {name!r} is not allowed"
+                )
+            errors.extend(spec.validate(field_where))
+        return errors
+
+    def validate_input(self, value: Any) -> list[str]:
+        if not isinstance(value, dict):
+            return ["input must be an object"]
+        errors: list[str] = []
+        unknown = set(value) - set(self.properties)
+        if unknown:
+            errors.append(f"input has undeclared fields {sorted(str(key) for key in unknown)!r}")
+        for name in self.required:
+            if name not in value:
+                errors.append(f"input is missing required field {name!r}")
+        for name, item in value.items():
+            spec = self.properties.get(name)
+            if spec is not None:
+                errors.extend(spec.validate_value(item, f"input.{name}"))
+        return errors
+
+
+@dataclass
+class AcceptanceKindContribution:
+    """One app-owned acceptance kind evaluated at a fixed relative backend route."""
+
+    id: str = ""
+    inputSchema: AcceptanceInputSchema = field(default_factory=AcceptanceInputSchema)  # noqa: N815
+    endpoint: str = ""
+    bad_input_schema: bool = False
+    unknown_fields: tuple[str, ...] = ()
+
+    _KNOWN = frozenset({"id", "inputSchema", "endpoint"})
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> AcceptanceKindContribution:
+        raw_schema = data.get("inputSchema", {})
+        return cls(
+            id=data.get("id", "") if isinstance(data.get("id", ""), str) else "",
+            inputSchema=(  # noqa: N815
+                AcceptanceInputSchema.from_dict(raw_schema)
+                if isinstance(raw_schema, dict)
+                else AcceptanceInputSchema()
+            ),
+            endpoint=(
+                data.get("endpoint", "") if isinstance(data.get("endpoint", ""), str) else ""
+            ),
+            bad_input_schema="inputSchema" in data and not isinstance(raw_schema, dict),
+            unknown_fields=tuple(sorted(str(key) for key in data if key not in cls._KNOWN)),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "inputSchema": self.inputSchema.to_dict(),
+            "endpoint": self.endpoint,
+        }
+
+    def qualified_name(self, app_id: str) -> str:
+        return app_acceptance_kind(app_id, self.id)
+
+    def validate(self) -> list[str]:
+        where = f"contributes.acceptanceKinds[{self.id or '?'}]"
+        errors: list[str] = []
+        if self.unknown_fields:
+            errors.append(f"{where}: unsupported fields {list(self.unknown_fields)!r}")
+        if not self.id:
+            errors.append("contributes.acceptanceKinds: entry missing id")
+        elif not app_acceptance_kind("app", self.id):
+            errors.append(
+                f"{where}: id must be a lowercase kebab slug of at most "
+                f"{APP_ACCEPTANCE_KIND_ID_MAX_CHARS} characters"
+            )
+        if self.bad_input_schema:
+            errors.append(f"{where}: inputSchema must be an object")
+        else:
+            errors.extend(self.inputSchema.validate(f"{where}.inputSchema"))
+        if not self.endpoint:
+            errors.append(f"{where}: missing endpoint")
+        elif len(
+            self.endpoint
+        ) > MAX_ACCEPTANCE_ENDPOINT_CHARS or not _ACCEPTANCE_ENDPOINT_RE.fullmatch(self.endpoint):
+            errors.append(
+                f"{where}: endpoint must be a fixed app-relative path of at most "
+                f"{MAX_ACCEPTANCE_ENDPOINT_CHARS} characters"
+            )
+        return errors
+
+
+@dataclass
 class Contributes:
     """What an app adds to host surfaces it does not own.
 
@@ -2123,6 +2504,9 @@ class Contributes:
     #: dispatched to the app's own endpoint -- so it carries the same malformed-input
     #: flags rather than coercing quietly.
     fileMenuItems: list[FileMenuItemConfig] = field(default_factory=list)  # noqa: N815
+    #: App-owned acceptance kinds. Each qualified name is derived as
+    #: ``<manifest name>:<id>``; the manifest never supplies that namespace.
+    acceptanceKinds: list[AcceptanceKindContribution] = field(default_factory=list)  # noqa: N815
     #: Whether the source manifest's ``commands`` was present but not a list. Same reason
     #: as ``CommandArgument.bad_hosts``: coercing to ``[]`` is indistinguishable from a
     #: deliberate empty list, so the declaration would pass validation and then vanish
@@ -2138,9 +2522,7 @@ class Contributes:
     #: Counted rather than flagged so the error can say how many vanished. Not
     #: serialized.
     dropped_commands: int = 0
-    sessionControls: list[SessionControlContribution] = field(  # noqa: N815
-        default_factory=list
-    )
+    sessionControls: list[SessionControlContribution] = field(default_factory=list)  # noqa: N815
     #: Whether the manifest's ``sessionControls`` was present but not a list. Same reason
     #: as ``bad_commands``: coercing to ``[]`` reads as a deliberate empty list, so the
     #: declaration would install clean and then never render a chip. Not serialized.
@@ -2157,6 +2539,10 @@ class Contributes:
     #: How many entries of a well-formed ``fileMenuItems`` array were not objects. Not
     #: serialized.
     dropped_file_menu_items: int = 0
+    #: ``acceptanceKinds`` present but not an array, and non-object entries in a valid
+    #: array. Both are refused rather than treated as an app declaring no checks.
+    bad_acceptance_kinds: bool = False
+    dropped_acceptance_kinds: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {}
@@ -2177,6 +2563,10 @@ class Contributes:
         kept_items = [i for i in items if i]
         if kept_items:
             d["fileMenuItems"] = kept_items
+        kinds = [kind.to_dict() for kind in self.acceptanceKinds]
+        kept_kinds = [kind for kind in kinds if kind]
+        if kept_kinds:
+            d["acceptanceKinds"] = kept_kinds
         return d
 
     @classmethod
@@ -2194,9 +2584,11 @@ class Contributes:
                 # discarded here is reported as nothing at all — the app installs
                 # clean and the control simply never appears. The placeholder fails
                 # the required-field checks, which is that promised refusal.
-                SessionControlContribution.from_dict(c)
-                if isinstance(c, dict)
-                else SessionControlContribution()
+                (
+                    SessionControlContribution.from_dict(c)
+                    if isinstance(c, dict)
+                    else SessionControlContribution()
+                )
                 for c in raw_controls
             ]
             if isinstance(raw_controls, list)
@@ -2206,21 +2598,29 @@ class Contributes:
         tab_entries = tabs_raw if isinstance(tabs_raw, list) else []
         items_raw = data.get("fileMenuItems", [])
         item_entries = items_raw if isinstance(items_raw, list) else []
+        kinds_raw = data.get("acceptanceKinds", [])
+        kind_entries = kinds_raw if isinstance(kinds_raw, list) else []
         return cls(
             commands=[CommandContribution.from_dict(c) for c in entries if isinstance(c, dict)],
             panelTabs=[PanelTabConfig.from_dict(t) for t in tab_entries if isinstance(t, dict)],
             fileMenuItems=[
                 FileMenuItemConfig.from_dict(i) for i in item_entries if isinstance(i, dict)
             ],
+            acceptanceKinds=[  # noqa: N815
+                AcceptanceKindContribution.from_dict(kind)
+                for kind in kind_entries
+                if isinstance(kind, dict)
+            ],
             bad_commands="commands" in data and not isinstance(raw, list),
             dropped_commands=sum(1 for c in entries if not isinstance(c, dict)),
             sessionControls=controls,
-            bad_session_controls="sessionControls" in data
-            and not isinstance(raw_controls, list),
+            bad_session_controls="sessionControls" in data and not isinstance(raw_controls, list),
             bad_panel_tabs="panelTabs" in data and not isinstance(tabs_raw, list),
             dropped_panel_tabs=sum(1 for t in tab_entries if not isinstance(t, dict)),
             bad_file_menu_items="fileMenuItems" in data and not isinstance(items_raw, list),
             dropped_file_menu_items=sum(1 for i in item_entries if not isinstance(i, dict)),
+            bad_acceptance_kinds="acceptanceKinds" in data and not isinstance(kinds_raw, list),
+            dropped_acceptance_kinds=sum(1 for kind in kind_entries if not isinstance(kind, dict)),
         )
 
     def validate(self) -> list[str]:
@@ -2329,6 +2729,28 @@ class Contributes:
                     # row's activation would target the first row's endpoint.
                     errors.append(f"contributes.fileMenuItems: duplicate id {item.id!r}")
                 seen_items.add(item.id)
+        if self.bad_acceptance_kinds:
+            errors.append(
+                "contributes.acceptanceKinds must be an array -- a non-array value "
+                "would otherwise pass as an app declaring no checks"
+            )
+        if self.dropped_acceptance_kinds:
+            errors.append(
+                f"contributes.acceptanceKinds: {self.dropped_acceptance_kinds} entr"
+                f"{'y' if self.dropped_acceptance_kinds == 1 else 'ies'} must be an object"
+            )
+        if len(self.acceptanceKinds) > MAX_ACCEPTANCE_KINDS_PER_APP:
+            errors.append(
+                f"contributes.acceptanceKinds: {len(self.acceptanceKinds)} kinds exceeds "
+                f"the limit of {MAX_ACCEPTANCE_KINDS_PER_APP}"
+            )
+        seen_kinds: set[str] = set()
+        for kind in self.acceptanceKinds:
+            errors.extend(kind.validate())
+            if kind.id:
+                if kind.id in seen_kinds:
+                    errors.append(f"contributes.acceptanceKinds: duplicate id {kind.id!r}")
+                seen_kinds.add(kind.id)
         return errors
 
 
@@ -2552,9 +2974,7 @@ class AppManifest:
                 errors.append(
                     f"session control contribution entryPoint contains path traversal: {ctl.entryPoint!r}"
                 )
-            if ctl.statusPath and not _SESSION_CONTROL_STATUS_PATH_RE.fullmatch(
-                ctl.statusPath
-            ):
+            if ctl.statusPath and not _SESSION_CONTROL_STATUS_PATH_RE.fullmatch(ctl.statusPath):
                 # Refused rather than ignored: a status route the dashboard
                 # declines to call would leave the chip permanently stateless
                 # with nothing saying why.
@@ -2623,6 +3043,22 @@ class AppManifest:
         # surfaces / when-filter grammar.
         errors.extend(self.contributes.validate())
 
+        # Host-owned acceptance evaluation invokes only a gateway-managed process
+        # backend. Hook-only and client-installed apps have no tracked loopback process,
+        # so accepting their declarations would create a work bar that can never run.
+        if self.contributes.acceptanceKinds and len(self.name) > APP_ACCEPTANCE_APP_ID_MAX_CHARS:
+            errors.append(
+                "contributes.acceptanceKinds requires an app name of at most "
+                f"{APP_ACCEPTANCE_APP_ID_MAX_CHARS} characters"
+            )
+        if self.contributes.acceptanceKinds and not self.backend.entryPoint:
+            errors.append(
+                "contributes.acceptanceKinds requires backend.entryPoint so the "
+                "gateway can own and health-check the provider process"
+            )
+        if self.contributes.acceptanceKinds and self.platform.installMode != "server":
+            errors.append("contributes.acceptanceKinds requires platform.installMode 'server'")
+
         # A contributed row's endpoint is checked against the app's OWN namespace here,
         # where the name is known -- refusing it at install is what keeps a declaration
         # naming a core route (`/api/shutdown`) from ever reaching the dashboard, which
@@ -2674,6 +3110,7 @@ class AppManifest:
             or self.contributes.sessionControls
             or self.contributes.panelTabs
             or self.contributes.fileMenuItems
+            or self.contributes.acceptanceKinds
         ):
             # A contributed command's `prompt` is sent to an agent with tools as if
             # the reader typed it, and `autoSend` fires it without a further
@@ -2708,6 +3145,11 @@ class AppManifest:
             # its `endpoint` is where the host POSTs the path of a file the reader picked,
             # so rewriting it on a signed app redirects that dispatch while every visible
             # character of the row, and the signature, stay exactly as published.
+            #
+            # An acceptance kind's endpoint returns a machine-authoritative verdict, and
+            # its inputSchema decides which stored values the host will send there. Both
+            # are therefore publisher intent: changing either under an old signature
+            # would let different code decide whether a work item passed.
             body["contributes"] = self.contributes.to_dict()
         setup_d = self.setup.to_dict()
         if setup_d:
@@ -3083,9 +3525,7 @@ def has_stdio_mcp_server(manifest: AppManifest) -> bool:
     from the app's provisioned deps tree, which is why its presence is what
     makes ``bridges.py`` provision at registration.
     """
-    return any(
-        isinstance(cfg, dict) and not cfg.get("url") for cfg in manifest.mcpServers.values()
-    )
+    return any(isinstance(cfg, dict) and not cfg.get("url") for cfg in manifest.mcpServers.values())
 
 
 def file_entry_point_refusal(entry_point: str, app_root: Path) -> str:

@@ -487,6 +487,134 @@ a signed app the rows are covered by the signature, because `endpoint` is where
 core sends the reader's chosen path. A stock build with no app declaring these
 renders nothing.
 
+### `contributes.acceptanceKinds` — Work-Ledger Acceptance Checks
+
+Declares app-owned acceptance kinds that a conductor can use as a work item's
+completion condition. The host derives the public name as
+`<manifest-name>:<id>`; the manifest supplies only `id`, so one app cannot claim
+another app's namespace or shadow a built-in kind. An app that contributes these
+checks has a manifest name of at most 128 characters; a kind id is at most 64.
+
+```json
+{
+  "name": "release-app",
+  "backend": { "entryPoint": "backend/server.py" },
+  "contributes": {
+    "acceptanceKinds": [
+      {
+        "id": "release-ready",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "change_id": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "environment": {
+              "type": "string",
+              "enum": ["test", "production"],
+              "maxLength": 32
+            }
+          },
+          "required": ["change_id", "environment"],
+          "additionalProperties": false
+        },
+        "endpoint": "acceptance/release-ready"
+      }
+    ]
+  }
+}
+```
+
+A stored work-ledger condition for this declaration is:
+
+```json
+{
+  "kind": "release-app:release-ready",
+  "input": {
+    "change_id": 7,
+    "environment": "test"
+  }
+}
+```
+
+| Field | Required | Contract |
+|---|---|---|
+| `id` | yes | Lowercase kebab id, at most 64 characters and unique within the app |
+| `inputSchema` | yes | The closed scalar-object schema subset below |
+| `endpoint` | yes | Fixed app-relative path, at most 240 characters |
+
+At most **8** kinds and **16** input fields may be declared by one app. The only
+field types are `string`, `integer`, `number`, and `boolean`. Strings require a
+finite `maxLength` no greater than **4096** and may also declare `minLength`.
+Numeric fields require finite `minimum` and `maximum` unless a non-empty finite
+`enum` already closes the value set. Any scalar field may
+have at most **32** same-typed, unique `enum` values. The object schema must say
+`type: "object"`, list its `properties` and `required` names, and set
+`additionalProperties: false`.
+
+This is a schema subset, not general JSON Schema. Nested objects, arrays,
+`pattern`, regular expressions, `$ref`, and unknown schema keys are refused.
+Input names that use common capability-selector spellings, including command,
+argv, executable, path, URL, endpoint, MCP server, or tool names, are also refused
+as defense in depth. Provider-defined names and bounded scalar values remain opaque
+data to the host; it never executes or interprets them, and the trusted provider
+must validate its declared input before use. A malformed
+`properties`, `required`, or `enum` container and an entry silently dropped by a
+loose parser are manifest errors.
+
+`endpoint` has no scheme, host, leading slash, query, fragment, path parameter,
+backslash, or traversal segment. It is joined only as `/api/<endpoint>` on the
+provider's gateway-managed loopback backend. An app declaring acceptance kinds
+must therefore use `backend.entryPoint` and server install mode; hook-only and
+client-installed apps are rejected because they have no gateway-tracked process
+the host can health-check and invoke. The gateway must have spawned that process;
+an adopted listener cannot provide an acceptance verdict because its response is
+not authenticated back to the gateway.
+
+The conductor calls `work_ledger_evaluate` with an item id only. The gateway
+loads the current stored condition, validates the input, verifies that the app
+is installed and enabled, applies the existing App admission/signature and
+per-app execution/repository trust gates, and signs the fixed POST with the
+app's existing proxy HMAC. For an admitted builtin backend, the declaration,
+schema, endpoint, version and digest come from immutable shipped `app.json`, not
+the mutable installed copy. The app receives exactly `{ "kind": ..., "input":
+... }` and returns exactly:
+
+```json
+{ "verdict": "pass", "evidence": "release checks are green" }
+```
+
+`verdict` is one of `pass`, `fail`, `pending`, `refused`, or `error`; `evidence`
+is a string. Response size and connect/read/total time are bounded. The host
+rechecks enablement, manifest and provider versions, declaration, backend port and
+execution generation, and all trust authority after the response, so a change,
+process replacement, or revocation during the call discards the result. Missing,
+disabled, changed, untrusted, unhealthy, identity-incomplete, timed-out, oversized,
+or malformed providers fail closed.
+
+The host records the verdict with provider, qualified kind, provider version,
+manifest digest, backend-generation digest, acceptance digest, authority, endpoint,
+timestamp, and bounded redacted evidence. A conductor cannot write `pass` for a
+namespaced kind through `work_ledger_record`, and cannot close it as `accepted`
+without a matching host-recorded pass. A legacy proof without the generation digest
+fails closed; built-in kinds remain unchanged. Around that close's provisional
+store write, the host validates the provider before and after; cross-process drift
+on the second read restores the item record/event-log preimage captured under the
+same item lock only while those files still equal that transaction's postimage,
+preserving concurrent conductor-header commits, before log publication. The checks
+cover installed and enabled state, version, manifest digest, declaration, healthy
+backend execution generation, every selected listener owner's PID and start identity
+in the tier reached by `127.0.0.1`, proxy secret, and current trust authority. A disable, same-version update, backend restart
+or loss, or trust revocation therefore invalidates a stored pass even when no new
+evaluation ran. Changing the stored acceptance also clears the proof. The whole
+`contributes` group, including each schema and endpoint, is admission-signature
+material.
+
+See the [API reference](api-reference.md#app-provided-work-ledger-acceptance-endpoint)
+for the provider request and response details.
+
 ## Store artwork
 
 ### App Icon

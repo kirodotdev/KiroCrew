@@ -7,7 +7,11 @@ import time
 import pytest
 from aiohttp.test_utils import make_mocked_request
 
-from kiro_crew.apps.proxy_auth import raw_request_target, verify_proxy_request
+from kiro_crew.apps.proxy_auth import (
+    raw_request_target,
+    sign_proxy_request,
+    verify_proxy_request,
+)
 
 SECRET = "s3cret-app-key"
 
@@ -21,9 +25,43 @@ def _sign(method: str, target: str, body: bytes, *, ts: int | None = None) -> st
     return f"{ts}:{sig}"
 
 
+def test_shared_signer_matches_the_verifier_contract() -> None:
+    now = 1_800_000_000
+    body = b'{"kind":"release-app:release-ready","input":{}}'
+    target = "/api/acceptance/release-ready"
+    header = sign_proxy_request(
+        method="POST",
+        target=target,
+        body=body,
+        secret=SECRET,
+        now=now,
+    )
+    assert header == _sign("POST", target, body, ts=now)
+    assert verify_proxy_request(
+        header,
+        method="POST",
+        target=target,
+        body=body,
+        secret=SECRET,
+        now=now,
+    )
+    assert (
+        sign_proxy_request(
+            method="POST",
+            target=target,
+            body=body,
+            secret="",
+            now=now,
+        )
+        == ""
+    )
+
+
 def test_valid_signature_passes():
     hdr = _sign("GET", "/api/read?path=x", b"")
-    assert verify_proxy_request(hdr, method="GET", target="/api/read?path=x", body=b"", secret=SECRET)
+    assert verify_proxy_request(
+        hdr, method="GET", target="/api/read?path=x", body=b"", secret=SECRET
+    )
 
 
 @pytest.mark.parametrize(
@@ -57,7 +95,9 @@ def test_tampered_body_fails():
 
 def test_wrong_target_fails():
     hdr = _sign("GET", "/api/read?path=x", b"")
-    assert not verify_proxy_request(hdr, method="GET", target="/api/git-status", body=b"", secret=SECRET)
+    assert not verify_proxy_request(
+        hdr, method="GET", target="/api/git-status", body=b"", secret=SECRET
+    )
 
 
 def test_wrong_method_fails():
@@ -72,8 +112,12 @@ def test_missing_secret_fails_closed():
 
 def test_missing_or_malformed_header_fails():
     assert not verify_proxy_request("", method="GET", target="/api/read", body=b"", secret=SECRET)
-    assert not verify_proxy_request("no-colon", method="GET", target="/api/read", body=b"", secret=SECRET)
-    assert not verify_proxy_request("abc:def", method="GET", target="/api/read", body=b"", secret=SECRET)
+    assert not verify_proxy_request(
+        "no-colon", method="GET", target="/api/read", body=b"", secret=SECRET
+    )
+    assert not verify_proxy_request(
+        "abc:def", method="GET", target="/api/read", body=b"", secret=SECRET
+    )
 
 
 def test_stale_timestamp_fails():
@@ -145,7 +189,9 @@ def test_a_valid_signature_suffixed_with_a_lone_surrogate_is_refused():
 
 def test_wrong_secret_fails():
     hdr = _sign("GET", "/api/read", b"")
-    assert not verify_proxy_request(hdr, method="GET", target="/api/read", body=b"", secret="different")
+    assert not verify_proxy_request(
+        hdr, method="GET", target="/api/read", body=b"", secret="different"
+    )
 
 
 @pytest.mark.parametrize(

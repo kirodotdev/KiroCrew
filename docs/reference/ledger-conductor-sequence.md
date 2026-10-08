@@ -4,7 +4,7 @@
 
 This page traces one work item from the moment a conductor mints it to the moment it is closed, end to end. It extends the shorter "Binding lifecycle" diagram in [the work-ledger RFC](../request-for-change/rfc-conductor-work-ledger.md) past the first report, through acceptance promotion, evaluation, and the terminal write. Every action name and every status value below is taken from the tool surface in `src/kiro_crew/mcp_work.py` and the routes in `src/kiro_crew/dashboard/handlers/work_ledger.py`.
 
-The two halves of the surface never overlap. A conductor writes with `work_ledger_record`, reads with `work_ledger_read`, and rebuilds a damaged ledger from the crew log with `work_ledger_rebuild`; a worker reads with `work_brief` and writes with `work_report`. Which half answers a call is resolved from the caller's own session identity, so a worker has no parameter naming its item, its conductor, or itself.
+The two halves of the surface never overlap. A conductor writes with `work_ledger_record`, reads with `work_ledger_read`, evaluates a namespaced App Kit condition with `work_ledger_evaluate`, and rebuilds a damaged ledger from the crew log with `work_ledger_rebuild`; a worker reads with `work_brief` and writes with `work_report`. Which half answers a call is resolved from the caller's own session identity, so a worker has no parameter naming its item, its conductor, or itself.
 
 ## Sequence
 
@@ -15,6 +15,7 @@ sequenceDiagram
     participant L as WorkLedger
     participant W as WorkerSession
     participant E as accept_eval
+    participant P as AppProvider
 
     U->>C: a goal
     C->>L: work_ledger_record action=goal (goal, round)
@@ -49,13 +50,23 @@ sequenceDiagram
     Note over W,L: done is a CLAIM — nothing on the worker half writes a verdict
 
     C->>L: work_ledger_read
-    L-->>C: the claimed pr, and accept_batch built from acceptance alone
-    C->>L: work_ledger_record action=accept (item_id, acceptance with the real pr)
-    L-->>C: the bar now names the checked pull request
+    L-->>C: stored acceptance and any worker claim
+    opt a condition value became known during work
+        C->>L: work_ledger_record action=accept (item_id, promoted acceptance)
+        L-->>C: the stored bar now names the checked value
+    end
 
-    C->>E: accept_eval.py over the promoted acceptance
-    E-->>C: pass / fail / pending / refused / error
-    C->>L: work_ledger_record action=verdict (item_id, verdict, fails)
+    alt built-in acceptance kind
+        C->>E: accept_eval.py over filtered built-in accept_batch via stdin
+        E-->>C: pass / fail / pending / refused / error
+        C->>L: work_ledger_record action=verdict (item_id, verdict, fails)
+    else namespaced app acceptance kind
+        C->>L: work_ledger_evaluate (item_id only)
+        L->>P: HMAC-signed POST to manifest-fixed endpoint with stored kind + input
+        P-->>L: pass / fail / pending / refused / error + evidence
+        Note over L,P: host revalidates provider, trust, manifest, backend and acceptance
+        L-->>C: host-recorded verdict + provider provenance
+    end
 
     alt verdict=pass
         C->>L: work_ledger_record action=close (item_id, state=accepted, decision)
@@ -77,7 +88,9 @@ sequenceDiagram
 
 **`done` is a claim.** A worker calling `work_report status=done` says it believes the acceptance condition is met and puts its evidence in `artifacts` and `pr`. It has no parameter that writes a verdict, a state, or an acceptance condition.
 
-**`verdict` is the evaluator's answer.** It carries `accept_eval.py`'s own five values — `pass`, `fail`, `pending`, `refused`, `error` — recorded under the conductor's key after the script ran. A claim and a verdict are therefore two different facts about the same item, and both are stored.
+**`verdict` is the evaluator's answer.** Both paths use `pass`, `fail`, `pending`, `refused`, and `error`. For a built-in kind the conductor records `accept_eval.py`'s answer. For a namespaced `<app-id>:<kind-id>`, `work_ledger_evaluate` loads the stored input, calls only the current manifest's fixed endpoint, and records the app answer with provider version, manifest, backend-generation and acceptance digests, authority, endpoint, timestamp, and sanitized evidence. A claim and a verdict are therefore two different facts about the same item, and both are stored.
+
+**A contributed pass is host-owned.** `work_ledger_record action=verdict` cannot write `pass` for a namespaced kind, and `close state=accepted` refuses until `work_ledger_evaluate` has stored a matching pass for the current acceptance and backend-generation digests. Close revalidates the provider before and after the provisional store write; cross-process drift on the second read restores the item record/event-log preimage captured under the same item lock only while those files still equal that transaction's postimage, preserving concurrent conductor-header commits, before log publication. A later disable, same-version update, backend restart or loss, or trust revocation makes that proof stale without another evaluation. A legacy proof missing the backend generation fails closed; built-in kinds remain unchanged. Changing the acceptance invalidates the proof. Missing, disabled, changed, untrusted, unhealthy, identity-incomplete, timed-out, or malformed providers fail closed; the conductor never falls back to `accept_eval.py` or a manual pass.
 
 **`accept` is why a `pr` claim is not self-serving.** `accept_batch` is composed from each item's stored `acceptance` alone and deliberately ignores whatever `pr` a worker reported, so a worker cannot point the bar at someone else's green pull request. Promoting the number into the bar is a separate conductor write, made after the conductor has read and checked it, and it refuses to clear the bar rather than accepting an empty condition.
 

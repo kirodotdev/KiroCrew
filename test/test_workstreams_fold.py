@@ -1438,3 +1438,65 @@ def test_nested_board_units_refused_by_the_ceiling_are_counted_too(
     assert len(units) == projection.WORKSTREAMS_UNIT_LIMIT
     # Each round offers one unit, so the refusals are the rounds past the ceiling.
     assert projection._workstreams_units_dropped("s0") > 0
+
+
+# --------------------------------------------------------------------------- #
+# an accept that invalidates a provider verdict
+# --------------------------------------------------------------------------- #
+
+
+def test_the_accept_invalidation_bumps_the_workstreams_state_version() -> None:
+    """A savepoint folded before an invalidating ``accept`` cleared the verdict keeps the
+    stale one, so the fold's version has to move to retire it."""
+    assert projection.fold_state_version("workstreams") == 5
+
+
+_CONTRIBUTED = {"kind": "release-app:release-ready", "input": {}}
+_BUILT_IN = {"kind": "human_approval"}
+
+
+@pytest.mark.parametrize(
+    ("created", "accept", "verdict", "why"),
+    [
+        (
+            _CONTRIBUTED,
+            {"acceptance": _BUILT_IN, "evaluation": {}},
+            None,
+            "a contributed bar replaced by a built-in one, recorded with the store's "
+            "evaluation reset",
+        ),
+        (
+            _BUILT_IN,
+            {"acceptance": _CONTRIBUTED, "evaluation": {}},
+            None,
+            "a built-in bar replaced by a contributed one",
+        ),
+        (
+            _BUILT_IN,
+            {"acceptance": _CONTRIBUTED},
+            None,
+            "a contributed bar promoted by an entry that carries no evaluation key, "
+            "which the work fold also reads as invalidating",
+        ),
+        (
+            _BUILT_IN,
+            {"acceptance": {"kind": "pr_checks", "pr": 5}},
+            "fail",
+            "a built-in bar replaced by another built-in one, which the store leaves alone",
+        ),
+    ],
+)
+def test_an_accept_clears_the_task_verdict_exactly_when_the_store_invalidated_it(
+    created: dict[str, Any], accept: dict[str, Any], verdict: str | None, why: str
+) -> None:
+    value = _fold(
+        [
+            _opened(CONDUCTOR),
+            _work("goal", goal="ship it", round=1),
+            _work("create", item_id="it_1", title="the fold", acceptance=created, round=1),
+            _work("verdict", item_id="it_1", verdict="fail", fails=1, time=NOON + HOUR),
+            _work("accept", item_id="it_1", time=NOON + 2 * HOUR, **accept),
+        ]
+    )
+    task = _task(_board(value, "ship it"), "the fold")
+    assert task["verdict"] == verdict, why

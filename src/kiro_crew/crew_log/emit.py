@@ -1077,7 +1077,7 @@ def _safe_text(text: Any) -> str:
 
 
 _WORK_PLAIN_TEXT_FIELDS = frozenset({"title", "goal", "decision", "summary", "event"})
-_WORK_NESTED_TEXT_FIELDS = frozenset({"acceptance", "artifacts"})
+_WORK_NESTED_TEXT_FIELDS = frozenset({"acceptance", "artifacts", "evaluation"})
 
 
 class WorkFieldError(ValueError):

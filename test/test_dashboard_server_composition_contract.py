@@ -1403,7 +1403,7 @@ _DASHBOARD_BOOT = tuple("""
     register_status_delta_sink _precompute_telemetry current_context
     _register_mcp_routes _deferred _deferred setup_spawn_resume_routes
     _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
-    _deferred_work_ledger _deferred_work_ledger _deferred _deferred _deferred _deferred
+    _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred
@@ -1465,7 +1465,7 @@ _API_BOOT = tuple("""
     _mixed_internal_api_paths safe_context_call current_context token_auth_middleware
     _register_mcp_routes _deferred _deferred setup_spawn_resume_routes
     _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
-    _deferred_work_ledger _deferred_work_ledger _deferred _deferred _deferred _deferred
+    _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred
@@ -1582,6 +1582,10 @@ async def _traced_dashboard(
     second loopback family left unbound so the boot takes one path on every host."""
     import test_dashboard_server_startup_coverage as harness
 
+    # The composition contract pins startup wiring, not the generated frontend
+    # bundles present in a developer checkout. Keep discovery visible in the trace
+    # while making its result deterministic across clean and locally built trees.
+    monkeypatch.setattr(server, "discover_app_window_entries", MagicMock(return_value=[]))
     monkeypatch.setattr(server, "_start_secondary_loopback_site", AsyncMock(return_value=None))
     # The crewmate prune is kicked onto a worker thread a few steps before the boot
     # merges channel transcripts, and the merge kicks a deferred removal when the
@@ -1683,8 +1687,8 @@ def _routes(app: web.Application) -> list[tuple[str, str, str]]:
 #: SHA-256 of the MCP route table's ``"<method> <path> <handler>"`` rows in
 #: registration order, and their count. The table is shared by both entrypoints, so a
 #: route added to it on purpose updates these with it.
-_MCP_TABLE_ROWS = 242
-_MCP_TABLE_DIGEST = "af7da1dd963a0a957c39b2ee03d87f10cd0aa18417aead722214fd59a0b0ab25"
+_MCP_TABLE_ROWS = 243
+_MCP_TABLE_DIGEST = "d5ee502c623f5ee3fc06d7a2f5d503c3089bfc752f2f41900dd2062f04a09ec3"
 
 
 def test_the_mcp_route_table_keeps_its_rows_and_order() -> None:

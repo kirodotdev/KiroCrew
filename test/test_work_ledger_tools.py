@@ -12,9 +12,11 @@ in the dispatch table resolves as tabulated against both tool halves.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import subprocess
 import sys
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -145,6 +147,18 @@ async def _report(sk: str, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
 
 async def _read(sk: str) -> tuple[int, dict[str, Any]]:
     resp = await routes.api_work_ledger_get(_req("GET", "/api/work-ledger", sk=sk))
+    return resp.status, json.loads(resp.text)
+
+
+async def _evaluate(sk: str, item_id: str) -> tuple[int, dict[str, Any]]:
+    resp = await routes.api_work_ledger_evaluate(
+        _req(
+            "POST",
+            "/api/work-ledger/evaluate",
+            body={"item_id": item_id},
+            sk=sk,
+        )
+    )
     return resp.status, json.loads(resp.text)
 
 
@@ -398,6 +412,8 @@ async def test_every_store_code_maps_to_the_status_the_rfc_tabulates():
         "depth_exceeded": 409,
         "crew_log_incomplete": 409,
         "cache_dirty": 409,
+        "acceptance_changed": 409,
+        "provider_verdict_required": 409,
         "field_too_long": 400,
         "invalid_action": 400,
         "invalid_status": 400,
@@ -624,6 +640,21 @@ async def test_accept_batch_parses_in_the_real_accept_eval():
     assert ids["item_a"] in evaluated, parsed
     verdicts = {row["verdict"] for row in parsed["results"]}
     assert verdicts <= wl.VERDICTS, verdicts
+
+
+@pytest.mark.asyncio
+async def test_accept_batch_excludes_namespaced_app_kinds():
+    await two_by_two()
+    item_id = await _dispatch(
+        CONDUCTOR_A,
+        "chat-app-worker",
+        "provider bar",
+        {"kind": "release-app:release-ready", "input": {"change_id": 7}},
+    )
+    _, body = await _read(CONDUCTOR_A)
+    row = next(entry for entry in body["items"] if entry["item_id"] == item_id)
+    assert row["acceptance_concrete"] is True
+    assert item_id not in {entry["id"] for entry in body["accept_batch"]["items"]}
 
 
 @pytest.mark.asyncio
@@ -1288,6 +1319,7 @@ def test_every_route_is_registered_lazily_on_the_app():
     src = inspect.getsource(server) + "".join(p.read_text(encoding="utf-8") for p in owners)
     for method, path, handler in (
         ("add_get", "/api/work-ledger", "api_work_ledger_get"),
+        ("add_post", "/api/work-ledger/evaluate", "api_work_ledger_evaluate"),
         ("add_post", "/api/work-ledger/record", "api_work_ledger_record"),
         ("add_get", "/api/work-ledger/brief", "api_work_brief"),
         ("add_post", "/api/work-ledger/report", "api_work_report"),
@@ -1311,6 +1343,7 @@ def test_the_handler_package_does_not_import_the_subsystem_at_boot():
         "api_work_brief",
         "api_work_report",
         "api_work_ledger_get",
+        "api_work_ledger_evaluate",
         "api_work_ledger_record",
     ):
         assert f"    {name},\n" not in text, name
@@ -1325,6 +1358,7 @@ def test_the_deferred_binder_resolves_each_handler():
         "api_work_brief",
         "api_work_report",
         "api_work_ledger_get",
+        "api_work_ledger_evaluate",
         "api_work_ledger_record",
     ):
         bound = server._deferred_work_ledger(name)
@@ -1718,3 +1752,575 @@ async def test_only_done_needs_evidence(status_value):
     await two_by_two()
     status, body = await _report(WORKER_A, {"status": status_value, "summary": "still going"})
     assert status == 200, body
+
+
+@pytest.mark.asyncio
+async def test_evaluate_loads_the_stored_acceptance_and_records_the_provider_verdict(monkeypatch):
+    from kiro_crew.apps import acceptance as app_acceptance
+    from kiro_crew.apps import manager as app_manager
+    from kiro_crew.work_vocab import canonical_json_digest
+
+    acceptance = {
+        "kind": "release-app:release-ready",
+        "input": {"change_id": 7},
+    }
+    item_id = await _dispatch(CONDUCTOR_A, WORKER_A, "item A", acceptance)
+    seen: dict[str, Any] = {}
+    locked = False
+
+    class Lifecycle:
+        async def __aenter__(self) -> None:
+            nonlocal locked
+            assert locked is False
+            locked = True
+
+        async def __aexit__(self, *exc: Any) -> None:
+            nonlocal locked
+            locked = False
+
+    def lifecycle(name: str):
+        assert name == "release-app"
+        return Lifecycle()
+
+    snapshot = {"app": "release-app"}
+    result = app_acceptance.ProviderEvaluation(
+        verdict="pass",
+        evidence="green",
+        provider="release-app",
+        kind=acceptance["kind"],
+        version="1.2.3",
+        manifest_digest="a" * 64,
+        backend_generation="b" * 64,
+        acceptance_digest=canonical_json_digest(acceptance),
+        authority="trusted-app",
+        endpoint="acceptance/release-ready",
+    )
+
+    async def prepare(stored: dict[str, Any], *, caller: str):
+        seen["prepare_locked"] = locked
+        seen["acceptance"] = stored
+        seen["caller"] = caller
+        return snapshot, None
+
+    async def call_provider(snap: dict[str, Any]):
+        assert snap is snapshot
+        seen["request_locked"] = locked
+        return result
+
+    async def confirm(snap: dict[str, Any], provisional: Any, *, caller: str):
+        assert snap is snapshot and provisional is result
+        seen["confirm_locked"] = locked
+        return provisional
+
+    real_apply = wl.apply_provider_evaluation
+
+    def apply(*args: Any, **kwargs: Any):
+        seen["commit_locked"] = locked
+        return real_apply(*args, **kwargs)
+
+    monkeypatch.setattr(app_manager, "app_lifecycle_lock", lifecycle)
+    monkeypatch.setattr(app_acceptance, "_prepare", prepare)
+    monkeypatch.setattr(app_acceptance, "_call_provider", call_provider)
+    monkeypatch.setattr(app_acceptance, "_confirm", confirm)
+    monkeypatch.setattr(app_acceptance, "audit_evaluation", lambda *a, **k: None)
+    monkeypatch.setattr(app_acceptance, "provider_pass_is_current", lambda *a, **k: True)
+    monkeypatch.setattr(routes.work_ledger, "apply_provider_evaluation", apply)
+
+    status, body = await _evaluate(CONDUCTOR_A, item_id)
+    assert status == 200, body
+    assert seen == {
+        "acceptance": acceptance,
+        "caller": CONDUCTOR_A,
+        "prepare_locked": True,
+        "request_locked": False,
+        "confirm_locked": True,
+        "commit_locked": True,
+    }
+    assert body["verdict"] == "pass"
+    stored = await asyncio.to_thread(wl.read_work_item, CONDUCTOR_A, item_id)
+    assert stored is not None
+    assert stored.verdict == "pass"
+    assert stored.evaluation["provider"] == "release-app"
+    assert stored.evaluation["manifest_digest"] == "a" * 64
+    assert locked is False
+
+
+@pytest.mark.asyncio
+async def test_health_restart_cannot_cross_provider_validation_and_evaluation_commit(
+    monkeypatch,
+) -> None:
+    from kiro_crew.apps import acceptance as app_acceptance
+    from kiro_crew.apps import backend
+
+    acceptance = {"kind": "release-app:release-ready", "input": {"change_id": 7}}
+    item_id = await _dispatch(CONDUCTOR_A, WORKER_A, "fenced evaluation", acceptance)
+    evaluation = _provider_evaluation(acceptance)
+    validated = threading.Event()
+    restart_attempted = threading.Event()
+    restarted = threading.Event()
+
+    def restart() -> None:
+        if not validated.wait(5):
+            return
+        restart_attempted.set()
+        lock = backend.health_reconcile_lock()
+        if not lock.acquire(timeout=5):
+            return
+        try:
+            restarted.set()
+        finally:
+            lock.release()
+
+    def current(*args: Any, **kwargs: Any) -> bool:
+        validated.set()
+        assert restart_attempted.wait(5), "health restart did not reach the fence"
+        return True
+
+    real_apply = routes.work_ledger.apply_provider_evaluation
+
+    def apply(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        assert not restarted.is_set(), "health restart crossed final validation"
+        return real_apply(*args, **kwargs)
+
+    monkeypatch.setattr(app_acceptance, "provider_pass_is_current", current)
+    monkeypatch.setattr(routes.work_ledger, "apply_provider_evaluation", apply)
+    restart_thread = threading.Thread(target=restart)
+    restart_thread.start()
+    try:
+        stored = await asyncio.to_thread(
+            routes._apply_provider_evaluation_fenced,
+            CONDUCTOR_A,
+            item_id,
+            expected_acceptance=acceptance,
+            verdict="pass",
+            evaluation=evaluation,
+            caller=CONDUCTOR_A,
+        )
+    finally:
+        validated.set()
+        await asyncio.to_thread(restart_thread.join, 5)
+    assert not restart_thread.is_alive()
+    assert restarted.is_set()
+    assert stored["item"].verdict == "pass"
+
+
+@pytest.mark.asyncio
+async def test_health_restart_cannot_cross_provider_validation_and_accepted_close(
+    monkeypatch,
+) -> None:
+    from kiro_crew.apps import acceptance as app_acceptance
+    from kiro_crew.apps import backend
+
+    acceptance = {"kind": "release-app:release-ready", "input": {"change_id": 7}}
+    item_id = await _dispatch(CONDUCTOR_A, WORKER_A, "fenced close", acceptance)
+    evaluation = _provider_evaluation(acceptance)
+    await asyncio.to_thread(
+        wl.apply_provider_evaluation,
+        CONDUCTOR_A,
+        item_id,
+        expected_acceptance=acceptance,
+        verdict="pass",
+        evaluation=evaluation,
+    )
+    validated = threading.Event()
+    restart_attempted = threading.Event()
+    restarted = threading.Event()
+
+    def restart() -> None:
+        if not validated.wait(5):
+            return
+        restart_attempted.set()
+        lock = backend.health_reconcile_lock()
+        if not lock.acquire(timeout=5):
+            return
+        try:
+            restarted.set()
+        finally:
+            lock.release()
+
+    def current(*args: Any, **kwargs: Any) -> bool:
+        validated.set()
+        assert restart_attempted.wait(5), "health restart did not reach the fence"
+        return True
+
+    real_write = routes._write
+
+    def write(
+        key: str,
+        action: str,
+        cleaned: dict[str, Any],
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        assert not restarted.is_set(), "health restart crossed final validation"
+        return real_write(key, action, cleaned, **kwargs)
+
+    monkeypatch.setattr(app_acceptance, "provider_pass_is_current", current)
+    monkeypatch.setattr(routes, "_write", write)
+    restart_thread = threading.Thread(target=restart)
+    restart_thread.start()
+    try:
+        stored = await asyncio.to_thread(
+            routes._write_accepted_close_fenced,
+            CONDUCTOR_A,
+            "close",
+            {"action": "close", "item_id": item_id, "state": "accepted"},
+            acceptance=acceptance,
+            evaluation=evaluation,
+            caller=CONDUCTOR_A,
+        )
+    finally:
+        validated.set()
+        await asyncio.to_thread(restart_thread.join, 5)
+    assert not restart_thread.is_alive()
+    assert restarted.is_set()
+    assert stored["item"].state == "accepted"
+
+
+@pytest.mark.asyncio
+async def test_provider_drift_after_evaluation_write_restores_the_item(monkeypatch) -> None:
+    from kiro_crew.apps import acceptance as app_acceptance
+
+    acceptance = {"kind": "release-app:release-ready", "input": {"change_id": 7}}
+    item_id = await _dispatch(CONDUCTOR_A, WORKER_A, "cross-process evaluation", acceptance)
+    evaluation = _provider_evaluation(acceptance)
+    stale_route_snapshot = await asyncio.to_thread(
+        wl.snapshot_for_write, CONDUCTOR_A, item_id=item_id
+    )
+    await asyncio.to_thread(
+        wl.apply_worker_report,
+        CONDUCTOR_A,
+        item_id,
+        status="progress",
+        summary="concurrent worker update",
+        artifacts={},
+    )
+    assert await asyncio.to_thread(wl.current_bytes, stale_route_snapshot) != stale_route_snapshot
+    header_before = await asyncio.to_thread(wl.read_conductor, CONDUCTOR_A)
+    assert header_before is not None
+    concurrent_created: dict[str, str] = {}
+    checks = {"value": 0}
+
+    def current_provider(*args: Any, **kwargs: Any) -> bool:
+        checks["value"] += 1
+        if checks["value"] == 2:
+            created = wl.apply_conductor_action(
+                CONDUCTOR_A,
+                "create",
+                title="concurrent conductor item",
+                acceptance={"kind": "human_approval"},
+            )
+            concurrent_created["item_id"] = created["item"].item_id
+            return False
+        return True
+
+    monkeypatch.setattr(
+        app_acceptance,
+        "provider_pass_is_current",
+        current_provider,
+    )
+
+    with pytest.raises(wl.WorkLedgerError) as caught:
+        await asyncio.to_thread(
+            routes._apply_provider_evaluation_fenced,
+            CONDUCTOR_A,
+            item_id,
+            expected_acceptance=acceptance,
+            verdict="pass",
+            evaluation=evaluation,
+            caller=CONDUCTOR_A,
+        )
+    assert caught.value.code == wl.CODE_PROVIDER_VERDICT_REQUIRED
+    stored = await asyncio.to_thread(wl.read_work_item, CONDUCTOR_A, item_id)
+    assert stored is not None
+    assert stored.verdict is None and stored.evaluation == {}
+    assert stored.status == "progress"
+    assert stored.summary == "concurrent worker update"
+    header_after = await asyncio.to_thread(wl.read_conductor, CONDUCTOR_A)
+    assert header_after is not None
+    assert header_after.created_total == header_before.created_total + 1
+    created_item = await asyncio.to_thread(
+        wl.read_work_item,
+        CONDUCTOR_A,
+        concurrent_created["item_id"],
+    )
+    assert created_item is not None
+    assert created_item.title == "concurrent conductor item"
+
+
+@pytest.mark.asyncio
+async def test_provider_drift_after_accepted_close_restores_the_open_item(monkeypatch) -> None:
+    from kiro_crew.apps import acceptance as app_acceptance
+
+    acceptance = {"kind": "release-app:release-ready", "input": {"change_id": 7}}
+    item_id = await _dispatch(CONDUCTOR_A, WORKER_A, "cross-process close", acceptance)
+    evaluation = _provider_evaluation(acceptance)
+    await asyncio.to_thread(
+        wl.apply_provider_evaluation,
+        CONDUCTOR_A,
+        item_id,
+        expected_acceptance=acceptance,
+        verdict="pass",
+        evaluation=evaluation,
+    )
+    current = iter((True, False))
+    monkeypatch.setattr(
+        app_acceptance,
+        "provider_pass_is_current",
+        lambda *args, **kwargs: next(current),
+    )
+
+    with pytest.raises(wl.WorkLedgerError) as caught:
+        await asyncio.to_thread(
+            routes._write_accepted_close_fenced,
+            CONDUCTOR_A,
+            "close",
+            {"action": "close", "item_id": item_id, "state": "accepted"},
+            acceptance=acceptance,
+            evaluation=evaluation,
+            caller=CONDUCTOR_A,
+        )
+    assert caught.value.code == wl.CODE_PROVIDER_VERDICT_REQUIRED
+    stored = await asyncio.to_thread(wl.read_work_item, CONDUCTOR_A, item_id)
+    assert stored is not None
+    assert stored.state == "open"
+    assert stored.verdict == "pass" and stored.evaluation["provider"] == "release-app"
+
+
+@pytest.mark.asyncio
+async def test_evaluate_accepts_only_item_id_from_the_caller(monkeypatch):
+    item_id = await _dispatch(
+        CONDUCTOR_A,
+        WORKER_A,
+        "item A",
+        {"kind": "release-app:release-ready", "input": {}},
+    )
+
+    async def unexpected(*args: Any, **kwargs: Any):
+        raise AssertionError("provider was reached with caller-supplied inputs")
+
+    from kiro_crew.apps import acceptance as app_acceptance
+
+    monkeypatch.setattr(app_acceptance, "evaluation", unexpected)
+    for extra in ({"input": {"change_id": 99}}, {"endpoint": None}):
+        response = await routes.api_work_ledger_evaluate(
+            _req(
+                "POST",
+                "/api/work-ledger/evaluate",
+                body={"item_id": item_id, **extra},
+                sk=CONDUCTOR_A,
+            )
+        )
+        body = json.loads(response.text)
+        assert response.status == 400
+        assert body["code"] == wl.CODE_INVALID_VALUE
+
+
+@pytest.mark.asyncio
+async def test_evaluate_refuses_if_the_acceptance_changes_during_provider_work(monkeypatch):
+    from contextlib import asynccontextmanager
+
+    from kiro_crew.apps import acceptance as app_acceptance
+    from kiro_crew.work_vocab import canonical_json_digest
+
+    acceptance = {"kind": "release-app:release-ready", "input": {"change_id": 7}}
+    changed = {"kind": "release-app:release-ready", "input": {"change_id": 8}}
+    item_id = await _dispatch(CONDUCTOR_A, WORKER_A, "item A", acceptance)
+
+    @asynccontextmanager
+    async def evaluate(stored: dict[str, Any], *, caller: str, lifecycle_lock: Any):
+        await asyncio.to_thread(
+            wl.apply_acceptance_update,
+            CONDUCTOR_A,
+            item_id,
+            acceptance=changed,
+        )
+        yield app_acceptance.ProviderEvaluation(
+            verdict="pass",
+            evidence="stale green",
+            provider="release-app",
+            kind=acceptance["kind"],
+            version="1.2.3",
+            manifest_digest="a" * 64,
+            backend_generation="b" * 64,
+            acceptance_digest=canonical_json_digest(acceptance),
+            authority="trusted-app",
+            endpoint="acceptance/release-ready",
+        )
+
+    monkeypatch.setattr(app_acceptance, "evaluation", evaluate)
+    monkeypatch.setattr(app_acceptance, "audit_evaluation", lambda *a, **k: None)
+    monkeypatch.setattr(app_acceptance, "provider_pass_is_current", lambda *a, **k: True)
+
+    status, body = await _evaluate(CONDUCTOR_A, item_id)
+    assert (status, body["code"]) == (409, wl.CODE_ACCEPTANCE_CHANGED)
+    stored = await asyncio.to_thread(wl.read_work_item, CONDUCTOR_A, item_id)
+    assert stored is not None
+    assert stored.acceptance == changed
+    assert stored.verdict is None and stored.evaluation == {}
+
+
+@pytest.mark.asyncio
+async def test_generic_log_entries_only_include_evaluation_when_provider_proof_is_invalidated(
+    monkeypatch,
+) -> None:
+    emitted: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        routes.crew_log_emit,
+        "on_work_recorded",
+        lambda unit, data: emitted.append(data) or True,
+    )
+
+    built_in = await _dispatch(
+        CONDUCTOR_A,
+        WORKER_A,
+        "built in",
+        {"kind": "human_approval"},
+    )
+    emitted.clear()
+    status, body = await _record(
+        CONDUCTOR_A,
+        {"action": "verdict", "item_id": built_in, "verdict": "pass"},
+    )
+    assert status == 200, body
+    assert "evaluation" not in emitted[-1]
+    status, body = await _record(
+        CONDUCTOR_A,
+        {
+            "action": "accept",
+            "item_id": built_in,
+            "acceptance": {"kind": "human_approval"},
+        },
+    )
+    assert status == 200, body
+    assert "evaluation" not in emitted[-1]
+
+    status, body = await _record(
+        CONDUCTOR_A,
+        {
+            "action": "create",
+            "title": "contributed",
+            "acceptance": {"kind": "release-app:release-ready", "input": {}},
+        },
+    )
+    assert status == 200, body
+    contributed = body["item"]["item_id"]
+    emitted.clear()
+    status, body = await _record(
+        CONDUCTOR_A,
+        {"action": "verdict", "item_id": contributed, "verdict": "fail"},
+    )
+    assert status == 200, body
+    assert emitted[-1]["evaluation"] == {}
+    status, body = await _record(
+        CONDUCTOR_A,
+        {
+            "action": "accept",
+            "item_id": contributed,
+            "acceptance": {"kind": "human_approval"},
+        },
+    )
+    assert status == 200, body
+    assert body["item"]["verdict"] is None
+    assert emitted[-1]["evaluation"] == {}
+
+
+@pytest.mark.asyncio
+async def test_evaluate_refuses_a_built_in_acceptance_without_calling_a_provider(
+    monkeypatch,
+) -> None:
+    item_id = await _dispatch(
+        CONDUCTOR_A,
+        WORKER_A,
+        "built in",
+        {"kind": "human_approval"},
+    )
+
+    async def unexpected(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("a built-in kind reached an App Kit provider")
+
+    from kiro_crew.apps import acceptance as app_acceptance
+
+    monkeypatch.setattr(app_acceptance, "evaluation", unexpected)
+    status, body = await _evaluate(CONDUCTOR_A, item_id)
+    assert status == 400
+    assert body["code"] == wl.CODE_INVALID_VALUE
+
+
+def _provider_evaluation(acceptance: dict[str, Any]) -> dict[str, str]:
+    from kiro_crew.work_vocab import canonical_json_digest
+
+    return {
+        "provider": "release-app",
+        "kind": "release-app:release-ready",
+        "version": "1.2.3",
+        "manifest_digest": "a" * 64,
+        "backend_generation": "b" * 64,
+        "acceptance_digest": canonical_json_digest(acceptance),
+        "authority": "trusted-app",
+        "endpoint": "acceptance/release-ready",
+        "evidence": "all checks green",
+    }
+
+
+@pytest.mark.asyncio
+async def test_accepted_close_refuses_an_unreadable_preflight_item(monkeypatch) -> None:
+    acceptance = {"kind": "release-app:release-ready", "input": {"change_id": 7}}
+    item_id = await _dispatch(CONDUCTOR_A, WORKER_A, "contributed", acceptance)
+    await asyncio.to_thread(
+        wl.apply_provider_evaluation,
+        CONDUCTOR_A,
+        item_id,
+        expected_acceptance=acceptance,
+        verdict="pass",
+        evaluation=_provider_evaluation(acceptance),
+    )
+    monkeypatch.setattr(routes, "_current_item_and_board", lambda *args: (None, None))
+
+    status, body = await _record(
+        CONDUCTOR_A,
+        {"action": "close", "item_id": item_id, "state": "accepted"},
+    )
+
+    assert (status, body["code"]) == (404, wl.CODE_UNKNOWN_ITEM)
+    stored = await asyncio.to_thread(wl.read_work_item, CONDUCTOR_A, item_id)
+    assert stored is not None and stored.state == "open"
+
+
+@pytest.mark.asyncio
+async def test_accepted_close_refuses_acceptance_drift_after_preflight(monkeypatch) -> None:
+    built_in = {"kind": "human_approval"}
+    contributed = {"kind": "release-app:release-ready", "input": {"change_id": 7}}
+    item_id = await _dispatch(CONDUCTOR_A, WORKER_A, "drifting", built_in)
+    await asyncio.to_thread(
+        wl.apply_conductor_action,
+        CONDUCTOR_A,
+        "verdict",
+        item_id=item_id,
+        verdict="pass",
+    )
+    real_preflight = routes._current_item_and_board
+
+    def drift_after_preflight(slot: str, requested_item: str | None):
+        item, header = real_preflight(slot, requested_item)
+        wl.apply_acceptance_update(CONDUCTOR_A, item_id, acceptance=contributed)
+        wl.apply_provider_evaluation(
+            CONDUCTOR_A,
+            item_id,
+            expected_acceptance=contributed,
+            verdict="pass",
+            evaluation=_provider_evaluation(contributed),
+        )
+        return item, header
+
+    monkeypatch.setattr(routes, "_current_item_and_board", drift_after_preflight)
+
+    status, body = await _record(
+        CONDUCTOR_A,
+        {"action": "close", "item_id": item_id, "state": "accepted"},
+    )
+
+    assert (status, body["code"]) == (409, wl.CODE_PROVIDER_VERDICT_REQUIRED)
+    stored = await asyncio.to_thread(wl.read_work_item, CONDUCTOR_A, item_id)
+    assert stored is not None
+    assert stored.state == "open"
+    assert stored.acceptance == contributed

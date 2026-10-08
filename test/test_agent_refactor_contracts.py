@@ -38,7 +38,9 @@ from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
 # ── the surface ─────────────────────────────────────────────────────────────
 
 #: Every name ``kiro_crew.agent`` bound before the split, described the way
-#: :func:`_describe` describes it now. A value is compared by the digest of its JSON
+#: :func:`_describe` describes it now. The inventory began at the pre-split values
+#: and changes only when a product contract deliberately changes. A value is compared
+#: by the digest of its JSON
 #: rendering; a name whose value depends on the host (a home-derived path, the logger)
 #: is compared by type only, and process state the module keeps across calls (a
 #: warned-once set, a pending count) by name only, because earlier tests set it.
@@ -66,7 +68,7 @@ BASE_SURFACE: dict[str, str] = {
     "_CONDUCTOR_AGENT_FILENAME": "value str 923f5ca0627d569f",
     "_CONDUCTOR_CORE_GRANTS": "value tuple 9ef89fe81974156e",
     "_CONDUCTOR_DASHBOARD_GRANTS": "value tuple 0b859d2b54e84503",
-    "_CONDUCTOR_SYSTEM_PROMPT": "value str 1a9f0b08e1074817",
+    "_CONDUCTOR_SYSTEM_PROMPT": "value str 4488cb59b6088257",
     "_CREW_ONLY_HOOK_EVENTS": "value frozenset 9d900cfb866f983a",
     "_DEFAULT_KIRO_HOOKS_DIR": "value host",
     "_DEFAULT_SPEC_OBSERVATION_ATTEMPTS": "value int 4e07408562bedb8b",
@@ -94,7 +96,7 @@ BASE_SURFACE: dict[str, str] = {
     "_KNOWLEDGE_SYSTEM_PROMPT": "value str 23af593eebd8222f",
     "_LAUNCHER_EXEC_ENV_KEYS": "value frozenset 8c69b5e74a77bb5d",
     "_LEDGER_CONDUCTOR_AGENT_FILENAME": "value str a87e496fff7c15e0",
-    "_LEDGER_CONDUCTOR_WORK_GRANTS": "value tuple 21f3684b0bc1f923",
+    "_LEDGER_CONDUCTOR_WORK_GRANTS": "value tuple 1f04eb96f5c37414",
     "_LEGACY_KIROCREW_HOOK_KEYS": "value frozenset 41cb57ce40df86b2",
     "_LITE_AGENT_FILENAME": "value str 55e6029e6c753857",
     "_MAIN_AGENT_NAME": "value str 153b868d134ec50e",

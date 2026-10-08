@@ -4,13 +4,14 @@ Pure data, deliberately outside ``kiro_crew.crew_log``: the ``work/recorded`` en
 type, the work-ledger store (``kiro_crew.work_ledger``) and the tool schemas
 (``kiro_crew.validation``) all import these tuples, and the last two sit on the
 gateway's boot path while the crew log's storage subsystem must stay unloaded
-until an entry point reaches storage. A leaf with no imports of its own is the
-only place all three can share without one of them dragging the others in.
+until an entry point reaches storage. A leaf with no project imports is the only
+place all three can share without one of them dragging the others in.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 from typing import Any, TypedDict
 
 #: The projection that folds ``work/recorded`` into a board, as its readers name it.
@@ -28,6 +29,7 @@ WORK_ACTIONS: tuple[str, ...] = (
     "bind",
     "decide",
     "verdict",
+    "evaluate",
     "close",
     "accept",
     "report",
@@ -36,6 +38,61 @@ WORK_ITEM_STATES: tuple[str, ...] = ("open", "accepted", "rejected", "abandoned"
 WORK_VERDICTS: tuple[str, ...] = ("pass", "fail", "pending", "refused", "error")
 WORK_WORKER_STATUSES: tuple[str, ...] = ("progress", "done", "blocked", "question")
 WORK_EVENT_KINDS: tuple[str, ...] = ("create", "bind", "report", "decision", "verdict", "close")
+
+#: The only separator between an app id and its app-owned acceptance-kind id. Built-in
+#: kinds contain no separator, so a contributed kind cannot shadow one, and two apps
+#: cannot claim the same fully-qualified name.
+APP_ACCEPTANCE_KIND_SEPARATOR = ":"
+APP_ACCEPTANCE_APP_ID_MAX_CHARS = 128
+APP_ACCEPTANCE_KIND_ID_MAX_CHARS = 64
+
+
+def _is_kebab_id(value: str) -> bool:
+    """Whether *value* is a lowercase ASCII kebab identifier."""
+    if not value or not value.isascii():
+        return False
+    return all(
+        part and all(ch.isdigit() or "a" <= ch <= "z" for ch in part) for part in value.split("-")
+    )
+
+
+def app_acceptance_kind(app_id: str, kind_id: str) -> str:
+    """Return the qualified ``<app-id>:<kind-id>`` name, or ``""`` if malformed."""
+    if (
+        not _is_kebab_id(app_id)
+        or len(app_id) > APP_ACCEPTANCE_APP_ID_MAX_CHARS
+        or not _is_kebab_id(kind_id)
+        or len(kind_id) > APP_ACCEPTANCE_KIND_ID_MAX_CHARS
+    ):
+        return ""
+    return f"{app_id}{APP_ACCEPTANCE_KIND_SEPARATOR}{kind_id}"
+
+
+def split_app_acceptance_kind(value: object) -> tuple[str, str] | None:
+    """Parse one qualified app acceptance kind without accepting aliases."""
+    if not isinstance(value, str) or value.count(APP_ACCEPTANCE_KIND_SEPARATOR) != 1:
+        return None
+    app_id, kind_id = value.split(APP_ACCEPTANCE_KIND_SEPARATOR, 1)
+    if app_acceptance_kind(app_id, kind_id) != value:
+        return None
+    return app_id, kind_id
+
+
+def canonical_json_digest(value: Any) -> str:
+    """SHA-256 over canonical JSON, or ``""`` when *value* is not finite JSON."""
+    try:
+        encoded = json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (TypeError, ValueError, RecursionError):
+        return ""
+    return hashlib.sha256(encoded).hexdigest()
+
+
 #: Items one board may CREATE over its life, open and closed together -- and the
 #: number of item records the crew log's ``work`` fold retains per board. ONE value
 #: on purpose: the store counts a board's creates in a monotonic counter in its
@@ -55,9 +112,10 @@ WORK_CONDUCTOR_FIELDS: dict[str, tuple[str, ...]] = {
     "create": ("title", "acceptance", "round"),
     "bind": ("worker_session_key",),
     "decide": ("decision", "round"),
-    "verdict": ("verdict", "fails"),
+    "verdict": ("verdict", "fails", "evaluation"),
+    "evaluate": ("verdict", "fails", "evaluation"),
     "close": ("state", "decision"),
-    "accept": ("acceptance",),
+    "accept": ("acceptance", "evaluation"),
 }
 
 
@@ -97,6 +155,9 @@ class WorkBoardItem(TypedDict):
     state: str
     #: One of :data:`WORK_VERDICTS`, or unset. An acceptance ruling, NOT a CI result.
     verdict: str | None
+    #: Host-recorded provenance for a contributed acceptance verdict. Empty for built-in
+    #: kinds and for conductor-authored non-passing rulings.
+    evaluation: dict[str, str]
     decision: str
     worker_session_key: str | None
     round: int

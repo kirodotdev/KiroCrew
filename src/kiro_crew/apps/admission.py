@@ -197,6 +197,48 @@ def verified_signer(manifest: "AppManifest | None") -> str:
     return str(getattr(manifest, "signer", "") or "")
 
 
+def app_admission_decision(
+    name: str,
+    manifest: "AppManifest | None" = None,
+    action: str = "install",
+) -> tuple[Optional[str], str]:
+    """Return ``(denial, authority)`` from the existing App admission policy.
+
+    ``authority`` is non-empty only when this exact policy positively identifies the
+    app through a verified signature or an explicit approved-list membership. The open
+    default may admit ordinary app execution, but it grants no machine-authoritative
+    acceptance role.
+    """
+    del action  # The policy is action-independent; callers retain the label for API parity.
+    policy = load_app_admission_policy()
+    norm = _normalize_name(name)
+
+    banned_norm = {_normalize_name(b) for b in policy.banned}
+    if norm in banned_norm:
+        return f"app {name!r} is banned (kill-switch)", ""
+
+    signature_valid = manifest is not None and _signature_valid(manifest, policy)
+    enforcing = policy.mode != MODE_OPEN or policy.approved is not None or policy.require_signature
+    if not enforcing:
+        signer = str(getattr(manifest, "signer", "") or "") if manifest else ""
+        return None, f"signature:{signer}" if signature_valid else ""
+
+    allowlisted = False
+    if policy.approved is not None:
+        approved_norm = {_normalize_name(a) for a in policy.approved}
+        if norm not in approved_norm:
+            return f"app {name!r} is not on the approved allowlist", ""
+        allowlisted = True
+
+    if policy.require_signature and not signature_valid:
+        return f"app {name!r} signature invalid or unsigned", ""
+
+    signer = str(getattr(manifest, "signer", "") or "") if manifest else ""
+    if signature_valid:
+        return None, f"signature:{signer}"
+    return None, "allowlist" if allowlisted else ""
+
+
 def app_admission_denied(
     name: str,
     manifest: "AppManifest | None" = None,
@@ -207,29 +249,5 @@ def app_admission_denied(
     Runs BEFORE the app's files are copied / its onInstall script runs, so a
     banned / non-allowlisted / unsigned app never lands on disk or executes.
     """
-    policy = load_app_admission_policy()
-    norm = _normalize_name(name)
-
-    # 1) Kill-switch always wins, in any mode.
-    banned_norm = {_normalize_name(b) for b in policy.banned}
-    if norm in banned_norm:
-        return f"app {name!r} is banned (kill-switch)"
-
-    # Whether the fleet has configured ANY active enforcement beyond the open
-    # default. Only when NOTHING is configured do we take the open fast path.
-    enforcing = policy.mode != MODE_OPEN or policy.approved is not None or policy.require_signature
-    if not enforcing:
-        return None
-
-    # 2) Marketplace allowlist (skipped when no allowlist is configured).
-    if policy.approved is not None:
-        approved_norm = {_normalize_name(a) for a in policy.approved}
-        if norm not in approved_norm:
-            return f"app {name!r} is not on the approved allowlist"
-
-    # 3) Verify-before-run signature (skipped unless required). A missing
-    #    manifest cannot carry a valid signature, so require_signature denies it.
-    if policy.require_signature and (manifest is None or not _signature_valid(manifest, policy)):
-        return f"app {name!r} signature invalid or unsigned"
-
-    return None
+    denial, _authority = app_admission_decision(name, manifest, action)
+    return denial

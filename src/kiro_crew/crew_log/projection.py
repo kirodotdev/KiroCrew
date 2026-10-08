@@ -148,6 +148,7 @@ from kiro_crew.work_vocab import (
     WORK_STORED_ITEM_LIMIT,
     WorkBoardItem,
     WorkBoardView,
+    split_app_acceptance_kind,
 )
 
 logger = logging.getLogger(__name__)
@@ -5641,6 +5642,7 @@ _WORK_BASELINE_FIELDS: Final[tuple[str, ...]] = (
     "acceptance",
     "state",
     "verdict",
+    "evaluation",
     "decision",
     "worker_session_key",
     "round",
@@ -5705,6 +5707,7 @@ def _work_new_item(item_id: str, stamp_ms: int) -> dict[str, Any]:
         "acceptance": {},
         "state": "open",
         "verdict": None,
+        "evaluation": {},
         "decision": "",
         "worker_session_key": None,
         "round": 0,
@@ -5947,9 +5950,27 @@ def _work_apply(item: dict[str, Any], data: Mapping[str, Any], stamp_ms: int) ->
         allowed = _WORK_CONDUCTOR_FIELDS.get(action)
         if allowed is None:
             return
+        invalidates_provider = action == "accept" and (
+            split_app_acceptance_kind(
+                data.get("acceptance", {}).get("kind")
+                if isinstance(data.get("acceptance"), dict)
+                else None
+            )
+            is not None
+            or split_app_acceptance_kind(
+                item.get("acceptance", {}).get("kind")
+                if isinstance(item.get("acceptance"), dict)
+                else None
+            )
+            is not None
+            or bool(item.get("evaluation"))
+        )
         for name in allowed:
             if name in data:
                 item[name] = _work_field(name, data[name])
+        if invalidates_provider:
+            item["verdict"] = None
+            item["evaluation"] = {}
         if action == "close":
             item["closed_at"] = _work_stamp(data.get("closed_at"), stamp_ms)
     kind = _as_str(data.get("event_kind"))
@@ -5981,10 +6002,10 @@ def _work_apply(item: dict[str, Any], data: Mapping[str, Any], stamp_ms: int) ->
 
 def _work_field(name: str, value: Any) -> Any:
     """*value* in the shape the record holds for *name*; the fold's own shape gate."""
-    if name in ("acceptance", "artifacts"):
+    if name in ("acceptance", "artifacts", "evaluation"):
         if not isinstance(value, dict):
             return {}
-        if name == "artifacts":
+        if name in ("artifacts", "evaluation"):
             return {str(k): v for k, v in value.items() if isinstance(v, str)}
         return dict(value)
     if name in ("round", "fails", "pr"):
@@ -6483,6 +6504,24 @@ def _workstreams_span_closed(item: dict[str, Any], data: Mapping[str, Any], stam
         item["closed_at"] = _work_stamp(data.get("closed_at"), stamp_ms)
 
 
+def _workstreams_accept_invalidates(data: Mapping[str, Any]) -> bool:
+    """Whether an ``accept`` entry cleared the provider verdict the ``work`` fold clears.
+
+    The store invalidates an item's verdict and evaluation when the bar it replaces or
+    the bar it promotes is an app-contributed kind, and the route records
+    ``evaluation`` on an ``accept`` entry only then. This fold keeps neither the
+    acceptance nor the evaluation, so it cannot ask the ``work`` fold's question about
+    the PRIOR bar; that recorded key is the store's own answer to it. A contributed
+    kind in the entry's own acceptance is the half of that question this fold can see,
+    read the same way ``_work_apply`` reads it.
+    """
+    if "evaluation" in data:
+        return True
+    acceptance = data.get("acceptance")
+    kind = acceptance.get("kind") if isinstance(acceptance, dict) else None
+    return split_app_acceptance_kind(kind) is not None
+
+
 def _workstreams_work(state: dict[str, Any], entry: Entry) -> None:
     """Apply one work record to the board it names."""
     data = entry.data
@@ -6556,6 +6595,8 @@ def _workstreams_work(state: dict[str, Any], entry: Entry) -> None:
             item[name] = _work_text(name, data[name])[:WORKSTREAMS_DECISION_LIMIT]
             continue
         item[name] = _work_field(name, data[name])
+    if action == "accept" and _workstreams_accept_invalidates(data):
+        item["verdict"] = None
     # AFTER the field copy, so the state this reads is the one this entry set.
     _workstreams_span_closed(item, data, entry.time)
     if "round" in data:
@@ -8137,6 +8178,10 @@ _FOLDS: Final[dict[str, _Fold]] = {
         affects=frozenset({WORK_ENTRY_TYPE}),
         count_rows=_work_rows,
         count_opaque=_work_opaque,
+        # Provider evaluation is stored per item, and ``accept`` invalidates it.
+        # The backend-generation identity added to that nested proof changes what
+        # this fold stores, so savepoints from either earlier shape must refold.
+        state_version=_FOLD_STATE_VERSION_BASE + 2,
     ),
     PANEL_FOLD_NAME: _Fold(
         PANEL_FOLD_NAME,
@@ -8184,6 +8229,9 @@ _FOLDS: Final[dict[str, _Fold]] = {
         affects=WORKSTREAMS_TYPES,
         copy_state=_workstreams_copy,
         count_rows=_workstreams_rows,
+        # An ``accept`` that invalidates a provider verdict now clears the task's
+        # verdict, so a savepoint folded before that still holds the stale one.
+        state_version=_FOLD_STATE_VERSION_BASE + 1,
     ),
 }
 

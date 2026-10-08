@@ -3250,10 +3250,10 @@ change lands in its owner.
 | Module under `src/kiro_crew/apps/` | Owns |
 |---|---|
 | `backend.py` | The facade: the only import path and patch surface, plus the spawn transaction (`start_app_backend`, `_start_app_backend`, `_clear_failed_spawn_state`, and `_start_app_backend_body` with the entry-point classification, child environment, sandbox wrap, and spawn and adoption records it builds) and `_pid_alive` |
-| `backend_runtime/tracking.py` | The process table: `AppProcess`, `_processes` under `_lock`, the STARTING placeholder's owner (`_spawn_publication_owner`), `_restart_attempts`, the lifecycle generation (`_advance_lifecycle_locked`), `_health_reconcile_lock`, the cross-process spawn flock, the wait on an in-flight spawn, the table reads the proxy and routes use, and `running_spawned_backend_pids`, the read the runtime reconciler's membership uses |
+| `backend_runtime/tracking.py` | The process table: `AppProcess`, `AppBackendIdentity`, `_processes` under `_lock`, the STARTING placeholder's owner (`_spawn_publication_owner`), `_restart_attempts`, the lifecycle generation (`_advance_lifecycle_locked`), `_health_reconcile_lock`, the health-gated port read, the backend acceptance fence, the cross-process spawn flock, the wait on an in-flight spawn, the table reads the proxy and routes use, and `running_spawned_backend_pids`, the read the runtime reconciler's membership uses |
 | `backend_runtime/probe.py` | The loopback health probe: the `healthCheck` path gate, `HealthProbeOutcome`, and the failure detail and hint the logs print |
 | `backend_runtime/pidfile.py` | `app_backends.pids.json`: the start-identity probe, the read and the atomic write, the record, the identity-conditional forget, and the strict Windows retirement writer |
-| `backend_runtime/ports.py` | Port reservation (`_find_free_port`, `_reserve_free_port`, `_claim_port`) and listener attribution (the survival check, the bounded ancestry walk, the adoption owner capture), plus the recorded and unstopped port reads uninstall uses |
+| `backend_runtime/ports.py` | Port reservation (`_find_free_port`, `_reserve_free_port`, `_claim_port`) and listener attribution (the survival check, the bounded ancestry walk, the adoption owner capture), the recorded and unstopped port reads uninstall uses, and the gateway-spawned execution-identity digest acceptance uses |
 | `backend_runtime/provisioning.py` | The dependency transaction: the no-follow requirements read, the stamp and ABI digests, `_PinnedDir`, staging, pip, the markers, the swap, the failure audit, and the activation gate `_deps_tree_stamp_current` |
 | `backend_runtime/termination.py` | Stopping a backend and draining a spawned tree: `stop_app_backend`, `_signal_backend_tree`, `_drain_exited_root_tree`, `_terminate_retired_spawn` |
 | `backend_runtime/stale_reap.py` | The startup reap of a prior generation's leaders and orphaned groups |
@@ -3384,6 +3384,161 @@ shipped `data` link, the root `data` file refused before the record),
 `test/test_apps_registry.py::test_a_root_data_file_is_refused_before_any_record_is_written`.
 
 
+
+## 23. App-provided work-ledger acceptance is host-owned
+
+`contributes.acceptanceKinds` is the public extension point for an app to answer
+one work-ledger completion condition. A declaration's effective name is
+`<manifest-name>:<kind-id>` (128-character app component, 64-character kind
+component). Built-in kinds remain unqualified, so an app cannot
+shadow them or another app's kind. The manifest parser retains malformed
+container and dropped-entry flags; validation refuses them rather than turning a
+bad declaration into an empty one.
+
+The declaration is deliberately not a general evaluator plug-in. It contains
+only `id`, a closed flat-object `inputSchema`, and a fixed app-relative
+`endpoint`. The schema admits at most 16 fields of type string, integer, number,
+or boolean; strings require a bounded `maxLength`, and numeric fields require
+finite minimum/maximum unless a finite enum closes the value set; enums and declarations are
+capped. Nested structures, arrays, regexes, references, and unknown keywords are
+refused. Common capability-selector field names are also refused as defense in
+depth, not as the authority boundary: provider-defined names and bounded scalar
+values are opaque data to the host, which never executes or interprets them. The
+trusted provider must validate its declared input before using it. The endpoint
+grammar has no scheme,
+host, leading slash, query, fragment, path parameter, traversal, or backslash.
+An app declaring a kind must have a server-installed `backend.entryPoint`,
+because the supported invocation target is a process the gateway starts, tracks,
+and health-checks. Hook-only and client-installed declarations are invalid, not
+accepted as checks that can never run.
+
+The `kirocrew-work` surface exposes `work_ledger_evaluate(item_id)` only to goal
+conductors. The request schema has one field. The handler derives the conductor
+ledger from the authenticated session, loads the current item and acceptance,
+and never accepts condition input, provider identity, endpoint, version, or
+manifest digest from the caller. Channel sessions cannot call it.
+
+Evaluation has three lock domains. Under the board lock the handler checks the
+ledger and snapshots the stored acceptance. It then releases that lock and
+resolves the provider under the provider app's lifecycle lock. It releases the
+lifecycle lock for the provider's HTTP request, so the provider's own
+lifecycle-locked routes (a notification push made while answering) and an
+operator's enable, disable, or update never wait on that request. It retakes the
+lifecycle lock before committing. Under the reacquired board lock, a short
+backend acceptance fence validates the passing provider immediately before and
+after the cache mutation. The pre-write and exact post-write images are captured
+inside the store's item lock; a post-write mismatch restores that transaction-local
+item record/event-log preimage only while those files still equal its postimage,
+preserving concurrent conductor-header commits, before any crew-log entry
+is published. This second read gives file-only
+cross-process lifecycle changes a linearization point: a change before it rolls the
+write back; a change after it follows the accepted mutation. The fence is also the
+backend health-reconcile lock, so an explicit start or stop and a health-driven
+restart cannot change the executing record between either validation and mutation.
+The lock order is lifecycle lock, then board lock, then backend acceptance fence,
+then the backend process-table lock. Provider HTTP is never made under the
+backend fence. A slow app therefore stops neither unrelated worker reports nor
+its own app's lifecycle. The store compares the current acceptance byte-for-byte
+with the snapshot and returns `acceptance_changed` if a conductor changed it
+meanwhile. The cache write and `work/recorded` append use the existing
+snapshot/rollback transaction, and an unrecorded write is undone or marks the
+cache dirty.
+
+`apps/acceptance.py` resolves only the app named by the stored qualified kind.
+It re-parses and validates the installed manifest and the exact `{kind, input}`
+condition, requires enabled metadata, and applies both existing trust systems:
+App admission must not deny, executable-app admission must allow the code, and
+machine authority must be positive from shipped builtin provenance, a verified
+App admission signature, an explicit App admission allowlist entry, or the
+existing per-app repository-bound trust grant. Builtin provenance counts only
+when the current verified backend record says the gateway spawned code that the
+execution gate admitted from the shipped builtin root
+(`AppProcess.admitted_builtin`). When that flag is true, the declaration,
+endpoint, schema, version and manifest digest are loaded from the immutable shipped
+`app.json`; the mutable installed copy cannot redirect a builtin request. `installed.json`
+is app-writable and supplies no builtin authority. Adopted or foreign listeners
+supply no acceptance identity because the gateway did not launch or vet their
+executing path. A user-installed app that
+shadows a builtin's name is therefore judged, and admitted for execution, as the
+third-party app it is. Open-default admission and the blanket third-party
+execution switch alone are not machine authority. Execution consent allows
+code to run; it does not let that code decide whether independent work meets a
+conductor's acceptance bar or authorize an accepted close.
+
+The gateway requires a healthy gateway-spawned backend with a complete execution
+identity and its existing per-app proxy secret. An adopted listener cannot provide
+acceptance verdicts: the request HMAC authenticates the gateway to the listener, but
+an adopted process does not authenticate its response to the gateway. The gateway
+canonicalizes `{kind, input}`, signs `POST /api/<declared-endpoint>`
+with the same body-bound HMAC helper as the reverse proxy, follows no redirect,
+and bounds connection time, total/read time, and response bytes. The only valid
+response is HTTP 200 with exactly `{verdict, evidence}`. The verdict uses the
+ledger's existing five-value vocabulary. Evidence is marker-neutralized,
+control-sanitized, folded to one line, redacted through the active platform
+context, and capped before it can reach storage or a model-facing result.
+
+A response is provisional. Before returning it, the evaluator reloads installed
+metadata and the manifest, recomputes the manifest digest, rechecks the exact
+declaration, tracked backend port and execution generation, proxy secret, and reruns App
+admission, executable-app admission, and repository-bound authority. The execution
+generation is a SHA-256 digest of a freshly verified backend process identity.
+Spawned backends must still have a live `Popen` whose pid and current start
+identity match the recorded per-spawn token and pinned pid/start identity, and
+the owners in the listener tier reached by `127.0.0.1` must all be that process
+or its descendants, and each owner's PID and start identity enter the digest.
+Adopted backends have no authenticated response channel and therefore return no
+acceptance execution identity. The generation changes whenever the executing
+spawned provider process or serving descendant is replaced, including a same-version
+update with an unchanged manifest and a health-driven restart, without hashing the app
+directory or persisting the proxy secret. Any exception or mismatch discards the
+response. This second check is what makes trust revocation or process replacement
+during an HTTP call fail closed rather than allowing one final stale pass.
+
+The host stores provider, qualified kind, provider version, manifest digest,
+backend-generation digest, acceptance digest, authority, endpoint, bounded evidence,
+and `evaluated_at` next to the verdict. A passing proof requires all identity fields and
+all three SHA-256 digests at the storage boundary. A legacy stored proof without the
+backend generation fails closed for a namespaced kind; built-in kinds carry no provider
+proof and remain unchanged. `apply_provider_evaluation` is the sole
+store entry point that can write a passing namespaced verdict. Generic
+`work_ledger_record action=verdict` refuses `pass` for a namespaced kind, and
+`close state=accepted` refuses unless its preflight can read the item. The
+preflight acceptance selects whether provider revalidation is required, and the
+handler requires that same acceptance under the board lock before committing;
+an unreadable preflight or acceptance drift cannot route a contributed close
+through the built-in path. A contributed accepted close also requires the
+current acceptance digest to match a host-recorded pass with complete authority.
+Close then takes the same provider lifecycle lock. Under the board lock it takes
+the backend acceptance fence, revalidates installed/enabled state, version,
+manifest digest, declaration, freshly verified backend execution generation,
+proxy secret, and trust authority, and commits before releasing that fence. A
+disable, same-version update, backend restart or loss, or trust revocation
+invalidates the stored pass without requiring another evaluation. The item proof
+is compared again under the board lock, so a concurrent ledger write cannot swap
+it after provider revalidation. An acceptance update and a manual non-pass
+invalidate proof; the crew-log fold reproduces the same invalidation.
+Built-in verdict and acceptance entries do not gain an empty `evaluation` field,
+while a contributed invalidation records `{}` explicitly. The `workstreams` fold
+keeps no acceptance or evaluation, so it reads that recorded `{}` (or a contributed
+kind in the entry's own acceptance) as the signal to clear the task's verdict, and
+the Crew board agrees with the `work` fold.
+
+Built-in evaluation is unchanged. `accept_eval.py` still receives its document
+through stdin and never through model-authored argv. Goal conductors filter
+namespaced items out of that batch and call `work_ledger_evaluate` for each one;
+they never substitute a generic verdict when a provider is unavailable.
+
+Owners: `apps/manifest.py`, `apps/acceptance.py`, `apps/backend_runtime/tracking.py`,
+`apps/admission.py`,
+`apps/proxy_auth.py`, `work_ledger.py`, `work_vocab.py`, `mcp_work.py`,
+`dashboard/handlers/work_ledger.py`, `dashboard/server_runtime/mcp_routes.py`,
+`crew_log/entry_types.py`, `crew_log/projection.py`, and `crew_log/emit.py`.
+Focused coverage lives in `test_app_acceptance_kinds.py`,
+`test_app_acceptance_evaluator.py`, `test_app_acceptance_ledger.py`,
+`test_app_proxy_auth.py`, `test_mcp_work.py`, `test_work_ledger_tools.py`, and
+`test_work_ledger_projection.py`. Real install, trust, backend, lifecycle,
+work-ledger, audit, and close wiring is covered by
+`test/integration/test_app_acceptance.py`.
 
 ## Windows stale-backend cleanup capacity
 

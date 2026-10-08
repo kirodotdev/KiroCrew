@@ -26,9 +26,9 @@ SUBCOMMAND = "mcp-work"
 # ── the advertised surface ────────────────────────────────────────────────
 
 
-def test_all_four_tools_are_advertised_to_every_caller():
+def test_all_six_tools_are_advertised_to_every_caller():
     """One list regardless of identity: a second-level conductor legitimately
-    reaches all four, and a list that varied by caller would make a worker's
+    reaches all six, and a list that varied by caller would make a worker's
     missing conductor tools look like a broken install rather than a refusal."""
     names = [t["name"] for t in mcp_work._list_tools()]
     assert names == list(mcp_work.WORK_TOOLS)
@@ -36,6 +36,7 @@ def test_all_four_tools_are_advertised_to_every_caller():
         "work_brief",
         "work_report",
         "work_ledger_read",
+        "work_ledger_evaluate",
         "work_ledger_record",
         "work_ledger_rebuild",
     }
@@ -55,6 +56,18 @@ def test_the_brief_tool_declares_an_empty_schema():
     assert definition["inputSchema"]["properties"] == {}
     assert "required" not in definition["inputSchema"]
     assert MCP_WORK_SCHEMAS["work_brief"].fields == []
+
+
+def test_work_ledger_evaluate_declares_only_a_required_item_id():
+    definition = next(
+        tool for tool in mcp_work._list_tools() if tool["name"] == "work_ledger_evaluate"
+    )
+    assert set(definition["inputSchema"]["properties"]) == {"item_id"}
+    assert definition["inputSchema"]["required"] == ["item_id"]
+    assert definition["inputSchema"]["additionalProperties"] is False
+    fields = MCP_WORK_SCHEMAS["work_ledger_evaluate"].fields
+    assert [field.name for field in fields] == ["item_id"]
+    assert fields[0].required is True
 
 
 def test_work_ledger_read_advertises_the_five_optional_filters():
@@ -171,6 +184,25 @@ def test_work_ledger_read_with_no_filters_hits_the_bare_path(monkeypatch):
     assert seen["path"] == f"{mcp_work._READ_PATH}?compact=false"
 
 
+def test_work_ledger_evaluate_uses_its_route_deadline(monkeypatch):
+    monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "chat-x")
+    seen: dict[str, Any] = {}
+
+    def _fake_post(path: str, body: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+        seen.update(path=path, body=body, **kwargs)
+        return {"item_id": "it_0000abcd", "verdict": "pass", "evaluation": {}}
+
+    monkeypatch.setattr(mcp_work, "_post", _fake_post)
+    mcp_work._call_tool_inner("work_ledger_evaluate", {"item_id": "it_0000abcd"})
+    assert seen == {
+        "path": mcp_work._EVALUATE_PATH,
+        "body": {"item_id": "it_0000abcd"},
+        "timeout": mcp_work._EVALUATE_TIMEOUT_SECS,
+        "session_key": "chat-x",
+    }
+    assert seen["timeout"] > 30
+
+
 def test_the_worker_report_tool_advertises_no_conductor_field():
     """The absence is the guarantee, so it is asserted on the ADVERTISED schema too —
     a field added to the inputSchema alone would be a promise the store refuses."""
@@ -194,6 +226,7 @@ def test_the_two_halves_are_enumerable_without_parsing_the_definitions():
     assert mcp_work.WORKER_TOOLS == ("work_brief", "work_report")
     assert mcp_work.CONDUCTOR_TOOLS == (
         "work_ledger_read",
+        "work_ledger_evaluate",
         "work_ledger_rebuild",
         "work_ledger_record",
     )
@@ -203,9 +236,7 @@ def test_the_two_halves_are_enumerable_without_parsing_the_definitions():
 # ── identity: strict, and never the /proc walk ────────────────────────────
 
 
-@pytest.mark.parametrize(
-    "tool", ["work_brief", "work_report", "work_ledger_read", "work_ledger_record"]
-)
+@pytest.mark.parametrize("tool", list(mcp_work.WORK_TOOLS))
 def test_a_subagent_identity_is_refused_on_every_tool(tool, monkeypatch):
     """A subagent lives under its parent slot's process tree, so the lenient
     resolver's ancestor walk would hand it the PARENT's identity — letting it read
@@ -397,7 +428,7 @@ def test_a_refresh_keeps_an_existing_grant_current():
 # ── channel agents hold none of it ────────────────────────────────────────
 
 
-def test_a_channel_agent_is_blocked_from_all_four_tools():
+def test_a_channel_agent_is_blocked_from_all_work_tools():
     """A channel agent has no dispatch relationship and no business holding one:
     reading a brief would pull a private dispatch's bar into a channel other humans
     can see, and a write would edit a conductor's record from outside it."""

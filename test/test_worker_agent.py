@@ -355,15 +355,20 @@ def test_a_ledger_conductor_mounts_the_server_and_grants_only_its_own_half(specs
 )
 def test_a_conductor_with_its_own_store_mounts_the_base_half(specs, filename):
     """The pipeline and security conductors get the work server from the shared
-    conductor base: the two conductor verbs auto-approved on ``allowedTools`` and on
-    the KAS rule, and the worker half left gated. ``work_brief`` is not theirs:
+    conductor base: its three conductor verbs auto-approved on ``allowedTools`` and
+    on the KAS rule, and the worker half left gated. ``work_brief`` is not theirs:
     neither procedure is dispatched as a ledger item's worker."""
     spec = specs[filename]
     assert "@kirocrew-work" in spec["tools"]
     assert spec["mcpServers"]["kirocrew-work"]["args"][-1] == "mcp-work"
     work = [ref for ref in spec["allowedTools"] if "kirocrew-work" in ref]
-    assert work == ["@kirocrew-work/work_ledger_read", "@kirocrew-work/work_ledger_record"]
+    assert work == [
+        "@kirocrew-work/work_ledger_read",
+        "@kirocrew-work/work_ledger_evaluate",
+        "@kirocrew-work/work_ledger_record",
+    ]
     match = spec["permissions"]["rules"][0]["match"]
+    assert "kirocrew-work/work_ledger_evaluate" in match
     assert "kirocrew-work/work_ledger_record" in match
     assert "kirocrew-work/work_report" not in match
 
@@ -384,6 +389,7 @@ def test_a_conductor_still_has_no_file_writing_tool(specs, filename):
 def test_the_grant_tuples_cover_the_server_and_share_only_the_read():
     assert agent._LEDGER_CONDUCTOR_WORK_GRANTS == (
         "@kirocrew-work/work_ledger_read",
+        "@kirocrew-work/work_ledger_evaluate",
         "@kirocrew-work/work_ledger_record",
         "@kirocrew-work/work_ledger_rebuild",
         "@kirocrew-work/work_brief",

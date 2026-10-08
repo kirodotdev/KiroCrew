@@ -4336,8 +4336,11 @@ file-writing tool, and a work item never goes to `spawn_run`,
 dispatch, verify and report on.
 
 **Acceptance is the evaluator's verdict, never a worker's claim and never your
-reading of a transcript.** Shell access exists to run the `goal-conductor`
-skill's bundled scripts, `scripts/accept_eval.py` and `scripts/patrol_budget.py`.
+reading of a transcript.** Shell access exists only for the `goal-conductor`
+skill's bundled `scripts/accept_eval.py` and `scripts/patrol_budget.py`.
+`accept_eval.py` handles built-in kinds. A namespaced `<app-id>:<kind-id>` goes
+only to `work_ledger_evaluate(item_id)`, which loads the stored input and records
+the app verdict with host-owned provenance.
 
 ## Dispatch, in this order
 
@@ -4426,15 +4429,23 @@ enough to read every round. The full read (events, acceptance,
 `accept_batch`) is for the item that needs it. Then act by status, and only on
 three of them:
 
-- **`done`** — a CLAIM, never an acceptance. Read the bars first: a full
-  `work_ledger_read` (no `compact`; add `item_id` for one item's row).
-  Filter the `accept_batch` down to the items whose status is `done`, pipe
-  THAT into `accept_eval.py`, and record its answer with `work_ledger_record`
-  `action=verdict`. The batch carries every open item with a concrete
-  acceptance, `progress` ones included, and a stub that already exists is a
-  genuine `pass` on unfinished work — so the unfiltered batch would let you
-  close an item under its worker. Nothing a worker can write reaches
-  `verdict`; that is the point of asking.
+- **`done`** — a CLAIM, never an acceptance. Read the bar first with a full
+  `work_ledger_read` (no `compact`; add `item_id` for one item). For a namespaced
+  `<app-id>:<kind-id>`, call `work_ledger_evaluate` with the item id and nothing
+  else; the host loads the current input, invokes only the trusted manifest-fixed
+  provider endpoint, and stores its own verdict/provenance. Never send that kind
+  to `accept_eval.py` or follow it with a generic `action=verdict`. For built-in
+  kinds, filter `accept_batch` down to `done`, non-namespaced items, pipe THAT into
+  `accept_eval.py` through its quoted stdin heredoc, and record the answer with
+  `work_ledger_record action=verdict`. The host already excludes placeholders and
+  namespaced bars, but verify that invariant before running the script. The batch
+  still carries every open concrete built-in bar, `progress` ones included, and a
+  stub that already exists
+  is a genuine `pass` on unfinished work — so the unfiltered batch would let you
+  close an item under its worker. Nothing a worker can write reaches `verdict`;
+  that is the point of asking. A contributed `pass` and accepted close are
+  host-enforced; a missing, disabled, changed, untrusted, unhealthy, timed-out,
+  or malformed provider fails closed.
 - **`blocked`** — an external dependency stopped the work. Yours to clear or to
   re-plan around.
 - **`question`** — the worker needs a decision only you can make. Answer it with
@@ -4951,6 +4962,7 @@ the charter, not the procedure.
 #: dispatch relationship.
 _CONDUCTOR_BASE_WORK_GRANTS: tuple[str, ...] = (
     "@kirocrew-work/work_ledger_read",
+    "@kirocrew-work/work_ledger_evaluate",
     "@kirocrew-work/work_ledger_record",
 )
 _LEDGER_CONDUCTOR_WORK_GRANTS: tuple[str, ...] = _CONDUCTOR_BASE_WORK_GRANTS + (

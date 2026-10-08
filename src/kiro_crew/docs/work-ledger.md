@@ -43,8 +43,9 @@ An item is the unit of dispatch. It holds:
 | `acceptance` | conductor | the completion condition, stored verbatim |
 | `round` | conductor | which dispatch round the item belongs to |
 | `decision` | conductor | what the conductor decided and why |
-| `verdict` | conductor | the acceptance evaluator's answer |
-| `fails` | conductor | how many acceptance attempts came back `fail` |
+| `verdict` | conductor or host evaluator | the acceptance evaluator's answer |
+| `evaluation` | host evaluator | provider/version/manifest, backend-generation and acceptance digests/authority/endpoint/evidence for an app-provided verdict |
+| `fails` | conductor or host evaluator | how many acceptance attempts came back `fail` |
 | `state` | conductor | `open`, or terminal: `accepted` / `rejected` / `abandoned` |
 | `status` | worker | `progress` / `done` / `blocked` / `question` |
 | `summary` | worker | the worker's own account, up to 500 chars |
@@ -53,7 +54,10 @@ An item is the unit of dispatch. It holds:
 
 The conductor writes its half with `work_ledger_record` (one action per call:
 `goal`, `create`, `bind`, `decide`, `verdict`, `accept`, `close`) and reads the
-ledger back with `work_ledger_read`. A patrol cycle reads it with `compact=true`
+ledger back with `work_ledger_read`. For a namespaced app-provided condition it
+calls `work_ledger_evaluate` with the item id; the gateway loads the stored
+condition and supplies no caller-provided input or endpoint to the app. A patrol
+cycle reads it with `compact=true`
 (status columns and derived flags only); `item_id`, `state`, `since` and
 `events` narrow a full read. A reply over the tool-result limit comes back as
 valid JSON marked `truncated`: event tails go first, then oversized acceptances
@@ -82,12 +86,15 @@ A deployment that sets the flag off has no board writes at all, so leave it on
 wherever a conductor runs, rather than discovering the refusal from a worker that
 cannot report.
 
-**The acceptance condition is named before dispatch, not after.** It is one of
-three kinds: `pr_checks` (a pull request's checks are all green), `file` (a path
-exists), or `human_approval` (you accept it — legitimate for a design review,
-and never machine-evaluated). There is deliberately no "run this command" kind,
-so "the tests pass" is expressed as `pr_checks` on the pull request that carries
-the work, and CI's verdict is the one that counts.
+**The acceptance condition is named before dispatch, not after.** Built-in
+conditions are `pr_checks` (a pull request's checks are all green), `file` (a
+path exists), or `human_approval` (you accept it, legitimate for a design review
+and never machine-evaluated). An enabled App Kit app may also declare a
+namespaced condition `<app-id>:<kind-id>` with a flat, host-validated scalar
+`input` object. There is deliberately no built-in "run this command" kind, and
+an app declaration cannot name a command, executable, tool, MCP server, URL, or
+caller-selected endpoint. "The tests pass" is expressed as `pr_checks` on the
+pull request that carries the work, and CI's verdict is the one that counts.
 
 A condition may name a value that only exists once the item starts — a pull
 request number is the common case. The conductor stores it as `TBD`, the worker
@@ -181,8 +188,34 @@ at the cap still reads.
 
 A worker's `done` never closes an item. The conductor reads its whole ledger
 with `work_ledger_read` — every item, its own derived staleness flags, and a
-ready-to-evaluate batch — runs the acceptance evaluator against the item's own
-condition, and records the answer with `work_ledger_record` as a `verdict`:
+ready-to-evaluate batch — then follows the condition's kind:
+
+- Built-in kinds stay in the batch consumed by the bundled `accept_eval.py`.
+  The conductor records that answer with `work_ledger_record action=verdict`.
+- A namespaced `<app-id>:<kind-id>` never goes to `accept_eval.py`. The conductor
+  calls `work_ledger_evaluate(item_id)`. The gateway reloads the item, validates
+  its stored `input` against the app's signed manifest declaration, verifies the
+  currently enabled app and its execution/admission trust, and POSTs only
+  `{kind, input}` to the fixed app-relative endpoint. It stores the result with
+  the provider version, manifest, backend-generation and acceptance digests,
+  authority, endpoint, timestamp, and bounded redacted evidence.
+
+A generic conductor write cannot record `pass` for a namespaced kind, and
+`close state=accepted` refuses until the current condition has a matching
+host-recorded pass. It also revalidates the provider's current install, enablement,
+version, manifest, backend execution generation, proxy secret, and trust under the
+lifecycle lock before and after the provisional store write. If the second read
+finds cross-process drift, the host restores the item record/event-log preimage
+captured under the same item lock only while those files still equal that
+transaction's postimage, preserving concurrent conductor-header commits, before
+publishing the crew-log entry. A disable, same-version update, backend restart or
+loss, or trust revocation makes stored proof stale without another evaluation. A
+legacy proof missing the backend generation fails closed; built-in kinds remain
+unchanged. Changing the condition clears that proof. A missing, disabled, changed,
+untrusted, unhealthy, identity-incomplete, timed-out, or malformed provider fails
+closed.
+
+Both evaluators use the same five verdicts:
 
 - `pass` / `fail` — final for that cycle.
 - `pending` — the condition is not true yet; keep waiting.

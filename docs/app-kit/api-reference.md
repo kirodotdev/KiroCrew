@@ -1111,6 +1111,72 @@ the value in the `X-KiroCrew-Proxy` header (constant-time), rejecting stale time
 > HMACs fails verification against any verifier that omits the body hash, so a
 > backend that implements the HMAC itself has to be updated in lockstep with the gateway.
 
+### App-Provided Work-Ledger Acceptance Endpoint
+
+An app that declares `contributes.acceptanceKinds` receives host-owned evaluation
+requests directly on its gateway-managed loopback backend. For a declaration
+whose endpoint is `acceptance/release-ready`, register:
+
+```text
+POST /api/acceptance/release-ready
+Content-Type: application/json
+X-KiroCrew-Proxy: <timestamp>:<hmac-sha256>
+```
+
+The request body is exactly the ledger's stored, host-validated condition. The
+qualified kind's app component is at most 128 characters and its kind-id
+component is at most 64:
+
+```json
+{
+  "kind": "release-app:release-ready",
+  "input": { "change_id": 7 }
+}
+```
+
+The request never includes an item id, caller-selected endpoint, URL, command,
+tool, or other host capability. The gateway, not the agent, resolves the app,
+endpoint, version, manifest digest, and input. Implement this endpoint as a
+side-effect-free, retry-safe check: patrols may evaluate the same unchanged item
+more than once. Verify `X-KiroCrew-Proxy` against
+the raw path and body with the helpers above. The endpoint is not a public
+Gateway route and should not accept unsigned direct requests.
+
+Return HTTP 200 and exactly two JSON members:
+
+```json
+{
+  "verdict": "pass",
+  "evidence": "release checks are green"
+}
+```
+
+`verdict` must be `pass`, `fail`, `pending`, `refused`, or `error`, and
+`evidence` must be a string. Redirects are not followed. The host reads at most
+16 KiB and applies a 5-second connect ceiling within a 30-second total/read
+timeout. A non-200 status, extra or missing key, invalid JSON/UTF-8, oversized
+body, unknown verdict, or non-string evidence becomes an `error` verdict.
+
+Evidence is data, not an instruction. Before persistence or return to a
+conductor, the host neutralizes session and prompt markers, removes hidden
+controls, folds it to one line, runs the active platform credential and
+exfiltration redactor, and caps it at 500 characters. Put a concise diagnostic
+there, not a secret or a full log.
+
+After receiving the response, the host revalidates the app's installed and
+enabled state, version, manifest digest, declaration, gateway-spawned backend
+and execution generation, App admission/signature authority, and per-app
+execution/repository trust. Adopted listeners cannot answer acceptance checks:
+the request HMAC authenticates the gateway to the listener, but the response is
+not authenticated back to the gateway. The generation is a digest of the spawned
+process's live handle, pinned start identity, per-spawn token, and each owner's
+PID and start identity in the listener tier reached by `127.0.0.1`, not the proxy
+HMAC secret. A process or listener replacement therefore
+discards even a `pass` when the app
+version and manifest are unchanged. The ledger persists accepted results with the
+digest of the exact stored condition. A legacy proof missing the generation fails closed;
+a generic conductor verdict cannot manufacture a passing namespaced result.
+
 ### Backend Environment Variables
 
 The gateway spawns each `backend.entryPoint` app as a sandboxed child and injects a fixed,

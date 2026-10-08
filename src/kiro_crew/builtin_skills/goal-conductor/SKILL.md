@@ -53,18 +53,22 @@ A candidate qualifies only if **all three** hold:
 1. **Independent** — it does not consume another candidate's output. Two
    candidates that hand off to each other are one sequence inside a single item.
 2. **Assertable** — you can name its completion condition *now*, before
-   dispatching, as one of the evaluator's kinds: `pr_checks` (a PR's checks all
+   dispatching. Built-in kinds are `pr_checks` (a PR's checks all
    green via `gh`; always set `repo` to `owner/name` — without it `gh` resolves
    the PR number against whatever checkout the evaluator runs in, which can be
    another repository's PR, and outside a checkout it cannot be evaluated),
    `file` (a path existing), or `human_approval` (the user accepts it —
    legitimate for design reviews and go/no-go gates, but never
-   machine-evaluated). **There is deliberately no "run this command" kind**, so
-   "the test suite passes" is expressed as `pr_checks` on the PR that carries the
-   work — CI runs the suite, and its verdict is the one that counts. If an item's
-   completion genuinely cannot be stated as one of these, it is not assertable:
-   say so and treat it as a needs-human item rather than inventing a condition.
-   A `pr_checks` condition names a NON-DRAFT pull request: a draft whose checks have not finished comes back `refused` rather than `pending` — the evaluator reads an unfinished check run on a draft as the author's turn, so no later cycle resolves it and you surface it instead of waiting. A draft whose checks have RESOLVED is judged on them like any other PR, so a green draft passes.
+   machine-evaluated). An installed App Kit provider may declare a namespaced
+   `<app-id>:<kind-id>` with a flat scalar `input` object; the host validates
+   that object and owns the provider call. **There is deliberately no "run this
+   command" kind**, and a namespaced declaration cannot add one indirectly by
+   naming a command, executable, path, URL, MCP server, tool, or caller-selected
+   endpoint. "The test suite passes" is expressed as `pr_checks` on the PR that
+   carries the work — CI runs the suite, and its verdict is the one that counts.
+   If an item's completion genuinely cannot be stated as one of these, it is not
+   assertable: say so and treat it as a needs-human item rather than inventing a
+   condition. A `pr_checks` condition names a NON-DRAFT pull request: a draft whose checks have not finished comes back `refused` rather than `pending` — the evaluator reads an unfinished check run on a draft as the author's turn, so no later cycle resolves it and you surface it instead of waiting. A draft whose checks have RESOLVED is judged on them like any other PR, so a green draft passes.
 3. **Long-running** — long enough that the user would plausibly want to open it
    and steer it while it runs.
 
@@ -167,7 +171,7 @@ beats more parallelism: every open item is a session the user may have to read.
 For each item in the round, in **exactly this order**:
 
 1. `work_ledger_record` `action=create`, with the item's `title` and its
-   `acceptance` condition — the same condition object `accept_eval.py` parses,
+   `acceptance` condition — the exact object the chosen evaluator will read,
    stored verbatim. It returns the `item_id`.
 2. `session_create` with a title that says what the item is FOR, `folder` set to
    `<goal folder>/<agent>` — the goal's folder from Round 0 with the agent name
@@ -320,26 +324,38 @@ Each cycle:
 
    `blocked` and `question` differ by who must act. That is why they are separate
    values, and why you must not treat one as the other.
-3. **Verify every `done` with the evaluator — never by reading the child's
-   transcript and judging, and never by believing the claim.** Take the
-   `accept_batch` from a full `work_ledger_read` (no `compact`), **keep only the entries
-   whose item is currently `status: done`** — each entry carries that status, so
-   the filter is a read of the document you already have — and pipe that filtered
-   document through a **quoted heredoc**:
+3. **Verify every `done` with its evaluator — never by reading the child's
+   transcript and judging, and never by believing the claim.** Take a full
+   `work_ledger_read` (no `compact`) for each done item's stored condition, then
+   split by `kind`:
+
+   - A namespaced `<app-id>:<kind-id>` goes only to
+     `work_ledger_evaluate(item_id)`. Pass the item id and nothing else. The
+     gateway reloads the stored condition, validates its `input` against the
+     current manifest, checks enablement plus admission/execution trust, invokes
+     only the fixed app-relative endpoint, and records the verdict with provider
+     provenance. Never pass a namespaced condition to `accept_eval.py`, and never
+     follow it with `work_ledger_record action=verdict`: generic conductor writes
+     cannot record a passing contributed verdict.
+   - Built-in kinds go to the bundled `accept_eval.py`. From `accept_batch`,
+     **keep only entries whose item is currently `status: done` and whose kind is
+     not namespaced**, then pipe that filtered document through a **quoted
+     heredoc**:
 
    ```bash
    python3 <this skill's dir>/scripts/accept_eval.py <<'ACCEPT_BATCH'
-   <the accept_batch document, with every non-done entry removed>
+   <the accept_batch entries filtered to status: done, after verifying every kind is built-in>
    ACCEPT_BATCH
    ```
 
-   **The filter is yours to apply, and it is not optional.** `accept_batch` is
-   composed from every open item whose `acceptance` is concrete, whatever its
-   status. An item whose bar still carries a placeholder (a `TBD` or blank `pr`,
-   an unknown kind) is already left out, and its `acceptance_concrete` flag says
-   so. It is the two-phase promotion seam, not a verdict gate. The evaluator
-   answers a world-state question ("does this file exist", "are this PR's checks
-   green"), and a worker that is still `progress` can have made that true early:
+   **The `done` filter is yours to apply and is not optional.** The server composes
+   `accept_batch` from concrete open built-in conditions only; namespaced conditions
+   are excluded by construction and go through `work_ledger_evaluate`. Verify that
+   invariant before invoking the script rather than turning an unexpected namespaced
+   entry into an `unknown kind` verdict. Status remains in the batch without filtering
+   because that judgment belongs to you. A built-in evaluator also answers a
+   world-state question ("does this file exist", "are this PR's checks green"), and a
+   worker that is still `progress` can have made that true early:
    a stub written before the real content, a PR that is green before the last
    commit. Evaluating that item returns a genuine `pass` on unfinished work, and
    recording it with `action=verdict` then `action=close` closes the item under
@@ -362,25 +378,30 @@ Each cycle:
    install that path does not exist and every evaluator call would fail before
    patrol ever ran.
 
-   Evaluate **every `done` item in ONE call** — each invocation costs one
-   approval prompt — then record each answer with `work_ledger_record`
-   `action=verdict` (with `fails` when you are counting retries).
+   Evaluate every `done` **built-in** item in one script call — each invocation
+   costs one approval prompt — then record each script answer with
+   `work_ledger_record action=verdict` (with `fails` when you are counting
+   retries). Call `work_ledger_evaluate` once per `done` namespaced item; that tool
+   stores its own answer and provenance. A contributed `pass` and
+   `close state=accepted` are host-enforced, and changing the stored condition
+   invalidates the proof.
 
    Verdicts: `pass` / `fail` are final for this cycle. `pending` means keep
    waiting. `refused` means the spec asked for something the evaluator will not
    do — most often naming a command, which it does not accept from a spec at all.
    Re-express the condition as `pr_checks` (or ask the user for a purpose-built
    kind); never try to route around a refusal. `error` is a broken spec or
-   environment — fix the spec or ask.
+   environment — fix the spec or ask. For a namespaced kind, missing, disabled,
+   changed, untrusted, unhealthy, timed-out, and malformed providers all fail
+   closed. Do not replace that result with a manual `pass` or a built-in script
+   invocation.
 
-   **Two-phase acceptance: the server omits the item, you promote the value.** A
-   condition may name a value that only exists after the item starts — a PR number for
-   `pr_checks` is the common case. Store the condition with the value marked TBD
-   at `create`, tell the child in its seed to report the number through
-   `work_report`'s `pr`. Until you promote the real value the item is absent from
-   `accept_batch` (`acceptance_concrete: false`); a `TBD` `pr` handed to the
-   evaluator by hand would be an `error` verdict, not `pending`, which is why it
-   is left out. **The worker's claimed `pr` is
+   **Two-phase acceptance is a server-visible omission, not an implicit
+   promotion.** A condition may name a value that only exists after the item starts
+   — a PR number for `pr_checks` is the common case. Store the condition with the
+   value marked TBD at `create`, tell the child in its seed to report the number
+   through `work_report`'s `pr`, and observe that the item is absent from
+   `accept_batch` with `acceptance_concrete: false`. **The worker's claimed `pr` is
    never read as the bar.** Promote it yourself with `work_ledger_record`
    `action=accept` once you have looked at it, and verify on the next cycle. A
    worker that could fill in its own acceptance could point it at anybody's

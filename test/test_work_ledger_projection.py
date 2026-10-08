@@ -31,6 +31,10 @@ WORKER = "chat-9-worker"
 ACCEPTANCE = {"kind": "human_approval"}
 
 
+def test_backend_generation_bumps_the_work_fold_state_version() -> None:
+    assert projection.fold_state_version("work") == 6
+
+
 class _Slot:
     """The slot attributes the routes read, and nothing else."""
 
@@ -382,6 +386,7 @@ def _rendered(slot: str, item_id: str) -> dict[str, Any]:
                 "acceptance": ACCEPTANCE,
                 "state": "open",
                 "verdict": None,
+                "evaluation": {},
                 "decision": "",
                 "worker_session_key": WORKER,
                 "round": 1,
@@ -3350,3 +3355,209 @@ def test_a_new_board_generation_starts_its_age_over() -> None:
     assert state["last_entry_at"] == projection._work_iso(
         fresh
     ), "a new generation's age is its own, not the purged board's"
+
+
+def test_provider_evaluation_provenance_survives_fold_and_rebuild() -> None:
+    from kiro_crew import crew_log as lg
+    from kiro_crew.crew_log import CrewLog
+    from kiro_crew.work_vocab import canonical_json_digest
+
+    item_id = "it_0000cafe"
+    acceptance = {
+        "kind": "release-app:release-ready",
+        "input": {"change_id": 7},
+    }
+    evaluation = {
+        "provider": "release-app",
+        "kind": acceptance["kind"],
+        "version": "1.2.3",
+        "manifest_digest": "a" * 64,
+        "backend_generation": "b" * 64,
+        "acceptance_digest": canonical_json_digest(acceptance),
+        "authority": "trusted-app",
+        "endpoint": "acceptance/release-ready",
+        "evidence": "green",
+        "evaluated_at": "2026-10-06T12:00:00+00:00",
+    }
+    log = CrewLog.create(
+        lg.KIND_SESSION,
+        "u-provider-eval",
+        owner="owner",
+        agent="kirocrew",
+        slot=CONDUCTOR,
+    )
+    base = {
+        "slot": CONDUCTOR,
+        "actor": "conductor",
+        "by": CONDUCTOR,
+        "generation": "g" * 16,
+    }
+    log.append(
+        "work/recorded",
+        {**base, "action": "goal", "goal": "ship", "round": 1, "depth": 0},
+        src="gateway",
+    )
+    log.append(
+        "work/recorded",
+        {
+            **base,
+            "action": "create",
+            "item_id": item_id,
+            "title": "release",
+            "acceptance": acceptance,
+            "event": "release",
+            "event_kind": "create",
+        },
+        src="gateway",
+    )
+    log.append(
+        "work/recorded",
+        {
+            **base,
+            "action": "evaluate",
+            "item_id": item_id,
+            "verdict": "pass",
+            "evaluation": evaluation,
+            "fails": 0,
+            "event": "pass: green",
+            "event_kind": "verdict",
+        },
+        src="gateway",
+    )
+
+    folded = projection.read_slot_projection(CONDUCTOR, "work").value
+    [folded_item] = folded["items"]
+    assert folded_item["verdict"] == "pass"
+    assert folded_item["evaluation"] == evaluation
+
+    wl.rebuild_from_projection(CONDUCTOR)
+    rebuilt = wl.read_work_item(CONDUCTOR, item_id)
+    assert rebuilt is not None
+    assert rebuilt.verdict == "pass"
+    assert rebuilt.evaluation == evaluation
+
+
+def test_contributed_to_builtin_acceptance_update_invalidates_verdict_without_proof() -> None:
+    state = projection._work_start()
+    item_id = "it_0000fade"
+    contributed = {"kind": "release-app:release-ready", "input": {}}
+    projection._work_step(
+        state,
+        _work_entry(
+            seq=1,
+            time_ms=1790000000000,
+            actor="conductor",
+            action="create",
+            item_id=item_id,
+            title="release",
+            acceptance=contributed,
+        ),
+    )
+    projection._work_step(
+        state,
+        _work_entry(
+            seq=2,
+            time_ms=1790000001000,
+            actor="conductor",
+            action="verdict",
+            item_id=item_id,
+            verdict="fail",
+            evaluation={},
+        ),
+    )
+    projection._work_step(
+        state,
+        _work_entry(
+            seq=3,
+            time_ms=1790000002000,
+            actor="conductor",
+            action="accept",
+            item_id=item_id,
+            acceptance={"kind": "human_approval"},
+            evaluation={},
+        ),
+    )
+    [item] = state["items"].values()
+    assert item["acceptance"] == {"kind": "human_approval"}
+    assert item["verdict"] is None
+    assert item["evaluation"] == {}
+
+
+def _fold_slot(name: str, entries: list[schema.Entry]) -> dict[str, Any]:
+    """*entries* folded from nothing by the slot fold *name*, bound to the conductor."""
+    state = projection.initial(name)
+    bind = projection._FOLDS[name].bind_slot
+    assert bind is not None
+    bind(state.state, CONDUCTOR)
+    return projection.projection_of(projection.advance(state, entries)).value
+
+
+@pytest.mark.asyncio
+async def test_a_recorded_accept_clears_the_workstreams_verdict_the_work_fold_clears(recorded):
+    """The board and the Crew board's task row agree on a verdict ``accept`` invalidated.
+
+    Both items are driven through the routes, so the ``accept`` entries folded here are
+    the ones the store records. Only the contributed item's provider verdict is written
+    by hand, because a provider evaluation needs an installed app; it has the shape the
+    evaluate route records.
+    """
+    status, body = await _record(CONDUCTOR, {"action": "goal", "goal": "ship it", "round": 1})
+    assert status == 200, body
+    contributed = {"kind": "release-app:release-ready", "input": {}}
+    status, body = await _record(
+        CONDUCTOR, {"action": "create", "title": "contributed", "acceptance": contributed}
+    )
+    assert status == 200, body
+    contributed_id = body["item"]["item_id"]
+    status, body = await _record(
+        CONDUCTOR, {"action": "create", "title": "built in", "acceptance": ACCEPTANCE}
+    )
+    assert status == 200, body
+    built_in_id = body["item"]["item_id"]
+    status, body = await _record(
+        CONDUCTOR,
+        {"action": "verdict", "item_id": built_in_id, "verdict": "fail"},
+    )
+    assert status == 200, body
+    for item_id in (contributed_id, built_in_id):
+        status, body = await _record(
+            CONDUCTOR,
+            {"action": "accept", "item_id": item_id, "acceptance": {"kind": "pr_checks", "pr": 5}},
+        )
+        assert status == 200, body
+
+    payloads = [data for _unit, data in recorded]
+    accepts = {data["item_id"]: data for data in payloads if data["action"] == "accept"}
+    assert accepts[contributed_id]["evaluation"] == {}
+    assert "evaluation" not in accepts[built_in_id]
+    assert "verdict" not in accepts[contributed_id]
+
+    evaluate = {
+        **next(data for data in payloads if data["action"] == "verdict"),
+        "action": "evaluate",
+        "item_id": contributed_id,
+        "verdict": "pass",
+        "fails": 0,
+        "evaluation": {"provider": "release-app", "evidence": "green"},
+    }
+    accept_at = payloads.index(accepts[contributed_id])
+    ordered = payloads[:accept_at] + [evaluate] + payloads[accept_at:]
+    entries = [
+        schema.Entry(type="session/opened", seq=1, time=1, src="test", data={"slot": CONDUCTOR})
+    ]
+    entries += [
+        schema.Entry(type=entry_types.WORK_ENTRY_TYPE, seq=seq, time=seq, src="test", data=data)
+        for seq, data in enumerate(ordered, start=2)
+    ]
+
+    work = {item["item_id"]: item for item in _fold_slot("work", entries)["items"]}
+    assert work[contributed_id]["verdict"] is None
+    assert work[contributed_id]["evaluation"] == {}
+    assert work[built_in_id]["verdict"] == "fail"
+
+    [board] = _fold_slot("workstreams", entries)["items"]
+    tasks = {task["title"]: task for task in board["tasks"]}
+    assert (
+        tasks["contributed"]["verdict"] is None
+    ), "the Crew board kept the provider verdict the accept invalidated"
+    assert tasks["built in"]["verdict"] == "fail"

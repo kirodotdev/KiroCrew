@@ -155,6 +155,18 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "error surfaces as a 500 rather than an un-redacted board.",
     ),
     (
+        "App acceptance evidence recorded and returned to conductors",
+        "apps/acceptance.py",
+        "The evidence string returned by an enabled App Kit provider before it is "
+        "stored in the work ledger, appended to the crew log, and returned through "
+        "`work_ledger_evaluate`. Provider code controls the string, so it can contain "
+        "credentials, exfiltration URLs, control characters, or prompt boundary "
+        "markers. The evaluator neutralizes session and authority markers, folds the "
+        "result to one line, and runs `platform.context.redact_via_context` before "
+        "applying the 500-character cap. A redactor failure drops the evidence to a "
+        "fixed placeholder rather than storing or returning the original text.",
+    ),
+    (
         "Tool-call risk questions sent to the decision judge",
         "decisions/points/tool_risk.py",
         "The tool name, its arguments and the message excerpt that one `tool.risk` "
