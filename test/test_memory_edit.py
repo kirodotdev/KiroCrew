@@ -733,6 +733,24 @@ def test_restore_refuses_a_version_that_is_not_kept_for_that_record(store):
     assert json.loads(store.get_semantic("user.city")["value_json"]) == "Seattle"
 
 
+@pytest.mark.parametrize("stored", ["Infinity", "-Infinity", "NaN", "[1e400]"])
+def test_restore_refuses_a_version_whose_value_is_not_finite_json(store, stored):
+    assert store.set_semantic("user.city", "Seattle", 1.0, "user_explicit") is None
+    _edit(store, "user.city", {"type": "set", "value": "Boston"})
+    first = _accepted_with(store, "user.city", "Seattle")
+    saved = json.loads(first["after_json"])
+    saved["value_json"] = stored
+    store.db.execute(
+        "UPDATE memory_revisions SET after_json = ? WHERE id = ?",
+        (json.dumps(saved), first["id"]),
+    )
+    with pytest.raises(memory_edit.MemoryEditError) as error:
+        _edit(store, "user.city", {"type": "restore", "revision_id": first["id"]})
+    assert error.value.code == "memory_revision_unreadable"
+    assert error.value.status == 409
+    assert json.loads(store.get_semantic("user.city")["value_json"]) == "Boston"
+
+
 @pytest.mark.parametrize("revision_id", [0, -1, True, "3", None, 2**63])
 def test_restore_requires_a_positive_integer_version(store, revision_id):
     assert store.set_semantic("user.city", "Seattle", 1.0, "user_explicit") is None

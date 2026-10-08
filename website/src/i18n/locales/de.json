@@ -18047,7 +18047,8 @@
     "restore_title": "Frühere Version wiederherstellen",
     "restore_hint": "Beim Wiederherstellen wird dieser Wert als neue Version gespeichert. Frühere Versionen bleiben im Verlauf.",
     "restored": "Wiederhergestellte Version",
-    "restore_apply": "Version wiederherstellen",
+    "restore_now": "Jetzt",
+    "restore_after": "Nach dem Wiederherstellen",
     "current_version": "Aktuelle Version"
   }
 }

@@ -421,7 +421,11 @@ def _restored_value(store: Any, before: dict, revision_id: int) -> object:
     if before["kind"] == "episode":
         return saved.get("text")
     try:
-        return json.loads(saved.get("value_json"))
+        value = json.loads(saved.get("value_json"))
+        # An old snapshot can hold NaN or Infinity, which the edit path cannot
+        # write back. Refuse it here as unreadable instead of crashing later.
+        _json(value)
+        return value
     except (TypeError, ValueError):
         raise MemoryEditError(
             "That version cannot be restored.", "memory_revision_unreadable", 409

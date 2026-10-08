@@ -18320,7 +18320,8 @@
     "restore_title": "Restaurer une version antérieure",
     "restore_hint": "La restauration enregistre cette valeur comme une nouvelle version. Les versions antérieures restent dans l'historique.",
     "restored": "Version restaurée",
-    "restore_apply": "Restaurer la version",
+    "restore_now": "Maintenant",
+    "restore_after": "Après restauration",
     "current_version": "Version actuelle"
   }
 }

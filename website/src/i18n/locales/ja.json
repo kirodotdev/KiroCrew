@@ -17774,7 +17774,8 @@
     "restore_title": "以前のバージョンを復元",
     "restore_hint": "復元すると、この値が新しいバージョンとして保存されます。以前のバージョンは履歴に残ります。",
     "restored": "復元されたバージョン",
-    "restore_apply": "バージョンを復元",
+    "restore_now": "現在",
+    "restore_after": "復元後",
     "current_version": "現在のバージョン"
   }
 }

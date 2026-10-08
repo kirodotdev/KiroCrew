@@ -729,9 +729,16 @@ it.each(['default', 'member-review'])('restores an earlier %s version through a 
   await waitFor(() => expect(api.memoryEditPreview).toHaveBeenCalledWith(store, { items: [{ kind: 'fact', id: current.id, revision: current.revision }] }, { type: 'restore', revision_id: 2 }))
   expect(within(dialog).getByText('Restoring saves this value as a new version. Earlier versions stay in the history.')).toBeVisible()
   // One record and nothing to adjust: the batch counters and the edit step stay hidden.
-  const confirm = await within(dialog).findByRole('button', { name: 'Restore version' })
+  const confirm = await within(dialog).findByRole('button', { name: 'Restore “Portland”' })
+  // The dialog compares the live value with the restored one, not the history card's before/after.
+  expect(within(dialog).getByText('Now')).toBeVisible()
+  expect(within(dialog).getByText('After restoring')).toBeVisible()
+  expect(within(dialog).queryByText('Before')).toBeNull()
   expect(within(dialog).queryByRole('button', { name: 'Adjust edit' })).toBeNull()
   expect(within(dialog).queryByText('Will change: 1')).toBeNull()
+  // A restore has no "preview again" step, and Cancel backs out without guessing at the X.
+  expect(within(dialog).queryByText(/Preview expires/)).toBeNull()
+  expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeVisible()
   fireEvent.click(confirm)
   await waitFor(() => expect(api.memoryEditApply).toHaveBeenCalledWith(store, 'restore-preview'))
 })

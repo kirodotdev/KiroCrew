@@ -8680,7 +8680,8 @@
     "restore_title": "Restore an earlier version",
     "restore_hint": "Restoring saves this value as a new version. Earlier versions stay in the history.",
     "restored": "Restored version",
-    "restore_apply": "Restore version",
+    "restore_now": "Now",
+    "restore_after": "After restoring",
     "current_version": "Current version"
   }
 }

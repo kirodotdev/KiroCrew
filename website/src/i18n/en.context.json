@@ -13,6 +13,7 @@
     "memoryV2.times_replaced": "Count of replacement events for one recoverable experience, including replacement again after restoration.",
     "memoryV2.filter_all": "Memory browser filter that includes facts, rules and experiences from the currently selected store.",
     "memoryV2.source_user": "Memory record source badge identifying the human user who explicitly supplied or corrected this knowledge.",
+    "memoryEditing.restore_now": "Column heading in the restore-to-earlier-version preview of a memory record, over the value the record holds at this moment; paired with the \"After restoring\" column. An adverb of time meaning \"currently\", not a \"do it now\" button.",
     "app.cpu": "Abbreviation for \"CPU\" in the dashboard header's resource strip, followed by a percentage. Width-constrained: keep it as short as the target language allows.",
     "app.dsk": "Abbreviation for \"disk\" in the dashboard header's resource strip, followed by a percentage. Width-constrained: keep it as short as the target language allows.",
     "app.mem": "Abbreviation for \"memory\" (RAM) in the dashboard header's resource strip, followed by a percentage. Width-constrained: keep it as short as the target language allows.",

@@ -17774,7 +17774,8 @@
     "restore_title": "恢复较早的版本",
     "restore_hint": "恢复会把这个值保存为新版本。较早的版本仍保留在历史中。",
     "restored": "已恢复的版本",
-    "restore_apply": "恢复版本",
+    "restore_now": "当前",
+    "restore_after": "恢复后",
     "current_version": "当前版本"
   }
 }
