@@ -32,6 +32,7 @@ from kiro_crew.agent_files import (
     LEDGER_CONDUCTOR_AGENT_FILENAME,
     OWNED_KIRO_AGENT_FILES,
     PIPELINE_CONDUCTOR_AGENT_FILENAME,
+    SECURITY_CONDUCTOR_AGENT_FILENAME,
     WORKER_AGENT_FILENAME,
 )
 from kiro_crew.agent_sdk.drivers.acp import derived_agent_permissions
@@ -96,11 +97,12 @@ def _accepting_kiro_cli(monkeypatch):
 
 @pytest.fixture()
 def specs(tmp_path, monkeypatch) -> dict[str, dict[str, Any]]:
-    """Install the four related specs into a throwaway agents dir and read them back."""
+    """Install the five related specs into a throwaway agents dir and read them back."""
     monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
     agent._install_worker_agent()
     agent._install_conductor_agent()
     agent._install_pipeline_conductor_agent()
+    agent._install_security_conductor_agent()
     agent._install_ledger_conductor_agent()
     return {
         name: json.loads((tmp_path / name).read_text(encoding="utf-8"))
@@ -108,6 +110,7 @@ def specs(tmp_path, monkeypatch) -> dict[str, dict[str, Any]]:
             WORKER_AGENT_FILENAME,
             CONDUCTOR_AGENT_FILENAME,
             PIPELINE_CONDUCTOR_AGENT_FILENAME,
+            SECURITY_CONDUCTOR_AGENT_FILENAME,
             LEDGER_CONDUCTOR_AGENT_FILENAME,
         )
     }
@@ -347,23 +350,22 @@ def test_a_ledger_conductor_mounts_the_server_and_grants_only_its_own_half(specs
     assert "@kirocrew-work" not in allowed
 
 
-def test_a_conductor_with_another_procedure_does_not_mount_the_server(specs):
-    """The pipeline conductor mounted this server briefly, and the mount is retracted.
-
-    The tools alone do not describe the procedure they came with: the ledger flow
-    binds before it seeds and reads a record instead of a transcript, so mounting
-    them on an agent that ships a different procedure hands its users a procedure
-    they did not choose. Asserted negatively, on every surface a mount can survive
-    on, so it cannot return unnoticed — the KAS rule especially, since nothing
-    reads ``allowedTools`` on that backend.
-    """
-    spec = specs[PIPELINE_CONDUCTOR_AGENT_FILENAME]
-    assert "@kirocrew-work" not in spec["tools"]
-    assert "kirocrew-work" not in spec["mcpServers"]
-    assert not [ref for ref in spec["allowedTools"] if "kirocrew-work" in ref]
-    assert not [m for m in spec["permissions"]["rules"][0]["match"] if "kirocrew-work" in m]
-    for token in ("work_ledger", "work_brief", "work_report", "kirocrew-work"):
-        assert token not in spec["prompt"], token
+@pytest.mark.parametrize(
+    "filename", [PIPELINE_CONDUCTOR_AGENT_FILENAME, SECURITY_CONDUCTOR_AGENT_FILENAME]
+)
+def test_a_conductor_with_its_own_store_mounts_the_base_half(specs, filename):
+    """The pipeline and security conductors get the work server from the shared
+    conductor base: the two conductor verbs auto-approved on ``allowedTools`` and on
+    the KAS rule, and the worker half left gated. ``work_brief`` is not theirs:
+    neither procedure is dispatched as a ledger item's worker."""
+    spec = specs[filename]
+    assert "@kirocrew-work" in spec["tools"]
+    assert spec["mcpServers"]["kirocrew-work"]["args"][-1] == "mcp-work"
+    work = [ref for ref in spec["allowedTools"] if "kirocrew-work" in ref]
+    assert work == ["@kirocrew-work/work_ledger_read", "@kirocrew-work/work_ledger_record"]
+    match = spec["permissions"]["rules"][0]["match"]
+    assert "kirocrew-work/work_ledger_record" in match
+    assert "kirocrew-work/work_report" not in match
 
 
 @pytest.mark.parametrize(

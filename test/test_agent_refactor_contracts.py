@@ -155,7 +155,7 @@ BASE_SURFACE: dict[str, str] = {
     "_ceiling_filtered_spec": "callable _ceiling_filtered_spec(ref: 'str', spec: 'dict[str, Any]', *, audit: 'bool' = True) -> 'dict[str, Any]'",
     "_collect_app_mcp_servers": "callable _collect_app_mcp_servers(*, audit: 'bool' = True) -> 'dict[str, Any]'",
     "_computer_use_spec_gate": "callable _computer_use_spec_gate() -> 'bool'",
-    "_conductor_mcp_servers": "callable _conductor_mcp_servers(config: 'dict[str, Any]', *, work: 'bool' = False) -> 'dict[str, Any]'",
+    "_conductor_mcp_servers": "callable _conductor_mcp_servers(config: 'dict[str, Any]') -> 'dict[str, Any]'",
     "_conductor_spec": "callable _conductor_spec(*, name: 'str', description: 'str', filename: 'str', source: 'str', clean: 'bool' = False) -> 'dict[str, Any] | None'",
     "_conflicting_spec_for": "callable _conflicting_spec_for(name: 'str', chosen: 'Path', agents_dir: 'Path') -> 'Path | None'",
     "_connection_tool_aliases_enabled": "callable _connection_tool_aliases_enabled() -> 'bool'",

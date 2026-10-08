@@ -1,14 +1,14 @@
 ---
 title: Conductor work ledger — workers report structured data, not prompts
 status: partial
-revision: v4
+revision: v5
 author: kirocrew agent session, directed by zejiangg
 created: 2026-09-05
-last-audited: 2026-10-06
+last-audited: 2026-10-08
 audited-at: 9348a25a34
 doc-pr: 8842
-implementation-prs: [8855, 9152, 9277, 12781, 12792, 16669]
-tracking-issues: []
+implementation-prs: [8855, 9152, 9277, 12781, 12792, 16669, 17992]
+tracking-issues: [17977]
 supersedes: []
 superseded-by: []
 ---
@@ -835,10 +835,10 @@ Splitting the worker half onto a server of its own would express the same rule i
 
 ### Conductor and pipeline-conductor specs
 
-**As implemented, this is where v2's recommendation was walked back and then reinstated.** Phase 2 mounted the server on `kirocrew-conductor` and `kirocrew-pipeline-conductor`; Phase 2.5 ([#9277](https://github.com/kirodotdev/KiroCrew/pull/9277)) retracted both and moved the flow to its own `kirocrew-ledger-conductor` spec; the swap recorded in §Rollout note — swap done made `kirocrew-conductor` the ledger conductor again and kept `kirocrew-ledger-conductor` as a deprecated alias. `kirocrew-pipeline-conductor` stayed retracted. What is on main:
+**As implemented, this is where v2's recommendation was walked back and then reinstated.** Phase 2 mounted the server on `kirocrew-conductor` and `kirocrew-pipeline-conductor`; Phase 2.5 ([#9277](https://github.com/kirodotdev/KiroCrew/pull/9277)) retracted both and moved the flow to its own `kirocrew-ledger-conductor` spec; the swap recorded in §Rollout note — swap done made `kirocrew-conductor` the ledger conductor again and kept `kirocrew-ledger-conductor` as a deprecated alias. `kirocrew-pipeline-conductor` stayed retracted until v5. **v5 reverses the #9277 retraction for every conductor:** on 2026-10-08 Mingwei (the maintainer, issue [#17977](https://github.com/kirodotdev/KiroCrew/issues/17977)) ruled that every conductor records its dispatched items in the work ledger, because the dashboard's `workstreams` fold mints a board only from `work/recorded` entries and a conductor that never records shows "No workstream yet" while it runs a full fleet. The implementing PR is [#17992](https://github.com/kirodotdev/KiroCrew/pull/17992). What is on main, with that PR's change marked:
 
 - `_conductor_spec`, which `_install_conductor_agent` and the alias installer `_install_ledger_conductor_agent` both call: `_conductor_mcp_servers(work=True)` hand-builds the `kirocrew-work` entry, `"@kirocrew-work"` is in `tools`, and `_LEDGER_CONDUCTOR_WORK_GRANTS` auto-approves four refs — `work_ledger_read`, `work_ledger_record`, `work_ledger_rebuild` and `work_brief`. The last is the one worker-half verb a conductor holds, because a second-level conductor's mandated first call is `work_brief` in a child session nobody opened, and gating that is an approval stall before any planning happens. `work_report` stays gated: it writes into the parent's record, across a dispatch relationship.
-- `_install_pipeline_conductor_agent` and `_install_security_conductor_agent`: **no work-ledger grant.** Both emit the spec they emitted before the ledger existed, and `_conductor_mcp_servers`'s `work` parameter stays a parameter precisely so that remains true — their children report through their own skills' scripts.
+- `_install_pipeline_conductor_agent` and `_install_security_conductor_agent`: **the base work-ledger grant (v5, #17992).** `_conductor_mcp_servers` mounts `kirocrew-work` unconditionally (the `work` parameter is removed), `_conductor_shipped` adds `_CONDUCTOR_BASE_WORK_GRANTS` (`work_ledger_read`, `work_ledger_record`) to both grant tuples, and `_conductor_prompt` appends one shared `_CONDUCTOR_WORK_LEDGER_PROTOCOL` block to both charters: create the item with a concrete acceptance, bind before seeding, the worker reports with `work_report`, the conductor gives the verdict and closes. The goal conductor's charter already states that flow in detail, so its prompt is unchanged. Each conductor's own store stays as the detail behind the ledger row: the pipeline queue and `decisions.md`, and the security skill's `scripts/ledger.py` findings, severity and evidence. No record field is added for severity. Before v5 both emitted the spec they emitted before the ledger existed.
 - `kirocrew-worker`: `"@kirocrew-work"` added to the default agent's own resolved surface, with `_WORKER_WORK_GRANTS` auto-approving `work_brief` and `work_report`. A worker that must ask permission to say it is blocked will not say it. The worker spec mirrors the default agent's spec as it stands on disk (`_WORKER_MIRRORED_SHAPES`: `tools`, `allowedTools`, `excludedTools`, `mcpServers`, `model`), minus every managed `opt_in` server other than `kirocrew-work` (`_worker_unassignable_servers`) and minus the cron scheduling grants (`_WORKER_EXCLUDED_GRANTS`), with ungoverned `autoApprove` stripped. Every spawn path runs `require_fresh_derived_spec` once and refuses the spawn with `DerivedSpecStale` when the mirror is older than the default spec and cannot be re-derived, and each host re-verifies the snapshot where it consumes the spec; a project-local shadow of a derived agent is refused. The bracket's per-path detail lives with the code and in [acp-client.md](../system-specs/modules/acp-client.md); the user-facing behaviour is in [`src/kiro_crew/docs/work-ledger.md`](../../src/kiro_crew/docs/work-ledger.md). The spec is therefore `build_agent_config()`-shaped only on a fresh install, and otherwise `default + @kirocrew-work − cron scheduling`.
 - Phase 5 adds `"@kirocrew-work/work_request"` and `"@kirocrew-work/work_message"` to `_WORKER_WORK_GRANTS`, and `"@kirocrew-work/work_request"` is **not** added to the conductor's grants: a conductor has no requester square to write from.
 
@@ -883,12 +883,14 @@ Two mechanics are worth stating outright, because both are easy to get wrong and
 
 ### Scope: conductors outside `kirocrew-conductor`
 
-Everything above describes `kirocrew-conductor` and the workers it dispatches, because that is the only conductor spec holding a work-ledger grant. Two kinds of conductor sit outside it, and both still learn what their children are doing by reading transcript tails:
+Everything above describes `kirocrew-conductor` and the workers it dispatches. Since v5 every installed conductor spec holds the base work-ledger grant (§Agent spec changes). Two kinds of conductor sat outside it before v5:
 
 - An **ad-hoc conductor** — an ordinary member session that dispatches peers with `session_create` instead of being installed as a conductor agent. It opens no ledger, so its children hold no binding file and `work_brief` answers `not_bound`. Nothing stops a session from conducting this way, and nothing gives it a structured record when it does.
-- `kirocrew-pipeline-conductor` and `kirocrew-security-conductor`, which carry **no work-ledger grant** by the decision recorded in §Agent spec changes; their children report through their own skills' scripts. `_install_pipeline_conductor_agent` calls `_conductor_mcp_servers(config)` with no `work` argument, and the security installer says outright that `@kirocrew-work` is deliberately not mounted.
+- `kirocrew-pipeline-conductor` and `kirocrew-security-conductor`, which carried **no work-ledger grant** until v5. They now mount `kirocrew-work` from the shared conductor base ([#17977](https://github.com/kirodotdev/KiroCrew/issues/17977), [#17992](https://github.com/kirodotdev/KiroCrew/pull/17992)) and record each dispatched item, keeping their own stores as detail.
 
-Whether any of them should hold a grant is **Q10**, and this note records the gap rather than closing it. Naming it here is what keeps §Motivation honest: the transcript-reading patrol this RFC replaces is still the live mechanism for every conductor that is not `kirocrew-conductor`.
+A user-made conductor (for example a crew-scoped `crew-manager-conductor`) picks this up only when it is built from the same base; a hand-written spec keeps whatever servers it declares.
+
+Whether any of them should hold a grant was **Q10**; v5 closes it for the installed conductors and leaves the ad-hoc case open. Naming it here is what keeps §Motivation honest: the transcript-reading patrol this RFC replaces is still the live mechanism for every conductor that is not `kirocrew-conductor`.
 
 ## Migration plan
 
@@ -904,6 +906,7 @@ Seven phases. Each is independently shippable and independently abandonable, and
 | 3b — visibility (`siblings`) | proposed — not implemented | |
 | 5 — communication | proposed — not implemented | |
 | 4 — the surfaces (Crew board) | **done** | [#12792](https://github.com/kirodotdev/KiroCrew/pull/12792) |
+| 6 — every conductor records (v5): pipeline and security mount `kirocrew-work` from the shared base | in progress | [#17992](https://github.com/kirodotdev/KiroCrew/pull/17992), issue [#17977](https://github.com/kirodotdev/KiroCrew/issues/17977) |
 
 **Phase 3 is not a precondition for use.** `kirocrew-conductor` runs a goal end to end
 on a plain timer too: it polls with `work_ledger_read` on its nudge interval and pays
@@ -1234,4 +1237,4 @@ scripts.
 
 **Q9. Can a `request` cross a level in a two-level conductor?** No, in v3: both ends must be items of the same ledger, so a grandchild cannot ask its grandparent for anything and two cousins under different second-level conductors cannot be paired. That is consistent with `depth`'s other rule — a parent sees only its child's item record, never its grandchildren's — and it means a cross-branch need has to travel as two requests up and one grant down. Whether that is correct containment or a gap only becomes answerable once a conductor of conductors has actually run, which is also Q5's condition.
 
-**Q10 — new in v4. Should a conductor outside `kirocrew-conductor` hold a work-ledger grant?** §Scope: conductors outside `kirocrew-conductor` names three that do not: an ad-hoc member session dispatching peers with `session_create`, `kirocrew-pipeline-conductor`, and `kirocrew-security-conductor`. All three still read transcript tails. The pipeline and security retractions were deliberate (§Agent spec changes), so reversing either is a decision about their skills' own reporting scripts rather than about this store. The ad-hoc case is the harder one, because it has no spec to grant anything to: the grant would have to attach to the dispatch rather than to the agent, which is the one shape §Agent spec changes argues against ("the grant never has to be a runtime property of a session"). v4 records the gap and takes no position.
+**Q10 — closed in v5 for the installed conductors; the ad-hoc case stays open.** Mingwei ruled on 2026-10-08 ([#17977](https://github.com/kirodotdev/KiroCrew/issues/17977)) that every conductor uses the work ledger, so `kirocrew-pipeline-conductor` and `kirocrew-security-conductor` now hold the base grant from the shared conductor base and their own stores stay as detail. The v4 text follows. **Should a conductor outside `kirocrew-conductor` hold a work-ledger grant?** §Scope: conductors outside `kirocrew-conductor` names three that do not: an ad-hoc member session dispatching peers with `session_create`, `kirocrew-pipeline-conductor`, and `kirocrew-security-conductor`. All three still read transcript tails. The pipeline and security retractions were deliberate (§Agent spec changes), so reversing either is a decision about their skills' own reporting scripts rather than about this store. The ad-hoc case is the harder one, because it has no spec to grant anything to: the grant would have to attach to the dispatch rather than to the agent, which is the one shape §Agent spec changes argues against ("the grant never has to be a runtime property of a session"). v4 records the gap and takes no position.

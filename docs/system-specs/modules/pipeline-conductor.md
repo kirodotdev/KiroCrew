@@ -398,17 +398,18 @@ is not granted them; its durable state is the session work ledger
 `conductor-status/v1`. The work-ledger tool family generalized from the Issue
 Radar one, proposed in
 [`../../request-for-change/rfc-conductor-work-ledger.md`](../../request-for-change/rfc-conductor-work-ledger.md),
-exists and `kirocrew-conductor` mounts it; this conductor does **not**. The
-ledger flow binds before it seeds and reads a record instead of a transcript, so
-it is a different procedure rather than two extra tools, and this conductor's
-children report through the `pipeline-conductor` skill's own scripts.
+exists, and every conductor mounts it from the shared conductor base, this one
+included: each dispatched item is created, bound, reported and closed in the work
+ledger, and the queue and `decisions.md` stay the detail behind that row. The
+pipeline conductor auto-approves `work_ledger_read` and `work_ledger_record`; the
+worker verbs stay gated.
 
 One sibling agent shares this one's installer mechanics and nothing else:
 `kirocrew-conductor` (the `goal-conductor` skill) decomposes a free-form goal and
 tracks its items in the work ledger. `kirocrew-ledger-conductor` is a deprecated
 alias emitting that same spec under the flow's old name for one release. Both
 narrow `mcpServers`, withhold every file-writing tool, grant verb by verb and
-derive `permissions` from the filtered list; only the conductor mounts
+derive `permissions` from the filtered list; all of them mount
 `kirocrew-work`.
 
 ## Tests that pin this

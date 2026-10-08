@@ -4907,25 +4907,57 @@ the charter, not the procedure.
 #: is not an error but a silent approval prompt on every patrol cycle, which is
 #: why they are spelled out rather than left to the whole-server ref.
 #:
-#: Reachable from ``_conductor_spec`` alone, which both ``kirocrew-conductor``
-#: and its deprecated ``kirocrew-ledger-conductor`` alias call.
-#: ``kirocrew-pipeline-conductor`` and ``kirocrew-security-conductor`` do not: their
-#: children report through their own skills' scripts, so the mount would grant a
-#: flow whose procedure neither of them runs. The tuple keeps its name because
-#: ``kirocrew-ledger-conductor`` is still an installed spec.
+#: The first two are the BASE every conductor spec ships
+#: (``_CONDUCTOR_BASE_WORK_GRANTS``): every conductor records its items in the
+#: ledger, because the dashboard's ``workstreams`` fold mints a board only from
+#: ``work/recorded`` entries. This tuple is the goal conductor's superset, shipped
+#: by ``_conductor_spec``, which both ``kirocrew-conductor`` and its deprecated
+#: ``kirocrew-ledger-conductor`` alias call; the name stays because that alias is
+#: still an installed spec.
 #:
-#: ``work_brief`` is the third entry, and it is the one worker-half verb granted:
-#: it only READS the caller's own bound item (or answers ``not_bound``), which is
-#: the same rule the two conductor verbs rest on. It is also a second-level
-#: conductor's mandated FIRST call, in a child session nobody opened — gated, that
-#: call is an approval stall before any planning happens. ``work_report`` stays
-#: gated: it WRITES into the parent's record, across a dispatch relationship.
-_LEDGER_CONDUCTOR_WORK_GRANTS: tuple[str, ...] = (
+#: ``work_ledger_rebuild`` is the goal conductor's recovery step and no other
+#: conductor's procedure names it. ``work_brief`` is the one worker-half verb
+#: granted: it only READS the caller's own bound item (or answers ``not_bound``),
+#: which is the same rule the two conductor verbs rest on. It is also a
+#: second-level conductor's mandated FIRST call, in a child session nobody opened —
+#: gated, that call is an approval stall before any planning happens.
+#: ``work_report`` stays gated: it WRITES into the parent's record, across a
+#: dispatch relationship.
+_CONDUCTOR_BASE_WORK_GRANTS: tuple[str, ...] = (
     "@kirocrew-work/work_ledger_read",
     "@kirocrew-work/work_ledger_record",
+)
+_LEDGER_CONDUCTOR_WORK_GRANTS: tuple[str, ...] = _CONDUCTOR_BASE_WORK_GRANTS + (
     "@kirocrew-work/work_ledger_rebuild",
     "@kirocrew-work/work_brief",
 )
+
+
+#: The work-ledger protocol appended to a conductor charter that does not already
+#: state the flow (``conductor_agents._conductor_prompt``): the pipeline and
+#: security conductors. One block, so each charter says what it supervises and this
+#: says where every item it dispatches is recorded. The goal conductor's charter
+#: states the same flow in detail and does not carry this block.
+_CONDUCTOR_WORK_LEDGER_PROTOCOL = """## Work ledger: every item you dispatch
+
+Every work item you hand to a child session is recorded in the work ledger, in
+this order, whatever else you keep about it:
+
+1. `work_ledger_record` `action=create` with the item's `title` and a concrete
+   `acceptance` condition. It returns the `item_id`.
+2. `session_create` the child, then `work_ledger_record` `action=bind` with that
+   `item_id` and the child's `worker_session_key` — before you seed it.
+3. The child reports against its item with `work_report` (`progress`,
+   `blocked`, `question`, `done`). Read the reports with `work_ledger_read`
+   (`compact=true` each cycle).
+4. You give each item its verdict and close it: `work_ledger_record`
+   `action=verdict`, then `action=close` with its `state`.
+
+The ledger holds the item's state, and it is what the person's Dashboard tab
+reads. A store of your own — a queue, a decisions file, a findings ledger —
+stays as the detail behind the ledger row, never as a replacement for it.
+
+"""
 
 
 #: The work-ledger verbs a WORKER may call without a prompt. A worker that must

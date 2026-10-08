@@ -88,15 +88,19 @@ _CONDUCTORS = [
 _USER_GRANT = "web_fetch"
 
 #: A grant an earlier release shipped on the spec and this one does not -- the bare
-#: ``@kirocrew-core`` on the goal conductor, ``work_ledger_read`` on the pipeline
-#: conductor (one release shipped the ledger verbs there). The security conductor
-#: has retired nothing; on it an earlier release's file holds nothing the history
-#: can claim.
+#: ``@kirocrew-core`` on the goal conductor. The pipeline and security conductors
+#: have retired nothing (the pipeline conductor's one-release work-ledger verbs are
+#: shipped again as the conductor base); on them an earlier release's file holds
+#: nothing the history can claim.
 _RETIRED_GRANT: dict[str, str | None] = {
     "kirocrew-conductor": "@kirocrew-core",
-    "kirocrew-pipeline-conductor": "@kirocrew-work/work_ledger_read",
+    "kirocrew-pipeline-conductor": None,
     "kirocrew-security-conductor": None,
 }
+
+#: An entry every regeneration drops from any conductor spec: a wildcard, which the
+#: gate cannot judge and so is never carried forward.
+_DROPPED_BY_EVERY_REWRITE = "session_*"
 
 #: Work verbs NO release ever shipped on the spec, though a sibling spec ships or
 #: shipped them: ``work_report`` is the worker's verb on every conductor, and
@@ -131,9 +135,7 @@ _NEVER_SHIPPED_HERE = [
 _VERIFIED_RETIREMENTS: dict[str, frozenset[str]] = {
     "kirocrew-conductor": frozenset({"@kirocrew-core"}),
     "kirocrew-ledger-conductor": frozenset(),
-    "kirocrew-pipeline-conductor": frozenset(
-        {"@kirocrew-work/work_ledger_read", "@kirocrew-work/work_ledger_record"}
-    ),
+    "kirocrew-pipeline-conductor": frozenset(),
     "kirocrew-security-conductor": frozenset(),
 }
 
@@ -1269,10 +1271,8 @@ class TestASpecLeftInPlaceHoldsTheCeilingMemo:
         shared = self._shared_home_rig(monkeypatch, tmp_path)
         agent.rebuild_agent_config()
         pipeline = shared / PIPELINE_CONDUCTOR_AGENT_FILENAME
-        # A list the current ceiling would narrow: a grant an earlier release shipped
-        # here and this one does not, which the rewrite drops.
-        retired = _RETIRED_GRANT["kirocrew-pipeline-conductor"]
-        assert retired is not None
+        # A list the rewrite narrows: a wildcard entry, which no rewrite carries.
+        retired = _DROPPED_BY_EVERY_REWRITE
         _edit_allowed(shared, PIPELINE_CONDUCTOR_AGENT_FILENAME, lambda lst: lst.append(retired))
         real = conductor_agents._spec_to_replace
         unreadable = {"value": True}
@@ -1327,8 +1327,7 @@ class TestASpecLeftInPlaceHoldsTheCeilingMemo:
         shared = self._shared_home_rig(monkeypatch, tmp_path)
         agent.rebuild_agent_config()
         pipeline = shared / PIPELINE_CONDUCTOR_AGENT_FILENAME
-        retired = _RETIRED_GRANT["kirocrew-pipeline-conductor"]
-        assert retired is not None
+        retired = _DROPPED_BY_EVERY_REWRITE
         _edit_allowed(shared, PIPELINE_CONDUCTOR_AGENT_FILENAME, lambda lst: lst.append(retired))
         real = conductor_agents._spec_to_replace
         unreadable = {"value": True}
