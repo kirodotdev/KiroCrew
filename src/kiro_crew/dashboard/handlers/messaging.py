@@ -237,6 +237,7 @@ from kiro_crew.dashboard.ws_event_scope import (  # noqa: F401
     persisted_snapshot_denial_reason,
     slot_owner_snapshot,
 )
+from kiro_crew.members import member_identity_for_session
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.link import SLACK_NAMESPACE, ChannelLink  # noqa: F401
 from kiro_crew.messaging.renderer import (  # noqa: F401
@@ -736,6 +737,11 @@ async def api_notification_agent_push(request: web.Request) -> web.Response:
     actions = body.get("actions")
     if actions is not None and not isinstance(actions, list):
         return web.json_response({"error": "actions must be a list"}, status=400)
+    # Attribution comes from the verified session header, never the body, so
+    # a session cannot put another crewmate's face on its note.
+    member = await asyncio.to_thread(
+        member_identity_for_session, request.headers.get("X-Session-Key", "")
+    )
     payload = NotificationPayload(
         source="system",
         channel="system.agent",
@@ -746,6 +752,7 @@ async def api_notification_agent_push(request: web.Request) -> web.Response:
         url=body.get("url"),
         group_key=body.get("group_key"),
         actions=actions,
+        member=member,
     )
     try:
         note = state.notification_bus.push(payload)

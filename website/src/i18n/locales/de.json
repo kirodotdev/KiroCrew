@@ -7673,6 +7673,10 @@
         "allow": "Erlauben",
         "not_now": "Nicht jetzt",
         "save_failed": "Konnte nicht gespeichert werden. Versuche es noch einmal."
+      },
+      "crewmateNoteFace": {
+        "roster_load_failed": "Crewmate-Details konnten nicht geladen werden, daher werden Name und Avatar des Absenders nicht angezeigt.",
+        "retry": "Erneut versuchen"
       }
     },
     "onboardingChapterShell": {

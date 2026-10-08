@@ -7786,6 +7786,10 @@
         "allow": "Consenti",
         "not_now": "Non ora",
         "save_failed": "Impossibile salvare. Riprova."
+      },
+      "crewmateNoteFace": {
+        "roster_load_failed": "Impossibile caricare i dati del compagno, quindi il nome e l'avatar di chi l'ha inviata non sono mostrati.",
+        "retry": "Riprova"
       }
     },
     "onboardingChapterShell": {

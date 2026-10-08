@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from kiro_crew.constants import MAX_SHORT_STRING
+
 # ── Constants ──
 
 PRIORITIES = ("critical", "default", "passive")
@@ -83,6 +85,9 @@ _MAX_ACTIONS = 4
 _MAX_ACTION_ID_LEN = 64
 _MAX_ACTION_LABEL_LEN = 40
 _MAX_ACTION_URL_LEN = 500
+# A crewmate's name may be as long as any crew name (MEMBER_NAME_MAX_CHARS is
+# this same constant), so a valid crewmate can never fail this bound.
+_MAX_MEMBER_FIELD_LEN = MAX_SHORT_STRING
 
 # Schema-owned note keys. Meta merging skips these entirely: setdefault alone
 # would only protect keys already present, letting meta smuggle unvalidated
@@ -102,6 +107,11 @@ _RESERVED_NOTE_KEYS = frozenset(
         "url",
         "icon",
         "ttl",
+        # Which crewmate published the note. Only gateway handlers that
+        # resolved it from a verified session key set it, so meta (which an
+        # app push forwards from its request body) must not be able to forge
+        # a crewmate's face onto a note.
+        "member",
         # Sink/frontend-owned status fields: a caller must not be able to
         # pre-suppress or pre-acknowledge a note it is pushing.
         "silenced",
@@ -158,6 +168,9 @@ class NotificationPayload:
     url: str | None = None
     icon: str | None = None
     ttl: int | None = None
+    # {"slug", "name"} of the crewmate that published the note, resolved by
+    # the gateway from the caller's verified session key; never caller-supplied.
+    member: dict[str, str] | None = None
     meta: dict[str, Any] = field(default_factory=dict)
 
     def validate(self) -> None:
@@ -260,6 +273,18 @@ class NotificationPayload:
             if not isinstance(self.url, str):
                 raise NotificationValidationError("url must be a dashboard-internal path")
             _validate_internal_url(self.url, field="url")
+        if self.member is not None and (
+            not isinstance(self.member, dict)
+            or set(self.member) != {"slug", "name"}
+            or not all(
+                isinstance(self.member[k], str) and 0 < len(self.member[k]) <= _MAX_MEMBER_FIELD_LEN
+                for k in ("slug", "name")
+            )
+        ):
+            # Closed shape: the frontend reads exactly these two strings.
+            raise NotificationValidationError(
+                "member must be {slug, name} with non-empty string values"
+            )
 
 
 def _channel_for_kind(kind: str) -> str:
@@ -281,6 +306,7 @@ def payload_from_legacy(
     url: str | None = None,
     actions: list[dict[str, Any]] | None = None,
     channel: str | None = None,
+    member: dict[str, str] | None = None,
 ) -> NotificationPayload:
     """Build a v2 payload from the legacy ``notify(kind, ...)`` call shape.
 
@@ -304,6 +330,10 @@ def payload_from_legacy(
     ``channel`` routes the note to a system channel other than the one its
     ``kind`` maps to, keeping ``kind`` for the frontend. It must name a system
     channel (the note's source is ``system``); anything else raises.
+
+    ``member`` attributes the note to a crewmate (see
+    :attr:`NotificationPayload.member`); like ``url`` it is a schema field, so
+    an invalid value raises rather than being repaired.
     """
     if channel is None:
         channel = _channel_for_kind(kind)
@@ -329,6 +359,7 @@ def payload_from_legacy(
         kind=kind,
         url=url,
         actions=actions,
+        member=member,
         meta=dict(meta) if meta else {},
     )
 
@@ -384,9 +415,7 @@ class NotificationBus:
         Returns the number of channels removed.
         """
         prefix = f"{app_name}."
-        doomed = [
-            c for c in self._channels if c.startswith(prefix) and c not in SYSTEM_CHANNELS
-        ]
+        doomed = [c for c in self._channels if c.startswith(prefix) and c not in SYSTEM_CHANNELS]
         for channel in doomed:
             self._channels.pop(channel, None)
         return len(doomed)
@@ -428,6 +457,7 @@ class NotificationBus:
             ("url", payload.url),
             ("icon", payload.icon),
             ("ttl", payload.ttl),
+            ("member", payload.member),
         ):
             if value is not None:
                 note[key] = value

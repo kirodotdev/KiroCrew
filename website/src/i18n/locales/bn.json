@@ -7673,6 +7673,10 @@
         "allow": "অনুমতি দাও",
         "not_now": "এখন না",
         "save_failed": "সংরক্ষণ করা যায়নি। আবার চেষ্টা করো।"
+      },
+      "crewmateNoteFace": {
+        "roster_load_failed": "সঙ্গীর তথ্য লোড করা যায়নি, তাই প্রেরকের নাম ও অবতার দেখানো হচ্ছে না।",
+        "retry": "আবার চেষ্টা করো"
       }
     },
     "onboardingChapterShell": {

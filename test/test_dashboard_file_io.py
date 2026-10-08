@@ -832,7 +832,7 @@ class TestSendMessage:
             assert resp.status == 200
             data = await resp.json()
             assert data == {"ok": True, "slack": False, "session": False, "delivered_to": "notification"}
-            state.notify.assert_called_once_with("agent", "Agent Message", "hello")
+            state.notify.assert_called_once_with("agent", "Agent Message", "hello", member=None)
 
     @pytest.mark.asyncio
     async def test_send_message_with_slack(self):
@@ -848,7 +848,7 @@ class TestSendMessage:
             assert resp.status == 200
             data = await resp.json()
             assert data == {"ok": True, "slack": True, "session": False, "delivered_to": "slack", "ts": "1712793600.000001"}
-            state.notify.assert_called_once_with("agent", "Test", "hello")
+            state.notify.assert_called_once_with("agent", "Test", "hello", member=None)
             slack.open_dm.assert_called_once_with("U123")
             slack.post_message.assert_called_once_with(
                 "C123",

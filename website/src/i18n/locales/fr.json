@@ -7786,6 +7786,10 @@
         "allow": "Autoriser",
         "not_now": "Pas maintenant",
         "save_failed": "Impossible d’enregistrer. Réessayez."
+      },
+      "crewmateNoteFace": {
+        "roster_load_failed": "Impossible de charger les infos du coéquipier : le nom et l'avatar de l'expéditeur ne sont pas affichés.",
+        "retry": "Réessayer"
       }
     },
     "onboardingChapterShell": {

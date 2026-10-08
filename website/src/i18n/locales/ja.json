@@ -7560,6 +7560,10 @@
         "allow": "許可",
         "not_now": "今はしない",
         "save_failed": "保存できませんでした。もう一度お試しください。"
+      },
+      "crewmateNoteFace": {
+        "roster_load_failed": "クルーメイトの情報を読み込めなかったため、送信者の名前とアバターは表示されません。",
+        "retry": "再試行"
       }
     },
     "onboardingChapterShell": {

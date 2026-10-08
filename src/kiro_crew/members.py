@@ -1139,6 +1139,33 @@ def read_dm_binding_for_slot(slot_key: str) -> dict | None:
     return binding if binding is not None and binding["slot_key"] == slot_key else None
 
 
+def member_identity_for_session(session_key: str | None) -> dict[str, str] | None:
+    """``{"slug", "name"}`` of the crewmate whose pinned DM session this is, else ``None``.
+
+    Accepts every spelling :func:`is_member_session_key` does. The name comes
+    from the slot's live ``dm.json`` binding, never from the key: slugification
+    is lossy, and a key whose binding is gone or belongs to another generation
+    names no crewmate. Total, and blocking file IO like :func:`read_dm_binding`.
+    """
+    if not session_key or not is_member_session_key(session_key):
+        return None
+    key = session_key
+    for prefix in ("dashboard_", "dashboard:"):
+        if key.startswith(prefix):
+            key = key[len(prefix) :]
+            break
+    binding = read_dm_binding_for_slot(key)
+    slug = slug_from_dm_slot_key(key)
+    if binding is None or not slug:
+        return None
+    name = binding["member"]
+    # The payload refuses a member past this bound, and a refused payload drops
+    # the whole note; an unattributable note must still be delivered.
+    if len(name) > MEMBER_NAME_MAX_CHARS:
+        return None
+    return {"slug": slug, "name": name}
+
+
 def member_rules_path(slug: str) -> Path:
     """Absolute path to one member's permanent-rules file, containment-checked.
 
