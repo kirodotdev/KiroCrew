@@ -24,12 +24,22 @@ class TestSetupElectronPlatformGuard:
 class TestSetupElectronNodeGuard:
     """_setup_electron exits early when Node.js is missing."""
 
-    def test_no_node(self, capsys, monkeypatch):
+    def test_no_node(self, capsys, monkeypatch, tmp_path):
         monkeypatch.setattr("kiro_crew.cli_setup.platform.system", lambda: "Darwin")
         monkeypatch.setattr("kiro_crew.cli_setup.shutil.which", lambda _: None)
+        monkeypatch.setattr("kiro_crew.cli_setup._find_electron_dir", lambda: tmp_path)
         _setup_electron()
         out = capsys.readouterr().out
         assert "Node.js not found" in out
+
+    def test_no_node_without_sources_skips_node_check(self, capsys, monkeypatch):
+        monkeypatch.setattr("kiro_crew.cli_setup.platform.system", lambda: "Darwin")
+        monkeypatch.setattr("kiro_crew.cli_setup.shutil.which", lambda _: None)
+        monkeypatch.setattr("kiro_crew.cli_setup._find_electron_dir", lambda: None)
+        _setup_electron()
+        out = capsys.readouterr().out
+        assert "Desktop app sources not found" in out
+        assert "Node.js not found" not in out
 
 
 class TestSetupElectronSourcesMissing:

@@ -200,18 +200,19 @@ def _setup_electron() -> None:
         print("  ⚠️  Kiro Crew desktop app is only available on macOS.")
         return
 
+    electron_dir = _find_electron_dir()
+    if electron_dir is None:
+        print("  ⚠️  Desktop app sources not found, so there is nothing to build.")
+        print("     If you are running the packaged desktop app, you already have it.")
+        print(
+            "     To build it from source, run setup from a source checkout "
+            "or run `make desktop` there."
+        )
+        return
+
     if not shutil.which("node"):
         print("  ❌ Node.js not found — required to build the desktop app.")
         print("     Install Node.js and re-run: kirocrew setup --electron-only")
-        return
-
-    electron_dir = _find_electron_dir()
-    if electron_dir is None:
-        print("  ❌ Desktop app sources not found.")
-        print(
-            "     The desktop app is built from a source checkout — clone the "
-            "repo and run `make desktop` (or run setup from the checkout)."
-        )
         return
 
     print("  🔨 Building Kiro Crew desktop app…")
