@@ -5549,13 +5549,83 @@ class TestDoctorStt:
             patch("kiro_crew.cli_doctor.config_dir", return_value=tmp_path),
             patch("kiro_crew.cli_doctor.probe_server", side_effect=_noop_probe_server),
             patch("kiro_crew.slack.enterprise.validate_enterprise", return_value=True),
-            patch.dict("sys.modules", modules or {}),
+            pytest.MonkeyPatch.context() as _mp,
         ):
+            # Fake ONLY the named sys.modules keys, each restored to its exact prior
+            # state (present, absent or None) on exit. A whole-dict
+            # patch.dict("sys.modules", ...) would instead evict a submodule this
+            # run imports for the first time inside the block
+            # (kiro_crew.acp.skill_projection, reached lazily via the ACP driver),
+            # leaving the kiro_crew.acp package attribute pointing at a now-orphan
+            # module object -- cross-test pollution a co-runner then trips over.
+            # setitem is the scoped restore testing-conventions D11 mandates.
+            for _name, _mod in (modules or {}).items():
+                _mp.setitem(sys.modules, _name, _mod)
             try:
                 _doctor()
             except SystemExit as exc:
                 code = int(exc.code or 0)
         return capsys.readouterr().out, code
+
+    def test_report_module_faking_does_not_evict_lazily_imported_modules(self, monkeypatch):
+        """``modules=`` faking must not corrupt a co-runner's module identity.
+
+        ``_report`` reaches ``kiro_crew.acp.skill_projection`` lazily (through the
+        ACP driver) the first time it runs on an xdist worker. That first import
+        happens inside the module-faking block, so the faking must leave it in
+        place: a module imported for the FIRST time inside the block has to
+        survive the block with one identity across ``sys.modules``, the package
+        attribute, and a re-import.
+
+        ``_report`` fakes those keys with ``MonkeyPatch.setitem`` (D11's mandated
+        path), which restores each key to its exact prior state and touches no
+        other entry. A whole-dict ``patch.dict("sys.modules", ...)`` would fail
+        this -- it evicts the first-import submodule, letting a co-runner (e.g.
+        ``test_subagent_shared_scratch.py``) re-import it as a second object,
+        monkeypatch that object, and watch the runtime's function-local
+        ``from kiro_crew.acp.skill_projection import ...`` resolve the unpatched
+        real preparer. This exercises the same ``setitem`` faking ``_report``
+        uses and pins the surviving identity.
+        """
+        import importlib
+
+        name = "kiro_crew.acp.skill_projection"
+        # Drop every trace so the import inside the block is a genuine first import,
+        # matching the window the doctor hits on a cold xdist worker.
+        acp_pkg = importlib.import_module("kiro_crew.acp")
+        monkeypatch.delitem(sys.modules, name, raising=False)
+        if hasattr(acp_pkg, "skill_projection"):
+            monkeypatch.delattr(acp_pkg, "skill_projection", raising=False)
+
+        faked = {
+            "amazon_transcribe": MagicMock(),
+            "amazon_transcribe.client": MagicMock(),
+            "boto3": MagicMock(),
+        }
+        # Snapshot each faked key's prior state. On a host with the voice extra
+        # installed these are already real modules (``cli_doctor`` imports
+        # ``transcribe``, which imports ``boto3`` / ``amazon_transcribe``); on one
+        # without they are absent. Either way setitem restores THIS exact state, so
+        # the pin asserts restoration, not absence -- host-independent.
+        missing = object()
+        before = {k: sys.modules.get(k, missing) for k in faked}
+
+        with pytest.MonkeyPatch.context() as mp:
+            for k, v in faked.items():
+                mp.setitem(sys.modules, k, v)
+                assert sys.modules.get(k) is v
+            # The lazy first import, exactly as the ACP driver does under the doctor.
+            inside_obj = importlib.import_module(name)
+            assert sys.modules[name] is inside_obj
+
+        # After the block: every faked key is back to its exact prior state.
+        for k in faked:
+            assert sys.modules.get(k, missing) is before[k]
+        # ...and the first-import submodule survives, with a single identity across
+        # sys.modules, the package attribute, and a re-import.
+        assert sys.modules.get(name) is inside_obj
+        assert getattr(acp_pkg, "skill_projection", None) is inside_obj
+        assert importlib.import_module(name) is inside_obj
 
     def test_doctor_stt_local_engine_and_model_ready(self, tmp_path, capsys, monkeypatch):
         """The ready state names the resolved catalog model AND where it sits, so
