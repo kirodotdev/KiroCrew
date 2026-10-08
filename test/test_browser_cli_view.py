@@ -1524,6 +1524,40 @@ def test_status_unavailable_without_the_cli(monkeypatch: pytest.MonkeyPatch) -> 
     assert "cli_version" not in st
 
 
+def test_status_unavailable_without_a_launcher_says_not_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nothing on disk or PATH: the plain not-installed reason, unchanged."""
+    monkeypatch.setattr(mod, "cli_path", lambda: None)
+    monkeypatch.setattr(mod, "legacy_launcher_refused", lambda: False)
+
+    st = mod.status()
+
+    assert st["status"] == "unavailable"
+    assert st["reason"] == mod.CLI_NOT_INSTALLED_REASON
+
+
+def test_status_unavailable_with_a_refused_legacy_launcher_explains_the_reinstall(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A launcher is present but declined: explain the one-time managed reinstall.
+
+    A ``~/.local/bin`` or version-manager install that sits outside the managed
+    prefix is not run, so the surface must say a reinstall is needed rather than
+    repeat "not installed" as if nothing exists.
+    """
+    monkeypatch.setattr(mod, "cli_path", lambda: None)
+    monkeypatch.setattr(mod, "legacy_launcher_refused", lambda: True)
+
+    st = mod.status()
+
+    assert st["status"] == "unavailable"
+    assert st["reason"] == mod.CLI_LEGACY_UNTRUSTED_REASON
+    assert st["reason"] != mod.CLI_NOT_INSTALLED_REASON
+    # The reason the dashboard renders must name the remedy (reinstall).
+    assert "reinstall" in st["reason"].lower()
+
+
 def test_status_running_reports_the_url(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(mod, "cli_path", lambda: "/n/pw")
     monkeypatch.setattr(mod, "_healthy", lambda port: True)

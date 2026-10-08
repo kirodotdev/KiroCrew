@@ -751,18 +751,30 @@ POSIX `#!/usr/bin/env node` shebang cannot select an agent-writable
 version-manager binary, and a Windows `.cmd` launcher never receives owner URL
 bytes for `cmd.exe` to reparse. The same prefix starts the supervised `show`
 process and performs install/version probes. If either executable in the pair is
-absent or refused, no subprocess starts and the panel keeps the same plain
-"playwright-cli is not installed" hint. The one-click install keeps that fence
-and checks it first: when the workspace root or `KIROCREW_PROJECT_DIR` is the
-data home or one of its parents, every launcher it could write would land in the
-agent-writable tree, so unless a vetted fixed-system launcher already resolves
-(which `cli_path()` would fall back to) it refuses at a `check-install-boundary` step, before
-npm runs, naming that root and the remedy (move it outside the data home and
-restart the gateway). When the install's own
-`resolve-binary` step finds the managed entrypoint on disk but refused, its
-error names the entrypoint and the refusal reason instead of "not found". `cli_env` still carries
-`PLAYWRIGHT_MCP_CONFIG`, the snapshot directory and the attach token exactly as it
-does for an agent's invocation:
+absent or refused, no subprocess starts. The unavailable reason both surfaces
+report -- the browser-view status the panel renders and the `open` launch result
+-- is drawn from one pair of constants so they always read identically: when a
+launcher the user installed themselves outside the managed prefix is present but
+declined -- a `~/.local/bin` or version-manager binary on `PATH`, or a machine
+install such as Homebrew `/opt/homebrew/bin` or npm-global `/usr/local/bin`
+refused as writable by the gateway user -- the reason explains that a one-time
+managed reinstall is needed, because telling that user "not installed" when they
+do have an install is misleading; when nothing is present at all, or the only
+refused candidate is a planted shim in an agent-writable tree or a boundary that
+cannot be verified (which a reinstall would not address), the plain
+"playwright-cli is not installed" hint stands. The user-installed-launcher case
+is identified by `legacy_launcher_refused`, which reuses the same identity-only
+resolution scan and so never runs the launcher. The one-click install keeps that
+fence and checks it first: when the workspace root or `KIROCREW_PROJECT_DIR` is
+the data home or one of its parents, every launcher it could write would land in
+the agent-writable tree, so unless a vetted fixed-system launcher already
+resolves (which `cli_path()` would fall back to) it refuses at a
+`check-install-boundary` step, before npm runs, naming that root and the remedy
+(move it outside the data home and restart the gateway). When the install's own
+`resolve-binary` step finds the managed entrypoint on disk but refused, its error
+names the entrypoint and the refusal reason instead of "not found". `cli_env`
+still carries `PLAYWRIGHT_MCP_CONFIG`, the snapshot directory and the attach token
+exactly as it does for an agent's invocation:
 
 | Browser state (from `playwright-cli --json list`) | Command |
 |---|---|

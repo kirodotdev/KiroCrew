@@ -472,6 +472,34 @@ class TestOpenUrlArgv:
         assert result.ok is False and "not installed" in (result.error or "")
         assert calls == []
 
+    def test_a_refused_legacy_launcher_explains_the_reinstall(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The open path reports the same migration explanation the view status
+        surface does when a user's own PATH launcher is present but refused."""
+        monkeypatch.setattr(launcher, "cli_path", lambda: None)
+        monkeypatch.setattr(launcher, "legacy_launcher_refused", lambda: True)
+        fake, calls = _runs([])
+        with patch.object(launcher, "_run_cli", fake):
+            result = launcher.open_url(URL, "chat-1")
+        assert result.ok is False
+        assert result.error == launcher.CLI_LEGACY_UNTRUSTED_REASON
+        assert calls == []
+
+    def test_nothing_installed_keeps_the_plain_message(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With no launcher present at all (not a refusal), the open path keeps
+        the plain not-installed message, not the reinstall explanation."""
+        monkeypatch.setattr(launcher, "cli_path", lambda: None)
+        monkeypatch.setattr(launcher, "legacy_launcher_refused", lambda: False)
+        fake, calls = _runs([])
+        with patch.object(launcher, "_run_cli", fake):
+            result = launcher.open_url(URL, "chat-1")
+        assert result.ok is False
+        assert result.error == launcher.CLI_NOT_INSTALLED_REASON
+        assert calls == []
+
     def test_windows_batch_wrapper_never_receives_the_url(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

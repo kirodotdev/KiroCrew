@@ -1321,6 +1321,133 @@ class TestCliPathTrust:
         assert repr(str(candidate.resolve())) in warning
         assert "writable by the gateway user" in warning
 
+    def test_legacy_user_local_launcher_is_reported_refused(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """User-local upgrade journey: a ``~/.local/bin`` launcher is present but
+        declined, so the surface can explain the one-time managed reinstall."""
+        home, _crew = self._isolate(tmp_path, monkeypatch)
+        shim = self._executable(home / ".local" / "bin" / mod.CLI_BIN)
+        monkeypatch.setenv("PATH", str(shim.parent))
+
+        assert mod.cli_path() is None
+        assert mod.legacy_launcher_refused() is True
+
+    def test_version_manager_launcher_is_reported_refused(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Version-manager upgrade journey: a PATH-resolved launcher (as a mise,
+        nvm, or Volta shim dir would contribute) is present but declined."""
+        self._isolate(tmp_path, monkeypatch)
+        shim = self._executable(tmp_path / "vm-shims" / mod.CLI_BIN)
+        monkeypatch.setenv("PATH", str(shim.parent))
+
+        assert mod.cli_path() is None
+        assert mod.legacy_launcher_refused() is True
+
+    def test_no_launcher_at_all_is_not_reported_refused(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Nothing on disk or PATH: not a refusal, so the plain not-installed
+        message stays, not the reinstall explanation."""
+        self._isolate(tmp_path, monkeypatch)
+
+        assert mod.cli_path() is None
+        assert mod.legacy_launcher_refused() is False
+
+    def test_a_trusted_managed_launcher_is_not_reported_refused(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A resolvable managed launcher is not a refusal even if a legacy shim
+        also sits on PATH -- the trusted copy wins and the panel is available."""
+        home, crew = self._isolate(tmp_path, monkeypatch)
+        self._executable(crew / "playwright-cli" / "bin" / mod.CLI_BIN)
+        shim = self._executable(home / ".local" / "bin" / mod.CLI_BIN)
+        monkeypatch.setenv("PATH", str(shim.parent))
+
+        assert mod.cli_path() is not None
+        assert mod.legacy_launcher_refused() is False
+
+    def test_a_trusted_system_launcher_resolves_and_is_not_a_refusal(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When no managed leaf exists, a trusted fixed system candidate resolves
+        -- the panel is available, so this is not a refusal."""
+        self._isolate(tmp_path, monkeypatch)
+        candidate = self._executable(tmp_path / "system-bin" / mod.CLI_BIN)
+        monkeypatch.setattr(mod, "_system_cli_candidates", lambda: (candidate,))
+        # The fixed system location is trusted here; only the agent-writable and
+        # user-local floors reject, and this candidate is under neither.
+        monkeypatch.setattr(mod, "_gateway_writable_component", lambda c, r: None)
+
+        assert mod.cli_path() == str(candidate.resolve())
+        assert mod.legacy_launcher_refused() is False
+
+    def test_an_agent_writable_path_shim_is_not_reported_as_legacy(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A planted shim on PATH that resolves inside an agent-writable tree is
+        refused, but it is NOT a user's legacy install -- a reinstall would not
+        address it -- so the plain refusal message stays, not the reinstall copy."""
+        self._isolate(tmp_path, monkeypatch)
+        project = tmp_path / "project"
+        shim = self._executable(project / "bin" / mod.CLI_BIN)
+        monkeypatch.setenv("PATH", str(shim.parent))
+        monkeypatch.setattr(mod, "_agent_writable_roots", lambda: (project.resolve(),))
+
+        assert mod.cli_path() is None
+        assert mod.legacy_launcher_refused() is False
+
+    def test_a_user_owned_system_install_refused_as_writable_is_legacy(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A user's own machine install -- a Homebrew ``/opt/homebrew/bin`` or an
+        npm-global ``/usr/local/bin`` launcher -- is a fixed system candidate
+        refused as writable by the gateway user. It IS the user's own install, so
+        a one-time managed reinstall is the remedy and the surface explains it."""
+        self._isolate(tmp_path, monkeypatch)
+        candidate = self._executable(tmp_path / "homebrew" / "bin" / mod.CLI_BIN)
+        monkeypatch.setattr(mod, "_system_cli_candidates", lambda: (candidate,))
+
+        assert mod.cli_path() is None
+        assert mod.legacy_launcher_refused() is True
+
+    def test_agent_writable_roots_unverifiable_is_not_reported_as_legacy(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When the agent-writable roots cannot be verified the candidate is
+        refused as an anomaly, not a user install -- a reinstall would not
+        address it -- so the plain refusal message stays, not the reinstall copy.
+        This case does not carry the ``agent-writable tree`` substring, which the
+        earlier reason-string classification would have mis-read as legacy."""
+        self._isolate(tmp_path, monkeypatch)
+        shim = self._executable(tmp_path / "vm-shims" / mod.CLI_BIN)
+        monkeypatch.setenv("PATH", str(shim.parent))
+
+        def _boom() -> tuple[Path, ...]:
+            raise RuntimeError("roots backend unavailable")
+
+        monkeypatch.setattr(mod, "_agent_writable_roots", _boom)
+
+        assert mod.cli_path() is None
+        assert mod.legacy_launcher_refused() is False
+
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink and permission semantics")
 class TestGatewayWritableComponentWalksEveryDirectory:
@@ -1389,7 +1516,7 @@ class TestGatewayWritableComponentWalksEveryDirectory:
         entry, writable, _target = self._hop_chain(tmp_path)
         self._writable_only(monkeypatch, writable)
 
-        resolved, reason = mod._system_candidate(entry)
+        resolved, reason, _kind = mod._system_candidate(entry)
 
         assert resolved is None
         assert reason is not None
@@ -1407,7 +1534,7 @@ class TestGatewayWritableComponentWalksEveryDirectory:
         entry, prefix, _leaf = self._symlinked_component_chain(tmp_path)
         self._writable_only(monkeypatch, prefix)
 
-        resolved, reason = mod._system_candidate(entry)
+        resolved, reason, _kind = mod._system_candidate(entry)
 
         assert resolved is None
         assert reason is not None
@@ -1421,7 +1548,7 @@ class TestGatewayWritableComponentWalksEveryDirectory:
         entry, _writable, target = self._hop_chain(tmp_path)
         self._writable_only(monkeypatch, None)
 
-        assert mod._system_candidate(entry) == (target.resolve(), None)
+        assert mod._system_candidate(entry) == (target.resolve(), None, None)
 
     def test_the_direct_launcher_file_walk_uses_the_same_enumeration(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -53,11 +53,14 @@ from urllib.parse import urlsplit
 
 from kiro_crew import platform_compat
 from kiro_crew.browser_cli.install import (
+    CLI_LEGACY_UNTRUSTED_REASON,
+    CLI_NOT_INSTALLED_REASON,
     cli_command,
     cli_env,
     cli_path,
     installed_cli_version,
     kill_cli_process_tree,
+    legacy_launcher_refused,
 )
 from kiro_crew.browser_cli.launch import ui_socket_env
 
@@ -1952,7 +1955,11 @@ def status() -> dict[str, Any]:
                 "status": "unavailable",
                 "url": None,
                 "port": None,
-                "reason": "playwright-cli is not installed",
+                "reason": (
+                    CLI_LEGACY_UNTRUSTED_REASON
+                    if legacy_launcher_refused()
+                    else CLI_NOT_INSTALLED_REASON
+                ),
             }
         if _recorded_state() is True and _child is not None and _child.info is not None:
             return {
