@@ -44,6 +44,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_STALE_RECOVER,
     STOP_REASON_TOOL_STALL,
 )
+from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.config import live
 from kiro_crew.config.sections import ResolvedBindings
 from kiro_crew.dashboard import chat_runner
@@ -206,6 +207,7 @@ def _set_stream(client, events) -> None:
         return _async_iter([_complete()])
 
     client.stream = MagicMock(side_effect=_stream)
+    client.stream_command = MagicMock(side_effect=_stream)
 
 
 @contextmanager
@@ -3824,23 +3826,41 @@ class TestRunChatLocalCommands:
         [
             ("acp", "", True),
             ("acp", "kas", True),
-            ("claude_code", "", False),
+            pytest.param("claude_code", "", True, id="legacy-label-does-not-select-claude"),
+            pytest.param("claude_code", "claude", False, id="legacy-label-still-uses-backend"),
             ("acp", "claude", False),
         ],
     )
     async def test_todos_is_refused_only_where_the_harness_lacks_it(
         self, tmp_path, provider, acp_backend, refused
     ):
-        """/todos is kiro-only: the claude harness answers on either provider axis."""
+        """OSS selects the harness through acp_backend, even with a legacy label.
+
+        H2 admits only provider=acp. The injected claude_code rows prove an
+        unsupported label cannot override the public factory's backend selector.
+        """
         state, client = _runner_state(tmp_path)
         _set_stream(client, [_complete()])
         slot = _slot()
         cfg = await asyncio.to_thread(chat_runner.KiroCrewConfig.load)
         cfg.agent.provider = provider
         cfg.agent.acp_backend = acp_backend
+        client.capabilities = capabilities_for(acp_backend)
+        # A KAS capability set arms the claimed-session hook re-projection check;
+        # a mock's auto-generated batch attribute would read as stale. Record none.
+        client.kas_auto_approved_capabilities = frozenset()
 
-        with patch.object(chat_runner.KiroCrewConfig, "load", return_value=cfg):
+        with (
+            patch.object(chat_runner.KiroCrewConfig, "load", return_value=cfg),
+            patch.object(
+                chat_runner, "select_provider_backend", wraps=chat_runner.select_provider_backend
+            ) as select_backend,
+        ):
             await _drive(state, slot, "/todos")
+
+        select_backend.assert_called_once_with(
+            chat_runner.effective_session_key(slot), cfg.agent.member_acp_backend, acp_backend
+        )
 
         notices = [
             m for m in slot.messages if "not available in the dashboard" in m.get("content", "")
@@ -3849,7 +3869,507 @@ class TestRunChatLocalCommands:
         if refused:
             state.sessions.get_or_create.assert_not_awaited()
         else:
-            state.sessions.get_or_create.assert_awaited()
+            state.sessions.get_or_create.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "config_backend,stale_backend,actual_backend,refused",
+        [
+            # The stale row says Claude, but get_or_create evicts it and builds
+            # the configured Kiro harness: the acquired provider must refuse.
+            ("", "claude", "", True),
+            # The inverse transition must forward to the acquired Claude
+            # harness even though the dead row would have refused it.
+            ("claude", "", "claude", False),
+            # A supported successor hint still needs acquired-provider confirmation.
+            ("claude", "claude", "", True),
+        ],
+    )
+    async def test_todos_gate_uses_the_provider_acquired_after_stale_eviction(
+        self, tmp_path, config_backend, stale_backend, actual_backend, refused
+    ):
+        """A dead registry row cannot answer for its get_or_create successor.
+
+        Session allocation probes liveness and can replace the row with a
+        different harness from current config. The command gate must use the
+        provider whose lease it actually acquired, not either pre-turn hint.
+        """
+        from kiro_crew.providers.acp import AcpProvider
+
+        state, client = _runner_state(tmp_path)
+        _set_stream(client, [_complete()])
+        slot = _slot()
+        stale = AcpProvider(acp_backend=stale_backend)
+        state.sessions._sessions = {
+            chat_runner.effective_session_key(slot): SimpleNamespace(provider=stale)
+        }
+        state.sessions.get_provider = MagicMock(return_value=stale)
+        state.sessions.is_provider_alive = AsyncMock(return_value=False)
+        client.capabilities = capabilities_for(actual_backend)
+
+        async def acquire_successor(*_args, **_kwargs):
+            assert stale.is_process_alive() is False
+            return client, True, False
+
+        state.sessions.get_or_create = AsyncMock(side_effect=acquire_successor)
+        cfg = await asyncio.to_thread(chat_runner.KiroCrewConfig.load)
+        cfg.agent.provider = "acp"
+        cfg.agent.acp_backend = config_backend
+
+        with patch.object(chat_runner.KiroCrewConfig, "load", return_value=cfg):
+            await _drive(state, slot, "/todos")
+
+        notices = [
+            m for m in slot.messages if "not available in the dashboard" in m.get("content", "")
+        ]
+        assert bool(notices) is refused
+        if config_backend == "":
+            state.sessions.get_or_create.assert_not_awaited()
+        else:
+            state.sessions.get_or_create.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("projected_backend,refused", [("", True), ("claude", False)])
+    async def test_todos_confirms_the_reprojected_claim(self, tmp_path, projected_backend, refused):
+        """The final claim owns dispatch even when hook re-projection replaced it."""
+        state, client = _runner_state(tmp_path)
+        _set_stream(client, [_complete()])
+        client.capabilities = capabilities_for(projected_backend)
+        initial = SimpleNamespace(capabilities=capabilities_for("claude"))
+        state.sessions.get_or_create = AsyncMock(return_value=(initial, True, False))
+        slot = _slot("todos-reprojected")
+        cfg = await asyncio.to_thread(chat_runner.KiroCrewConfig.load)
+        cfg.agent.acp_backend = "claude"
+
+        with (
+            patch.object(chat_runner.KiroCrewConfig, "load", return_value=cfg),
+            patch.object(
+                chat_runner,
+                "reproject_claimed_session",
+                new=AsyncMock(return_value=(client, True, False)),
+            ) as reproject,
+        ):
+            await _drive(state, slot, "/todos")
+
+        assert reproject.await_args.args[3] == (initial, True, False)
+        notices = [
+            m for m in slot.messages if "not available in the dashboard" in m.get("content", "")
+        ]
+        assert bool(notices) is refused
+        if refused:
+            client.stream_command.assert_not_called()
+        else:
+            client.stream_command.assert_called_once_with("/todos")
+        state.sessions.release.assert_called_once_with(chat_runner.effective_session_key(slot))
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("prefetched_resume", [False, True])
+    async def test_fresh_todos_refusal_replays_session_start_once_for_member(
+        self, tmp_path, prefetched_resume
+    ):
+        """A fresh or resume-prefetched first command owes member start context."""
+        from kiro_crew import member_memory_auth
+        from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+        from kiro_crew.context import ContextBuilder
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.memory_stores import provision_member_memory
+        from kiro_crew.session import FirstTurnState, SessionManager, _Session
+        from kiro_crew.skills import SkillsLoader
+
+        builds: list[tuple[bool, str]] = []
+
+        def build_message(text, is_new, session_key=None, **kwargs):
+            member = kwargs.get("member", "")
+            builds.append((is_new, member))
+            assert kwargs["resumed"] is prefetched_resume
+            if prefetched_resume:
+                assert kwargs["compressed_history"] == ""
+            # A fresh claim replays as session start (is_new); a resumed claim
+            # keeps its native transcript and re-owes only the member section
+            # through needs_reinjection. Either way the start block is injected
+            # on the first ordinary turn and not the second.
+            owes_start = (is_new or kwargs.get("needs_reinjection")) and member
+            start = "[PERMANENT RULES]\nmember start\n" if owes_start else ""
+            return start + text, MagicMock(action=None, text="")
+
+        builder = ContextBuilder(
+            memory=MemoryStore(workspace=tmp_path / "ws"),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+        )
+        builder.build_message = build_message
+        state, client = _runner_state(tmp_path, context_builder=builder)
+        slot = _slot("member-oncall")
+        state._slots[slot.key] = slot
+        slot.mode = "member"
+        slot.agent = "oncall"
+        cfg = KiroCrewConfig.load()
+        # The pre-claim authority permits acquisition; the acquired Kiro refuses.
+        cfg.agent.member_acp_backend = "claude"
+        cfg.agents["oncall"] = KiroCrewAgentConfig()
+        store = provision_member_memory(cfg, "oncall")
+        cfg.save()
+        member_memory_auth.bind_private_session_store(
+            chat_runner.effective_session_key(slot), store
+        )
+        client.capabilities = capabilities_for("")
+        client.memory_mode = "persistent"
+        client.is_process_alive = MagicMock(return_value=True)
+        client.client.resumed = prefetched_resume
+        client.client.pop_pending_oauth_requests = MagicMock(return_value=[])
+        _set_stream(client, [LLMEvent(kind=EVENT_TEXT_CHUNK, text="ok"), _complete()])
+        session_key = chat_runner.effective_session_key(slot)
+        manager = SessionManager(cfg)
+        # This is the record left by an eager spawn / slot-focused resume.
+        # Drive the real claim so the first /todos consumes the armed observation.
+        session = _Session(
+            provider=client,
+            first_turn=FirstTurnState.RESUMED if prefetched_resume else FirstTurnState.FRESH,
+        )
+        manager._sessions[session_key] = session
+        state.sessions.get_or_create = AsyncMock(wraps=manager.get_or_create)
+        state.sessions.release = MagicMock(wraps=manager.release)
+        state.sessions.provider_switch_replay_pending = manager.provider_switch_replay_pending
+        state.sessions.mark_provider_switch_replay = MagicMock(
+            wraps=manager.mark_provider_switch_replay
+        )
+        state.sessions.commit_provider_switch_replay_sid = manager.commit_provider_switch_replay_sid
+        state.sessions.mark_needs_reinjection = manager.mark_needs_reinjection
+        state.sessions.consume_needs_reinjection = manager.consume_needs_reinjection
+
+        with (
+            patch.object(
+                chat_runner, "record_activity", wraps=chat_runner.record_activity
+            ) as activity,
+            patch.object(chat_runner, "_surface_agent_welcome", new_callable=AsyncMock) as welcome,
+        ):
+            await _drive(state, slot, "/todos")
+            assert client.stream.call_count == 0
+            assert session.first_turn is FirstTurnState.NOTHING_ARMED
+            # A fresh refusal re-arms the replay lease (native session holds no
+            # history); a resumed refusal keeps its transcript and re-arms only
+            # the member re-injection. A replay lease forces a resumed=False
+            # next turn, so the resumed case must NOT take it.
+            assert session.provider_switch_replay is (not prefetched_resume)
+            assert session.needs_context_reinjection is True
+            assert not session.semaphore.locked()
+            activity.assert_called_once()
+            assert activity.call_args.args[:2] == ("oncall", session_key)
+            welcome.assert_awaited_once()
+
+            await _drive(state, slot, "ordinary first prompt")
+            await _drive(state, slot, "ordinary second prompt")
+            activity.assert_called_once()
+            welcome.assert_awaited_once()
+
+        # The fresh ordinary turn rebuilds as session start (is_new); the resumed
+        # ordinary turn keeps its transcript (is_new False) and re-injects the
+        # member section through needs_reinjection instead.
+        assert builds == [(not prefetched_resume, "oncall"), (False, "oncall")]
+        prompts = [call.args[0] for call in client.stream.call_args_list]
+        assert prompts[0].count("[PERMANENT RULES]") == 1
+        assert "[PERMANENT RULES]" not in prompts[1]
+        assert session.provider_switch_replay is False
+        assert session.needs_context_reinjection is False
+        if prefetched_resume:
+            state.sessions.mark_provider_switch_replay.assert_not_called()
+        else:
+            state.sessions.mark_provider_switch_replay.assert_called_once_with(session_key)
+        assert not session.semaphore.locked()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "backend,acquired_backend,refused",
+        [("", "", True), ("claude", "claude", False), ("claude", "", True)],
+    )
+    async def test_todos_expires_slack_options_only_after_capability_acceptance(
+        self, tmp_path, backend, acquired_backend, refused
+    ):
+        from kiro_crew.dashboard.chat_utils import options_records, remember_slack_options
+        from kiro_crew.slack.outbound import PostedOptions
+
+        state, client = _runner_state(tmp_path)
+        slot = _slot("todos-options")
+        state._slots[slot.key] = slot
+        state.slack_client = MagicMock(update_message=AsyncMock(return_value=True))
+        session_key = chat_runner.effective_session_key(slot)
+        posted = PostedOptions(channel="C1", ts="options-ts", choices=("A", "B"), blocks=())
+        remember_slack_options(state, session_key, posted)
+        client.capabilities = capabilities_for(acquired_backend)
+        client.client.pop_pending_oauth_requests = MagicMock(return_value=[])
+        _set_stream(client, [_complete()])
+        client.stream_command = client.stream
+        cfg = await asyncio.to_thread(chat_runner.KiroCrewConfig.load)
+        cfg.agent.acp_backend = backend
+        with (
+            patch.object(chat_runner.KiroCrewConfig, "load", return_value=cfg),
+            patch.object(
+                chat_runner, "expire_slack_options", wraps=chat_runner.expire_slack_options
+            ) as expire,
+        ):
+            await _drive(state, slot, "/todos")
+        if refused:
+            if backend:
+                state.sessions.get_or_create.assert_awaited_once()
+            else:
+                state.sessions.get_or_create.assert_not_awaited()
+            expire.assert_not_awaited()
+            client.stream.assert_not_called()
+            assert options_records(state, session_key) == (posted,)
+            state.slack_client.update_message.assert_not_awaited()
+        else:
+            state.sessions.get_or_create.assert_awaited_once()
+            expire.assert_awaited_once_with(state, session_key)
+            client.stream.assert_called_once()
+            assert options_records(state, session_key) == ()
+            state.slack_client.update_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("backend,refused", [("", True), ("claude", False)])
+    @pytest.mark.parametrize("failure_site", ["memory", "claim", "spec-hooks"])
+    async def test_todos_deferred_options_cleanup_survives_early_failure(
+        self, tmp_path, backend, refused, failure_site
+    ):
+        from kiro_crew.dashboard.chat_utils import options_records, remember_slack_options
+        from kiro_crew.slack.outbound import PostedOptions
+
+        state, client = _runner_state(tmp_path)
+        slot = _slot("todos-options-failure")
+        state._slots[slot.key] = slot
+        state.slack_client = MagicMock(update_message=AsyncMock(return_value=True))
+        session_key = chat_runner.effective_session_key(slot)
+        posted = PostedOptions(channel="C1", ts="failure-options-ts", choices=("A", "B"), blocks=())
+        remember_slack_options(state, session_key, posted)
+        client.capabilities = capabilities_for(backend)
+        cfg = await asyncio.to_thread(chat_runner.KiroCrewConfig.load)
+        cfg.agent.acp_backend = backend
+        error = RuntimeError("early todos failure")
+        if failure_site == "memory":
+            failure_target = "kiro_crew.memory_startup.wait_for_memory_preparation"
+        elif failure_site == "claim":
+            failure_target = state.sessions.get_or_create
+            failure_target.side_effect = chat_runner.SessionBusyError("early todos failure")
+        else:
+            failure_target = "kiro_crew.dashboard.chat_runner._prepare_spec_hooks"
+
+        with (
+            patch.object(chat_runner.KiroCrewConfig, "load", return_value=cfg),
+            patch.object(
+                chat_runner, "expire_slack_options", wraps=chat_runner.expire_slack_options
+            ) as expire,
+        ):
+            if failure_site == "claim":
+                await _drive(state, slot, "/todos")
+            else:
+                with patch(failure_target, new=AsyncMock(side_effect=error)) as fail:
+                    await _drive(state, slot, "/todos")
+                    if refused:
+                        fail.assert_not_awaited()
+                    else:
+                        fail.assert_awaited_once()
+        client.stream.assert_not_called()
+        if refused:
+            state.sessions.get_or_create.assert_not_awaited()
+            expire.assert_not_awaited()
+            assert options_records(state, session_key) == (posted,)
+            state.slack_client.update_message.assert_not_awaited()
+        else:
+            expire.assert_awaited_once_with(state, session_key)
+            assert options_records(state, session_key) == ()
+            state.slack_client.update_message.assert_awaited_once()
+            assert any("early todos failure" in m.get("content", "") for m in slot.messages)
+
+    @pytest.mark.asyncio
+    async def test_todos_deferred_expiry_cancellation_releases_session(self, tmp_path):
+        from kiro_crew.dashboard.chat_utils import remember_slack_options
+        from kiro_crew.slack.outbound import PostedOptions
+
+        state, client = _runner_state(tmp_path)
+        slot = _slot("todos-options-cancel")
+        state._slots[slot.key] = slot
+        session_key = chat_runner.effective_session_key(slot)
+        remember_slack_options(
+            state,
+            session_key,
+            PostedOptions(channel="C1", ts="cancel-options-ts", choices=("A", "B"), blocks=()),
+        )
+        client.capabilities = capabilities_for("claude")
+        cfg = await asyncio.to_thread(chat_runner.KiroCrewConfig.load)
+        cfg.agent.acp_backend = "claude"
+        preparing = asyncio.Event()
+        expiring = asyncio.Event()
+        unblock = asyncio.Event()
+
+        async def wait_preparation(*args, **kwargs):
+            preparing.set()
+            await unblock.wait()
+
+        async def wait_expiry(*args, **kwargs):
+            expiring.set()
+            await unblock.wait()
+
+        state.slack_client = MagicMock(update_message=AsyncMock(side_effect=wait_expiry))
+        with (
+            patch.object(chat_runner.KiroCrewConfig, "load", return_value=cfg),
+            patch.object(
+                chat_runner, "_prepare_spec_hooks", new=AsyncMock(side_effect=wait_preparation)
+            ),
+            patch.object(
+                chat_runner, "expire_slack_options", wraps=chat_runner.expire_slack_options
+            ) as expire,
+        ):
+            task = asyncio.create_task(_drive(state, slot, "/todos"))
+            try:
+                await asyncio.wait_for(preparing.wait(), timeout=5)
+                task.cancel()
+                await asyncio.wait_for(expiring.wait(), timeout=5)
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, timeout=5)
+            finally:
+                unblock.set()
+                if not task.done():
+                    task.cancel()
+                await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=5)
+
+        expire.assert_awaited_once_with(state, session_key)
+        state.slack_client.update_message.assert_awaited_once()
+        state.sessions.release.assert_called_once_with(session_key)
+        assert slot._active_turn_session_key == ""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("alive", [True, False, None, "absent"])
+    async def test_todos_member_override_selects_claude_over_default_kiro(self, tmp_path, alive):
+        """Live capability or member-aware successor wins over the global default."""
+        from kiro_crew.config.loader import KiroCrewAgentConfig
+        from kiro_crew.memory_stores import provision_member_memory
+
+        state, client = _runner_state(tmp_path)
+        slot = _slot("member-oncall")
+        state._slots[slot.key] = slot
+        slot.mode = "member"
+        slot.agent = "oncall"
+        client.capabilities = capabilities_for("claude")
+        client.client.pop_pending_oauth_requests = MagicMock(return_value=[])
+        _set_stream(client, [_complete()])
+        client.stream_command = client.stream
+        # A dead Kiro must not override the member's Claude successor either.
+        hint = SimpleNamespace(capabilities=capabilities_for("claude" if alive is True else ""))
+        state.sessions.get_provider = MagicMock(return_value=None if alive == "absent" else hint)
+        state.sessions.is_provider_alive = AsyncMock(return_value=alive)
+        cfg = await asyncio.to_thread(chat_runner.KiroCrewConfig.load)
+        cfg.agent.acp_backend = ""
+        cfg.agent.member_acp_backend = "claude"
+        cfg.agents["oncall"] = KiroCrewAgentConfig()
+        provision_member_memory(cfg, "oncall")
+        cfg.save()
+        with (
+            patch.object(chat_runner.KiroCrewConfig, "load", return_value=cfg),
+            patch.object(
+                chat_runner, "select_provider_backend", wraps=chat_runner.select_provider_backend
+            ) as select_backend,
+        ):
+            await _drive(state, slot, "/todos")
+        # Behavior first: the global-default-only gate refused here, so these are
+        # the assertions that fail against it, not the selector spy below.
+        assert not any(
+            "not available in the dashboard" in m.get("content", "") for m in slot.messages
+        )
+        state.sessions.get_or_create.assert_awaited_once()
+        client.stream.assert_called_once()
+        if alive is True:
+            select_backend.assert_not_called()
+        else:
+            select_backend.assert_called_once_with(
+                chat_runner.effective_session_key(slot), "claude", ""
+            )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("alive", [False, None, "absent"])
+    async def test_todos_member_kiro_refuses_without_acquisition_over_default_claude(
+        self, tmp_path, alive
+    ):
+        """The mirror case: a Claude global default cannot admit a Kiro member.
+
+        An empty ``member_acp_backend`` routes the member DM to kiro, which has no
+        native /todos. Read from the global default alone, the gate admitted the
+        command and cold-started that kiro session only to refuse after the claim.
+        A dead Claude row is no better a witness than the global default.
+        """
+        from kiro_crew.config.loader import KiroCrewAgentConfig
+        from kiro_crew.memory_stores import provision_member_memory
+
+        state, client = _runner_state(tmp_path)
+        slot = _slot("member-oncall")
+        state._slots[slot.key] = slot
+        slot.mode = "member"
+        slot.agent = "oncall"
+        client.capabilities = capabilities_for("")
+        _set_stream(client, [_complete()])
+        hint = SimpleNamespace(capabilities=capabilities_for("claude"))
+        state.sessions.get_provider = MagicMock(return_value=None if alive == "absent" else hint)
+        state.sessions.is_provider_alive = AsyncMock(return_value=alive)
+        cfg = await asyncio.to_thread(chat_runner.KiroCrewConfig.load)
+        cfg.agent.acp_backend = "claude"
+        cfg.agent.member_acp_backend = ""
+        cfg.agents["oncall"] = KiroCrewAgentConfig()
+        provision_member_memory(cfg, "oncall")
+        cfg.save()
+        with (
+            patch.object(chat_runner.KiroCrewConfig, "load", return_value=cfg),
+            patch.object(
+                chat_runner, "expire_slack_options", wraps=chat_runner.expire_slack_options
+            ) as expire_options,
+        ):
+            await _drive(state, slot, "/todos")
+        assert any("not available in the dashboard" in m.get("content", "") for m in slot.messages)
+        state.sessions.get_or_create.assert_not_awaited()
+        client.stream.assert_not_called()
+        client.stream_command.assert_not_called()
+        expire_options.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_live_busy_kiro_todos_refuses_before_session_claim(self, tmp_path):
+        """A held turn semaphore cannot delay an unsupported local command."""
+        from kiro_crew.session import SessionManager, _Session
+
+        state, client = _runner_state(tmp_path)
+        slot = _slot("busy-todos")
+        client.capabilities = capabilities_for("")
+        client.is_process_alive = MagicMock(return_value=True)
+        cfg = await asyncio.to_thread(chat_runner.KiroCrewConfig.load)
+        cfg.agent.acp_backend = "claude"
+        manager = SessionManager(cfg)
+        session = _Session(provider=client)
+        await session.semaphore.acquire()
+        session_key = chat_runner.effective_session_key(slot)
+        manager._sessions[session_key] = session
+        state.sessions.get_provider = manager.get_provider
+        state.sessions.is_provider_alive = manager.is_provider_alive
+        state.sessions.get_or_create = AsyncMock(wraps=manager.get_or_create)
+        try:
+            with patch.object(chat_runner.KiroCrewConfig, "load", return_value=cfg):
+                await asyncio.wait_for(_drive(state, slot, "/todos"), timeout=5)
+            state.sessions.get_or_create.assert_not_awaited()
+            assert session.semaphore.locked()
+            client.stream.assert_not_called()
+            assert any(
+                "not available in the dashboard" in m.get("content", "") for m in slot.messages
+            )
+        finally:
+            session.semaphore.release()
+
+    @pytest.mark.asyncio
+    async def test_warm_todos_refusal_does_not_create_replay(self, tmp_path):
+        state, client = _runner_state(tmp_path)
+        slot = _slot("warm-todos")
+        client.capabilities = capabilities_for("")
+        state.sessions.get_or_create = AsyncMock(return_value=(client, False, False))
+        state.sessions.mark_provider_switch_replay = MagicMock()
+
+        await _drive(state, slot, "/todos")
+
+        state.sessions.mark_provider_switch_replay.assert_not_called()
+        client.stream.assert_not_called()
 
     def test_kiro_only_members_are_still_forwarded_once_unblocked(self):
         """The gate drops these for the claude harness; forwarding must then happen.

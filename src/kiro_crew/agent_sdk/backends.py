@@ -154,6 +154,8 @@ with no row here.
    * - ``ACP_BACKENDS_KIRO_SLASH_COMMANDS``
      - semantic question (``SessionCapabilities.effort_via_slash_command``), and
        driver-internal everywhere else (whether ``_kiro.dev/commands/execute`` exists)
+   * - ``ACP_BACKENDS_NATIVE_TODOS``
+     - semantic question (``SessionCapabilities.supports_native_todos``)
    * - ``ACP_BACKENDS_TOOL_SEARCH_OVERLAY``
      - driver-internal (whether the workspace ``cli.json`` Tool Search keys are written)
    * - ``ACP_BACKENDS_CLIENT_META_SETTINGS``
@@ -2054,6 +2056,14 @@ def model_registry_namespace(backend: str) -> str:
 # deepseek is not a member and publishes no command list either: it carries commands
 # internally and its ACP surface rejects them, so it exposes none over the wire.
 ACP_BACKENDS_KIRO_SLASH_COMMANDS = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+
+# Backends that interpret ``/todos`` as a native prompt command. This is separate
+# from ``ACP_BACKENDS_KIRO_SLASH_COMMANDS``: that set names the private RPC used by
+# the kiro family, while this command is implemented by claude-agent-acp inside
+# ``session/prompt``. A new backend stays out until its adapter demonstrates the
+# same command, so an unknown harness is refused rather than receiving prompt text
+# it may interpret as an ordinary user request.
+ACP_BACKENDS_NATIVE_TODOS = frozenset({ACP_BACKEND_CLAUDE})
 
 # Backends on which an agent spec's ``"tools": []`` is honoured as a total ban --
 # no MCP server AND no harness-native tool (Bash, file edit, ...) is callable --

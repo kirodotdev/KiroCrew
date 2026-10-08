@@ -170,6 +170,7 @@ class TestDashboardManualCompactGate:
         never started: no session is created, nothing dispatched."""
         client = MagicMock(spec=AcpProvider)
         client.manual_compact_unsupported_backend = ACP_BACKEND_KAS
+        client.is_process_alive.return_value = True
         dispatched = _empty_stream(client)
         client.wait_for_compaction = AsyncMock(
             side_effect=AssertionError("must not wait for compaction on KAS")
@@ -180,6 +181,8 @@ class TestDashboardManualCompactGate:
         from kiro_crew.dashboard.chat_runner import effective_session_key
 
         state.sessions._sessions = {effective_session_key(slot): SimpleNamespace(provider=client)}
+        state.sessions.get_provider = MagicMock(return_value=client)
+        state.sessions.is_provider_alive = AsyncMock(return_value=True)
 
         await _run_chat(state, slot, "/compact")
 
@@ -193,6 +196,76 @@ class TestDashboardManualCompactGate:
         state.sessions.discard_conversation.assert_not_awaited()
         # Local commands close their own turn.
         assert slot.messages and slot.messages[-1].get("role") == "done"
+
+    @pytest.mark.asyncio
+    async def test_dead_kas_row_cannot_override_the_successor_harness(self, tmp_path) -> None:
+        """A dead registry row cannot answer for get_or_create's successor."""
+        stale = MagicMock(spec=AcpProvider)
+        stale.manual_compact_unsupported_backend = ACP_BACKEND_KAS
+        stale.is_process_alive.return_value = False
+        successor = MagicMock(spec=AcpProvider)
+        successor.manual_compact_unsupported_backend = None
+        dispatched = _empty_stream(successor)
+        state, slot = _state_and_slot(tmp_path, successor)
+        from kiro_crew.dashboard import chat_runner as cr
+
+        state.sessions._sessions = {cr.effective_session_key(slot): SimpleNamespace(provider=stale)}
+        state.sessions.get_provider = MagicMock(return_value=stale)
+        state.sessions.is_provider_alive = AsyncMock(return_value=False)
+        _cfg = SimpleNamespace(agent=SimpleNamespace(provider="acp", acp_backend=""))
+        with patch.object(cr.KiroCrewConfig, "load", staticmethod(lambda: _cfg)):
+            await _run_chat(state, slot, "/compact")
+
+        dispatched.assert_called_once()
+        state.sessions.get_or_create.assert_awaited_once()
+        texts = [m.get("content", "") for m in slot.messages]
+        assert not any("manages compaction" in t for t in texts)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "default_backend,member_backend,refused",
+        [
+            (ACP_BACKEND_KIRO, ACP_BACKEND_KAS, True),
+            (ACP_BACKEND_KAS, ACP_BACKEND_KIRO, False),
+        ],
+    )
+    async def test_dead_member_row_uses_member_backend_for_compact(
+        self, tmp_path, default_backend, member_backend, refused
+    ) -> None:
+        """Dead member DMs use the same member override as their next allocation."""
+        from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+        from kiro_crew.dashboard import chat_runner as cr
+        from kiro_crew.memory_stores import provision_member_memory
+
+        cfg = KiroCrewConfig.load()
+        cfg.agent.acp_backend = default_backend
+        cfg.agent.member_acp_backend = member_backend
+        cfg.agents["oncall"] = KiroCrewAgentConfig()
+        provision_member_memory(cfg, "oncall")
+        cfg.save()
+        stale = AcpProvider(acp_backend=default_backend)
+        assert stale.is_process_alive() is False
+        successor = MagicMock(spec=AcpProvider)
+        successor.manual_compact_unsupported_backend = None
+        successor.wait_for_compaction = AsyncMock(return_value={"type": "completed", "summary": ""})
+        dispatched = _empty_stream(successor)
+        state, _ = _state_and_slot(tmp_path, successor)
+        slot = state.get_or_create_slot("member-oncall", mode="member")
+        slot.agent = "oncall"
+        state.sessions.get_provider = MagicMock(return_value=stale)
+        state.sessions.is_provider_alive = AsyncMock(return_value=False)
+        with patch.object(cr, "expire_slack_options", new_callable=AsyncMock) as expire:
+            await _run_chat(state, slot, "/compact")
+
+        texts = [m.get("content", "") for m in slot.messages]
+        assert any("manages compaction" in text for text in texts) is refused
+        if refused:
+            state.sessions.get_or_create.assert_not_awaited()
+            dispatched.assert_not_called()
+            expire.assert_not_awaited()
+        else:
+            state.sessions.get_or_create.assert_awaited_once()
+            dispatched.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_kas_config_backend_answers_without_live_session(self, tmp_path) -> None:
@@ -223,11 +296,14 @@ class TestDashboardManualCompactGate:
         /compact prompt is forwarded to the harness."""
         client = MagicMock(spec=AcpProvider)
         client.manual_compact_unsupported_backend = None
+        client.is_process_alive.return_value = True
         dispatched = _empty_stream(client)
         state, slot = _state_and_slot(tmp_path, client)
         from kiro_crew.dashboard.chat_runner import effective_session_key
 
         state.sessions._sessions = {effective_session_key(slot): SimpleNamespace(provider=client)}
+        state.sessions.get_provider = MagicMock(return_value=client)
+        state.sessions.is_provider_alive = AsyncMock(return_value=True)
 
         await _run_chat(state, slot, "/compact")
 
@@ -243,10 +319,13 @@ class TestDashboardManualCompactGate:
         client = MagicMock()  # attribute read yields a MagicMock, not a str
         dispatched = _empty_stream(client)
         client.wait_for_compaction = AsyncMock(return_value={"type": "completed", "summary": ""})
+        client.is_process_alive.return_value = True
         state, slot = _state_and_slot(tmp_path, client)
         from kiro_crew.dashboard.chat_runner import effective_session_key
 
         state.sessions._sessions = {effective_session_key(slot): SimpleNamespace(provider=client)}
+        state.sessions.get_provider = MagicMock(return_value=client)
+        state.sessions.is_provider_alive = AsyncMock(return_value=True)
 
         await _run_chat(state, slot, "/compact")
 

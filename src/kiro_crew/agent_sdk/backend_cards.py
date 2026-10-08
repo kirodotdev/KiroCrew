@@ -350,6 +350,13 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "H6) rather than inherited from session control; if the two memberships ever "
         "diverge, that divergence is what earns a line"
     ),
+    "ACP_BACKENDS_NATIVE_TODOS": (
+        "whether the dashboard may forward the harness-native /todos command. The "
+        "dashboard still renders agent-authored task state for every harness, so this "
+        "membership selects a command-dispatch path rather than a task capability a "
+        "reader loses by choosing another harness. A wrong membership forwards a "
+        "command the acquired provider cannot serve, which is a defect"
+    ),
     "ACP_BACKENDS_HOOKS_LIST": (
         "which backend's agent may ask its client for the hooks matching a trigger, and "
         "have the client run one. Nothing a reader choosing a harness can act on: Crew "

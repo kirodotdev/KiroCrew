@@ -116,6 +116,26 @@ liveness, active-mode confirmation, saved-version checks and MCP readiness still
 apply. Pinned by `test_harness_parity.py::test_member_capabilities_are_opt_in`
 and `test_session_capabilities.py::test_real_session_provider_member_support_is_explicit`.
 
+`ACP_BACKENDS_NATIVE_TODOS` is the H6 opt-in for the harness-native `/todos`
+command. Only Claude belongs today. Before acquisition, the dashboard asks a
+positively live provider's `SessionCapabilities.supports_native_todos` field;
+otherwise it asks `capabilities_for(select_provider_backend(session_key,
+member_acp_backend, acp_backend))` for every provider axis. The acquired provider's
+capability is the final confirmation, so an unknown backend and a newly registered
+backend both fail closed until their adapter explicitly joins the table.
+The public schema admits only `agent.provider = "acp"` (H2); a dormant
+`"claude_code"` provider label does not select the Claude harness or grant native
+`/todos`. The public factory selects through `select_provider_backend` even if
+a caller injects that unsupported label. An edition adding a provider seam must
+define its allocation and capability authority rather than inherit a label-based
+exemption.
+An unsupported pre-acquisition answer refuses without cold-starting or waiting
+for a provider. Refusal preserves
+live Slack OPTIONS and the context owed by a first claim, including speculative
+resume, while completing that claim's session-start bookkeeping. The sibling
+`/compact` gate may refuse before acquisition; when no positively alive provider
+exists, it uses the factory's member-aware `select_provider_backend` authority.
+
 ## Group C: the Kiro path keeps its own machinery
 
 An adapter that lands by *generalizing* a Kiro-specific step to a
