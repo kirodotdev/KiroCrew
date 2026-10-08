@@ -92,39 +92,27 @@ def drop_gate_withheld(refs: list[str]) -> list[str]:
     ``kirocrew doctor`` already skips the same case through
     ``_spec_gate_closed()``.
 
-    Only a gate that ANSWERS closed drops its ref. A gate that raises keeps the
-    ref reported, the same fail direction as ``_spec_gate_closed()``: emission
-    withholds such a server to stay safe, but a diagnostic that also went quiet
-    would hide the broken gate, and "closed" is exactly what silences the
-    finding. Each side fails toward its own safe state. An unreadable registry
-    drops nothing, for the same reason.
+    Only a gate that ANSWERS closed drops its ref, through
+    ``agent._spec_gate_answers_closed``, the same predicate doctor's
+    ``_spec_gate_closed()`` calls. A gate that raises keeps the ref reported:
+    emission withholds such a server to stay safe, but a diagnostic that also
+    went quiet would hide the broken gate, and "closed" is exactly what silences
+    the finding. An unreadable registry drops nothing, for the same reason.
     """
     if not refs:
         return refs
-    withheld = _cleanly_closed_gates()
+    try:
+        from kiro_crew import agent as agent_mod
+
+        names = list(agent_mod._MANAGED_MCP_SERVERS)
+        answers_closed = agent_mod._spec_gate_answers_closed
+    except Exception:
+        logger.debug("managed MCP registry unreadable; dropping no refs", exc_info=True)
+        return refs
+    withheld = {name for name in names if answers_closed(name)}
     if not withheld:
         return refs
     return [ref for ref in refs if ref.lstrip("@") not in withheld]
-
-
-def _cleanly_closed_gates() -> frozenset[str]:
-    """Managed servers whose ``spec_gate`` answers closed without raising."""
-    try:
-        from kiro_crew.agent import _MANAGED_MCP_SERVERS
-
-        entries = list(_MANAGED_MCP_SERVERS.items())
-    except Exception:
-        logger.debug("managed MCP registry unreadable; dropping no refs", exc_info=True)
-        return frozenset()
-    closed = set()
-    for name, entry in entries:
-        try:
-            gate = entry.get("spec_gate")
-            if gate is not None and not gate():
-                closed.add(name)
-        except Exception:
-            logger.debug("spec gate for %s unreadable; its ref stays reported", name, exc_info=True)
-    return frozenset(closed)
 
 
 def warn_unresolved_server_refs(

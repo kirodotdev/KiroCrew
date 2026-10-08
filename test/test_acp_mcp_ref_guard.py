@@ -1270,11 +1270,25 @@ class TestGateWithheldServers:
 
     def test_an_unreadable_registry_drops_nothing(self, monkeypatch):
         class Broken(dict):
-            def items(self):
+            def __iter__(self):
                 raise RuntimeError("registry unreadable")
 
         monkeypatch.setattr(agent_mod, "_MANAGED_MCP_SERVERS", Broken())
         assert mcp_ref_guard.drop_gate_withheld(["@kirocrew-computer"]) == ["@kirocrew-computer"]
+
+    def test_doctor_and_the_report_share_one_predicate(self, monkeypatch):
+        from kiro_crew import cli_doctor
+
+        calls = []
+
+        def spy(name):
+            calls.append(name)
+            return True
+
+        monkeypatch.setattr(agent_mod, "_spec_gate_answers_closed", spy)
+        assert cli_doctor._spec_gate_closed("kirocrew-computer") is True
+        assert mcp_ref_guard.drop_gate_withheld(["@kirocrew-computer"]) == []
+        assert calls[0] == "kirocrew-computer" and "kirocrew-computer" in calls[1:]
 
     def test_doctors_static_rows_apply_the_same_filter(self):
         from kiro_crew.agent_sdk.drivers import acp as acp_driver

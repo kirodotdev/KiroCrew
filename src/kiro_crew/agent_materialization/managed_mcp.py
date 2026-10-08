@@ -246,6 +246,29 @@ def _mcp_spec_gate_open(name: str, spec: dict) -> bool:
         return False
 
 
+def _spec_gate_answers_closed(name: str) -> bool:
+    """Whether *name*'s ``spec_gate`` ANSWERS closed right now, without raising.
+
+    The diagnostic counterpart of :func:`_mcp_spec_gate_open`, and the one
+    implementation every diagnostic uses (``kirocrew doctor`` and the session's
+    unresolved-ref report). It fails the opposite way: a gate that raises, an
+    entry that is not a dict, or an unreadable registry all report NOT closed,
+    because "closed" is what silences a missing-entry finding, and a broken gate
+    must stay visible. A server without a gate is never closed.
+    """
+    try:
+        spec = agent_mod._MANAGED_MCP_SERVERS.get(name) or {}
+        gate = spec.get("spec_gate")
+        if gate is None:
+            return False
+        return not gate()
+    except Exception:
+        agent_mod.logger.debug(
+            "spec gate for %s unreadable; diagnostics treat it as open", name, exc_info=True
+        )
+        return False
+
+
 def _mcp_server_emission_eligible(
     name: str, spec: object, *, gated_off: "frozenset[str] | None" = None
 ) -> bool:

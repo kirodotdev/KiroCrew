@@ -703,16 +703,11 @@ def _spec_gate_closed(name: str) -> bool:
     Never loads a native driver: the computer-use gate reads only the enable
     keystone and platform flags (see ``agent._computer_use_spec_gate``), which
     is what makes it safe to evaluate on doctor's diagnostic path.
+
+    The rule lives in ``agent._spec_gate_answers_closed``, which the session's
+    unresolved-ref report also calls, so the two cannot drift.
     """
-    try:
-        spec = _agent._MANAGED_MCP_SERVERS.get(name) or {}
-        gate = spec.get("spec_gate")
-        if gate is None:
-            return False
-        return not gate()
-    except Exception:
-        logger.debug("spec gate for %s unreadable; doctor treats it as open", name, exc_info=True)
-        return False
+    return _agent._spec_gate_answers_closed(name)
 
 
 def _doctor_gated_off_mcps() -> frozenset[str]:
