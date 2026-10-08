@@ -397,8 +397,9 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   const [editedContent, setEditedContent] = useState('')
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
-  // Identifies the artifact and edit session that owns an async write. Navigation
-  // and each new edit advance it, so late completions cannot mutate a newer editor.
+  // Identifies the artifact and edit session that owns an async write. Navigation,
+  // starting an edit and ending one advance it, so a late completion only touches
+  // the edit session that sent it.
   const editGenerationRef = useRef(0)
   // Token of the content this edit started from (Artifact.content_token). Pinned at
   // edit start and advanced only by this page's own successful save, so a
@@ -817,17 +818,25 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     }
   }, [justCreatedBlank, queryClient])
 
-  const cancelEditing = useCallback(async () => {
-    if (dirty && !(await confirm({
-      title: i18nT('pages.artifactDetailPage.discard_unsaved_changes'),
-      confirmLabel: i18nT('pages.artifactDetailPage.discard_changes_button'),
-    }))) return
+  // Every way out of an edit (Cancel, Escape, the version switch) ends it here, so
+  // none of them leaves its save notice or preview toggle behind. Advancing the
+  // generation also stops a write still on the wire from re-arming the notice.
+  const endEditing = useCallback(() => {
+    editGenerationRef.current += 1
     setEditing(false)
     setEditedContent('')
     setSaveError(null)
     setSaveConflict(false)
     setPreviewDuringEdit(false)
-  }, [dirty, confirm])
+  }, [])
+
+  const cancelEditing = useCallback(async () => {
+    if (dirty && !(await confirm({
+      title: i18nT('pages.artifactDetailPage.discard_unsaved_changes'),
+      confirmLabel: i18nT('pages.artifactDetailPage.discard_changes_button'),
+    }))) return
+    endEditing()
+  }, [dirty, confirm, endEditing])
 
   // `overwrite` is passed ONLY by the relabelled Save button's own click after a
   // 409. Every other save path (Cmd+S, Cmd+Shift+S, Snapshot) keeps the base
@@ -2000,8 +2009,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                 }))) return
                 // A typed comment draft is lost with the toolbar the switch unmounts.
                 await guardCommentDraft(() => {
-                  setEditing(false)
-                  setEditedContent('')
+                  endEditing()
                   if (raw === 'live') {
                     setSelectedVersion(null)
                   } else {
