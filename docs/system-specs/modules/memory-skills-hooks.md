@@ -1212,7 +1212,10 @@ Global Memory is **V1**. Explicit member creation allocates a unique empty **V2*
 store before publication. Automatic discovery registers agents on Global V1.
 Existing members retain their exact V1 binding. Only explicit new member
 creation provisions a member database; member edits never migrate a V1 binding
-or create a replacement for missing memory. Existing V1 data is preserved.
+or create a replacement for missing memory. The one exception is the first
+crewmate's row (`mate`), which the installer itself moves onto a
+private store at creation or, for an install that created it on Global, at the
+next start ([crew mode](crew-mode.md)). Existing V1 data is preserved.
 The crew editor describes each member's memory ownership and states that V2 is
 available only when creating a new crew member. Existing members retain their
 current version and have no migration or provisioning action in the editor.
@@ -1247,6 +1250,7 @@ raw agent file writes cannot modify managed SQLite state.
 | Scheduled work | `member_id` pins the member separately from its provider template. Creation, firing and resumed chat validate the pinned store |
 | Restart or continuation | The owning record retains the same frozen execution context |
 | Unavailable or corrupt memory | Learned-memory operations report unavailability; manual essentials remain usable. No global fallback or replacement empty database |
+| The first crewmate (`mate`) | An ordinary member: its own private V2 store, and no access to Global memory beyond what every member has |
 
 The Memory tab has separate global and member views. Member links address
 `/settings/overview?view=memory&store=<store>`; every member data request carries
@@ -1337,7 +1341,10 @@ revision tables and `schema_version`) but no `member_database` row, no
 and the `member_database` row, so that shape is refused everywhere and no
 runtime action can repair it.
 
-`memory_stores.migrate_legacy_member_stores(config)` is the one repair. It runs
+`memory_stores.migrate_legacy_member_stores(config)` is the one repair of
+pre-identity stores. The same start-of-process entry then runs
+`give_assistant_private_memory`, which moves a first-crewmate row still on Global onto a
+newly provisioned private store (see [crew mode](crew-mode.md)); each step is logged and skipped on its own failure. It runs
 from `repair_legacy_member_stores()` at process start on both surfaces — the CLI
 prologue in `cli.main` for every CLI subcommand (except `doctor`, which only
 reports, and the `mcp-*` stdio servers, which are children of a gateway that

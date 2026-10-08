@@ -40,7 +40,7 @@ import { useGuide, useViewedSlot, type GuideView } from './GuideContext'
 import { finishedKeyFor } from './GuideOfferCard'
 import { clearFrozenPicks, factVerdict, freezePick, isGuideTargetVisible, offStepRoute, pickMade, resolveGuideTarget, resolveStepTarget, useGuideStepTracker, type GuideRect } from './useGuideStepTracker'
 import { GUIDE_PREDICATE_TEXT_KEYS, GUIDE_PREDICATE_TICK_MS, GUIDE_SELECTION_TEXT_KEYS, isRuntimePredicate, selectedName, useUnmetPredicates } from './guidePredicates'
-import GuideAgentNote from './GuideAgentNote'
+import GuideMateNote from './GuideMateNote'
 import { openDialogsNow, watchConfirmDialog } from './guideConfirmWatch'
 import { accessibleName, findCandidates, findPick, searchByName, setFindPick, type FindQuery } from './findByName'
 import { isCautionTarget } from './findTargetPolicy'
@@ -986,8 +986,8 @@ function ActiveStep({ view, rect, preselected = false, awaitingConfirm = false }
         const first = view.guide.action_index === 0 && view.guide.step_index === 0
         const last = !!view.action && view.guide.step_index === view.action.steps.length - 1
         const note = last ? view.guide.actions[view.guide.action_index]?.note : undefined
-        if (last && typeof note === 'string' && note.trim()) return <GuideAgentNote text={note} testId="guide-step-note" slotKey={view.guide.slot_key} />
-        return first ? <GuideAgentNote text={view.guide.intro} testId="guide-step-intro" slotKey={view.guide.slot_key} /> : null
+        if (last && typeof note === 'string' && note.trim()) return <GuideMateNote text={note} testId="guide-step-note" slotKey={view.guide.slot_key} />
+        return first ? <GuideMateNote text={view.guide.intro} testId="guide-step-intro" slotKey={view.guide.slot_key} /> : null
       })()}
       {!factBlocked && looking && unmet.length > 0 && <PredicateBlocker unmet={unmet} />}
       {!factBlocked && looking && unmet.length === 0 && (

@@ -78,7 +78,7 @@ export const LOCATIONS = {
     }],
   },
   // The phone's way from a crewmate chat back to the roster (the header arrow,
-  // named after the page). It writes `?view=roster`.
+  // named after the page). It returns to the bare `/members` roster.
   'members.back': {
     kind: 'button',
     label: { from: 'attr', attr: 'aria-label' },

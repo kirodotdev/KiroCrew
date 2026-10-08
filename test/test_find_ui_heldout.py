@@ -65,7 +65,7 @@ HELD_OUT: list[tuple[str, str, str]] = [
     ("run a task now", "en", "schedule.run-now"),
     ("upload a document", "en", "artifacts.import"),
     ("install a skill", "en", "skills.add"),
-    # A live run: the exact query the agent sent, then the user's own wording.
+    # A live run: the exact query Mate sent, then the user's own wording.
     ("stop button while agent is answering", "en", "composer.stop"),
     ("I want to stop it while it is answering", "en", "composer.stop"),
     ("stop the reply", "en", "composer.stop"),

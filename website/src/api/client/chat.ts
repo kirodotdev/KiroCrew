@@ -213,7 +213,7 @@ export function createChatEndpoints({ post, put, del, patch, j, jfetch: fetch, s
       const themeConsent = themeConsentSha(colorTheme)
       // `X-Guide-Tab` names this tab as the one talking in *slot*, so a live
       // guide observation before Start asks this tab and no other. `X-UI-Lang`
-      // is the language this tab renders, so the agent quotes dashboard labels
+      // is the language this tab renders, so Mate quotes dashboard labels
       // as this screen spells them (the gateway keeps only a shipped tag).
       return fetch('/api/chat?ws=1', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Guide-Tab': TAB_ID, 'X-UI-Lang': activeLocale(), ..._sk }, body: JSON.stringify({ message, slot, ...(colorTheme ? { color_theme: colorTheme } : {}), ...(themeConsent ? { theme_consent_sha: themeConsent } : {}), ...(meta ? { meta } : {}), ...(steer ? { steer: steer === 'auto' ? 'auto' : true } : {}) }), signal }).then(sendResponseAuthRecovery)
     },

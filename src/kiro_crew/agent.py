@@ -28,7 +28,7 @@ server keys and tool aliases (``mcp_aliases``), the governance ceiling
 (``auto_approve``), MCP source projection (``mcp_sources``), the locked
 default-spec write (``default_spec_commit``), fork refresh (``fork_refresh``) and
 the derived agents (``service_agents``, ``conductor_agents``, ``worker_agent``,
-``guide_platform``).
+``guide_platform``) and the first crewmate (``first_crewmate``).
 Every moved name is re-exported here, so reading or patching
 ``kiro_crew.agent.<name>`` reaches it.
 """
@@ -141,6 +141,9 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
     from kiro_crew.agent_materialization.default_spec_commit import (  # noqa: F401
         _apply_operator_oauth_client,
         prune_dangling_tool_refs,
+    )
+    from kiro_crew.agent_materialization.first_crewmate import (  # noqa: F401
+        create_first_crewmate_once,
     )
     from kiro_crew.agent_materialization.fork_refresh import (  # noqa: F401
         _FORK_REFRESH_WAIT_SECS,
@@ -2011,6 +2014,7 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "grant_guide_platform_once",
         "mark_guide_platform_granted",
     ),
+    "kiro_crew.agent_materialization.first_crewmate": ("create_first_crewmate_once",),
 }
 
 
@@ -3823,6 +3827,13 @@ def rebuild_agent_config(
         service_agents._install_dashboard_manager_agent()
     except Exception:
         logger.debug("kirocrew-dashboard-manager agent install failed", exc_info=True)
+    # Every install, fresh or upgraded, creates its first crewmate once (a
+    # one-time marker, so a deleted one is never re-created). The reserved
+    # ``default`` member is never touched. Boot keeps going either way.
+    try:
+        first_crewmate.create_first_crewmate_once()
+    except Exception:
+        logger.warning("First crewmate creation failed", exc_info=True)
 
     # Install kirocrew-heartbeat agent (used by HeartbeatService for unattended polling)
     try:
@@ -4372,6 +4383,7 @@ _GUIDE_AUTO_GRANTS = (
     f"@{_GUIDE_SERVER}/diagnose_settings",
     f"@{_GUIDE_SERVER}/propose_change",
     f"@{_GUIDE_SERVER}/get_change_status",
+    f"@{_GUIDE_SERVER}/rename_self",
 )
 
 
@@ -5754,6 +5766,7 @@ from kiro_crew.agent_materialization import (  # noqa: E402, F401 -- the owners 
     auto_approve,
     conductor_agents,
     default_spec_commit,
+    first_crewmate,
     fork_refresh,
     guide_platform,
     kiro_hooks,

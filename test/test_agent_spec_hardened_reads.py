@@ -1301,7 +1301,7 @@ _EXPECTED_PARSED_SPECS_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     # the label its per-file hardened read carried.
     "kiro_crew/config/loader.py": [("load_config", "unknown")],
     "kiro_crew/dashboard/handlers/_shared.py": [("skills_loaded_by_agents", "dashboard")],
-    # The guide's diagnose probe lists the models agent specs pin; a refused spec
+    # Mate's diagnose probe lists the models agent specs pin; a refused spec
     # pins nothing usable, so the folding snapshot is the right reader.
     "kiro_crew/diagnose_probes.py": [("diagnose", "dashboard")],
     # Export/import warn about crew rows whose template this machine lacks.

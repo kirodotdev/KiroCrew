@@ -764,9 +764,10 @@ describe('MeetCrewmatesFlow helpers', () => {
     expect(builtFromOptions(undefined)).toEqual(['kirocrew'])
   })
 
-  it('treats a default-only roster as empty', () => {
+  it('treats a default-only roster as empty; Mate, the first crewmate, is a crewmate', () => {
     expect(hasNoCrewmates([])).toBe(true)
     expect(hasNoCrewmates([{ name: 'default' }])).toBe(true)
+    expect(hasNoCrewmates([{ name: 'default' }, { name: 'mate' }])).toBe(false)
     expect(hasNoCrewmates([{ name: 'default' }, { name: 'Radar' }])).toBe(false)
     expect(hasNoCrewmates(undefined)).toBe(false)
   })

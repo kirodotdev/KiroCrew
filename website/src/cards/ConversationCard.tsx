@@ -1,5 +1,5 @@
 /**
- * A change card or guide offer, drawn in the conversation at the point
+ * Mate's change card or guide offer, drawn in the conversation at the point
  * it was proposed.
  *
  * The gateway records each proposal as a `card` row of the slot's transcript

@@ -1,7 +1,7 @@
 /**
  * Change-card API client (`/api/cards/*`).
  *
- * A crewmate PROPOSES a change; the gateway holds it as a card with a computed
+ * Mate PROPOSES a change; the gateway holds it as a card with a computed
  * diff, risk and request plan. Nothing here can confirm a card by itself: apply
  * and undo replay the card's own `plan` steps against the EXISTING routes the
  * settings pages use, each request tagged with the card headers so the gateway

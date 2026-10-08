@@ -133,8 +133,11 @@ async def _json_body(request: web.Request) -> dict[str, Any]:
 # ── agent half ──
 
 
-#: Operations that put something in front of the person: only a turn they sent may.
-_USER_TURN_OPERATIONS = frozenset({"guide.start", "cards.propose"})
+#: Operations that put something in front of the person, or change what they
+#: see, on their word: only a turn they sent may. ``member.rename_self`` is a
+#: crewmate taking the name the user gave it, so a wake or the hidden welcome
+#: kickoff cannot pick one.
+_USER_TURN_OPERATIONS = frozenset({"guide.start", "cards.propose", "member.rename_self"})
 
 
 def _resolve_agent_caller(request: web.Request, operation: str) -> tuple[str, str]:
@@ -147,7 +150,8 @@ def _resolve_agent_caller(request: web.Request, operation: str) -> tuple[str, st
     (``_turn_channel_origin``) and any channel steer admitted into it
     (``_turn_channel_narrowed``) are what the gateway recorded when the turn
     started. An operation that puts something in front of the person (a guide
-    or a change card, :data:`_USER_TURN_OPERATIONS`) also needs the turn to be
+    or a change card) or renames the calling crewmate
+    (:data:`_USER_TURN_OPERATIONS`) also needs the turn to be
     one the person sent (``_turn_user_sent``): a loop wake, a cron or app
     injection, a ``session_send`` and a sub-agent completion are refused with
     403 ``not_user_turn``.
@@ -282,6 +286,44 @@ async def api_guide_agent_status(request: web.Request) -> web.Response:
     except GuideError as exc:
         return _refusal(exc)
     return web.json_response(guide)
+
+
+async def api_guide_agent_rename_self(request: web.Request) -> web.Response:
+    """POST /api/guide/agent/rename — the calling crewmate renames itself.
+
+    The member is the one whose pinned thread the verified caller's slot is,
+    never a name from the body: the body carries only the new display name. Like
+    every agent-half route it admits only a turn the user sent from the
+    dashboard (:func:`_resolve_agent_caller`), so a channel message, a schedule,
+    a subagent or an app cannot rename anyone.
+    """
+    import asyncio
+
+    from kiro_crew import members as members_mod
+
+    try:
+        slot_key, sk = _resolve_agent_caller(request, "member.rename_self")
+        body = await _json_body(request)
+    except GuideError as exc:
+        return _refusal(exc)
+    slot = request.app["state"].get_slot(slot_key)
+    member = getattr(slot, "agent", "") if slot is not None else ""
+    if (
+        slot is None
+        or getattr(slot, "mode", "") != members_mod.DM_SLOT_MODE
+        or not isinstance(member, str)
+        or not member
+    ):
+        _audit(sk, "member.rename_self", "denied", "not a crewmate thread")
+        return _deny(403, "not_a_crewmate", "only a crewmate, in its own chat, can rename itself")
+    try:
+        name = await asyncio.to_thread(members_mod.rename_member_display, member, body.get("name"))
+    except members_mod.SelfRenameError as exc:
+        _audit(sk, "member.rename_self", "denied", exc.code)
+        status = 403 if exc.code == "not_a_crewmate" else 400
+        return _deny(status, exc.code, str(exc))
+    _audit(sk, "member.rename_self", "ok")
+    return web.json_response({"ok": True, "member": member, "display_name": name})
 
 
 async def api_guide_agent_cancel(request: web.Request) -> web.Response:
@@ -696,6 +738,7 @@ def register_guide_routes(app: web.Application) -> None:
     app.router.add_post("/api/guide/agent/start", api_guide_agent_start)
     app.router.add_get("/api/guide/agent/status", api_guide_agent_status)
     app.router.add_post("/api/guide/agent/cancel", api_guide_agent_cancel)
+    app.router.add_post("/api/guide/agent/rename", api_guide_agent_rename_self)
     app.router.add_post("/api/guide/agent/observe", api_guide_agent_observe)
     app.router.add_get("/api/guide/agent/language", api_guide_agent_language)
     app.router.add_get("/api/guide/pending", api_guide_pending)

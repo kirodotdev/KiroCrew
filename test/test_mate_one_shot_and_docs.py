@@ -1,4 +1,4 @@
-"""One-time schedule cards and the guide's read-only packaged-docs search.
+"""One-time schedule cards and Mate's read-only packaged-docs search.
 
 A ``schedule.create`` card takes exactly one of ``cron_expr`` (recurring) or
 ``at`` (a local date-time, runs once). The gateway resolves ``at`` in the card's

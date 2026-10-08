@@ -137,6 +137,13 @@ describe('listedByDefault / rosterShows', () => {
     // The default crew is exempt by NAME only.
     expect(listedByDefault(byName('default'), '')).toBe(false)
   })
+  it('lists Mate, the first crewmate, from the start; a fresh roster shows Mate and not the default crew', () => {
+    const fresh = [
+      { name: 'default', ...NO, last_chat_ts: 0, source: 'builtin' },
+      { name: 'mate', ...NO, last_chat_ts: 0, source: 'builtin' },
+    ]
+    expect(names(rosterPopulation(fresh, WITH_DEFAULT))).toEqual(['mate'])
+  })
   it('a starred row is listed like a chatted one, so starring a row reached through the search keeps it', () => {
     expect(listedByDefault(byName('app-bot'), 'default')).toBe(false)
     expect(listedByDefault({ ...byName('app-bot'), starred: true }, 'default')).toBe(true)

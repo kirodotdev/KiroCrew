@@ -79,7 +79,7 @@ from kiro_crew.mcp_core import (
 )
 from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
 from kiro_crew.platform import redact_via_context as redact
-from kiro_crew.validation import MCP_GUIDE_SCHEMAS, validate_tool_args
+from kiro_crew.validation import MAX_SHORT_STRING, MCP_GUIDE_SCHEMAS, validate_tool_args
 
 logger = logging.getLogger(__name__)
 
@@ -326,6 +326,25 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "inputSchema": {
                 "type": "object",
                 "properties": {"change_id": {"type": "string", "maxLength": 48}},
+            },
+        },
+        {
+            "name": "rename_self",
+            "description": (
+                "Change the name the user sees for you, in this chat, the roster "
+                "and the sidebar. Call it only when the user has just told you what "
+                "they want to call you; never on your own initiative and never to "
+                "rename anyone else. Pass the name exactly as they gave it. Only a "
+                "crewmate in its own chat can call it, from a message the user sent "
+                "in the dashboard."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "minLength": 1, "maxLength": MAX_SHORT_STRING}
+                },
+                "required": ["name"],
+                "additionalProperties": False,
             },
         },
         {
@@ -1166,6 +1185,7 @@ _TOOL_NAMES = frozenset(
         "diagnose_settings",
         "propose_change",
         "get_change_status",
+        "rename_self",
     }
 )
 
@@ -1247,6 +1267,20 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             path += "?" + urllib.parse.urlencode({"card_id": change_id})
         d = _get(path, session_key=sk)
         return _error_for(name, d) or _render(d)
+
+    if name == "rename_self":
+        d = _post("/api/guide/agent/rename", {"name": args.get("name")}, session_key=sk)
+        refused = _error_for(name, d)
+        if refused:
+            return f"{refused}\nYour name did not change; do not say it did."
+        return _render(
+            {
+                **d,
+                "next": "Your name now shows as "
+                + str(d.get("display_name") or "")
+                + " everywhere in the dashboard. Answer to it from now on.",
+            }
+        )
 
     if name == "guide_list_actions":
         d = _get("/api/guide/agent/actions", session_key=sk)

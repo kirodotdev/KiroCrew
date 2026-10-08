@@ -1321,33 +1321,124 @@ def migrate_legacy_member_stores(config) -> list[str]:
 
 
 def repair_legacy_member_stores() -> list[str]:
-    """The start-of-process entry to :func:`migrate_legacy_member_stores`; never raises.
+    """The start-of-process entry to the member memory upgrades; never raises.
+
+    Two independent steps, each logged and skipped on its own failure:
+    :func:`migrate_legacy_member_stores` for pre-identity V2 stores, then
+    :func:`give_assistant_private_memory` for a Mate row still on Global.
 
     Cheap when there is nothing to do: an install with no pre-identity V2 record
-    takes no lock and opens no file. A config whose memory section degraded is
-    left alone -- writing identities into a document the loader could not fully
-    read would be a guess.
+    and a Mate that is already private (or absent) takes no lock and opens no
+    file. A config whose memory section degraded is left alone -- writing
+    identities into a document the loader could not fully read would be a guess.
     """
     try:
         from kiro_crew.config.loader import KiroCrewConfig
         from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
 
         config = KiroCrewConfig.load()
-        if not any(
+        repaired: list[str] = []
+        if any(
             getattr(record, "memory_version", 1) == 2 and not getattr(record, "owner_member_id", "")
             for record in config.memory_stores.values()
         ):
-            return []
-        if set(getattr(config, "degraded_sections", ())) & {"memory", DEGRADED_WHOLE_CONFIG}:
-            logger.warning(
-                "memory stores without a member identity were left unrepaired: the memory "
-                "configuration is unreadable"
-            )
-            return []
-        return migrate_legacy_member_stores(config)
+            if set(getattr(config, "degraded_sections", ())) & {"memory", DEGRADED_WHOLE_CONFIG}:
+                logger.warning(
+                    "memory stores without a member identity were left unrepaired: the memory "
+                    "configuration is unreadable"
+                )
+                return []
+            repaired = migrate_legacy_member_stores(config)
     except Exception:
         logger.warning("member memory upgrade did not run", exc_info=True)
         return []
+    try:
+        mate = give_assistant_private_memory(config)
+    except Exception:
+        logger.warning("Mate's private memory store was not created", exc_info=True)
+        return repaired
+    if mate:
+        repaired.append(mate)
+    return repaired
+
+
+def assistant_needs_private_memory(config) -> bool:
+    """True when the first crewmate's row is still on Global memory with no member identity.
+
+    The first crewmate (Mate) is named positively, by its key
+    (:func:`kiro_crew.agent_files.is_assistant_member`), and only when the
+    first-crewmate step wrote that row
+    (:func:`kiro_crew.agent_materialization.first_crewmate.first_crewmate_was_created`):
+    a crewmate the user made under the same key keeps its own V1 binding. Any
+    other member, and a row that already carries a ``member_id`` or a named
+    store, is never selected here. Reads the loaded config, and the step's
+    one-time marker only for a row that would otherwise qualify.
+    """
+    from kiro_crew.agent_files import ASSISTANT_MEMBER_NAME, is_assistant_member
+
+    entry = getattr(config, "agents", {}).get(ASSISTANT_MEMBER_NAME)
+    if not (
+        entry is not None
+        and is_assistant_member(ASSISTANT_MEMBER_NAME, entry)
+        and not getattr(entry, "member_id", "")
+        and getattr(entry, "memory_store", DEFAULT_MEMORY_STORE) == DEFAULT_MEMORY_STORE
+    ):
+        return False
+    from kiro_crew.agent_materialization.first_crewmate import first_crewmate_was_created
+
+    return first_crewmate_was_created()
+
+
+def give_assistant_private_memory(config) -> str:
+    """Move Mate from Global memory onto its own private V2 store; return the store.
+
+    Called right after the one-time first-crewmate row is created (so a fresh install never runs Mate on Global) and
+    at process start through :func:`repair_legacy_member_stores` (so an install
+    that already created Mate on ``default`` is moved on its next start). It
+    uses the same two steps every explicit member creation uses --
+    :func:`provision_member_memory` then :func:`persist_member_config` -- so
+    Mate's store is an ordinary member store with an ordinary identity.
+
+    Global data is never moved, copied or deleted: whatever Mate learned while
+    it ran on Global stays there. The member id is allocated the way the
+    pre-identity upgrade allocates one (``refuse_damaged=False``), so Mate's
+    own retained DM binding does not push its id off its slug.
+
+    Returns ``""`` when there is nothing to do (no Mate, already private, or a
+    degraded memory configuration). A failure after provisioning removes the
+    unpublished store and re-raises; the caller decides whether that is fatal.
+    """
+    from kiro_crew.agent_files import ASSISTANT_MEMBER_NAME
+    from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
+
+    if not assistant_needs_private_memory(config):
+        return ""
+    if set(getattr(config, "degraded_sections", ())) & {"memory", DEGRADED_WHOLE_CONFIG}:
+        logger.warning("Mate stays on Global memory: the memory configuration is unreadable")
+        return ""
+    entry = config.agents[ASSISTANT_MEMBER_NAME]
+    previous_store, previous_id = entry.memory_store, entry.member_id
+    try:
+        with memory_store_namespace_lock():
+            store = _provision_member_memory(config, ASSISTANT_MEMBER_NAME, adopt_own_binding=True)
+        persist_member_config(
+            config,
+            ASSISTANT_MEMBER_NAME,
+            expected_store=previous_store,
+            changed_fields={"memory_store", "member_id"},
+        )
+    except BaseException:
+        if entry.memory_store != previous_store:
+            retire_unpublished_allocation(
+                config,
+                ASSISTANT_MEMBER_NAME,
+                entry.memory_store,
+                previous_store=previous_store,
+                previous_member_id=previous_id,
+            )
+        raise
+    logger.info("Mate now uses its own private memory store %r", store)
+    return store
 
 
 def provision_member_memory(config, member: str) -> str:
@@ -1360,7 +1451,13 @@ def provision_member_memory(config, member: str) -> str:
         return _provision_member_memory(config, member)
 
 
-def _provision_member_memory(config, member: str) -> str:
+def _provision_member_memory(config, member: str, *, adopt_own_binding: bool = False) -> str:
+    """Allocate and publish-ready a new V2 store for the existing row *member*.
+
+    ``adopt_own_binding`` is for a LIVE member gaining its first identity (Mate
+    moving off Global): its own DM binding then names it and must not reserve its
+    slug, exactly as in the pre-identity upgrade. Every create path leaves it off.
+    """
     from kiro_crew import platform_compat
     from kiro_crew.config.sections import MemoryStoreConfig
     from kiro_crew.vector_memory import create_member_database
@@ -1376,7 +1473,7 @@ def _provision_member_memory(config, member: str) -> str:
         raise UnknownMemoryStore("Existing member identity has no valid store; allocation refused")
     if current is not None and (current.owner_member_id or current.owner_member):
         raise UnknownMemoryStore("Existing member store identity is invalid")
-    member_id = _allocate_member_id(config, member)
+    member_id = _allocate_member_id(config, member, refuse_damaged=not adopt_own_binding)
     root = memory_stores_root()
     platform_compat.make_owner_only_dir(root)
     while True:

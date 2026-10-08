@@ -12,7 +12,8 @@ import { EdgeFade, JumpToBottomButton } from '../app-sdk/ChatScrollChrome'
 import { createTranscriptRenderers } from '../pages/chat/transcriptRenderers'
 import ChatInput, { type ComposerBusyMode } from './ChatInput'
 import { busySteerFlag } from './chat-input/busySend'
-import { filterCrewmateChat } from './chat/crewmateBubbles'
+import { mateNarration, filterCrewmateChat } from './chat/crewmateBubbles'
+import { useCarryHeldAnswer } from './chat/useCarryHeldAnswer'
 import type { CrewmateIdentity } from '../pages/chat/CrewmateMessage'
 import ErrorNotice from './ErrorNotice'
 import { Btn } from './ui'
@@ -504,11 +505,24 @@ export default function ChatPane({
   // is on screen. Same array identity back when nothing is dropped. While a
   // turn runs, its tool calls and thinking stay in, so the chat shows what the
   // crewmate is doing (same liveness the footer reads).
+  // Mate's chat also folds the narration it writes before a tool call
+  // (`mateNarration`): superseded narration is dropped here, with the
+  // machinery, and a live turn's first text is handed to the renderer as a
+  // muted status line. Other crewmates skip the read entirely.
   const crewmateLive = running || !!paneSlot?.running
-  const messages = useMemo(
-    () => (crewmate ? filterCrewmateChat(paneMessages, crewmateLive) : paneMessages),
-    [crewmate, paneMessages, crewmateLive],
+  const isMate = !!crewmate?.mate
+  const narration = useMemo(
+    () => (isMate ? mateNarration(paneMessages, running) : undefined),
+    [isMate, paneMessages, running],
   )
+  const messages = useMemo(() => {
+    if (!crewmate) return paneMessages
+    const drawn = filterCrewmateChat(paneMessages, crewmateLive)
+    if (!narration || narration.size === 0) return drawn
+    const kept = drawn.filter(m => narration.get(m) !== 'hidden')
+    return kept.length === drawn.length ? drawn : kept
+  }, [crewmate, paneMessages, crewmateLive, narration])
+  useCarryHeldAnswer(!!narration && Array.from(narration.values()).includes('status'), listRef)
   // The unfiltered rows, handed to the row set for the one read that must see
   // what the filter dropped (the steer-chip decision reads the policy-block
   // inject row). `undefined` for an ordinary chat, so its renderer set does not
@@ -1521,6 +1535,7 @@ export default function ChatPane({
       onFileOpen,
       crewmate,
       crewmateTranscript,
+      mateNarration: narration,
       // Session links resolve through the SAME renderer path the single-chat
       // page uses; there is no second resolver. Absent from the host = the
       // renderer's own gate leaves them plain.
@@ -1528,7 +1543,7 @@ export default function ChatPane({
       sessions,
       activeSession,
     }),
-    [slotKey, toolDisclosure, setToolDisclosureFor, busyMode, onFileOpen, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession],
+    [slotKey, toolDisclosure, setToolDisclosureFor, busyMode, onFileOpen, crewmate, crewmateTranscript, narration, onSessionOpen, sessions, activeSession],
   )
 
   // Quote / Ask on selected assistant text — the same chat-core seam the main

@@ -2531,7 +2531,7 @@ ARTIFACT_SAVE_SCHEMA = ToolSchema(
     custom_validator=_validate_artifact_save,
     tool_name="artifact_save",
     fields=[
-        FieldSpec("name", str, required=True, max_len=200),
+        FieldSpec("name", str, required=True, max_len=MAX_SHORT_STRING),
         FieldSpec("content", str, required=True, max_len=ARTIFACT_CONTENT_MAX),
         FieldSpec("slug", str, max_len=80, pattern=_ARTIFACT_SLUG_RE),
         FieldSpec("kind", str, max_len=20, pattern=_ARTIFACT_KIND_RE),
@@ -4777,6 +4777,10 @@ MCP_GUIDE_SCHEMAS: dict[str, ToolSchema] = {
         fields=[
             FieldSpec("change_id", str, max_len=48, pattern=re.compile(r"^cc_[A-Za-z0-9_-]{8,40}$"))
         ],
+    ),
+    "rename_self": ToolSchema(
+        tool_name="rename_self",
+        fields=[FieldSpec("name", str, required=True, max_len=200)],
     ),
     "search_docs": ToolSchema(
         tool_name="search_docs",

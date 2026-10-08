@@ -9817,6 +9817,9 @@
       "primary_schedule_once": "Créer le rappel",
       "due": "Prévu {{when}}",
       "time_passed": "Cette heure est déjà passée. Demande à l'agent une nouvelle heure."
+    },
+    "assistantWelcome": {
+      "default_name": "Mate"
     }
   },
   "hooks": {
@@ -17657,6 +17660,7 @@
       "add_member": "Nouveau coéquipier",
       "slug_collision": "Ce coéquipier partage son nom court avec {{name}}, dont le chat l'utilise déjà. Renomme l'un des deux coéquipiers pour que chacun ait son propre chat.",
       "thread_open_failed": "Impossible d'ouvrir le chat de ce coéquipier.",
+      "greeting_failed": "Le premier message d’accueil n’a pas pu démarrer. Tu peux quand même écrire ton message ci-dessous.",
       "thread_repair_failed": "Impossible de reconnecter ce chat. Rouvre le coéquipier pour réessayer.",
       "title": "Coéquipiers",
       "unread_message": "Message non lu",

@@ -763,6 +763,7 @@ def test_no_tool_takes_a_session_slot_or_tab():
         "diagnose_settings",
         "propose_change",
         "get_change_status",
+        "rename_self",
         "search_docs",
         "find_ui",
     }

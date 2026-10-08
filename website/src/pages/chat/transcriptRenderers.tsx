@@ -52,7 +52,7 @@ import { REASONING_ROLES, hasReasoningContent } from './groupDisplayItems'
 import { FileCard } from '../../components/FileCard'
 import UserMessage from './UserMessage'
 import CrewmateMessage, { type CrewmateIdentity } from './CrewmateMessage'
-import { crewmateBubbleClass, crewmateCornerClass, crewmateRunPosition } from '../../components/chat/crewmateBubbles'
+import { crewmateBubbleClass, crewmateCornerClass, crewmateRunPosition, type MateNarration } from '../../components/chat/crewmateBubbles'
 import { CardCornersContext } from '../../cards/cardCorners'
 import { formatTs, quoteMessageFor, renderAssistantBubble, replyInThreadFor, threadFooterFor, type MessageRenderer, type MessageRenderContext } from '../../app-sdk/messageRenderers'
 import { renderUserContent } from './ChatPageMessageContent'
@@ -171,6 +171,10 @@ export interface TranscriptRendererOptions {
    *  Read for the run position, never for layout. Meaningless without
    *  `crewmate`. */
   crewmateTranscript?: ChatMessage[]
+  /** Mate's narration verdicts (`mateNarration`), keyed by row. A
+   *  `status` row draws as a muted one-line status instead of a bubble; the
+   *  pane has already dropped the `hidden` ones. Absent for every other chat. */
+  mateNarration?: ReadonlyMap<ChatMessage, MateNarration>
 }
 
 /** True when the error row at `index` is the seeded feature-request turn's own
@@ -383,7 +387,7 @@ export function createTranscriptRenderers(
       },
     },
     {
-      // A change card or guide offer, at the point it was proposed. The
+      // Mate's change card or guide offer, at the point it was proposed. The
       // row holds a reference; the live card is the card / guide store's, so it
       // updates in place (cards/ConversationCard). The SDK default draws nothing
       // for this role, which is right for a store-free surface.
@@ -491,6 +495,19 @@ export function createTranscriptRenderers(
           render: (m: ChatMessage, ctx: MessageRenderContext) => {
             // Run position reads turn boundaries off the UNFILTERED transcript
             // (a patrol wake between two replies is filtered from `ctx.messages`).
+            // Mate's live first text: held as a muted status line until a
+            // tool call shows it was narration (the pane then drops it once
+            // the answer arrives) or the turn ends without one (then it is the
+            // answer and draws as a bubble). No bubble appears and vanishes.
+            if (o.mateNarration?.get(m) === 'status') {
+              const line = m.content.replace(/\s+/g, ' ').trim()
+              if (!line) return null
+              return ctx.row(
+                <div data-testid="mate-status-line" className="mt-3 px-1 text-[12px] leading-5 text-muted truncate max-w-[72ch]">
+                  {line}
+                </div>,
+              )
+            }
             const pos = crewmateRunPosition(ctx.messages, ctx.index, crewmateTranscript)
             // The run ends here (single / end): the row after it is a boundary
             // the user sees or the turn ended, so this bubble is the one that

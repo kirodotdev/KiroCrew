@@ -48,7 +48,8 @@
     "@kirocrew-guide/get_member_capabilities",
     "@kirocrew-guide/diagnose_settings",
     "@kirocrew-guide/propose_change",
-    "@kirocrew-guide/get_change_status"
+    "@kirocrew-guide/get_change_status",
+    "@kirocrew-guide/rename_self"
   ],
   "resources": [
     "file://.kiro/steering/**/*.md"

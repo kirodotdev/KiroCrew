@@ -750,8 +750,16 @@ grants once (`guide_platform_granted.json` marks it), and keeps whatever you do
 with them afterwards. Its guide and card tools work only for a turn the user
 sent from the dashboard and refuse with one line anywhere else, a message from
 Slack or another channel included; `find_ui` and `search_docs` still answer
-there. The one-time guide grant lives in
-`src/kiro_crew/agent_materialization/guide_platform.py`; the grant tuple stays in
+there.
+
+`rebuild_agent_config` creates the first crewmate (`mate`, shown as
+Mate) once, bound to the same template a crewmate you create gets, with its
+own private memory store; the reserved `default` member is never changed. The
+`mate_member_created.json` sidecar keeps the creation one-time, so a first
+crewmate you delete is not created again. It is an ordinary crewmate you may
+rename, rebind and delete. The first-crewmate creation lives in
+`src/kiro_crew/agent_materialization/first_crewmate.py`. The one-time guide grant
+lives in `src/kiro_crew/agent_materialization/guide_platform.py`; the grant tuple stays in
 `src/kiro_crew/agent.py`.
 
 
@@ -800,6 +808,7 @@ fence requirement, the JSON-twin precedence, and which backends run the form.
 | the default spec's locked write | `src/kiro_crew/agent_materialization/default_spec_commit.py` |
 | derived specs — lite, guest, knowledge, research; the conductors; the worker | `src/kiro_crew/agent_materialization/service_agents.py`, `conductor_agents.py`, `worker_agent.py`; their prompts and grant tuples, and the heartbeat installer, stay in `src/kiro_crew/agent.py` |
 | the one-time guide grant on an existing default spec | `src/kiro_crew/agent_materialization/guide_platform.py` |
+| the first crewmate, created once | `src/kiro_crew/agent_materialization/first_crewmate.py` |
 | the fork refresh | `src/kiro_crew/agent_materialization/fork_refresh.py` |
 | owned filenames | `src/kiro_crew/agent_files.py` |
 | `model_managed`, `cc_model`, fork lineage | `src/kiro_crew/agent_state.py` |

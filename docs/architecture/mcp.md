@@ -1583,10 +1583,11 @@ the provenance the turn runner recorded: the slot must be executing a turn now
 (`_turn_channel_origin`, set from `_run_chat`'s `_directive_channel_origin` at the
 turn's start and cleared at its end) nor have taken a channel steer since
 (`_turn_channel_narrowed`). Starting something on screen (`guide_start`,
-`propose_change`) also needs the turn to be one the person sent
-(`_turn_user_sent`, set from `_directive_user_origin` the same way): a loop
-wake, a cron or app injection, a `session_send` and a subagent completion are
-refused with 403 `not_user_turn`, while their reads still answer. A Slack or Discord conversation is mirrored into a
+`propose_change`) or renaming the calling crewmate (`rename_self`) also needs
+the turn to be one the person sent (`_turn_user_sent`, set from
+`_directive_user_origin` the same way): a loop wake, a cron or app injection, a
+`session_send`, a subagent completion and a crewmate's hidden first-welcome
+kickoff are refused with 403 `not_user_turn`, while their reads still answer. A Slack or Discord conversation is mirrored into a
 dashboard slot, so a live slot alone is not enough: a message from the channel,
 whether the gateway runs it on the mirrored slot or on the channel's own session,
 is refused, while the user typing into that same slot in the dashboard is

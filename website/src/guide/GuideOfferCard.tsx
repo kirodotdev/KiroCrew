@@ -23,7 +23,7 @@ import { GUIDE_TERMINAL_STATUSES, type Guide, type GuideStatus } from '../api/gu
 import { useGuide } from './GuideContext'
 import { resolveGuideActions } from './guideActions'
 import { useCardCorners } from '../cards/cardCorners'
-import GuideAgentNote from './GuideAgentNote'
+import GuideMateNote from './GuideMateNote'
 
 /** How a guide's end reads, by terminal status; shared with GuideLayer's finish chip. */
 export const FINISHED_KEYS: Record<string, string> = {
@@ -251,7 +251,7 @@ export default function GuideOfferCard({ guideId, slotKey, recordedStatus = null
                 <span className="min-w-0 break-words">{i18nT('components.guideLayer.region_label')}</span>
               </div>
               {action && <h3 id={headingId} className="m-0 mt-1 text-[14px] font-semibold leading-5 text-text break-words">{i18nT(action.titleKey, action.titleVars)}</h3>}
-              <GuideAgentNote className="mt-1.5" text={offered!.intro} testId="guide-offer-intro" slotKey={slotKey} />
+              <GuideMateNote className="mt-1.5" text={offered!.intro} testId="guide-offer-intro" slotKey={slotKey} />
             </div>
             <div className="ml-auto flex shrink-0 items-center gap-2">
               <Btn

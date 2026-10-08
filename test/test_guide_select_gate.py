@@ -1,4 +1,4 @@
-"""Dashboard guides, phase 3: selection and gate steps, and the mid-guide re-plan.
+"""Mate guides, phase 3: selection and gate steps, and the mid-guide re-plan.
 
 The generated ``ui.show`` plans carry ``select`` steps (point at a registered
 picker until the page reports the selection) and ``gate`` steps (pause on a

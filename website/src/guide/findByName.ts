@@ -230,7 +230,7 @@ const HEADING = 'h1, h2, h3, h4, h5, h6, [role="heading"]'
 const NAV_REGION = 'nav, [role="navigation"], [role="tablist"], [role="listbox"]'
 
 /**
- * The chat transcript's own text: a link in a reply (the agent's own answer
+ * The chat transcript's own text: a link in a reply (Mate's own answer
  * naming "Artifacts") is something the person reads, never the control a
  * guide points at.
  */

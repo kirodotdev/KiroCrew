@@ -371,8 +371,8 @@ class TestQueueEditPrunesTheQuote:
 
 
 class TestQueuedSendKeepsItsTab:
-    """A send that lands on a busy slot (e.g. while an earlier turn is still
-    running) is queued and runs later with no request in hand. Which tab
+    """A send that lands on a busy slot (e.g. while Mate's first greeting is
+    still running) is queued and runs later with no request in hand. Which tab
     sent it, and the language that tab shows, must still reach the guide tools
     for that later turn, exactly as for an idle send."""
 

@@ -1188,7 +1188,7 @@ def test_find_setting_returns_writable_matches_and_withholds_credential_values(m
 
 
 def test_find_setting_flags_only_settings_that_wait_for_a_restart(monkeypatch):
-    # Most settings apply live; the schema's restart mark is what lets the agent
+    # Most settings apply live; the schema's restart mark is what lets Mate
     # say "restart" for the few that need it and stay quiet for the rest.
     monkeypatch.setattr(cards, "read_setting_value", lambda target: None)
     remote = next(r for r in cards.find_settings("remote crew management") if r["writable"])
@@ -1646,7 +1646,7 @@ def assistant_editor(tmp_path, monkeypatch):
     )
     loader._invalidate_config_cache()
     row = {"kiro_agent": "kirocrew", "workspace": "default", "memory_store": "default"}
-    (home / "config.json").write_text(json.dumps({"agents": {"helper": row}}), encoding="utf-8")
+    (home / "config.json").write_text(json.dumps({"agents": {"mate": row}}), encoding="utf-8")
     monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: specs)
     # A default that grants nothing, so the crewmate starts without fs_read approved.
     (specs / "kirocrew.json").write_text(
@@ -1665,14 +1665,14 @@ def assistant_editor(tmp_path, monkeypatch):
 
 def test_capabilities_view_explains_both_approval_grammars(assistant_editor):
     app, *_ = assistant_editor
-    view = cards.member_capabilities_view(app, "helper")
+    view = cards.member_capabilities_view(app, "mate")
     assert view["template"] == "kirocrew"
     assert {"section": "tools", "id": "fs_read"}.items() <= next(
         r for r in view["rows"] if r["id"] == "fs_read"
     ).items()
     assert view["how_to"]["builtin_tool_approval"]["section"] == "allowedTools"
     params = {
-        "member": "helper",
+        "member": "mate",
         "draft": {
             "operations": [
                 {"section": "autoApprove", "id": "fs_read", "action": "set", "value": True}
@@ -1688,7 +1688,7 @@ def test_an_approval_the_ceiling_withholds_is_refused_plainly(assistant_editor):
     params = catalog.validate_params(
         "crewmate.capabilities",
         {
-            "member": "helper",
+            "member": "mate",
             "draft": {
                 "enroll": True,
                 "operations": [
@@ -1719,8 +1719,8 @@ def test_shim_routes_get_member_capabilities(monkeypatch):
     monkeypatch.setattr(
         mcp_guide, "_get", lambda path, session_key: sent.append(path) or {"rows": []}
     )
-    json.loads(mcp_guide._call_tool_inner("get_member_capabilities", {"member": "helper"}))
-    assert sent == ["/api/cards/agent/capabilities?member=helper"]
+    json.loads(mcp_guide._call_tool_inner("get_member_capabilities", {"member": "mate"}))
+    assert sent == ["/api/cards/agent/capabilities?member=mate"]
 
 
 # ── settings diagnosis ──
@@ -2004,7 +2004,7 @@ def test_shim_routes_diagnose_settings(monkeypatch):
 
 # ── a card is part of the conversation ──
 
-SID = "acp-helper-1"
+SID = "acp-mate-1"
 
 
 @pytest.fixture

@@ -29,7 +29,7 @@ export const CARD_REGISTRY: Record<CardKind, CardKindSpec> = {
   },
   'schedule.create': {
     icon: CalendarClock, label: () => i18nT('components.changeCards.kind_schedule_create'),
-    // A one-shot is what a person calls a reminder, and it is the word the agent
+    // A one-shot is what a person calls a reminder, and it is the word Mate
     // uses when it points at this button: the label has to match what it says.
     primary: card => i18nT(card && isOneShot(card)
       ? 'components.changeCards.primary_schedule_once'

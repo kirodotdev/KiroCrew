@@ -1,4 +1,4 @@
-"""What find_ui tells the agent to do next for a few question shapes.
+"""What find_ui tells Mate to do next for a few question shapes.
 
 A named app is the item to act on, not words to search for; a result with no
 guide is answered in words without promising one; a preview feature is
@@ -45,7 +45,7 @@ def test_an_app_name_without_an_app_action_is_searched_as_words() -> None:
 
 def test_a_result_without_any_guide_is_answered_in_words_and_promises_none() -> None:
     # The approval-mode picker is the agent's own ceiling: no guide is handed
-    # out, and the agent must not say it can show it.
+    # out, and Mate must not say it can show it.
     d = ui_index.find_ui("approval mode", "en")
     assert d["results"][0]["id"] == "composer.approval-mode"
     assert "guide_ref" not in d["results"][0] and "find_ref" not in d["results"][0]

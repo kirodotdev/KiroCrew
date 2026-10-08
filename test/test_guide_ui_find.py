@@ -454,7 +454,7 @@ def test_a_removal_the_user_asked_for_still_gets_its_guide_first(
     assert "caution_text" in hint and "cannot be undone" not in hint
 
 
-def test_a_create_question_is_guided_even_though_the_agent_could_create_it(
+def test_a_create_question_is_guided_even_though_mate_could_create_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     out = _next_for(monkeypatch, "add a schedule")
@@ -664,7 +664,7 @@ def test_instances_settings_are_guidable_and_the_trust_root_is_not() -> None:
     assert not any(e["tab"] in {"security", "secrets", "computer-use"} for e in ids.values())
 
 
-# ── the numbered pick and the tab's own refusals, as the agent is told them ──
+# ── the numbered pick and the tab's own refusals, as Mate is told them ──
 
 
 def test_ui_find_tells_the_agent_the_user_picks_a_numbered_match() -> None:

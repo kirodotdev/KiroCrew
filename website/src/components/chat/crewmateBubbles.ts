@@ -149,6 +149,73 @@ export function filterCrewmateChat(messages: ChatMessage[], live = false): ChatM
   return kept.length === messages.length ? messages : kept
 }
 
+/** How Mate's own narration draws: `hidden` (not drawn at all) or `status`
+ *  (a muted one-line status, not a bubble). Rows absent from the map draw as
+ *  ordinary bubbles. */
+export type MateNarration = 'hidden' | 'status'
+
+/** A row that does the turn's work rather than say something: a tool row in
+ *  any of its spellings, or a change card / guide offer the tool wrote. */
+function isWorkRow(m: ChatMessage): boolean {
+  return m.role === 'tool' || m.role === 'tool_call' || m.role === 'tool_result' || m.role === CARD_ROW_ROLE
+}
+
+/** True when `m` opens a new turn: anything that is not the turn's own speech,
+ *  work or machinery (a user message, a patrol wake, an injected envelope), or
+ *  a completion envelope whatever role carries it. Same boundary rule `chained`
+ *  reads. */
+function opensMateTurn(m: ChatMessage): boolean {
+  if (isTurnEnvelope(m)) return true
+  return !(m.role === 'assistant' || m.role === CARD_ROW_ROLE || WITHIN_TURN_ROLES.has(m.role))
+}
+
+/**
+ * Mate's pre-tool narration ("I'll look up where chat history lives…").
+ *
+ * The model announces what it is about to do before its first tool call, then
+ * proposes a card, then answers. Prompt rules never reliably stopped that, so
+ * the transcript renderer settles it for Mate's chat alone (other
+ * crewmates keep every bubble). Within ONE turn of the UNFILTERED transcript:
+ *
+ * - a speech row followed by work (a tool row or a card) and, after that work,
+ *   by more speech is narration the answer superseded: `hidden`;
+ * - while the turn is still live, a speech row with no work before it is held
+ *   as `status`: it may be narration (a tool call starts next) or the whole
+ *   answer (the turn ends without one), and a muted line that becomes a
+ *   bubble or disappears does not flash a bubble the user then loses;
+ * - everything else is a bubble: the final text after the last tool call, and
+ *   a settled turn's only text, even when a card followed it.
+ *
+ * `running` is the pane's live-turn flag; only the transcript's last turn can
+ * be live. Pure and keyed by row identity, so the renderer and the filter
+ * read one verdict.
+ */
+export function mateNarration(transcript: ChatMessage[], running: boolean): Map<ChatMessage, MateNarration> {
+  const out = new Map<ChatMessage, MateNarration>()
+  let start = 0
+  for (let i = 0; i <= transcript.length; i += 1) {
+    if (i < transcript.length && (i === start || !opensMateTurn(transcript[i]))) continue
+    // transcript[start, i) is one turn; transcript[start] may be its opener.
+    const live = running && i === transcript.length
+    let workBefore = false
+    for (let k = start; k < i; k += 1) {
+      const m = transcript[k]
+      if (isWorkRow(m)) { workBefore = true; continue }
+      if (!isCrewmateSpeech(m)) continue
+      let workAfter = false
+      let speechAfterWork = false
+      for (let j = k + 1; j < i; j += 1) {
+        if (isWorkRow(transcript[j])) workAfter = true
+        else if (workAfter && isCrewmateSpeech(transcript[j])) { speechAfterWork = true; break }
+      }
+      if (speechAfterWork) out.set(m, 'hidden')
+      else if (live && !workBefore) out.set(m, 'status')
+    }
+    start = i
+  }
+  return out
+}
+
 /** Nearest row in `dir` that is not run-transparent, or undefined at an end. */
 function neighbour(messages: ChatMessage[], index: number, dir: -1 | 1): ChatMessage | undefined {
   for (let j = index + dir; j >= 0 && j < messages.length; j += dir) {

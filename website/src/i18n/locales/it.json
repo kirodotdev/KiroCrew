@@ -9817,6 +9817,9 @@
       "primary_schedule_once": "Imposta promemoria",
       "due": "Scade {{when}}",
       "time_passed": "Questo orario è già passato. Chiedi all'agente un nuovo orario."
+    },
+    "assistantWelcome": {
+      "default_name": "Mate"
     }
   },
   "hooks": {
@@ -17657,6 +17660,7 @@
       "add_member": "Nuovo compagno",
       "slug_collision": "Questo compagno condivide il nome breve con {{name}}, la cui chat lo usa già. Rinomina uno dei due compagni perché ognuno abbia la propria chat.",
       "thread_open_failed": "Impossibile aprire la chat di questo compagno.",
+      "greeting_failed": "Non è stato possibile avviare il primo saluto. Puoi comunque scrivere il tuo messaggio qui sotto.",
       "thread_repair_failed": "Impossibile riconnettere questa chat. Riapri il compagno per riprovare.",
       "title": "Compagni",
       "unread_message": "Messaggio non letto",

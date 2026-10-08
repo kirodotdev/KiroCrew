@@ -1,9 +1,10 @@
-"""The platform guide set on every crewmate.
+"""The platform guide set on every crewmate, and the first crewmate's creation.
 
 ``kirocrew-guide`` (find_ui, search_docs, guides, change cards) is a platform
 capability: mounted on the default template, on every spec derived from it and
 so on every crewmate and dashboard session, with exactly the reviewed
 :data:`kiro_crew.agent._GUIDE_AUTO_GRANTS` granted through the shared ceiling.
+The first crewmate is an ordinary crewmate on that template, created once.
 Every test writes under the isolated data home; nothing touches a live
 ``~/.kiro``.
 """
@@ -17,8 +18,12 @@ from typing import Any
 import pytest
 
 from kiro_crew import agent
-from kiro_crew.agent_files import AGENT_FILENAME, WORKER_AGENT_FILENAME
-from kiro_crew.agent_materialization import guide_platform
+from kiro_crew.agent_files import (
+    AGENT_FILENAME,
+    ASSISTANT_MEMBER_NAME,
+    WORKER_AGENT_FILENAME,
+)
+from kiro_crew.agent_materialization import first_crewmate, guide_platform
 from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
 
 GUIDE_SERVER = "kirocrew-guide"
@@ -65,6 +70,12 @@ def _guide_grants(spec: dict[str, Any]) -> set[str]:
         for ref in spec.get("allowedTools") or []
         if isinstance(ref, str) and ref.startswith(f"{GUIDE_REF}/")
     }
+
+
+def _saved() -> dict:
+    from kiro_crew.config.loader import config_path
+
+    return json.loads(config_path().read_text(encoding="utf-8"))
 
 
 def _seed(doc: dict) -> None:
@@ -117,6 +128,10 @@ def test_every_crewmate_spec_mounts_the_same_guide_set(rebuildable: Path) -> Non
         assert GUIDE_REF in spec["tools"]
         assert "autoApprove" not in spec["mcpServers"][GUIDE_SERVER]
         assert _guide_grants(spec) == GRANTS
+    # The first crewmate runs the very template a user-created crewmate gets.
+    row = _saved()["agents"][ASSISTANT_MEMBER_NAME]
+    assert row["kiro_agent"] == "kirocrew"
+    assert sorted(p.name for p in rebuildable.glob("*mate*")) == []
 
 
 def test_conductors_and_background_agents_do_not_mount_the_guide_set(rebuildable: Path) -> None:
@@ -174,6 +189,122 @@ def test_a_spec_without_the_guide_server_keeps_the_one_time_grant_for_later(
     config["mcpServers"][agent._GUIDE_SERVER] = {}
     assert guide_platform.grant_guide_platform_once(config, fresh_install=False) is True
     assert GUIDE_REF in config["tools"] and _guide_grants(config) == GRANTS
+
+
+# ── the first crewmate ──
+
+
+def _assert_private_first_crewmate(saved: dict, template: str = "kirocrew") -> None:
+    row = dict(saved["agents"][ASSISTANT_MEMBER_NAME])
+    store, member_id = row.pop("memory_store"), row.pop("member_id")
+    assert row == {
+        "kiro_agent": template,
+        "workspace": "default",
+        "source": "builtin",
+        "display_name": "",
+    }
+    assert member_id == ASSISTANT_MEMBER_NAME
+    assert saved["memory_stores"][store]["owner_member_id"] == member_id
+
+
+@pytest.mark.parametrize(
+    "default_row",
+    [
+        {"kiro_agent": "kirocrew", "display_name": "Mochi", "workspace": "work"},
+        {"kiro_agent": "custom-template"},
+    ],
+)
+def test_creation_never_changes_the_default_member(agents_dir, default_row):
+    _seed({"agents": {"default": dict(default_row)}, "dashboard": {"user_role": "designer"}})
+    first_crewmate.create_first_crewmate_once()
+    saved = _saved()
+    assert saved["agents"]["default"] == default_row
+    assert saved["dashboard"] == {"user_role": "designer"}
+    _assert_private_first_crewmate(saved)
+
+
+def test_it_runs_the_configured_default_template(agents_dir):
+    _seed({"agent": {"default_agent": "my-template"}})
+    first_crewmate.create_first_crewmate_once()
+    saved = _saved()
+    assert saved["agents"]["default"]["kiro_agent"] == "my-template"
+    _assert_private_first_crewmate(saved, "my-template")
+
+
+def test_a_deleted_first_crewmate_is_not_recreated(agents_dir):
+    from kiro_crew.config.loader import config_path
+
+    _seed({"agents": {"default": {"kiro_agent": "kirocrew"}}})
+    first_crewmate.create_first_crewmate_once()
+    saved = _saved()
+    del saved["agents"][ASSISTANT_MEMBER_NAME]
+    _seed(saved)
+    before = config_path().read_bytes()
+    first_crewmate.create_first_crewmate_once()
+    assert config_path().read_bytes() == before
+
+
+@pytest.mark.parametrize("where", ["base", "overlay"])
+def test_an_existing_key_is_left_alone(agents_dir, where):
+    from kiro_crew.config.loader import config_local_path, config_path, update_config_locked
+
+    mine = {"kiro_agent": "my-template"}
+    if where == "base":
+        _seed({"agents": {"default": {"kiro_agent": "kirocrew"}, ASSISTANT_MEMBER_NAME: mine}})
+    else:
+        _seed({"agents": {"default": {"kiro_agent": "kirocrew"}}})
+        update_config_locked(
+            config_local_path(),
+            mutate=lambda _: {"agents": {ASSISTANT_MEMBER_NAME: mine}},
+            stamp_meta=False,
+        )
+    before = config_path().read_bytes()
+    first_crewmate.create_first_crewmate_once()
+    assert config_path().read_bytes() == before
+    # The start-of-process memory upgrade leaves the user's own row on Global.
+    from kiro_crew.config.loader import KiroCrewConfig, _invalidate_config_cache
+    from kiro_crew.memory_stores import repair_legacy_member_stores
+
+    assert repair_legacy_member_stores() == []
+    _invalidate_config_cache()
+    row = KiroCrewConfig.load().agents[ASSISTANT_MEMBER_NAME]
+    assert (row.memory_store, row.member_id, row.kiro_agent) == ("default", "", "my-template")
+
+
+def test_a_created_first_crewmate_left_on_global_is_moved_at_next_start(
+    agents_dir, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kiro_crew.memory_stores import repair_legacy_member_stores
+
+    _seed({"agents": {"default": {"kiro_agent": "kirocrew"}}})
+    monkeypatch.setattr(first_crewmate, "_give_private_memory", lambda: None)
+    first_crewmate.create_first_crewmate_once()
+    assert _saved()["agents"][ASSISTANT_MEMBER_NAME]["memory_store"] == "default"
+    assert len(repair_legacy_member_stores()) == 1
+    _assert_private_first_crewmate(_saved())
+
+
+def test_a_foreign_template_and_its_member_are_left_exactly_as_they_are(
+    rebuildable: Path,
+) -> None:
+    """A template and member under a name the product does not own stay untouched.
+
+    The rebuild neither rewrites the file, nor rebinds, relabels or re-stores the
+    member bound to it, nor treats the member as the first crewmate.
+    """
+    foreign = {"name": "kirocrew-mate", "prompt": "mine", "hooks": {"auto_approve_tools": []}}
+    path = rebuildable / "kirocrew-mate.json"
+    path.write_text(json.dumps(foreign), encoding="utf-8")
+    row = {
+        "kiro_agent": "kirocrew-mate",
+        "memory_store": "default",
+        "display_name": "Skipper",
+    }
+    _seed({"agents": {"default": {"kiro_agent": "kirocrew"}, "kirocrew-mate": row}})
+    agent.repair_agent_configs()
+    agent.rebuild_agent_config()
+    assert json.loads(path.read_text(encoding="utf-8")) == foreign
+    assert _saved()["agents"]["kirocrew-mate"] == row
 
 
 # ── the guide tools on and off the dashboard ──

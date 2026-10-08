@@ -23,6 +23,9 @@ export interface CrewmateIdentity {
   /** Presentation label shown in place of `name` when set. `name` stays the
    *  immutable identity — routes, API calls and avatar seeds key on it. */
   label?: string
+  /** The built-in Mate. Its chat folds the narration it writes before a
+   *  tool call (`mateNarration` in components/chat/crewmateBubbles). */
+  mate?: boolean
 }
 
 export default function CrewmateMessage({ pos, author, children }: { pos: CrewmateRunPosition; author?: string; children: ReactNode }) {

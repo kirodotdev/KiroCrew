@@ -23,6 +23,8 @@ layout below can change without touching a caller.
   freshness gate.
 * :mod:`.guide_platform` -- the one-time platform guide grant on an existing
   default spec.
+* :mod:`.first_crewmate` -- the one-time first crewmate on the ordinary crewmate
+  template.
 
 Importing this package imports the facade first, and the facade imports every owner
 once its own names are bound, so no owner can be observed half-built whichever module

@@ -5580,7 +5580,7 @@ offer card (the intro, under the title) and the guide panel (the intro on the
 first step of the first action; a note on its action's final step; a step that
 is both shows one block, the note when the action has one, else the intro),
 always below the template line, which stays, and attributed with "From
-{name}" for the crewmate whose pinned thread offered the guide (`GuideAgentNote`,
+{name}" for the crewmate whose pinned thread offered the guide (`GuideMateNote`,
 the guide's `slot_key` matched against the roster, muted theme tokens), as React
 text; a guide offered from an ordinary chat shows the words without a "From" line.
 

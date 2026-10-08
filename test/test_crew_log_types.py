@@ -274,7 +274,7 @@ CANONICAL: dict[str, dict] = {
         "crew_key": "9f2c" + "0" * 60,
     },
     "card/proposed": {
-        "slot": "member-helper",
+        "slot": "member-mate",
         "card_id": "cc_0a1b2c3d4e5f",
         "kind": "setting.change",
         "title": "Change chat.verbosity to brief",
@@ -285,7 +285,7 @@ CANONICAL: dict[str, dict] = {
     },
     "card/finished": {"card_id": "cc_0a1b2c3d4e5f", "status": "applied", "revision": 1},
     "guide/offered": {
-        "slot": "member-helper",
+        "slot": "member-mate",
         "guide_id": "g_0a1b2c3d4e5f",
         "actions": ["crewmate.create"],
         "turn": 4,

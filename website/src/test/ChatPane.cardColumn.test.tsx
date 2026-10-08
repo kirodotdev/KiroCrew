@@ -19,7 +19,7 @@ import notificationsReducer from '../store/notificationsSlice'
  * composer below. Outside that column it spanned the whole pane (measured at
  * 1440px: x=509..1431 while messages and composer sat at ~579..1361).
  *
- * Change cards and guide offers are NOT in that column: each is a
+ * Mate's change cards and guide offers are NOT in that column: each is a
  * `card` row of the conversation, drawn in the transcript where it was proposed,
  * and a reload (the slot-detail read below) puts it back in the same place. */
 
@@ -127,7 +127,7 @@ describe('ChatPane card column', () => {
   })
 })
 
-describe('change cards are part of the conversation', () => {
+describe('Mate\'s cards are part of the conversation', () => {
   const card = (): Card => ({
     id: 'cc_inline1', slot_key: SLOT, kind: 'setting.change', revision: 1, status: 'pending', risk: 'normal',
     title: 'Shorter replies', changes: [{ label: 'Reply length', before: 'standard', after: 'brief' }], editable: [],

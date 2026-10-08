@@ -9561,6 +9561,9 @@
       "primary_schedule_once": "알림 설정",
       "due": "{{when}} 실행",
       "time_passed": "이 시간은 이미 지났습니다. 에이전트에게 새 시간을 요청하세요."
+    },
+    "assistantWelcome": {
+      "default_name": "Mate"
     }
   },
   "hooks": {
@@ -17163,6 +17166,7 @@
       "add_member": "새 크루메이트",
       "slug_collision": "이 크루메이트는 {{name}}와(과) 짧은 이름이 같아 채팅이 이미 그쪽에서 사용 중입니다. 각자 별도의 채팅을 가지려면 두 크루메이트 중 하나의 이름을 변경하세요.",
       "thread_open_failed": "이 크루메이트의 채팅을 열 수 없습니다.",
+      "greeting_failed": "첫 인사를 시작하지 못했습니다. 아래에 메시지를 계속 입력할 수 있습니다.",
       "thread_repair_failed": "이 채팅에 다시 연결할 수 없습니다. 크루메이트를 다시 열어 다시 시도하세요.",
       "title": "크루메이트",
       "unread_message": "읽지 않은 메시지",

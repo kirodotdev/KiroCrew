@@ -9561,6 +9561,9 @@
       "primary_schedule_once": "设置提醒",
       "due": "{{when}}到期",
       "time_passed": "这个时间已经过了。请让代理换一个时间。"
+    },
+    "assistantWelcome": {
+      "default_name": "Mate"
     }
   },
   "hooks": {
@@ -17163,6 +17166,7 @@
       "add_member": "新建队友",
       "slug_collision": "此队友与 {{name}} 的简称相同，聊天已被后者占用。重命名这两位队友中的一位，让各自拥有独立的聊天。",
       "thread_open_failed": "无法打开此队友的聊天。",
+      "greeting_failed": "无法开始第一次问候。你仍然可以在下方输入消息。",
       "thread_repair_failed": "无法重新连接此聊天。重新打开该队友以重试。",
       "title": "队友",
       "unread_message": "未读消息",

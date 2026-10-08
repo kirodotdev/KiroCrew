@@ -1538,7 +1538,7 @@ running turn, so `seq` orders the entry after that call's `tool/called`.
 nothing here.
 
 ```json
-{"type":"card/proposed","seq":91,"time":1789000004100,"src":"gateway","data":{"slot":"member-scout","card_id":"cc_0a1b2c3d4e5f","kind":"setting.change","title":"Change chat.verbosity to brief","revision":1,"risk":"normal","turn":3,"mid":"m-7f3a"}}
+{"type":"card/proposed","seq":91,"time":1789000004100,"src":"gateway","data":{"slot":"member-mate","card_id":"cc_0a1b2c3d4e5f","kind":"setting.change","title":"Change chat.verbosity to brief","revision":1,"risk":"normal","turn":3,"mid":"m-7f3a"}}
 ```
 
 **Reader hint** — To rebuild the conversation, draw the card at its `mid`; its
@@ -1598,7 +1598,7 @@ the append of the offer's transcript row.
 | `mid` | string | optional | Id of the transcript row the offer is drawn at. | |
 
 ```json
-{"type":"guide/offered","seq":102,"time":1789000005200,"src":"gateway","data":{"slot":"member-scout","guide_id":"g_0a1b2c3d4e5f","actions":["crewmate.create"],"turn":4,"mid":"m-7f3b"}}
+{"type":"guide/offered","seq":102,"time":1789000005200,"src":"gateway","data":{"slot":"member-mate","guide_id":"g_0a1b2c3d4e5f","actions":["crewmate.create"],"turn":4,"mid":"m-7f3b"}}
 ```
 
 **Reader hint** — Draw the offer at its `mid`; its outcome is the `guide/finished`

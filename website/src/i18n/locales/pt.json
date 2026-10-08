@@ -9817,6 +9817,9 @@
       "primary_schedule_once": "Definir lembrete",
       "due": "Vence {{when}}",
       "time_passed": "Este horário já passou. Peça ao agente um novo horário."
+    },
+    "assistantWelcome": {
+      "default_name": "Mate"
     }
   },
   "hooks": {
@@ -17657,6 +17660,7 @@
       "add_member": "Novo colega",
       "slug_collision": "Este colega compartilha seu nome curto com {{name}}, cujo chat já o usa. Renomeie um dos dois colegas para que cada um tenha seu próprio chat.",
       "thread_open_failed": "Não foi possível abrir o chat deste colega.",
+      "greeting_failed": "Não foi possível iniciar a primeira saudação. Você ainda pode escrever sua mensagem abaixo.",
       "thread_repair_failed": "Não foi possível reconectar este chat. Reabra o colega para tentar novamente.",
       "title": "Colegas",
       "unread_message": "Mensagem não lida",

@@ -651,7 +651,7 @@ def test_find_ui_offers_a_destructive_control_with_its_caution() -> None:
 
 
 def test_find_ui_quotes_the_pages_own_words_for_what_a_deletion_removes() -> None:
-    # Delete crewmate only unbinds; the agent describes it from the page's own
+    # Delete crewmate only unbinds; Mate describes it from the page's own
     # notice, never from a guess that it wipes chats and notes for good.
     for locale, want in (
         ("en", "Deleting a crewmate only unbinds it from new sessions."),

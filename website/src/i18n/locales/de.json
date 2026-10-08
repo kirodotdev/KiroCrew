@@ -9689,6 +9689,9 @@
       "primary_schedule_once": "Erinnerung setzen",
       "due": "Fällig {{when}}",
       "time_passed": "Diese Zeit ist schon vorbei. Bitte den Agenten um eine neue Zeit."
+    },
+    "assistantWelcome": {
+      "default_name": "Mate"
     }
   },
   "hooks": {
@@ -17410,6 +17413,7 @@
       "add_member": "Neuer Crewmate",
       "slug_collision": "Dieser Crewmate teilt seinen Kurznamen mit {{name}}, dessen Chat ihn bereits verwendet. Benenne einen der beiden Crewmates um, damit jeder seinen eigenen Chat erhält.",
       "thread_open_failed": "Der Chat dieses Crewmates konnte nicht geöffnet werden.",
+      "greeting_failed": "Die erste Begrüßung konnte nicht gestartet werden. Du kannst deine Nachricht trotzdem unten schreiben.",
       "thread_repair_failed": "Dieser Chat konnte nicht wieder verbunden werden. Öffne den Crewmate erneut, um es noch einmal zu versuchen.",
       "title": "Crewmates",
       "unread_message": "Ungelesene Nachricht",

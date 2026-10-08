@@ -134,6 +134,27 @@ export const runStateReducers = {
     bumpRunEpoch(state, slot)
     if (slot === state.activeSlot) state.slotRunning = true
   },
+  /** A turn the gateway started on `slot` at this tab's request, with no
+   *  transcript row to announce it (Mate's first greeting). Until its first
+   *  live frame the slot reads idle, so a send made meanwhile would mint an
+   *  optimistic bubble the server then queues: the user's words drawn twice.
+   *  `epoch` is the slot's turn count when the request was made; any frame
+   *  since has already moved the run, so a stale answer changes nothing. */
+  startServerTurn(state: ChatState, action: PayloadAction<{ slot: string; epoch: number }>) {
+    const { slot, epoch } = action.payload
+    if (isUnsafeKey(slot)) return
+    if ((state.runEpoch?.[safeKey(slot)] ?? 0) !== epoch) return
+    bumpRunEpoch(state, slot)
+    if (slot === state.activeSlot) {
+      state.pendingTurnSlot = slot
+      state.slotRunning = true
+      return
+    }
+    const run = (state.slotRun[safeKey(slot)] ??= { state: 'idle' })
+    if (run.state !== 'idle') return
+    setRunState(run, 'streaming')
+    syncOriginRun(state, slot, 'streaming')
+  },
   /** The inverse of `startLocalTurn` for a send that did NOT start a turn
    *  (refused, or never left). Slot-keyed like its counterpart: only the slot
    *  the send was for loses its pending mark, and only when that slot is the

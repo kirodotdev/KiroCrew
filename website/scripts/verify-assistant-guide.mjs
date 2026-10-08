@@ -20,7 +20,7 @@ try {
     const ctx = await browser.newContext({ viewport: { width, height: 1000 }, locale: 'en-US', recordVideo: { dir: out } })
     await ctx.route('**/*', route => new URL(route.request().url()).origin === base ? route.continue() : route.abort())
     let guide = {
-      guide_id: `fixture-${width}`, slot_key: 'chat-pilot', status: 'offered', revision: 1,
+      guide_id: `fixture-${width}`, slot_key: 'chat-assistant', status: 'offered', revision: 1,
       owner_tab: null, action_index: 0, step_index: 0, reason: '',
       expires_at: Date.now() / 1000 + 1800, lease_expires_at: null,
       actions: [
@@ -28,11 +28,11 @@ try {
         { id: 'mcp.open_add', params: {} },
       ],
     }
-    // The reserved `default` member (untouched) and the crewmate the guide was
-    // offered in.
+    // Both built-ins: the reserved `default` member (ordinary, untouched) and
+    // the separate Assistant member the guide was offered in.
     const members = [
       { name: 'default', slug: 'default', bound: true, slot_key: 'chat-default', kiro_agent: 'kirocrew', source: 'builtin', workspace: 'default', memory_store: 'default' },
-      { name: 'pilot', slug: 'pilot', bound: true, slot_key: 'chat-pilot', kiro_agent: 'kirocrew', source: 'kirocrew', workspace: 'default', memory_store: 'default' },
+      { name: 'assistant', slug: 'assistant', bound: true, slot_key: 'chat-assistant', kiro_agent: 'kirocrew-assistant', source: 'builtin', workspace: 'default', memory_store: 'default' },
     ]
     const threadReads = []
     const sockets = []
@@ -45,7 +45,7 @@ try {
       page.on('pageerror', e => { throw e })
       await stubDashboardApi(page, {
         slots: [
-          { key: 'chat-pilot', title: 'Pilot', agent: 'pilot', messages: 0, running: false },
+          { key: 'chat-assistant', title: 'Assistant', agent: 'assistant', messages: 0, running: false },
           { key: 'chat-default', title: 'default', agent: 'default', messages: 0, running: false },
         ],
         theme: 'light', preserveStorage: true,
@@ -56,10 +56,10 @@ try {
           if (path === '/api/config/kirocrew') return reply({ ...KIROCREW_CONFIG_FIXTURE, dashboard: { crewmate_threads: false } })
           if (path === '/api/members') return reply({ members })
           if (path === '/api/teams') return reply({ teams: [] })
-          if (path === '/api/members/pilot/thread') { threadReads.push('pilot'); return reply({ member: 'pilot', slot_key: 'chat-pilot' }) }
+          if (path === '/api/members/assistant/thread') { threadReads.push('assistant'); return reply({ member: 'assistant', slot_key: 'chat-assistant' }) }
           if (path === '/api/members/default/thread') { threadReads.push('default'); return reply({ member: 'default', slot_key: 'chat-default' }) }
           if (path.endsWith('/projections')) return reply({ asOfSeq: 0, values: {} })
-          if (path === '/api/chat/slots/chat-pilot') return reply({ key: 'chat-pilot', messages: [], running: false, has_more: false, total: 0 })
+          if (path === '/api/chat/slots/chat-assistant') return reply({ key: 'chat-assistant', messages: [], running: false, has_more: false, total: 0 })
           if (path === '/api/agents/installed') return reply([{ name: 'kirocrew', source: 'kirocrew' }])
           if (path.startsWith('/api/mcp') && route.request().method() !== 'GET') {
             mcpWrites.push(`${route.request().method()} ${path}`)
@@ -114,8 +114,8 @@ try {
     await page.goto(`${base}/members`)
     await page.getByTestId('guide-start').waitFor()
     assert.equal(await page.getByTestId('onboarding-chapter-embedded').count(), 0)
-    // The guide is offered in the crewmate's chat; `default` is never opened.
-    assert.equal(new URL(page.url()).searchParams.get('member'), 'pilot', 'opens the crewmate')
+    // The guide is offered in the Assistant member's chat; `default` is never opened.
+    assert.equal(new URL(page.url()).searchParams.get('member'), 'assistant', 'lands on the Assistant member')
     assert.equal(threadReads.includes('default'), false, 'the default member is not opened')
     const shot = async name => {
       await page.waitForTimeout(500)

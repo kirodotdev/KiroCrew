@@ -9817,6 +9817,9 @@
       "primary_schedule_once": "Crear recordatorio",
       "due": "Vence {{when}}",
       "time_passed": "Esta hora ya pasó. Pide al agente una hora nueva."
+    },
+    "assistantWelcome": {
+      "default_name": "Mate"
     }
   },
   "hooks": {
@@ -17657,6 +17660,7 @@
       "add_member": "Nuevo compañero",
       "slug_collision": "Este compañero comparte su nombre corto con {{name}}, cuyo chat ya lo usa. Cambia el nombre de uno de los dos compañeros para que cada uno tenga su propio chat.",
       "thread_open_failed": "No se pudo abrir el chat de este compañero.",
+      "greeting_failed": "No se pudo iniciar el primer saludo. Aún puedes escribir tu mensaje abajo.",
       "thread_repair_failed": "No se pudo volver a conectar este chat. Vuelve a abrir el compañero para intentarlo de nuevo.",
       "title": "Compañeros",
       "unread_message": "Mensaje sin leer",

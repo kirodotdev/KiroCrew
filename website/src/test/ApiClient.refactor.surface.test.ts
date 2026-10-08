@@ -61,7 +61,7 @@ const API_KEY_ORDER = [
   'agentTemplates', 'agentTemplateCreate', 'agentTemplateDelete', 'agentDetail',
   'agentPatch', 'agentFork', 'agentPublish', 'agentReset',
   'kirocrewAgents', 'agentResolvedModel', 'agentCatalog', 'createKirocrewAgent',
-  'members', 'memberThread', 'memberActivity', 'memberProjections',
+  'members', 'memberThread', 'memberGreet', 'memberActivity', 'memberProjections',
   'memberPanel', 'memberDashboard', 'memberBriefing', 'memberRecap', 'teams', 'updateKirocrewAgent',
   'deleteKirocrewAgent', 'appearances', 'uploadCrewAvatar', 'models',
   'chatSlotSelectionCapabilities', 'effortLevels', 'slashCommands', 'chatSlotAgent',

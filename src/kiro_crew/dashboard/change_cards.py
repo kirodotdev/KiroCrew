@@ -2391,7 +2391,7 @@ async def read_context(
             and any(
                 f"{r.get('section')}:{r.get('id')}" == ref
                 # Sanitized to a tombstone (forked members) or kept as an override
-                # the ceiling filtered out of the spec (a builtin server override).
+                # the ceiling filtered out of the spec (the Assistant singleton).
                 and (r.get("state") == "removed" or not r.get("present"))
                 for r in result.get("rows") or []
             )

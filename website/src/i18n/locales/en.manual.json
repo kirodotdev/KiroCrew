@@ -4103,6 +4103,9 @@
       "primary_schedule_once": "Set reminder",
       "due": "Due {{when}}",
       "time_passed": "This time has already passed. Ask the agent for a new time."
+    },
+    "assistantWelcome": {
+      "default_name": "Mate"
     }
   },
   "hooks": {

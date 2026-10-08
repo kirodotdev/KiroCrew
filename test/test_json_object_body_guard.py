@@ -166,6 +166,8 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     # A checklist tick is one task id and one boolean, so the shared default
     # ceiling is far above any legitimate body.
     "chat_todo.py::api_chat_slot_todo": ("<default>", _BOUNDED_BY_DEFAULT),
+    # Mate's one-line Global preference: a short sentence, so a 4 KB cap
+    # is well above any legitimate body and far below the shared default.
     # A thread reply is one text field (capped at 32 KiB by the handler) plus a
     # slot key, so the shared default ceiling is the right one.
     "chat_threads.py::api_chat_thread_reply": ("<default>", _BOUNDED_BY_DEFAULT),

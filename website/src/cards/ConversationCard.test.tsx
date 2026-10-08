@@ -419,7 +419,7 @@ describe('change card', () => {
     expect(JSON.stringify(qc.getQueryData(cardsQueryKey(SLOT)))).not.toContain(SECRET)
   })
 
-  it('offers no free-text Edit: a value is changed by asking the agent for a new card', async () => {
+  it('offers no free-text Edit: a value is changed by asking Mate for a new card', async () => {
     pending = [card({ kind: 'setting.change', editable: ['value'], params: { path: 'agent.fallback_model', value: 'x' } })]
     renderCards()
     await screen.findByTestId('change-card-apply')

@@ -1,4 +1,4 @@
-"""The bounded live-observation channel behind ``find_ui``'s ``live`` field.
+"""The bounded live-observation channel behind Mate's ``find_ui`` ``live`` field.
 
 The gateway asks ONE owner tab, over an owner-only ``guide_observe`` frame, what
 it shows of a manifest-validated set of curated location ids; the tab answers on

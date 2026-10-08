@@ -229,6 +229,7 @@ def _register_mcp_routes(app: web.Application) -> None:
         ("POST", "/api/guide/agent/start", "api_guide_agent_start"),
         ("GET", "/api/guide/agent/status", "api_guide_agent_status"),
         ("POST", "/api/guide/agent/cancel", "api_guide_agent_cancel"),
+        ("POST", "/api/guide/agent/rename", "api_guide_agent_rename_self"),
         ("POST", "/api/guide/agent/observe", "api_guide_agent_observe"),
         ("GET", "/api/guide/agent/language", "api_guide_agent_language"),
         ("GET", "/api/guide/pending", "api_guide_pending"),
