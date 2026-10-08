@@ -193,6 +193,10 @@ class DefaultCredentialPolicy:
         # host set (empty = MORE redaction, the safe direction).
         return frozenset()
 
+    def token_param_exempt_url_prefixes(self) -> "frozenset[str]":
+        # No exemptions: pass 4 redacts every `token=` value, as before.
+        return frozenset()
+
 
 class DefaultSlackEnterpriseGate:
     """Default-open gate delegating to ``slack/enterprise.py``.

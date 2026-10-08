@@ -611,6 +611,12 @@ def set_context(ctx: PlatformContext) -> None:
 # must contain the phrase ``no-context answer`` so the justification is greppable
 # and cannot dodge the question it exists to answer.
 PEEK_CALLERS: "dict[str, str]" = {
+    "security/redaction.py::_token_param_exempt_prefixes": (
+        "no-context answer is the empty prefix set, which means MORE redaction: "
+        "pass 4 redacts every `token=` URL value. The lookup can only skip a "
+        "value no earlier credential pass claimed, so an absent context cannot "
+        "be the reason a credential survives."
+    ),
     "security/exfil.py::_exempt_exact_hosts": (
         "no-context answer is the empty exempt-host set, which means MORE "
         "redaction: every host runs the base64-blob / query-length heuristics. "

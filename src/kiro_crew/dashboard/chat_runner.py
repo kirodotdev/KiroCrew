@@ -12245,8 +12245,16 @@ async def _run_chat(
                 # reader can concatenate. The redacted whole body on
                 # ``message/sent`` carries the same content, redacted once over
                 # text where the credential is intact and therefore matchable.
+                #
+                # Pass 4 (`?token=` values) is DEFERRED to that whole-segment run
+                # while a companion prefix set is installed: a delta cut inside an
+                # approval link shows the pass a `token=` with no prefix before it,
+                # so the value is redacted here and the exemption `_redact_segment`
+                # would have granted can never apply. Every other pass still runs
+                # per delta; the live wire goes through `_wsred`, which never
+                # exempts; with the empty default prefix set nothing changes.
                 safe_chunk, _ = redact_exfiltration_urls(event.text)
-                safe_chunk, _ = redact_credentials(safe_chunk)
+                safe_chunk, _ = redact_credentials(safe_chunk, defer_token_param=True)
                 _accumulate_segment_raw(slot, event.text)
                 assistant_text += safe_chunk
                 if event.control_notice:

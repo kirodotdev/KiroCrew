@@ -566,6 +566,15 @@ class StreamRedactor:
         self._discard_kind: str | None = None
         self._discarded = 0
 
+    def _redact_window(self, text: str) -> str:
+        """Redact one context-incomplete window without URL-prefix exemptions."""
+        redaction = _submodule("redaction")
+        suspension = redaction._TOKEN_PARAM_EXEMPT_SUSPENDED.set(True)
+        try:
+            return self._redact(text)
+        finally:
+            redaction._TOKEN_PARAM_EXEMPT_SUSPENDED.reset(suspension)
+
     def feed(self, chunk: str) -> str:
         """Accept a chunk; return the redacted prefix that is safe to emit now."""
         # Owners of the re-exported names read below, resolved through the
@@ -730,7 +739,7 @@ class StreamRedactor:
                 if complete_token_crossing is not None and not credential_reaches_end:
                     drop_end = complete_token_crossing.end(1)
                 commit, self._buf = self._buf[:i], self._buf[drop_end:]
-                out = self._redact(commit) if commit else ""
+                out = self._redact_window(commit) if commit else ""
                 return out + _redaction._REDACTED_CREDENTIAL_TAG
             i = len(self._buf) - cap
             i -= self._buf.startswith("${", i - 1)  # keep a JS/TS `${` placeholder whole
@@ -754,7 +763,7 @@ class StreamRedactor:
         if i <= 0:
             return ""  # whole buffer is a (possibly partial) credential run — hold
         commit, self._buf = self._buf[:i], self._buf[i:]
-        return self._redact(commit)
+        return self._redact_window(commit)
 
     def flush(self) -> str:
         """Redact and return the buffered remainder; clears the buffer."""
@@ -763,7 +772,7 @@ class StreamRedactor:
             self._discarding = False
             self._discard_kind = None
             return ""
-        out = self._redact(self._buf) if self._buf else ""
+        out = self._redact_window(self._buf) if self._buf else ""
         self._buf = ""
         return out
 

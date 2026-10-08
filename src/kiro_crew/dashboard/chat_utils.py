@@ -82,6 +82,7 @@ from kiro_crew.security.exfil import (
     restore_allowed_links,
     scoped_exempt_hosts,
 )
+from kiro_crew.security.redaction import _token_param_exempt_prefixes
 from kiro_crew.security.redaction_allow import allowed_hosts_for
 from kiro_crew.sel import SecurityEvent, sel
 from kiro_crew.session_surface import has_dashboard_surface, set_dashboard_surfaced
@@ -2341,12 +2342,15 @@ _display_redaction_cache_lock = RLock()
 
 
 def _display_redaction_cache_key(text: str) -> tuple[_DisplayRedactionKey, int]:
-    """Digest the exact string entering the battery together with the exempt-host set it reads.
+    """Digest the exact string entering the battery together with the exempt sets it reads.
 
     The key is fixed-size: a 32-byte digest and the input byte length. The host set
     is sorted and folded into the MAC input behind a NUL separator (a host never
     contains NUL), so a changed set yields a different key while no per-entry
-    container is retained. The length component constrains a digest collision.
+    container is retained. A non-empty pass-4 token-parameter prefix set follows
+    behind a ``\\x01`` separator (a host never contains one either); an empty set adds
+    nothing, so the MAC input is the host-only form whenever no companion sets one.
+    The length component constrains a digest collision.
     The digest is an HMAC under the per-process ``_DISPLAY_REDACTION_SALT``: one
     hash per lookup, so the cache stays cheaper than the battery it fronts.
     """
@@ -2354,7 +2358,11 @@ def _display_redaction_cache_key(text: str) -> tuple[_DisplayRedactionKey, int]:
     hosts = "\0".join(sorted(_exempt_exact_hosts() | current_scoped_exempt_hosts())).encode(
         "utf-8", errors="surrogatepass"
     )
-    digest = hmac.new(_DISPLAY_REDACTION_SALT, raw + b"\0" + hosts, hashlib.sha256).digest()
+    mac_input = raw + b"\0" + hosts
+    prefixes = _token_param_exempt_prefixes()
+    if prefixes:
+        mac_input += b"\x01" + "\0".join(prefixes).encode("utf-8", errors="surrogatepass")
+    digest = hmac.new(_DISPLAY_REDACTION_SALT, mac_input, hashlib.sha256).digest()
     return (digest, len(raw)), len(raw)
 
 

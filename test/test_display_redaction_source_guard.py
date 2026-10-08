@@ -1,9 +1,10 @@
-"""The display redaction battery reads no mutable state beyond ``_exempt_exact_hosts``.
+"""The display redaction battery reads no mutable state beyond its two exempt sets.
 
 ``kiro_crew.dashboard.chat_utils._redact_for_display`` memoizes the output of
 ``redact_exfiltration_urls`` followed by ``redact_credentials``, keyed on the
-input text and the exempt-host set. That key is only sound while the battery's
-OUTPUT is a pure function of exactly those two inputs. Nothing on the
+input text, the exempt-host set and the pass-4 token-parameter prefix set. That
+key is only sound while the battery's OUTPUT is a pure function of exactly those
+inputs. Nothing on the
 ``security/`` side is told its output is memoized, so a battery change that
 starts reading a second mutable input -- an operator file, the clock, the
 environment, a memo that a later call can repopulate differently -- would make
@@ -13,7 +14,8 @@ This module pins that contract on the ``security/`` SOURCE: every function the
 battery reaches, statically, reads no mutable module global and performs no
 I/O or clock read, with two named carve-outs:
 
-* ``_exempt_exact_hosts`` -- the ONE mutable read the cache key covers.
+* ``_exempt_exact_hosts`` and ``_token_param_exempt_prefixes`` -- the two
+  mutable reads the cache key covers.
 * ``_slack_manifest_re_slot`` -- a write-once memo of a bundled package
   resource that is constant for the life of the process; a fresh process
   starts with an empty cache anyway.
@@ -41,8 +43,11 @@ BATTERY_ROOTS: tuple[tuple[object, str], ...] = (
     (redaction, "redact_credentials"),
 )
 
-# The one mutable read the cache key accounts for.
+# The mutable reads the cache key accounts for.
 ALLOWED_MUTABLE_READER = "_exempt_exact_hosts"
+ALLOWED_MUTABLE_READERS = frozenset(
+    {("exfil", ALLOWED_MUTABLE_READER), ("redaction", "_token_param_exempt_prefixes")}
+)
 
 # Module globals a reachable function may read although they are mutable
 # containers, each with the reason the cache key need not cover it.
@@ -277,7 +282,7 @@ def test_battery_reaches_the_one_allowed_mutable_reader(graph: _Graph) -> None:
     """The guard measures a real graph: the allowed reader is in it, the file reader is not."""
     reached = graph.reachable()
     names = {name for _, name in reached}
-    assert ("exfil", ALLOWED_MUTABLE_READER) in reached
+    assert ALLOWED_MUTABLE_READERS <= reached, sorted(ALLOWED_MUTABLE_READERS - reached)
     assert ("exfil", GATED_CLASSIFIER) in reached
     assert ("redaction", "redact_credentials") in reached
     assert OAUTH_FILE_READER not in names
@@ -289,7 +294,7 @@ def test_battery_reads_no_mutable_state_beyond_the_exempt_hosts(graph: _Graph) -
     """No reachable function reads a mutable global, the clock, the environment or a file."""
     violations: list[str] = []
     for module, name in sorted(graph.reachable()):
-        if name == ALLOWED_MUTABLE_READER:
+        if (module, name) in ALLOWED_MUTABLE_READERS:
             continue
         fn = graph.defs[module][name]
         tokens = _tokens(fn)

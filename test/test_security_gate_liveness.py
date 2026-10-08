@@ -230,7 +230,36 @@ def _url_payload_command(n: int) -> str:
 #: Raised again, from 28,740, for the one import ``redaction_allow`` needs to publish
 #: its hosts file through ``atomic_write.replace_with_retry``, which retries the
 #: Windows sharing violation a bare ``os.replace`` lost the write on. No pattern moved.
-_PACKAGE_LINE_BUDGET = 28_741
+#:
+#: Raised again, from 28,741, for the companion token-parameter URL-prefix seam in
+#: ``redaction``: pass 4 leaves a ``?token=`` value alone only when it is one
+#: unreserved/base64/percent-encoded run (plus trailing closers) directly after a
+#: ``CredentialPolicy.token_param_exempt_url_prefixes()`` member and no earlier pass
+#: claimed any of it. Costs the prefix reader with its degrade-to-empty contract, the
+#: prefix grammar, the enclosing-URL boundary scan, the preceding-destination guard
+#: (with proven earlier exempt links and their own ``<`` autolink opener blanked; any
+#: raw ``&`` or ``<`` before the prefix is a destination signal, never decoded), the
+#: value-run classes, and the match predicate. Public default is the empty set, so
+#: nothing is exempt without a companion. The context-local stream suspension and its
+#: exception-safe wrapper add the fail-closed rule for windows that cannot inspect
+#: the whole destination. Then by 128 more for the per-text scan state that keeps
+#: the two guards linear: candidates arrive left to right, so the destination guard
+#: reads each character once (a found signal is sticky, a scan resumes after the
+#: last exempt URL) and the boundary guard carries the last whitespace and the
+#: whitespace-free run an earlier matched prefix already settled. Same answers, and
+#: repeated exempt links cost one read of the text, not a rescan of the whole prefix each.
+#: Then by 20 more for replacing the variable-width scheme branch with
+#: fixed-width destination candidates and a backward scheme walk over disjoint
+#: colon-delimited runs. This removes regex retry amplification without widening
+#: the exemption or adding another scan of the message.
+#: Then by 21 more for ``redact_credentials``'s ``defer_token_param`` keyword: a
+#: streamed delta that a whole-segment run redacts again leaves pass 4 to that run
+#: while a prefix set is installed, read lazily on the first ``token=`` match as
+#: before. Every other pass still runs on the delta; the empty default and every
+#: other caller are byte-identical, and the stream suspension still wins. Then by
+#: 4 more because only a value no earlier pass touched is deferred: a partly
+#: claimed value is still redacted per delta, gaps and all.
+_PACKAGE_LINE_BUDGET = 28_967
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
