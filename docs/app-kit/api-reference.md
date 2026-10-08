@@ -362,6 +362,20 @@ call `await client.authenticate()` before the first request; the context manager
 does not exchange the secret automatically. The same exchange refreshes a token
 after a 401/403 response.
 
+> **Cron children cannot read `.app_secret` from disk.** Inside a cron child — a
+> script cron or a command cron — the whole apps tree is masked and every
+> `.app_secret` is unreadable, the cron's own app included, so a client
+> constructed there with `app_name` set finds no secret to exchange. An app cron
+> reaches the Gateway through its `ScriptContext` instead (`ctx.notify()`,
+> `ctx.call_tool()`), which carries the job's identity without reading a
+> credential off disk. If your app cron previously read `.app_secret` (directly
+> or by constructing a client with `app_name`), move it to `ScriptContext`
+> before upgrading. The cron's own bundle code and its `data/` directory stay
+> readable and writable, so imports and durable state are unaffected; only the
+> secret file is masked. Keep each `.app_secret` a single plain file: if your
+> bundle holds a second hard link to any app's secret, that cron is refused with
+> a message naming the linked path, so remove the extra link.
+
 The Gateway names its authentication cookie from the Host header it receives,
 falling back to its own listen port. The Python client normally derives that name
 from `base_url`. For a port-less URL or a reverse proxy that strips or rewrites
