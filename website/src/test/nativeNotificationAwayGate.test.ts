@@ -238,7 +238,7 @@ describe('one approval frame yields exactly one OS toast', () => {
     act(() => {
       ws.simulateMessage({
         type: 'approval',
-        data: { id: 'ap-once-1', source: 'cron', tool: 'Bash', tool_input: '{}', ts: 1.0 },
+        data: { id: 'ap-once-1', instance: 'inst-ap-once-1', source: 'cron', tool: 'Bash', tool_input: '{}', ts: 1.0 },
       })
     })
 
@@ -259,7 +259,7 @@ describe('one approval frame yields exactly one OS toast', () => {
     act(() => {
       ws.simulateMessage({
         type: 'approval',
-        data: { id: 'ap-once-2', source: 'cron', tool: 'Bash', tool_input: '{}', ts: 2.0 },
+        data: { id: 'ap-once-2', instance: 'inst-ap-once-2', source: 'cron', tool: 'Bash', tool_input: '{}', ts: 2.0 },
       })
     })
 
@@ -283,7 +283,7 @@ describe('one approval frame yields exactly one OS toast', () => {
     act(() => {
       ws.simulateMessage({
         type: 'approval',
-        data: { id: 'ap-once-3', source: 'cron', tool: 'Bash', tool_input: '{}', ts: 3.0 },
+        data: { id: 'ap-once-3', instance: 'inst-ap-once-3', source: 'cron', tool: 'Bash', tool_input: '{}', ts: 3.0 },
       })
     })
 

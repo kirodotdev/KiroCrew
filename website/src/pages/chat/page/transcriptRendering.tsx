@@ -4,7 +4,6 @@ import { Clock, AppWindow } from 'lucide-react'
 import type { MessageQuoteRole, MessageQuote } from '../../../chat-core/composer/messageQuote'
 import type { ChatMessage, ChatSlot } from '../../../types'
 import type { CapabilityFix, FreshSessionState, RepairImagesState } from '../ErrorCard'
-import { toApiDecision } from '../../../utils/approvalDecision'
 import { isHiddenInvisibleAssistantRow } from '../../../utils/invisibleText'
 import { type MessageRenderer, mergeRenderers, type MessageRenderContext, resolveRenderer } from '../../../app-sdk/messageRenderers'
 import { createTranscriptRenderers } from '../transcriptRenderers'
@@ -110,8 +109,8 @@ interface TranscriptRenderingOptions {
   connectionsUiOn: boolean
   planTaskId: string
   showRefusedPress: (action: RefusedPressAction, e: unknown) => void
-  approve: (action: string) => Promise<void>
-  dismissApproval: (aid: string, decision?: string) => void
+  /** Decides a collapsed tool group's pending row, bound to the request it names. */
+  decideRow: (meta: Record<string, unknown> | undefined, action: string) => Promise<void>
   revealAppInPanel: (toolCallId: string) => void
   lastTextIdx: number
   regenerating: boolean
@@ -171,7 +170,7 @@ export function useTranscriptRendering({
   embedded, mode, popout, filteredSlots, connected, activeSlot, voiceRecoverySlot, appToolCallIds, mcpAppPanel, messages, messagesRef, slotRunning, toolDisclosure, setToolDisclosureFor, slotState,
   activityOpen, slotHasMore, slotOldestIndex, cursorIsForActiveSlot, loadingOlder, chatConfig, activeSlotRemoteBound, automationId, setAutomationOpen, handleArtifactOpen, handleFileOpen,
   handleFolderOpen, handleOpenDiff, handleSubagentPanelOpen, sessionTitles, handleFork, forkDirectionChoice, highlightTs, selectSessionTab, linkPreviewsOn, socialShareOn, connectionsUiOn, planTaskId, showRefusedPress, handleOpenCrewTab,
-  approve, dismissApproval, revealAppInPanel, lastTextIdx, regenerating, handleRegenerate, replacingMids, continuable, continuing, freshSession, handleContinue, handleFreshSession, repairImages, handleRepairImages, interrupted,
+  decideRow, revealAppInPanel, lastTextIdx, regenerating, handleRegenerate, replacingMids, continuable, continuing, freshSession, handleContinue, handleFreshSession, repairImages, handleRepairImages, interrupted,
   openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, openModelPickerFromError, openTurnLimitSetting, quoteWholeMessage, handleAsk, handleQuote, handleEditResend, editLast, farmPassRef,
   handleEditConsumed, renderUserContentCb, transcriptHot, toggleAct, handleSpeak, handleApplyPlan, renderedDisplayItems, stableMsgKey, handleLoadEarlier, isPinned, handleJumpToQuote,
   handleTogglePinForMessage, handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures,
@@ -551,16 +550,15 @@ export function useTranscriptRendering({
           permissionMeta={unresolvedPerms.at(-1)?.meta as Record<string, unknown> | undefined}
           pendingPermCount={unresolvedPerms.length}
           onApprove={(() => {
-            const aid = unresolvedPerms.at(-1)?.meta?.approval_id as string | undefined
-            if (!aid) return approve
-            return async (action: string) => { await api.resolveApproval(aid, toApiDecision(action)); dismissApproval(aid) }
+            const meta = unresolvedPerms.at(-1)?.meta as Record<string, unknown> | undefined
+            return (action: string) => decideRow(meta, action)
           })()}
           onViewActivity={toggleAct}
           activityOpen={activityOpen}
         >{it.msgs.map((m, j) => <div key={msgIdentityKey(m, stableMsgKey)}>{renderMessage(it.startIdx + j, m)}</div>)}</CollapsibleToolGroup>)
       })() : renderMessage(it.idx, it.msg)}
     </div>
-  }, [stableMsgKey, renderMessage, approve, dismissApproval, toggleAct, activityOpen])
+  }, [stableMsgKey, renderMessage, decideRow, toggleAct, activityOpen])
 
   // ---- Measure-farm wiring ----
   // The farm's renderItem must reproduce the transcript row wrappers EXACTLY
@@ -586,7 +584,7 @@ export function useTranscriptRendering({
               isRunning={false}
               permissionMeta={undefined}
               pendingPermCount={0}
-              onApprove={approve}
+              onApprove={action => decideRow(undefined, action)}
               onViewActivity={toggleAct}
               activityOpen={false}
             >{item.msgs.map((m, j) => <div key={msgIdentityKey(m, stableMsgKey)}>{renderMessage(item.startIdx + j, m)}</div>)}</CollapsibleToolGroup>
@@ -594,7 +592,7 @@ export function useTranscriptRendering({
         })() : renderMessage(item.idx, item.msg)}
       </div>
     )
-  }, [renderedDisplayItems, renderTurnItem, chatConfig.collapseAllSteps, appToolCallIds, approve, toggleAct, stableMsgKey, renderMessage])
+  }, [renderedDisplayItems, renderTurnItem, chatConfig.collapseAllSteps, appToolCallIds, decideRow, toggleAct, stableMsgKey, renderMessage])
   const renderFarmItem = useCallback((i: number): React.ReactNode => {
     farmPassRef.current = true
     try { return buildFarmItem(i) } finally { farmPassRef.current = false }

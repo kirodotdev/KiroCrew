@@ -4,12 +4,12 @@ import type { ModelInfo } from '../../../providers/types'
 import { store, type AppDispatch } from '../../../store'
 import type { ChatSlot } from '../../../types'
 import { useAnchoredTriggerRect } from '../../../hooks/useAnchoredTriggerRect'
-import { resolveByApprovalId, setAgentSwitchNotice } from '../../../store/chatSlice'
-import { endApprovalRow, liveApprovalRows } from '../../../store/notificationsSlice'
+import { setAgentSwitchNotice } from '../../../store/chatSlice'
 import { updateSlot } from '../../../store/dashboardSlice'
 import { inFlightSlotSwitchOutcome, stagedSlotSwitchTarget, performSlotSwitch } from '../../../lib/slotSwitch'
 import { performAgentSlotSwitch } from '../../../lib/agentSwitch'
 import { api } from '../../../api/client'
+import { decidePermissionRow } from '../../../lib/decidePermissionRow'
 import { useFilteredDropdown } from '../../../hooks/useFilteredDropdown'
 import { useModelPickerHiddenModelsQuery, useModelPickerConfigured, shouldSeparateModelEffort, filterInteractiveModels, effortToCarry, switchGroupedModel } from '../../../hooks/useInteractiveModels'
 import { jevRouteOffered, withJevRoute, JEV_ROUTE_MODEL } from '../../../lib/jevRoute'
@@ -197,19 +197,12 @@ interface SessionChoicesOptions {
 export function useSessionChoices({
   dispatch, queryClient, activeSlot, codexPairModels, setModelDropdown, modelPickerReturnsFocusRef, setPendingAgent, setPendingModel, setPendingProject,
 }: SessionChoicesOptions) {
-  const approve = useCallback(async (action: string) => { if (activeSlot) await api.approveChatSlot(activeSlot, action) }, [activeSlot])
-  // Approvals dismissed through the CollapsibleToolGroup mounts resolve via the
-  // ONE-SHOT `api.resolveApproval` endpoint, which has no trust verb. The shared
-  // `toApiDecision` (utils/approvalDecision.ts) is fail-closed and is the only
-  // place that mapping is spelled — a Trust affordance on this path would claim
-  // a standing grant the backend never records (#5400, #5434).
-  const dismissApproval = useCallback((aid: string, decision?: string) => {
-    dispatch(resolveByApprovalId({ id: aid, slot: activeSlot || undefined, decision }))
-    // The id recurs and the feed keeps a refused press's retired row, so only
-    // a live row under the id is this decision's.
-    const n = liveApprovalRows(store.getState().notifications, aid).at(-1)
-    if (n) dispatch(endApprovalRow(n.ts))
-  }, [activeSlot, dispatch])
+  // The collapsed tool groups decide their pending row bound to the request
+  // it names (see lib/decidePermissionRow). A row that names none, including a
+  // group with no pending row, is refused as no longer pending with nothing
+  // sent: a bare slot decide would answer whatever is pending there now.
+  const decideRow = useCallback((meta: Record<string, unknown> | undefined, action: string) =>
+    dispatch(decidePermissionRow(meta, activeSlot, action)), [activeSlot, dispatch])
   // Resolves `true` once the switch landed (or was held as the pending pick of a
   // chat not created yet), `false` when it was refused: the refusal is already
   // shown as the shared notice, so a caller only needs the answer to know
@@ -372,6 +365,6 @@ export function useSessionChoices({
     // setPendingProject is a stable ref-backed setter.
   }, [activeSlot, dispatch, setPendingProject])
   return {
-    approve, dismissApproval, switchAgent, pickModel, setProject,
+    decideRow, switchAgent, pickModel, setProject,
   }
 }

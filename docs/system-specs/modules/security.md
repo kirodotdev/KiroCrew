@@ -3710,20 +3710,31 @@ upstream sync.
 and request ID. The coordinator endpoint's optional
 `origin=coordinator&slot=…&instance=…` selector checks the exact inventory slot
 and the record's instance, and resolves only its live state future, without
-yielding between check and resolution. The instance is minted by the coordinator
+yielding between check and resolution. `slot` must be present but may be empty:
+a coordinator approval raised with no owning slot (a cron job's) is bound by its
+instance alone, and the record's own empty slot must still match. The instance is minted by the coordinator
 once per request and carried on the record; the request ID is the caller's and
 can recur in the same slot, so a card rendered from an expired record cannot
 resolve the request that replaced it. An earlier wait's exit removes only its own
 record and future, judged by the future it created, so a replacement registered
 under the same ID stays resolvable. A selector naming no instance is malformed
-and returns 400. The native slot endpoint's optional
+and returns 400. A task gate's record names its run and task as
+fields (`run_task_id`, `task_index`, returned by `GET /api/approvals` beside
+`instance`), because up to three runs execute at once and their task indexes
+overlap. The project page, which reads the global listing, finds its own run's
+gate and the task index from those fields and treats the ID as opaque; the
+decide does not carry either, because the instance is minted per record and
+already names that record. The native slot endpoint's optional
 `origin: native` body selector requires an explicit request ID, `request_mid`
-and one-shot action. The host permission row's existing `meta.mid` is associated
+and a one-shot or pending-card trust action (`trust`, `trust_reads`,
+`trust_command`, `trust_base`; never `yolo`), so a standing grant is bound to
+the exact request the card showed. The host permission row's existing `meta.mid` is associated
 with the exact registered future; projection and submission both verify that
 association, so ACP reconnect ID reuse cannot transfer old consent. Cleanup
 only removes the future and association it owns and never broadcasts a stale
 resolution over a replacement. The strict endpoint
-never adopts another slot's future or falls back to the coordinator. Missing or
+never falls back to the coordinator, and it looks on another slot only when
+that slot has the same effective session key (below). Missing or
 expired targets return 404. Omitting the selector retains established behavior
 for older approval surfaces. These selectors narrow resolution, not authorization
 or permission mode; the existing caller gates still run first.
@@ -3742,8 +3753,11 @@ batch; a coordinator refusal resolves its boolean future to false. Neither
 changes permission mode or promises that the agent continues. Copies in other
 views describe the same request and reconcile on refresh. Normal mode asks for
 tools requiring approval, not every action. Invalid strict selectors return
-`400 / invalid_approval_target`; a missing strict native future returns
-`404 / approval_not_pending` without cross-origin fallback.
+`400 / invalid_approval_target`. A strict native decide looks for its future
+as every native decide does: on the addressed slot, then on a slot with the
+same effective session key. Across those slots the row's `request_mid` is the
+only binding, so a missing future, or one whose instance is not that `mid`,
+returns `404 / approval_not_pending` without cross-origin fallback.
 
 **3-tier interactive trust escalation** (`dashboard/chat_turn/tool_approval.py`, `dashboard/chat_turn/permission_prompt.py`, `dashboard/chat_api/slot_approval.py`):
 

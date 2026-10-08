@@ -2663,7 +2663,10 @@ A dashboard approval refusal and process liveness are separate facts. A terminal
 approval response (expired/already decided) immediately removes decision controls,
 but remains conservatively active because another browser may already have approved
 and launched the same id. A reconnect that finds a spawn approval gone with no known
-outcome records the same verdict. The client immediately reconciles against
+outcome records the same verdict. The verdict names the request the card was raised
+for, its coordinator target (`types/approvalTarget.ts`): a refusal for one request never
+withdraws a card that a newer request under the same id raised, and a press on a card
+that names no request takes the verdict with nothing sent. The client immediately reconciles against
 `GET /api/spawn`, matching the record by run id alone (a nested, cron- or channel-born
 run's `parent` is not its tab key): a non-terminal record promotes the card to
 running/tool once `awaiting_approval` is false, a terminal record adopts its `outcome`,

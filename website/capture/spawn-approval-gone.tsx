@@ -103,6 +103,8 @@ const pendingSpawn = (n: number): SubagentActivity => ({
   startedAt: Date.now() - 42_000,
   elapsed: 42,
   approval_id: `spawn:a${n}`,
+  // The coordinator request the spawn waits on: a decide is bound to it.
+  approval_target: { origin: 'coordinator', id: `spawn:a${n}`, slot: SLOT, instance: `inst-a${n}` },
 })
 const IDS = scenario === 'multi' ? ['a1', 'a2', 'a3'] : ['a1']
 const pendingSubs = Object.fromEntries(IDS.map((id, i) => [id, pendingSpawn(i + 1)]))

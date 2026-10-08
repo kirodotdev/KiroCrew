@@ -827,6 +827,11 @@ An `approval_resolved` frame says a pending approval is no longer waiting. Its
 - `decision`: absent for an ordinary decision. `"expired"` means the wait timed
   out and the request was denied.
 
+A request that takes over a live request's id raises its own `approval` frame
+with a new `instance`; no `approval_resolved` frame retires the request it
+replaced. A decide that names the old `instance` is refused, so a card kept for
+the replaced request cannot decide the new one.
+
 The app `slots` event (`mc:app:slots`) fires after the dashboard applies each
 `slots` or `slot_patch` frame. Its `detail` is `null`: the event says the slot
 list changed, not what it now holds. Re-read slots through your own scoped

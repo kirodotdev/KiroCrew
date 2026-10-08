@@ -12,7 +12,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { screen, act, waitFor } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import ToolCallLine from '../pages/chat/ToolCallLine'
-import { resolveByApprovalId, sseToolResult } from '../store/chatSlice'
+import { resolveNativeApprovalRows, sseToolResult } from '../store/chatSlice'
 import type { RootState } from '../store'
 import type { ChatMessage } from '../types'
 
@@ -208,7 +208,7 @@ describe('ToolCallLine — shell activity line threshold', () => {
     expect(screen.queryByTestId('shell-activity')).toBeNull()
 
     act(() => {
-      store.dispatch(resolveByApprovalId({ id: 'app-long', slot: 'S', decision: 'approved' }))
+      store.dispatch(resolveNativeApprovalRows({ id: 'app-long', slot: 'S', decision: 'approved' }))
     })
     expect(screen.queryByTestId('shell-activity')).toBeNull()
 
