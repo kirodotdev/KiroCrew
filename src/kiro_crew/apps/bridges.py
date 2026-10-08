@@ -2816,13 +2816,12 @@ def _warn_unresolvable_stdio_command(app_name: str, server_name: str, cfg: dict)
 def _warn_unresolved_secret_refs(app_name: str, server_name: str, env: dict) -> None:
     """Warn when an app's stdio MCP server declares a ``secret://`` env value.
 
-    Kiro Crew resolves ``secret://<name>`` against the Secrets vault only on its
-    own MCP gateway spawn path. An app-registered stdio server is written into
-    the agent config and spawned by kiro-cli directly, so such a value reaches
-    the child as the literal reference text and the credential silently never
-    arrives. Whether an installed app may name a vault secret at
-    all is an open trust decision, so this only makes the gap visible: it logs,
-    gates nothing, and leaves the entry exactly as declared.
+    An app-registered stdio server is written into the agent config, and when
+    kiro-cli spawns it directly the child gets the literal reference text: the
+    credential silently never arrives. How an installed app may receive a vault
+    secret at all is an open trust decision, so this neither resolves the value
+    nor points at a route that would: it states the gap, gates nothing, and
+    leaves the entry exactly as declared.
 
     Names only the env-var KEYS, never the secret name after the scheme -- the
     same sink rule :mod:`kiro_crew.mcp_gateway.secret_uri` follows, because a
@@ -2839,9 +2838,10 @@ def _warn_unresolved_secret_refs(app_name: str, server_name: str, env: dict) -> 
     if not keys:
         return
     logger.warning(
-        "App %s: stdio MCP server %r sets env %s to a secret:// reference, which "
-        "Kiro Crew does not resolve for app-registered MCP servers -- the server "
-        "will receive the literal reference text, not the vault value",
+        "App %s: stdio MCP server %r sets env %s to a secret:// reference; when "
+        "kiro-cli spawns the server directly it receives the literal reference "
+        "text, not a vault value. How an app may receive a vault secret is "
+        "undecided (https://github.com/kirodotdev/KiroCrew/issues/10641)",
         app_name,
         server_name,
         ", ".join(repr(k) for k in keys),

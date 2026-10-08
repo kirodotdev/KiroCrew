@@ -1893,11 +1893,10 @@ class TestStdioInterpreterResolution:
     def test_a_secret_uri_env_value_logs_a_warning_and_registers_unchanged(
         self, tmp_path, app_env, monkeypatch, caplog
     ):
-        # An app's stdio server is spawned by kiro-cli, which never
-        # resolves secret://, so the literal reaches the child. Until the owner
-        # decides how apps may reach the vault, registration must at least say
-        # so -- naming the env KEY only, never the secret name -- and must not
-        # rewrite or drop the declared value.
+        # kiro-cli never resolves secret://, so an app stdio server it spawns
+        # gets the literal. The warning states that gap without prescribing a
+        # route to vault access (that trust model is undecided), names the env
+        # KEY only, never the secret name, and leaves the declared value as is.
         with caplog.at_level("WARNING", logger="kiro_crew.apps.bridges"):
             entry = self._register_stdio(
                 tmp_path, app_env, monkeypatch,
@@ -1916,6 +1915,9 @@ class TestStdioInterpreterResolution:
         assert "'API_TOKEN'" in hits[0]
         assert "'MODE'" not in hits[0]
         assert "hidden-name-10641" not in caplog.text
+        assert "kiro-cli spawns the server directly" in hits[0]
+        assert "undecided" in hits[0]
+        assert "stub" not in hits[0].lower()
 
     def test_a_plain_env_logs_no_secret_uri_warning(
         self, tmp_path, app_env, monkeypatch, caplog
