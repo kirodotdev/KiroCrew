@@ -172,7 +172,7 @@ describe('ChatPage on the phone: its share of the single top bar', () => {
     fireEvent.pointerDown(menu, { button: 0, ctrlKey: false })
     fireEvent.click(menu)
     expect(await screen.findByRole('menuitem', { name: /Rename/ })).toBeInTheDocument()
-    expect(screen.getByRole('menuitem', { name: /Auto-title/ })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: /^Regenerate title/ })).toBeInTheDocument()
     // Pop out is NOT here: the bar's trailing ⋯ menu is the phone's window
     // menu and carries it, and the same row in two adjacent menus read as two
     // different actions (UX lane).

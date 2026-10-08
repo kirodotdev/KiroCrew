@@ -235,7 +235,7 @@ describe('SessionTitleControl', () => {
     await waitFor(() => expect(storeTitle(store)).toBe('Generated title'))
     // Spinner gone; the Auto-title button's place is taken by the Undo offer.
     await waitFor(() => expect(screen.getByRole('button', { name: `Undo: ${TITLE}` })).toBeTruthy())
-    expect(screen.queryByText('Auto-title…')).toBeNull()
+    expect(screen.queryByText('Generating title…')).toBeNull()
   })
 
   it('offers a one-shot Undo after a generated title lands, which restores the previous name through the rename path', async () => {
@@ -400,6 +400,16 @@ describe('SessionTitleControl', () => {
     expect(regen.getAttribute('tabindex')).not.toBe('-1')
   })
 
+  it('the regenerate button names its action with a verb, not a state noun (#14443)', () => {
+    renderControl()
+    const regen = screen.getByRole('button', { name: REGEN })
+    // A noun label ("Auto-title") read as "this title is automatic" once Enter
+    // returned focus to the header and revealed it; the verb says what a press does.
+    expect(regen.textContent).toBe('Regenerate title')
+    expect(regen.getAttribute('aria-label')).toMatch(/^Regenerate title/)
+    expect(screen.queryByText(/Auto-title/)).toBeNull()
+  })
+
   it('no Undo is offered when the generated title equals the current one', async () => {
     vi.mocked(api.generateTitle).mockResolvedValueOnce({ title: TITLE })
     renderControl()
@@ -415,10 +425,12 @@ describe('SessionTitleControl', () => {
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: REGEN })) })
     expect(screen.queryByRole('button', { name: REGEN })).toBeNull()
     // The busy state is named, not just drawn: the label stays beside the spinner.
-    expect(screen.getByText('Auto-title…').closest('[role="status"]')).not.toBeNull()
+    expect(screen.getByText('Generating title…').closest('[role="status"]')).not.toBeNull()
+    // The busy label is a progress phrase, never the button's imperative verb.
+    expect(screen.queryByText(/Regenerate title/)).toBeNull()
     await act(async () => { resolve({ title: 'Done' }) })
     // Settled: the busy status is gone and the Undo offer stands in the button's place.
-    await waitFor(() => expect(screen.queryByText('Auto-title…')).toBeNull())
+    await waitFor(() => expect(screen.queryByText('Generating title…')).toBeNull())
     expect(screen.getByRole('button', { name: `Undo: ${TITLE}` })).toBeTruthy()
   })
 

@@ -430,13 +430,15 @@ export default function SessionTitleControl({
         )
         : generating
         ? (
-          /* Busy-naming is NAMED: the spinner keeps the action's label beside
-             it (with an ellipsis), so the swap from the Auto-title button to a
+          /* Busy-naming is NAMED: the spinner carries a progress label beside
+             it (with an ellipsis), so the swap from the regenerate button to a
              bare glyph does not read as "something unknown is happening" --
-             and the status is announced, not just drawn. */
+             and the status is announced, not just drawn. The label is its own
+             progressive phrase, not the button's verb: an imperative with an
+             ellipsis reads as one more button to press. */
           <span role="status" aria-live="polite" className="shrink-0 flex items-center gap-1 text-accent">
             <Loader size={compact ? 14 : 16} className="shrink-0 animate-spin" />
-            <span className={compact ? 'text-[11px] leading-none whitespace-nowrap' : 'text-xs leading-none whitespace-nowrap'}>{i18nT('pages.chatPage.auto_title')}…</span>
+            <span className={compact ? 'text-[11px] leading-none whitespace-nowrap' : 'text-xs leading-none whitespace-nowrap'}>{i18nT('pages.chatPage.regenerating_title')}…</span>
           </span>
         )
         : (
