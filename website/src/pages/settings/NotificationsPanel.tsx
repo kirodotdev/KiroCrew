@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Lock, MonitorCog, Blocks, Check, RadioTower, Bell, Volume2, ListMusic } from 'lucide-react'
+import { Lock, MonitorCog, Blocks, Check, RadioTower, Bell, Volume2, ListMusic, Music } from 'lucide-react'
 import { SettingsSection, SettingsCard, SettingsToggle, SettingsSelect } from '../../components/settings'
 import { SettingsSubNav, type SubNavItem } from '../../components/SettingsSubNav'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '../../components/ui/select'
@@ -9,9 +9,11 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { api } from '../../api/client'
 import type { NotificationChannel } from '../../types'
 import {
-  SOUND_PRESETS, type SoundPreset, type SoundCategory, type SoundSettings,
-  loadSoundSettings, saveSoundSettings, playPreset, presetForKind,
+  SOUND_PRESETS, SOUND_CATEGORIES, type SoundPreset, type SoundChoice, type SoundCategory, type SoundSettings, type ToneStep,
+  type CustomTones, validateCustomTone,
+  loadSoundSettings, saveSoundSettings, playPreset, presetForKind, customSoundId, customSoundName,
 } from '../../hooks/useNotificationSound'
+import { CustomSoundsSection, type UndoResult } from './CustomSoundsSection'
 import { loadChatCompleteNotify, saveChatCompleteNotify } from '../../hooks/chatCompleteNotify'
 import { loadBannerEnabled, saveBannerEnabled } from '../../hooks/notificationBanner'
 import { loadUnreadOnAttention, saveUnreadOnAttention } from '../../hooks/unreadOnAttention'
@@ -47,20 +49,46 @@ const PRESET_LABEL_KEY: Record<SoundPreset, string> = {
   pulse: 'pages.settings.notificationsPanel.preset_pulse',
 }
 const DEFAULT_SENTINEL = 'default'
+
+/** The per-category choices in one stored value, as written, for telling
+ *  which categories a single write changed. Anything unreadable is empty. */
+function rawPerCategory(raw: string | null): Record<string, unknown> {
+  try {
+    const p = raw ? (JSON.parse(raw) as { perCategory?: unknown }).perCategory : null
+    return p && typeof p === 'object' && !Array.isArray(p) ? (p as Record<string, unknown>) : {}
+  } catch {
+    return {}
+  }
+}
+
+/** Bump the count of each category whose choice differs between two values. */
+function countCategoryChanges(
+  edits: Partial<Record<SoundCategory, number>>, before: Record<string, unknown>, after: Record<string, unknown>,
+) {
+  for (const cat of SOUND_CATEGORIES) {
+    if (before[cat] !== after[cat]) edits[cat] = (edits[cat] ?? 0) + 1
+  }
+}
 const OVERRIDE_OPTIONS: string[] = [DEFAULT_SENTINEL, ...PRESET_OPTIONS]
 
-/** Localised preset labels, positionally aligned with `PRESET_OPTIONS`. No
- *  `hasOwnProperty` guard: `SoundPreset` is a closed union and
- *  `loadSoundSettings` validates stored values against it, so every id reaching
- *  this table has an entry (unlike `lib/effort.ts`, whose levels are whatever
- *  the backend reports). */
-const presetLabels = (): string[] => PRESET_OPTIONS.map(p => i18nT(PRESET_LABEL_KEY[p]))
+/** The user's custom sounds as picker options, after the built-ins. */
+const customOptions = (s: SoundSettings): SoundChoice[] =>
+  Object.keys(s.customTones ?? {}).map(customSoundId)
+
+/** Localised preset labels, positionally aligned with `PRESET_OPTIONS` plus the
+ *  custom options. A custom sound is labelled with the name the user gave it;
+ *  `loadSoundSettings` drops any choice whose custom sound is gone, so every
+ *  other id reaching this table is a built-in with an entry. */
+const presetLabels = (s: SoundSettings): string[] => [
+  ...PRESET_OPTIONS.map(p => i18nT(PRESET_LABEL_KEY[p])),
+  ...customOptions(s).map(id => i18nT('pages.settings.notificationsPanel.custom_sound_option', { name: customSoundName(id) ?? id })),
+]
 
 /** …plus the leading "inherit the default sound" row the per-category selects
  *  carry, aligned with `OVERRIDE_OPTIONS`. */
-const overrideLabels = (): string[] => [
+const overrideLabels = (s: SoundSettings): string[] => [
   i18nT('pages.settings.notificationsPanel.use_default'),
-  ...presetLabels(),
+  ...presetLabels(s),
 ]
 
 /** Per-category sound rows, in display order. Ids only — the label and
@@ -281,6 +309,17 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
   // config. Reload through loadSoundSettings() (reusing its validation/clamping
   // and its adopt-DEFAULTS-on-clear behaviour where e.newValue is null) rather
   // than parsing e.newValue by hand.
+  // How many times each category's choice has changed while this panel is
+  // open, from this tab or another. Undo compares it with the count at the
+  // delete, so it never puts back a category the user has touched since, even
+  // one changed away and back to the same value.
+  const categoryEdits = useRef<Partial<Record<SoundCategory, number>>>({})
+  const lastPerCategory = useRef(settings.perCategory)
+  const noteCategoryEdits = (next: SoundSettings['perCategory']) => {
+    countCategoryChanges(categoryEdits.current, lastPerCategory.current, next)
+    lastPerCategory.current = next
+  }
+
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
       // Ignore writes to a different storageArea (e.g. sessionStorage in a
@@ -294,7 +333,17 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
       // key === null is a whole-store clear() and must be honoured; otherwise
       // only our key matters.
       if (e.key !== null && e.key !== SOUND_STORAGE_KEY) return
-      setSettings(loadSoundSettings())
+      const next = loadSoundSettings()
+      if (e.key === SOUND_STORAGE_KEY) {
+        // Count from this event's own before/after, not from a re-read:
+        // events can queue, and by the time one runs storage may already hold
+        // a later write that changed a category back.
+        countCategoryChanges(categoryEdits.current, rawPerCategory(e.oldValue), rawPerCategory(e.newValue))
+      } else {
+        countCategoryChanges(categoryEdits.current, lastPerCategory.current, next.perCategory)
+      }
+      lastPerCategory.current = next.perCategory
+      setSettings(next)
     }
     window.addEventListener('storage', onStorage)
     return () => window.removeEventListener('storage', onStorage)
@@ -306,30 +355,113 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
   // panel's last render never saw. Merging `partial` onto the freshly loaded
   // snapshot means a local edit to one field can never silently clobber a newer
   // persisted value in another field.
-  const applyUpdate = (mutate: (current: SoundSettings) => SoundSettings): void => {
+  const applyUpdate = (mutate: (current: SoundSettings) => SoundSettings): boolean => {
     const next = mutate(loadSoundSettings())
     // Persist first; adopt into local state only if the write landed. On a
     // quota-dropped save, saveSoundSettings returns false and does NOT fire the
     // settings-changed event — so we keep the previous local state, leaving the
     // UI showing the persisted truth rather than a value that vanishes on
     // reload.
-    if (saveSoundSettings(next)) setSettings(next)
+    if (!saveSoundSettings(next)) return false
+    setSettings(next)
+    return true
+  }
+
+  // A user's own category change: counted, unlike the clean-up a delete or an
+  // undo does, so a later undo leaves it alone.
+  const applyCategoryEdit = (mutate: (current: SoundSettings) => SoundSettings): boolean => {
+    const ok = applySetting(mutate)
+    if (ok) noteCategoryEdits(loadSoundSettings().perCategory)
+    return ok
+  }
+
+  // A sound, volume or category change that could not be saved. The control
+  // snaps back to the saved value, so this notice says why.
+  const [soundSaveFailed, setSoundSaveFailed] = useState(false)
+  const applySetting = (mutate: (current: SoundSettings) => SoundSettings): boolean => {
+    const ok = applyUpdate(mutate)
+    setSoundSaveFailed(!ok)
+    return ok
   }
 
   const update = (partial: Partial<SoundSettings>) => {
-    applyUpdate(current => ({ ...current, ...partial }))
+    applySetting(current => ({ ...current, ...partial }))
   }
 
-  const setCategoryPreset = (cat: SoundCategory, preset: SoundPreset) => {
-    applyUpdate(current => ({ ...current, perCategory: { ...current.perCategory, [cat]: preset } }))
-  }
+  const setCategoryPreset = (cat: SoundCategory, preset: SoundChoice): boolean =>
+    applyCategoryEdit(current => ({ ...current, perCategory: { ...current.perCategory, [cat]: preset } }))
 
-  const clearCategoryOverride = (cat: SoundCategory) => {
-    applyUpdate(current => {
+  const clearCategoryOverride = (cat: SoundCategory): boolean =>
+    applyCategoryEdit(current => {
       const { [cat]: _drop, ...rest } = current.perCategory
       void _drop
       return { ...current, perCategory: rest }
     })
+
+  // Checked again against the sounds saved NOW, not the panel's last render:
+  // another tab may have saved a sound since, and adding over it would
+  // overwrite it. Returns the problems found (empty when saved), or null when
+  // the save itself failed.
+  const addCustomSound = (name: string, tones: ToneStep[]): string[] | null => {
+    const next = loadSoundSettings()
+    const problems = validateCustomTone(name, tones, next.customTones ?? {})
+    if (problems.length > 0) return problems
+    next.customTones = { ...(next.customTones ?? {}), [name]: tones }
+    if (!saveSoundSettings(next)) return null
+    setSettings(next)
+    return []
+  }
+
+  // Deleting a sound also clears every category that was set to it, so no
+  // picker is left pointing at a sound that no longer exists.
+  const removeCustomSound = (name: string): (() => UndoResult) | null => {
+    const id = customSoundId(name)
+    const before = loadSoundSettings()
+    const tones = before.customTones?.[name]
+    const usedBy = (Object.entries(before.perCategory) as Array<[SoundCategory, SoundChoice]>)
+      .filter(([, v]) => v === id).map(([cat]) => cat)
+    const ok = applyUpdate(current => {
+      const { [name]: _gone, ...customTones } = current.customTones ?? {}
+      void _gone
+      const perCategory = Object.fromEntries(
+        Object.entries(current.perCategory).filter(([cat, v]) => v !== id || cat === 'all'),
+      ) as SoundSettings['perCategory']
+      if (perCategory.all === id) perCategory.all = 'chime'
+      return { ...current, customTones, perCategory }
+    })
+    if (!ok || !tones) return ok ? () => 'ok' : null
+    // The delete's own clean-up is not a user edit: take it in silently, then
+    // remember each category's count as of now.
+    lastPerCategory.current = loadSoundSettings().perCategory
+    const editsAtDelete = { ...categoryEdits.current }
+    // Undo puts back this one sound, and each category that used it unless
+    // the user has set that category to something else since. It merges into
+    // the settings as they are now, so nothing saved after the delete is lost.
+    return () => {
+      let result: UndoResult = 'ok'
+      const saved = applyUpdate(current => {
+        // No prototype, as on load: a sound named `__proto__` must be
+        // restored as its own entry, not hit Object.prototype's setter.
+        const customTones: CustomTones = Object.assign(Object.create(null) as CustomTones, current.customTones)
+        // The same checks as adding it, always: a sound restored past the
+        // limit, or over one the user has since saved under that name, would
+        // be dropped on load or would replace the newer sound.
+        const problems = validateCustomTone(name, tones, customTones)
+        if (problems.includes('too_many')) result = 'full'
+        else if (problems.length > 0) result = 'taken'
+        if (result !== 'ok') return current
+        customTones[name] = tones
+        const perCategory = { ...current.perCategory }
+        for (const cat of usedBy) {
+          const untouched = (categoryEdits.current[cat] ?? 0) === (editsAtDelete[cat] ?? 0)
+            && (cat === 'all' ? perCategory.all === 'chime' : perCategory[cat] === undefined)
+          if (untouched) perCategory[cat] = id
+        }
+        return { ...current, customTones, perCategory }
+      })
+      if (saved) lastPerCategory.current = loadSoundSettings().perCategory
+      return result !== 'ok' ? result : saved ? 'ok' : 'failed'
+    }
   }
 
   const fallback = settings.perCategory.all ?? 'chime'
@@ -372,6 +504,15 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
       onDismiss={() => patchMut.reset()}
       askAgent
     />
+  ) : soundSaveFailed ? (
+    // No hand-off: a hand-off leaves the page, and the Custom sounds add form
+    // (CustomSoundsSection below) may hold an unsaved draft name and tone rows
+    // that would be lost.
+    <ErrorNotice
+      className="mb-2 animate-rise"
+      message={i18nT('pages.settings.notificationsPanel.sound_save_failed')}
+      onDismiss={() => setSoundSaveFailed(false)}
+    />
   ) : null
 
   const railItems: SubNavItem[] = [
@@ -379,6 +520,7 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
     { key: 'alerts', label: i18nT('pages.settings.notificationsPanel.desktop_alerts'), icon: <Bell size={16} /> },
     { key: 'sound', label: i18nT('pages.settings.notificationsPanel.sound'), icon: <Volume2 size={16} /> },
     { key: 'percategory', label: i18nT('pages.settings.notificationsPanel.per_category_sounds'), icon: <ListMusic size={16} /> },
+    { key: 'custom', label: i18nT('pages.settings.notificationsPanel.custom_sounds'), icon: <Music size={16} /> },
   ]
 
   return (
@@ -490,14 +632,14 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
             // all='none' silence rule. A naive `perCategory[cat] ?? fallback`
             // diverged from playback for approval (showed the fallback, played
             // pulse). 'all' has no kind, so it previews the fallback directly.
-            const effective: SoundPreset = cat === 'all'
+            const effective: SoundChoice = cat === 'all'
               ? fallback
               : presetForKind(cat, settings)
             const selectValue: string = cat === 'all'
               ? fallback
-              : (hasOverride ? (settings.perCategory[cat] as SoundPreset) : DEFAULT_SENTINEL)
-            const opts = cat === 'all' ? PRESET_OPTIONS : OVERRIDE_OPTIONS
-            const optLabels = cat === 'all' ? presetLabels() : overrideLabels()
+              : (hasOverride ? (settings.perCategory[cat] as SoundChoice) : DEFAULT_SENTINEL)
+            const opts = [...(cat === 'all' ? PRESET_OPTIONS : OVERRIDE_OPTIONS), ...customOptions(settings)]
+            const optLabels = cat === 'all' ? presetLabels(settings) : overrideLabels(settings)
             return (
               <div key={cat} className="flex items-end gap-2">
                 <div className="flex-1 min-w-0">
@@ -509,11 +651,9 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
                     optionLabels={optLabels}
                     onChange={v => {
                       if (v === DEFAULT_SENTINEL) {
-                        clearCategoryOverride(cat)
-                        if (fallback !== 'none') playPreset(fallback, settings.volume)
-                      } else {
-                        setCategoryPreset(cat, v as SoundPreset)
-                        if (v !== 'none') playPreset(v as SoundPreset, settings.volume)
+                        if (clearCategoryOverride(cat) && fallback !== 'none') playPreset(fallback, settings.volume)
+                      } else if (setCategoryPreset(cat, v as SoundChoice) && v !== 'none') {
+                        playPreset(v as SoundChoice, settings.volume)
                       }
                     }}
                     disabled={!settings.enabled}
@@ -532,6 +672,17 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
           })}
         </SettingsCard>
       </SettingsSection>
+          )
+
+        case 'custom':
+          return (
+            <CustomSoundsSection
+              customTones={settings.customTones ?? {}}
+              volume={settings.volume}
+              enabled={settings.enabled}
+              onAdd={addCustomSound}
+              onRemove={removeCustomSound}
+            />
           )
 
         default:

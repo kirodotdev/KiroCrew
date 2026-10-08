@@ -15,11 +15,92 @@ export type SoundPreset = typeof SOUND_PRESETS[number] | 'none'
 export const SOUND_CATEGORIES = ['all', 'turn', 'agent', 'cron', 'approval', 'hook', 'heartbeat', 'subagent', 'taskrunner', 'skills'] as const
 export type SoundCategory = typeof SOUND_CATEGORIES[number]
 
+export interface ToneStep { freq: number; start: number; dur: number; gain: number }
+
+/** A user-defined sound, stored by its name. Selected in `perCategory` through
+ *  `customSoundId(name)`, so a custom name can never collide with a built-in id. */
+export type CustomTones = Record<string, ToneStep[]>
+export type CustomSoundId = `custom:${string}`
+/** Anything a category can be set to: a built-in, 'none', or a custom sound. */
+export type SoundChoice = SoundPreset | CustomSoundId
+
+const CUSTOM_PREFIX = 'custom:'
+export const customSoundId = (name: string): CustomSoundId => `${CUSTOM_PREFIX}${name}`
+export const customSoundName = (id: string): string | null =>
+  id.startsWith(CUSTOM_PREFIX) ? id.slice(CUSTOM_PREFIX.length) : null
+
+/** Bounds a custom sound must meet. Applied when one is added AND on every load,
+ *  because the stored value can be edited by hand or restored from a backup
+ *  file, and whatever passes here is what reaches the speakers. */
+export const CUSTOM_TONE_LIMITS = {
+  maxSounds: 20,
+  maxNameLength: 32,
+  maxTones: 16,
+  minFreq: 20,
+  maxFreq: 20000,
+  /** Shorter than the attack + release envelope would not sound at all. */
+  minDur: 0.02,
+  maxDur: 2,
+  /** No step may end later than this many seconds after the sound starts. */
+  maxLength: 5,
+} as const
+
+/** Letters and digits of any script, plus space, dash and underscore. */
+const CUSTOM_NAME_RE = /^[\p{L}\p{N} _-]+$/u
+const RESERVED_NAMES = new Set<string>(['none', 'default', ...SOUND_PRESETS])
+
+/** Problem codes a custom sound fails on: `name`, `name_taken`, `count`,
+ *  `freq`, `start`, `dur`, `gain`, `too_many`. Empty means valid. */
+export function validateCustomTone(name: string, tones: unknown, existing: Record<string, unknown> = {}): string[] {
+  const L = CUSTOM_TONE_LIMITS
+  const problems = new Set<string>()
+  if (typeof name !== 'string' || name !== name.trim() || name.length === 0
+      || name.length > L.maxNameLength || !CUSTOM_NAME_RE.test(name)) {
+    problems.add('name')
+  } else if (RESERVED_NAMES.has(name.toLowerCase())
+      || Object.keys(existing).some(n => n.toLowerCase() === name.toLowerCase())) {
+    problems.add('name_taken')
+  }
+  if (Object.keys(existing).length >= L.maxSounds) problems.add('too_many')
+  if (!Array.isArray(tones) || tones.length === 0 || tones.length > L.maxTones) {
+    problems.add('count')
+    return [...problems]
+  }
+  const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
+  for (const step of tones as Array<Record<string, unknown>>) {
+    if (!step || typeof step !== 'object') { problems.add('count'); continue }
+    const { freq, start, dur, gain } = step
+    if (!num(freq) || freq < L.minFreq || freq > L.maxFreq) problems.add('freq')
+    if (!num(dur) || dur < L.minDur || dur > L.maxDur) problems.add('dur')
+    if (!num(gain) || gain <= 0 || gain > 1) problems.add('gain')
+    if (!num(start) || start < 0 || start + (num(dur) ? dur : 0) > L.maxLength) problems.add('start')
+  }
+  return [...problems]
+}
+
+/** Keep only the four tone fields, so nothing else a stored value carries is
+ *  written back or played. */
+const cleanTones = (tones: ToneStep[]): ToneStep[] =>
+  tones.map(({ freq, start, dur, gain }) => ({ freq, start, dur, gain }))
+
+function loadCustomTones(raw: unknown): CustomTones {
+  // No prototype: a sound named `__proto__` must land as its own entry, not
+  // hit Object.prototype's setter and vanish.
+  const out: CustomTones = Object.create(null) as CustomTones
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out
+  for (const [name, tones] of Object.entries(raw as Record<string, unknown>)) {
+    if (validateCustomTone(name, tones, out).length === 0) out[name] = cleanTones(tones as ToneStep[])
+  }
+  return out
+}
+
 export interface SoundSettings {
   enabled: boolean
   volume: number // 0..1
   /** Per-category sound. 'all' is the fallback; other keys override for that kind. */
-  perCategory: Partial<Record<SoundCategory, SoundPreset>>
+  perCategory: Partial<Record<SoundCategory, SoundChoice>>
+  /** User-defined sounds by name. Built-ins are never stored here. */
+  customTones?: CustomTones
 }
 
 const STORAGE_KEY = 'mc-notification-sound'
@@ -38,17 +119,24 @@ export function loadSoundSettings(): SoundSettings {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return { ...DEFAULTS, perCategory: { ...DEFAULTS.perCategory } }
     const parsed = JSON.parse(raw) as Partial<SoundSettings>
-    const perCategory: Partial<Record<SoundCategory, SoundPreset>> = { ...DEFAULTS.perCategory }
+    const customTones = loadCustomTones(parsed.customTones)
+    const perCategory: Partial<Record<SoundCategory, SoundChoice>> = { ...DEFAULTS.perCategory }
     for (const [k, v] of Object.entries(parsed.perCategory || {})) {
-      if (VALID_CATEGORIES.has(k) && typeof v === 'string' && VALID_PRESETS.has(v)) {
-        perCategory[k as SoundCategory] = v as SoundPreset
+      if (!VALID_CATEGORIES.has(k) || typeof v !== 'string') continue
+      const custom = customSoundName(v)
+      // A custom choice counts only while its sound still exists; otherwise the
+      // category falls back as if it had never been set.
+      if (VALID_PRESETS.has(v) || (custom !== null && Object.hasOwn(customTones, custom))) {
+        perCategory[k as SoundCategory] = v as SoundChoice
       }
     }
-    return {
+    const out: SoundSettings = {
       enabled: typeof parsed.enabled === 'boolean' ? parsed.enabled : DEFAULTS.enabled,
       volume: Math.max(0, Math.min(1, typeof parsed.volume === 'number' ? parsed.volume : DEFAULTS.volume)),
       perCategory,
     }
+    if (Object.keys(customTones).length > 0) out.customTones = customTones
+    return out
   } catch {
     return { ...DEFAULTS, perCategory: { ...DEFAULTS.perCategory } }
   }
@@ -92,8 +180,6 @@ function getCtx(): AudioContext | null {
   try { ctxSingleton = new AC() } catch { return null }
   return ctxSingleton
 }
-
-interface ToneStep { freq: number; start: number; dur: number; gain: number }
 
 const PRESETS: Record<Exclude<SoundPreset, 'none'>, ToneStep[]> = {
   chime: [
@@ -145,8 +231,31 @@ function scheduleEnvelope(gain: AudioParam, start: number, duration: number, pea
   gain.setValueCurveAtTime(smoothstepCurve(floor, 0), releaseStart, RELEASE_DURATION)
 }
 
-export function playPreset(preset: SoundPreset, volume: number): void {
+/** The steps and output trim a choice plays, or null when it plays nothing (a
+ *  custom sound that no longer exists). */
+function resolveTones(preset: Exclude<SoundChoice, 'none'>, customTones?: CustomTones): { steps: ToneStep[]; outputGain: number } | null {
+  const custom = customSoundName(preset)
+  if (custom === null) {
+    const builtin = preset as Exclude<SoundPreset, 'none'>
+    return { steps: PRESETS[builtin], outputGain: PRESET_OUTPUT_GAIN[builtin] }
+  }
+  const tones = customTones ?? loadSoundSettings().customTones ?? {}
+  if (!Object.hasOwn(tones, custom)) return null
+  const steps = tones[custom]
+  // Overlapping steps add up; scale by the loudest overlap so a custom sound
+  // can never drive the output past full scale.
+  const worst = Math.max(1, ...steps.map(at => steps
+    .filter(s => s.start <= at.start && at.start < s.start + s.dur)
+    .reduce((sum, s) => sum + s.gain, 0)))
+  return { steps, outputGain: 0.98 / worst }
+}
+
+/** `customTones` names the custom sounds a custom choice is looked up in;
+ *  omitted, they are read from the stored settings. */
+export function playPreset(preset: SoundChoice, volume: number, customTones?: CustomTones): void {
   if (preset === 'none' || volume <= 0) return
+  const tones = resolveTones(preset, customTones)
+  if (!tones) return
   // Backoff guard: once MAX_CLOSED_RECOVERIES consecutive 'closed' hits occur,
   // stop trying entirely. Without this, getCtx() keeps allocating fresh
   // AudioContexts that the browser closes again — unbounded churn per notification.
@@ -174,11 +283,11 @@ export function playPreset(preset: SoundPreset, volume: number): void {
   // transitioning to running.
   if (ctx.state === 'suspended') {
     ctx.resume().then(() => {
-      if (ctx.state === 'running') scheduleTones(ctx, preset, volume)
+      if (ctx.state === 'running') scheduleTones(ctx, tones, volume)
     }).catch(() => {})
     return
   }
-  scheduleTones(ctx, preset, volume)
+  scheduleTones(ctx, tones, volume)
 }
 
 /**
@@ -235,19 +344,19 @@ export function playSoundFile(url: string, volume: number): void {
  * Disconnects nodes via `onended` so the audio graph doesn't leak over long
  * sessions — without this, every call leaks one osc + one gain node permanently.
  */
-function scheduleTones(ctx: AudioContext, preset: Exclude<SoundPreset, 'none'>, volume: number): void {
+function scheduleTones(ctx: AudioContext, tones: { steps: ToneStep[]; outputGain: number }, volume: number): void {
   // Reset backoff counter on successful schedule — a single good run wipes out
   // accumulated closed-state hits. Prevents permanent disable after 3 transient
   // close events over the page lifetime.
   closedRecoveryCount = 0
   const now = ctx.currentTime
   const perceptualVolume = Math.min(1, Math.max(0, volume)) ** VOLUME_EXPONENT
-  for (const step of PRESETS[preset]) {
+  for (const step of tones.steps) {
     const osc = ctx.createOscillator()
     const g = ctx.createGain()
     osc.type = 'sine'
     osc.frequency.value = step.freq
-    const peak = Math.max(0.001, perceptualVolume * step.gain * PRESET_OUTPUT_GAIN[preset])
+    const peak = Math.max(0.001, perceptualVolume * step.gain * tones.outputGain)
     scheduleEnvelope(g.gain, now + step.start, step.dur, peak)
     osc.connect(g)
     g.connect(ctx.destination)
@@ -262,11 +371,11 @@ function scheduleTones(ctx: AudioContext, preset: Exclude<SoundPreset, 'none'>, 
  * these are NOT persisted to localStorage and therefore cannot be clobbered by
  * a "Use default" reset. They apply only when the user has never explicitly
  * chosen a preset for the category. */
-const BUILTIN_CATEGORY_DEFAULTS: Partial<Record<SoundCategory, SoundPreset>> = {
+const BUILTIN_CATEGORY_DEFAULTS: Partial<Record<SoundCategory, SoundChoice>> = {
   approval: 'pulse',
 }
 
-export function presetForKind(kind: string | undefined, settings: SoundSettings): SoundPreset {
+export function presetForKind(kind: string | undefined, settings: SoundSettings): SoundChoice {
   if (!settings.enabled) return 'none'
   const cat = kind && VALID_CATEGORIES.has(kind) ? (kind as SoundCategory) : undefined
   const specific = cat ? settings.perCategory[cat] : undefined
@@ -316,7 +425,7 @@ export function useNotificationSound(): void {
       const preset = presetForKind(kind, current)
       if (preset === 'none' || current.volume <= 0) return
       lastPlayedAt = now
-      playPreset(preset, current.volume)
+      playPreset(preset, current.volume, current.customTones ?? {})
     }
     window.addEventListener(MC_SOUND_SETTINGS_CHANGED_EVENT, onSettingsChanged)
     window.addEventListener('storage', onStorage)

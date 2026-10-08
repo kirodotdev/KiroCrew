@@ -69,6 +69,7 @@ const UNMAPPED_PANELS: Record<string, string> = {
   'BrowserInstallStatus.tsx': 'read-only install progress region BrowserPanel mounts above its sections, zero controls',
   'ChannelDisabledPanel.tsx': 'informational placeholder (locked/loading/error states), zero controls',
   'ChannelFolderBackfill.tsx': 'one action button shared by the channel panels; files existing conversations into the folder the OWNING panel configures, and holds no setting of its own',
+  'CustomSoundsSection.tsx': 'the Notifications tab\'s add-a-sound form (name + tones) and the list of saved sounds; it creates entries rather than holding settings, and the sounds it saves are chosen through the per-category pickers NotificationsPanel already indexes',
   'ChannelsPanel.tsx': 'list-detail shell routing to per-channel panels; carries no controls of its own',
   'DecisionsProviderPicker.tsx': 'the Decisions card\'s provider choice writes a preset id through the owner-only PUT /api/decisions/provider, not a config path, so there is no configKey to index; it is reached through the card the developer.decisions-jev entry deep-links to',
   'DiscordPanel.tsx': 'thin BotChannelSpec wrapper; BotChannelPanel fans its entries out to channel=discord',
@@ -231,6 +232,10 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
   'InstanceFormFields.tsx': {
     counts: { SimpleSelect: 1, input: 9 },
     reason: 'per-instance add/edit CRUD form fields, not global settings',
+  },
+  'CustomSoundsSection.tsx': {
+    counts: { Input: 2 },
+    reason: 'add-a-custom-sound form (name + per-tone number fields) — creates an entry, not a persistent setting',
   },
   'McpManagement.tsx': {
     counts: { Switch: 2 },
