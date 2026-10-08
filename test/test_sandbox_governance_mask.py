@@ -373,11 +373,20 @@ class TestSecretsAreMaskedInEveryMode:
     @pytest.mark.parametrize("prefix", _CREW_PREFIXES)
     @pytest.mark.parametrize("leaf", MASKED)
     def test_macos_denies_reads(self, mode: str, prefix: str, leaf: str) -> None:
+        """Both the subpath and the literal spelling deny read and hardlink.
+
+        A subpath rule covers the entry when it is a directory; the literal spelling
+        covers it when it is a plain file. Whether subpath alone reaches a plain-file
+        anchor is not exercised here, so the leaf carries both spellings in every
+        direction -- matching the write deny, which already emits both.
+        """
         profile = sandbox._build_seatbelt_profile(mode)
         target = _crew_path(prefix, leaf)
 
         assert f'(deny file-read* (subpath "{target}"))' in profile
         assert f'(deny file-link (subpath "{target}"))' in profile
+        assert f'(deny file-read* (literal "{target}"))' in profile
+        assert f'(deny file-link (literal "{target}"))' in profile
 
     @pytest.mark.parametrize("mode", _MODES)
     @pytest.mark.parametrize("prefix", _CREW_PREFIXES)
@@ -387,9 +396,10 @@ class TestSecretsAreMaskedInEveryMode:
 
         The Linux launcher binds an empty dir/file over the target, which blocks both
         directions in one rule. Seatbelt does not, and forging ``token_signing.key``
-        needs no read at all — so the read deny on its own is not the control it looks
-        like. Both spellings, because a leaf may be a plain file and no subpath rule
-        addresses one.
+        needs no read at all -- so the read deny on its own is not the control it looks
+        like. Both spellings, because whether a subpath rule alone reaches a plain-file
+        anchor is not checked against the kernel here: the literal is redundant if
+        subpath covers files and load-bearing if it does not.
         """
         profile = sandbox._build_seatbelt_profile(mode)
         target = _crew_path(prefix, leaf)
