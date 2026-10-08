@@ -434,6 +434,12 @@ its own once the cache refreshes with a list that carries it.
   the call and raises `AcpModelUnavailable` itself, so the handler answers 400 and
   the slot keeps its old model instead of reporting a switch the session never
   made. `AcpClient.set_model` (dedicated runtime) raises inside the call as before.
+  On a backend that switches through `session/set_model` (kiro-cli),
+  `AcpSessionHandle.set_model` waits briefly for the adapter's reply before
+  recording the model. An explicit error reply is recorded in `model_pin_refused`
+  and the session keeps its model, the same contract as the config-option branch,
+  so the dashboard pick answers 4xx instead of resetting. No reply within the wait
+  is read as accepted and the model is recorded, as it was before the wait existed.
   Both refusals carry `advertised_but_refused` from the same verdict, which selects
   the adapter-mismatch wording; `AcpModelUnavailable` requires `backend=` and shows
   the `kiro-cli whoami` hint only for backends that sign in through the host

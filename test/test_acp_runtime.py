@@ -971,6 +971,28 @@ def _register(rt: AcpRuntime, *session_ids: str) -> dict[str, asyncio.Queue]:
     return queues
 
 
+def _replying_send(queue_for, *, error: dict | None = None, req_id: int = 1) -> AsyncMock:
+    """A ``send_request`` stand-in that answers each request the way an adapter does.
+
+    The reply lands on the session's queue, which is where the handle's
+    ``_wait_for_response`` reads it; ``queue_for(params)`` names that queue.
+    """
+
+    async def _send(method, params, **kwargs):
+        on_reserved = kwargs.get("on_reserved")
+        if on_reserved is not None:
+            on_reserved(req_id)
+        reply = (
+            JsonRpcMessage(id=req_id, error=error)
+            if error
+            else JsonRpcMessage(id=req_id, result={})
+        )
+        queue_for(params).put_nowait(reply)
+        return req_id
+
+    return AsyncMock(side_effect=_send)
+
+
 async def _start_reader(rt: AcpRuntime) -> asyncio.Task:
     task = asyncio.ensure_future(rt._reader_loop())
     await asyncio.sleep(0)  # let the loop reach its first readline
@@ -3798,10 +3820,96 @@ async def test_handle_set_model():
     rt, _, proc = _make_runtime()
     q = _register(rt, "sA")
     handle = AcpSessionHandle("sA", q["sA"], rt)
+    wire_send = rt.send_request
+
+    async def _send_and_answer(method, params, **kwargs):
+        req_id = await wire_send(method, params, **kwargs)
+        q["sA"].put_nowait(JsonRpcMessage(id=req_id, result={}))
+        return req_id
+
+    rt.send_request = _send_and_answer  # type: ignore[method-assign]
     await handle.set_model("claude-sonnet-4")
     sent = json.loads(proc.stdin.write.call_args.args[0].decode())
     assert sent["method"] == "session/set_model"
     assert sent["params"]["modelId"] == "claude-sonnet-4"
+    assert handle.model == "claude-sonnet-4"
+
+
+@pytest.mark.asyncio
+async def test_handle_set_model_refusal_is_recorded_and_keeps_the_serving_model():
+    """An adapter that refuses ``session/set_model`` must not read as a switch.
+
+    Sent unawaited, the error reply was dropped by the pre-turn drain and the
+    handle recorded the pick, so the dashboard showed a model that never served.
+    The refusal is recorded in ``model_pin_refused`` like the config-option
+    branch, so the session stays alive on its model and the caller reads it back.
+    """
+    rt = MagicMock()
+    rt.is_alive.return_value = True
+    rt.acp_backend = ACP_BACKEND_KIRO
+    queue: asyncio.Queue = asyncio.Queue()
+    rt.send_request = _replying_send(
+        lambda _p: queue, error={"code": -32601, "message": "Method not found"}
+    )
+    h = AcpSessionHandle("sA", queue, rt)
+    h._turn_done.set()
+    h._model = "old-model"
+    h._resolved_model_id = "old-model"
+
+    await h.set_model("new-model")
+
+    assert h.model_pin_refused == "new-model"
+    assert h._model == "old-model"
+    assert h._resolved_model_id == "old-model"
+
+
+@pytest.mark.asyncio
+async def test_handle_set_model_without_a_reply_records_the_switch(monkeypatch):
+    """Silence is not a refusal: an adapter that never answers keeps the old,
+    unawaited outcome, so only an explicit error reply stops the switch."""
+    from kiro_crew.acp import session_handle as sh
+
+    monkeypatch.setattr(sh, "_SET_MODEL_REPLY_TIMEOUT", 0.05)
+    rt = MagicMock()
+    rt.is_alive.return_value = True
+    rt.acp_backend = ACP_BACKEND_KIRO
+    rt.send_request = AsyncMock(return_value=1)
+    h = AcpSessionHandle("sA", asyncio.Queue(), rt)
+    h._turn_done.set()
+
+    await h.set_model("new-model")
+
+    assert h._model == "new-model"
+    assert h._resolved_model_id == "new-model"
+
+
+@pytest.mark.asyncio
+async def test_refused_served_default_switch_does_not_fail_a_kiro_session_start():
+    """``ensure_served_default`` runs right after session/new succeeded, so a
+    refused switch leaves the session on its default instead of raising."""
+    rt = MagicMock()
+    rt.is_alive.return_value = True
+    rt.acp_backend = ACP_BACKEND_KIRO
+    queue: asyncio.Queue = asyncio.Queue()
+    rt.send_request = _replying_send(
+        lambda _p: queue, error={"code": -32603, "message": "model unavailable"}
+    )
+    h = AcpSessionHandle("sA", queue, rt)
+    h._turn_done.set()
+    h.store_session_config(
+        {
+            "models": {
+                "currentModelId": "auto",
+                "availableModels": [{"modelId": "gpt-5.6-sol"}],
+            }
+        }
+    )
+
+    await h.ensure_served_default()  # must not raise
+
+    rt.send_request.assert_awaited_once()
+    assert h.served_model == "auto"
+    assert h.model == ""
 
 
 # ── send_response / send_error ──
@@ -6790,8 +6898,8 @@ class TestAcpRuntimeLoadSession:
             return {}
 
         monkeypatch.setattr(rt, "_send_and_await", _fake_send)
-        # set_model goes through the routed (fire-and-forget) send.
-        routed = AsyncMock(return_value=1)
+        # set_model goes through the routed send and waits for the adapter's reply.
+        routed = _replying_send(lambda params: rt._session_queues[params["sessionId"]])
         monkeypatch.setattr(rt, "send_request", routed)
 
         handle = await rt.load_session("/f.json", "sid-resume", agent="kirocrew")
@@ -8550,8 +8658,9 @@ async def test_set_model_syncs_resolved_model_id():
     (else context-window backfill uses the stale session/new model)."""
     rt = MagicMock()
     rt.is_alive.return_value = True
-    rt.send_request = AsyncMock()
-    h = AcpSessionHandle("sA", asyncio.Queue(), rt)
+    queue: asyncio.Queue = asyncio.Queue()
+    rt.send_request = _replying_send(lambda _p: queue)
+    h = AcpSessionHandle("sA", queue, rt)
     h._turn_done.set()
     await h.set_model("new-model")
     assert h._model == "new-model"
@@ -8570,8 +8679,9 @@ async def test_set_model_rebases_context_stats(monkeypatch):
     monkeypatch.setattr(model_registry, "model_window", lambda mid, **kw: 272_000)
     rt = MagicMock()
     rt.is_alive.return_value = True
-    rt.send_request = AsyncMock()
-    h = AcpSessionHandle("sA", asyncio.Queue(), rt)
+    queue: asyncio.Queue = asyncio.Queue()
+    rt.send_request = _replying_send(lambda _p: queue)
+    h = AcpSessionHandle("sA", queue, rt)
     h._turn_done.set()
     h.last_prompt_stats.context_used_tokens = 100_000
     h.last_prompt_stats.context_window_tokens = 1_000_000
