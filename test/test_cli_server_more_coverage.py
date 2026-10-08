@@ -182,6 +182,34 @@ class TestTokenRefusal:
         assert exc.value.code == 1
         assert "Could not reach gateway on port 5476" in capsys.readouterr().err
 
+    @pytest.mark.parametrize(
+        "slow",
+        [
+            TimeoutError("timed out"),
+            urllib.error.URLError(TimeoutError("timed out")),
+        ],
+        ids=["read-timeout", "urlopen-timeout"],
+    )
+    def test_slow_gateway_reports_busy_not_unreachable(self, monkeypatch, capsys, slow) -> None:
+        seen: dict[str, float] = {}
+
+        def stalls(*a, **k):
+            seen["timeout"] = k["timeout"]
+            raise slow
+
+        monkeypatch.setattr(cli_server, "run_preflight_checks", lambda: None)
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda _port: 5476)
+        monkeypatch.setattr(cli_server, "read_local_secret", lambda _port, **_kw: "s3cr3t")
+        monkeypatch.setattr(cli_server, "loopback_urlopen", stalls)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._token(argparse.Namespace(ttl="1h", port=None))
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "Gateway on port 5476 is up but did not answer within 20 s (busy)" in err
+        assert "Could not reach gateway" not in err
+        assert "status" not in err
+        assert seen["timeout"] >= 15
+
 
 # --------------------------------------------------------------------------
 # _logout

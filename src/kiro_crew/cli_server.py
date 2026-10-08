@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import NoReturn
 
 from kiro_crew import __version__, dep_sync, platform_compat
+from kiro_crew.app_lifecycle_client import _deadline_expired
 from kiro_crew.beacon import distribution, is_default_home
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
@@ -156,6 +157,12 @@ def _probe_dashboard_health(port: int) -> None:
         pass
 
 
+# How long the token command waits for the gateway to answer. A gateway whose
+# event loop is starved by a CPU-bound thread can take 12-14 s to answer while
+# still being healthy.
+_TOKEN_REQUEST_TIMEOUT = 20.0
+
+
 def _token(args: argparse.Namespace) -> None:
     """Print a dashboard URL with a fresh auth token.
 
@@ -189,7 +196,7 @@ def _token(args: argparse.Namespace) -> None:
         url += f"&embed_parent_port={int(epp)}"
     req = urllib.request.Request(url, headers={"X-Local-Secret": secret})
     try:
-        with loopback_urlopen(req, timeout=5) as resp:
+        with loopback_urlopen(req, timeout=_TOKEN_REQUEST_TIMEOUT) as resp:
             data = json.loads(resp.read())
             token = data.get("token", "")
     except urllib.error.HTTPError as exc:
@@ -206,7 +213,18 @@ def _token(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
     except Exception as exc:
-        print(f"❌ Could not reach gateway on port {port}: {exc}", file=sys.stderr)
+        if _deadline_expired(exc):
+            # Something is listening and took the request, so the gateway is
+            # alive. Saying "could not reach" sends the operator to restart a
+            # healthy gateway. The line names no other probe command: the
+            # status command's own short timeout reports a busy gateway as down.
+            print(
+                f"❌ Gateway on port {port} is up but did not answer within "
+                f"{_TOKEN_REQUEST_TIMEOUT:g} s (busy). Try again in a moment.",
+                file=sys.stderr,
+            )
+        else:
+            print(f"❌ Could not reach gateway on port {port}: {exc}", file=sys.stderr)
         sys.exit(1)
 
     if not token:

@@ -446,6 +446,14 @@ unresolvable peer pid, a different namespace on Linux — see
 [security](security.md)) names its remedy in the body, and reporting it as a
 network failure sent the operator to the wrong fix.
 
+A gateway that takes the request but does not answer within the 20 s budget
+(`_TOKEN_REQUEST_TIMEOUT`) is reported as busy (`Gateway on port N is up but did
+not answer within 20 s (busy)`), also never as `Could not reach gateway`. A read
+timeout and a `URLError` wrapping a timeout both count as busy; a refused
+connection stays `Could not reach gateway`. A loop thread starved of the GIL
+answers in 12-14 s while healthy, and calling that unreachable sends the
+operator to restart a gateway that works.
+
 The contract exists because stdout is parsed, not just read by a human. The
 remote-mint path (`kiro_crew.instances.token_mint.mint_remote_token`) runs
 `kirocrew token` on a remote host over SSH and regex-extracts the JWT from its
