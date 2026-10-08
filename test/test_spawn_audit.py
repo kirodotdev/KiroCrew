@@ -1638,6 +1638,11 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # makes to warn the operator when runtimes would die at logout. No shell,
         # no agent-influenced argument, nothing written.
         "service/linux.py::_linger_enabled",
+        # Read-only state probe at gateway start, before any agent exists:
+        # `security show-keychain-info <login keychain>`, a fixed argv whose only
+        # variable is the path built from Path.home(). It reads the Keychain's
+        # lock state, never an item; no shell, nothing written.
+        "service/keychain_wait.py::keychain_is_locked",
         "service/linux.py::_sudo_run",
         "service/linux.py::_systemctl",
         "service/linux.py::_write_unit_via_sudo",
