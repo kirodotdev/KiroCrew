@@ -9077,9 +9077,7 @@
       "loading": "cargando...",
       "not_a_repository": "No es un repositorio Git",
       "not_a_repository_help": "Esta carpeta de proyecto no es un repositorio Git. Si el repositorio está en una subcarpeta, haz clic en el nombre de la carpeta debajo del cuadro de mensaje.",
-      "no_project": "No hay carpeta de proyecto configurada para esta sesión.",
       "refresh": "Actualizar",
-      "title": "Git",
       "uncommitted": "{{count}} sin confirmar",
       "branch_unavailable": "Rama no disponible",
       "status_failed": "No se pudo leer el estado del repositorio. El historial de commits puede estar desactualizado.",
@@ -9097,7 +9095,15 @@
       "filter_refused_title_unreadable_changes": "Kiro no puede mostrar los cambios ahora mismo",
       "filter_refused_title_unreadable_history": "Kiro no puede mostrar el historial ahora mismo",
       "ask_agent_changes": "Preguntar al agente sobre los cambios",
-      "ask_agent_history": "Preguntar al agente sobre el historial"
+      "ask_agent_history": "Preguntar al agente sobre el historial",
+      "repos_empty": "Aún no se han encontrado repositorios Git para este chat.",
+      "source_project": "Proyecto",
+      "repos_failed": "No se pudieron listar los repositorios de este chat.",
+      "repos_loading": "Cargando los repositorios de este chat…",
+      "repos_omitted_one": "No se muestra {{formattedCount}} repositorio más antiguo.",
+      "repos_omitted_many": "No se muestran {{formattedCount}} repositorios más antiguos.",
+      "repos_omitted_other": "No se muestran {{formattedCount}} repositorios más antiguos.",
+      "source_project_help": "La carpeta en la que se inició este chat. Los demás repositorios son aquellos en los que trabajó el agente."
     },
     "workspaceTree": {
       "status_failed": "No se pudo leer el estado del repositorio.",

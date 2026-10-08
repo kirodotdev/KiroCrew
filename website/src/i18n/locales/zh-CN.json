@@ -8831,9 +8831,7 @@
       "loading": "加载中…",
       "not_a_repository": "不是 Git 仓库",
       "not_a_repository_help": "此项目文件夹不是 Git 仓库。如果仓库位于子文件夹中，请点击消息框下方的文件夹名称。",
-      "no_project": "此会话未设置项目文件夹。",
       "refresh": "刷新",
-      "title": "Git",
       "uncommitted": "{{count}} 个未提交",
       "branch_unavailable": "分支不可用",
       "status_failed": "无法读取仓库状态。提交历史可能已过时。",
@@ -8851,7 +8849,13 @@
       "filter_refused_title_unreadable_changes": "Kiro 目前无法显示更改",
       "filter_refused_title_unreadable_history": "Kiro 目前无法显示历史",
       "ask_agent_changes": "就更改询问代理",
-      "ask_agent_history": "就历史询问代理"
+      "ask_agent_history": "就历史询问代理",
+      "repos_empty": "尚未找到此聊天的 Git 仓库。",
+      "source_project": "项目",
+      "repos_failed": "无法列出此聊天的仓库。",
+      "repos_loading": "正在加载此聊天的仓库…",
+      "repos_omitted_other": "另有 {{formattedCount}} 个较早的仓库未显示。",
+      "source_project_help": "此聊天的起始文件夹。其他仓库是代理曾工作过的仓库。"
     },
     "workspaceTree": {
       "status_failed": "无法读取仓库状态。",

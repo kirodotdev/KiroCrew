@@ -22,7 +22,7 @@ if TYPE_CHECKING:
         _match_known_project_for,
         _redact_project_path,
         _sel,
-        _slot_project_snapshot,
+        _slot_git_repo_snapshot,
         config_hook_disable_args_sandboxed,
         is_sensitive_path,
         popen_limited,
@@ -311,14 +311,16 @@ async def api_project_git_status(request: web.Request) -> web.Response:
     """GET /api/project/git/status?path=... - working tree status for a project dir.
 
     Returns staged/unstaged/untracked files with per-file line-change counts.
-    Path must match a known project directory (same allow-list as api_project_git).
+    Path must match a known project directory or a git root a session's tool
+    calls touched (``_slot_git_repo_snapshot``).
     """
     state: DashboardState = request.app["state"]
     caller = request.get("user", "dashboard")
     raw = request.query.get("path", "").strip()
     if not raw:
         return web.json_response({"error": "path required", "code": "path_required"}, status=400)
-    project = await asyncio.to_thread(_match_known_project_for, _slot_project_snapshot(state), raw)
+    allowed = _slot_git_repo_snapshot(state, request.get("app", ""))
+    project = await asyncio.to_thread(_match_known_project_for, allowed, raw)
     if project is None:
         _sel().log_api_access(
             caller=caller,
@@ -694,7 +696,8 @@ async def api_project_git_log(request: web.Request) -> web.Response:
     """GET /api/project/git/log?path=...&limit=N - recent commit log for a project dir.
 
     Returns short sha, subject, author, date (ISO), and isHead flag.
-    Path must match a known project directory (same allow-list as api_project_git).
+    Path must match a known project directory or a git root a session's tool
+    calls touched (``_slot_git_repo_snapshot``).
     """
     state: DashboardState = request.app["state"]
     caller = request.get("user", "dashboard")
@@ -708,7 +711,8 @@ async def api_project_git_log(request: web.Request) -> web.Response:
     except (ValueError, TypeError):
         limit = 20
 
-    project = await asyncio.to_thread(_match_known_project_for, _slot_project_snapshot(state), raw)
+    allowed = _slot_git_repo_snapshot(state, request.get("app", ""))
+    project = await asyncio.to_thread(_match_known_project_for, allowed, raw)
     if project is None:
         _sel().log_api_access(
             caller=caller,

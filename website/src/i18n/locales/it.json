@@ -9077,9 +9077,7 @@
       "loading": "caricamento...",
       "not_a_repository": "Non è un repository Git",
       "not_a_repository_help": "Questa cartella di progetto non è un repository Git. Se il repository si trova in una sottocartella, fai clic sul nome della cartella sotto la casella del messaggio.",
-      "no_project": "Nessuna cartella di progetto impostata per questa sessione.",
       "refresh": "Aggiorna",
-      "title": "Git",
       "uncommitted": "{{count}} non committati",
       "branch_unavailable": "Branch non disponibile",
       "status_failed": "Impossibile leggere lo stato del repository. La cronologia dei commit potrebbe non essere aggiornata.",
@@ -9097,7 +9095,15 @@
       "filter_refused_title_unreadable_changes": "Kiro non può mostrare le modifiche in questo momento",
       "filter_refused_title_unreadable_history": "Kiro non può mostrare la cronologia in questo momento",
       "ask_agent_changes": "Chiedi all'agente delle modifiche",
-      "ask_agent_history": "Chiedi all'agente della cronologia"
+      "ask_agent_history": "Chiedi all'agente della cronologia",
+      "repos_empty": "Nessun repository Git trovato per questa chat finora.",
+      "source_project": "Progetto",
+      "repos_failed": "Impossibile elencare i repository di questa chat.",
+      "repos_loading": "Caricamento dei repository di questa chat…",
+      "repos_omitted_one": "{{formattedCount}} repository meno recente non è mostrato.",
+      "repos_omitted_many": "{{formattedCount}} repository meno recenti non sono mostrati.",
+      "repos_omitted_other": "{{formattedCount}} repository meno recenti non sono mostrati.",
+      "source_project_help": "La cartella in cui è stata avviata questa chat. Gli altri repository sono quelli in cui ha lavorato l’agente."
     },
     "workspaceTree": {
       "status_failed": "Impossibile leggere lo stato del repository.",

@@ -8831,9 +8831,7 @@
       "loading": "로드 중…",
       "not_a_repository": "Git 리포지토리가 아님",
       "not_a_repository_help": "이 프로젝트 폴더는 Git 리포지토리가 아닙니다. 리포지토리가 하위 폴더에 있다면 메시지 상자 아래의 폴더 이름을 클릭하세요.",
-      "no_project": "이 세션에 설정된 프로젝트 폴더가 없습니다.",
       "refresh": "새로 고침",
-      "title": "Git",
       "uncommitted": "커밋되지 않음 {{count}}개",
       "branch_unavailable": "브랜치를 사용할 수 없음",
       "status_failed": "리포지토리 상태를 읽을 수 없습니다. 커밋 기록이 최신이 아닐 수 있습니다.",
@@ -8851,7 +8849,13 @@
       "filter_refused_title_unreadable_changes": "Kiro가 지금은 변경 사항을 표시할 수 없습니다",
       "filter_refused_title_unreadable_history": "Kiro가 지금은 기록을 표시할 수 없습니다",
       "ask_agent_changes": "변경 사항에 대해 에이전트에게 질문",
-      "ask_agent_history": "기록에 대해 에이전트에게 질문"
+      "ask_agent_history": "기록에 대해 에이전트에게 질문",
+      "repos_empty": "이 채팅의 Git 리포지토리를 아직 찾지 못했습니다.",
+      "source_project": "프로젝트",
+      "repos_failed": "이 채팅의 리포지토리 목록을 가져오지 못했습니다.",
+      "repos_loading": "이 채팅의 리포지토리를 불러오는 중…",
+      "repos_omitted_other": "이전 리포지토리 {{formattedCount}}개는 표시되지 않습니다.",
+      "source_project_help": "이 채팅을 시작한 폴더입니다. 다른 리포지토리는 에이전트가 작업한 것입니다."
     },
     "workspaceTree": {
       "status_failed": "리포지토리 상태를 읽을 수 없습니다.",
