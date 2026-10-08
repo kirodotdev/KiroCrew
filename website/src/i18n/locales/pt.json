@@ -11129,6 +11129,11 @@
         "worked_through_step_one": "Percorreu {{count}} etapa",
         "worked_through_step_other": "Percorreu {{count}} etapas"
       },
+      "crewmateSteps": {
+        "step_many": "{{count}} etapas",
+        "step_one": "{{count}} etapa",
+        "step_other": "{{count}} etapas"
+      },
       "userMessage": {
         "cancel": "Cancelar",
         "cancel_esc": "Cancelar (Esc)",

@@ -10970,6 +10970,10 @@
         "worked_through_step_one": "{{count}} Schritt durchgearbeitet",
         "worked_through_step_other": "{{count}} Schritte durchgearbeitet"
       },
+      "crewmateSteps": {
+        "step_one": "{{count}} Schritt",
+        "step_other": "{{count}} Schritte"
+      },
       "userMessage": {
         "cancel": "Abbrechen",
         "cancel_esc": "Abbrechen (Esc)",

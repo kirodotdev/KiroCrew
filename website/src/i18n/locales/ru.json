@@ -11288,6 +11288,12 @@
         "worked_through_step_one": "Проработан {{count}} шаг",
         "worked_through_step_other": "Проработано {{count}} шага"
       },
+      "crewmateSteps": {
+        "step_few": "{{count}} шага",
+        "step_many": "{{count}} шагов",
+        "step_one": "{{count}} шаг",
+        "step_other": "{{count}} шага"
+      },
       "userMessage": {
         "cancel": "Отмена",
         "cancel_esc": "Отмена (Esc)",

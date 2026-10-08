@@ -11129,6 +11129,11 @@
         "worked_through_step_one": "Completó {{count}} paso",
         "worked_through_step_other": "Completó {{count}} pasos"
       },
+      "crewmateSteps": {
+        "step_many": "{{count}} pasos",
+        "step_one": "{{count}} paso",
+        "step_other": "{{count}} pasos"
+      },
       "userMessage": {
         "cancel": "Cancelar",
         "cancel_esc": "Cancelar (Esc)",

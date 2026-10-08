@@ -11129,6 +11129,11 @@
         "worked_through_step_one": "Ha elaborato {{count}} passaggio",
         "worked_through_step_other": "Ha elaborato {{count}} passaggi"
       },
+      "crewmateSteps": {
+        "step_many": "{{count}} passaggi",
+        "step_one": "{{count}} passaggio",
+        "step_other": "{{count}} passaggi"
+      },
       "userMessage": {
         "cancel": "Annulla",
         "cancel_esc": "Annulla (Esc)",

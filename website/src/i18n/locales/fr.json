@@ -11129,6 +11129,11 @@
         "worked_through_step_one": "A parcouru {{count}} étape",
         "worked_through_step_other": "A parcouru {{count}} étapes"
       },
+      "crewmateSteps": {
+        "step_many": "{{count}} étapes",
+        "step_one": "{{count}} étape",
+        "step_other": "{{count}} étapes"
+      },
       "userMessage": {
         "cancel": "Annuler",
         "cancel_esc": "Annuler (Esc)",

@@ -121,6 +121,46 @@ describe("a crewmate's chat", () => {
     expect(view.queryByTestId('crewmate-quiet-hint')).toBeNull()
   })
 
+  it('while it works, its steps are ONE collapsed live line, and the footer indicator stands down', async () => {
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue({
+      messages: MACHINERY, running: true, has_more: false, total: MACHINERY.length,
+    })
+    const view = renderPane({ crewmate: true, running: true })
+    // Before the history lands the turn already shows its (empty) working line;
+    // once the tool row arrives it is the same one line, now counting it.
+    await waitFor(() => expect(view.getByTestId('crewmate-steps')).toHaveTextContent('1 step'))
+    const line = view.getByTestId('crewmate-steps')
+    expect(view.getAllByTestId('crewmate-steps')).toHaveLength(1)
+    expect(line).toHaveAttribute('data-live', 'true')
+    expect(line.querySelector('button')).toHaveAttribute('aria-expanded', 'false')
+    expect(view.queryByTestId('chat-footer')).toBeNull()
+  })
+
+  it('text streamed before the tools (parked below them) keeps the live line and still no footer', async () => {
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue({
+      messages: [
+        { role: 'user', content: 'Merge the clean PRs', cls: 'msg msg-u', ts: '2026-09-22T06:00:00Z' },
+        { role: 'tool', content: '🔧 gh pr merge 1', cls: '', ts: '2026-09-22T06:00:05Z' },
+        { role: 'streaming', content: 'Merging now', cls: '' },
+      ],
+      running: true, has_more: false, total: 3,
+    })
+    const view = renderPane({ crewmate: true, running: true })
+    await waitFor(() => expect(view.getByTestId('crewmate-steps')).toHaveTextContent('1 step'))
+    expect(view.getByTestId('crewmate-steps')).toHaveAttribute('data-live', 'true')
+    expect(view.queryByTestId('chat-footer')).toBeNull()
+  })
+
+  it('an ordinary chat is unchanged: its tool row draws itself, no steps line, the footer shows', async () => {
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue({
+      messages: MACHINERY, running: true, has_more: false, total: MACHINERY.length,
+    })
+    const view = renderPane({ crewmate: false, running: true })
+    expect(await view.findByText(/gh issue list/)).toBeInTheDocument()
+    expect(view.queryByTestId('crewmate-steps')).toBeNull()
+    expect(view.getByTestId('chat-footer')).toBeInTheDocument()
+  })
+
   it('a BOUNDED window with no speech in it is not proof: the pane reads the whole history first', async () => {
     // Older speech behind fifty newer machinery rows: the bounded first read
     // (has_more) shows none of it. The pane must not say "hasn't said anything"

@@ -51,8 +51,9 @@ import { REASONING_ROLES, hasReasoningContent } from './groupDisplayItems'
 import { FileCard } from '../../components/FileCard'
 import UserMessage from './UserMessage'
 import CrewmateMessage, { type CrewmateIdentity } from './CrewmateMessage'
-import { crewmateBubbleClass, crewmateRunPosition } from '../../components/chat/crewmateBubbles'
-import { formatTs, quoteMessageFor, renderAssistantBubble, replyInThreadFor, threadFooterFor, type MessageRenderer, type MessageRenderContext } from '../../app-sdk/messageRenderers'
+import CrewmateStepsLine from './CrewmateStepsLine'
+import { CREWMATE_STEPS_ROLE, crewmateBubbleClass, crewmateRunPosition, crewmateStepsOf } from '../../components/chat/crewmateBubbles'
+import { formatTs, mergeRenderers, quoteMessageFor, renderAssistantBubble, replyInThreadFor, resolveRenderer, threadFooterFor, type MessageRenderer, type MessageRenderContext } from '../../app-sdk/messageRenderers'
 import { renderUserContent } from './ChatPageMessageContent'
 import { fmtMessageTimeFull } from './messageTime'
 import type { ChatMessage } from '../../types'
@@ -266,7 +267,7 @@ export function createTranscriptRenderers(
   const crewmate = o.crewmate
   const crewmateTranscript = o.crewmateTranscript
 
-  return [
+  const entries: readonly MessageRenderer[] = [
     // ── Shape-matched rows, ahead of anything keyed only by role ──
     {
       // A dollar-picked skill is gateway-authored context, not a conversational
@@ -490,6 +491,36 @@ export function createTranscriptRenderers(
               true,
             )
           },
+        } satisfies MessageRenderer, {
+          // A run of steps folded into one line (crewmateBubbles). Opened, each
+          // step draws through this same registry, so the rows are the ordinary
+          // tool line and thinking block, placed inside the line's own row.
+          id: 'crewmate_steps',
+          roles: [CREWMATE_STEPS_ROLE],
+          render: (m: ChatMessage, ctx: MessageRenderContext) => {
+            const steps = crewmateStepsOf(m)
+            if (!steps) return null
+            const dKey = `crewmate-steps:${(m.meta?.clientTs as string | undefined) ?? ctx.key}`
+            const drawSteps = () => {
+              const all = mergeRenderers(entries)
+              return steps.steps.map((step, j) => {
+                const key = `${ctx.key}:${j}`
+                const bare = (children: React.ReactNode) => <div key={key} className="min-w-0">{children}</div>
+                return resolveRenderer(step, all)?.render(step, { ...ctx, key, row: bare, wrapper: bare }) ?? null
+              })
+            }
+            return ctx.row(
+              <CrewmateStepsLine
+                steps={steps}
+                slot={o.slot}
+                disclosure={o.toolDisclosure?.[dKey]}
+                onDisclosureChange={o.onToolDisclosureChange ? next => o.onToolDisclosureChange?.(dKey, next) : undefined}
+              >
+                {drawSteps}
+              </CrewmateStepsLine>,
+              true,
+            )
+          },
         } satisfies MessageRenderer]
       : []),
     {
@@ -599,4 +630,5 @@ export function createTranscriptRenderers(
         } satisfies MessageRenderer]
       : []),
   ]
+  return entries
 }

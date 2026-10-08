@@ -10970,6 +10970,10 @@
         "worked_through_step_one": "{{count}} चरण पूरा किया",
         "worked_through_step_other": "{{count}} चरण पूरे किए"
       },
+      "crewmateSteps": {
+        "step_one": "{{count}} चरण",
+        "step_other": "{{count}} चरण"
+      },
       "userMessage": {
         "cancel": "रद्द करें",
         "cancel_esc": "रद्द करें (Esc)",

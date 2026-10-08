@@ -10970,6 +10970,10 @@
         "worked_through_step_one": "{{count}}টি ধাপ সম্পন্ন করেছে",
         "worked_through_step_other": "{{count}}টি ধাপ সম্পন্ন করেছে"
       },
+      "crewmateSteps": {
+        "step_one": "{{count}}টি ধাপ",
+        "step_other": "{{count}}টি ধাপ"
+      },
       "userMessage": {
         "cancel": "বাতিল",
         "cancel_esc": "বাতিল (Esc)",

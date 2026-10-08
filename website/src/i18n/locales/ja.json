@@ -10811,6 +10811,9 @@
         "hide_tool_calls": "ツール呼び出しを非表示",
         "worked_through_step_other": "{{count}} ステップを処理"
       },
+      "crewmateSteps": {
+        "step_other": "{{count}} ステップ"
+      },
       "userMessage": {
         "cancel": "キャンセル",
         "cancel_esc": "キャンセル (Esc)",

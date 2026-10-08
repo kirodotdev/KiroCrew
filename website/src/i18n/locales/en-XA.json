@@ -10750,6 +10750,10 @@
         "worked_through_step_one": "[Ẁøŕķèð ţĥŕøùğĥ {{count}} şţèþ ··················]",
         "worked_through_step_other": "[Ẁøŕķèð ţĥŕøùğĥ {{count}} şţèþş ···············]"
       },
+      "crewmateSteps": {
+        "step_one": "[{{count}} şţèþ ········]",
+        "step_other": "[{{count}} şţèþş ·········]"
+      },
       "deepLink": {
         "message_unavailable": "[Ţĥìş ɱèşşàğè ìş ñø ĺøñğèŕ ìñ ţĥìş çøñṽèŕşàţìøñ. ························]"
       },

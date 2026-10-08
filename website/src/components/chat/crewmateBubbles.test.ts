@@ -3,8 +3,10 @@ import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { ChatMessage } from '../../types'
 import {
+  CREWMATE_STEPS_ROLE,
   crewmateBubbleClass,
   crewmateRunPosition,
+  crewmateStepsOf,
   filterCrewmateChat,
   isCrewmateChatRow,
   isCrewmateSpeech,
@@ -16,6 +18,8 @@ const at = (iso: string) => iso
 const user = (ts: string, content = 'hi'): ChatMessage => ({ role: 'user', content, cls: 'msg msg-u', ts })
 const said = (ts: string, content = 'Found the cause.'): ChatMessage => ({ role: 'assistant', content, cls: '', ts })
 const tool = (ts: string): ChatMessage => ({ role: 'tool', content: '🔧 gh issue list', cls: '', ts, meta: { tool_call_id: `tc-${ts}` } })
+/** The drawn list with every steps line opened back into the rows it folds. */
+const unfolded = (drawn: ChatMessage[]) => drawn.flatMap(m => crewmateStepsOf(m)?.steps ?? [m])
 
 describe('filterCrewmateChat', () => {
   it('drops the machinery and keeps what the crewmate says plus the user', () => {
@@ -132,14 +136,14 @@ describe('filterCrewmateChat while a turn runs (live)', () => {
   ]
 
   it("keeps the running turn's thinking and tool rows, completion siblings included", () => {
-    const kept = filterCrewmateChat(rows, true)
+    const kept = unfolded(filterCrewmateChat(rows, true))
     expect(kept).toContain(liveThinking)
     expect(kept).toContain(liveTool)
     expect(kept).toContain(liveDone)
   })
 
   it("an earlier turn's machinery stays folded away", () => {
-    expect(filterCrewmateChat(rows, true)).not.toContain(earlierTurn)
+    expect(unfolded(filterCrewmateChat(rows, true))).not.toContain(earlierTurn)
   })
 
   it('folds the progress away again once the turn ends', () => {
@@ -151,7 +155,7 @@ describe('filterCrewmateChat while a turn runs (live)', () => {
   it('a patrol wake opens the live turn too, and stays hidden itself', () => {
     const wake: ChatMessage = { role: 'nudge', content: '[auto-nudge cycle 3]', cls: 'msg msg-nudge', ts: at('2026-09-20T10:00:00Z'), meta: { nudge: { cycle: 3 } } }
     const patrolTool = tool(at('2026-09-20T10:00:04Z'))
-    const kept = filterCrewmateChat([...rows, wake, patrolTool], true)
+    const kept = unfolded(filterCrewmateChat([...rows, wake, patrolTool], true))
     expect(kept).toContain(patrolTool)
     expect(kept).not.toContain(wake)
     expect(kept).not.toContain(liveTool)
@@ -160,7 +164,7 @@ describe('filterCrewmateChat while a turn runs (live)', () => {
   it('a steer sent into the running turn does not restart it', () => {
     const steer: ChatMessage = { role: 'user', content: 'also check main', cls: 'msg msg-u', ts: at('2026-09-20T09:12:09Z'), meta: { steer: true } }
     const after = tool(at('2026-09-20T09:12:10Z'))
-    const kept = filterCrewmateChat([...rows, steer, after], true)
+    const kept = unfolded(filterCrewmateChat([...rows, steer, after], true))
     expect(kept).toContain(liveTool)
     expect(kept).toContain(after)
     expect(kept).toContain(steer)
@@ -171,14 +175,108 @@ describe('filterCrewmateChat while a turn runs (live)', () => {
     const b = said(at('2026-09-20T09:12:30Z'), 'Found it.')
     const transcript = [opener, a, liveTool, b]
     const drawn = filterCrewmateChat(transcript, true)
-    expect(drawn).toContain(liveTool)
+    expect(unfolded(drawn)).toContain(liveTool)
     expect(crewmateRunPosition(drawn, drawn.indexOf(a), transcript)).toBe('start')
     expect(crewmateRunPosition(drawn, drawn.indexOf(b), transcript)).toBe('end')
   })
 
   it('other machinery stays hidden even in the live turn', () => {
     const envelope: ChatMessage = { role: 'inject', content: '[Cron notification] x', cls: '', ts: at('2026-09-20T09:12:08Z') }
-    expect(filterCrewmateChat([...rows, envelope], true)).not.toContain(envelope)
+    expect(unfolded(filterCrewmateChat([...rows, envelope], true))).not.toContain(envelope)
+  })
+})
+
+describe('filterCrewmateChat folds a run of steps into one line', () => {
+  const opener = user(at('2026-09-20T09:12:00Z'))
+  const t1 = tool(at('2026-09-20T09:12:01Z'))
+  const t1done: ChatMessage = { role: 'tool', content: '✅ gh issue list', cls: '', ts: at('2026-09-20T09:12:02Z'), meta: { tool_call_id: t1.meta!.tool_call_id } }
+  const t2 = tool(at('2026-09-20T09:12:03Z'))
+  const think: ChatMessage = { role: 'thinking', content: 'next', cls: '', ts: at('2026-09-20T09:12:04Z') }
+  const t3 = tool(at('2026-09-20T09:12:05Z'))
+
+  it('the running turn is ONE live line counting its tool calls, siblings and thinking folded in', () => {
+    const drawn = filterCrewmateChat([opener, t1, t1done, t2, think, t3], true)
+    expect(drawn).toHaveLength(2)
+    expect(crewmateStepsOf(drawn[1])).toEqual({ steps: [t1, t1done, t2, think, t3], count: 3, live: true })
+  })
+
+  it('a live run with only thinking so far is still the live line', () => {
+    const drawn = filterCrewmateChat([opener, think], true)
+    expect(crewmateStepsOf(drawn[1])).toMatchObject({ count: 0, live: true })
+  })
+
+  it('once the crewmate speaks after it, the run is no longer the live one', () => {
+    // A settled reply (not the still-open streaming row, which the store parks
+    // below the tool rows; see the test below).
+    const reply = said(at('2026-09-20T09:12:06Z'), 'Found it')
+    const drawn = filterCrewmateChat([opener, t1, t2, reply], true)
+    expect(crewmateStepsOf(drawn[1])).toMatchObject({ count: 2, live: false })
+    expect(drawn[2]).toBe(reply)
+  })
+
+  it('a streaming row the store parked below the tool rows does not end the live run', () => {
+    // Text streamed before the tools: the store inserts each tool row ABOVE the
+    // trailing streaming row (chat_segment is withheld for the tool group).
+    const stream: ChatMessage = { role: 'streaming', content: 'Checking the PRs…', cls: '' }
+    const drawn = filterCrewmateChat([opener, t1, t2, stream], true)
+    expect(drawn.map(m => crewmateStepsOf(m)?.live ?? m.role)).toEqual(['user', true, 'streaming'])
+    expect(crewmateStepsOf(drawn[1])).toMatchObject({ count: 2 })
+  })
+
+  it('a running turn shows its working line from the start, before any step', () => {
+    const drawn = filterCrewmateChat([opener], true)
+    expect(drawn.map(m => m.role)).toEqual(['user', CREWMATE_STEPS_ROLE])
+    expect(crewmateStepsOf(drawn[1])).toEqual({ steps: [], count: 0, live: true })
+  })
+
+  it('…and again after the crewmate speaks mid-turn, below the steps it already took', () => {
+    const a = said(at('2026-09-20T09:12:04Z'), 'Halfway.')
+    const drawn = filterCrewmateChat([opener, t1, a], true)
+    expect(drawn.map(m => crewmateStepsOf(m)?.live ?? m.role)).toEqual(['user', false, 'assistant', true])
+    expect(crewmateStepsOf(drawn[3])!.steps).toEqual([])
+  })
+
+  it('no empty working line after a row that is its own statement (a pending approval)', () => {
+    const ask: ChatMessage = { role: 'permission', content: 'ok?', cls: '', ts: at('2026-09-20T09:12:04Z'), meta: { approval_id: 'a1' } }
+    const drawn = filterCrewmateChat([opener, t1, ask], true)
+    expect(drawn[drawn.length - 1]).toBe(ask)
+  })
+
+  it('a finished turn that never spoke draws nothing (a quiet patrol stays quiet)', () => {
+    const wake: ChatMessage = { role: 'nudge', content: '[auto-nudge cycle 3]', cls: '', ts: at('2026-09-20T10:00:00Z') }
+    expect(filterCrewmateChat([wake, t1, t2, said(at('2026-09-20T10:00:09Z'), '\u200B')], false)).toEqual([])
+  })
+
+  it('a finished thinking-only run sums up nothing, so it draws nothing', () => {
+    const reply = said(at('2026-09-20T09:12:09Z'))
+    expect(filterCrewmateChat([opener, think, reply], false)).toEqual([opener, reply])
+  })
+
+  it('when the turn ends its steps fold away, even when it spoke between them', () => {
+    const a = said(at('2026-09-20T09:12:02Z'), 'Looking now.')
+    const b = said(at('2026-09-20T09:12:09Z'), 'Merged.')
+    expect(filterCrewmateChat([opener, t1, a, t2, think, t3, b], false)).toEqual([opener, a, b])
+  })
+
+  it('mid-turn speech stays where it was said: an earlier run is its own line, the newest is live', () => {
+    const a = said(at('2026-09-20T09:12:02Z'), 'Looking now.')
+    const drawn = filterCrewmateChat([opener, t1, a, t2, t3], true)
+    expect(drawn.map(m => crewmateStepsOf(m)?.live ?? m.role)).toEqual(['user', false, 'assistant', true])
+  })
+
+  it('only the running turn draws steps: an earlier turn\'s are gone', () => {
+    const r1 = said(at('2026-09-20T09:12:06Z'))
+    const next = user(at('2026-09-20T09:13:00Z'))
+    const t4 = tool(at('2026-09-20T09:13:01Z'))
+    const drawn = filterCrewmateChat([opener, t1, r1, next, t4], true)
+    expect(drawn.map(m => crewmateStepsOf(m)?.live ?? m.role)).toEqual(['user', 'assistant', 'user', true])
+  })
+
+  it('a steps line keys on its first step, so it keeps its identity as steps arrive', () => {
+    const a = filterCrewmateChat([opener, t1], true)[1]
+    const b = filterCrewmateChat([opener, t1, t2], true)[1]
+    expect(a.meta?.clientTs).toBe(b.meta?.clientTs)
+    expect(a.ts).toBe(t1.ts)
   })
 })
 
@@ -214,10 +312,10 @@ describe('crewmateRunPosition', () => {
       said(iso(190_000)),
     ]
     const drawn = filterCrewmateChat(transcript)
-    expect(drawn.map((m) => m.content)).toEqual([transcript[0].content, transcript[3].content, transcript[4].content])
-    expect(crewmateRunPosition(drawn, 0, transcript)).toBe('single')
-    expect(crewmateRunPosition(drawn, 1, transcript)).toBe('start')
-    expect(crewmateRunPosition(drawn, 2, transcript)).toBe('end')
+    expect(drawn).toEqual([transcript[0], transcript[3], transcript[4]])
+    expect(crewmateRunPosition(drawn, drawn.indexOf(transcript[0]), transcript)).toBe('single')
+    expect(crewmateRunPosition(drawn, drawn.indexOf(transcript[3]), transcript)).toBe('start')
+    expect(crewmateRunPosition(drawn, drawn.indexOf(transcript[4]), transcript)).toBe('end')
   })
 
   it("a turn's own machinery between two replies does not split the run", () => {

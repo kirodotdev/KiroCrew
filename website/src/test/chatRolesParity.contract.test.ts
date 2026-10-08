@@ -52,6 +52,7 @@ const PAGE_ONLY_ENTRY_IDS: Record<string, string> = {
   workflow_run_tool: 'launch card refining the tool line; store-connected',
   subagent_run_tool: 'launch card refining the tool line; store-connected',
   tool_completion: 'the ✅/🚫 completion sibling draws nothing, claimed so no surface\'s unclaimed-role fallback prints it',
+  crewmate_steps: 'a crewmate chat\'s folded run of steps (CrewmateStepsLine); the role is built by filterCrewmateChat and never reaches the wire or the SDK',
   // -- page-only --
   permission: 'undrawn here; the registry leaves it to GROUPED_ROLES',
   hidden_invisible_assistant: 'zero-width-space quiet-cycle rows; the registry applies the same skip inside its assistant entry',

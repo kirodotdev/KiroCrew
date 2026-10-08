@@ -12,7 +12,7 @@ import { EdgeFade, JumpToBottomButton } from '../app-sdk/ChatScrollChrome'
 import { createTranscriptRenderers } from '../pages/chat/transcriptRenderers'
 import ChatInput, { type ComposerBusyMode } from './ChatInput'
 import { busySteerFlag } from './chat-input/busySend'
-import { filterCrewmateChat } from './chat/crewmateBubbles'
+import { crewmateStepsOf, filterCrewmateChat } from './chat/crewmateBubbles'
 import type { CrewmateIdentity } from '../pages/chat/CrewmateMessage'
 import ErrorNotice from './ErrorNotice'
 import { Btn } from './ui'
@@ -499,13 +499,19 @@ export default function ChatPane({
   // rows compute from their neighbours see the drawn list, and so the pinned
   // prompt, the earlier-messages anchor and the empty hint all agree with what
   // is on screen. Same array identity back when nothing is dropped. While a
-  // turn runs, its tool calls and thinking stay in, so the chat shows what the
-  // crewmate is doing (same liveness the footer reads).
+  // turn runs, its tool calls and thinking stay in, folded into one steps line
+  // that says what the crewmate is doing (same liveness the footer reads).
   const crewmateLive = running || !!paneSlot?.running
   const messages = useMemo(
     () => (crewmate ? filterCrewmateChat(paneMessages, crewmateLive) : paneMessages),
     [crewmate, paneMessages, crewmateLive],
   )
+  // The live steps line is the crewmate's working indicator; while it is the
+  // newest row the footer's PLAIN working indicator stands down, so there are
+  // never two. Stopping and compacting are other statements and still show.
+  // Any live row, not only the last one: the turn's trailing streaming row
+  // (text started before the tools) is drawn after the live line.
+  const stepsLineWorking = !!crewmate && messages.some(m => crewmateStepsOf(m)?.live)
   // The unfiltered rows, handed to the row set for the one read that must see
   // what the filter dropped (the steer-chip decision reads the policy-block
   // inject row). `undefined` for an ordinary chat, so its renderer set does not
@@ -1784,7 +1790,7 @@ export default function ChatPane({
                  land. Stop/regenerate chrome stays page-level: the pane derives
                  the footer's inputs from its own per-slot stream state. */
               <ChatFooter
-                running={running || !!paneSlot?.running}
+                running={(running || !!paneSlot?.running) && !(stepsLineWorking && streamState !== 'stopping' && !paneSlot?.stopping && streamState !== 'compacting')}
                 stopping={streamState === 'stopping' || !!paneSlot?.stopping}
                 state={streamState}
                 lastRole={messages[messages.length - 1]?.role ?? ''}

@@ -10811,6 +10811,9 @@
         "hide_tool_calls": "도구 호출 숨기기",
         "worked_through_step_other": "{{count}}개 단계 수행"
       },
+      "crewmateSteps": {
+        "step_other": "{{count}}개 단계"
+      },
       "userMessage": {
         "cancel": "취소",
         "cancel_esc": "취소 (Esc)",

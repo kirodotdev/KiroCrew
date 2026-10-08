@@ -10811,6 +10811,9 @@
         "hide_tool_calls": "隐藏工具调用",
         "worked_through_step_other": "已完成 {{count}} 个步骤"
       },
+      "crewmateSteps": {
+        "step_other": "{{count}} 个步骤"
+      },
       "userMessage": {
         "cancel": "取消",
         "cancel_esc": "取消 (Esc)",

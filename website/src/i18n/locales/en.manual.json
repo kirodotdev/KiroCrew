@@ -4731,6 +4731,10 @@
         "worked_through_step_one": "Worked through {{count}} step",
         "worked_through_step_other": "Worked through {{count}} steps"
       },
+      "crewmateSteps": {
+        "step_one": "{{count}} step",
+        "step_other": "{{count}} steps"
+      },
       "deepLink": {
         "message_unavailable": "This message is no longer in this conversation."
       },
