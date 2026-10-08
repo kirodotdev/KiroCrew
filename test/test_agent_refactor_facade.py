@@ -212,6 +212,7 @@ def test_every_prompt_is_listed_by_dir() -> None:
         "_PIPELINE_CONDUCTOR_SYSTEM_PROMPT",
         "_RESEARCH_SYSTEM_PROMPT",
         "_SECURITY_CONDUCTOR_SYSTEM_PROMPT",
+        "_TEAM_LEAD_SYSTEM_PROMPT",
         "_WORKER_SYSTEM_PROMPT",
     }
 

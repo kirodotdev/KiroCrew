@@ -35,6 +35,19 @@ PIPELINE_CONDUCTOR_AGENT_FILENAME = "kirocrew-pipeline-conductor.json"
 # ``kirocrew-work`` mount and the prompt that drives it.
 LEDGER_CONDUCTOR_AGENT_FILENAME = "kirocrew-ledger-conductor.json"
 SECURITY_CONDUCTOR_AGENT_FILENAME = "kirocrew-security-conductor.json"
+# The team-lead crewmate: the one generated spec that both LEADS and WORKS. It
+# carries the default agent's whole toolset, so a small focused item it keeps for
+# itself is one it can actually finish, plus the work ledger and session control
+# its charter dispatches a fleet through. Its own file because it is neither a
+# conductor nor a worker: every conductor spec withholds ``fs_write``, which is
+# what makes "never does a work item's work itself" true against the tool list
+# rather than only against the prose, and a worker cannot dispatch at all.
+#
+# The spec is half of the capability. Its charter also drives the owner's dynamic
+# dashboard, and those verbs resolve the calling crew from the session rather than
+# from an argument -- so they answer only in a crewmate's own thread, which a spec
+# cannot confer on itself (``members.member_panel_session_server``).
+TEAM_LEAD_AGENT_FILENAME = "kirocrew-team-lead.json"
 WORKER_AGENT_FILENAME = "kirocrew-worker.json"
 # The dashboard-author crewmate: authors ONE dashboard template and lands it as a
 # pull request, writing no runtime code. Its own file because it is a dispatched,
@@ -92,6 +105,7 @@ OWNED_KIRO_AGENT_FILES = (
     PIPELINE_CONDUCTOR_AGENT_FILENAME,
     LEDGER_CONDUCTOR_AGENT_FILENAME,
     SECURITY_CONDUCTOR_AGENT_FILENAME,
+    TEAM_LEAD_AGENT_FILENAME,
     WORKER_AGENT_FILENAME,
     DASHBOARD_AUTHOR_AGENT_FILENAME,
     KNOWLEDGE_AGENT_FILENAME,

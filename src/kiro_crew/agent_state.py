@@ -19,8 +19,8 @@ rather than the kiro spec:
   crew's private copy of another template (blueprint semantics — editing a
   crew's definition forks a copy instead of mutating the shared file).
 - ``managed_digest`` (str): the SHA-256 of the exact spec bytes the installer
-  last wrote at an OWNED filename whose stem was a user-creatable name before it
-  became owned (today only ``kirocrew-dashboard-author``). It is the installer's
+  last wrote at an OWNED filename whose installer can DECLINE to write -- a stem
+  that was a user-creatable name before it became owned. It is the installer's
   record that THIS file is its own managed write: a rebuild overwrites the spec
   only when the file on disk reproduces this digest, so a user artefact that
   happens to sit at the stem -- or a copy of another agent renamed onto it -- is
@@ -66,8 +66,8 @@ _MIRRORED_FROM = "mirrored_from"
 _MIRRORED_STAT = "mirrored_stat"
 _FORKED_FROM = "forked_from"
 _PRIVATE_TO = "private_to"
-# Installer-recorded ownership for a spec at an owned filename that was a
-# user-creatable name before it became owned (today: kirocrew-dashboard-author).
+# Installer-recorded ownership for a spec at an owned filename whose installer can
+# DECLINE to write -- a stem that was a user-creatable name before it became owned.
 # Holds the SHA-256 of the exact spec bytes the installer last wrote there, so
 # "is this file our own managed write?" is answered by a digest the installer
 # recorded, not by marks a user artefact could carry by coincidence.

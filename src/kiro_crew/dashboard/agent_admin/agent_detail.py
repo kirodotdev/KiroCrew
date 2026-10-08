@@ -13,7 +13,6 @@ from aiohttp import web
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.agents import (
-        DASHBOARD_AUTHOR_AGENT_FILENAME,
         MAX_AGENT_SKILLS,
         TEMPLATE_DEFINITION_KEYS,
         CapabilityError,
@@ -22,9 +21,9 @@ if TYPE_CHECKING:
         SkillCatalogSnapshot,
         _AmbiguousTemplateName,
         _atomic_json_write,
+        _confirms_managed_pre_write,
         _declined_foreign_spec_write,
         _get_config_lock,
-        _is_confirmed_managed_dashboard_author,
         _read_agent_spec,
         _read_session_key,
         _require_owner,
@@ -429,17 +428,26 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                             # so ENOSPC mid-write would destroy the existing
                             # template. Same tmp+rename helper as the fork
                             # refresh and install paths. An authorized model/skills edit of
-                            # the OWNED dashboard-author spec renews the ownership digest ONLY
-                            # when the PRE-write content was already our confirmed managed
-                            # spec -- a user file at the once-user-creatable stem is never
-                            # stamped. Two-phase (begin pending -> write -> finalize) so a
-                            # crash leaves bytes and record in step and the installer keeps
+                            # an OWNED spec renews the ownership digest ONLY when the
+                            # PRE-write content was already our confirmed managed spec -- a
+                            # user file at a once-user-creatable stem is never stamped.
+                            # Two-phase (begin pending -> write -> finalize) so a crash
+                            # leaves bytes and record in step and the installer keeps
                             # re-filtering against a tightened ceiling. The helper and the
                             # owned filename are composed GLOBALS (bound from the agents
                             # facade), so this owner submodule imports no materialization owner.
-                            if f.stem == Path(DASHBOARD_AUTHOR_AGENT_FILENAME).stem and (
-                                _is_confirmed_managed_dashboard_author(pre_write)
-                            ):
+                            #
+                            # Asked through the per-stem TABLE rather than against one
+                            # stem's predicate: every owned stem whose spec this endpoint can
+                            # rewrite needs its digest renewed, and a stem-specific condition
+                            # here is a condition that answers "no" for the next one. Without
+                            # the renewal an authorized edit leaves the file matching no
+                            # recorded digest, so the admission gate refuses every later start
+                            # as hand-edited and the installer declines it -- the documented
+                            # customization path breaking the agent permanently. The table
+                            # returns False for any stem it does not list, so it subsumes the
+                            # membership half of the question as well as the confirmation.
+                            if _confirms_managed_pre_write(f.stem, pre_write):
                                 agent_state.begin_managed_write(
                                     f.stem,
                                     agent_state.spec_digest(fresh),

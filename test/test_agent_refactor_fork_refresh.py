@@ -358,3 +358,73 @@ def test_an_unconfirmed_private_copy_at_the_dashboard_author_stem_is_governance_
     agent._refresh_forked_templates_locked(gated_off=frozenset())
     assert written == [], "a confirmed-owned stem spec is left to its owned writer"
     assert agent._fork_refresh_failed == frozenset()
+
+
+def test_a_declined_private_copy_at_a_declining_stem_is_governance_filtered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The team-lead stem's installer can DECLINE, so a private copy sitting at it may have
+    NO owned writer re-filtering its grants. The loop must not skip such a file as "owned":
+    its ``allowedTools``/``autoApprove`` would stay live against a ceiling tightened after
+    it was written, while ``require_fork_governance`` still admits sessions on it.
+
+    Driven through the real gate rather than a stubbed predicate, both ways, so the two
+    answers come from the installer's own attribution:
+
+    * a lineage record naming this name a crew's copy makes the install decline, so the
+      governance passes must RUN and write the re-filtered config;
+    * with no record the install lands, the owned writer re-filters it every rebuild, and
+      the loop must SKIP it. That is the control -- without it a loop that filtered
+      everything would pass the first half on its own.
+    """
+    from kiro_crew.agent_files import TEAM_LEAD_AGENT_FILENAME
+
+    name = Path(TEAM_LEAD_AGENT_FILENAME).stem
+    _forks(monkeypatch, {name: {"private_to": "crew", "forked_from": "kirocrew-conductor"}})
+    _bindings(monkeypatch, {"crew": name})
+    monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
+    # Exactly the shape a fork of a conductor leaves at this name: both attribution marks
+    # hold, so only the lineage record can tell it from the installer's own write.
+    spec = tmp_path / (name + ".json")
+    spec.write_text(
+        json.dumps(
+            {
+                "name": name,
+                "mcpServers": {"kirocrew-dashboard": {}, "kirocrew-work": {}},
+                "tools": [],
+                "allowedTools": ["@kirocrew-core/some_verb"],
+            }
+        )
+    )
+    monkeypatch.setattr(agent, "agent_spec_path", lambda _n: spec)
+    monkeypatch.setattr(agent, "_refresh_dynamic_fields", lambda *_a, **_k: None)
+    written: list[dict[str, Any]] = []
+    monkeypatch.setattr(agent, "_atomic_json_write", lambda _p, config: written.append(config))
+
+    agent_state.set_fork_info(name, forked_from="kirocrew-conductor", private_to="crew")
+    agent._refresh_forked_templates_locked(gated_off=frozenset())
+    assert [c["name"] for c in written] == [name], "a declined copy must be governance-filtered"
+    assert agent._fork_refresh_failed == frozenset()
+
+    # With no record AND the ownership digest recorded, the install lands, so the owned
+    # writer re-filters it and the loop skips it. The digest is what ownership means here:
+    # the file's shape alone is not authorship.
+    written.clear()
+    agent_state.clear_fork_info(name)
+    agent_state.set_managed_digest(
+        name, agent_state.spec_digest(json.loads(spec.read_text(encoding="utf-8")))
+    )
+    agent._refresh_forked_templates_locked(gated_off=frozenset())
+    assert written == [], "a spec the installer owns is left to its owned writer"
+    assert agent._fork_refresh_failed == frozenset()
+
+
+def test_a_plain_owned_stem_needs_no_provenance_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The other half of the registry's rule, and what keeps it from spreading: a stem whose
+    installer writes every rebuild has no gate, so its filename stays the whole answer and
+    the loop skips it without reading anything off the disk."""
+    assert agent.owned_provenance_gate("kirocrew-worker") is None
+    assert agent.owned_provenance_gate("kirocrew-conductor") is None
+    # The two that DO decline are gated, which is the control for the Nones above.
+    assert agent.owned_provenance_gate("kirocrew-dashboard-author") is not None
+    assert agent.owned_provenance_gate("kirocrew-team-lead") is not None

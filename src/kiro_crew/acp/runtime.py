@@ -5969,10 +5969,13 @@ class AcpRuntime:
         plain local unregister would leak it in the shared process.
 
         A ``set_mode`` naming an agent activates that agent's spec, and the spec it
-        activates needs the same bracket the spawn's does. Neither other gate reaches
-        here: the spawn gate is keyed to ``self._agent``, so a SHARED runtime spawned
-        as one agent and switched to another on this line passes no gate, and a host
-        that builds no in-process tool surface never runs ``session_mcp``'s gate.
+        activates needs the same bracket the spawn's does. No gate CALLED ELSEWHERE
+        reaches here: the spawn gate is keyed to ``self._agent``, so a SHARED runtime
+        spawned as one agent and switched to another on this line passes no gate of
+        its own, and a host that builds no in-process tool surface never runs
+        ``session_mcp``'s gate. So this method asks the shared admission decision
+        itself, about ``mode_agent``, below -- one of the three enforcement points over
+        ONE decision function, which is what keeps them from drifting apart.
 
         WHERE the spec is consumed differs by host, and that decides which snapshot the
         post-check may use -- exactly ONE per consumed load:
@@ -6000,7 +6003,40 @@ class AcpRuntime:
             DerivedSpecStale,
             require_fresh_derived_spec,
             require_unchanged_derived_spec,
+            team_lead_start_refusal,
         )
+
+        # The shared admission decision, on BOTH paths and before the send. The spawn
+        # gate is keyed to ``self._agent`` (see this method's docstring), so a SHARED
+        # runtime spawned as one agent and switched to another HERE passed no gate -- and
+        # an activation IS a start of that agent's spec, so the refusals a spawn is held
+        # to apply to it. Asked about ``mode_agent``, the agent being switched TO: the one
+        # being switched FROM was answered for at its own spawn, and asking about it again
+        # would answer for the wrong spec. That distinction is the whole finding.
+        #
+        # ``team_lead_start_refusal``, not ``require_fork_governance``: the gate would
+        # ALSO apply the fork half here -- the refresh wait and its timeout -- newly
+        # blocking a mode switch to a fork whose refresh has not settled, which is a
+        # product-wide change this finding does not call for. The shared function carries
+        # the fork EXCLUSION (a recorded fork is admitted and left to its own lane) and
+        # nothing else from the gate.
+        #
+        # OUTSIDE the ``wire_registered`` branch, deliberately. That branch rations
+        # SNAPSHOTS -- exactly one per consumed load -- because a second read of a file
+        # the host already holds judges the wrong bytes. This is not a snapshot and takes
+        # no part in that budget: it answers whether this product will run that agent at
+        # all, which is the same answer on both paths and wrong to skip on either.
+        #
+        # ``self._work_dir`` is what the shared function's *work_dir* means: the cwd
+        # kiro-cli resolves ``--agent`` against, which ``_spawn_work_dir`` is set from and
+        # which the spawn sites already pair with the same question.
+        refusal = await asyncio.to_thread(team_lead_start_refusal, mode_agent, self._work_dir)
+        if refusal:
+            # Same teardown as the freshness refusal below: ``session/new`` or
+            # ``session/load`` already succeeded, so a local unregister would leak the
+            # host's session.
+            await self.terminate_session(session_id)
+            raise AcpRuntimeError(refusal)
 
         if wire_registered:
             mode_snapshot = payload_snapshot
@@ -7057,6 +7093,40 @@ class AcpRuntime:
                 notify_start_queue(
                     logger, on_gate_acquired, permit.queue_wait_ms, START_QUEUE_SESSION_NEW
                 )
+                # The second of the three enforcement points over the one admission
+                # decision. A start reaching this method may pass no gate otherwise: the
+                # session-start gate lives on the SPAWN, and this creates a session on a
+                # runtime already up, so an agent named HERE is a spec about to be
+                # consumed under a question nobody asked.
+                #
+                # INSIDE the permit, after both queue notifications and before the
+                # request goes out. Still fail-closed in the only sense that matters:
+                # ``session/new`` has not been sent, so no session exists in the host and
+                # nothing has read the spec. What the earlier placement cost was not
+                # safety but TIMING -- the question is answered off the loop, and a
+                # thread hop before ``on_gate_queued`` delays the queue edges the
+                # subagent manager's startup clock is charged against, which
+                # ``test_session_start_gate`` measures to the millisecond. Those edges
+                # are a contract; where a pre-send refusal sits between them is not.
+                #
+                # Teardown is the handlers already here: a refusal raises, the inner
+                # ``except`` releases the permit, and the outer one closes the init
+                # scope. Off the loop, like every other spec read on this path.
+                #
+                # Asked with ``session_work_dir``, not the raw *cwd*, which can be None:
+                # ``_session_work_dir`` resolves None to the runtime's own ``_work_dir``,
+                # the cwd the backend process runs with and what kiro-cli resolves
+                # ``--agent`` against, so it is the directory the project-shadow half has
+                # to be asked about. The raw parameter would check nothing for every
+                # caller that passes no cwd. And about ``agent`` after
+                # ``_source_agent``, so the name is the one this session will bind.
+                from kiro_crew.agent import team_lead_start_refusal
+
+                start_refusal = await asyncio.to_thread(
+                    team_lead_start_refusal, agent, session_work_dir
+                )
+                if start_refusal:
+                    raise AcpRuntimeError(start_refusal)
             except BaseException:
                 permit.release()
                 raise

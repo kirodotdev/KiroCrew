@@ -1154,6 +1154,11 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 _EXPECTED_PROJECT_NAMES_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/agent.py": [("require_fork_governance", "unknown")],
     "kiro_crew/agent_discovery.py": [("forward:operation", "forward:source")],
+    # The team-lead admission check asks the same question the fork path asks -- does
+    # the session's project declare this agent's name -- but labels it apart, because
+    # the two refuse for different reasons and name different remedies. A refusal on a
+    # sensitive project directory should say which of the two was asking.
+    "kiro_crew/agent_materialization/team_lead_agent.py": [("team_lead_start_refusal", "unknown")],
     "kiro_crew/config/loader.py": [("project_declares_agent", "unknown")],
     "kiro_crew/dashboard/handlers/agents.py": [("api_kirocrew_agents", "dashboard")],
 }
@@ -1336,6 +1341,13 @@ _EXPECTED_STRICT_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/acp/kas_agents.py": [("kas_agent_projection", "unknown")],
     "kiro_crew/agent_materialization/conductor_agents.py": [
         ("conductor_spec_regeneration", "unknown"),
+    ],
+    # Its own label rather than the regeneration one it sits beside, because the
+    # two reads of the same file answer different questions: one asks whether this
+    # release can use the spec, this one asks only who wrote it. A denial row
+    # naming the wrong question sends a reader to the wrong decision.
+    "kiro_crew/agent_materialization/team_lead_agent.py": [
+        ("team_lead_spec_attribution", "unknown"),
     ],
     "kiro_crew/crewmate_prune_migration.py": [("crewmate_prune", "dashboard")],
     "kiro_crew/dashboard/handlers/sessions.py": [

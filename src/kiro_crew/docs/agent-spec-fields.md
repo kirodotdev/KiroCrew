@@ -629,6 +629,7 @@ would otherwise clobber your pin.
 | `kirocrew-ledger-conductor.json` | generated; your `allowedTools` entries are carried forward | every gateway start |
 | `kirocrew-pipeline-conductor.json` | generated; your `allowedTools` entries are carried forward | every gateway start |
 | `kirocrew-security-conductor.json` | generated; your `allowedTools` entries are carried forward | every gateway start |
+| `kirocrew-team-lead.json` | generated, and nothing on a previous file is carried forward: the spec is a function of the shipped template, its charter and its grant tuples. Only an ABSENT path is installed into. A file of this name that is NOT this installer's own — it does not declare the name `kirocrew-team-lead`, or its `mcpServers` does not mount both `kirocrew-dashboard` and `kirocrew-work`, **or it does not parse, or its read fails** — is left **untouched** and the install is **declined**, logged at ERROR: no backup is written and the agent stays unselectable under this name until you remove or rename the file. A read that may succeed later (a permission, an I/O error) is HELD instead, so the next rebuild installs rather than the file being judged on one bad read | every gateway start |
 | `kirocrew-knowledge.json` | generated | every gateway start |
 | `kirocrew-research.json` | generated | every gateway start |
 | `kirocrew-heartbeat.json` | generated | every gateway start |

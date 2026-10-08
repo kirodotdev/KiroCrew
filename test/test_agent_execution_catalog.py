@@ -248,6 +248,7 @@ def test_every_owned_spec_is_classified_for_the_picker():
         agent_files.PIPELINE_CONDUCTOR_AGENT_FILENAME,
         agent_files.LEDGER_CONDUCTOR_AGENT_FILENAME,
         agent_files.SECURITY_CONDUCTOR_AGENT_FILENAME,
+        agent_files.TEAM_LEAD_AGENT_FILENAME,
         agent_files.WORKER_AGENT_FILENAME,
         agent_files.DASHBOARD_AUTHOR_AGENT_FILENAME,
         agent_files.KNOWLEDGE_AGENT_FILENAME,

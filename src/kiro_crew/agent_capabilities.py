@@ -20,12 +20,10 @@ from typing import Any, Callable
 from kiro_crew import agent_state, kiro_cli
 from kiro_crew.agent import (
     OWNED_KIRO_AGENT_FILES,
-    _is_confirmed_managed_dashboard_author,
-    _read_spec_capped,
     agents_spec_lock,
     kiro_agents_dir_path,
+    owned_provenance_gate,
 )
-from kiro_crew.agent_files import DASHBOARD_AUTHOR_AGENT_FILENAME
 from kiro_crew.agent_sdk.drivers.acp import derived_agent_permissions
 from kiro_crew.agent_spec_format import (
     agent_spec_candidates,
@@ -660,23 +658,24 @@ _REBUILT_FIELDS = frozenset({"hooks", "includeMcpJson"})
 def _parent_is_owned(snap: dict) -> bool:
     """Is the capability projection's parent template one Crew owns?
 
-    A global-scope parent whose filename is in ``OWNED_KIRO_AGENT_FILES`` -- except the
-    dashboard-author stem, which was a user-creatable template name before it became owned.
-    For that stem the owned classification holds ONLY when the on-disk spec POSITIVELY
-    confirms as this installer's own -- its bytes reproduce the installer-recorded ownership
-    digest; a pre-existing user template at the stem -- one whose bytes do not reproduce it,
-    or an absent/unreadable file -- is NOT an owned parent, so a capability save
-    (``_maintain_owned`` / ``_unvouched``) does not refresh its inherited custom guards away
-    and publication does not bind the crew to that replacement. Fail-closed: unconfirmed is a
-    user file. The install gate and the fork-governance origin check apply the same gate.
+    A global-scope parent whose filename is in ``OWNED_KIRO_AGENT_FILES`` -- except at a
+    stem whose installer can DECLINE, which was a user-creatable template name before it
+    became owned. At those stems the owned classification holds ONLY when the on-disk spec
+    POSITIVELY confirms as that installer's own; a pre-existing user template there -- one
+    the installer would refuse, or an absent/unreadable file -- is NOT an owned parent, so a
+    capability save (``_maintain_owned`` / ``_unvouched``) does not refresh its inherited
+    custom guards away and publication does not bind the crew to that replacement.
+    Fail-closed: unconfirmed is a user file. The install gate and the fork-governance origin
+    check read the same gate, reached here through ``owned_provenance_gate`` on the agent
+    facade so this module never names a materialization owner.
     """
     parent_path = snap["parent"].get("path", "")
     name = Path(parent_path).name
     if snap["parent"].get("scope") != "global" or name not in OWNED_KIRO_AGENT_FILES:
         return False
-    if name == DASHBOARD_AUTHOR_AGENT_FILENAME:
-        spec = _read_spec_capped(Path(parent_path))
-        return _is_confirmed_managed_dashboard_author(spec)
+    gate = owned_provenance_gate(Path(name).stem)
+    if gate is not None:
+        return gate.confirms(Path(parent_path))
     return True
 
 

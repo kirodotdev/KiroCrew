@@ -1364,6 +1364,83 @@ def test_dashboard_author_stem_is_always_skipped_in_the_home_probe(monkeypatch, 
     assert agent._existing_specs_are_mine(shared, own_home) is True
 
 
+def test_a_declined_file_at_a_pinning_stem_does_not_refuse_the_whole_directory(
+    monkeypatch, tmp_path
+):
+    """A stem whose installer can DECLINE was a user-creatable template name before it
+    became owned, so a leftover user file can sit at it mounting a managed server with no
+    home pin. Read by the probe that file is foreign, and one foreign file refuses the
+    WHOLE directory -- so nothing is installed and nothing is ceiling-filtered, over a file
+    the installer was never going to touch.
+
+    The team-lead stem is excluded only when its provenance is DECLINED, which is the one
+    refinement over the dashboard-author stem's blanket exclusion: this installer's write
+    does pin the data home, so a file it confirms carries a real signal and keeps its check.
+    Both controls are here, because an exclusion that fired unconditionally or for every
+    owned stem would pass the first assertion on its own.
+    """
+    import json
+
+    from kiro_crew import agent
+    from kiro_crew.agent_files import TEAM_LEAD_AGENT_FILENAME
+
+    own_home = (tmp_path / "my-home").resolve()
+    foreign = (tmp_path / "someone-elses-home").resolve()
+    monkeypatch.delenv("KIRO_HOME", raising=False)
+    monkeypatch.delenv("KIROCREW_POD", raising=False)
+    monkeypatch.setenv("KIROCREW_HOME", str(own_home))
+    _durable_checkout(monkeypatch, agent)
+    shared = tmp_path / "agents"
+    shared.mkdir()
+    (shared / agent.AGENT_FILENAME).write_text(_spec_pinned_to(str(own_home)), encoding="utf-8")
+    lead = shared / TEAM_LEAD_AGENT_FILENAME
+    _pretend_target_is_shared(monkeypatch, agent, shared)
+
+    # A user's own agent parked at the stem: it declares its own name and mounts a managed
+    # server with NO pin, which is exactly the shape that read as foreign.
+    leftover = json.dumps(
+        {
+            "name": "my-own-lead",
+            "mcpServers": {"kirocrew-core": {"command": "kirocrew"}},
+            "allowedTools": [],
+        }
+    )
+    lead.write_text(leftover, encoding="utf-8")
+    assert agent._existing_specs_are_mine(shared, own_home) is True
+    assert agent._decline_shared_agent_home() is None, "the rebuild must still be allowed"
+    assert lead.read_text(encoding="utf-8") == leftover, "the user's file was touched"
+
+    # Control: a file this installer CONFIRMS it wrote keeps its pin checked, so a foreign
+    # pin at the same stem still refuses. The exclusion tracks provenance, not the name --
+    # and provenance is the recorded ownership digest, so the record is seeded here rather
+    # than relying on the file's shape.
+    from kiro_crew import agent_state
+
+    ours = {
+        "name": "kirocrew-team-lead",
+        "mcpServers": {
+            "kirocrew-core": {
+                "command": "kirocrew",
+                "env": {"KIROCREW_HOME": str(foreign)},
+            },
+            "kirocrew-dashboard": {"command": "kirocrew"},
+            "kirocrew-work": {"command": "kirocrew"},
+        },
+        "allowedTools": [],
+    }
+    lead.write_text(json.dumps(ours, indent=2) + "\n", encoding="utf-8")
+    agent_state.set_managed_digest("kirocrew-team-lead", agent_state.spec_digest(ours))
+    assert agent._existing_specs_are_mine(shared, own_home) is False
+
+    # Control: an owned stem with no gate is untouched by this -- a foreign pin there still
+    # refuses, so the exclusion did not widen to every owned name.
+    lead.unlink()
+    (shared / agent._CONDUCTOR_AGENT_FILENAME).write_text(
+        _spec_pinned_to(str(foreign)), encoding="utf-8"
+    )
+    assert agent._existing_specs_are_mine(shared, own_home) is False
+
+
 def test_unnormalized_spelling_of_own_pin_stays_mine(monkeypatch, tmp_path):
     """Lexical means normalized, not byte-identical.
 

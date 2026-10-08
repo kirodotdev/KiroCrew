@@ -56,7 +56,7 @@ BASE_SURFACE: dict[str, str] = {
     "GUEST_AGENT_PROMPT": "value str 9f07b9e7c179fff5",
     "KIRO_AGENTS_DIR": "value host",
     "MCP_PATH_HINT": "value str 2c0b855124e13185",
-    "OWNED_KIRO_AGENT_FILES": "value tuple 56259bfccecde44b",
+    "OWNED_KIRO_AGENT_FILES": "value tuple 4ccfca725525b61b",
     "Path": "class Path",
     "REQUIRED_KIRO_AGENT_FILES": "value tuple d3a5d201c05d5c9b",
     "SecurityEvent": "class SecurityEvent",

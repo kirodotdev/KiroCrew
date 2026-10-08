@@ -1779,6 +1779,38 @@ and the Crewmates page's empty state with **New crewmate** (#12924) is the path
 from a custom agent to a crewmate. What an existing user actually has is the
 opposite problem — the crewmates that sync already made — and that is what this
 migration settles.
+
+## Binding a crewmate to the shipped team-lead template
+
+One shipped agent template exists to be bound to a crewmate rather than
+dispatched, and it is worth a section because the reason is not visible from the
+spec. `kirocrew-team-lead` carries the toolset, session control and the work
+ledger; the dynamic dashboard and the auto-approved dispatch writes come from no
+spec at all. `kirocrew-panel` is `opt_in` and host-injected, so no spec may emit
+it, and `_resolve_publishing_crew` accepts a write only from a session whose
+agent selection is in namespace `member` AND which holds a dashboard slot. The
+session projection adds `@kirocrew-panel` with `_MEMBER_PANEL_GRANTS` and
+`@kirocrew-dashboard` with `_MEMBER_DASHBOARD_GRANTS` for a crewmate thread and
+for nothing else.
+
+So the template alone is a conductor that can also do work, and a crewmate bound
+to it is the whole agent. The product creates no such crewmate: binding one is
+the operator's own action, through the Crewmates page or the one command
+
+```
+kirocrew agent create --name <name> --kiro-agent kirocrew-team-lead
+```
+
+which is the ordinary create path -- `KiroCrewAgentConfig(kiro_agent=...)`, a
+provisioned memory store, `persist_member_config(create=True)` -- and nothing
+about it is special to this template. A crewmate removed from the Crewmates page
+stays removed, like any other.
+
+The crewmate is the ROOT of its own goal. Dispatched as a child session it would
+carry neither mount, so it could not create a session, record a ledger item or
+write the board; the chain it runs is the crewmate, one conductor beneath it,
+and workers as leaves.
+
 ## A crewmate's chat
 
 A member-mode slot's transcript is the crewmate's whole working record: the

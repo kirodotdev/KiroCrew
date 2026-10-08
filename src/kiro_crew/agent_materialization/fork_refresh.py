@@ -17,10 +17,11 @@ from typing import Literal
 from kiro_crew import agent as agent_mod
 from kiro_crew import agent_state, user_json
 from kiro_crew.agent_files import DASHBOARD_AUTHOR_AGENT_FILENAME, OWNED_KIRO_AGENT_FILES
-from kiro_crew.agent_materialization import auto_approve
+from kiro_crew.agent_materialization import auto_approve, owned_provenance
 from kiro_crew.agent_spec_format import is_markdown_spec
 
-#: The dashboard-author origin stem, digest-gated in :func:`_origin_is_owned`.
+#: The dashboard-author stem, whose gate :func:`_dashboard_author_file_is_installers`
+#: reads. The loop itself resolves a stem's gate by name rather than naming this one.
 _DASHBOARD_AUTHOR_STEM = Path(DASHBOARD_AUTHOR_AGENT_FILENAME).stem
 
 
@@ -32,7 +33,11 @@ def _dashboard_author_file_is_installers(path: Path) -> bool:
     with a JSON crew fork, where the capped reader returns ``None`` -- is NOT confirmed ours,
     so this returns False and the fork refresh leaves the fork's custom ``preToolUse`` guards
     in place rather than replacing them with bundled hooks. A lazy import avoids an import
-    cycle at module load."""
+    cycle at module load.
+
+    This stem's ``confirms`` entry in
+    :mod:`kiro_crew.agent_materialization.owned_provenance` routes here, so the capability
+    projection asks exactly this question and the two cannot drift."""
     from kiro_crew.agent_materialization import worker_agent
 
     spec = agent_mod._read_spec_capped(path)
@@ -209,16 +214,17 @@ def _refresh_forked_templates_locked(*, gated_off: "frozenset[str] | None" = Non
             name = forks[name]["forked_from"]
         if name not in owned_names:
             return False
-        # The dashboard-author stem was a user-creatable template name before it became
-        # owned, so a pre-upgrade fork can descend from a USER template at this stem.
+        # A stem whose installer can DECLINE was a user-creatable template name before it
+        # became owned, so a pre-upgrade fork can descend from a USER template at it.
         # Treating that origin as owned here would overwrite the fork's hooks and MCP
-        # plumbing with the managed set. Count it as an owned origin ONLY when the on-disk
-        # origin spec reproduces the installer-recorded ownership digest -- the same gate the
-        # installer, the capability-parent check and the home probe apply. Other owned
-        # origins keep the plain check.
-        if name == _DASHBOARD_AUTHOR_STEM:
+        # plumbing with the managed set. Count such an origin as owned ONLY when the
+        # on-disk spec positively confirms as the installer's own -- the same gate the
+        # installer, the capability-parent check and the home probe apply. Every other
+        # owned origin keeps the plain check, because its installer writes every rebuild.
+        gate = owned_provenance.owned_provenance_gate(name)
+        if gate is not None:
             origin_path = agent_mod.kiro_agents_dir_path() / (name + ".json")
-            return _dashboard_author_file_is_installers(origin_path)
+            return gate.confirms(origin_path)
         return True
 
     agents_dir = agent_mod.kiro_agents_dir_path()
@@ -229,30 +235,30 @@ def _refresh_forked_templates_locked(*, gated_off: "frozenset[str] | None" = Non
         its grants, so this governance loop may skip it?
 
         A plain owned stem (worker, conductor, service agents) always does -- its installer
-        runs every rebuild. The dashboard-author stem is the exception: it was a
+        runs every rebuild. A stem whose installer can DECLINE is the exception: it was a
         user-creatable template name before it became owned, so a pre-upgrade PRIVATE COPY
-        can sit at this stem with NO owned writer re-filtering it. Skipping such a file as
-        "owned" would leave its ``allowedTools``/``autoApprove`` live against a tightened
-        ceiling forever (``require_fork_governance`` then admits sessions on it). So for
-        this stem the skip is honoured ONLY when the managed install would actually LAND on
-        the ``.json`` -- it reproduces the installer-recorded ownership digest AND no user
-        ``.md`` sibling makes the installer refuse. A private copy that reproduces the digest
-        but sits beside a ``.md`` (so the installer refuses and never re-filters it), or any
-        unconfirmed copy, falls through to the governance passes below rather than being
-        skipped as owned.
+        can sit at it with NO owned writer re-filtering it. Skipping such a file as "owned"
+        would leave its ``allowedTools``/``autoApprove`` live against a tightened ceiling
+        forever (``require_fork_governance`` then admits sessions on it). So for those stems
+        the skip is honoured ONLY when the managed install would actually LAND on the
+        ``.json``. A copy the install refuses -- for whatever reason that stem's installer
+        refuses, a blocking user ``.md`` sibling or a lineage record naming it a crew's own
+        -- falls through to the governance passes below rather than being skipped as owned.
+
+        ``install_refreshes`` and not ``confirms``, because this is the question the skip
+        actually rests on: bytes that confirm are not enough when something else still
+        stops the install from landing, and nothing else re-filters the file.
         """
         if name not in owned_names:
             return False
-        if name == _DASHBOARD_AUTHOR_STEM:
-            from kiro_crew.agent_materialization import worker_agent
-
-            spec_path = agents_dir / (name + ".json")
-            return worker_agent._managed_dashboard_author_install_lands(spec_path)
+        gate = owned_provenance.owned_provenance_gate(name)
+        if gate is not None:
+            return gate.install_refreshes(agents_dir / (name + ".json"))
         return True
 
     for fork_name in sorted(forks):
-        # Owned specs have their own writer; this path must never touch them -- EXCEPT an
-        # unconfirmed private copy at the dashboard-author stem, which has no owned writer
+        # Owned specs have their own writer; this path must never touch them -- EXCEPT a
+        # private copy at a stem whose installer can decline, which has no owned writer
         # and must still be governance-filtered here (see _owned_spec_has_its_own_writer).
         if _owned_spec_has_its_own_writer(fork_name):
             continue

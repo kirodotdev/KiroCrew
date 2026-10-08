@@ -265,6 +265,10 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         warn_invalid_disabled,
         without_marker,
     )
+    from kiro_crew.agent_materialization.owned_provenance import (  # noqa: F401
+        OwnedProvenanceGate,
+        owned_provenance_gate,
+    )
     from kiro_crew.agent_materialization.service_agents import (  # noqa: F401
         _DASHBOARD_MANAGER_AGENT_FILENAME,
         _GUEST_AGENT_FILENAME,
@@ -276,6 +280,18 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         _install_knowledge_agent,
         _install_lite_agent_fallback,
         _install_research_agent,
+    )
+    from kiro_crew.agent_materialization.team_lead_agent import (  # noqa: F401
+        _DEFINING_SERVERS,
+        _TEAM_LEAD_SHIPPED_GRANTS,
+        InstallOutcome,
+        _foreign_team_lead_spec_reason,
+        _install_team_lead_agent,
+        _narrow_whole_server_grants,
+        _team_lead_mcp_servers,
+        _team_lead_unassignable_servers,
+        spec_start_refusal,
+        team_lead_start_refusal,
     )
     from kiro_crew.agent_materialization.worker_agent import (  # noqa: F401
         _DEFAULT_SPEC_OBSERVATION_ATTEMPTS,
@@ -2210,6 +2226,22 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "_PIPELINE_CONDUCTOR_AGENT_FILENAME",
         "_SECURITY_CONDUCTOR_AGENT_FILENAME",
     ),
+    "kiro_crew.agent_materialization.owned_provenance": (
+        "OwnedProvenanceGate",
+        "owned_provenance_gate",
+    ),
+    "kiro_crew.agent_materialization.team_lead_agent": (
+        "_DEFINING_SERVERS",
+        "_TEAM_LEAD_SHIPPED_GRANTS",
+        "InstallOutcome",
+        "_foreign_team_lead_spec_reason",
+        "_install_team_lead_agent",
+        "spec_start_refusal",
+        "team_lead_start_refusal",
+        "_narrow_whole_server_grants",
+        "_team_lead_mcp_servers",
+        "_team_lead_unassignable_servers",
+    ),
     "kiro_crew.agent_materialization.worker_agent": (
         "_WORKER_MIRRORED_SHAPES",
         "_WORKER_MIRRORED_KEYS",
@@ -2748,9 +2780,30 @@ def migrate_agent_specs() -> int:
         if "model_managed" not in data and "cc_model" not in data:
             continue
         name = data.get("name") or spec_path.stem
+        # Asked BEFORE the strip below, which mutates ``data``: the question is whether the
+        # bytes ON DISK are our confirmed managed write, and after the strip they are not
+        # those bytes any more. Through the same per-stem table every other in-place writer
+        # of a managed spec uses -- this one is reached only by a spec still carrying
+        # ``model_managed``/``cc_model``, keys no current installer writes, so for an owned
+        # stem it is dormant rather than safe by construction. A uniform rule is easier to
+        # keep than a documented exception, and the cost here is one predicate call.
+        pre_strip_confirmed = _confirms_managed_pre_write(spec_path.stem, data)
+        pre_strip_digest = agent_state.spec_digest(data) if pre_strip_confirmed else None
         agent_state.lift_and_strip_bookkeeping(data, name)
         try:
-            _atomic_json_write(spec_path, data)
+            if pre_strip_confirmed:
+                # Two-phase, like the other renewing writers: the stripped bytes' digest is
+                # recorded as pending, written, then finalized, so an interruption leaves
+                # the file matching a recorded slot rather than neither.
+                agent_state.begin_managed_write(
+                    spec_path.stem,
+                    agent_state.spec_digest(data),
+                    current=pre_strip_digest,
+                )
+                _atomic_json_write(spec_path, data)
+                agent_state.finalize_managed_write(spec_path.stem)
+            else:
+                _atomic_json_write(spec_path, data)
             cleaned += 1
         except OSError as exc:
             logger.warning("Could not rewrite cleaned agent spec %s: %s", spec_path, exc)
@@ -2862,18 +2915,20 @@ def migrate_relocated_skill_uris() -> int:
                         present.add(new_uri)
                 if not changed:
                     continue
-                # The skill-URI migration is a managed WRITER of this spec. For the
-                # dashboard-author stem, decide ownership from the PRE-rewrite bytes and renew
-                # the digest after the write only when they were our confirmed managed write
-                # -- otherwise the installer would read its own migrated spec as foreign and
-                # stop re-filtering its grants against a tightened ceiling. A user file (no
-                # recorded digest) is never stamped. ``worker_agent`` is the module global
-                # bound by the core's tail import, resolved at call time.
-                pre_migration_confirmed = (
-                    str(name) == worker_agent._MANAGED_OWNED_NAME
-                    and spec_path.stem == (worker_agent._MANAGED_OWNED_NAME)
-                    and worker_agent._is_confirmed_managed_dashboard_author(data)
-                )
+                # The skill-URI migration is a managed WRITER of this spec: decide ownership
+                # from the PRE-rewrite bytes and renew the digest after the write only when
+                # they were our confirmed managed write -- otherwise the installer reads its
+                # own migrated spec as foreign and stops re-filtering its grants against a
+                # tightened ceiling. A user file (no recorded digest) is never stamped.
+                #
+                # Through the per-stem TABLE, not one stem's predicate: this rewrite reaches
+                # EVERY owned spec that maps a relocated skill, and the dashboard's skills
+                # PATCH can add such a mapping to any of them -- so a condition naming one
+                # stem is a condition that answers "no" for the rest and leaves them matching
+                # no recorded digest. The table answers False for any stem it does not list,
+                # so it carries the membership half too, and its predicates are anchored on
+                # the recorded digest of these very bytes rather than on a name.
+                pre_migration_confirmed = _confirms_managed_pre_write(spec_path.stem, data)
                 pre_migration_digest = (
                     agent_state.spec_digest(data) if pre_migration_confirmed else None
                 )
@@ -3146,6 +3201,55 @@ def _conflicting_spec_for(name: str, chosen: Path, agents_dir: Path) -> Path | N
     return direct
 
 
+def _confirms_managed_pre_write(name: str, data: dict) -> bool:
+    """Is *data* -- a managed spec's PRE-EDIT bytes -- that installer's own last write?
+
+    A TABLE rather than a chain of ``or`` clauses, because the question is per managed
+    stem and the stems keep arriving. Every in-place mutator of a managed spec has to
+    ask it: an authorized edit to a file we wrote may renew the recorded ownership
+    digest, and the same edit to a file we did NOT write may not. Adding a stem is one
+    entry here instead of one more branch at each mutator.
+
+    The safety property is the whole point and it runs in ONE direction. Renewing a
+    digest for a file this product did not write would make an in-place edit a way to
+    LAUNDER a user-authored spec into a confirmed one -- the reset would hand it the
+    provenance the installer refused it. Declining to renew merely leaves the file
+    unconfirmed, which the admission gate reports and the next rebuild repairs. So every
+    uncertain answer is False, including a predicate that raises.
+
+    Asked on the PARSED PRE-EDIT dict, never by re-reading the path: the caller has
+    already read those bytes, and a second read after mutation would confirm the wrong
+    content while a second read before it would open a window for the file to change in
+    between. This is why the entries are dict predicates rather than the
+    ``owned_provenance`` gate's ``confirms(path)``, which exists for callers that hold
+    only a path.
+    """
+
+    def _team_lead(spec: dict) -> bool:
+        # The SAME notion of "ours" the admission gate uses, so a reset cannot confirm a
+        # file that gate would refuse: byte-identical to the recorded digest, not a
+        # crew's recorded fork, and declaring this agent with both its servers. A fork
+        # must not have the TEMPLATE's digest renewed under it -- its own lane maintains
+        # it -- which is why this is the full attribution and not the digest check alone.
+        return team_lead_agent._attribution_reason(spec) is None
+
+    # Annotated loosely on purpose: naming ``Callable`` here would bind that name in
+    # the core's namespace, and the facade contract then reads every owner module
+    # that imports it from ``typing`` as copying a core binding.
+    renewable: dict[str, Any] = {
+        worker_agent._MANAGED_OWNED_NAME: worker_agent._is_confirmed_managed_dashboard_author,
+        team_lead_agent._TEAM_LEAD_AGENT_NAME: _team_lead,
+    }
+    confirms = renewable.get(name)
+    if confirms is None:
+        return False
+    try:
+        return bool(confirms(data))
+    except Exception:  # noqa: BLE001 — an unanswerable confirmation is not a confirmation
+        logger.debug("ownership confirmation failed for managed spec %r", name, exc_info=True)
+        return False
+
+
 def reset_agent_model(name: str) -> tuple[Path, str]:
     """Clear *name*'s spec model pin on disk; return (spec path, previous model).
 
@@ -3190,9 +3294,7 @@ def reset_agent_model(name: str) -> tuple[Path, str]:
         # Snapshot the PRE-edit bytes to decide ownership BEFORE this writer mutates them:
         # the digest is renewed below only when the file WAS already our confirmed managed
         # write, never for a user file at the once-user-creatable stem.
-        pre_write_confirmed = name == worker_agent._MANAGED_OWNED_NAME and (
-            worker_agent._is_confirmed_managed_dashboard_author(data)
-        )
+        pre_write_confirmed = _confirms_managed_pre_write(name, data)
         # Digest of the CURRENT on-disk bytes (pre-edit), captured before mutation so
         # ``begin_managed_write`` can keep the file confirmable if this write is interrupted.
         pre_write_digest = agent_state.spec_digest(data) if pre_write_confirmed else None
@@ -3310,6 +3412,18 @@ def _existing_specs_are_mine(target: Path, own_home: Path | None) -> bool | None
         # provenance is the installer-recorded ownership digest, checked at the install gate,
         # not a home pin.
         if name == _DASHBOARD_AUTHOR_FILENAME:
+            continue
+        # The same hazard at every other stem whose installer can DECLINE, and the same
+        # resolution narrowed by one fact the registry records: such a stem was a
+        # user-creatable template name before it became owned, so a leftover user file can
+        # sit at it mounting a managed server with no pin -- which would read as foreign and
+        # refuse creation of EVERY required spec, the very set that would otherwise be
+        # installed and ceiling-filtered. A stem whose managed write DOES pin the home
+        # (``pins_home``) keeps its check for a file the installer confirms it wrote, because
+        # that file carries a real signal; only a file the installer would decline is
+        # excluded. Provenance is asked of the registry, never re-derived here.
+        gate = owned_provenance.owned_provenance_gate(Path(name).stem)
+        if gate is not None and not (gate.pins_home and gate.confirms(spec_path)):
             continue
         found = True
         if expected is None:
@@ -4392,6 +4506,61 @@ def rebuild_agent_config(
         except Exception:
             conductor_held = True
             logger.debug("kirocrew-security-conductor agent install failed", exc_info=True)
+
+        # Install kirocrew-team-lead (the crewmate that both leads and works).
+        #
+        # EAGER, for the forced reason spelled out on the worker below: ``session_create``
+        # refuses an agent it cannot resolve, and resolution reads a boot-time in-memory
+        # snapshot that no spec write refreshes — so a lazily-materialized spec is
+        # invisible to the validation that runs ahead of the spawn.
+        #
+        # That reason is about RESOLUTION, not about dispatching this agent as a child:
+        # it runs as the root of its own goal, since the servers carrying session control
+        # and the status board join a session's mounts only for a crewmate thread. What
+        # the eager write buys is that the name resolves at all -- for the crewmate
+        # binding, for a roster read, and for an operator naming it.
+        #
+        # Counted with the conductors above because it shares their consequence rather
+        # than their shape: this spec is also a list this rebuild re-derives, so a boot
+        # that could not write it must not be marked as having projected the current
+        # ceiling onto the grants on disk.
+        #
+        # Only a HELD outcome counts, and the distinction is load-bearing rather than
+        # tidy. ``_conductor_spec_held`` feeds the retry sweep, so anything counted here
+        # is something a later pass is expected to finish, and HELD is exactly that: a
+        # read that failed for a reason the next pass may not meet.
+        #
+        # A DECLINED outcome is this installer refusing, on purpose and permanently, to
+        # overwrite a spec it did not write. The file is still somebody else's on every
+        # later pass, so counting it would put the install in a retry set it can never
+        # leave -- an hourly full rebuild, and a log line reading as a failure, for a
+        # decision that was correct. It leaves no hold, so a spec declined this way is
+        # excluded from projection tracking and ``prime_ceiling_projection`` seeds the
+        # generation as it does for a clean rebuild.
+        #
+        # That is not a claim that the grants on such a file are governed. They are
+        # not, and nothing here narrows them: the install declines and the file keeps
+        # whatever the operator wrote. What keeps a ceiling from mattering to it is
+        # that the spec never RUNS -- ``require_fork_governance`` refuses a start on a
+        # team-lead file this product cannot vouch for, so there is no session for an
+        # ungoverned grant to be consumed by. The projection generation is therefore about the specs
+        # this rebuild DERIVED, which a declined one is not.
+        # Counted for the retry sweep here, and that is ALL this arm owes. Whether a
+        # session may consume what is on disk is asked at admission instead
+        # (``team_lead_agent.spec_start_refusal``), by comparing the file's own grants
+        # with what the current ceiling would produce -- so no marker set here has to
+        # be reached for the refusal to work, and a rebuild that dies before this
+        # installer runs is caught just the same.
+        try:
+            if (
+                team_lead_agent._install_team_lead_agent(clean=clean)
+                is team_lead_agent.InstallOutcome.HELD
+            ):
+                conductor_held = True
+        except Exception:
+            conductor_held = True
+            logger.debug("kirocrew-team-lead agent install failed", exc_info=True)
+
         # Settled here, not at the end: ``prime_ceiling_projection`` seeds the ceiling
         # baseline from this after the boot rebuild, and a rebuild that raises further
         # down must still leave the installers' verdict behind, not the previous one.
@@ -4572,13 +4741,24 @@ def _stem_claimant_fork(agent: str) -> str | None:
 
 
 def require_fork_governance(agent: str | None, project_dir: str | Path | None = None) -> None:
-    """Fail closed: block a fork-backed session start until fork governance is
-    re-projected, and ABORT it when the projection failed or timed out.
+    """Fail closed: block a session start this product cannot vouch for.
+
+    TWO refusals, and they are separate rules sharing one gate because this is
+    the one function every session start passes through -- the KAS harness, the
+    kiro harness and the ACP client all call it, and a rule copied into three
+    places is a rule that will be in two of them after the next change.
 
     A fork's ``allowedTools``/``autoApprove`` bypass the PreToolUse gate, so a
     session consuming a fork the refresh never re-filtered would run grants the
-    ceiling has since tightened away. Non-fork agents never wait and never
-    raise. Raises :class:`ForkGovernanceUnresolved` only.
+    ceiling has since tightened away. A fork-backed start therefore waits for
+    that re-projection and aborts when it failed or timed out.
+
+    A NON-FORK start raises for one reason only: the team-lead template's file
+    was hand-edited, so the installer declined to rewrite it and does not
+    sanitize it either (:func:`team_lead_agent.spec_start_refusal`). Every
+    other non-fork agent still never waits and never raises.
+
+    Raises :class:`ForkGovernanceUnresolved` only.
 
     *project_dir* is the cwd the backend will run with. kiro-cli resolves
     ``--agent`` against ``<cwd>/.kiro/agents`` BEFORE the global directory, so
@@ -4663,6 +4843,39 @@ def require_fork_governance(agent: str | None, project_dir: str | Path | None = 
                 except Exception as exc:
                     raise ForkGovernanceUnresolved(_lineage_unreadable_refusal(agent, exc)) from exc
     if not is_fork:
+        # A NON-FORK spec can still be one this product will not run: the team-lead
+        # template declines to overwrite a hand-edited file and does not sanitize it,
+        # so the refusal that governs those grants is here, at the one place every
+        # start passes through. All three callers of this function reach it, which is
+        # why it lives in the gate rather than beside any one of them.
+        #
+        # Keyed on the gate's OWN ``is_fork``, deliberately, rather than on a second
+        # lineage read of its own: a recorded fork is a supported feature with its
+        # own governance -- the refresh re-filters its grants and the wait below
+        # gates its starts -- and refusing it here would break that lane outright.
+        # One sidecar read and one notion of "is a fork" cannot disagree with
+        # themselves; two could.
+        # BOTH spellings are offered, because a binding may carry the file stem where
+        # the declared name differs and ``effective`` is what the resolution above
+        # settled on. Which names it answers for is the owner's to know, not this
+        # gate's -- it holds the filename already, and a second copy of that string
+        # here is a copy that can go stale.
+        # ``project_dir`` is this function's own parameter, so it is in scope here
+        # exactly as it is on the fork path below -- no path is reconstructed. The
+        # owner is handed it rather than a precomputed name set because only it knows
+        # whether any of these names is its own, and a project scan for every
+        # non-fork start of every other agent would be work nobody asked for.
+        #
+        # ``team_lead_start_refusal`` rather than ``spec_start_refusal`` directly: this
+        # gate is ONE of three enforcement points and the shared function is the only
+        # thing that decides. It repeats this gate's lineage read for ``agent``, which
+        # is the price of the two ACP sites getting the fork exclusion without reading
+        # the sidecar themselves -- one implementation of "is this a fork" rather than
+        # three. Its answer here cannot differ from the one above: same sidecar, same
+        # key, inside one start.
+        refusal = team_lead_agent.team_lead_start_refusal(agent, project_dir, effective)
+        if refusal:
+            raise ForkGovernanceUnresolved(refusal)
         return
     # Checked before the refresh wait: a shadowed fork is refused no matter
     # what the refresh concludes, so waiting up to the timeout first would
@@ -6034,6 +6247,300 @@ instruction with `monitor_update` so every later cycle honors it.
 """
 
 
+_TEAM_LEAD_SYSTEM_PROMPT = """# Kiro Crew Team Lead
+
+You are `kirocrew-team-lead`. You own a goal end to end: you register it, split
+it into work items, do the small focused ones yourself, dispatch a session for
+every other one, patrol that fleet, decide what your children cannot, and keep
+the owner's board current — until the goal is met or a stop condition fires.
+
+**You run as the root of your own goal, in your own thread, and you are never
+dispatched as somebody's child.** Your dispatch and board tools reach you
+because this thread is yours; a copy of you opened as another session's child
+would come up without them and could neither build a team nor write the board.
+So the goal arrives from the person and the items go downward only: there is no
+conductor above you to report to, and no peer to hand an item sideways.
+
+**You both work and lead, and the rule below is which.** A conductor has no
+file-writing tool, so under it every leaf becomes another session's turn; a
+worker cannot dispatch, so under it every goal becomes one long session. You
+hold both halves, so the half a task belongs to is yours to decide every time.
+
+## Do it yourself, or dispatch it
+
+**Read the task as if you were writing its ledger item. ONE acceptance
+condition, met before this turn ends, with nothing outside this session to wait
+on — do it yourself, now. Everything else is dispatched.**
+
+Every clause of that test is decidable in one read:
+
+- **Two or more conditions that can be accepted independently** means the task
+  decomposes, so it is a dispatch — and a dispatch to something that decomposes
+  again.
+- **Anything you would wait on** — a build, a review round, a human reply,
+  another item's output — means the task outlives this turn. A turn you spend
+  waiting is a turn your whole fleet spends unled. Dispatch it.
+- **A task you started yourself and did not finish in that turn becomes a
+  dispatch, not a second turn.** Register it, seed what you already learned as
+  its inputs, hand it over.
+
+Say in one line which half you picked. Idle capacity does not decide it, nor
+file count, nor "this looks big", nor "writing the seed costs more than the
+fix" — the fix you keep is the team you never built.
+
+**Your own loop is never an item.** Reading to plan, running a check to see
+where things stand, writing the brief, recording verdicts and rulings, writing
+the board: that is the work of leading, and none of it goes to a child.
+
+## Register the work before you start it
+
+**Before the first dispatch of a new piece of work, run the owner's intake
+step** — a hook, a skill, or whatever tracker the project already configures
+for it. Carry the identifiers it returns into the item's `title` and into every
+seed, so the fleet's output lands against the owner's own record instead of
+beside it. With no intake step configured, say so once and keep going: an
+unregistered goal still runs, but nobody can find it afterwards.
+
+## Dispatch, in this order
+
+Once per goal, before the first dispatch: `chat_folder_file_self` into the
+goal's folder so you sit beside your team rather than above it,
+`resource_status` once, and ONE brief file that every seed names by path. One
+brief per goal, never per child — the rules, the output shape and the stop
+conditions are the same for all of them, and copies pasted per child drift
+apart by the second round.
+
+Then, per item, and the order is not a preference:
+
+1. `work_ledger_record` `action=create` with the item's `title` and a CONCRETE
+   `acceptance`: a file that will exist at a named path, a check that will
+   pass, a pull request that will be open and green. An item you cannot state
+   an acceptance for is not ready to dispatch — it is an item you have not
+   finished splitting.
+2. `session_create` with a title saying what the item is FOR, `folder` set to
+   `<goal folder>/<agent>` (one subfolder per agent kind, created on the way),
+   and **`agent` set explicitly**. It returns the child's session key.
+3. `work_ledger_record` `action=bind` with that `item_id` and
+   `worker_session_key`.
+4. `session_send` the seed.
+
+**Bind before you seed.** A child whose first call is `work_brief` while
+unbound gets `not_bound`, and cannot tell an early call from a broken dispatch
+— so it either guesses its goal out of the seed or stops. A bound item with no
+seed is visible in your own ledger and you can seed it on the next cycle; an
+unbound running child is neither visible there nor recoverable from it.
+
+### Which agent — and why nesting is the default
+
+| the item | `agent` |
+|---|---|
+| its size is not yet known, or it decomposes into two or more independently acceptable sub-items | `kirocrew-conductor`, which splits it again and dispatches workers under itself |
+| a clearly single leaf — one assertable acceptance, one session's work | `kirocrew-worker` |
+| `select_crew` names a specialist crew that fits | that crew |
+
+**When the size is unknown, dispatch a conductor rather than a worker.** This
+is the point of having a team, not an optimisation of it. A fleet one level
+deep sends every surprise back to you and you become the bottleneck you
+dispatched to avoid, whereas a conductor that decomposes again absorbs its own
+surprises and reports one item's worth of state upward.
+
+**That nesting is one level: you dispatch a conductor, and that conductor
+dispatches workers.** A conductor of yours may not stand up a third conducting
+level — the server refuses the item it would have to create, with a depth
+error, and the branch dies holding a goal nobody can be bound to. So a
+conductor's seed says plainly that its own children are workers. Treat that
+refusal as the general signal rather than carrying a number: wherever a
+dispatch comes back with a depth error, flatten that branch into workers for
+items you have already split small enough, and keep the splitting at your own
+level where there is room for it.
+
+**Never leave `agent` unset.** An omitted `agent` inherits YOURS, and a copy of
+you opened as a child has none of the tools that make you useful — it can
+neither dispatch nor write the board — so the item reads as stalled rather than
+as misconfigured. `select_crew` returns a name and you pass it; it does not
+wire itself. A specialist crew that does not mount the work ledger cannot
+report into it — dispatch it anyway when it is the right crew, and fall back to
+`session_read_message` for that one item, never for all of them.
+
+## Patrol
+
+**After your first `bind`, arm ONE loop on your own session: `monitor_start`
+with `watch="work-ledger"`.** That watch is what makes the loop event-driven: a
+report lands as a crew-log write on your board, and the watch subscribes to
+that board — so a report, a child's session closing and a child's turn ending
+(a crash included) each pull the next tick forward within seconds, while a tick
+carrying no news costs no turn at all. Without the watch none of those signals
+reaches you, and a dead child reads the same as a working one. Take the
+interval and the caps from the `goal-conductor` skill's `patrol_budget.py
+check` instead of choosing them: the interval is only the backstop for a child
+that goes silent, and caps set too small end the loop mid-goal without a word.
+
+**Loop health is checked, never remembered, and the runtime checks it for
+you.** Having armed a loop is not evidence that one is armed — a reply saying
+*requested* confirms receipt only. Two readings answer it without your having
+to remember anything, and both arrive in calls you already make. The `bind`
+reply carries a `patrol` field, so you learn at dispatch time whether this
+session has a loop reading the item you just bound. And every row of the
+`compact` ledger read carries `unpatrolled`: an open item with no patrol
+reading it. One `unpatrolled` row means the loop that should be reading it is
+not, whatever you remember arming, and the remedy is in that order too — arm
+or re-arm it, and if a cycle shows a loop without the watch, fix that with
+`monitor_update(watch="work-ledger")` before anything else in the cycle.
+`monitor_inspect` is the fallback for when you need the loop's own settings
+rather than the answer to "is anything reading this". If arming is refused
+outright, say plainly that no loop is running and drive that one round with
+`wait`. Call `autonudge_stop` only when every item is terminal or the owner
+says stop; `max_cycles` is a runaway backstop, not a stop signal.
+
+On each wake, `work_ledger_read` with `compact=true` FIRST — every item's
+status columns plus the derived `orphaned` and `stale` flags, small enough to
+read each time. The full read (events, acceptance, `accept_batch`) is for the
+item that needs it. Then act by status, and only on three of them:
+
+- **`done`** — a CLAIM, never an acceptance. Read the bars with a full
+  `work_ledger_read`, filter `accept_batch` down to the items whose status is
+  `done`, pipe THAT into the `goal-conductor` skill's `scripts/accept_eval.py`,
+  and record its answer with `work_ledger_record` `action=verdict`. The batch
+  carries every open item with a concrete acceptance, `progress` ones included,
+  so the unfiltered batch would let you close an item under its own worker.
+  Nothing a child can write reaches `verdict` — that is the whole reason you
+  ask the evaluator rather than read the claim.
+- **`blocked`** — an external dependency stopped the work. Yours to clear or to
+  re-plan around.
+- **`question`** — a decision only you can make. Record it with
+  `work_ledger_record` `action=decide` and answer with `session_send`.
+- **`progress`** — informational. Do nothing.
+
+**A claimed `pr` is not an acceptance condition.** When a child reports a pull
+request while the item's stored `acceptance` still holds a placeholder, the
+batch leaves that item out rather than reading the claim as the bar. Promote it
+yourself with `work_ledger_record` `action=accept`, then verify. A worker that
+could fill in its own acceptance could point the bar at anybody's green pull
+request.
+
+**Every verdict names the head sha you read from git in that same turn.** A
+child's "green" is a reading of some head, and a rebase, a force-push or its
+own later commit moves that head afterwards — while a test that never exercised
+the change passes exactly as loudly as one that does. So read the sha yourself
+in the turn you record the verdict, check the item's acceptance rather than the
+child's account of its test, and say which facts you verified and which you
+relayed.
+
+**Most items `stale` at once is a STOPPED fleet, not a busy one.** One stale
+item is a child thinking; most of them stale together is a restart, a dead loop
+or an exhausted host — and on the board that reads exactly like deep work.
+Resume each one: read its tail with `session_read_message`, check
+`resource_status` before standing the wave back up, and re-seed each child from
+the brief and its own item by path.
+
+`work_ledger_record` `action=close` with the item's `state` is what ends an
+item; `session_close` the child once its item is terminal, so the fleet on the
+board is the fleet that is still running.
+
+**Answer a question inside a standing ruling rather than waiting to be asked.**
+Technical and design calls inside the goal are yours; record each ruling once
+so later children cite it instead of asking again. Four things a default cannot
+settle go to the owner: credentials or a login only they hold, spend, something
+irreversible, and overwriting or closing work that is somebody else's. Park
+just that item, keep the rest of the fleet moving, and leave the loop armed —
+an open ask never stops it.
+
+## The seed is the whole brief
+
+**A seed restates the owner's ask VERBATIM, in the owner's own words, above
+anything of your own.** You are one reading away from the ask and your children
+are two. A paraphrase that drops a clause is how a fleet spends a whole round
+building the wrong thing with nothing on the board looking wrong, because every
+child is executing your summary faithfully. Quote the ask, then give the item's
+inputs by path, its acceptance condition, what it may touch, its stop
+conditions, and the brief's path.
+
+**Require the echo.** The seed tells the child to restate that ask back to you
+in its first report, before it plans. A child that cannot restate it has not
+read it, and learning that from its first report is cheap; learning it from its
+deliverable is not.
+
+## The owner's board
+
+The dynamic dashboard is your status board, and it is not a copy of your chat.
+Each cycle, after `work_ledger_read`: `dashboard_fields` for which fields are
+yours (the ones marked `agentic`) and which of your past writes were refused
+and why, then `dashboard_write` for those fields only.
+
+- `verdict` — `{state, headline, blocker}`, with `state` one of `on_track`,
+  `needs_you`, `blocked`. This is the field nothing else can produce: a board
+  shows six reds and no fold ranks them, so you name the one that is actually
+  in the way. Rewrite it each cycle. The page downgrades a stale verdict to
+  `no_word` on its own once the fold has moved past the write, which is the
+  honest reading of a lead that stopped.
+- `for_you` — only asks the owner alone can answer, each with its `text` and
+  `ask` (`decide`, `approve`, `do`) plus the `context`, `why`, `how` and
+  `options` a reader needs to answer without opening anything else. Clear an
+  ask in the cycle it is answered.
+
+**Write judgement, never arithmetic.** Counts, spend, item states and durations
+come from folds and are already live; a number you type is stale the moment the
+fold advances and wrong in a way the page cannot detect. A key the manifest
+does not declare is refused rather than rendered, and the refusal says what was
+valid there — read it instead of guessing a second time.
+
+## Your own state
+
+`session_ledger_record` and `session_ledger_read` hold YOUR goal, its folder,
+your standing rulings and the patrol cursor, so a compaction or a restart
+resumes the patrol instead of re-dispatching a fleet that already exists.
+**What a cold resume needs is a concrete `next`: the call you were about to
+make, with its arguments and the item it lands on.** A status word like
+"patrolling" tells a resumed turn nothing it can act on. Do not encode items
+there — the work ledger is the item store.
+
+## Capacity
+
+`resource_status` before standing up several sessions at once, and before a
+full test run or a large build. It is advisory and reserves nothing: on `tight`
+or `critical`, take the lighter path, dispatch the next wave later, and say why
+you narrowed it. Every hard ceiling is the server's and a create past one is
+refused with its own limit named, so hold no count of your own for how many
+sessions a goal may run — a count you pick is wrong on the next host.
+
+## Your tools
+
+- The work ledger — `work_ledger_read` for the whole fleet as data,
+  `work_ledger_record` for the fields you own (`create`, `bind`, `decide`,
+  `accept`, `verdict`, `close`, `goal`). There is no report for you to file:
+  the goal is yours, so the person is the only reader above you.
+- Child sessions — `session_create`, `session_send`, `session_read_message`,
+  `session_status`, `session_stop`, `session_close` (close a child once its
+  item is terminal), `list_sessions`.
+- Keeping the goal's sessions together — `chat_folder_file_self`,
+  `chat_folder_tree`, `chat_folder_create`.
+- Patrol — `monitor_start`, `monitor_update`, `monitor_inspect`,
+  `autonudge_stop`, `wait`.
+- The owner's board — `dashboard_fields`, `dashboard_write`.
+- Your own state across rounds — `session_ledger_read`,
+  `session_ledger_record`.
+- Capacity — `resource_status`.
+- Doing the small focused task yourself — the full default toolset: write
+  files, run commands, run builds, drive git, open pull requests.
+- Talking to the person — `ask_question` puts a decision that is not yours to
+  make to them as a card, after which you END your turn and their answer
+  arrives as the next message; `send_message` / `send_notification` to report.
+- Naming the right skill in a seed — `skill_search`, `skill_fetch`.
+- Reading — `fs_read`, `web_fetch`.
+- `tool_search` loads a tool that is not in your list yet.
+
+The `team-lead` skill carries the operating procedure — the work-item tests,
+the dispatch steps, the patrol cycle, the acceptance scripts and the stop
+conditions. Read it before acting on a goal. It is your own procedure and not
+a conductor's: the two scripts it runs are `goal-conductor`'s, reached where
+they are maintained, and everything about keeping half the work yourself is
+here rather than there. The owner can message you at any time: apply a goal
+change at the round boundary, except a message that invalidates an item already
+in flight, which you handle at once.
+
+"""
+
+
 _HEARTBEAT_SYSTEM_PROMPT = """# KiroCrew Heartbeat Worker
 
 You are `kirocrew-heartbeat`, an unattended polling worker that runs one task
@@ -6229,9 +6736,12 @@ def _sanitize_agent_hooks() -> None:
         # and let the next rebuild overwrite them. ``worker_agent`` is a module global bound
         # by the tail import below (like ``kiro_hooks`` above), resolved at call time.
         stem = filename.removesuffix(".json")
-        pre_sweep_confirmed = stem == worker_agent._MANAGED_OWNED_NAME and (
-            worker_agent._is_confirmed_managed_dashboard_author(data)
-        )
+        # Through the per-stem TABLE for the reason the skill-URI migration uses it: the
+        # sweep reaches every owned spec carrying a legacy hook key, and one stem's
+        # predicate answers "no" for the others. Dormant for the other owned stems today,
+        # because no installer writes the legacy key -- which is a fact about today's
+        # specs, not a property of this writer, and keying it correctly costs the same line.
+        pre_sweep_confirmed = _confirms_managed_pre_write(stem, data)
         pre_sweep_digest = agent_state.spec_digest(data) if pre_sweep_confirmed else None
         data["hooks"] = {
             key: value
@@ -6306,7 +6816,9 @@ from kiro_crew.agent_materialization import (  # noqa: E402, F401 -- the owners 
     managed_mcp,
     mcp_aliases,
     mcp_sources,
+    owned_provenance,
     service_agents,
+    team_lead_agent,
     worker_agent,
 )
 
