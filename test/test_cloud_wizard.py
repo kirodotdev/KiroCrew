@@ -844,6 +844,8 @@ class TestLaunchResume:
 
         monkeypatch.setattr(wizard.ui, "choose", fake_choose)
         monkeypatch.setattr(ec2, "deploy", fake_deploy)
+        # The first deploy names the account and asks, `--size` included.
+        monkeypatch.setattr(wizard.ui, "confirm", lambda *a, **k: True)
 
         assert wizard.launch(profile="dev", region="us-west-2", size_key="balanced") == 0
         assert deploy_calls == ["kc-new"]
@@ -1268,3 +1270,89 @@ class TestThePriorPointerIsClearedBeforeANewStackExists:
         wizard.launch(profile="dev", region="us-west-2", assume_yes=True)
 
         assert cleared == [], cleared
+
+
+class TestFirstDeployConfirmsAccount:
+    """A first stack deploy names the AWS account and profile, and asks first."""
+
+    def _setup(self, monkeypatch):
+        cfg = LaunchState(profile="", region="us-west-2", last_tag="")
+        monkeypatch.setattr(wizard.LaunchState, "load", classmethod(lambda cls, *a: cfg))
+        monkeypatch.setattr(wizard.LaunchState, "record", classmethod(lambda cls, **k: None))
+        monkeypatch.setattr(
+            wizard.iam,
+            "reachability_check",
+            lambda *a, **k: {
+                "reachable": True,
+                "account": "111122223333",
+                "arn": "arn:aws:sts::111122223333:assumed-role/Admin/me",
+                "ec2_reachable": True,
+                "cloudformation_reachable": True,
+                "ssm_reachable": True,
+            },
+        )
+        monkeypatch.setattr(wizard, "_ensure_session_manager_plugin", lambda **k: True)
+        monkeypatch.setattr(wizard, "_select_existing_launch", lambda *a, **k: None)
+        deploys: list[dict] = []
+
+        def fake_deploy(**kwargs):
+            deploys.append(kwargs)
+            raise AssertionError("stop after deploy")
+
+        monkeypatch.setattr(wizard, "_deploy_with_progress", fake_deploy)
+        prompts: list[str] = []
+        return deploys, prompts
+
+    def _decline(self, prompts):
+        def fake_confirm(text, default=True):
+            prompts.append(text)
+            return False
+
+        return fake_confirm
+
+    def test_size_flag_still_asks_and_decline_deploys_nothing(self, monkeypatch, capsys):
+        deploys, prompts = self._setup(monkeypatch)
+        monkeypatch.delenv("AWS_PROFILE", raising=False)
+        monkeypatch.delenv("AWS_DEFAULT_PROFILE", raising=False)
+        monkeypatch.setattr(wizard.ui, "confirm", self._decline(prompts))
+
+        rc = wizard.launch(profile="prod", region="us-west-2", size_key="light")
+
+        assert rc == 0
+        assert deploys == []
+        assert len(prompts) == 1
+        assert "111122223333" in prompts[0] and "profile prod" in prompts[0]
+        assert "nothing was created" in capsys.readouterr().out
+
+    def test_prompt_names_profile_from_aws_profile_env(self, monkeypatch, capsys):
+        deploys, prompts = self._setup(monkeypatch)
+        monkeypatch.setenv("AWS_PROFILE", "work-prod")
+        monkeypatch.setattr(wizard.ui, "choose", lambda *a, **k: 0)
+        monkeypatch.setattr(wizard.ui, "confirm", self._decline(prompts))
+
+        assert wizard.launch(profile="", region="us-west-2") == 0
+        assert deploys == []
+        assert len(prompts) == 1
+        assert "111122223333" in prompts[0]
+        assert "work-prod" in prompts[0] and "AWS_PROFILE" in prompts[0]
+        assert "assumed-role/Admin/me" in capsys.readouterr().out
+
+    def test_prompt_names_default_profile(self, monkeypatch):
+        deploys, prompts = self._setup(monkeypatch)
+        monkeypatch.delenv("AWS_PROFILE", raising=False)
+        monkeypatch.delenv("AWS_DEFAULT_PROFILE", raising=False)
+        monkeypatch.setattr(wizard.ui, "choose", lambda *a, **k: 0)
+        monkeypatch.setattr(wizard.ui, "confirm", self._decline(prompts))
+
+        assert wizard.launch(profile="", region="us-west-2") == 0
+        assert len(prompts) == 1 and "default profile" in prompts[0]
+
+    def test_yes_skips_the_prompt(self, monkeypatch):
+        deploys, prompts = self._setup(monkeypatch)
+        monkeypatch.setattr(
+            wizard.ui, "confirm", lambda *a, **k: pytest.fail("--yes must not prompt")
+        )
+
+        with pytest.raises(AssertionError, match="stop after deploy"):
+            wizard.launch(profile="prod", region="us-west-2", size_key="light", assume_yes=True)
+        assert len(deploys) == 1

@@ -95,7 +95,8 @@ here, and opens the dashboard — all from your laptop.
    bootstrapper does this and hands off to the wizard. Verify prerequisites with
    `kirocrew cloud doctor`. Attach the least-privilege policy printed by
    `kirocrew cloud iam-policy` to the AWS profile you'll launch with.
-2. **Launch.** Run `kirocrew cloud launch` — interactive (size picker + confirm),
+2. **Launch.** Run `kirocrew cloud launch` — interactive (size picker + a confirm
+   that names the AWS account and profile the stack will be created in),
    or non-interactive, e.g. `kirocrew cloud launch --size power --region us-west-2
    --profile dev -y`. Useful flags: `--new` (a separate box instead of resuming
    your saved one) and `--keep-on-failure` (disable CloudFormation rollback to
