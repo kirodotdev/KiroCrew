@@ -14,6 +14,24 @@ const SLOW_LATEACK = '[[SLOW_LATEACK]]'
 // per-folder "New chat in <name>" buttons. fork.spec.ts uses the same locator.
 const NEW_CHAT_NAME = 'New chat session'
 
+// The stub's whole reply to a prompt that carries no [[...]] sentinel: REPLY_TEXT
+// in src/kiro_crew/testing/fake_acp_backend.py.
+const STUB_REPLY = 'pong from the fake ACP backend'
+
+// Named ceiling for the first reply in a NEW slot. A new slot is a new ACP
+// session, and its first prompt waits until the MCP-init drain gives up:
+// `_MCP_DRAIN_NO_REPORT_CEILING` (6 s, src/kiro_crew/acp/session_handle.py) runs
+// in full because the stub reports no MCP server. Send to reply measured
+// 7.05-7.10 s (12 runs, two gateways): that fixed 6 s timer plus a ~1.1 s rest
+// that load moves. So the ceiling is the timer plus 10x the rest:
+// 6 s + 10 x 1.1 s = 17 s. A change to the drain ceiling changes this sum.
+const FIRST_REPLY_CEILING_MS = 17_000
+
+// The timeout 'displays streaming response' runs under: twice the reply ceiling,
+// plus 2 s for the page load before it, so a lost turn fails on the reply wait,
+// by name, before the test itself times out.
+const STREAMING_TEST_TIMEOUT_MS = 2 * FIRST_REPLY_CEILING_MS + 2_000
+
 // @needs-agent: these specs drive a live agent turn (send/stream/soft-stop),
 // so they require model/agent credentials the credential-less CI gateway
 // lacks. Tagged so the default gating run (grepInvert /@needs-agent/ in
@@ -59,14 +77,46 @@ test.describe('Chat Page E2E Tests', { tag: '@needs-agent' }, () => {
     await expect(messageInput).toHaveValue('', { timeout: 2000 })
   })
 
+  // The slot 'displays streaming response' creates through the API, closed after
+  // the test (see the cleanup note at the end of this block).
+  let ownSlot = ''
+  test.afterEach(async ({ page }) => {
+    if (ownSlot) await page.request.delete(`/api/chat/slots/${encodeURIComponent(ownSlot)}`)
+    ownSlot = ''
+  })
+
   test('displays streaming response', async ({ page }) => {
-    // Send a message first
+    test.setTimeout(STREAMING_TEST_TIMEOUT_MS)
+    // A slot of its own. Every other spec here lands on one shared slot, which
+    // can still be running the turn the spec before this one sent: a prompt sent
+    // to a busy slot is only queued. Its seeded history is not this test's
+    // either: while the view rests at the bottom, its first prompt can be the
+    // pinned prompt's stand-in, which stays hidden while the pinned card shows it.
+    const created = await page.request.post('/api/chat/slots', { data: { agent: 'default' } })
+    expect(created.ok(), await created.text()).toBeTruthy()
+    const slot = ((await created.json()) as { key: string }).key
+    ownSlot = slot
+    await page.goto(`/chat?sid=${encodeURIComponent(slot)}`, { waitUntil: 'domcontentloaded' })
+    // The link opens the slot only once the gateway is connected and the slot
+    // list has loaded. Before that the composer shows with no slot behind it, or
+    // offline (that placeholder matches /message/i too), and Enter sends nowhere
+    // or into a slot it creates itself.
+    const ownRow = page.locator(`[data-slot-key="${slot}"] .session-row.session-active`)
+    await expect(ownRow).toBeVisible({ timeout: 10000 })
     const messageInput = page.getByPlaceholder(/message/i)
+    await expect(messageInput).not.toHaveAttribute('placeholder', /offline/i)
+
     await messageInput.fill('Hello')
     await page.keyboard.press('Enter')
-    
-    // Check if messages are visible
-    await expect(page.locator('.msg-content').first()).toBeVisible({ timeout: 5000 })
+
+    // Sent, not queued: the prompt is in this slot's transcript, the backend's
+    // streamed reply follows it, and the slot is still the one this test opened.
+    const transcript = page.getByLabel('Chat messages', { exact: true })
+    await expect(transcript.getByText('Hello', { exact: true })).toBeVisible()
+    await expect(transcript.getByText(STUB_REPLY, { exact: true })).toBeVisible({
+      timeout: FIRST_REPLY_CEILING_MS,
+    })
+    await expect(ownRow).toBeVisible()
   })
 
   test('clears message input after sending', async ({ page }) => {
@@ -142,10 +192,10 @@ test.describe('Chat Page E2E Tests', { tag: '@needs-agent' }, () => {
     // Input should be cleared quickly, indicating send was successful
     await expect(messageInput).toHaveValue('', { timeout: 2000 })
   })
-  // Cleanup: Skip automated cleanup to avoid accidentally deleting user data
-  // Chat slots created during tests will persist, but this is safer than
-  // risking deletion of real user chat history
-  // If cleanup is needed, it should be done manually with explicit test markers
+  // Cleanup: the slots 'creates new chat slot' and 'switches between chat slots'
+  // open through the UI stay open, since nothing tells them apart from a user's
+  // own. The one slot created through the API has a known key and is closed after
+  // its test; closing archives a slot to history and deletes nothing.
 })
 
 /**
