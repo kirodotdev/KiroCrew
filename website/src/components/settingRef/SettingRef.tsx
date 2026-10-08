@@ -7,7 +7,8 @@
  * - Env var (kind='env'): <code> with popover showing per-shell export lines
  * - Unknown/malicious key: plain <code>, NO link
  */
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
+import type { MouseEvent } from 'react'
 import { Settings, Terminal } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover'
 import { resolveSettingRef } from './resolveSettingRef'
@@ -18,6 +19,7 @@ import { i18nT } from '../../i18n/t'
 import { toPathSegment, SUBNAV_PARAM, SUBNAV_LEGACY_PARAMS } from '../subNavParams'
 import { settingsPath } from '../settingsPath'
 import { CopyCommandButton } from './CopyCommandButton'
+import { useGuardedLeave } from '../NavigationLeaveGuard'
 
 export interface SettingRefProps {
   /** The dotted config key (e.g. 'telemetry.beacon_enabled') or env var name. */
@@ -77,6 +79,10 @@ export function SettingRef({ configKey, kind = 'config', schemaIndex: schemaInde
   // When schemaIndexProp is passed (tests), treat it as the loaded schema.
   // When absent, use hook result (Map | undefined).
   const schemaIndex = schemaIndexProp !== undefined ? schemaIndexProp : hookSchema
+  // The UI-mode chip is a navigation surface like SettingsLink: a chip in a chat
+  // must ask the page first, or following it drops an unsent draft.
+  const navigate = useNavigate()
+  const guardedLeave = useGuardedLeave()
 
   // Env var mode: validate key at component boundary, then render popover
   if (kind === 'env') {
@@ -134,9 +140,16 @@ export function SettingRef({ configKey, kind = 'config', schemaIndex: schemaInde
       // Safety fallback: cannot build a valid route
       return <code className="text-xs font-mono px-1 py-0.5 rounded bg-bg-accent border border-border">{configKey}</code>
     }
+    const onClick = (e: MouseEvent<HTMLAnchorElement>) => {
+      // A modified or non-primary click opens a new tab and unmounts nothing.
+      if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+      e.preventDefault()
+      guardedLeave(() => navigate(route), route)
+    }
     return (
       <Link
         to={route}
+        onClick={onClick}
         className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-mono max-w-full [overflow-wrap:anywhere] bg-accent/10 border border-accent/30 text-accent hover:bg-accent/20 transition-colors no-underline"
         aria-label={i18nT('components.settingRef.openSettingsAriaLabel', { tab: translatedTabLabel(resolution.entry.tab), key: configKey })}
       >

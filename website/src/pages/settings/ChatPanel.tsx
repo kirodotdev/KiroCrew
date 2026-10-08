@@ -28,7 +28,7 @@ import { readBusySendDefault, setBusySendDefault, type BusySendMode } from '../.
 import { platformShortcut } from '../../utils/platform'
 import { capRoleOther, clampRoleOther } from '../../lib/userProfile'
 import { ROLE_SLUGS, TECH_SLUGS } from '../../lib/profileOptions'
-import { fmtNumber } from '../../i18n/format'
+import { fmtNumber, fmtUnit } from '../../i18n/format'
 import { normalizeHiddenModels } from '../../hooks/useInteractiveModels'
 
 import { i18nT } from '../../i18n/t'
@@ -144,9 +144,12 @@ const COMPLETION_KEEP_CHARS_MIN = 0
 const COMPLETION_KEEP_CHARS_MAX = 512000
 const COMPLETION_KEEP_CHARS_DEFAULT = 3000
 
+/** What PATCH returns beside the config when it clamped the value it was sent. */
+type ClampNotice = { requested: number; stored: number; min: number; max: number }
+
 /** Shape of the kirocrewConfig query payload this panel reads and patches. */
 type KirocrewConfigShape = {
-  session?: { autocompact_pct?: number }
+  session?: { autocompact_pct?: number; compact_wait_secs?: number }
   session_summary?: { enabled?: boolean }
   agent?: {
     model?: string
@@ -843,6 +846,48 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
     },
   })
 
+  // ── Compaction wait budget ──
+  // The server clamps an out-of-range value instead of refusing it (0 keeps
+  // the built-in budget; anything else lands in 60-3600 s), so the field shows
+  // what was saved and says why it differs from what was typed.
+  const [localWaitSecs, setLocalWaitSecs] = useState('')
+  const [waitClampNotice, setWaitClampNotice] = useState('')
+  // True only while the user holds a typed, unsaved value. An untouched field
+  // follows the server on every refetch, and a blur without an edit saves
+  // nothing, so a value saved elsewhere is never written back over.
+  const waitSecsEditedRef = useRef(false)
+  const serverWaitSecs = mcQ.data?.session?.compact_wait_secs
+  useEffect(() => {
+    if (mcQ.isSuccess && !waitSecsEditedRef.current) {
+      setLocalWaitSecs(String(serverWaitSecs ?? 0))
+    }
+  }, [mcQ.isSuccess, serverWaitSecs])
+
+  const waitSecsMut = useMutation({
+    mutationFn: (n: number) => api.patchConfig('session.compact_wait_secs', n),
+    onSuccess: (data: { clamp_notice?: ClampNotice } | undefined) => {
+      const notice = data?.clamp_notice
+      if (notice) {
+        setLocalWaitSecs(String(notice.stored))
+        setWaitClampNotice(
+          i18nT('pages.settings.chatPanel.compaction_wait_budget_clamped', {
+            requested: fmtUnit(notice.requested, 'second'),
+            stored: fmtUnit(notice.stored, 'second'),
+            min: fmtUnit(notice.min, 'second'),
+            max: fmtUnit(notice.max, 'second'),
+          }),
+        )
+      } else {
+        setWaitClampNotice('')
+      }
+      return qc.invalidateQueries({ queryKey: ['kirocrewConfig'] })
+    },
+    onError: () => {
+      setSaveError(i18nT('pages.settings.chatPanel.failed_to_save_compaction_wait_budget'))
+      setLocalWaitSecs(String(mcCfg?.session?.compact_wait_secs ?? 0))
+    },
+  })
+
   const keepModeMut = useMutation({
     mutationFn: (v: CompletionKeepMode) => api.patchConfig('agent.completion_keep', v),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
@@ -1507,6 +1552,38 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
             disabled={!mcQ.isSuccess}
             configKey="session.autocompact_pct"
           />
+          <SettingsInput
+            label={i18nT('pages.settings.chatPanel.compaction_wait_budget')}
+            description={i18nT('pages.settings.chatPanel.compaction_wait_budget_description')}
+            hint={i18nT('pages.settings.chatPanel.compaction_wait_budget_hint')}
+            type="number"
+            value={localWaitSecs}
+            min={0}
+            max={3600}
+            step={30}
+            onChange={v => {
+              waitSecsEditedRef.current = true
+              setLocalWaitSecs(v)
+              setWaitClampNotice('')
+            }}
+            onBlur={() => {
+              if (!waitSecsEditedRef.current) return
+              waitSecsEditedRef.current = false
+              const saved = mcCfg?.session?.compact_wait_secs ?? 0
+              const n = Number(localWaitSecs)
+              if (localWaitSecs.trim() === '' || !Number.isFinite(n)) {
+                setLocalWaitSecs(String(saved))
+                return
+              }
+              if (n === saved) return
+              waitSecsMut.mutate(n)
+            }}
+            // Locked while a save is in flight: its result rewrites the field
+            // (the clamped value), which must never land on a newer draft.
+            disabled={!mcQ.isSuccess || waitSecsMut.isPending}
+            configKey="session.compact_wait_secs"
+          />
+          <FieldHint message={waitClampNotice} />
         </SettingsCard>
       </div>
 

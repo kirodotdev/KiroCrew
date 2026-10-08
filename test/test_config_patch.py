@@ -700,6 +700,59 @@ class TestFloatValidator:
             assert resp.status == 400
 
 
+# ── Clamped float: session.compact_wait_secs ─────────────────────────────
+
+
+class TestCompactWaitSecsClamp:
+    """The wait budget is editable and clamps (not rejects) an out-of-range value.
+
+    The stored value is the one the load path would produce from it, and the
+    response carries a ``clamp_notice`` so the Settings row can say so.
+    """
+
+    @staticmethod
+    def _stored(cfg_path) -> object:
+        return json.loads(cfg_path.read_text(encoding="utf-8"))["session"]["compact_wait_secs"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", [0, 60, 450, 3600])
+    async def test_in_range_value_is_stored_without_notice(self, tmp_config, value) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "session.compact_wait_secs", value)
+            assert resp.status == 200
+            body = await resp.json()
+        assert "clamp_notice" not in body
+        assert self._stored(tmp_config) == float(value)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("value", "stored"),
+        [(1, 60.0), (59.5, 60.0), (3601, 3600.0), (99999, 3600.0), (-5, 0.0)],
+    )
+    async def test_out_of_range_value_is_clamped_with_notice(
+        self, tmp_config, value, stored
+    ) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "session.compact_wait_secs", value)
+            assert resp.status == 200
+            body = await resp.json()
+        assert body["clamp_notice"] == {
+            "path": "session.compact_wait_secs",
+            "requested": float(value),
+            "stored": stored,
+            "min": 60.0,
+            "max": 3600.0,
+        }
+        assert self._stored(tmp_config) == stored
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", ["abc", float("nan"), True, None])
+    async def test_non_number_is_still_rejected(self, tmp_config, value) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "session.compact_wait_secs", value)
+            assert resp.status == 400
+
+
 # ── Bool validator ───────────────────────────────────────────────────────
 
 

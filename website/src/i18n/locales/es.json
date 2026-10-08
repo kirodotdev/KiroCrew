@@ -15586,7 +15586,12 @@
         "message_font_size_desc": "Tamaño de fuente de la conversación, en todas las sesiones: texto de los mensajes, código, tablas, respuestas sugeridas y el cuadro de entrada de mensajes. El ancho de contenido compacto crece en proporción. La barra lateral, la lista de sesiones y el resto de la interfaz no se ven afectados.",
         "remove_the_agents_pin": "Quitar su fijación",
         "failed_to_clear_agent_model_pin": "No se pudo quitar el modelo fijado del agente ({{error}}). Inténtalo de nuevo.",
-        "failed_to_clear_agent_model_pin_no_reason": "No se pudo quitar el modelo fijado del agente. Inténtalo de nuevo."
+        "failed_to_clear_agent_model_pin_no_reason": "No se pudo quitar el modelo fijado del agente. Inténtalo de nuevo.",
+        "compaction_wait_budget": "Límite de tiempo de compactación (segundos)",
+        "compaction_wait_budget_description": "Lo máximo que puede durar una compactación. 0 = valor predeterminado (300 s). Si no, de 60 a 3600 s.",
+        "compaction_wait_budget_hint": "Al superar este límite, la sesión se reinicia o una compactación manual indica que se agotó el tiempo. Auméntalo si la compactación de un contexto grande suele tardar más de 300 segundos.",
+        "compaction_wait_budget_clamped": "Se guardó {{stored}}. {{requested}} está fuera del rango permitido ({{min}} a {{max}}).",
+        "failed_to_save_compaction_wait_budget": "No se pudo guardar el tiempo de espera de compactación"
       },
       "computerUsePanel": {
         "accessibility": "Accesibilidad",

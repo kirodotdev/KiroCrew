@@ -872,6 +872,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.compaction-time-limit-seconds",
+    "label": "Compaction Time Limit (seconds)",
+    "labelKey": "pages.settings.chatPanel.compaction_wait_budget",
+    "description": "Past this limit the session restarts, or a manual compaction reports that it timed out. Raise it if compaction on a large context regularly needs more than 300 seconds. Longest a compaction may run. 0 = default (300 s). Otherwise 60 to 3,600 s.",
+    "tab": "chat",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "sub": "advanced"
+    },
+    "configKey": "session.compact_wait_secs"
+  },
+  {
     "id": "chat.completion-event-characters",
     "label": "Completion Event Characters",
     "labelKey": "pages.settings.chatPanel.completion_event_characters",

@@ -15586,7 +15586,12 @@
         "message_font_size_desc": "Taille de police de la conversation, dans toutes les sessions : texte des messages, code, tableaux, réponses suggérées et zone de saisie du message. La largeur de contenu compacte s'élargit en proportion. La barre latérale, la liste des sessions et le reste de l'interface ne sont pas affectés.",
         "remove_the_agents_pin": "Retirer son épingle",
         "failed_to_clear_agent_model_pin": "Impossible de retirer le modèle épinglé de l’agent ({{error}}). Réessaie.",
-        "failed_to_clear_agent_model_pin_no_reason": "Impossible de retirer le modèle épinglé de l’agent. Réessaie."
+        "failed_to_clear_agent_model_pin_no_reason": "Impossible de retirer le modèle épinglé de l’agent. Réessaie.",
+        "compaction_wait_budget": "Durée maximale du compactage (secondes)",
+        "compaction_wait_budget_description": "Durée maximale d'un compactage. 0 = valeur par défaut (300 s). Sinon de 60 à 3 600 s.",
+        "compaction_wait_budget_hint": "Au-delà de cette limite, la session redémarre ou un compactage manuel signale qu'il a expiré. Augmente-la si le compactage d'un grand contexte prend souvent plus de 300 secondes.",
+        "compaction_wait_budget_clamped": "{{stored}} enregistré. {{requested}} est hors de la plage autorisée ({{min}} à {{max}}).",
+        "failed_to_save_compaction_wait_budget": "Impossible d'enregistrer le délai d'attente du compactage"
       },
       "computerUsePanel": {
         "accessibility": "Accessibilité",

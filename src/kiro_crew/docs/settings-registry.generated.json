@@ -473,6 +473,14 @@
       "description": "A folder with no chats takes one row instead of two, and its New chat button moves onto the folder's own row"
     },
     {
+      "id": "chat.compaction-time-limit-seconds",
+      "label": "Compaction Time Limit (seconds)",
+      "tab": "chat",
+      "route": "/settings/chat/advanced?highlight=key%3Asession.compact_wait_secs",
+      "description": "Past this limit the session restarts, or a manual compaction reports that it timed out. Raise it if compaction on a large context regularly needs more than 300 seconds. Longest a compaction may run. 0 = default (300 s). Otherwise 60 to 3,600 s.",
+      "configKey": "session.compact_wait_secs"
+    },
+    {
       "id": "chat.completion-event-characters",
       "label": "Completion Event Characters",
       "tab": "chat",

@@ -15114,7 +15114,12 @@
         "message_font_size_desc": "모든 세션에서 대화의 글꼴 크기입니다: 메시지 텍스트, 코드, 표, 추천 답변 및 메시지 입력창. 콤팩트 콘텐츠 너비도 이에 맞춰 넓어집니다. 사이드바, 세션 목록 및 나머지 인터페이스에는 영향을 주지 않습니다.",
         "remove_the_agents_pin": "고정 해제",
         "failed_to_clear_agent_model_pin": "에이전트의 고정 모델을 해제할 수 없습니다 ({{error}}). 다시 시도하세요.",
-        "failed_to_clear_agent_model_pin_no_reason": "에이전트의 고정 모델을 해제할 수 없습니다. 다시 시도하세요."
+        "failed_to_clear_agent_model_pin_no_reason": "에이전트의 고정 모델을 해제할 수 없습니다. 다시 시도하세요.",
+        "compaction_wait_budget": "압축 시간 제한(초)",
+        "compaction_wait_budget_description": "압축이 실행될 수 있는 최대 시간입니다. 0 = 기본값(300초). 그 외에는 60~3,600초.",
+        "compaction_wait_budget_hint": "이 제한을 넘기면 세션이 다시 시작되거나 수동 압축이 시간 초과를 알립니다. 큰 컨텍스트의 압축에 자주 300초 넘게 걸리면 값을 높이세요.",
+        "compaction_wait_budget_clamped": "{{stored}}(으)로 저장했습니다. {{requested}}은(는) 허용 범위({{min}}~{{max}})를 벗어납니다.",
+        "failed_to_save_compaction_wait_budget": "압축 대기 시간을 저장하지 못했습니다"
       },
       "computerUsePanel": {
         "accessibility": "손쉬운 사용",

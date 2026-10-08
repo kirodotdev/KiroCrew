@@ -15350,7 +15350,12 @@
         "message_font_size_desc": "Schriftgröße für die Konversation, in jeder Sitzung: Nachrichtentext, Code, Tabellen, Antwortvorschläge und die Nachrichteneingabe. Die kompakte Inhaltsbreite wächst entsprechend mit. Seitenleiste, Sitzungsliste und der Rest der Oberfläche sind nicht betroffen.",
         "remove_the_agents_pin": "Anheftung entfernen",
         "failed_to_clear_agent_model_pin": "Angeheftetes Modell des Agenten konnte nicht entfernt werden ({{error}}). Versuch es erneut.",
-        "failed_to_clear_agent_model_pin_no_reason": "Angeheftetes Modell des Agenten konnte nicht entfernt werden. Versuch es erneut."
+        "failed_to_clear_agent_model_pin_no_reason": "Angeheftetes Modell des Agenten konnte nicht entfernt werden. Versuch es erneut.",
+        "compaction_wait_budget": "Zeitlimit für Verdichtung (Sekunden)",
+        "compaction_wait_budget_description": "Wie lange eine Verdichtung höchstens laufen darf. 0 = Standard (300 s). Sonst 60 bis 3.600 s.",
+        "compaction_wait_budget_hint": "Nach diesem Limit startet die Sitzung neu, oder eine manuelle Verdichtung meldet eine Zeitüberschreitung. Erhöhe den Wert, wenn die Verdichtung eines großen Kontexts regelmäßig länger als 300 Sekunden dauert.",
+        "compaction_wait_budget_clamped": "{{stored}} gespeichert. {{requested}} liegt außerhalb des zulässigen Bereichs ({{min}} bis {{max}}).",
+        "failed_to_save_compaction_wait_budget": "Wartezeit für Verdichtung konnte nicht gespeichert werden"
       },
       "computerUsePanel": {
         "accessibility": "Bedienungshilfen",

@@ -15586,7 +15586,12 @@
         "message_font_size_desc": "Dimensione del carattere della conversazione, in ogni sessione: testo dei messaggi, codice, tabelle, risposte suggerite e campo di inserimento del messaggio. La larghezza compatta del contenuto cresce di conseguenza. La barra laterale, l'elenco delle sessioni e il resto dell'interfaccia non sono interessati.",
         "remove_the_agents_pin": "Rimuovi il suo modello fissato",
         "failed_to_clear_agent_model_pin": "Impossibile rimuovere il modello fissato dell'agente ({{error}}). Riprova.",
-        "failed_to_clear_agent_model_pin_no_reason": "Impossibile rimuovere il modello fissato dell'agente. Riprova."
+        "failed_to_clear_agent_model_pin_no_reason": "Impossibile rimuovere il modello fissato dell'agente. Riprova.",
+        "compaction_wait_budget": "Limite di tempo della compattazione (secondi)",
+        "compaction_wait_budget_description": "Durata massima di una compattazione. 0 = predefinito (300 s). Altrimenti da 60 a 3.600 s.",
+        "compaction_wait_budget_hint": "Oltre questo limite la sessione si riavvia, oppure una compattazione manuale segnala il timeout. Aumentalo se la compattazione di un contesto ampio richiede spesso più di 300 secondi.",
+        "compaction_wait_budget_clamped": "Salvato {{stored}}. {{requested}} è fuori dall'intervallo consentito ({{min}}–{{max}}).",
+        "failed_to_save_compaction_wait_budget": "Impossibile salvare il tempo di attesa della compattazione"
       },
       "computerUsePanel": {
         "accessibility": "Accessibilità",

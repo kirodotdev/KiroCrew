@@ -8857,7 +8857,12 @@
         "minimap_location_desc": "When located on the right edge, the minimap replaces the scroll bar.",
         "remove_the_agents_pin": "Clear its pin",
         "failed_to_clear_agent_model_pin": "Couldn't clear the agent's pinned model ({{error}}). Try again.",
-        "failed_to_clear_agent_model_pin_no_reason": "Couldn't clear the agent's pinned model. Try again."
+        "failed_to_clear_agent_model_pin_no_reason": "Couldn't clear the agent's pinned model. Try again.",
+        "compaction_wait_budget": "Compaction Time Limit (seconds)",
+        "compaction_wait_budget_description": "Longest a compaction may run. 0 = default (300 s). Otherwise 60 to 3,600 s.",
+        "compaction_wait_budget_hint": "Past this limit the session restarts, or a manual compaction reports that it timed out. Raise it if compaction on a large context regularly needs more than 300 seconds.",
+        "compaction_wait_budget_clamped": "Saved {{stored}}. {{requested}} is outside the allowed range ({{min}} to {{max}}).",
+        "failed_to_save_compaction_wait_budget": "Failed to save compaction wait budget"
       },
       "computerUsePanel": {
         "accessibility": "Accessibility",
