@@ -1905,6 +1905,82 @@ class TestClientSeam:
         assert [e["name"] for e in elsewhere._pooled_broker_stubs()] == ["pooled"]
 
 
+class TestWithholdWarningNamesTheCause:
+    """The withhold warning gives no wrong fix, and each cause is logged once.
+
+    Removing the file is not always the fix: an old adapter needs an upgrade, a
+    file with hooks needs them taken out, and a sibling session's seed comes
+    straight back. So the mirror's line names no single remedy and points at the
+    client's own line, which is where each cause and its fix are written.
+    """
+
+    _STALE_REMEDY = "Removing or renaming the project's .claude/settings.local.json"
+
+    @staticmethod
+    def _withhold_lines(caplog):
+        return [
+            r.getMessage()
+            for r in caplog.records
+            if r.name == claude_mirror.__name__ and "withholding the whole" in r.getMessage()
+        ]
+
+    def test_the_line_names_no_stale_remedy(self, agents_dir, caplog):
+        _write_spec(agents_dir, servers={"foo": {"command": "/bin/foo"}}, tools=["@foo"])
+        with caplog.at_level("WARNING", logger=claude_mirror.__name__):
+            projection = ClaudeCodeMirror().session_projection(
+                "kirocrew", permission_surface_owned=False
+            )
+        assert projection.params == {"mcpServers": []}
+        [line] = self._withhold_lines(caplog)
+        assert self._STALE_REMEDY not in line
+        assert "a permissions.allow entry there" not in line
+        assert "log lines for that file name the cause" in line
+
+    @pytest.mark.parametrize("cause", ["old-adapter", "permission-mode", "hooks", "link"])
+    def test_each_client_refusal_logs_its_cause_at_warning(
+        self, tmp_path, agents_dir, caplog, monkeypatch, cause
+    ):
+        _write_spec(agents_dir, servers={"foo": {"command": "/bin/foo"}}, tools=["@foo"])
+        local = tmp_path / ".claude" / "settings.local.json"
+        local.parent.mkdir(parents=True)
+        local.write_text(json.dumps({"permissions": {}}), encoding="utf-8")
+        kw: dict = {}
+        if cause == "link":
+            # The usability check is what reads a link; stand it in so the case
+            # runs on every host, including one that cannot create symlinks.
+            monkeypatch.setattr(client_mod, "_claude_settings_usable", lambda _p: False)
+        if cause == "hooks":
+            hook = {"type": "command", "command": "./block.sh"}
+            (local.parent / "settings.json").write_text(
+                json.dumps({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [hook]}]}}),
+                encoding="utf-8",
+            )
+        if cause == "permission-mode":
+            kw["permission_mode"] = "auto"
+        client = AcpClient(
+            work_dir=tmp_path, agent="kirocrew", acp_backend=ACP_BACKEND_CLAUDE, **kw
+        )
+        if cause == "old-adapter":
+            client._claude_adapter_disk_version = "0.83.0"
+        with caplog.at_level("WARNING"):
+            client._write_claude_local_settings()
+            assert client._session_mcp_servers() == []
+        client_lines = [
+            r.getMessage()
+            for r in caplog.records
+            if r.name == client_mod.__name__ and r.levelname == "WARNING"
+        ]
+        expected = {
+            "old-adapter": "Upgrade with 'npm i -g ",
+            "permission-mode": "requested permission mode 'auto'",
+            "hooks": "sets hooks or sandbox settings",
+            "link": "is a symlink or resolves to a sensitive path",
+        }[cause]
+        assert any(expected in line for line in client_lines)
+        [line] = self._withhold_lines(caplog)
+        assert self._STALE_REMEDY not in line
+
+
 class TestPooledStubsOnTheClaudeMirror:
     """The claude mirror places the pooled broker stubs itself (codex parity).
 

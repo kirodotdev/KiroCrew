@@ -251,11 +251,11 @@ class ClaudeCodeMirror(AgentConfigMirror):
         if not permission_surface_owned:
             logger.warning(
                 "session MCP: withholding the whole mcpServers array, pooled broker stubs "
-                "included -- Crew does not own this session's settings.local.json, so a "
-                "permissions.allow entry there could pre-approve a Crew tool and skip "
-                "session/request_permission entirely. This session runs without Crew's MCP "
-                "tools; the client's own warning names why the file could not be left out. "
-                "Removing or renaming the project's .claude/settings.local.json restores them.",
+                "included -- Crew does not govern this session's .claude/settings.local.json, "
+                "and a tool approved in a file Crew does not govern would never reach Crew's "
+                "permission check. This session runs without Crew's MCP tools. The ACP "
+                "client's log lines for that file name the cause and its fix; removing the "
+                "file does not help while another Crew session holds it.",
             )
             return SessionProjection(params={"mcpServers": []}, zero_tools=projection.zero_tools)
         out: list[dict[str, Any]] = list(projection.servers)
