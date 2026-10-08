@@ -254,6 +254,7 @@ from kiro_crew.dashboard.server_runtime.maintenance import (  # noqa: F401
     _kick_connections_warm_scavenge,
     _kick_knowledge_orphan_reclaim,
     _kick_local_decision_model,
+    _kick_mediation_signing_root_mint,
     _kick_owner_only_sweep,
     _kick_session_search_index,
     _own_host_warm_done,
@@ -702,6 +703,13 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # session identity through X-Session-Key, so cookie authentication can
         # never authorize this leaf.
         "/api/autonudge/session-monitor",
+        # The mediated-secret request endpoint. Its only legitimate caller is the
+        # in-sandbox kirocrew-secrets MCP subprocess forwarding a request over
+        # loopback with the gateway IPC secret; no browser ever posts to it, and
+        # keeping it strict means a dashboard cookie cannot reach the handler that
+        # resolves a vault secret and performs a credential-bearing egress.
+        "/api/mediated-secret-capability",
+        "/api/mediated-secret-request",
     }
 )
 
@@ -2098,6 +2106,10 @@ async def start_dashboard(
     _kick_session_search_index(state)
     _kick_config_watch(app, state)
     _kick_local_decision_model(state)
+    # Mint the mediated-secret policy-signing root here, post-bind, so a stalled
+    # or full data home can never block the listener on key creation; mediation
+    # stays fail-closed (policy verification refuses) until the root is ready.
+    _kick_mediation_signing_root_mint(state)
     # Same shape for the knowledge store's writer-locked orphan sweep: it left
     # the constructor (which runs pre-bind, on the loop) and runs here on a
     # worker thread once requests are already being served.
@@ -2678,6 +2690,10 @@ async def start_api_server(
     _kick_config_watch(app, state)
     _kick_local_decision_model(state)
     _kick_owner_only_sweep(state)
+    # Mint the mediated-secret policy-signing root here, post-bind (parity with
+    # start_dashboard), so key creation on a stalled or full data home never
+    # blocks the bind; mediation stays fail-closed until the root is ready.
+    _kick_mediation_signing_root_mint(state)
 
     logger.info("API-only server listening on %s:%d", bind_addr, port)
 

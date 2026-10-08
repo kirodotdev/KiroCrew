@@ -477,6 +477,7 @@ _LAZY_IMPORTS = {
         "api_workflow_run_rerun api_workflow_runs"
     ),
     "kiro_crew.dashboard.handlers_system": "_get_owner_hash _get_static_system_info",
+    "kiro_crew.dashboard.token_auth": "mint_mediation_signing_root",
     "kiro_crew.dashboard.workflow_inject": "inject_bound_workflow_result",
     "kiro_crew.decisions": "local_runtime",
     "kiro_crew.diag.recorder": "_DiagRecorder get_recorder",
@@ -509,7 +510,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 76
+    assert len(expected) == 77
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:
@@ -1432,8 +1433,8 @@ _DASHBOARD_BOOT = tuple("""
     _start_secondary_loopback_site subprocess_executor _note_listener_sidecar
     _reconcile_listener_publication _kick_workflow_initialization
     _kick_connections_warm_scavenge _kick_session_search_index _kick_config_watch
-    _kick_local_decision_model _kick_knowledge_orphan_reclaim _kick_owner_only_sweep
-    load_loop_stall_exit_after
+    _kick_local_decision_model _kick_mediation_signing_root_mint
+    _kick_knowledge_orphan_reclaim _kick_owner_only_sweep load_loop_stall_exit_after
     _arm_prevent_sleep_poll safety_override safety_override safety_override
     await_crewmate_prune_settled current_context record_boot_to_ready
     _dispatch_healthy_boot_marker
@@ -1480,8 +1481,9 @@ _API_BOOT = tuple("""
     subprocess_executor _resolved_bound_host _resolved_bound_host _note_listener_sidecar
     _resolved_bound_host _reconcile_listener_publication _kick_workflow_initialization
     _kick_connections_warm_scavenge _kick_session_search_index _kick_config_watch
-    _kick_local_decision_model _kick_owner_only_sweep _arm_prevent_sleep_poll
-    record_boot_to_ready _dispatch_healthy_boot_marker
+    _kick_local_decision_model _kick_owner_only_sweep _kick_mediation_signing_root_mint
+    _arm_prevent_sleep_poll record_boot_to_ready
+    _dispatch_healthy_boot_marker
     """.split())
 _API_TEARDOWN: tuple[str, ...] = ()
 _API_ELSEWHERE = tuple("""
@@ -1683,8 +1685,8 @@ def _routes(app: web.Application) -> list[tuple[str, str, str]]:
 #: SHA-256 of the MCP route table's ``"<method> <path> <handler>"`` rows in
 #: registration order, and their count. The table is shared by both entrypoints, so a
 #: route added to it on purpose updates these with it.
-_MCP_TABLE_ROWS = 242
-_MCP_TABLE_DIGEST = "af7da1dd963a0a957c39b2ee03d87f10cd0aa18417aead722214fd59a0b0ab25"
+_MCP_TABLE_ROWS = 244
+_MCP_TABLE_DIGEST = "8b0dc842d2c49e4524746ddf0339aeeaad5842d9598ef2ed2cf3cf9d30f6ec6b"
 
 
 def test_the_mcp_route_table_keeps_its_rows_and_order() -> None:

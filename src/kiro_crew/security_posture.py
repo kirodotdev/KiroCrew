@@ -1696,6 +1696,14 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # change it, so a zero-click fetch never carries what redaction removes.
         # Nothing it returns is redacted text, so it is a gate, not an egress sink.
         "dashboard/handlers/link_meta.py",
+        # Gate-side, same shape as link_meta: the mediated-secret dispatcher runs
+        # both redactors over every agent-supplied outbound value (URL, body,
+        # headers, query) only to REFUSE the request (`MediationError`) when either
+        # would change one, before the vault is ever read — so a credential or
+        # exfiltration URL the agent tried to smuggle out never leaves the machine.
+        # Nothing it returns is redacted text (the response is a fixed withheld
+        # constant), so it is a refusal gate, not an egress sink.
+        "secrets_mediation/dispatch.py",
         # Drives the backup redaction pass and reports what it did, but applies no
         # redactor itself: the outbound bytes are rewritten in `snapshot_redact.py`,
         # which is the registered sink. What matches the call-site scan here are the

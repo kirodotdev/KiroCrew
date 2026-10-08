@@ -559,7 +559,16 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
 # already-authenticated application must stay behind a prompt), and a diagnostic
 # command must not silently undo that.  Doctor still repairs the ``tools`` entry,
 # which only makes the server's tools *reachable*, never pre-approved.
-_NO_BLANKET_ALLOW_MCPS = frozenset({CU_MCP_SERVER}) | frozenset(_OPT_IN_MCPS)
+# ``kirocrew-secrets`` (the mediated Custom-secret egress server,
+# :data:`kiro_crew.mcp_secrets.SERVER_NAME`) joins the floor for a stronger
+# reason than the others: a blanket grant does not merely over-approve it, it
+# DEFEATS the feature. ``call_api_with_secret`` must reach ``hooks.on_tool_call``
+# so the owner-authorization check and the per-call capability redemption run;
+# an ``allowedTools`` entry approves it locally in kiro-cli, so the call never
+# reaches that plane and capability redemption has nothing to redeem against.
+# The server deliberately omits ``autoApprove`` for this reason, and the doctor
+# repair path must not reinstate what the spec withholds.
+_NO_BLANKET_ALLOW_MCPS = frozenset({CU_MCP_SERVER, "kirocrew-secrets"}) | frozenset(_OPT_IN_MCPS)
 
 
 def _strict_agent_json_specs(directory: Path) -> list[Path]:

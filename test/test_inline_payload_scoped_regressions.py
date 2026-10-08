@@ -336,6 +336,16 @@ class TestTheGenuineProtectionsSurvive:
             "python3 -c \"import runpy; runpy.run_module(mod_name='kiro_crew', run_name='__main__')\"",
             "python -c \"exec('from kiro_crew.config.loader import read_local_secret; f()')\"",
             "python3 - <<'PY'\nfrom kiro_crew.dashboard.token_auth import generate_token\nPY",
+            # The mediated-secret signing functions reach the DASHBOARD token root
+            # (`provenance._token_root()` -> `token_secret._get_secret()`), so a
+            # command naming them reaches a token producer. Their names carry no
+            # `token`/`secret` whole word, so the mint-surface RE lists them
+            # explicitly; the `test_the_mint_surface_covers_every_token_producer_in_the_tree`
+            # ratchet requires this. The argv gate refuses BEFORE product code
+            # runs, a layer distinct from the OS `_CREW_HIDDEN_LEAVES` key mask.
+            "python -c 'from kiro_crew.secrets_mediation.provenance import _member_key; _member_key(d)'",
+            "python -c 'from kiro_crew.secrets_mediation.provenance import sign_authorizations; sign_authorizations(a, d)'",
+            'python3 -c "from kiro_crew.secrets_mediation.provenance import verify_authorizations; help(verify_authorizations)"',
         ],
     )
     def test_the_mint_surface_is_still_denied(self, cmd):

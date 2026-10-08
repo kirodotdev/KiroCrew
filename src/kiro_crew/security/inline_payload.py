@@ -45,6 +45,32 @@ _MINT_SURFACE_RE = re.compile(
     r"kiro_crew[./\\](?:cli|cli_server|__main__|_bootstrap)(?![a-z0-9_])"
     r"|kiro_crew[\w./\\]*token(?!iz)"
     r"|from\s+kiro_crew\s+import\b[^;]{0,120}?(?<![a-z0-9_.-])(?:cli|cli_server|__main__|_bootstrap)(?![a-z0-9_])"
+    # The mediated-secret signing functions reach the DASHBOARD token-signing root:
+    # `secrets_mediation.provenance._token_root()` reads it via
+    # `dashboard.token_secret._get_secret()`, so `_member_key`,
+    # `sign_authorizations`, and `verify_authorizations` (re-exported through
+    # `cli_commands`) are token-root producers the way a signer is. Their names and
+    # module paths carry neither `token` nor `secret` as a whole word
+    # (`secrets_mediation` is `secret` + `s`), so the `_MINT_VERB_RE` convention
+    # above does NOT cover them -- they need an explicit entry here. This is NOT
+    # redundant with the OS-layer `_CREW_HIDDEN_LEAVES` mask on the policy-signing
+    # directory: that mask stops a RUNTIME read inside the sandbox, whereas this
+    # argv-floor gate refuses the command BEFORE any product code runs, and the
+    # chain reaches the dashboard token root (not only the masked policy leaf).
+    # The `test_the_mint_surface_covers_every_token_producer_in_the_tree` ratchet
+    # derives these three from the live import graph and REQUIRES this coverage;
+    # it is a hard security gate, so removing this re-opens a token-root reacher.
+    # The three names are distinctive to the signing modules. Match them only as
+    # an IMPORT target or an ATTRIBUTE-CALL target -- the two forms a program uses
+    # to REACH the signer (``from M import verify_authorizations`` /
+    # ``m.verify_authorizations()``) -- never as a bare identifier, and never as a
+    # bare ``name(`` that a quoted source-search string (``'def verify_authorizations('``)
+    # would also carry, so a command that merely READS the signing source is
+    # ordinary inspection and not denied. The import-reach ratchet
+    # exercises exactly these two spellings, so the narrower match still covers
+    # every token producer it derives.
+    r"|import\s[^\n;]{0,200}?(?<![a-z0-9_])(?:_member_key|sign_authorizations|verify_authorizations)(?![a-z0-9_])"
+    r"|\.\s*(?:_member_key|sign_authorizations|verify_authorizations)\s*\("
 )
 # A simple statement begins at the start of input, after ``;``, after a newline,
 # or after the ``:`` that closes a compound header (``if x:``, ``for``, ``try:``,

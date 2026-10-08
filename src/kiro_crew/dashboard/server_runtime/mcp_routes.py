@@ -150,6 +150,13 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post(
         "/api/work-ledger/rebuild", _deferred_work_ledger("api_work_ledger_rebuild")
     )
+    # Mediated-secret egress (kirocrew-secrets MCP tool). Both are MCP-only, loopback
+    # + gateway-IPC-secret callers — no browser posts to them (they are in
+    # ``_STRICT_INTERNAL_API_PATHS``). The capability endpoint redeems the single-use
+    # approval grant; the request endpoint does the host-side vault read + SSRF-pinned
+    # egress and always withholds the origin's response.
+    app.router.add_post("/api/mediated-secret-capability", handlers.api_mediated_secret_capability)
+    app.router.add_post("/api/mediated-secret-request", handlers.api_mediated_secret_request)
     # The Crew page's masked read of a conductor's work ledger (RFC Phase 4).
     # Deliberately NOT in ``_STRICT_INTERNAL_API_PATHS``: a browser is its only
     # caller, so it stays on cookie auth — the same split the agent-panel surface

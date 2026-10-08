@@ -825,6 +825,25 @@ def _inject_client_extensions(msg: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _carry_tool_call_id(caller: CallerContext, msg: dict[str, Any]) -> CallerContext:
+    """Return ``caller`` carrying the request's harness ACP ``toolCallId``.
+
+    kiro-cli sends that id as the ``tools/call`` ``_meta.progressToken``. The
+    gateway promotes it onto the caller so :func:`build_caller_meta` emits it in
+    the gateway-authored block, giving an identity-aware backend the SAME id the
+    approval gate keyed its grant by. Returns ``caller`` unchanged when the
+    request carried no token, so the backend's own progressToken fallback still
+    applies.
+    """
+    params = msg.get("params")
+    meta = params.get("_meta") if isinstance(params, dict) else None
+    token = meta.get("progressToken") if isinstance(meta, dict) else None
+    call_id = str(token) if isinstance(token, (str, int)) else ""
+    if not call_id:
+        return caller
+    return replace(caller, tool_call_id=call_id)
+
+
 def _inject_caller_meta(msg: dict[str, Any], caller: CallerContext) -> dict[str, Any]:
     """Return a shallow copy of ``msg`` with ``params._meta.kirocrew.caller``
     unconditionally set from ``caller``.
@@ -1746,7 +1765,18 @@ class Backend:
             # inject the authoritative caller block when known.
             msg = _strip_caller_meta(msg)
             if self.supports_caller_identity and caller is not None:
-                msg = _inject_caller_meta(msg, caller)
+                # Carry the harness ACP toolCallId through the gateway-authored
+                # caller block so an identity-aware backend reads the SAME id the
+                # approval gate keyed its grant by, from one place. kiro-cli
+                # sends that id as the ``tools/call`` progressToken, so this
+                # promotes progressToken into the caller block — it is the SAME
+                # value, not a separate always-present source. A ``tools/call``
+                # that carried no progress token leaves the id empty, and the
+                # capability claim it drives is refused fail-closed. Read from the
+                # message's own ``_meta`` so this stays correct for every
+                # forwarded shape.
+                _effective_caller = _carry_tool_call_id(caller, msg)
+                msg = _inject_caller_meta(msg, _effective_caller)
             if self.supports_caller_identity and tenant_nonce:
                 msg = _inject_tenant_meta(msg, tenant_nonce)
             if retry_fid is not None:

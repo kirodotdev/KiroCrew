@@ -430,6 +430,7 @@ def _enforce_managed_mcp_ownership(
     registry_mode: bool,
     *,
     auto_approve: str,
+    server_name: str = "",
 ) -> None:
     """Strip/re-pin the fields Kiro Crew owns on one managed-server entry.
 
@@ -633,7 +634,9 @@ def emit_managed_servers(mcp: dict, *, gated_off: frozenset[str], registry_mode:
         entry = dict(existing) if isinstance(existing, dict) else {}
         entry["command"] = cmd
         entry["args"] = args
-        _enforce_managed_mcp_ownership(entry, spec, registry_mode, auto_approve="own")
+        _enforce_managed_mcp_ownership(
+            entry, spec, registry_mode, auto_approve="own", server_name=name
+        )
         mcp[name] = entry
 
 
@@ -697,7 +700,11 @@ def refresh_managed_servers(mcp: dict, *, gated_off: frozenset[str], registry_mo
         # genuinely new entry — all via the same helper the fresh-build loop
         # uses, so the two ownership rules cannot hand-drift.
         _enforce_managed_mcp_ownership(
-            entry, spec, registry_mode, auto_approve="seed" if is_new else "preserve"
+            entry,
+            spec,
+            registry_mode,
+            auto_approve="seed" if is_new else "preserve",
+            server_name=name,
         )
 
 
@@ -773,6 +780,50 @@ def register_managed_refs(config: dict, *, fresh_install: bool, gated_off: froze
                 source="install_agent",
                 resources=f"{cu_ref} added to tools (existing config upgrade)",
             )
+
+    # Same narrow ADD-only migration for the always-on mediated-secret server:
+    # an UPGRADING install gains its ``mcpServers`` entry but never the
+    # ``@kirocrew-secrets`` tools ref (the fresh-install loop above is the only
+    # other place a ref is added), so kiro-cli would expose the server and none
+    # of its tools — the mediated-secret feature silently absent for every
+    # pre-existing user. DELIBERATELY tools-only, never ``allowedTools``: this
+    # server has no autoApprove precisely so ``call_api_with_secret`` reaches
+    # ``hooks.on_tool_call`` (the credential-egress approval gate); adding it to
+    # the blanket auto-approve list would delete that plane. Gated on the shipped
+    # template granting the ref and on the server having resolved, scoped to this
+    # one server so no other managed ref is re-added behind the user's back.
+    #
+    # NOTE: there is deliberately NO allowedTools scrub or mount-withhold for an
+    # existing auto-approve grant here. An auto-approved call never reaches
+    # ``approve_tool``, which is the ONLY site that mints a mediated-request
+    # capability (``mediated_request_capability.mint_for_approved_call``); the tool
+    # always claims that single-use capability from the host endpoint before any
+    # egress, and the endpoint refuses a claim with no matching minted grant. So
+    # an auto-approved ``call_api_with_secret`` — mounted or not, allowedTools or
+    # not — is refused at dispatch for lack of a capability, which makes an
+    # install-time scrub of the user's grants redundant belt-and-suspenders over
+    # the capability gate (and risked stripping unrelated auto-approvals). See
+    # test_mediated_secret_request_handler for the no-capability refusal.
+    if "kirocrew-secrets" in valid_servers:
+        # The tools-ref ADD is only for an UPGRADING install (a fresh build gets
+        # the ref from the shipped template).
+        if not fresh_install:
+            sec_ref = "@kirocrew-secrets"
+            shipped_tools = agent_mod.get_shipped_tools().get("tools", [])
+            existing_tools = config.get("tools")
+            if (
+                isinstance(existing_tools, list)
+                and sec_ref in shipped_tools
+                and sec_ref not in existing_tools
+            ):
+                existing_tools.append(sec_ref)
+                agent_mod.sel().log_api_access(
+                    caller="system",
+                    operation="mcp_tools_added",
+                    outcome="ok",
+                    source="install_agent",
+                    resources=f"{sec_ref} added to tools (existing config upgrade)",
+                )
 
     # Audit the DECISION, not a config delta. Nothing in the spec changes shape
     # when a gate closes — the ``@ref`` stays exactly where the template put it

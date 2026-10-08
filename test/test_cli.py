@@ -4958,7 +4958,7 @@ class TestDoctorMcpTools:
         assert issues == [
             f"{ref} auto-approve forbidden by ceiling (repair from the owning install)"
             for ref in ("@kirocrew-cron", "@kirocrew-core")
-        ] + ["agent config (auto-fix skipped: shared home)"]
+        ] + ["@kirocrew-secrets config", "agent config (auto-fix skipped: shared home)"]
 
     def test_ceiling_revoke_drops_per_tool_grants_too(self, tmp_path, capsys):
         """Withholding auto-approve drops the bare ref and every ``@server/tool``
@@ -5061,6 +5061,47 @@ class TestDoctorMcpTools:
             _doctor_mcp_tools(agent_path, issues)
         updated = json.loads(agent_path.read_text(encoding="utf-8"))
         assert "@kirocrew-computer" in updated["allowedTools"]
+
+    def test_auto_fix_never_blanket_allows_mediated_secret(self, tmp_path, capsys):
+        """**Doctor must never add ``@kirocrew-secrets`` to ``allowedTools``.**
+
+        ``kirocrew-secrets`` is the mediated Custom-secret egress server, and a
+        blanket grant does not merely over-approve it — it DEFEATS the feature.
+        ``call_api_with_secret`` must reach ``hooks.on_tool_call`` so the owner's
+        per-secret authorization check and the per-call capability redemption run.
+        An ``allowedTools`` entry approves the call LOCALLY in kiro-cli, so it
+        never reaches that plane and capability redemption has nothing to redeem
+        against. The managed spec omits ``autoApprove`` for exactly this reason,
+        and a diagnostic command must not reinstate what the spec withholds.
+
+        Unlike ``kirocrew-computer`` this server is always-on with no spec gate,
+        so the fixture needs no gate pin — the only pinning the carve-out needs is
+        its own membership in ``_NO_BLANKET_ALLOW_MCPS``.
+        """
+        from kiro_crew.cli_doctor import _doctor_mcp_tools
+
+        agent_path = tmp_path / "kirocrew.json"
+        _healthy_agent_file(agent_path)
+        # Start from the state an upgrade leaves behind: servers registered, no
+        # tool refs at all, so every ref doctor could add is attributable to it.
+        data = json.loads(agent_path.read_text(encoding="utf-8"))
+        data["tools"] = []
+        data["allowedTools"] = []
+        agent_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+        issues: list[str] = []
+        with self._mock_probe({}):
+            _doctor_mcp_tools(agent_path, issues)
+
+        updated = json.loads(agent_path.read_text(encoding="utf-8"))
+        # The tools entry IS repaired — that only makes the tool reachable.
+        assert "@kirocrew-secrets" in updated["tools"]
+        # But it is never pre-approved: calls stay behind the approval/SEL gate.
+        assert "@kirocrew-secrets" not in updated["allowedTools"]
+        assert not [t for t in updated["allowedTools"] if t.startswith("@kirocrew-secrets/")]
+        # The other always-on servers are unaffected — the carve-out is scoped.
+        assert "@kirocrew-core" in updated["allowedTools"]
+        assert "@kirocrew-cron" in updated["allowedTools"]
 
     def test_probe_exception_does_not_crash(self, tmp_path, capsys):
         """If `probe_server` itself raises (e.g. event-loop oddity), doctor

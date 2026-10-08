@@ -1353,6 +1353,24 @@ def _tools_call_with_caller(req_id, tool_name: str, session_key: str) -> dict:
     return msg
 
 
+def _tools_call_with_caller_call_id(
+    req_id, tool_name: str, session_key: str, tool_call_id: str
+) -> dict:
+    """A forwarded call carrying the ACP toolCallId in the caller block and NO
+    ``_meta.progressToken`` — the shape a client that omits the optional token
+    produces. The toolCallId is the always-present correlation key.
+    """
+    from kiro_crew.mcp_caller import CallerContext, build_caller_meta
+
+    msg = _tools_call(req_id, tool_name)
+    msg["params"]["_meta"] = build_caller_meta(
+        CallerContext(session_key=session_key, from_gateway=True, tool_call_id=tool_call_id)
+    )
+    # No progressToken: proving correlation does not depend on it.
+    assert "progressToken" not in msg["params"]["_meta"]
+    return msg
+
+
 def _tools_call_with_tenant(req_id, tool_name: str, nonce: str) -> dict:
     """A forwarded call as an UNNAMED co-tenant receives it: nonce, no identity."""
     from kiro_crew.mcp_caller import build_tenant_meta
@@ -1720,6 +1738,82 @@ class TestStdioLoopCallerIdentity:
             assert harness.wait_for(lambda: len(harness.responses) >= 1)
             assert seen == ["dashboard:chat-3"]
             assert mcp_caller.current_caller() is None  # cleared after dispatch
+        finally:
+            harness.close()
+
+    def test_tool_call_id_from_caller_block_without_progress_token(self, monkeypatch):
+        """A call that omits the optional ``_meta.progressToken`` is still
+        correlated: the dispatch loop reads the harness ACP toolCallId the gateway
+        carries in the caller block as the current correlation id.
+
+        This is the shape that broke the approval->execution correlation when the
+        id was derived from progressToken alone — the authorized call could not
+        claim its own capability because the id came back empty.
+        """
+        from kiro_crew import mcp_caller
+
+        seen: list = []
+
+        def call_tool(name, args):
+            seen.append(mcp_caller.current_tool_call_id())
+            return "ok"
+
+        harness = _LoopHarness(monkeypatch, call_tool)
+        try:
+            harness.send(
+                _tools_call_with_caller_call_id(21, "echo", "dashboard:chat-9", "toolu_abc123")
+            )
+            assert harness.wait_for(lambda: len(harness.responses) >= 1)
+            assert seen == ["toolu_abc123"]
+            assert mcp_caller.current_tool_call_id() == ""  # cleared after dispatch
+        finally:
+            harness.close()
+
+    def test_progress_token_is_the_fallback_when_no_caller_tool_call_id(self, monkeypatch):
+        """With no toolCallId in the caller block, correlation falls back to the
+        optional progressToken — the pre-existing behaviour, kept for a client
+        that sends one and a gateway that carries none.
+        """
+        from kiro_crew import mcp_caller
+
+        seen: list = []
+
+        def call_tool(name, args):
+            seen.append(mcp_caller.current_tool_call_id())
+            return "ok"
+
+        harness = _LoopHarness(monkeypatch, call_tool)
+        try:
+            msg = _tools_call(22, "echo")
+            msg["params"]["_meta"] = {"progressToken": "pt-77"}
+            harness.send(msg)
+            assert harness.wait_for(lambda: len(harness.responses) >= 1)
+            assert seen == ["pt-77"]
+        finally:
+            harness.close()
+
+    def test_no_tool_call_id_and_no_progress_token_yields_empty_id(self, monkeypatch):
+        """The honest fail-closed contract: a call carrying NEITHER a caller-block
+        toolCallId NOR a progressToken has no correlation id at all.
+
+        progressToken IS the carrier of the toolCallId — it is not an independent
+        always-present source — so a call with neither leaves the id empty, and a
+        capability claim driven by an empty id is refused fail-closed rather than
+        matching a grant it was never keyed to.
+        """
+        from kiro_crew import mcp_caller
+
+        seen: list = []
+
+        def call_tool(name, args):
+            seen.append(mcp_caller.current_tool_call_id())
+            return "ok"
+
+        harness = _LoopHarness(monkeypatch, call_tool)
+        try:
+            harness.send(_tools_call(23, "echo"))  # no _meta at all
+            assert harness.wait_for(lambda: len(harness.responses) >= 1)
+            assert seen == [""]
         finally:
             harness.close()
 

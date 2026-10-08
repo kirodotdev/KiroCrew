@@ -158,6 +158,22 @@ def test_session_token_round_trips_only_when_present():
     assert parsed is not None and parsed.from_gateway and parsed.session_token == "t" * 64
 
 
+def test_tool_call_id_round_trips_only_when_present():
+    """The harness ACP toolCallId is the approval-correlation key, carried in the
+    gateway-authored block only when the gateway has one, and read back into the
+    typed field."""
+    bare = build_caller_meta(CallerContext(session_key="dashboard:reviewer"))
+    assert "toolCallId" not in bare[kiro_crew.mcp_caller.CALLER_META_KEY]
+    assert CallerContext.from_meta(bare).tool_call_id == ""
+
+    carried = build_caller_meta(
+        CallerContext(session_key="dashboard:reviewer", tool_call_id="toolu_xyz")
+    )
+    assert carried[kiro_crew.mcp_caller.CALLER_META_KEY]["toolCallId"] == "toolu_xyz"
+    parsed = CallerContext.from_meta(carried)
+    assert parsed is not None and parsed.tool_call_id == "toolu_xyz"
+
+
 @pytest.mark.asyncio
 async def test_interleaved_member_calls_keep_their_ordinary_session_identity(monkeypatch):
     from kiro_crew import mcp_core

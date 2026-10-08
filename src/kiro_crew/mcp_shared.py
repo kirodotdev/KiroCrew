@@ -38,6 +38,7 @@ from kiro_crew.mcp_caller import (
     resolve_own_identity,
     set_current_caller,
     set_current_tenant_nonce,
+    set_current_tool_call_id,
     tenant_nonce_from_meta,
 )
 from kiro_crew.mcp_cleanup import STALE_MANAGED_MCP_SERVERS
@@ -1653,6 +1654,7 @@ def _run_stdio_dispatch_loop(
         cancel_evt: threading.Event,
         caller_ctx: "CallerContext | None" = None,
         tenant_nonce: str = "",
+        tool_call_id: str = "",
     ) -> None:
         """Worker thread: run tool, store result unless cancelled."""
         global _thread_cancel_event
@@ -1662,6 +1664,7 @@ def _run_stdio_dispatch_loop(
         # a module slot: dispatch is strictly sequential (one worker at a
         # time, joined before the next dispatch).
         set_current_caller(caller_ctx)
+        set_current_tool_call_id(tool_call_id)
         # And the connection's namespace separator, which is present even when
         # the caller is not: a tool that keys per-tenant state for a caller the
         # gateway could not name reads it instead of a process-global fallback.
@@ -1681,6 +1684,7 @@ def _run_stdio_dispatch_loop(
             )
             _thread_cancel_event = None
             set_current_caller(None)
+            set_current_tool_call_id("")
             set_current_tenant_nonce("")
             _result_ready.set()
             return
@@ -1692,6 +1696,7 @@ def _run_stdio_dispatch_loop(
         finally:
             _thread_cancel_event = None
             set_current_caller(None)
+            set_current_tool_call_id("")
             set_current_tenant_nonce("")
         # Audit decision is made atomically with the cancellation check, under
         # the same lock that guards response delivery: exactly ONE audit event
@@ -1876,7 +1881,22 @@ def _run_stdio_dispatch_loop(
             # any client-forged ``kirocrew.caller`` block and injects its own
             # on every forwarded call, so a block present here is
             # gateway-authored. None in the non-pooled stdio topology.
+            _meta = params.get("_meta")
             _caller_ctx = _req_caller(params)
+            # Correlation key between the approval gate and this execution: the
+            # harness ACP ``toolCallId`` the approval was keyed by. The harness
+            # carries that id as the ``tools/call`` ``_meta.progressToken``; the
+            # gateway promotes it into the caller block, so we read it from the
+            # caller block when present and from ``progressToken`` otherwise —
+            # the SAME value either way, not two independent sources. A call that
+            # carried no progress token yields an empty id, and the capability
+            # claim it drives is refused fail-closed rather than silently sent.
+            _progress_token = _meta.get("progressToken") if isinstance(_meta, dict) else ""
+            _tool_call_id = (
+                _caller_ctx.tool_call_id
+                if _caller_ctx is not None and _caller_ctx.tool_call_id
+                else (str(_progress_token) if isinstance(_progress_token, (str, int)) else "")
+            )
             # The connection's namespace separator. Parsed separately because it
             # arrives WITHOUT an identity for a caller the gateway could not
             # name — the case it exists for — so it cannot be folded
@@ -2129,6 +2149,7 @@ def _run_stdio_dispatch_loop(
                 # an Error response and the failure is SEL-audited with the
                 # caller identity (an escaped exception would kill the loop).
                 set_current_caller(_caller_ctx)
+                set_current_tool_call_id(_tool_call_id)
                 set_current_tenant_nonce(_tenant_nonce)
                 try:
                     result_text = call_tool_fn(tool_name, tool_args)
@@ -2142,6 +2163,7 @@ def _run_stdio_dispatch_loop(
                     )
                 finally:
                     set_current_caller(None)
+                    set_current_tool_call_id("")
                     set_current_tenant_nonce("")
                 respond(req_id, _tool_response(result_text))
             else:
@@ -2162,6 +2184,7 @@ def _run_stdio_dispatch_loop(
                         _cancel_event,
                         _caller_ctx,
                         _tenant_nonce,
+                        _tool_call_id,
                     ),
                     daemon=True,
                 )

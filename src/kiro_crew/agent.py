@@ -1200,6 +1200,19 @@ _MANAGED_MCP_SERVERS: dict[str, dict] = {
         "invocation_fn": lambda: _kirocrew_mcp_invocation("mcp-panel"),
         "opt_in": True,
     },
+    # Mediated secret requests: the ONE trusted tool that lets an agent
+    # call an owner-authorized API with a Custom secret without ever seeing the
+    # value. Always-on (no spec_gate / opt_in) so the capability cannot be
+    # toggled away from the trust boundary it enforces.
+    #
+    # DELIBERATELY NO ``autoApprove`` — like kirocrew-computer/-dashboard: an
+    # autoApproved MCP tool is approved inside kiro-cli and never reaches
+    # ``hooks.on_tool_call``, so the governance ceiling and approval gate would
+    # be bypassed for a credential-bearing egress. Injecting a stored secret into
+    # an outbound request is exactly the action that must stay gated.
+    "kirocrew-secrets": {
+        "invocation_fn": lambda: _kirocrew_mcp_invocation("mcp-secrets"),
+    },
 }
 
 

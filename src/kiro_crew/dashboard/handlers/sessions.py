@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import functools
 import hashlib
+import importlib
 import json
 import logging
 import os
@@ -16,6 +17,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Collection
 
+from kiro_crew.config.loader import config_dir as _config_dir
 from kiro_crew.loop_lock import LoopBoundLock
 
 if TYPE_CHECKING:
@@ -28,7 +30,7 @@ from aiohttp import web
 # binds via sys.modules and defers attribute access to call time, which also
 # keeps tests' monkeypatching of handlers.redact_* effective (late binding).
 import kiro_crew.dashboard.handlers as _h
-from kiro_crew import hooks, session_directive
+from kiro_crew import hooks, mediated_request_capability, session_directive
 from kiro_crew.acp.client import _resolve_kiro_bin_for_spawn
 from kiro_crew.agent_discovery import (
     AgentsDirMemo,
@@ -60,6 +62,7 @@ from kiro_crew.dashboard.handlers._shared import (
     SESSION_SEARCH_TEXT_FIELDS,
     guard_owner_surface_routes,
     internal_memory_scope,
+    member_request_scope,
 )
 from kiro_crew.dashboard.interaction_coordinator import _slot_decision
 from kiro_crew.dashboard.kiro_readiness import (
@@ -248,6 +251,28 @@ _MAX_BONUS_GRANTS = 32
 _MAX_BONUS_NAME_CHARS = 100
 _MAX_BONUS_CREDITS = 1_000_000.0
 _MAX_BONUS_DAYS_LEFT = 3_650
+
+
+async def _read_mediated_body_bounded(request: "web.Request") -> "bytes | None":
+    """Read a mediated-request body, capped at the 1 MiB mediated-request limit.
+
+    Returns the raw bytes, or ``None`` when the body exceeds the cap — the caller
+    rejects with a 413 BEFORE decoding. The cap is applied to the bytes actually
+    read (``cap + 1`` requested, then a length check), so a request that lies in
+    or omits ``Content-Length`` cannot stream an unbounded body that is parsed in
+    full before validation. A declared ``Content-Length`` over the cap is rejected
+    up front without reading the body at all.
+    """
+    cap = mediated_request_capability.MAX_REQUEST_PAYLOAD_BYTES
+    declared = request.content_length
+    if declared is not None and declared > cap:
+        return None
+    body = await request.content.read(cap + 1)
+    if len(body) > cap:
+        return None
+    return body
+
+
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
 _BONUS_DASH_RE = re.compile(r"^([\d.]+)/([\d.]+)\s+used\s+\((\d+)\s+days?\s+left\)$")
 _BONUS_COLON_RE = re.compile(
@@ -5033,6 +5058,312 @@ async def api_session_tool_policy(request: web.Request) -> web.Response:
         resources=f"agent={agent_name}",
     )
     return web.json_response(policy)
+
+
+async def api_mediated_secret_capability(request: web.Request) -> web.Response:
+    """Claim the single-use capability minted for one approved MCP invocation."""
+    if request.get("internal_auth") is not True:
+        _sel().log_api_access(
+            caller=request.headers.get("X-Session-Key", "unknown"),
+            operation="mediated_secret_capability",
+            outcome="denied",
+            source="dashboard",
+            resources="not an internal-secret caller",
+        )
+        return web.json_response(
+            {"error": "internal authority required", "code": "internal_auth_required"},
+            status=403,
+        )
+    session_key = request.headers.get("X-Session-Key", "").strip()
+    if not session_key:
+        _sel().log_api_access(
+            caller="unknown",
+            operation="mediated_secret_capability",
+            outcome="denied",
+            source="dashboard",
+            resources="missing X-Session-Key",
+        )
+        return web.json_response(
+            {"error": "X-Session-Key required", "code": "session_key_required"}, status=400
+        )
+    scope = await member_request_scope(request)
+    if not scope.verified or scope.session != session_key or not scope.store:
+        _sel().log_api_access(
+            caller=session_key,
+            operation="mediated_secret_capability",
+            outcome="denied",
+            source="dashboard",
+            resources="unverified or non-member session scope",
+        )
+        return web.json_response(
+            {"error": "verified member scope required", "code": "member_scope_required"},
+            status=403,
+        )
+    body = await _read_mediated_body_bounded(request)
+    if body is None:
+        _sel().log_api_access(
+            caller=session_key,
+            operation="mediated_secret_capability",
+            outcome="denied",
+            source="dashboard",
+            resources="request body exceeds the mediated-request size limit",
+        )
+        return web.json_response(
+            {"error": "request body too large", "code": "request_too_large"}, status=413
+        )
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        payload = None
+    if not isinstance(payload, dict):
+        _sel().log_api_access(
+            caller=session_key,
+            operation="mediated_secret_capability",
+            outcome="denied",
+            source="dashboard",
+            resources="invalid request shape",
+        )
+        return web.json_response(
+            {"error": "invalid request shape", "code": "invalid_request_shape"}, status=400
+        )
+    tool_call_id = payload.get("tool_call_id")
+    intent = payload.get("request")
+    if not isinstance(tool_call_id, str) or not isinstance(intent, dict):
+        _sel().log_api_access(
+            caller=session_key,
+            operation="mediated_secret_capability",
+            outcome="denied",
+            source="dashboard",
+            resources="approved call identity required",
+        )
+        return web.json_response(
+            {"error": "approved call identity required", "code": "approved_call_required"},
+            status=403,
+        )
+    capability = mediated_request_capability.claim(session_key, tool_call_id, intent)
+    if not capability:
+        # A claim that matches no approved tool call is a refused single-use egress
+        # authorization; audit it by tool-call id (never the intent contents) so a
+        # replay or a forged claim leaves a record, exactly as a granted one does.
+        _sel().log_api_access(
+            caller=session_key,
+            operation="mediated_secret_capability",
+            outcome="denied",
+            source="dashboard",
+            resources=f"tool_call_id={tool_call_id} no matching approved tool call",
+        )
+        return web.json_response(
+            {"error": "no matching approved tool call", "code": "approved_call_required"},
+            status=403,
+        )
+    # A granted single-use egress authorization is audited too: it is the moment a
+    # capability that later unlocks a credential-bearing request is minted.
+    _sel().log_api_access(
+        caller=session_key,
+        operation="mediated_secret_capability",
+        outcome="ok",
+        source="dashboard",
+        resources=f"tool_call_id={tool_call_id}",
+    )
+    return web.json_response({"capability": capability})
+
+
+async def api_mediated_secret_request(request: web.Request) -> web.Response:
+    """POST /api/mediated-secret-request — perform an owner-authorized outbound
+    HTTPS request that carries a Custom secret, WITHOUT the secret ever leaving
+    this host process.
+
+    The in-sandbox ``kirocrew-secrets`` MCP tool cannot read the vault: managed
+    MCP servers share the agent's mount namespace, where ``.vault`` is
+    bind-mount-hidden. So the tool forwards the non-secret request intent here,
+    to the unsandboxed dashboard process, which is the same trust boundary that
+    already resolves ``secret://`` env references. Only here is the vault
+    readable and ``secret_request_policy.json`` protected by the OS sandbox from
+    the agent. The response body returned to the caller is sanitized by
+    :func:`perform_mediated_request` and never contains the secret.
+
+    Authenticated via X-Internal-Secret + X-Session-Key, exactly like
+    ``/api/session-tool-policy``: only a same-host MCP subprocess can reach it.
+    """
+    # Machines only. A credential-bearing egress must never be reachable through
+    # the browser cookie fall-through: require the proven internal-secret
+    # authority (``request["internal_auth"]``) before doing any work, so a
+    # dashboard bearer that slipped past the strict-path routing still cannot
+    # drive a mediated request that skips the MCP approval gate.
+    if request.get("internal_auth") is not True:
+        _sel().log_api_access(
+            caller=request.headers.get("X-Session-Key", "unknown"),
+            operation="mediated_secret_request",
+            outcome="denied",
+            source="dashboard",
+            resources="not an internal-secret caller",
+        )
+        return web.json_response(
+            {"error": "internal authority required", "code": "internal_auth_required"},
+            status=403,
+        )
+    session_key = request.headers.get("X-Session-Key", "").strip()
+    if not session_key:
+        _sel().log_api_access(
+            caller="unknown",
+            operation="mediated_secret_request",
+            outcome="denied",
+            source="dashboard",
+            resources="missing X-Session-Key",
+        )
+        return web.json_response(
+            {"error": "X-Session-Key required", "code": "session_key_required"}, status=400
+        )
+
+    # Bind this credential-bearing egress to an ATTESTED member session, not
+    # merely "some same-host process holding the loopback secret". The gateway's
+    # internal-auth middleware sets ``internal_auth`` (a header a sandboxed
+    # process cannot forge), and ``member_request_scope`` reads the caller's
+    # attested execution identity the same way the member-memory routes do:
+    # the X-Session-Key is honoured only behind a transport attestation
+    # (``session_key_is_attested`` — the Unix-socket kernel peer attestation, or
+    # the launcher's signed per-session token), and the canonical execution
+    # record is read before the scope is trusted. A raw in-sandbox `python -c`
+    # that reads the loopback secret and a session key off a transcript has
+    # neither attestation, so its scope is unverified and this endpoint refuses
+    # it. There is no relayable token in this model — the caller authenticates
+    # per request directly to this endpoint over the owner-only socket — so the
+    # old cross-server "audience" relay surface does not exist to defend.
+    #
+    # This member-scope check is the SOLE gate: it is not preceded by an
+    # ``internal_memory_scope`` call, so an unattested caller receives this
+    # endpoint's documented 403 ``member_scope_required`` rather than the memory
+    # route's 409 ``member_identity_unavailable``.
+    scope = await member_request_scope(request)
+    if not scope.verified or scope.session != session_key or not scope.store:
+        _sel().log_api_access(
+            caller=session_key,
+            operation="mediated_secret_request",
+            outcome="denied",
+            source="dashboard",
+            resources="unverified or non-member session scope",
+        )
+        return web.json_response(
+            {
+                "error": (
+                    "This request must come from an approved kirocrew-secrets tool call in a "
+                    "member session; the session identity is unverified or is not a member "
+                    "session."
+                ),
+                "code": "member_scope_required",
+            },
+            status=403,
+        )
+
+    body = await _read_mediated_body_bounded(request)
+    if body is None:
+        _sel().log_api_access(
+            caller=session_key,
+            operation="mediated_secret_request",
+            outcome="denied",
+            source="dashboard",
+            resources="request body exceeds the mediated-request size limit",
+        )
+        return web.json_response(
+            {"error": "request body too large", "code": "request_too_large"}, status=413
+        )
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        return web.json_response({"error": "invalid JSON body", "code": "invalid_json"}, status=400)
+    if not isinstance(payload, dict):
+        return web.json_response(
+            {"error": "invalid request shape", "code": "invalid_request_shape"}, status=400
+        )
+
+    capability = request.headers.get("X-Mediated-Secret-Capability", "").strip()
+    if not mediated_request_capability.consume(session_key, capability, payload):
+        _sel().log_api_access(
+            caller=session_key,
+            operation="mediated_secret_request",
+            outcome="denied",
+            source="dashboard",
+            resources="missing, invalid, or replayed approved-call capability",
+        )
+        return web.json_response(
+            {
+                "error": "an unused capability from the approved tool call is required",
+                "code": "approved_call_capability_required",
+            },
+            status=403,
+        )
+
+    secret_name = payload.get("secret_name")
+    if not isinstance(secret_name, str) or not secret_name:
+        return web.json_response(
+            {"error": "secret_name is required", "code": "secret_name_required"}, status=400
+        )
+
+    # The mediation stack pulls ``requests`` and the vault, whose import is
+    # synchronous and heavy — importing it on the event loop would BLOCK it. Do
+    # the import, the request build, AND the dispatch inside the worker thread
+    # (asyncio.to_thread) so nothing synchronous touches the loop; import_module
+    # keeps that heavy reference out of module scope (top-level-imports gate) and
+    # off the gateway boot path (this handler module loads at startup). The cheap
+    # stdlib ``importlib`` and the lightweight ``config_dir`` are module-scope.
+    def _run_mediation() -> tuple[str, Any]:
+        _dispatch = importlib.import_module("kiro_crew.secrets_mediation.dispatch")
+        _policy = importlib.import_module("kiro_crew.secrets_mediation.policy")
+        _ssrf = importlib.import_module("kiro_crew.secrets_mediation.ssrf")
+
+        req = _dispatch.MediatedRequest(
+            secret_name=secret_name,
+            method=str(payload.get("method", "")),
+            url=str(payload.get("url", "")),
+            headers=payload.get("headers") or {},
+            query=payload.get("query") or {},
+            json_body=payload.get("json_body"),
+            timeout_s=float(payload.get("timeout_s") or 20.0),
+        )
+        try:
+            return "ok", _dispatch.perform_mediated_request(req, _config_dir())
+        except (_policy.PolicyError, _ssrf.SsrfError, _dispatch.MediationError) as exc:
+            # Safe, secret-free message; the value never appears in these.
+            return "refused", str(exc)
+
+    outcome, result = await asyncio.to_thread(_run_mediation)
+    if outcome == "refused":
+        # Fail-closed outcomes are audited by the secret NAME only, never the value.
+        _sel().log_api_access(
+            caller=session_key,
+            operation="mediated_secret_request",
+            outcome="denied",
+            source="dashboard",
+            resources=f"secret={secret_name}",
+        )
+        return web.json_response({"error": result, "code": "mediation_refused"}, status=400)
+
+    # Every post-send result returns the fixed withheld response (the
+    # oracle-collapse invariant: a success, an SSRF/DNS refusal, a transport
+    # error, a redirect refusal, and a timeout are all byte-identical). The audit
+    # outcome is therefore a CONSTANT ``ok`` — ``security_events.jsonl`` is a
+    # sandbox-visible leaf the agent can ``open()`` without passing the tool gate,
+    # so distinguishing refused from ok here would leak one bit of
+    # credential-bearing-send outcome per call, the exact oracle the withheld
+    # constant and the timing pad exist to close. The pre-send refusal path above
+    # returns a distinct 400 status and audits ``denied`` honestly — it never sent
+    # the secret, so it reveals nothing about the authorized origin's behaviour.
+    _sel().log_api_access(
+        caller=session_key,
+        operation="mediated_secret_request",
+        outcome="ok",
+        source="dashboard",
+        resources=f"secret={secret_name} status={result.status}",
+    )
+    return web.json_response(
+        {
+            "status": result.status,
+            "headers": result.headers,
+            "body": result.body,
+            "truncated": result.truncated,
+            "final_url_origin": result.final_url_origin,
+        }
+    )
 
 
 async def _reset_all_sessions(request: web.Request) -> int:

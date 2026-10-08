@@ -131,6 +131,27 @@ def _kick_owner_only_sweep(state: DashboardState) -> None:
     task.add_done_callback(state._background_tasks.discard)
 
 
+def _kick_mediation_signing_root_mint(state: DashboardState) -> None:
+    """Mint the mediated-secret policy-signing root as a tracked task, post-bind.
+
+    Called by both gateway entrypoints only after ``_start_site`` has returned, so
+    key creation (``make_owner_only_dir`` / ``atomic_write`` / ``os.link`` on the
+    data home) can never block the bind on a stalled or full filesystem
+    (no-new-work-on-gateway-boot-path). Mediation is FAIL-CLOSED until it lands:
+    ``provenance._member_key`` returns ``None`` while the root is absent, so every
+    mediated-secret request that arrives before it completes is refused, not
+    served. The coroutine degrades (never raises) on a key that cannot be minted
+    or certified, so a failing data home leaves mediation disabled-closed rather
+    than crashing the task. The import sits inside the hook, like the siblings
+    here, because ``no-new-work-on-gateway-boot-path`` governs this file.
+    """
+    from kiro_crew.dashboard.token_auth import mint_mediation_signing_root
+
+    task = asyncio.create_task(mint_mediation_signing_root())
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+
+
 def _kick_session_search_index(state: DashboardState) -> None:
     """Keep the session search candidate index caught up, in its OWN process.
 

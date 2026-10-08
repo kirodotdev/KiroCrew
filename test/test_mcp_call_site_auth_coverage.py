@@ -107,6 +107,8 @@ _UNKNOWN = "{X}"
 _SOURCES = (
     _CORE,
     _SRC / "mcp_shared.py",
+    _SRC / "mcp_secrets.py",
+    _SRC / "mcp_dashboard.py",
     _SRC / "mcp_work.py",
     _SRC / "mcp_crew_log.py",
     _SRC / "mcp_debug.py",

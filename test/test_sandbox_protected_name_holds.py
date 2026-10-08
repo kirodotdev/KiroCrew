@@ -321,7 +321,37 @@ class TestLeafOnlyPopulationIsRecorded:
     #: launch fingerprints; ``mcp/resolved`` holds executables substituted for an
     #: approved launch. Each sits beside writable siblings, so no parent stand-in
     #: can hold it.
-    EXPECTED: dict[str, int] = {"standard": 265, "cc": 272, "strict": 273}
+    #:
+    #: Four more data-home-root names join the mediated custom-secret egress path,
+    #: each leaf-only for the same reason as the entries above -- the host reads
+    #: them at a fixed root path a stand-in parent cannot cover. The two files below
+    #: are counted once per home-prefix spelling (both ``_CREW_HOME_PREFIXES``
+    #: spellings plus the resolved ``config_dir()`` spelling), so the measured
+    #: leaf-only count rises by more than four; ``EXPECTED`` records the actual
+    #: per-tier total:
+    #:
+    #: * ``secret_request_policy.json`` -- the owner-authored per-secret egress
+    #:   authorization (origin + credential placement). Read ONLY by the host
+    #:   dashboard endpoint; masked so an in-sandbox ``open(...,'w')`` cannot
+    #:   rewrite its own egress allowlist and turn mediation into an exfiltration
+    #:   oracle. It lives at ``<config_dir>/secret_request_policy.json`` because
+    #:   the host resolves that exact path, so it cannot move under a masked
+    #:   subdirectory.
+    #: * ``.secret_request_policy.json.lock`` -- the cross-process lock guarding
+    #:   that policy's read-modify-write, masked on the same floor so a spawned
+    #:   command cannot pre-create or swap the lock inode and split the authorize
+    #:   mutex.
+    #: * ``secret-request-policy-staging`` -- the wholly-masked directory the owner
+    #:   authorize CLI stages the atomic policy publication through. Its POINT is to
+    #:   be held as a whole DIRECTORY: the temp inode ``atomic_write`` creates lives
+    #:   INSIDE it, so the directory mask covers the temp and an in-sandbox process
+    #:   can neither see nor hard-link the staging inode before the publish rename.
+    #: * ``secret-request-policy-signing`` -- the wholly-masked, gateway-only
+    #:   directory holding the HOST-ONLY policy-signing key. Held as a whole
+    #:   directory: the certified signing key lives INSIDE it, hidden from every
+    #:   in-sandbox process, so an in-sandbox process cannot read it to forge an
+    #:   owner-policy signature.
+    EXPECTED: dict[str, int] = {"standard": 277, "cc": 284, "strict": 285}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

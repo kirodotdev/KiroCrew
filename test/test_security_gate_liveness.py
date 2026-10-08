@@ -194,7 +194,17 @@ def _url_payload_command(n: int) -> str:
 #: helper strips a local-drive namespace prefix and a default-stream suffix, and
 #: ``_candidate_forms`` resolves the folded spelling while keeping the raw one as a
 #: candidate. No target, no matching rule and no threshold moved.
-_PACKAGE_LINE_BUDGET = 28_572
+#:
+#: Raised again, from 28,572, for the mediated-secret egress feature's two
+#: security-package additions: ``inline_payload.py``'s mint-surface matcher (the
+#: ``call_api_with_secret`` argv shape is covered by the inline-payload scan, not an
+#: OS-path mask) and ``paths.py``'s protected leaves for the mediated-secret
+#: subsystem. 47 lines, plus the mint-surface matcher's signer-name branch, which
+#: is scoped to IMPORT and ATTRIBUTE-CALL forms -- it matches a command that
+#: imports or calls a signer, and leaves a command that only reads the signing
+#: source or searches for the ``name(`` string alone -- while keeping the
+#: import-reach coverage the ratchet derives.
+_PACKAGE_LINE_BUDGET = 28_627
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
