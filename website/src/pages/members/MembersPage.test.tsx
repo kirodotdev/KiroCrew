@@ -35,6 +35,10 @@ vi.mock('../../api/client', () => ({
     // The roster's team grouping reads the team list; "no teams" keeps the
     // list flat, which is the shape every case here was written against.
     teams: { list: vi.fn(() => Promise.resolve({ teams: [] })), create: vi.fn(), update: vi.fn(), remove: vi.fn() },
+    // The warm greeting's read of the crewmate's work ledger. No ledger is the
+    // state every case not about the greeting wants: the chat opens bare.
+    crewBoard: vi.fn(() => Promise.reject(Object.assign(new Error('no_ledger'), { status: 404 }))),
+    memberRecap: vi.fn(() => Promise.reject(new Error('no recap in this test'))),
     memberThread: vi.fn(),
     memberActivity: vi.fn(() => Promise.resolve({ slug: '', member: '', capped: false, entries: [] })),
     // The open member's folded views. The roster list carries the `roster` view
@@ -4991,5 +4995,76 @@ describe('MembersPage colliding slugs (live projection)', () => {
     })
 
     await waitFor(() => expect(starItem).toHaveTextContent('1'))
+  })
+})
+
+describe('MembersPage cold welcome (a new or long-idle thread)', () => {
+  beforeEach(() => { localStorage.clear(); sessionStorage.clear() })
+
+  it('opening a long-idle crewmate with no goal in flight recaps its paused and recent work, once', async () => {
+    vi.mocked(api.memberRecap).mockResolvedValue({
+      slug: 'oncall', member: 'oncall',
+      paused: [{ goal: 'Rotate the pager keys', next: 'confirm with Sam' }],
+      recent: [{ title: 'Triage last night\'s alarms', ts: 1 }],
+    })
+    await renderPage([row({ last_active_ts: 1 })])
+    fireEvent.click(await rosterRow('oncall'))
+    const card = await screen.findByTestId('member-welcome-card', undefined, PANE_READY)
+    expect(api.memberRecap).toHaveBeenCalledExactlyOnceWith('oncall', 'oncall')
+    expect(within(card).getByTestId('member-welcome-items')).toHaveTextContent('Paused: Rotate the pager keys (next: confirm with Sam)')
+    expect(within(card).getByTestId('member-welcome-items')).toHaveTextContent("Recent session, may be finished: Triage last night's alarms")
+    expect(screen.queryByTestId('member-resume-card')).toBeNull()
+    expect(api.sendChat).not.toHaveBeenCalled()
+    expect(localStorage.getItem('kc-mate-welcomed-member-oncall')).toBe('1')
+  })
+})
+
+describe('MembersPage warm greeting (a return in the middle of a goal)', () => {
+  const midGoal = {
+    conductor: { schema: 1, slot_key: 'member-oncall', goal: 'Ship the crew page', round: 1, depth: 0, parent_item: null, created_at: '' },
+    conductor_alive: 'idle',
+    take_over_available: false,
+    items: [
+      { item_id: 'a', title: 'Mate list', state: 'accepted', status: 'done', terminal: true, alive: 'closed', outstanding: false, orphaned: false, stale: false, last_report_at: null },
+      { item_id: 'b', title: 'Bubbles', state: 'open', status: 'progress', terminal: false, alive: 'running', outstanding: false, orphaned: false, stale: false, last_report_at: null },
+      { item_id: 'c', title: 'Write the RFC', state: 'open', status: 'question', terminal: false, alive: 'idle', outstanding: true, orphaned: false, stale: false, last_report_at: null },
+    ],
+  }
+  beforeEach(() => { sessionStorage.clear() })
+
+  it('opening a crewmate mid-goal says where the goal stands and the next step, above the chat, without a chat turn', async () => {
+    vi.mocked(api.crewBoard).mockResolvedValue(midGoal as never)
+    await renderPage([row()])
+    fireEvent.click(await rosterRow('oncall'))
+    const card = await screen.findByTestId('member-resume-card', undefined, PANE_READY)
+    expect(api.crewBoard).toHaveBeenCalledExactlyOnceWith('member-oncall')
+    expect(within(card).getByTestId('member-resume-goal')).toHaveTextContent('Ship the crew page')
+    expect(within(card).getByTestId('member-resume-counts')).toHaveTextContent('Finished 1 · Running 1 · Idle 0 · Needs a look 1')
+    expect(within(card).getByTestId('member-resume-attention')).toHaveTextContent('Write the RFC has a question waiting')
+    expect(within(card).getByTestId('member-resume-next')).toHaveTextContent('Next: tell oncall here how to answer the question on Write the RFC.')
+    expect(api.sendChat).not.toHaveBeenCalled()
+
+    fireEvent.click(within(card).getByTestId('member-resume-dismiss'))
+    expect(screen.queryByTestId('member-resume-card')).toBeNull()
+  })
+
+  it('a failed status read is said through ErrorNotice, not hidden as "no ledger"', async () => {
+    vi.mocked(api.crewBoard).mockRejectedValue(Object.assign(new Error('ledger needs repair'), { status: 409 }))
+    await renderPage([row()])
+    fireEvent.click(await rosterRow('oncall'))
+    expect(await screen.findByTestId('member-resume-error', undefined, PANE_READY)).toHaveTextContent("Could not read where oncall's goal stands.")
+    expect(screen.queryByTestId('member-resume-card')).toBeNull()
+  })
+
+  it('a crewmate opened while its own turn runs gets no greeting: its reply is about to speak', async () => {
+    vi.mocked(api.crewBoard).mockResolvedValue(midGoal as never)
+    const { store } = await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    act(() => {
+      store.dispatch(sseSlots([{ key: 'member-oncall', mode: 'member', running: true, messages: 1 }] as never))
+    })
+    fireEvent.click(await rosterRow('oncall'))
+    await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
+    expect(api.crewBoard).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('member-resume-card')).toBeNull()
   })
 })

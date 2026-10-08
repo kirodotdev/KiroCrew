@@ -2144,6 +2144,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # handlers/sessions.py, feeding the same dashboard HTTP surface the
         # registered sink already covers.
         "dashboard/handlers/members.py",
+        # The crewmate recap lines `handlers/members.py`'s recap route returns:
+        # a helper behind that same dashboard HTTP surface, not a boundary itself.
+        "member_recap.py",
         "dashboard/handlers/artifacts.py",
         "dashboard/handlers/core.py",
         "dashboard/handlers/cron.py",

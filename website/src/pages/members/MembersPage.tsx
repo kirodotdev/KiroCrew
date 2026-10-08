@@ -95,7 +95,7 @@ import { fmtList } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { usePersistedString } from '../../hooks/usePersistedString'
-import { findReport, type ErrorReport } from '../../utils/errorReport'
+import { findReport, reportForError, type ErrorReport } from '../../utils/errorReport'
 import { useAppDispatch, useAppSelector } from '../../store'
 import { selectSidebarAutomationRunningKeys, selectSlotStreamState, selectSlotToolLog } from '../../store/chatSlice'
 import { toolStatusLabel, type ToolStatusDetail } from '../../utils/toolStatusLabel'
@@ -111,6 +111,9 @@ import Glass from '../../components/Glass'
 import { Badge } from '../../components/ui'
 import { resolvePillActivity, type PillActivityKind } from './pillActivity'
 import ChatPane from '../../components/ChatPane'
+import MateResumeCard from './MateResumeCard'
+import MateWelcomeCard from './MateWelcomeCard'
+import { useMateGreeting } from './mateGreeting'
 import type { ThreadHooks } from '../../app-sdk/messageRenderers'
 import { threadsApi, threadsQueryKey } from '../../api/threads'
 import ThreadPanel from './ThreadPanel'
@@ -2381,6 +2384,15 @@ export default function MembersPage() {
   // busy (the busy line carries no age). A separate clock from the Schedules card, because it runs under a different
   // condition.
   const pillResting = !!active && !isRunning(active) && pillStreamState === 'idle'
+  // The greeting the open chat starts on (cold welcome or warm resume), read
+  // once per open of a confirmed thread. Mid-turn means the crewmate's OWN
+  // turn: workers it runs do not count, since a goal in flight is the very case
+  // the resume speaks to.
+  const { greeting: mateGreeting, failure: mateGreetingFailure, dismiss: dismissMateGreeting } = useMateGreeting(
+    confirmedSlot,
+    pillStreamState === 'idle' && !pillLiveSlot?.running,
+    activeView ? { slug: activeView.slug, member: activeView.name, lastActiveTs: activeView.last_active_ts ?? 0 } : null,
+  )
   const pillLastActive = (activeView ?? active)?.last_active_ts
   const [pillIdleAge, setPillIdleAge] = useState('')
   useEffect(() => {
@@ -4032,6 +4044,25 @@ export default function MembersPage() {
                 )}
               </div>
             )}
+            {mateGreeting && crewmateIdentity && (mateGreeting.kind === 'warm'
+              ? <MateResumeCard resume={mateGreeting.resume} crewmate={crewmateIdentity} onDismiss={dismissMateGreeting} />
+              : <MateWelcomeCard recap={mateGreeting.recap} crewmate={crewmateIdentity} onDismiss={dismissMateGreeting} />
+            )}
+            {mateGreetingFailure && crewmateIdentity && (
+              /* The status read failed (not "no ledger", which is no greeting).
+                 No hand-off, for the reason the notices above give: the DM
+                 composer below may hold an unsaved draft. */
+              <div className="px-4 pt-3">
+                <ErrorNotice
+                  message={t(mateGreetingFailure.kind === 'cold' ? 'pages.membersPage.welcome_failed' : 'pages.membersPage.resume_failed', { name: crewmateIdentity.label || crewmateIdentity.name })}
+                  report={reportForError(mateGreetingFailure.error)}
+                  variant="inline"
+                  askAgent={false}
+                  onDismiss={dismissMateGreeting}
+                  testId="member-resume-error"
+                />
+              </div>
+            )}
             {activeSlot ? (
               <div className="flex-1 min-h-0">
                 <ErrorBoundary>
@@ -4053,7 +4084,8 @@ export default function MembersPage() {
                     // The failure notice above owns the verdict on this thread
                     // while a repair has failed; the pane's own "Session
                     // ready" would contradict it one line down.
-                    hideEmptyHint={activeThreadFailed}
+                    // A greeting card above already speaks for the empty chat.
+                    hideEmptyHint={activeThreadFailed || mateGreeting?.kind === 'cold'}
                     crewmate={crewmateIdentity}
                     onOpenCrewWorkLog={openCrewWorkLog}
                     openSideChat={openMemberSideChat}

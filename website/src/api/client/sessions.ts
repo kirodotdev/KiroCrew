@@ -9,7 +9,7 @@ import type { CrewBoardAction, CrewBoardActionResult, WorkBoardResponse } from '
 
 export const SEARCH_MIN_CHARS = 2  // backend session search threshold (must match kiro_crew.history.SEARCH_MIN_CHARS)
 
-export function createSessionsEndpoints({ get, post, del, j, jfetch: fetch }: ClientTransport) {
+export function createSessionsEndpoints({ get, post, del, j, jfetch: fetch, jCrewBoard }: ClientTransport) {
   const runtimes = {
     restartSessions: () =>
       post('/api/sessions/restart').then(j) as Promise<{
@@ -97,7 +97,7 @@ export function createSessionsEndpoints({ get, post, del, j, jfetch: fetch }: Cl
      * silently inherit MCP-only auth and 403 every call from here.
      */
     crewBoard: (conductor: string) =>
-      get(`/api/crew-board?conductor=${encodeURIComponent(conductor)}`).then(j) as Promise<WorkBoardResponse>,
+      get(`/api/crew-board?conductor=${encodeURIComponent(conductor)}`).then(jCrewBoard) as Promise<WorkBoardResponse>,
     /**
      * Act on one ORPHANED item. The worker session key is never sent and never
      * returned: the server resolves it from the store, which is what lets this call

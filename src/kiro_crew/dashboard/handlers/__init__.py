@@ -266,6 +266,7 @@ from kiro_crew.dashboard.handlers.members import (  # noqa: E402, F401
     api_member_activity,
     api_member_briefing,
     api_member_projections,
+    api_member_recap,
     api_member_rules_get,
     api_member_rules_put,
     api_member_thread,

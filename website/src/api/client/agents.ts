@@ -83,6 +83,16 @@ export interface MemberActivityEntry {
 /** One team of crewmates (GET /api/teams). `members` are exact crew NAMES in
  *  the user's order; a crewmate is on at most one team, which the store
  *  enforces on every write. */
+/** GET /api/members/{slug}/recap: the work a crewmate holds, for its cold-start
+ *  welcome. Goals still open (in its thread or a recent session), then the
+ *  newest other sessions that ran as it. */
+export interface MemberRecap {
+  slug: string
+  member: string
+  paused: { goal: string; next: string }[]
+  recent: { title: string; ts: number }[]
+}
+
 export interface CrewTeam {
   id: string
   name: string
@@ -290,6 +300,12 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, sessio
          *  notes. */
         truncated: boolean
       }>,
+    // The work a crewmate holds (open goals, recent sessions), read for its
+    // cold-start welcome. `member` is the exact crew name (slugs are lossy).
+    memberRecap: (slug: string, member: string) =>
+      fetch(
+        '/api/members/' + encodeURIComponent(slug) + '/recap?member=' + encodeURIComponent(member),
+      ).then(j) as Promise<MemberRecap>,
     // Crewmate teams: a name plus an ordered member list, stored by the gateway
     // in the data home's crew-teams directory. Dashboard-only like the members routes; the three
     // writes are owner actions. `remove` rather than `delete`: a reserved word

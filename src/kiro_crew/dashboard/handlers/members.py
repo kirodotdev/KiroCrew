@@ -1839,6 +1839,63 @@ async def api_member_briefing(request: web.Request) -> web.Response:
     )
 
 
+async def api_member_recap(request: web.Request) -> web.Response:
+    """GET /api/members/{slug}/recap?member=<name> — the work a crewmate holds.
+
+    Feeds the cold-start welcome (``mateGreeting.ts``): goals left open in the
+    crewmate's thread or a recent session, then its recent sessions
+    (:mod:`kiro_crew.member_recap`). A read that writes nothing; the page
+    decides when to greet. Same owner gate and exact-name posture as the
+    activity read: titles are the owner's own task text.
+    """
+    from kiro_crew import member_recap
+
+    denied = await _deny_app_caller(request, "members.recap")
+    if denied is not None:
+        return denied
+    owner_denied = await require_owner_dashboard_request(request, "members.recap.read")
+    if owner_denied is not None:
+        return owner_denied
+    _audit_owner_read(request, "members.recap.read")
+    slug = request.match_info["slug"]
+    try:
+        members_mod.validate_slug(slug)
+    except MemberSlugError:
+        return web.json_response(
+            {"error": "invalid member slug", "code": "invalid_member_slug"}, status=400
+        )
+    member = request.query.get("member", "")
+    if not members_mod.is_dispatchable_member_name(member):
+        return web.json_response(
+            {"error": "member query parameter required", "code": "missing_member"}, status=400
+        )
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    try:
+        if member not in cfg.agents or members_mod.member_slug(member, cfg) != slug:
+            raise MemberSlugError(member)
+    except MemberSlugError:
+        return web.json_response(
+            {"error": "no crew member for this slug", "code": "member_not_found"}, status=404
+        )
+    state: DashboardState | None = request.app.get("state")
+    log = getattr(state, "conversation_log", None)
+
+    def _gather() -> dict[str, Any]:
+        from kiro_crew import session_ledger
+
+        binding = members_mod.read_dm_binding(slug)
+        slot_key = binding["slot_key"] if binding and binding.get("member") == member else ""
+        thread_ledger = session_ledger.read_state(slot_key) if slot_key else {}
+        recent = member_recap.recent_sessions(log.list_sessions() if log else [], member)
+        ledgers = [
+            session_ledger.read_state(session_ledger.ledger_key(str(r["key"]))) for r in recent
+        ]
+        return member_recap.recap(thread_ledger, recent, ledgers)
+
+    payload = await asyncio.to_thread(_gather)
+    return web.json_response({"slug": slug, "member": member, **payload})
+
+
 async def api_member_rules_get(request: web.Request) -> web.Response:
     """GET /api/members/{slug}/rules?member=<name> — user-owned permanent rules.
 

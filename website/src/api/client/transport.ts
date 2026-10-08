@@ -67,6 +67,8 @@ export interface ClientTransport {
    * the domain modules so their call sites are the global's shape, unchanged.
    */
   jfetch: (input: string, init?: RequestInit) => Promise<Response>
+  /** `j` that does not journal `/api/crew-board`'s 404 `no_ledger` (see client.ts). */
+  jCrewBoard: (r: Response) => ReturnType<Response['json']>
   /** The shared `X-Session-Key: dashboard:ui` header, for a raw `fetch` that must still carry it. */
   sessionKeyHeader: { 'X-Session-Key': string }
   /** The pre-body 403 `X-Auth-Required` hook, for a method that reads its own response. */

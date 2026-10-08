@@ -162,6 +162,7 @@ export type {
 export type {
   MemberRosterRow,
   MemberActivityEntry,
+  MemberRecap,
   CrewTeam,
   CrewPanelData,
   CrewPanelMeta,
@@ -941,6 +942,16 @@ const INSTANCES_DISABLED: BenignDenial = { status: 403, code: 'instances_disable
  */
 const jInstancesDisabled = (r: Response) => parseJson(r, INSTANCES_DISABLED)
 
+/**
+ * The second one, on its own merits: `/api/crew-board` answering `no_ledger` for a
+ * session that never ran a goal. Every reader treats it as "no board", not a
+ * failure (the Crew board page, its menu entry, the crewmate resume greeting),
+ * and the greeting probes it on every crewmate open, so journaling it would fill
+ * the error reports with one routine 404 per open.
+ */
+const CREW_BOARD_NO_LEDGER: BenignDenial = { status: 404, code: 'no_ledger' }
+const jCrewBoard = (r: Response) => parseJson(r, CREW_BOARD_NO_LEDGER)
+
 /** Add transport failures that have no HTTP Response to the same journal as apiFailure.
  *
  *  The journaled report is also PINNED to the rejection (`attachReport`). Every deadline here
@@ -1199,6 +1210,7 @@ const transport: ClientTransport = {
   jNullable,
   jInstancesDisabled,
   jfetch,
+  jCrewBoard,
   sessionKeyHeader: _sk,
   checkSessionExpired,
   removeAuthBanner,
