@@ -1220,6 +1220,12 @@ dispatch; missing or malformed member identity refuses instead of selecting Glob
 Run list/detail/cancel keep ordinary execution permissions. A permitted rerun
 retains the original run's member/store and strictest privacy mode, even when an
 internal-secret caller requests it from another member. Member stores add no separate cross-member ACL.
+The rerun's `author` and `session_key` are a different matter: they name the session
+whose Trust the new run's spawns borrow (`slack.gateway._spawn_parent_slot`). The
+dashboard owner's rerun keeps the prior run's origin. Every other caller's rerun,
+edited or not, is bound to the caller's own `X-Session-Key` (blank when it sends
+none), exactly as a fresh run from that session would be. So another session cannot
+launch a script under a trusted chat's identity.
 
 | Route | Body / params | Response |
 |-------|---------------|----------|
