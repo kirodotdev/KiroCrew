@@ -80,8 +80,10 @@ jobs:
           HEAD: ${{ github.event.pull_request.head.sha }}
           RETRY: ${{ steps.review_retry.outcome }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          warn() { printf '::%s::%s\n' warning "$*"; }
           if [ "$RETRY" = "success" ]; then
-            echo "::warning::The first dependency review failed and the retry passed;" \
+            warn "The first dependency review failed and the retry passed;" \
                  "the first failure was transient."
             exit 0
           fi
@@ -92,14 +94,14 @@ jobs:
           for attempt in 1 2 3; do
             if gh api --method GET "repos/$REPO/dependency-graph/compare/$BASE...$HEAD" \
                 --silent 2>"$err"; then
-              echo "::error::Dependency review failed twice while the dependency-graph" \
+              err "Dependency review failed twice while the dependency-graph" \
                    "API answers, so this is the action's license verdict: see its summary above."
               exit 1
             fi
             [ "$attempt" -lt 3 ] && sleep 20
           done
           answer="$(head -c 300 "$err" | tr '\n' ' ')"
-          echo "::error::Dependency review could not run: GitHub's dependency-graph API" \
+          err "Dependency review could not run: GitHub's dependency-graph API" \
                "does not answer for this PR (${answer:-no output}). This is not a license" \
                "finding; re-run this job once the API recovers."
           exit 1

@@ -556,7 +556,7 @@ class TestUxReviewReadsTheScreenshotsBlindFirstDescriptionEvidence(UxEvidenceGat
         gate = _step("ux-review.yml", "UX review status (gates on BLOCK)")
         assert gate["env"]["UNFETCHED"] == "${{ steps.evidence.outputs.unfetched }}"
         assert 'if [ "${UNFETCHED:-}" = "true" ]; then' in gate["run"]
-        assert "::error::UX review for $HEAD could not evaluate the change" in gate["run"]
+        assert 'err "UX review for $HEAD could not evaluate the change' in gate["run"]
         assert gate["run"].index('if [ "${UNFETCHED:-}" = "true" ]; then') < gate["run"].index(
             'case "$VERDICT" in'
         )
