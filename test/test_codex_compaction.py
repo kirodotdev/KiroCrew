@@ -830,3 +830,141 @@ def _stub_provider(impl: Any, backend: str) -> Any:
     if "self.backend" in source:
         stub.backend = backend  # type: ignore[attr-defined]
     return stub
+
+
+@pytest.mark.parametrize("backend", [ACP_BACKEND_CODEX, ACP_BACKEND_CLAUDE])
+@pytest.mark.parametrize("transport", ["client", "runtime"])
+def test_native_compaction_lifecycle(backend: str, transport: str) -> None:
+    target = _bare_client(backend) if transport == "client" else _bare_handle(backend)
+
+    def deliver(status: str, identity: str = "native-1"):
+        update = {"sessionUpdate": "compaction_update", "compactionId": identity, "status": status}
+        payload = _update_msg(update) if transport == "client" else update
+        return target._codex_compaction_event(payload)
+
+    assert deliver("future_status") is None
+    assert deliver("in_progress").text == "started"
+    assert deliver("in_progress") is None
+    assert deliver("completed").text == "completed"
+    assert target.last_prompt_stats.context_pct_unknown
+    assert deliver("completed") is None
+    assert deliver("in_progress") is None
+    assert deliver("completed", "terminal-only").text == "completed"
+
+
+@pytest.mark.parametrize("transport", ["client", "runtime"])
+def test_native_compaction_failure_preserves_counts(transport: str) -> None:
+    target = _bare_client() if transport == "client" else _bare_handle()
+    target.last_prompt_stats.context_pct_unknown = False
+    update = {"sessionUpdate": "compaction_update", "compactionId": "failure", "status": "failed"}
+    payload = _update_msg(update) if transport == "client" else update
+    assert target._codex_compaction_event(payload).text == "failed"
+    assert not target.last_prompt_stats.context_pct_unknown
+    assert target._codex_compaction_event(payload) is None
+
+
+@pytest.mark.parametrize("transport", ["client", "runtime"])
+def test_native_compaction_failure_arms_the_post_failure_budget(transport: str) -> None:
+    """Like every other failure producer: the backend may never answer the prompt
+    the compaction was for, so the bounded post-failure wait is armed."""
+    target = _bare_client() if transport == "client" else _bare_handle()
+    target._compaction_failed_at = None
+    update = {"sessionUpdate": "compaction_update", "compactionId": "budget", "status": "failed"}
+    payload = _update_msg(update) if transport == "client" else update
+    assert target._codex_compaction_event(payload).text == "failed"
+    assert target._compaction_failed_at is not None
+
+
+@pytest.mark.parametrize("transport", ["client", "runtime"])
+def test_native_compaction_cancel_gives_no_verdict(transport: str) -> None:
+    """A Stop mid-compaction is not a failure: no event, no streak, no settle."""
+    target = _bare_client() if transport == "client" else _bare_handle()
+    target.last_prompt_stats.context_pct_unknown = False
+
+    def deliver(status: str):
+        update = {"sessionUpdate": "compaction_update", "compactionId": "stop", "status": status}
+        payload = _update_msg(update) if transport == "client" else update
+        return target._codex_compaction_event(payload)
+
+    assert deliver("in_progress").text == "started"
+    assert deliver("cancelled") is None
+    assert not target._codex_compaction_pending
+    assert not target.last_prompt_stats.context_pct_unknown
+    assert target._settle_codex_compaction("cancelled") is None
+    assert deliver("completed") is None
+
+
+def test_native_compaction_state_is_bounded() -> None:
+    from kiro_crew.acp._dispatch import (
+        NATIVE_COMPACTION_ID_MAX_CHARS,
+        NATIVE_COMPACTION_STATES_MAX,
+        NativeCompactionStates,
+        parse_native_compaction_update,
+    )
+
+    states = NativeCompactionStates()
+
+    def deliver(identity: str, status: str):
+        update = {"sessionUpdate": "compaction_update", "compactionId": identity, "status": status}
+        return parse_native_compaction_update(update, states)
+
+    long_id = "x" * (NATIVE_COMPACTION_ID_MAX_CHARS * 100)
+    assert deliver(long_id, "in_progress") == "started"
+    assert all(len(key) <= NATIVE_COMPACTION_ID_MAX_CHARS for key in states._states)
+    for index in range(NATIVE_COMPACTION_STATES_MAX + 5):
+        assert deliver(f"done-{index}", "completed") == "completed"
+    assert len(states) == NATIVE_COMPACTION_STATES_MAX
+    assert states.evicted == 6
+    assert states.get(long_id) == "started"
+    # Settled ids are evicted first, so the in-flight one still dedupes.
+    assert deliver(long_id, "completed") == "completed"
+    assert deliver(long_id, "completed") is None
+
+
+def test_compaction_negotiation_does_not_enable_air() -> None:
+    from kiro_crew.acp.types import ACP_CLIENT_CAPABILITIES_NATIVE_COMPACTION
+
+    assert ACP_CLIENT_CAPABILITIES_NATIVE_COMPACTION["session"]["compaction"] == {}
+    assert "_meta" not in ACP_CLIENT_CAPABILITIES_NATIVE_COMPACTION
+
+
+def test_native_compaction_is_advertised_only_where_translated() -> None:
+    """kiro-cli, KAS and every other backend keep the base handshake byte-identical."""
+    from kiro_crew.acp.harness.codex import CodexHarness
+    from kiro_crew.acp.harness.kiro import KiroHarness
+    from kiro_crew.acp.types import (
+        ACP_BACKENDS_INLINE_COMPACTION,
+        ACP_BACKENDS_NATIVE_COMPACTION,
+        ACP_CLIENT_CAPABILITIES,
+        KAS_CLIENT_CAPABILITIES,
+        acp_client_capabilities,
+    )
+
+    assert "session" not in ACP_CLIENT_CAPABILITIES
+    assert "session" not in KAS_CLIENT_CAPABILITIES
+    assert ACP_BACKENDS_NATIVE_COMPACTION <= ACP_BACKENDS_INLINE_COMPACTION
+    for backend in (ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX):
+        assert acp_client_capabilities(backend)["session"] == {"compaction": {}}
+    for backend in ("kiro", "kas", "opencode", "pi", "goose", "deepseek", None):
+        assert acp_client_capabilities(backend) is ACP_CLIENT_CAPABILITIES
+    assert "session" in CodexHarness.client_capabilities.fget(None)
+    assert "session" not in KiroHarness.client_capabilities.fget(None)
+
+
+@pytest.mark.parametrize("backend", [ACP_BACKEND_CODEX, ACP_BACKEND_CLAUDE])
+def test_native_compaction_routes_without_tool_rows(backend: str) -> None:
+    handle = _live_handle(backend)
+    update = {
+        "sessionUpdate": "compaction_update",
+        "compactionId": "routed",
+        "status": "in_progress",
+    }
+    events = handle._handle_update(_update_msg(update))
+    assert [event.kind for event in events] == [EVENT_COMPACTION_STATUS]
+    assert handle._handle_update(_update_msg(update)) == []
+    unknown = {
+        "sessionUpdate": "compaction_summary_chunk",
+        "compactionId": "routed",
+        "content": {"type": "text", "text": "summary"},
+    }
+    assert handle._handle_update(_update_msg(unknown)) == []

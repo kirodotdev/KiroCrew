@@ -46,6 +46,7 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_MEMBER_PANEL,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
+    ACP_BACKENDS_NATIVE_COMPACTION,
     ACP_BACKENDS_OPEN_EXTERNAL_URL,
     ACP_BACKENDS_POD_HOME_REMAP,
     ACP_BACKENDS_RESUME_WITHOUT_LOAD,
@@ -260,6 +261,24 @@ ACP_CLIENT_CAPABILITIES: dict = {
 # filter string (``clientApp/kirocrew``, ``acp-client/kirocrew``) finds Crew on both.
 KIRO_CLI_CLIENT_APPLICATION_ENV = "KIRO_CLI_CLIENT_APPLICATION"
 KIRO_CLI_CLIENT_APPLICATION = "kirocrew"
+# `session.compaction` switches an adapter from its legacy compaction reporting to
+# native `compaction_update` frames, so it goes only to the backends whose adapters
+# emit those frames AND whose sessions translate them (`_codex_compaction_event`,
+# gated on `ACP_BACKENDS_INLINE_COMPACTION`). Observed live: codex-acp 2.0.0 and
+# claude-agent-acp 0.84.0. kiro-cli and KAS keep the shared set byte-identical --
+# the rule above again: add a key for a backend in the change that handles it.
+ACP_CLIENT_CAPABILITIES_NATIVE_COMPACTION: dict = {
+    **ACP_CLIENT_CAPABILITIES,
+    "session": {"compaction": {}},
+}
+
+
+def acp_client_capabilities(backend: str | None) -> dict:
+    """The ``clientCapabilities`` the standalone transport sends for ``backend``."""
+    if backend in ACP_BACKENDS_NATIVE_COMPACTION:
+        return ACP_CLIENT_CAPABILITIES_NATIVE_COMPACTION
+    return ACP_CLIENT_CAPABILITIES
+
 
 # ── ACP Backend Identifiers ──
 # DEFINED in :mod:`kiro_crew.acp_backends` and re-exported from the import block
