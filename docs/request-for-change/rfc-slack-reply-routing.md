@@ -4,7 +4,7 @@ status: draft
 author: phantom-tim
 created: 2026-10-08
 last-audited: 2026-10-08
-audited-at: 230b9141c888a4b2a53cd236328a7e42035389b8
+audited-at: 8c7417ea82b843875507593d712ac0eff6491644
 doc-pr:
 implementation-prs: []
 tracking-issues: [17933]
@@ -34,15 +34,15 @@ sent it. A threaded reply from the owner to that DM is delivered to the sending
 session as a user turn, instead of starting a new session. Every message and
 reply that does not opt in behaves exactly as it does today.
 
-The binding reuses the thread-to-session reverse index Slack routing already
-keeps, so the sending session is never marked mirrored and keeps every tool it
-has.
+The binding is its own persisted record, separate from the Slack link and the
+outbound mirror. The mirror readers never see it, so the sending session is
+never marked mirrored and keeps every tool it has.
 
 ## Motivation
 
 ### Current state
 
-Observed by direct testing and confirmed in source at main `230b9141`:
+Observed by direct testing and confirmed in source at main `8c7417ea8`:
 
 - `send_message(session="slack")` delivers one targeted DM to the owner and
   returns its `ts`. It does not mirror the sending session. The handler returns
@@ -114,29 +114,65 @@ plain Slack send degrades open on identity today; this flag requires a resolved
 session key (`require_strict_session_key` in `mcp_tools/messaging.py`), because
 a binding to "the sending session" is meaningless without one.
 
-**Binding, reusing the existing reverse index.** Slack already keeps a
-thread-to-session reverse index, `_thread_to_session` in
-`session_map.py`, written by `set_slack_link` and read by
-`get_session_for_thread`. A new store is not needed, and reusing this one is the
-smaller change the project asks for. When the flag is set, the gateway records a
-binding from the DM's thread root (channel id plus the message `ts` it already
-returns) to the sending session's key, with the owner's Slack user id and a TTL.
-The one thing it must not do is set an outbound mirror: the refusals in
-`session_control.py` are all keyed on the outbound mirror, so a reply-only
-binding leaves the sending session fully addressable and able to create peers.
-`SessionMap` already carries the nearest concept, a resume binding that accepts
-inbound without being a full mirror (`set_mirror_link(..., accepts_inbound=True)`),
-and the single-owner-per-thread discipline the binding needs
-(`_evict_rival_claimants`). The tool result reports the binding beside the `ts`
-it already returns.
+**Binding, as its own persisted record.** The binding cannot reuse Slack's
+existing thread-to-session reverse index. That index, `_thread_to_session` in
+`session_map.py`, is rebuilt on load (`_rebuild_thread_index`) only from each
+entry's `slack_thread_ts`, and `slack_thread_ts` is exactly the field the mirror
+readers count as a room: `_mirror_identity_of` in `session_control.py` builds a
+session's mirror identity from `get_slack_link` (through `_slack_thread_of`) as
+well as `get_mirror_link`, and `get_slack_link` returns the entry's
+`slack_thread_ts`. So a binding written there would make the orchestrator read as
+`mirrored_caller` and lose `session_create`, breaking Goal 3; a binding written
+anywhere the rebuild does not read would be lost on restart.
 
-**Inbound routing.** A Slack message whose `thread_ts` matches a live binding,
-sent by the bound user, is delivered to the sending session as a Slack-origin
-user turn and queued if that session is busy. This is the path the inbound
-handler already takes once `get_session_for_thread(reply_ts)` resolves an owner:
-the reply is appended as an ordinary user turn and run or queued
-(`slack/handler.py`, `slack/handler_runtime/inbound.py`). It is not the peer
-`session_send` route, and no new session is created.
+The binding is therefore a dedicated field on the `SessionMap` entry,
+`reply_binding`, carrying the owner's Slack user id, the DM's channel id, the
+thread root `ts` the send already returns, a created-at, and a TTL. It is not
+`slack_thread_ts` and not a `mirror` row, so `get_slack_link` and
+`get_mirror_link` never return it and `_slack_thread_of` / `_mirror_identity_of`
+find no room: the sending session stays non-mirrored and keeps every peer tool.
+`SessionMap._load` already preserves the whole entry dict across the disk
+round-trip, so the field persists for free; a dedicated reverse index,
+`_reply_thread_to_session`, is rebuilt from `reply_binding` on load beside
+`_rebuild_thread_index`, which is what reloads the binding after a restart. The
+same single-owner-per-thread discipline the Slack link uses
+(`_evict_rival_claimants`) is applied to this field, keyed on the new reverse
+index, and the TTL plus an eviction accessor bound and clear it.
+
+A session holds at most one live reply binding. A flagged page in a new thread
+replaces the previous binding and evicts that thread from
+`_reply_thread_to_session`, so a later reply to the earlier thread falls back to
+today's behavior. A follow-up page with `thread_ts` set to the bound thread root
+keeps the existing binding and restarts its TTL.
+
+The tool result reports the binding beside the `ts` it already returns.
+
+**Inbound routing, as a new delivery into the sending session's slot.** A Slack
+message whose `thread_ts` matches a live `reply_binding`, sent by the bound user,
+is delivered to the sending session as a Slack-origin user turn and queued if that
+session is busy. Neither existing inbound path does this. The owner path that
+`get_session_for_thread(reply_ts)` resolves runs the turn inside the Slack
+handler (`slack/handler.py` builds `_AnswerStream(slack, channel, reply_ts, ...)`
+and `get_or_create(session_key)` under the resolved key) and streams the answer
+back into the thread, and it self-links the resolved session with
+`set_slack_link`, which is the `slack_thread_ts` write that marks it mirrored. The
+only path that delivers cleanly into a live dashboard slot,
+`maybe_route_linked_thread` in `slack/handler_runtime/inbound.py`, fires only for
+a `get_linked_slot(reply_ts)` slot, and such a slot carries `linked_session_key`,
+so `containment_snapshot` reads it as `linked=True` and `session_create` is
+refused `linked_session_caller`. Both break Goal 3.
+
+So a bound reply takes a new path: resolve the sending session's slot by its own
+key (`resolve_slot`), then `append_and_surface` the reply and, if the slot is
+busy, `queue_append` it, as a Slack-origin user turn, without calling
+`link_slack` / `set_slack_link` and without setting `linked_session_key`. The
+slot's `linked` containment stays False, so the session keeps `session_create`.
+The turn runs under the sending session's own dashboard runner (`_run_chat`), the
+same runner a dashboard-typed turn uses, so no `_AnswerStream` is constructed for
+it and nothing is posted back to the thread: the bound-reply branch returns before
+the `handler.py` region that builds the stream and runs the turn under the
+thread owner. It is not the peer `session_send` route, and no new session is
+created.
 
 **Follow-ups.** The sending session's own turns are not posted to the thread. To
 ask again, it sends another flagged page with `thread_ts` set to the same thread
@@ -145,11 +181,13 @@ already threads a reply today (`thread_ts` is refused only alongside a non-Slack
 channel session, not alongside `session="slack"`), so the exchange stays in one
 thread and keeps routing back.
 
-**Fallback.** No binding, an expired binding, a closed or archived sending
-session, a sender other than the bound user, and a top-level (non-threaded) DM
-are all handled exactly as today. No binding means `get_session_for_thread`
-returns nothing and the inbound path mints `slack:<ts>`, which is the current
-behavior, so the fallback needs no new code beyond not finding a binding.
+**Fallback.** No binding, an expired binding, a thread whose binding was
+replaced by a later page, a closed or archived sending session, a sender other
+than the bound user, and a top-level (non-threaded) DM are all handled exactly
+as today. When the new reply-binding lookup finds no live match, the inbound
+path falls through unchanged: `get_session_for_thread` returns nothing and it
+mints `slack:<ts>`, which is the current behavior, so the fallback needs no new
+code beyond not finding a binding.
 
 ## Implementation sketch
 
@@ -161,17 +199,25 @@ flagged page's threaded reply.
   session key when set, and surface the binding in the result string.
 - `src/kiro_crew/dashboard/messaging_api/proactive_send.py`
   (`_read_send_message`, `_post_send_message_to_slack`,
-  `_send_message_response`): accept the flag, record the binding against the
-  posted `ts` after a successful owner-DM post, and report it in the response
+  `_send_message_response`): accept the flag, record the `reply_binding` against
+  the posted `ts` after a successful owner-DM post, and report it in the response
   beside `ts`.
-- `src/kiro_crew/session_map.py` (`SessionMap`): add a reply-only binding that
-  writes the `_thread_to_session` reverse index and an inbound-accept marker
-  without an outbound mirror, plus a TTL field and its expiry read; reuse
-  `_evict_rival_claimants` for single-owner-per-thread and `clear_slack_link`
-  semantics for eviction. `src/kiro_crew/session.py` forwards the new accessor.
+- `src/kiro_crew/session_map.py` (`SessionMap`): add a `reply_binding` entry
+  field (owner user id, channel id, thread root `ts`, created-at, TTL) and its
+  accessors, written without touching `slack_thread_ts` or any `mirror` row;
+  rebuild a dedicated `_reply_thread_to_session` reverse index from it on load,
+  beside `_rebuild_thread_index`; reuse the `_evict_rival_claimants` discipline
+  keyed on the new index for single-owner-per-thread, and add a TTL-expiry read
+  and an eviction accessor. `src/kiro_crew/session.py` forwards the new
+  accessors.
 - `src/kiro_crew/slack/handler.py` and `slack/handler_runtime/inbound.py`:
-  honor a live reply-only binding when resolving the thread owner, bounded by
-  the bound user id and the TTL, before the `slack:<ts>` fallback.
+  before the thread-owner resolution and the `slack:<ts>` fallback, check the
+  `reply_binding` reverse index bounded by the bound user id and the TTL, and on
+  a live match deliver the reply into the sending session's dashboard slot
+  (`resolve_slot` then `append_and_surface` / `queue_append`) as a Slack-origin
+  user turn, returning before the `_AnswerStream` turn-running region so nothing
+  is posted back to the thread and no `set_slack_link` / `linked_session_key` is
+  set.
 
 Tests go beside the code they cover:
 
@@ -180,23 +226,27 @@ Tests go beside the code they cover:
   `test/test_bug_validation_send_message_schema.py`: the flag, its headless
   refusal, and the result string.
 - `test/test_session_map_mirror.py`, `test/test_session_map_unlink.py`,
-  `test/test_session_map_conv_state.py`: the reply-only binding, its TTL, its
-  single-owner eviction, and that it sets no outbound mirror.
+  `test/test_session_map_conv_state.py`: the `reply_binding` field, its reload
+  into `_reply_thread_to_session` across a load, its TTL, its single-owner
+  eviction, the replace-and-evict case for a page in a new thread, the follow-up
+  case that keeps the binding and restarts its TTL, and that it sets neither
+  `slack_thread_ts` nor a `mirror` row (so `get_slack_link` and `get_mirror_link`
+  do not return it).
 - `test/test_slack_handler.py` (and the `*_coverage*` siblings),
   `test/test_slack_thread_parent_transcript.py`,
   `test/test_thread_parent_context.py`: a flagged page's threaded reply lands in
-  the sending session and creates none; an unflagged page's reply, a top-level
-  DM, an expired binding and a closed sending session each still start a new
-  session.
+  the sending session's slot as a Slack-origin turn, posts nothing back to the
+  thread, and creates no session; an unflagged page's reply, a top-level DM, an
+  expired binding and a closed sending session each still start a new session.
 - `test/test_session_control_owner_dm.py`,
-  `test/test_session_control_boundaries.py`: a session carrying a reply-only
-  binding still passes `session_create` / `session_send` /
-  `session_read_message`.
+  `test/test_session_control_boundaries.py`: a session carrying a `reply_binding`
+  reads as non-mirrored (`_mirror_identity_of` returns no room for it) and still
+  passes `session_create` / `session_send` / `session_read_message`.
 
 Docs updated in the same change (CONTRIBUTING requires it):
 
-- `docs/architecture/design-notes/session-slack-linking.md`: the reply-only
-  binding beside the existing link and mirror.
+- `docs/architecture/design-notes/session-slack-linking.md`: the reply binding
+  beside the existing link and mirror.
 - `docs/system-specs/modules/slack-gateway.md` and
   `docs/system-specs/modules/messaging.md`: the `send_message` flag and the
   inbound routing of a bound reply.
@@ -205,7 +255,7 @@ Docs updated in the same change (CONTRIBUTING requires it):
 
 | Phase | Scope | Exit criteria |
 |---|---|---|
-| **R1** | Flag, reply-only binding in `SessionMap`, inbound routing, docs for `send_message` and Slack inbound routing | A flagged page's threaded reply lands in the sending session and creates no session. An unflagged page's reply, a top-level DM, an expired binding and a closed sending session each still start a new session. The sending session still passes `session_create` / `session_send` / `session_read_message` |
+| **R1** | Flag, `reply_binding` field and its reverse index in `SessionMap`, the new slot-delivery inbound path, docs for `send_message` and Slack inbound routing | A flagged page's threaded reply lands in the sending session's slot as a Slack-origin turn, posts nothing back to the thread, and creates no session. An unflagged page's reply, a top-level DM, an expired binding and a closed sending session each still start a new session. The sending session reads as non-mirrored and still passes `session_create` / `session_send` / `session_read_message` |
 | **R2** | Fallback notice in the thread | When a reply falls back because the sending session is gone, the thread says a new session was started. Blocked on open question 2 |
 
 R2 is independently abandonable. Without it, a fallback looks the same as it
@@ -228,16 +278,22 @@ from the dashboard, so the binding grants no new reach. Extending it to other
 allowed users would let a non-owner write into an owner's session, so it is an
 open question rather than part of the design.
 
-The binding sets no outbound mirror, so it does not make the sending session
-readable from Slack: the session's turns are not republished, and the mirrored
-caller and mirrored target refusals in `session_control.py` are untouched. The
-TTL bounds how long a thread stays routable, and the single-owner-per-thread
-eviction (`_evict_rival_claimants`) keeps one thread from routing to two
-sessions. Each routed reply arrives through the inbound path that already gates
-on `is_allowed_user` and writes an SEL record (`linked_thread_intercept` in
-`slack/handler_runtime/inbound.py`), and is marked Slack-origin in the
-transcript (`source_thread` / `source_user`), so governance and audit apply to
-it exactly as to any Slack-born turn.
+The binding sets no outbound mirror and writes no `slack_thread_ts`, so it does
+not make the sending session readable from Slack: the session's turns are not
+republished, and the mirrored caller and mirrored target refusals in
+`session_control.py` are untouched. The TTL bounds how long a thread stays
+routable, and the single-owner-per-thread eviction (`_evict_rival_claimants`,
+keyed on the reply-binding index) keeps one thread from routing to two sessions.
+Each routed reply passes the same `is_allowed_user` gate the Slack inbound path
+already applies before it is delivered, and is marked Slack-origin in the
+transcript (`source_thread` / `source_user`), so governance applies to it
+exactly as to any Slack-born turn. The existing clean slot-delivery record,
+`linked_thread_intercept` (`slack/handler_runtime/inbound.py`), is tied to a
+`linked=True` slot, which this path deliberately does not create, so the new
+path emits its own SEL record instead, `bound_reply_intercept`
+(`tool_kind="permission"`, outcome `allowed` or `denied` on the `is_allowed_user`
+gate, metadata naming the bound user and the delivered-to session), so audit
+reflects a reply-binding delivery rather than a link that does not exist.
 
 ## Alternatives considered
 
@@ -255,9 +311,17 @@ it exactly as to any Slack-born turn.
 - **Route replies through the notification bridge.** The bridge is not built,
   and it carries notifications rather than a conversation with a sender. The
   binding here could serve its Phase B4 later.
-- **A new reply-binding store.** Rejected. Slack already keeps the
-  thread-to-session reverse index this needs; a parallel store would duplicate
-  the single-owner and eviction logic that `SessionMap` already has.
+- **Reuse the existing thread-to-session index instead of a dedicated record.**
+  Rejected. The shared index cannot carry this binding. `_rebuild_thread_index`
+  (`session_map.py`) rebuilds `_thread_to_session` only from each entry's
+  `slack_thread_ts`, and `_slack_thread_of` / `_mirror_identity_of`
+  (`session_control.py`) read that same `slack_thread_ts` through `get_slack_link`
+  as a mirror room. So a binding stored there either sets `slack_thread_ts`, which
+  makes the orchestrator `mirrored_caller` and breaks Goal 3, or lives where the
+  rebuild never reads and is lost on restart. A dedicated `reply_binding` field
+  with its own reloaded reverse index is what keeps the binding durable and
+  invisible to the mirror readers; it reuses `SessionMap`'s single-owner and
+  eviction discipline rather than duplicating it.
 - **Let mirrored sessions keep peer tools.** This is a larger change to behavior
   users rely on, and it is not needed once replies route back.
 
