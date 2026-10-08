@@ -740,11 +740,11 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                     />
                   </div>
                 ) : null
-                // A read, retired or passive row recedes through its title and
-                // controls only. Its notice keeps full contrast (that sentence
-                // is the row's one remaining message), and so does a retired
-                // row's close X, its only way out.
-                const rowDim = (n.acked || settled || prio === 'passive') && !active && !silenced ? 'opacity-50' : ''
+                // A read or passive row recedes through its title and
+                // controls only. A retired row's notice keeps full contrast
+                // (that sentence is the row's one remaining message), and so
+                // does its close X, its only way out.
+                const rowDim = (n.acked || prio === 'passive') && !active && !silenced ? 'opacity-50' : ''
                 const collapsedStack = !!(stackKey && stackCount && stackCount > 1 && !stackExpanded)
                 const actionBtn = MAC_ACTION_BTN_CLASS
                 // The mac row IS the shared card (one rendering with the
@@ -873,8 +873,11 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                           <span className="text-[11px] text-muted font-mono">{fmtTime(n.ts)}</span>
                           {silenced ? (
                             <span className="text-[10px] text-muted italic flex items-center gap-1"><BellOff className="lucide-inline" /> {i18nT('components.notifications.notificationFeed.muted_2')}</span>
-                          ) : !n.acked && !settled ? (
-                            <span className={`w-1.5 h-1.5 rounded-full animate-dot-breathe ${prio === 'critical' ? 'bg-danger' : 'bg-accent'}`} data-priority={prio} />
+                          ) : !n.acked ? (
+                            // A retired approval the reader has not seen keeps a
+                            // quiet dot: it no longer asks for a decision, but
+                            // why it ended is still news.
+                            <span className={`w-1.5 h-1.5 rounded-full ${settled ? 'bg-accent' : `animate-dot-breathe ${prio === 'critical' ? 'bg-danger' : 'bg-accent'}`}`} data-priority={settled ? 'settled' : prio} />
                           ) : null}
                         </div>
                       </Clickable>

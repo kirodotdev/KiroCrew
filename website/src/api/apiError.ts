@@ -86,13 +86,23 @@ const errorBodyCode = (body: string): string => {
   }
 }
 
+/** The refusal a decide control raises when it names no request: nothing live
+ *  stands behind it, so it is answered like the server's own 404 for an
+ *  approval that is gone (`isTerminalApprovalRefusal`), in the one sentence
+ *  every approval surface shows for that. */
+export const noPendingApprovalError = (): ApiError =>
+  new ApiError(404, i18nT('components.approvalCard.approval_no_longer_pending'))
+
 /** True when an approval refusal is terminal — the approval itself is gone (404,
- *  or the endpoint's `no pending approval` 400). Duck-typed like {@link isNotFoundError}. */
+ *  the endpoint's `no pending approval` 400, or a 409 `already_resolved`: another
+ *  click settled it first, so every retry of this press gets the same answer).
+ *  Duck-typed like {@link isNotFoundError}. */
 export const isTerminalApprovalRefusal = (e: unknown): boolean => {
   if (typeof e !== 'object' || e === null) return false
   const r = e as { status?: unknown; message?: unknown; authRequired?: unknown }
   // 403 + re-auth leaves the approval live once the user signs back in.
   if (r.authRequired) return false
+  if (r.status === 409) return apiErrorCode(e) === 'already_resolved'
   return r.status === 404 || (r.status === 400 && r.message === 'no pending approval')
 }
 

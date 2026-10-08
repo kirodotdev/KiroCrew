@@ -14,6 +14,7 @@ from kiro_crew.dashboard.state import (
     DENY_CAUSE_APPROVAL_UNDELIVERABLE,
     DENY_CAUSE_BATCH_CASCADE,
     _mark_permission_resolved,
+    row_mid,
 )
 from kiro_crew.dashboard.turn_dispatch import (
     APPROVAL_EXPIRED_NOTE_TITLE,
@@ -640,6 +641,10 @@ async def _on_permission_prompt(
             only_if_pending=True,
         ):
             slot._dirty = True
+            # Imported here: the runner does not bind this helper.
+            from kiro_crew.dashboard.interaction_coordinator import native_resolution_target
+
+            _resolved_mid = row_mid(permission_row)
             state.broadcast_ws(
                 "approval_resolved",
                 {
@@ -647,6 +652,8 @@ async def _on_permission_prompt(
                     "approved": _approved,
                     # Keys the frame for the slot-scoped WS gate.
                     "slot": slot.key,
+                    # The runner's own request, named by its row.
+                    **native_resolution_target(_resolved_mid),
                 },
             )
             state.push_slots_update()

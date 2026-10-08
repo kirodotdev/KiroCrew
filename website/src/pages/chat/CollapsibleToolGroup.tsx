@@ -57,8 +57,8 @@ interface CollapsibleToolGroupProps {
    * Offer the standing-trust tier. FAIL-CLOSED: leave unset unless this mount's
    * `onApprove` routes to an endpoint that actually RECORDS standing trust
    * (POST /api/chat/slots/{slot}/approve carries the decision verbatim).
-   * The common resolve path — ChatPage's `toApiDecision` into the one-shot
-   * `api.resolveApproval` — has no trust verb, so offering Trust there (or
+   * The common resolve path — ChatPage's `toApiDecision` into a one-shot
+   * `api.decideApproval` — has no trust verb, so offering Trust there (or
    * labelling a decision "Trusted") overstates the grant: the next identical
    * call prompts again (#5400 on the spawn card, #5434 on this row).
    */
@@ -131,6 +131,10 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, reasoni
   const [localResolved, setLocalResolved] = useState<string | null>(null)
   const [failure, setFailure] = useState<{ terminal: boolean; message: string; attempted: string } | null>(null)
   const needsAttention = !!hasPermission && !localResolved
+  // A press the server refused as gone leaves nothing to decide: the header
+  // drops its pending dot and "Approval needed" and reads as a plain tool
+  // group, while the notice below says what became of the request.
+  const headerPending = needsAttention && !failure?.terminal
 
   // Skip the first run: on mount the disclosure already starts from
   // `restingExpanded` (the fallback above), and writing it here would overwrite
@@ -157,13 +161,13 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, reasoni
   }, [isRunning, setExpanded, startExpanded])
 
   // The 'trust' entries are reachable only from a `canTrust` mount (see the
-  // prop's contract above): a mount resolving through the one-shot
-  // `api.resolveApproval` endpoint never offers the Trust button, so it can
+  // prop's contract above): a mount resolving through a one-shot
+  // `api.decideApproval` never offers the Trust button, so it can
   // never wear a "Trusted" label it did not earn (#5400, #5434).
   const decisionLabel: Record<string, ReactNode> = { approved: <><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.approved')}</>, trust: <><Handshake className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.trusted')}</>, rejected: <><Ban className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.rejected')}</> }
   const labelNode = localResolved
     ? (decisionLabel[localResolved] || <><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.resolved')}</>)
-    : needsAttention
+    : headerPending
       ? (pendingPermCount && pendingPermCount > 1 ? <><AlertTriangle className="lucide-inline" /> {pendingPermCount} {i18nT('pages.chat.collapsibleToolGroup.approvals_pending')}</> : <><AlertTriangle className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.approval_needed')}</>)
       : isRunning
         ? <><Wrench className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.running_tools')}</>
@@ -172,7 +176,7 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, reasoni
           : <><Wrench className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.tool_call', { count: count })}</>
   const labelText = localResolved
     ? (localResolved === 'approved' ? i18nT('pages.chat.collapsibleToolGroup.approved') : localResolved === 'trust' ? i18nT('pages.chat.collapsibleToolGroup.trusted') : i18nT('pages.chat.collapsibleToolGroup.rejected'))
-    : needsAttention ? i18nT('pages.chat.collapsibleToolGroup.approval_needed') : isRunning ? i18nT('pages.chat.collapsibleToolGroup.running_tools') : reasoningOnly ? i18nT('pages.chat.turnBlock.worked_through_step', { count }) : i18nT('pages.chat.collapsibleToolGroup.tool_call', { count: count })
+    : headerPending ? i18nT('pages.chat.collapsibleToolGroup.approval_needed') : isRunning ? i18nT('pages.chat.collapsibleToolGroup.running_tools') : reasoningOnly ? i18nT('pages.chat.turnBlock.worked_through_step', { count }) : i18nT('pages.chat.collapsibleToolGroup.tool_call', { count: count })
 
   const preview = needsAttention ? sanitizeLlmOutput(extractPreview(permissionMeta)) : ''
   // Heading over the single-call preview; '' when the command is already the
@@ -243,12 +247,12 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, reasoni
   return (
     <div className="my-1">
       <button
-        className={`flex items-center gap-2 px-3 py-2 rounded-md text-[13px] leading-5 font-mono text-muted bg-card ring-1 ring-inset forced-colors:border cursor-pointer transition-all w-full text-left ${needsAttention ? 'ring-warn hover:ring-warn/80' : localResolved ? 'ring-ok/60 hover:ring-ok/80' : 'ring-border hover:ring-border-strong'} hover:text-text`}
+        className={`flex items-center gap-2 px-3 py-2 rounded-md text-[13px] leading-5 font-mono text-muted bg-card ring-1 ring-inset forced-colors:border cursor-pointer transition-all w-full text-left ${headerPending ? 'ring-warn hover:ring-warn/80' : localResolved ? 'ring-ok/60 hover:ring-ok/80' : 'ring-border hover:ring-border-strong'} hover:text-text`}
         onClick={() => { userToggled.current = true; setExpanded(e => !e) }}
         aria-expanded={expanded}
         aria-label={`${expanded ? i18nT('pages.chat.collapsibleToolGroup.collapse') : i18nT('pages.chat.collapsibleToolGroup.expand')} ${labelText}`}
       >
-        {needsAttention ? (
+        {headerPending ? (
           <span className="relative w-2.5 h-2.5 flex-shrink-0" aria-label={i18nT('pages.chat.collapsibleToolGroup.approval_needed')}>
             <span className="absolute inset-0 rounded-full bg-warn animate-ping opacity-60" />
             <span className="relative block w-2.5 h-2.5 rounded-full bg-warn" />
@@ -275,7 +279,9 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, reasoni
           actionable buttons — a dead end exactly while the agent is parked
           waiting on the user (#5487). */}
       {needsAttention && (onApprove || onApproveBatch) && (isBatch ? batchPreviews.length > 0 : !!preview) && (
-        <div className="mt-1 ml-4 pl-3 shadow-[inset_2px_0_0_0_var(--color-amber-400)] forced-colors:border-l-2">
+        // The amber bar marks a request still waiting; after a refusal for one
+        // that is gone it takes the group's own neutral bar.
+        <div data-testid="tool-group-approval-preview" className={`mt-1 ml-4 pl-3 ${failure?.terminal ? 'shadow-[inset_2px_0_0_0_var(--border)]' : 'shadow-[inset_2px_0_0_0_var(--color-amber-400)]'} forced-colors:border-l-2`}>
           {isBatch ? (
             <>
               {/* Batch: preview EVERY pending call so "Approve all N" is not a
@@ -314,9 +320,11 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, reasoni
       )}
 
       {failure !== null && (
-        // Hand-off on by default. The approval buttons hold no draft of their
-        // own, and the main chat's composer draft is persisted per slot (ChatPage
-        // saves it on slot switch) while the hand-off opens a FRESH slot.
+        // A refused decide is a failed request (errors-use-error-notice), the
+        // gone refusal included. Hand-off on by default. The approval buttons
+        // hold no draft of their own, and the main chat's composer draft is
+        // persisted per slot (ChatPage saves it on slot switch) while the
+        // hand-off opens a FRESH slot.
         // No hand-off when the host passes `askAgent={false}`: ChatEmbed's
         // composer draft is unsaved local state the navigation would drop.
         <ErrorNotice variant="inline" className="mt-1 ml-4 pl-3" askAgent={askAgent} message={failure.terminal

@@ -142,12 +142,13 @@ async def api_approval_resolve(request: web.Request) -> web.Response:
         # record expires. The instance binds the decision to the request the card
         # showed: the request id is minted by the caller and can recur in the same
         # slot, so a card left up from an expired record would otherwise resolve
-        # the request that replaced it. An approval with no owning slot (a cron,
-        # autonudge or task-runner request) names its slot as empty, which only
-        # a record whose own slot is empty matches.
-        slot = request.query.get("slot", "")
+        # the request that replaced it.
+        # ``slot`` must be present but may be empty: a coordinator approval
+        # raised with no owning slot (a cron job's) is bound by its instance
+        # alone, and the record's own empty slot must still match.
+        slot = request.query.get("slot")
         instance = request.query.get("instance", "")
-        if request.query["origin"] != "coordinator" or "slot" not in request.query or not instance:
+        if request.query["origin"] != "coordinator" or slot is None or not instance:
             return web.json_response(
                 {"error": "invalid approval target", "code": "invalid_approval_target"}, status=400
             )
@@ -168,11 +169,11 @@ async def api_approval_resolve(request: web.Request) -> web.Response:
                 )
         pending = state._pending_approvals.get(approval_id)
         # No await between checking the record and resolving its state-only future.
+        current = (
+            pending.get("instance") if pending and (pending.get("slot") or "") == slot else None
+        )
         ok = bool(
-            pending
-            and (pending.get("slot") or "") == slot
-            and pending.get("instance") == instance
-            and state.resolve_state_approval(approval_id, action == "approve")
+            current == instance and state.resolve_state_approval(approval_id, action == "approve")
         )
     else:
         # Imported here: chat_handlers imports this package at module scope.

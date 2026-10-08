@@ -24,6 +24,7 @@ vi.mock('../api/client', () => {
   return {
     api: {
       resolveApproval: vi.fn(() => Promise.resolve({})),
+      decideApproval: vi.fn(() => Promise.resolve({})),
       approveChatSlot: vi.fn(() => Promise.resolve({})),
       chatMode: vi.fn(() => Promise.resolve({})),
     },
@@ -44,6 +45,7 @@ function permissionMsg(n: number, meta: Record<string, unknown> = {}) {
     content: `Running: ls /tmp/${n}`,
     meta: {
       approval_id: `ap-${n}`,
+      mid: `mid-${n}`,
       request_id: `req-${n}`,
       tool_input: `{"command":"ls /tmp/${n}"}`,
       tool_title: `Running: ls /tmp/${n}`,
@@ -117,7 +119,7 @@ describe('approval nudge trigger (B2)', () => {
   async function approveN(store: ReturnType<typeof renderWithProviders>['store'], n: number) {
     for (let i = 1; i <= n; i++) {
       fireEvent.click(screen.getByText('Allow once'))
-      await waitFor(() => expect(api.resolveApproval).toHaveBeenCalledTimes(i))
+      await waitFor(() => expect(api.decideApproval).toHaveBeenCalledTimes(i))
       if (i < n) {
         store.dispatch(sseChatMessage({ slot: 'slot-1', ...permissionMsg(i + 1) } as never))
         await waitFor(() => expect(screen.getByText('Allow once')).toBeInTheDocument())
@@ -179,7 +181,7 @@ describe('review-round fixes (hint retirement + coexistence)', () => {
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     for (let i = 1; i <= 3; i++) {
       fireEvent.click(screen.getByText('Allow once'))
-      await waitFor(() => expect(api.resolveApproval).toHaveBeenCalledTimes(i))
+      await waitFor(() => expect(api.decideApproval).toHaveBeenCalledTimes(i))
       store.dispatch(sseChatMessage({ slot: 'slot-1', ...permissionMsg(i + 1) } as never))
       await waitFor(() => expect(screen.getByText('Allow once')).toBeInTheDocument())
     }
