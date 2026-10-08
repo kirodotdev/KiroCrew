@@ -3316,6 +3316,7 @@
         "closeBlocked_one": "{{count}} sigue sin decidir",
         "closeBlocked_other": "{{count}} siguen sin decidir",
         "closeMeeting": "Cerrar la reunión",
+        "closing": "Guardando la transcripción…",
         "file": "Registrar",
         "filedSection": "Registradas en {{provider}}",
         "filing": "Registrando…",

@@ -1962,6 +1962,7 @@
         "closeBlocked_one": "{{count}} still needs a decision",
         "closeBlocked_other": "{{count}} still need a decision",
         "closeMeeting": "Close the meeting",
+        "closing": "Saving the transcript…",
         "file": "File",
         "filedSection": "Filed to {{provider}}",
         "filing": "Filing…",

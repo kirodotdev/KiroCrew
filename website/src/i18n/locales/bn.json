@@ -3256,6 +3256,7 @@
         "closeBlocked_one": "{{count}}টির সিদ্ধান্ত এখনও বাকি",
         "closeBlocked_other": "{{count}}টির সিদ্ধান্ত এখনও বাকি",
         "closeMeeting": "মিটিং বন্ধ করুন",
+        "closing": "প্রতিলিপি সংরক্ষণ করা হচ্ছে…",
         "file": "নথিবদ্ধ করুন",
         "filedSection": "{{provider}}-এ নথিবদ্ধ",
         "filing": "নথিবদ্ধ হচ্ছে…",

@@ -3196,6 +3196,7 @@
         "backToMeeting": "返回会议",
         "closeBlocked_other": "还有 {{count}} 项待决定",
         "closeMeeting": "关闭会议",
+        "closing": "正在保存转录……",
         "file": "提交",
         "filedSection": "已提交至 {{provider}}",
         "filing": "正在提交……",

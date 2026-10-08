@@ -20,6 +20,7 @@ import {
 import {
   CAPTION_FINALS_LIMIT,
   CAPTION_WINDOW_CHARS,
+  DEFAULT_MAX_DURATION_MS,
   captionWindow,
 } from '../apps/meetings/hooks/useMeetingTranscription'
 import type { AgentDef, MeetingsConfig } from '../apps/meetings/api'
@@ -242,7 +243,11 @@ describe('final-segment dispatch is retried, never swallowed', () => {
     // `toDispatch`, not `text`: the caller's dedup returns only the NEW suffix of
     // a growing final, and dispatching the raw text would re-send what the agents
     // already have (see the growing-final suite below).
-    expect(TranscriptionSource).toContain('dispatchWithRetry(toDispatch)')
+    expect(TranscriptionSource).toContain('dispatchInOrder(toDispatch)')
+    // The ordered issue hands that text on to the retry helper unchanged.
+    const ordered = TranscriptionSource.match(/const dispatchInOrder[\s\S]*?\n  \}, \[dispatchWithRetry\]\)/)
+    expect(ordered, 'dispatchInOrder not found').not.toBeNull()
+    expect(ordered![0]).toContain('dispatchWithRetry(text)')
     // The helper awaits the API and retries on the declared schedule.
     const helper = TranscriptionSource.match(
       /const dispatchWithRetry[\s\S]*?\n  \},\n?\s*\[[^\]]*\],?\n?\s*\)/,
@@ -648,12 +653,25 @@ describe('the live caption shows the newest speech, not the meeting opening', ()
     // passed, so the guard is on the source itself.
     expect(TranscriptionSource).not.toContain("finalsRef.current.join(' ')")
     expect(TranscriptionSource).toContain('captionWindow(finalsRef.current, lastPartial)')
-    expect(TranscriptionSource).toContain('captionWindow(finalsRef.current)')
+    // The final branch passes the LIVE lease's partial, so a draining
+    // predecessor's final does not leave its own stale partial in the caption.
+    expect(TranscriptionSource).toContain('captionWindow(finalsRef.current, livePartial)')
   })
 
   it('bounds the browser-only final segment buffer', () => {
     expect(CAPTION_FINALS_LIMIT).toBeGreaterThan(1)
     expect(TranscriptionSource).toContain('finalsRef.current.splice(')
+  })
+
+  it('assumes exactly the connection cap the server enforces when none is advertised', () => {
+    // A server that does not send `max_duration_ms` on `ready` is assumed to
+    // enforce `_MAX_STREAM_DURATION_SECS`. Lowering that constant without this
+    // mirror would make the lease rotate AFTER the cap, silently losing the
+    // utterance in flight again, with no test going red — so the two are pinned.
+    const server = readSource('../src/kiro_crew/dashboard/stt_stream.py')
+    const cap = /^_MAX_STREAM_DURATION_SECS = (\d+)$/m.exec(server)
+    expect(cap).not.toBeNull()
+    expect(DEFAULT_MAX_DURATION_MS).toBe(Number(cap![1]) * 1000)
   })
 })
 

@@ -3316,6 +3316,7 @@
         "closeBlocked_one": "{{count}} attende ancora una decisione",
         "closeBlocked_other": "{{count}} attendono ancora una decisione",
         "closeMeeting": "Chiudi la riunione",
+        "closing": "Salvataggio della trascrizione…",
         "file": "Registra",
         "filedSection": "Registrate in {{provider}}",
         "filing": "Registrazione…",

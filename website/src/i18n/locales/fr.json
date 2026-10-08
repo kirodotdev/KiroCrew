@@ -3406,6 +3406,7 @@
         "closeBlocked_one": "{{count}} attend encore une décision",
         "closeBlocked_other": "{{count}} attendent encore une décision",
         "closeMeeting": "Clore la réunion",
+        "closing": "Enregistrement de la transcription…",
         "file": "Enregistrer",
         "filedSection": "Enregistrées dans {{provider}}",
         "filing": "Enregistrement…",
