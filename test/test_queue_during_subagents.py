@@ -265,6 +265,101 @@ async def test_drain_releases_user_message_when_only_child_is_stalled(tmp_path, 
     assert slot.queue_depth == 0
 
 
+@pytest.mark.asyncio
+class TestDrainIdleParentQueueForStall:
+    """The ``subagent_stalled`` event drains a message queued before the flag.
+
+    A stalled child does not *hold* user messages, but only a fresh send or a
+    child completion ever *starts* the drain. A message queued while the child
+    was still live would otherwise sit until the next send or the 30-minute
+    reap. ``drain_idle_parent_queue_for_stall`` is the trigger the stall event
+    fires to release it at stall time.
+    """
+
+    def _make(self, tmp_path, monkeypatch, agents):
+        from kiro_crew.dashboard import chat_runner
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        subs = MagicMock()
+        subs.running_agents_for = MagicMock(return_value=agents)
+        state = _make_state(tmp_path, subagents=subs)
+        slot = state.get_or_create_slot("s1")
+        spawned = []
+        monkeypatch.setattr(chat_runner, "spawn_guarded_turn", lambda *a, **k: spawned.append(a))
+        monkeypatch.setattr(chat_runner, "_run_chat", MagicMock(return_value=MagicMock()))
+        return chat_runner, state, slot, spawned
+
+    async def test_stall_drains_message_queued_before_the_flag(self, tmp_path, monkeypatch):
+        """An idle parent slot's parked message drains when its only child stalls."""
+        chat_runner, state, slot, spawned = self._make(
+            tmp_path, monkeypatch, [{"id": "dead", "stalled": True}]
+        )
+        slot.queue_append("message queued before the stall")
+
+        await chat_runner.drain_idle_parent_queue_for_stall(state, "dashboard:s1")
+
+        assert len(spawned) == 1
+        assert slot.queue_depth == 0
+
+    async def test_live_sibling_keeps_the_queue_parked(self, tmp_path, monkeypatch):
+        """A still-live sibling means the hold stands; the stall drains nothing."""
+        chat_runner, state, slot, spawned = self._make(
+            tmp_path,
+            monkeypatch,
+            [{"id": "dead", "stalled": True}, {"id": "live", "stalled": False}],
+        )
+        slot.queue_append("waiting user message")
+
+        await chat_runner.drain_idle_parent_queue_for_stall(state, "dashboard:s1")
+
+        assert spawned == []
+        assert slot.queue_depth == 1
+
+    async def test_running_slot_is_left_alone(self, tmp_path, monkeypatch):
+        """A busy slot drains its own queue at turn end; the stall must not double it."""
+        chat_runner, state, slot, spawned = self._make(
+            tmp_path, monkeypatch, [{"id": "dead", "stalled": True}]
+        )
+        slot.queue_append("waiting user message")
+        gate = asyncio.Event()
+        slot.task = asyncio.get_running_loop().create_task(gate.wait())
+        try:
+            assert slot.running is True
+            await chat_runner.drain_idle_parent_queue_for_stall(state, "dashboard:s1")
+        finally:
+            gate.set()
+
+        assert spawned == []
+        assert slot.queue_depth == 1
+
+    async def test_empty_queue_and_unknown_parent_are_noops(self, tmp_path, monkeypatch):
+        """No queued work, or a parent with no slot, drains nothing and does not raise."""
+        chat_runner, state, slot, spawned = self._make(
+            tmp_path, monkeypatch, [{"id": "dead", "stalled": True}]
+        )
+        # Idle slot, empty queue.
+        await chat_runner.drain_idle_parent_queue_for_stall(state, "dashboard:s1")
+        # Parent with no slot at all.
+        await chat_runner.drain_idle_parent_queue_for_stall(state, "dashboard:ghost")
+        assert spawned == []
+
+    async def test_refused_admission_keeps_the_message_queued(self, tmp_path, monkeypatch):
+        """A stall during shutdown holds the parked prompt instead of losing it.
+
+        When memory startup is stopping, ``_run_chat`` refuses a popped turn
+        without requeueing it. The drain must leave the message queued."""
+        chat_runner, state, slot, spawned = self._make(
+            tmp_path, monkeypatch, [{"id": "dead", "stalled": True}]
+        )
+        slot.queue_append("message queued before the stall")
+        monkeypatch.setattr(chat_runner, "_parked_queue_drain_admitted", lambda: False)
+
+        await chat_runner.drain_idle_parent_queue_for_stall(state, "dashboard:s1")
+
+        assert spawned == []
+        assert slot.queue_depth == 1
+
+
 # ── API test: api_chat busy-slot queue branch (receipt honesty) ──
 
 

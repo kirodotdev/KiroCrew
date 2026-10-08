@@ -138,6 +138,7 @@ from kiro_crew.dashboard.chat_runner import (
     _resolve_channel_target,
     _run_chat,
     _slot_is_trusted,
+    drain_idle_parent_queue_for_stall,
     turn_stats_meta,
 )
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
@@ -10637,6 +10638,23 @@ class GatewayOrchestrator:
                 # deltas (tool/stalled/retrying) coalesce at scale into ONE
                 # subagent_batch_update frame per tick; lifecycle events
                 # (spawn/done/recovering/batch_*) always pass through.
+                #
+                # A child the reaper flagged stalled does not hold the parent's
+                # user messages (``subagents_hold_user_messages``), yet nothing
+                # else starts that drain: a message queued BEFORE the flag is set
+                # stays queued until the next send or the wall-clock reap. Kick
+                # the parent slot's drain here — before the coalescer can absorb
+                # the UI frame — so the parked message starts now. The drain
+                # re-reads the hold under the slot lock, so a live sibling keeps
+                # the queue parked and a running slot is left alone.
+                if etype == "subagent_stalled" and extra.get("stalled"):
+                    _drain = asyncio.ensure_future(
+                        drain_idle_parent_queue_for_stall(
+                            self.dashboard_state, info.parent_session_key
+                        )
+                    )
+                    self.dashboard_state._background_tasks.add(_drain)
+                    _drain.add_done_callback(self.dashboard_state._background_tasks.discard)
                 if self._subagent_coalescer().handle(etype, {**base, **extra}):
                     return
                 self.dashboard_state.broadcast_ws(etype, {**base, **extra})

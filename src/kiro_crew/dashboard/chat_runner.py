@@ -6550,6 +6550,31 @@ async def _drain_parked_queues(state: DashboardState, slot_keys: list[str]) -> N
             )
 
 
+async def drain_idle_parent_queue_for_stall(state: DashboardState, parent_session_key: str) -> None:
+    """Drain one idle parent slot's queue after its only live child stalled.
+
+    ``subagents_hold_user_messages`` already lets a stalled child's queue drain,
+    but that rule only fires when something *starts* a drain: the next user send,
+    or a child's completion turn. A message queued BEFORE the reaper flagged the
+    child ``stalled`` has neither — it sits until the next send or the 30-minute
+    wall-clock reap. The ``subagent_stalled`` event is the missing trigger: when
+    the flag is set, kick the parent slot's drain so the parked message starts.
+
+    Resolves the parent slot and hands it to :func:`_drain_parked_queues`, which
+    owns the lock-guarded, admission-checked drain: a send or Continue that
+    landed meanwhile is never doubled, a running slot drains its own queue at its
+    turn end, ``_start_next_queued_turn`` re-reads the hold so a live sibling
+    keeps the queue parked, and a stall arriving mid-shutdown leaves the message
+    queued rather than popping it into a refused turn.
+    """
+    from kiro_crew.dashboard.handlers.messaging import _slot_for_parent
+
+    slot = _slot_for_parent(state, parent_session_key)
+    if slot is None or not slot._queue or slot.executor == "remote":
+        return
+    await _drain_parked_queues(state, [slot.key])
+
+
 def _mark_turn_end(slot: _ChatSlot) -> None:
     """Mark on ``slot._pending`` that the turn that just ended is over.
 
