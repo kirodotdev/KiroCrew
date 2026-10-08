@@ -1641,6 +1641,21 @@ silently skip everything in between. The caller falls back to a tail read.
 window means the target finished and went idle, which is different from "nothing
 new yet". `queue_depth` reports how much the target still owes.
 
+A turn parked on a tool approval keeps `running` true for the whole approval
+window, so `running` alone cannot tell "working" from "waiting on a person".
+While the target has an open approval, the read adds `pending_approval: true`
+and, when a title is known, `pending_approval_tool` (redacted, at most
+`MAX_PENDING_APPROVAL_TOOL_CHARS`). The values are the slot projection's own
+`pending_approval` and `pending_approval_info["tool"]` (`slot.to_dict()`), the
+fields the dashboard card reads, so the two cannot disagree; that covers both
+the slot's `_approval_futures` (a native tool prompt) and
+`state.pending_coordinator_approvals(slot.key)` (a sub-agent spawn gate or a
+tool inside a running sub-agent). `to_dict()` walks the transcript, so it runs
+only once one of those registries has an open entry. The fields are absent when
+nothing is waiting. `session_status` rows
+carry the same two fields from the same helper, `_pending_approval_fields`; the
+row's `status` stays `working`.
+
 The cursor deliberately stops **before the streaming tail**. `chat_runner`
 appends a `chunk` row per token burst and `_flush_segment` then deletes that
 trailing run, replacing it with one durable assistant message — so chunk rows are

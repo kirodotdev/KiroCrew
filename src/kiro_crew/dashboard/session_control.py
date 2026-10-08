@@ -148,6 +148,9 @@ DEFAULT_READ_MESSAGES = 20
 # a multi-megabyte tool payload verbatim.
 MAX_READ_CONTENT_CHARS = 4000
 
+# Cap on the tool title a read or status row names as waiting for approval.
+MAX_PENDING_APPROVAL_TOOL_CHARS = 200
+
 # Bounds on a ``read_summary`` response. The stored summary caps intent and note
 # COUNTS at 50 but neither per-intent list lengths nor string lengths, so the
 # response is cut here, once, and says how much it left out. Intents arrive
@@ -7581,6 +7584,35 @@ def _bounded_status_title(value: object) -> str:
     return sanitize_outbound(str(value or ""))[:MAX_SESSION_STATUS_TITLE_CHARS]
 
 
+def _pending_approval_fields(state: "DashboardState", slot: Any) -> dict[str, Any]:
+    """``{"pending_approval": True, "pending_approval_tool": ...}`` while *slot* waits.
+
+    A turn parked on a tool approval keeps ``running`` true, so without this a
+    creator polling the session sees ``working`` for the whole approval window.
+    The answer is the slot projection's own ``pending_approval`` and
+    ``pending_approval_info`` -- the fields the dashboard card reads -- so the
+    two cannot disagree. ``to_dict`` walks the transcript, so it runs only once
+    one of the two registries it consults has an open entry; an ordinary turn
+    pays one dict scan and the response shape is unchanged.
+    """
+    futures = getattr(slot, "_approval_futures", None) or {}
+    pending_for = getattr(state, "pending_coordinator_approvals", None)
+    if not any(not fut.done() for fut in futures.values()) and not (
+        callable(pending_for) and pending_for(slot.key)
+    ):
+        return {}
+    projected = slot.to_dict()
+    if not projected.get("pending_approval"):
+        return {}
+    fields: dict[str, Any] = {"pending_approval": True}
+    tool = str((projected.get("pending_approval_info") or {}).get("tool") or "")
+    if tool:
+        fields["pending_approval_tool"] = redact_and_truncate(
+            sanitize_outbound(tool), MAX_PENDING_APPROVAL_TOOL_CHARS
+        )
+    return fields
+
+
 def _created_history_roster(
     state: "DashboardState", caller_key: str, caller_workspace: str
 ) -> tuple[dict[str, dict[str, Any]], str, int]:
@@ -7816,6 +7848,7 @@ async def created_session_status(
                 "status": "working" if running else ("queued" if queue_depth else "idle"),
                 "running": running,
                 "queue_depth": queue_depth,
+                **_pending_approval_fields(state, slot),
                 "source": "+".join(sources),
             }
         )
@@ -8000,6 +8033,9 @@ def read_messages(
         # "nothing happening".
         **({"streaming": True} if durable_end < len(raw_window) else {}),
         "queue_depth": len(slot._queue),
+        # A turn parked on a tool approval is still ``running``; this says it is
+        # waiting on a person rather than working.
+        **_pending_approval_fields(state, slot),
         # The model the target's turns use, and a session_set_model pick still
         # waiting for its next turn, so a caller can see whether its pick took.
         # Redacted: the owner's picker stores whatever string it is given.

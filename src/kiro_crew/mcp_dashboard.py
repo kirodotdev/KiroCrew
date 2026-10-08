@@ -1122,7 +1122,11 @@ def _session_tools() -> tuple[Tool, ...]:
                 "left to message), or `unknown` (birth metadata records that you "
                 "created it, but neither a live session nor an attested crew-log "
                 "edge exists — it was created and its fate is not recorded, so "
-                "read it before you re-dispatch it). `gone` is the reason to use "
+                "read it before you re-dispatch it). A row with "
+                "`pending_approval: true` is parked on a tool approval a person "
+                "must answer (`pending_approval_tool` names the tool when known): "
+                "it still reads `working`, but waiting will not move it. `gone` is "
+                "the reason to use "
                 "this instead of "
                 "reading sessions one at a time: a worker that vanished is absent "
                 "from any live list, so a live list cannot tell a worker that died "
@@ -1209,7 +1213,11 @@ def _session_tools() -> tuple[Tool, ...]:
                 "and you get only what arrived in between, so a poll loop does not re-read "
                 "the same messages. ``running: false`` with nothing new means the target "
                 "finished and is idle, which is the difference between 'not done yet' and "
-                "'done'. READ-only: it never sends anything or changes the target's state."
+                "'done'. ``pending_approval: true`` means the target is parked on a "
+                "tool approval a person must answer (``pending_approval_tool`` names "
+                "the tool when known); it stays ``running`` but will not progress "
+                "until someone decides. READ-only: it never sends anything or changes "
+                "the target's state."
             ),
             schema={
                 "type": "object",
@@ -2986,6 +2994,12 @@ def _run_session_status(args: dict[str, Any], ctx: ToolContext) -> str:
             )
             continue
         mark = {"working": "\U0001f503", "queued": "\u23f8\ufe0f"}.get(status, "\U0001f4a4")
+        if row.get("pending_approval"):
+            status_lines.append(
+                f"  \u270b `{target}` ({title}) — {status}, "
+                f"{_pending_approval_phrase(row)}{queued}"
+            )
+            continue
         status_lines.append(f"  {mark} `{target}` ({title}) — {status}{queued}")
     status_lines.extend(quality_notes)
     return redact("\n".join(status_lines))
@@ -3030,6 +3044,12 @@ def _run_session_release(args: dict[str, Any], ctx: ToolContext) -> str:
     )
 
 
+def _pending_approval_phrase(resp: dict[str, Any]) -> str:
+    """The state words for a session parked on a tool approval."""
+    tool = str(resp.get("pending_approval_tool") or "")
+    return "waiting on a tool approval" + (f": {redact(tool)}" if tool else "")
+
+
 def _run_session_read_message(args: dict[str, Any], ctx: ToolContext) -> str:
     query = f"target={quote(str(args['target']))}&limit={args.get('limit', 20)}"
     if args.get("since") is not None:
@@ -3040,6 +3060,8 @@ def _run_session_read_message(args: dict[str, Any], ctx: ToolContext) -> str:
         return f"Error: could not read that session: {refused.error}"
     msg_rows = resp.get("messages") or []
     state_line = "still working" if resp.get("running") else "idle"
+    if resp.get("pending_approval"):
+        state_line = _pending_approval_phrase(resp)
     queued = resp.get("queue_depth", 0)
     if queued:
         state_line += f", {queued} message(s) queued"
