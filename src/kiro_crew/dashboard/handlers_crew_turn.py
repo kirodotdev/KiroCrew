@@ -40,7 +40,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 from typing import TYPE_CHECKING, Any, Optional
 
 import aiohttp
@@ -98,34 +97,74 @@ TURN_LANES = frozenset({MICROVM_PROVISIONER_ID})
 def control_secret_id(inst: Any) -> str:
     """This crew's control secret, by NAME, or ``""``.
 
-    Read from the lane's own record rather than built from the instance's display
-    name. The display name is a label: the Fargate lane registers crews as
-    ``Kiro Crew Cloud (<tag>)``, which is not a valid secret name at all, so
-    deriving an id from it makes every such turn fail to read a secret that
-    exists. The record holds the reference the LAUNCH minted, which is the only
-    value guaranteed to name the right secret.
+    Read from the record this instance IS -- found by ``_record_for`` on the id
+    the launch registered -- and never from the instance's display name. The
+    display name is a label and the row carrying it is agent-writable, so a label
+    cannot be allowed to choose a secret: see ``_record_for`` for the relabelling
+    it would otherwise permit. The record holds the reference the LAUNCH minted,
+    which is also the only value guaranteed to name the right secret, since the
+    Fargate lane's own label (``Kiro Crew Cloud (<tag>)``) is not a valid secret
+    name at all.
 
-    Falls back to deriving one from the launch tag and the operator's configured
-    prefix -- not the hardcoded default -- so a crew recorded before the lane
-    stored references still works, and an operator who moved the prefix is
-    honoured. Empty when neither is available, which the caller reports as a
-    crew that cannot be authenticated to rather than guessing a name.
+    Derives the name from the operator's configured prefix -- not the hardcoded
+    default, so a moved prefix is honoured -- only when the record was already
+    matched and simply carries no reference, where the tag used is the RECORD's
+    own. A row that owns no record gets ``""``, which the caller reports as a
+    crew it cannot authenticate to rather than guessing a name for it.
     """
     try:
         from kiro_crew.cloud.config import CloudConfig
-        from kiro_crew.cloud.microvm.record import CrewStore
     except Exception:  # noqa: BLE001 - no lane, no reference
         return ""
-    name = str(getattr(inst, "name", "") or "")
-    tag = str(getattr(inst, "provisioner_tag", "") or "") or _tag_in(name)
-    for record in CrewStore().iter_records():
-        if record.tag and tag and record.tag == tag and record.control_secret_ref:
-            return record.control_secret_ref
-    if not tag:
+    record = _record_for(inst)
+    if record is None:
         return ""
+    if record.control_secret_ref:
+        return record.control_secret_ref
+    # No reference stored, but the row IS this record's: the tag is the record's
+    # own, not a label the caller supplied, so deriving a path from it names this
+    # crew's secret and no other.
     config = CloudConfig.load().microvm_config()
     prefix = config.secret_path_prefix if config else "kirocrew/crew"
-    return _SECRET_PATH.format(prefix=prefix, crew=tag)
+    return _SECRET_PATH.format(prefix=prefix, crew=record.tag)
+
+
+def _record_for(inst: Any) -> Any:
+    """The crew record this instance IS, or ``None``.
+
+    Matched on the instance's own identity -- the ``mi-`` node id the launch
+    registered -- and not on its tag or display name, because ``instances.json``
+    is not write-protected and a row is therefore agent-writable while the crew
+    record beside it is not.
+
+    That gap is the whole reason this function exists. A tag match binds the
+    credential to a LABEL while the tunnel stays bound to the ROW, and the two
+    can be made to disagree: relabel a connected hostile peer's row with a real
+    crew's tag, lane and AWS coordinates, and the owner's next turn reads the
+    REAL crew's control secret and sends it down the HOSTILE peer's already-open
+    tunnel. Matching on the id closes it, because the id is what decides where
+    that tunnel goes.
+
+    The account and region are checked too, not for the tunnel but for the READ:
+    the caller passes the ROW's ``aws_profile`` and ``aws_region`` to
+    Secrets Manager, so a row that keeps the id and moves the account points the
+    read at an account the writer controls, where that secret name can be made
+    to exist and hold a value they chose.
+    """
+    from kiro_crew.cloud.microvm.record import CrewStore
+
+    instance_id = str(getattr(inst, "id", "") or "")
+    if not instance_id:
+        return None
+    for record in CrewStore().iter_records():
+        if not record.mi_id or record.mi_id != instance_id:
+            continue
+        if str(getattr(inst, "aws_profile", "") or "") != record.profile:
+            return None
+        if str(getattr(inst, "aws_region", "") or "") != record.region:
+            return None
+        return record
+    return None
 
 
 def served_crew_name(inst: Any) -> str:
@@ -151,40 +190,24 @@ def served_crew_name(inst: Any) -> str:
     if provisioner not in TURN_LANES:
         return ""
     try:
-        from kiro_crew.cloud.microvm.record import CrewStore
+        record = _record_for(inst)
     except Exception:  # noqa: BLE001 - no lane, no record
         return ""
-    name = str(getattr(inst, "name", "") or "")
-    tag = str(getattr(inst, "provisioner_tag", "") or "") or _tag_in(name)
-    if not tag:
+    if record is None:
         return ""
-    for record in CrewStore().iter_records():
-        if record.tag == tag:
-            return str(record.crew_name or "")
-    return ""
+    return str(record.crew_name or "")
 
 
-#: A launch tag's shape, which is also the one segment a secret name may carry.
-#: Anything else is a display label, and a label interpolated into a secret path
-#: names a secret nobody minted.
-_TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
-
-
-def _tag_in(name: str) -> str:
-    """The launch tag inside an instance's display name, or ``""``.
-
-    The Fargate lane registers crews as ``Kiro Crew Cloud (<tag>)``, so the tag is
-    recoverable from the label even when no record holds a reference. A name that
-    yields nothing tag-shaped resolves to nothing at all, which the caller reports
-    as a crew it cannot authenticate to -- better than interpolating a label with
-    spaces and brackets into a secret path and reporting that the secret is
-    missing.
-    """
-    text = name.strip()
-    if text.endswith(")") and "(" in text:
-        text = text[text.rfind("(") + 1 : -1].strip()
-    return text if _TAG_RE.match(text) else ""
-
+#: This module deliberately holds no tag-from-display-name parser.
+#:
+#: ``instances.json`` is not write-protected, so an instance's display name is
+#: agent-supplied. Recovering a launch tag from ``Kiro Crew Cloud (<tag>)`` and
+#: resolving a crew by it therefore lets a relabelled row name whichever crew's
+#: secret its label claims, while the credential travels down that row's own
+#: tunnel. ``_record_for`` matches on the instance's registered id, and a row
+#: that owns no record is refused rather than having a secret name guessed for
+#: it. A helper that turns a label back into a crew id is the shape of that bug,
+#: so this module keeps none.
 
 #: Longest message the hub will forward. The crew's own front caps the body it
 #: accepts; this is the hub's cap, so an oversized prompt is refused here rather
@@ -492,10 +515,23 @@ async def api_crew_turn(request: web.Request) -> web.StreamResponse:
                 # and one the redactor refuses both end the stream rather than
                 # forwarding anything unchecked.
                 pending = b""
+                first = True
                 async for chunk in resp.content.iter_any():
                     if not chunk:
                         continue
                     pending += chunk
+                    if first:
+                        # The stream's BOM, before any field is read. The browser
+                        # skips it per the SSE spec, so a ``data:`` line behind one
+                        # is a data line to the caller -- but not to the line match
+                        # in ``_redact_sse_event``, which would send it down the
+                        # plain-text chain and miss a credential written as a JSON
+                        # escape. Three bytes, so a BOM the socket split waits for
+                        # its last one rather than being half-tested and given up on.
+                        if len(pending) < 3 and b"\xef\xbb\xbf".startswith(pending):
+                            continue
+                        pending = pending.removeprefix(b"\xef\xbb\xbf")
+                        first = False
                     hold = pending.endswith(b"\r")
                     if hold:
                         pending = pending[:-1]

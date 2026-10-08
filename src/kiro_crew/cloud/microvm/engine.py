@@ -408,7 +408,30 @@ class MicroVmLaunchEngine:
         # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
         logger.info("minted the control secret for microvm crew %s", tag)
         activation = launcher.create_activation(tag=tag, profile=profile, region=region)
-        record = store.put(record.evolve(activation_id=activation.activation_id))
+        # Fenced for the same reason the online write below is. Minting an
+        # activation is a round trip the owner's teardown can finish inside, and
+        # ``put`` would write back the whole record this function read before it --
+        # reviving the ``pending`` a teardown had moved to ``terminated``. That
+        # also defeats the fence further down, which would then find a row reading
+        # live and of this generation and let the launch record its node.
+        fenced = store.patch_live(
+            tag, generation=generation, activation_id=activation.activation_id
+        )
+        if fenced is None:
+            # Nothing but the activation exists yet, and an activation with zero
+            # registrations bills nothing while counting against the account's
+            # limits -- invisible until a sweep looks for it.
+            logger.warning(
+                "microvm launch %s was torn down while its activation was minted; "
+                "releasing the activation it had already created",
+                tag,
+            )
+            _delete_activation(activation.activation_id, profile=profile, region=region)
+            raise LaunchSuperseded(
+                f"the crew {tag} was torn down while this launch minted its activation, so "
+                "the activation it created was released"
+            )
+        record = fenced
         microvm_id = ""
         try:
             payload = RunHookPayload(
@@ -430,7 +453,32 @@ class MicroVmLaunchEngine:
                 client_token=f"kc-{tag}-{generation}-{secrets.token_hex(4)}",
             )
             microvm_id = vm.microvm_id
-            record = store.put(record.evolve(microvm_id=microvm_id, endpoint=vm.endpoint))
+            # ``launcher.run`` is a wait too, so this write is fenced like the two
+            # around it. Unfenced it was the one that mattered most: it ran BEFORE
+            # the online fence and put ``pending`` back, so the fence below would
+            # find a live row of this generation and pass, and a crew the owner had
+            # cancelled would come up and bill to its wall.
+            fenced = store.patch_live(
+                tag, generation=generation, microvm_id=microvm_id, endpoint=vm.endpoint
+            )
+            if fenced is None:
+                logger.warning(
+                    "microvm launch %s was torn down while its VM was created; "
+                    "releasing the VM and activation it had already created",
+                    tag,
+                )
+                self._clean_up_failed_launch(
+                    launcher,
+                    microvm_id=microvm_id,
+                    activation_id=activation.activation_id,
+                    profile=profile,
+                    region=region,
+                )
+                raise LaunchSuperseded(
+                    f"the crew {tag} was torn down while this launch created its VM, so the "
+                    "VM and activation it created were released"
+                )
+            record = fenced
             mi_id = launcher.wait_online(
                 activation_id=activation.activation_id, profile=profile, region=region
             )

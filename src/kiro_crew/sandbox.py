@@ -658,6 +658,21 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # ``open(..., "w")``, however the write is spelled. Absent-file coverage is the
     # pre-create list below, because a name nothing occupies is a name an agent creates.
     "cloud_launch_state.json",
+    # The microvm lane's CREW RECORDS (``cloud/microvm/record.py``). Sealed for the same
+    # reason as the launch record above and a sharper version of it: this document holds
+    # each crew's ``microvm_id``, and ``teardown`` hands that value straight to
+    # ``launcher.terminate`` -- no ``--tag`` to disagree with, no describe-and-ask step in
+    # front of it. So a sandboxed process that could rewrite one crew's id would choose
+    # which of the owner's VMs the next delete destroys, taking its home with it.
+    # The gateway writes it outside the agent's file-edit gate, so the launch path is
+    # unaffected, and absent-file coverage is the pre-create list below.
+    #
+    # Deliberately NOT on the child-readable list, unlike ``cloud.json`` and the launch
+    # record: those two are classified there because in-sandbox code genuinely reads
+    # them, and this one has no in-sandbox reader at all -- the engine and the turn
+    # route are the only callers of ``CrewStore`` and both run in the gateway. Adding
+    # it there would grant a read nobody needs, which is a widening, not a seal.
+    "microvm_crews.json",
     # The pi gate launcher and sealed extension must be readable and executable by
     # the enforced harness's child, but never writable by it. The launcher cache
     # accepts an existing path after ``isfile`` without re-verifying its content, so
@@ -878,6 +893,17 @@ _CREW_CHILD_WITHHELD_LEAVES: tuple[str, ...] = (
     # leave no record. One member's silo holding another's preferences and lessons is
     # worth a denial that costs nothing.
     "memory_stores",
+    # The microvm lane's crew records, withheld on the same ground as ``memory_stores``
+    # and for the same reason it cannot be classified readable: no in-sandbox reader
+    # breaks without it, because the gateway owns every read and every write -- the
+    # engine and the crew-turn route are the only callers of ``CrewStore``. The seal on
+    # the read-only list answers the WRITE (a rewritten ``microvm_id`` chooses which VM
+    # the next delete destroys), and that argument says nothing about a READ by a
+    # foreign harness, which reaches no gate and leaves no record. What a read hands
+    # over is the owner's live cloud inventory -- each crew's VM id, its node id, its
+    # endpoint and the NAME of its control secret -- which is reconnaissance for the
+    # write this list cannot prevent. Withholding it costs nothing at all.
+    "microvm_crews.json",
     # The governance ceiling, its trust root, and every policy or consent document
     # beside them. Withheld as one family because they share one reader and one risk:
     # each is an INPUT TO AN AUTHORIZATION DECISION that an in-sandbox process makes,
@@ -1579,6 +1605,20 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     # too: a sandboxed reader frozen at ``{}`` sees no tag and the command exits with "no
     # previous launch found" rather than acting on one, which is narrower than the truth.
     "cloud_launch_state.json",
+    # The microvm crew records, pre-created for the reason this list exists: the file does
+    # not appear until the lane's first launch, and ``mount(2)`` cannot seal a name nothing
+    # occupies -- so without this the leaf stays WRITABLE in-sandbox on every install that
+    # has not launched a microvm crew yet, which is most of them.
+    #
+    # Criterion 1 (an EMPTY document means what an ABSENT one means) holds on BOTH of
+    # this store's readers, which is what the criterion asks and what the tolerant read
+    # alone does not establish: ``CrewStore.load`` answers ``{}`` for either, and
+    # ``load_for_write`` accepts exactly ``{}`` as the pre-created store rather than
+    # refusing it for carrying no ``crews`` list -- without which the first launch on a
+    # sealed install would be the one launch that could not start. Criterion 2 (a stale
+    # sealed read fails toward refusal) holds as well: a reader frozen at ``{}`` finds no
+    # crew and answers "no such crew" rather than acting on one.
+    "microvm_crews.json",
     "computer_use.json",
     "oauth_endpoints.json",
     "aws_service_consent.json",

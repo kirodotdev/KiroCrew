@@ -299,8 +299,27 @@ class CrewStore:
             ) from exc
         if document is None:
             return {}
+        # Shape first, THEN the key. ``document.get`` on a list or a number raises
+        # ``AttributeError``, which is not this module's error and reaches the caller
+        # as a crash rather than the refusal the next branch is written to give.
+        if not isinstance(document, dict):
+            raise CrewStoreUnreadable(
+                f"the microvm crew store {self._path} is not the shape this lane writes, so a "
+                "write would discard whatever it does hold"
+            )
+        if not document:
+            # The PRE-CREATED store, and the one empty object that is not a
+            # malformed one. ``mount(2)`` cannot seal a name nothing occupies, so
+            # this leaf is on the sandbox's pre-create list and the pre-create
+            # writes ``{}`` -- which makes ``{}`` the shape the FIRST launch on a
+            # sealed install finds. Refusing it here would turn the state the seal
+            # itself creates into the one state a launch cannot start from. The
+            # tolerant read already answers "no crews" for it; that list requires
+            # an empty document to mean what an absent one means for BOTH readers,
+            # and this is the write half of it.
+            return {}
         entries = document.get("crews")
-        if not isinstance(document, dict) or not isinstance(entries, list):
+        if not isinstance(entries, list):
             raise CrewStoreUnreadable(
                 f"the microvm crew store {self._path} is not the shape this lane writes, so a "
                 "write would discard whatever it does hold"

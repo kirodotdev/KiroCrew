@@ -232,12 +232,23 @@ class TestTheSecretIsNamedByTheLaneNotTheDisplayName:
 
         store = CrewStore(tmp_path / "crews.json")
         store.put(
-            CrewRecord(tag="l2crew", control_secret_ref="kirocrew/crew/l2crew/CONTROL_SECRET")
+            CrewRecord(
+                tag="l2crew",
+                mi_id="mi-l2crew0000000000",
+                control_secret_ref="kirocrew/crew/l2crew/CONTROL_SECRET",
+            )
         )
         monkeypatch.setattr("kiro_crew.cloud.microvm.record.CrewStore", lambda *a, **k: store)
 
+        # The record is matched on the instance's own id, so the row has to carry
+        # the identity the launch registered; see
+        # ``TestTheCredentialIsBoundToTheInstanceNotItsLabel`` for why a label
+        # cannot stand in for it.
         class Inst:
             name = "Kiro Crew Cloud (l2crew)"
+            id = "mi-l2crew0000000000"
+            aws_profile = ""
+            aws_region = ""
 
         assert control_secret_id(Inst()) == "kirocrew/crew/l2crew/CONTROL_SECRET"
 
@@ -314,11 +325,18 @@ class TestTheCrewIsAddressedByItsOwnNameNotTheLaunchTag:
         from kiro_crew.cloud.microvm.record import CrewRecord
         from kiro_crew.dashboard.handlers_crew_turn import served_crew_name
 
-        self._store(tmp_path, monkeypatch, CrewRecord(tag="kc-22d27f", crew_name="l2crew"))
+        self._store(
+            tmp_path,
+            monkeypatch,
+            CrewRecord(tag="kc-22d27f", mi_id="mi-kc22d27f0000000", crew_name="l2crew"),
+        )
 
         class Inst:
             name = "kc-22d27f"
             provisioner_id = "microvm"
+            id = "mi-kc22d27f0000000"
+            aws_profile = ""
+            aws_region = ""
 
         assert served_crew_name(Inst()) == "l2crew"
 
@@ -330,11 +348,18 @@ class TestTheCrewIsAddressedByItsOwnNameNotTheLaunchTag:
         from kiro_crew.cloud.microvm.record import CrewRecord
         from kiro_crew.dashboard.handlers_crew_turn import served_crew_name
 
-        self._store(tmp_path, monkeypatch, CrewRecord(tag="kc-22d27f", crew_name="l2crew"))
+        self._store(
+            tmp_path,
+            monkeypatch,
+            CrewRecord(tag="kc-22d27f", mi_id="mi-kc22d27f0000000", crew_name="l2crew"),
+        )
 
         class Inst:
             name = "kc-22d27f"
             provisioner_id = "microvm"
+            id = "mi-kc22d27f0000000"
+            aws_profile = ""
+            aws_region = ""
 
         resolved = served_crew_name(Inst())
         assert resolved == "l2crew"
@@ -350,11 +375,14 @@ class TestTheCrewIsAddressedByItsOwnNameNotTheLaunchTag:
         from kiro_crew.cloud.microvm.record import CrewRecord
         from kiro_crew.dashboard.handlers_crew_turn import served_crew_name
 
-        self._store(tmp_path, monkeypatch, CrewRecord(tag="kc-22d27f"))
+        self._store(tmp_path, monkeypatch, CrewRecord(tag="kc-22d27f", mi_id="mi-kc22d27f0000000"))
 
         class Inst:
             name = "kc-22d27f"
             provisioner_id = "microvm"
+            id = "mi-kc22d27f0000000"
+            aws_profile = ""
+            aws_region = ""
 
         assert served_crew_name(Inst()) == ""
 
@@ -965,11 +993,24 @@ class TestOnlyTheMicrovmLaneIsServed:
 
 
 class TestControlSecretIdLanePrecedence:
-    """``control_secret_id`` prefers this crew's recorded reference, then a derive."""
+    """``control_secret_id`` prefers this crew's recorded reference, then a derive
+    FROM THAT RECORD'S OWN TAG -- never from a label the row supplied.
 
-    def test_a_non_matching_record_tag_does_not_satisfy_the_lookup(self, tmp_path, monkeypatch):
-        """A record for a DIFFERENT tag is not this crew's reference, so the lookup
-        falls through to the configured-prefix derivation rather than borrowing it."""
+    A row that owns no record resolves to nothing. Deriving a secret path from the
+    tag in its display name instead would be the hole rather than a fallback:
+    ``instances.json`` is not write-protected, so the label is agent-supplied, and
+    a relabelled row would name whichever crew's secret its label claims. The
+    derive is available only where the record is already matched by identity, so
+    the tag it uses is the record's own.
+
+    Nothing legitimate needs the wider form. Every record this lane's launch
+    writes carries ``control_secret_ref`` from the start, and this function is
+    called only from the turn route, which serves only this lane.
+    """
+
+    def test_a_record_for_another_instance_is_not_borrowed(self, tmp_path, monkeypatch):
+        """A record that is not THIS row's must yield nothing -- neither its
+        reference nor a path derived from the row's own label."""
         from types import SimpleNamespace
 
         from kiro_crew.cloud.microvm.record import CrewRecord, CrewStore
@@ -977,15 +1018,47 @@ class TestControlSecretIdLanePrecedence:
         store = CrewStore(tmp_path / "crews.json")
         store.put(
             CrewRecord(
-                tag="someone-else", control_secret_ref="kirocrew/crew/someone-else/CONTROL_SECRET"
+                tag="someone-else",
+                mi_id="mi-someoneelse00000",
+                control_secret_ref="kirocrew/crew/someone-else/CONTROL_SECRET",
             )
         )
         monkeypatch.setattr("kiro_crew.cloud.microvm.record.CrewStore", lambda *a, **k: store)
 
-        inst = SimpleNamespace(name="Kiro Crew Cloud (l2crew)", provisioner_id="microvm")
+        inst = SimpleNamespace(
+            name="Kiro Crew Cloud (l2crew)",
+            provisioner_id="microvm",
+            id="mi-l2crew0000000000",
+            aws_profile="",
+            aws_region="",
+        )
         got = mod.control_secret_id(inst)
-        assert "someone-else" not in got
-        assert got.endswith("/l2crew/CONTROL_SECRET")
+        assert "someone-else" not in got, "another instance's reference was borrowed"
+        assert got == "", "a secret path was derived from the row's own label"
+
+    def test_the_derive_still_runs_for_a_matched_record_without_a_reference(
+        self, tmp_path, monkeypatch
+    ):
+        """The surviving half of the precedence: identity matched, no reference
+        stored, so the path is derived -- from the RECORD's tag."""
+        from types import SimpleNamespace
+
+        from kiro_crew.cloud.microvm.record import CrewRecord, CrewStore
+
+        store = CrewStore(tmp_path / "crews.json")
+        store.put(CrewRecord(tag="l2crew", mi_id="mi-l2crew0000000000"))
+        monkeypatch.setattr("kiro_crew.cloud.microvm.record.CrewStore", lambda *a, **k: store)
+
+        inst = SimpleNamespace(
+            name="Kiro Crew Cloud (anything-else)",
+            provisioner_id="microvm",
+            id="mi-l2crew0000000000",
+            aws_profile="",
+            aws_region="",
+        )
+        got = mod.control_secret_id(inst)
+        assert got.endswith("/l2crew/CONTROL_SECRET"), "the record's own tag was not used"
+        assert "anything-else" not in got, "the row's label reached the secret name"
 
 
 def test_a_connected_crew_with_a_turn_url_is_headless_even_without_a_headless_lane():
@@ -1152,3 +1225,163 @@ class TestTheCrewsReplyIsRedactedBeforeItReachesTheCaller:
         written = b"".join(resp.frames)
         assert self._KEY.encode() not in written
         assert b"crew_refused" in written
+
+    @pytest.mark.asyncio
+    async def test_a_leading_bom_does_not_hide_an_escaped_credential(self, monkeypatch):
+        """A BOM at the head of the stream must not cost the JSON-aware pass.
+
+        ``_redact_sse_event`` sends a ``data:`` line through the JSON decoder, which
+        is what sees a credential written as a JSON escape; every other line goes
+        through the plain-text chain, which cannot. So a stream whose first line is
+        ``\\ufeffdata: ...`` does not match ``data:``, takes the text chain, and the
+        escaped credential passes through -- while the browser, which skips the BOM
+        per the SSE spec, parses the field and decodes the credential back.
+        """
+        import json
+
+        _wire_handler(monkeypatch, status=_connected())
+        _capture_stream(monkeypatch)
+        # The literal bytes never spell the key id: only a JSON decode produces it.
+        escaped = b"\\u0041" + self._KEY[1:].encode()
+        event = b"\xef\xbb\xbf" + b'data: {"delta": "key ' + escaped + b'"}\n\n'
+        _install_session(monkeypatch, [], resp=_FakeResp(status=200, chunks=(event,)))
+        resp = await mod.api_crew_turn(_turn_request({"message": "hi", "thread": "t"}))
+
+        written = b"".join(resp.frames).decode()
+        # Read it the way a BOM-stripping EventSource client does.
+        payload = "\n".join(
+            line[len("data: ") :]
+            for line in written.removeprefix("\ufeff").split("\n")
+            if line.startswith("data: ")
+        )
+        assert self._KEY not in json.dumps(json.loads(payload)), (
+            "the BOM sent the data line through the plain-text chain, so the "
+            "escaped credential reached the caller"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_bom_split_across_chunks_is_still_stripped(self, monkeypatch):
+        """The BOM is three bytes and the socket may split it.
+
+        Stripping only when the whole prefix has arrived is why the strip waits for
+        the third byte instead of testing the first chunk and giving up.
+        """
+        import json
+
+        _wire_handler(monkeypatch, status=_connected())
+        _capture_stream(monkeypatch)
+        escaped = b"\\u0041" + self._KEY[1:].encode()
+        stream = b"\xef\xbb\xbf" + b'data: {"delta": "key ' + escaped + b'"}\n\n'
+        _install_session(
+            monkeypatch,
+            [],
+            resp=_FakeResp(status=200, chunks=(stream[:1], stream[1:2], stream[2:])),
+        )
+        resp = await mod.api_crew_turn(_turn_request({"message": "hi", "thread": "t"}))
+
+        written = b"".join(resp.frames).decode()
+        payload = "\n".join(
+            line[len("data: ") :]
+            for line in written.removeprefix("\ufeff").split("\n")
+            if line.startswith("data: ")
+        )
+        assert self._KEY not in json.dumps(json.loads(payload))
+
+
+class TestTheCredentialIsBoundToTheInstanceNotItsLabel:
+    """`instances.json` is NOT write-protected, so a row is agent-writable.
+
+    Resolving the crew record by the row's TAG binds the credential to a label
+    while the tunnel stays bound to the ROW. An agent that controls a connected
+    hostile peer's row can relabel it with a real crew's tag, lane and AWS
+    coordinates, and the owner's next turn then reads the REAL crew's control
+    secret and sends it down the HOSTILE peer's already-open tunnel. So the
+    record has to be found by the instance's own identity -- for this lane the
+    `mi-` node id the launch registered -- and its account and region have to
+    agree with the row the secret is read with.
+    """
+
+    REAL_REF = "kirocrew/crew/realcrew/CONTROL_SECRET"
+
+    def _store(self, tmp_path, monkeypatch):
+        from kiro_crew.cloud.microvm.record import CrewRecord, CrewStore
+
+        store = CrewStore(tmp_path / "crews.json")
+        store.put(
+            CrewRecord(
+                tag="realcrew",
+                mi_id="mi-realcrew0000000",
+                profile="owner",
+                region="us-east-1",
+                control_secret_ref=self.REAL_REF,
+                crew_name="real",
+            )
+        )
+        monkeypatch.setattr("kiro_crew.cloud.microvm.record.CrewStore", lambda *a, **k: store)
+        return store
+
+    class _Inst:
+        def __init__(self, **kw):
+            from kiro_crew.platform.defaults import MICROVM_PROVISIONER_ID
+
+            self.name = ""
+            self.id = ""
+            self.provisioner_tag = ""
+            # The real lane id, so the lane gate passes and these tests exercise
+            # the record match rather than being refused one step earlier.
+            self.provisioner_id = MICROVM_PROVISIONER_ID
+            self.aws_profile = "owner"
+            self.aws_region = "us-east-1"
+            for k, v in kw.items():
+                setattr(self, k, v)
+
+    def test_the_real_crews_own_row_still_resolves(self, tmp_path, monkeypatch):
+        """Non-vacuity: the binding must not refuse the legitimate crew."""
+        from kiro_crew.dashboard.handlers_crew_turn import control_secret_id, served_crew_name
+
+        self._store(tmp_path, monkeypatch)
+        inst = self._Inst(id="mi-realcrew0000000", provisioner_tag="realcrew")
+        assert control_secret_id(inst) == self.REAL_REF
+        assert served_crew_name(inst) == "real"
+
+    def test_a_relabelled_hostile_row_gets_no_credential(self, tmp_path, monkeypatch):
+        """The attack: the hostile peer's own tunnel, wearing the real crew's tag."""
+        from kiro_crew.dashboard.handlers_crew_turn import control_secret_id
+
+        self._store(tmp_path, monkeypatch)
+        hostile = self._Inst(id="mi-hostile00000000", provisioner_tag="realcrew")
+        got = control_secret_id(hostile)
+        assert got != self.REAL_REF, "the real crew's secret was handed to another instance"
+        assert got == "", "a secret name was still guessed for a row that owns no record"
+
+    def test_a_relabelled_display_name_gets_no_credential(self, tmp_path, monkeypatch):
+        """Same attack through the display name, which the old tag parser read."""
+        from kiro_crew.dashboard.handlers_crew_turn import control_secret_id
+
+        self._store(tmp_path, monkeypatch)
+        hostile = self._Inst(id="mi-hostile00000000", name="Kiro Crew Cloud (realcrew)")
+        assert control_secret_id(hostile) == ""
+
+    def test_a_relabelled_hostile_row_is_not_told_the_crew_name(self, tmp_path, monkeypatch):
+        """`model` is also resolved from the record, and naming the real crew to a
+        hostile front is what lets it answer as that crew instead of 404ing."""
+        from kiro_crew.dashboard.handlers_crew_turn import served_crew_name
+
+        self._store(tmp_path, monkeypatch)
+        hostile = self._Inst(id="mi-hostile00000000", provisioner_tag="realcrew")
+        assert served_crew_name(hostile) == ""
+
+    @pytest.mark.parametrize(
+        "field,value",
+        [("aws_profile", "attacker"), ("aws_region", "eu-west-1")],
+        ids=["profile-moved", "region-moved"],
+    )
+    def test_moved_aws_coordinates_get_no_credential(self, tmp_path, monkeypatch, field, value):
+        """The secret is READ with the row's profile and region, so a row that
+        keeps the id but moves the account points the read at an account the
+        attacker controls, where that secret name can be made to exist."""
+        from kiro_crew.dashboard.handlers_crew_turn import control_secret_id
+
+        self._store(tmp_path, monkeypatch)
+        inst = self._Inst(id="mi-realcrew0000000", provisioner_tag="realcrew", **{field: value})
+        assert control_secret_id(inst) == ""

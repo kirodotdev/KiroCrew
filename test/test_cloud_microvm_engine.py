@@ -1112,3 +1112,62 @@ class TestALifecycleStepRechecksTheRecordAfterItWaits:
         # The new crew's row is not this teardown's to end.
         assert store.get("c").state == states.RUNNING
         assert store.get("c").generation == ours.generation + 1
+
+    def test_a_teardown_during_the_vm_create_is_not_overwritten(self, engine):
+        """S1b. ``launcher.run`` is a wait as well, and the write that records the
+        VM it made is a WHOLE-record write of the copy read before it.
+
+        The fence further down cannot catch this: by the time it looks, this write
+        has already put ``pending`` back, so the row reads live and of this
+        generation and the fence passes. The cancellation has to be seen here.
+        """
+        from kiro_crew.cloud.microvm import engine as engine_mod
+
+        built, store, launcher = engine
+        original = launcher.run
+
+        def run(**kwargs):
+            vm = original(**kwargs)
+            # The owner's teardown finishes while the VM is being created.
+            store.apply_event("c", states.EVENT_TERMINATED)
+            return vm
+
+        launcher.run = run  # type: ignore[method-assign]
+
+        with pytest.raises(engine_mod.LaunchSuperseded):
+            built.provision(tag="c", size_key="", profile="p", region="us-east-1")
+
+        assert store.get("c").state == states.TERMINATED, "the late write revived the row"
+        assert store.get("c").microvm_id == "", "the superseded VM id was recorded anyway"
+        # The VM and the activation this launch created are released rather than
+        # left billing with a terminated row naming neither.
+        assert "terminate" in launcher.calls, "the VM was left running"
+        assert "delete_activation" in launcher.calls, "the activation was left behind"
+        # And the minutes-long online poll is not entered for a crew already gone.
+        assert "wait_online" not in launcher.calls
+
+    def test_a_teardown_during_the_activation_create_is_not_overwritten(self, engine):
+        """S1c. The same whole-record write, one step earlier: the activation id is
+        stored with a ``put`` of the copy read before ``create_activation``."""
+        from kiro_crew.cloud.microvm import engine as engine_mod
+
+        built, store, launcher = engine
+        original = launcher.create_activation
+
+        def create_activation(**kwargs):
+            activation = original(**kwargs)
+            store.apply_event("c", states.EVENT_TERMINATED)
+            return activation
+
+        launcher.create_activation = create_activation  # type: ignore[method-assign]
+
+        with pytest.raises(engine_mod.LaunchSuperseded):
+            built.provision(tag="c", size_key="", profile="p", region="us-east-1")
+
+        assert store.get("c").state == states.TERMINATED, "the late write revived the row"
+        assert store.get("c").activation_id == "", "the superseded activation was recorded"
+        # The activation is the one resource that exists at this point, and an
+        # activation with no registrations counts against the account's limits.
+        assert "delete_activation" in launcher.calls, "the activation was left behind"
+        # No VM was ever asked for.
+        assert "run" not in launcher.calls
