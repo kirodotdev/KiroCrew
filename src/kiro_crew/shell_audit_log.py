@@ -92,12 +92,12 @@ def rotate_shell_audit_log(data_home: Path) -> bool:
     """Rotate ``<data_home>/audit.log`` aside to ``audit.log.1`` once it reaches the cap.
 
     The cap is :data:`SHELL_AUDIT_LOG_MAX_BYTES`, the one shipped value; no
-    caller varies it. Returns ``True`` when this call moved the file aside.
-    Never raises: a fresh install without the file, an unreadable or unusable
-    path, or a rotation the primitive could not complete (lock lost to a
-    concurrent rotator, a blocked rename) all answer ``False`` and leave the
-    live file exactly as it was. An over-cap file that stays over the cap is
-    logged at WARNING, at most once per
+    caller varies it. Returns ``True`` when the file was moved aside by the
+    time this call checked -- by this call or by a concurrent rotator that won
+    the lock. Never raises: a fresh install without the file, an unreadable or
+    unusable path, or a rotation the primitive could not complete (a blocked
+    rename) all answer ``False`` and leave the live file exactly as it was. An
+    over-cap file that stays over the cap is logged at WARNING, at most once per
     :data:`SHELL_AUDIT_LOG_WARN_INTERVAL_SECS` per data home, so a rotation that
     stopped working is told apart from a file under the cap without repeating
     the same line on every retry.
