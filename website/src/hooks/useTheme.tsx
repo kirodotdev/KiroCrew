@@ -547,22 +547,10 @@ export interface ThemeContextValue {
    * chapter while the boot fetch is in flight.
    */
   privacyAcked: boolean
-  /** Has the first-run Meet CrewMates flow been finished or dismissed? Server-backed like the other first-run flags; localStorage is only the render cache. */
-  crewmatesOnboarded: boolean
-  /** Has the Meet CrewMates flow itself actually been finished or dismissed on
-   *  this workspace (the server's `crewmates_onboarded`)? Unlike
-   *  `crewmatesOnboarded` it does NOT count an existing user who finished first
-   *  run before the chapter shipped: that seed only keeps the tour-end auto-fire
-   *  from interrupting them, and the Crewmates page's first visit still owes
-   *  them the flow. */
-  crewmatesFlowSeen: boolean
   themeBootReady: boolean
   markOnboarded: () => void
   markImportOnboarded: () => void
   markPrivacyAcked: () => void
-  /** Resolves when the server has the flag; rejects on a failed PUT so the
-   *  caller can render the failure (the local mark is set either way). */
-  markCrewmatesOnboarded: () => Promise<void>
   addCustomTheme: (data: Omit<CustomThemeData, 'slug'> & { slug?: string }) => Promise<CustomThemeData>
   deleteCustomTheme: (slug: string) => Promise<void>
   /** Refetch the installed-theme catalog once; `true` when it now reflects the
@@ -862,23 +850,6 @@ function useThemeState(): ThemeContextValue {
   const [privacyAcked, setPrivacyAcked] = useState(
     () => !!localStorage.getItem('mc-privacy-acked') || !!localStorage.getItem('mc-onboarded'),
   )
-  // Seeded from `mc-onboarded` as well as its own flag, like `privacyAcked`: a
-  // workspace that finished first run before this chapter existed is an
-  // EXISTING user, who reaches the flow from the Crew Members page instead of
-  // being interrupted by it. `mc-crewmates-pending` tells the two apart: the
-  // tour's own completion (`markOnboarded`) sets it on this browser, so a NEW
-  // user who reloads or restarts between the tour and this chapter is still
-  // due the chapter -- only a workspace onboarded with no such mark (before
-  // this shipped, or from another machine) counts as done. Cleared when the
-  // chapter is marked, so the mark cannot outlive its purpose.
-  const [crewmatesOnboarded, setCrewmatesOnboarded] = useState(
-    () =>
-      !!localStorage.getItem('mc-crewmates-onboarded') ||
-      (!!localStorage.getItem('mc-onboarded') && !localStorage.getItem('mc-crewmates-pending')),
-  )
-  const [crewmatesFlowSeen, setCrewmatesFlowSeen] = useState(
-    () => !!localStorage.getItem('mc-crewmates-onboarded'),
-  )
   const legacyOnboardedRef = useRef(
     !!localStorage.getItem('mc-onboarded') && !localStorage.getItem('mc-import-onboarded'),
   )
@@ -1059,14 +1030,13 @@ function useThemeState(): ThemeContextValue {
       window.removeEventListener('mc-auth-recovered', onAuthRecovered)
     }
   }, [queryClient])
-  const { mutate: persistTheme, mutateAsync: persistThemeAsync } = useMutation({
+  const { mutate: persistTheme } = useMutation({
     mutationFn: (body: {
       mode?: string
       color?: string
       onboarded?: boolean
       import_onboarded?: boolean
       privacy_acked?: boolean
-      crewmates_onboarded?: boolean
     }) => api.updateThemeConfig(body),
   })
 
@@ -1141,21 +1111,6 @@ function useThemeState(): ThemeContextValue {
             localStorage.removeItem('mc-import-onboarded')
           }
         }
-        // Server value wins, set forward only: clearing it locally would re-open
-        // the Meet CrewMates flow mid-session on a stale read. A workspace the
-        // server already reports as onboarded is an existing one (same seed
-        // rule as the state initialiser, same `mc-crewmates-pending` exception
-        // for a first run this browser is mid-way through), so it counts as
-        // done locally too — without persisting, so the server flag keeps
-        // meaning "the flow ran".
-        if (
-          bootData.crewmates_onboarded === true ||
-          (bootData.onboarded === true && !localStorage.getItem('mc-crewmates-pending'))
-        ) {
-          setCrewmatesOnboarded(true)
-          if (bootData.crewmates_onboarded === true) safeSetItem('mc-crewmates-onboarded', '1')
-        }
-        if (bootData.crewmates_onboarded === true) setCrewmatesFlowSeen(true)
       }
     }
     setThemeBootReady(true)
@@ -1462,15 +1417,10 @@ function useThemeState(): ThemeContextValue {
   ]
 
   const markOnboarded = useCallback(() => {
-    // Only a FIRST completion marks the Meet CrewMates chapter pending (so it
-    // survives a reload, see the `crewmatesOnboarded` seed): an existing user
-    // replaying the tour from Settings was already onboarded, and must not be
-    // handed the first-run chapter on their next reload.
-    if (!onboarded && !localStorage.getItem('mc-crewmates-onboarded')) safeSetItem('mc-crewmates-pending', '1')
     safeSetItem('mc-onboarded', '1')
     setOnboarded(true)
     persistTheme({ onboarded: true })
-  }, [onboarded, persistTheme])
+  }, [persistTheme])
 
   const markImportOnboarded = useCallback(() => {
     safeSetItem('mc-import-onboarded', '1')
@@ -1485,22 +1435,6 @@ function useThemeState(): ThemeContextValue {
     setPrivacyAcked(true)
     persistTheme({ privacy_acked: true })
   }, [persistTheme])
-
-  // Persisted server-side as well as locally so a second machine does not replay
-  // the Meet CrewMates flow this user already finished or dismissed.
-  const markCrewmatesOnboarded = useCallback(async () => {
-    // Awaited, unlike the sibling marks, and the local completion state is
-    // applied ONLY after the server accepted the write: a refused PUT leaves
-    // the render cache, the pending mark and the in-memory flag exactly as
-    // they were, so a reload re-offers the chapter instead of seeding "done"
-    // from a completion the server never recorded. The Meet CrewMates flow
-    // renders the refusal as an ErrorNotice (see useMeetCrewmatesGate).
-    await persistThemeAsync({ crewmates_onboarded: true })
-    safeSetItem('mc-crewmates-onboarded', '1')
-    localStorage.removeItem('mc-crewmates-pending')
-    setCrewmatesOnboarded(true)
-    setCrewmatesFlowSeen(true)
-  }, [persistThemeAsync])
 
   return {
     theme: resolved,
@@ -1525,13 +1459,10 @@ function useThemeState(): ThemeContextValue {
     onboarded,
     importOnboarded,
     privacyAcked,
-    crewmatesOnboarded,
-    crewmatesFlowSeen,
     themeBootReady,
     markOnboarded,
     markImportOnboarded,
     markPrivacyAcked,
-    markCrewmatesOnboarded,
     addCustomTheme,
     deleteCustomTheme,
     loadCustomThemes,

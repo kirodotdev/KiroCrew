@@ -218,10 +218,10 @@ the whole root, sample project included.
 
 One boot also means one roster: every scenario meets the members `GUI_MEMBERS` seeded
 plus whatever an earlier scenario created, so a flow that exists only for an EMPTY
-roster -- the "Meet CrewMates" first-run chapter, offered while `config.agents` holds
+roster -- the Crewmates feature intro, offered while `config.agents` holds
 nothing beyond `default` -- cannot be reached in this lane and has no scenario;
-`seed_home.py` also sets `dashboard.crewmates_onboarded`, so that chapter never opens
-over a Crewmates page visit in a run. Giving
+`seed_home.py` also sets `dashboard.crewmates_onboarded`, which hides that intro in
+a run. Giving
 it one needs a second gateway boot per run (a scenario-level reseed), which is
 per-scenario isolation work for the tracking issue, not a YAML change.
 

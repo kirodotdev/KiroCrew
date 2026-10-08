@@ -5,9 +5,9 @@ author: CrysisDeu
 created: 2026-09-22
 last-audited: 2026-10-06
 audited-at: 9348a25a34
-revision: 2026-10-01 — §11 roster-as-floating-card amendment
+revision: 2026-10-08 — screen 08 replaced by the Crewmates feature intro (#17154)
 doc-pr:
-implementation-prs: [12797, 12798, 12805, 12806, 12924, 14897, 14914, 14925, 15103, 15280, 16317]
+implementation-prs: [12797, 12798, 12805, 12806, 12924, 14897, 14914, 14925, 15103, 15280, 16317, 17156]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -330,6 +330,26 @@ Crewmates page keeps its on-demand **Meet CrewMates** entry. Reasoning: the
 flow introduces the concept and creates one crewmate the person names; neither
 depends on what the workspace already holds, and a person who opens the
 Crewmates page is looking for exactly this.
+
+Amended 2026-10-08 by the product owner (#17154, PR #17156): the four-step
+flow is replaced by the Crewmates feature intro, a single card with a short
+looping video, "Not now" and "Try it". This supersedes the 2026-09-28
+amendment's showing rules and its on-demand entry.
+
+- **Where it lives:** a startup feature intro, shown on a later launch once
+  first run is finished. It is offered only while the Crew Members preview is
+  on, and not once `dashboard.crewmates_onboarded` is true or a crewmate
+  besides `default` exists.
+- **What it does:** it does not create a crewmate. "Try it" opens `default`'s chat
+  on Crew Members and the ghost lands on its avatar in the chat header; "Not now" leaves a "New" tag on
+  the Crew Members rail item until the page is opened.
+- **Entry point:** the Crewmates page no longer has a Meet CrewMates entry.
+- **Off switch:** `dashboard.feature_videos_enabled: false` does not suppress
+  this intro, because it stands in for a first-run chapter that never had that
+  switch. `dashboard.crewmates_onboarded: true` turns it off.
+
+Reasoning: a person who already has crewmates does not need the concept
+introduced, and creating a crewmate is the normal "+ New crewmate" dialog.
 
 Already shipped and shown in the review as evidence, not re-decided here:
 crewmates are out of the ordinary session list; the ghost icon marks a

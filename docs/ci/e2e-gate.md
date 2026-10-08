@@ -123,10 +123,9 @@ Config facts worth knowing before you touch a spec:
 
 Playwright runs two projects. The `setup` project (`playwright/auth.setup.ts`)
 navigates once to `/?token=<PLAYWRIGHT_TOKEN>`, lets the gateway exchange the
-token for a session cookie, sets two localStorage flags, and persists the whole
+token for a session cookie, sets a localStorage flag, and persists the whole
 storage state. `mc-onboarded` keeps the first-run theme overlay from
-intercepting clicks; `mc-crewmates-onboarded` keeps the Meet CrewMates chapter
-from covering the `/members` specs. The `chromium` project declares `dependencies: ['setup']` and loads that
+intercepting clicks. The `chromium` project declares `dependencies: ['setup']` and loads that
 state, so raw tokens never appear in test-level traces or videos.
 
 The state path is `PLAYWRIGHT_STORAGE_STATE` or `playwright/.auth/state.json`,

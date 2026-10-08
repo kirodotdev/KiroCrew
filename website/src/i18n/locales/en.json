@@ -7526,8 +7526,6 @@
       "deploy_state_unknown": "A deploy finished {{age}} ago in {{region}}. This page cannot tell whether it is still running.",
       "deploy_check_console": "Check the AWS console in {{region}} to see whether it is still running.",
       "deploy_action_manage": "Open Remote Crew in Settings",
-      "meet_crewmates": "Meet CrewMates",
-      "meet_crewmates_hint": "A guided intro that creates your first crewmate.",
       "agent_template": "Built from",
       "roster_load_failed_ask": "Ask {{productName}} about this (opens a chat)",
       "roster_load_retry": "Try again",

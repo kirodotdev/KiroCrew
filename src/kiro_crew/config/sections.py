@@ -3360,10 +3360,10 @@ class DashboardConfig:
         default=False,
         metadata=_meta(
             "Crewmates Onboarded",
-            "Whether the user has finished or dismissed the first-run Meet CrewMates "
-            "flow (the four-step introduction that creates the first crewmate). "
-            "Server-backed like the other first-run flags so a second machine does "
-            "not replay it. Also set when the flow is re-run from the Crewmates page.",
+            "Whether the user finished or dismissed the retired first-run Meet CrewMates "
+            "flow. Kept because it is the record that this user was already introduced "
+            "to crewmates: while it is true the Crewmates feature intro, which replaced "
+            "that flow, is not offered.",
         ),
     )
     user_role: str = field(
@@ -3409,7 +3409,9 @@ class DashboardConfig:
         metadata=_meta(
             "Feature Videos Enabled",
             "Show short feature-intro clips for features this install has not used "
-            "yet. Instance-wide kill switch.",
+            "yet. Instance-wide switch for the clip library; an intro that stands in "
+            "for a first-run chapter (the Crewmates intro) is offered either way. "
+            "Set dashboard.crewmates_onboarded to true to turn the Crewmates intro off.",
         ),
     )
     feature_videos_cache_max_mb: float = field(

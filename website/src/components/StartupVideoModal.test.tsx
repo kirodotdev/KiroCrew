@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
+import { useLocation } from 'react-router-dom'
 
 import { renderWithProviders, createTestStore } from '../test/helpers'
 import { setActiveSlot } from '../store/chatSlice'
@@ -10,6 +11,12 @@ import { findReport, __resetErrorJournalForTests } from '../utils/errorReport'
 import { resetStartupVideoLaunchGuardForTests, startupVideoHandledThisLaunch } from './startupVideoGate'
 import type { FeatureVideo } from '../api/client'
 import StartupVideoModal from './StartupVideoModal'
+import { deliverFeatureNewTag, landFeatureGhost } from '../utils/featureNewTag'
+import '../surfaces/builtins'
+import { PREVIEW_CREW, setPreviewFlag } from '../utils/previewFlags'
+import { NavigationLeaveGuardProvider, useRegisterNavigationLeaveGuard } from './NavigationLeaveGuard'
+
+vi.mock('../utils/featureNewTag', () => ({ deliverFeatureNewTag: vi.fn(), landFeatureGhost: vi.fn() }))
 
 vi.mock('../api/client', () => {
   class MockApiError extends Error {}
@@ -142,12 +149,12 @@ describe('StartupVideoModal — when it renders nothing', () => {
     expect(dialog()).not.toBeInTheDocument()
   })
 
-  it('renders nothing when the feature is disabled, even with a video attached', async () => {
-    // `enabled` is the operator kill switch and outranks the payload; a disabled
-    // install that still names a clip must stay silent.
+  it('shows a clip the server sends while the switch is off (a default-on intro)', async () => {
+    // The server applies the kill switch and still sends a default-on intro, so
+    // the clip's presence is the answer and `enabled` is not checked again here.
     mockedApi.featureVideoNext.mockResolvedValue({ video: clip, enabled: false } as never)
     await mount()
-    expect(dialog()).not.toBeInTheDocument()
+    expect(dialog()).toBeInTheDocument()
   })
 
   it('renders nothing when the request fails (404 from an older gateway)', async () => {
@@ -487,7 +494,7 @@ describe('StartupVideoModal — the clip', () => {
     }
     await waitFor(() => expect(dialog()).toBeInTheDocument())
 
-    expect(mockedApi.featureVideoNext).toHaveBeenCalledWith('dashboard:slot-7')
+    expect(mockedApi.featureVideoNext).toHaveBeenCalledWith('dashboard:slot-7', expect.any(Array))
 
     fireEvent.click(screen.getByText(i18nT('components.startupVideoModal.got_it')))
     await waitFor(() => expect(mockedApi.featureVideoFeedback).toHaveBeenCalled())
@@ -501,7 +508,7 @@ describe('StartupVideoModal — the clip', () => {
     // the key is omitted entirely and the server falls back to its own default.
     const { onClose } = await mount()
     await waitFor(() => expect(dialog()).toBeInTheDocument())
-    expect(mockedApi.featureVideoNext).toHaveBeenCalledWith(undefined)
+    expect(mockedApi.featureVideoNext).toHaveBeenCalledWith(undefined, expect.any(Array))
 
     fireEvent.click(screen.getByText(i18nT('components.startupVideoModal.got_it')))
     await waitFor(() => expect(mockedApi.featureVideoFeedback).toHaveBeenCalled())
@@ -806,5 +813,124 @@ describe('StartupVideoModal — share governance fails closed', () => {
     fireEvent.click(screen.getByTestId('startup-video-share'))
     await waitFor(() => expect(screen.getByTestId('stub-share-modal')).toBeInTheDocument())
     expect(mockedApi.featureVideoFeedback).not.toHaveBeenCalled()
+  })
+})
+
+describe('StartupVideoModal — an intro with a call to action', () => {
+  const ctaClip: FeatureVideo = { ...clip, id: 'crewmates', feature: 'crewmates', cta_route: '/members' }
+
+  function LocationProbe() {
+    const loc = useLocation()
+    return <span data-testid="location">{loc.pathname + loc.search}</span>
+  }
+
+  beforeEach(() => {
+    mockedApi.featureVideoNext.mockResolvedValue({ video: ctaClip, enabled: true, download_enabled: true } as never)
+    vi.mocked(deliverFeatureNewTag).mockReset()
+    vi.mocked(landFeatureGhost).mockReset()
+    setPreviewFlag(PREVIEW_CREW, true)
+  })
+
+  afterEach(() => {
+    setPreviewFlag(PREVIEW_CREW, false)
+  })
+
+  it('is not offered while the page it opens is behind a preview that is off', async () => {
+    setPreviewFlag(PREVIEW_CREW, false)
+    await mount()
+    expect(dialog()).not.toBeInTheDocument()
+    // No verdict: the intro comes back once the preview is on.
+    expect(mockedApi.featureVideoFeedback).not.toHaveBeenCalled()
+  })
+
+  it('opens with focus on Try it, the main choice', async () => {
+    await mount()
+    expect(screen.getByTestId('startup-video-try-it')).toHaveFocus()
+  })
+
+  it('shows the translated copy, not the catalog English', async () => {
+    await mount()
+    expect(screen.getByText(i18nT('components.startupVideoModal.crewmates_title'))).toBeInTheDocument()
+    expect(screen.getByText(i18nT('components.startupVideoModal.crewmates_description'))).toBeInTheDocument()
+  })
+
+  it('swaps "Got it" for Not now / Try it and drops the header close', async () => {
+    await mount()
+    expect(screen.getByTestId('startup-video-not-now')).toHaveTextContent(i18nT('components.startupVideoModal.not_now'))
+    expect(screen.getByTestId('startup-video-try-it')).toHaveTextContent(i18nT('components.startupVideoModal.try_it'))
+    expect(screen.queryByRole('button', { name: i18nT('components.startupVideoModal.close') })).toBeNull()
+    expect(screen.queryByText(i18nT('components.startupVideoModal.got_it'))).toBeNull()
+  })
+
+  it('Try it asks before leaving unsaved work, and does nothing when refused', async () => {
+    function DirtyDraft() {
+      useRegisterNavigationLeaveGuard(() => false)
+      return null
+    }
+    const onClose = vi.fn()
+    renderWithProviders(
+      <NavigationLeaveGuardProvider><DirtyDraft /><StartupVideoModal onClose={onClose} /><LocationProbe /></NavigationLeaveGuardProvider>,
+    )
+    await screen.findByTestId('startup-video-try-it')
+    fireEvent.click(screen.getByTestId('startup-video-try-it'))
+    expect(mockedApi.featureVideoFeedback).not.toHaveBeenCalled()
+    expect(onClose).not.toHaveBeenCalled()
+    expect(screen.getByTestId('location')).not.toHaveTextContent('/members')
+    expect(landFeatureGhost).not.toHaveBeenCalled()
+  })
+
+  it('Try it records seen, closes, and opens the CTA route', async () => {
+    const onClose = vi.fn()
+    renderWithProviders(<><StartupVideoModal onClose={onClose} /><LocationProbe /></>)
+    await screen.findByTestId('startup-video-try-it')
+    fireEvent.click(screen.getByTestId('startup-video-try-it'))
+    expect(mockedApi.featureVideoFeedback).toHaveBeenCalledWith('crewmates', 'seen', undefined)
+    expect(onClose).toHaveBeenCalledTimes(1)
+    expect(screen.getByTestId('location')).toHaveTextContent(/^\/members$/)
+    expect(deliverFeatureNewTag).not.toHaveBeenCalled()
+    expect(landFeatureGhost).toHaveBeenCalledWith('members', expect.anything())
+  })
+
+  it('Not now records seen, closes, and hands the New tag to the route\'s rail item', async () => {
+    const { onClose } = await mount()
+    fireEvent.click(screen.getByTestId('startup-video-not-now'))
+    expect(mockedApi.featureVideoFeedback).toHaveBeenCalledWith('crewmates', 'seen', undefined)
+    expect(onClose).toHaveBeenCalledTimes(1)
+    expect(deliverFeatureNewTag).toHaveBeenCalledWith(
+      'members',
+      i18nT('components.startupVideoModal.new_tag'),
+      expect.objectContaining({ popIn: false }),
+      '/members',
+    )
+  })
+
+  it('Escape does what Not now does', async () => {
+    await mount()
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(mockedApi.featureVideoFeedback).toHaveBeenCalledWith('crewmates', 'seen', undefined)
+    expect(deliverFeatureNewTag).toHaveBeenCalledTimes(1)
+  })
+
+  it('plays the clip muted on a loop as soon as it opens', async () => {
+    await mount()
+    expect(video()).toHaveAttribute('autoplay')
+    expect(video()).toHaveAttribute('loop')
+    expect(video()).toHaveAttribute('preload', 'auto')
+    expect(video()!.muted).toBe(true)
+  })
+
+  it('records nothing from playback alone, since the clip plays by itself', async () => {
+    const { onClose } = await mount()
+    const el = video()!
+    Object.defineProperty(el, 'duration', { configurable: true, value: 7.5 })
+    Object.defineProperty(el, 'currentTime', { configurable: true, value: 7.4 })
+    fireEvent.timeUpdate(el)
+    expect(mockedApi.featureVideoFeedback).not.toHaveBeenCalled()
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('hides Share even when the policy allows it', async () => {
+    await mount({ shareEnabled: true })
+    expect(screen.queryByTestId('startup-video-share')).toBeNull()
   })
 })

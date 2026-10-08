@@ -88,8 +88,11 @@ you are about to play would just download them again.
 
 Two independent switches:
 
-- `dashboard.feature_videos_enabled: false` (the default) turns the whole feature
-  off: nothing is fetched and nothing is shown.
+- `dashboard.feature_videos_enabled: false` (the default) turns the feature off:
+  nothing is fetched and no clip is shown, except the built-in Crewmates intro. That
+  one is marked `default_on` because it replaced a first-run step that never had this
+  switch; set `dashboard.crewmates_onboarded: true` to turn it off. Its **Try it**
+  button opens the entry's `cta_route` (`/members?member=default`).
 - A managed fleet can forbid the fetch itself with the
   `capabilities.feature_videos_download` policy scope. Then no manifest is requested,
   no clip is downloaded, and nothing streams from the CDN — clips already on disk
