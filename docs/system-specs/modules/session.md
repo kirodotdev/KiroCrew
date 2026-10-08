@@ -650,6 +650,32 @@ An incomplete sweep records what it is waiting on (`identity_sweep_waiting_on`:
 session keys tagged `busy` or `channel member`, or the runtime that stayed up),
 and the turn gate logs it at WARNING so an operator can find the holdout.
 
+**Live-children deferral** (`spare_children`, inside the sweep): an idle parent
+whose stamp does NOT match the live account but which still has live or queued
+`spawn_run` children is not retired on the per-turn sweep — it is deferred the
+way a busy session is (flagged `retire_on_identity_change`, kept in the map, and
+recorded `<key> (subagents)` so the sweep reports incomplete). The per-turn gate
+fires on every chat turn, so without the deferral an idle parent with running
+children was retired and its children cancelled as `AcpProcessDied ... (provider
+shutdown)` on every turn (#17360). The deferred parent is refused its next turn
+by session allocation (`retire_on_identity_change`) and evicted by
+`_evict_stale_session`, which shuts the parent's provider down WITHOUT
+`_cancel_parent_children`, so the children survive and their completions reach
+the successor under the key. The probe is the side-effect-free
+`has_live_or_queued_children` (not the teardown `snapshot_teardown_children`,
+which arms the delivery gate, clears follow-ups and cancels follow-up watchers).
+The deferral is SCOPED to a proven switch between two real accounts:
+`spare_children` defaults to False, so the sign-out path
+(`_retire_runtimes_after_sign_out`, which sweeps with no fingerprint) keeps the
+cancel behaviour — on sign-out the account is gone, so an idle parent and its
+children MUST be retired, or the children keep running on the signed-out
+account's in-memory credential. `chat_runner`'s per-turn identity-change sweep
+passes `spare_children=bool(live)`: an empty live fingerprint is an external
+`kiro-cli logout` (which never reaches the sign-out handler, so the per-turn
+sweep is the only path that catches it) or an unreadable store, and there the
+children are cancelled for the same reason — only a non-empty live fingerprint
+(a real A→B switch) defers.
+
 **Per-turn stamp gate** (`flag_identity_stamp_mismatches`, before the
 unchanged early-return in the turn gate): a session whose stamp provably
 differs from the live account is flagged `retire_on_identity_change` and its

@@ -505,6 +505,38 @@ class CancellationCoordinator(ManagerComponent):
         record = self._manager._agents.get(agent_id) if agent_id else None
         return record is not None and record.queued and record._finalized
 
+    def has_live_or_queued_children_impl(self, parent_session_key: str) -> bool:
+        """Whether *parent_session_key* owns a live or queued run, read with no await.
+
+        A pure query: it answers the same live/queued question the snapshot's
+        return value answers, but mutates nothing. The snapshot arms the delivery
+        gate, clears follow-ups and cancels follow-up watchers as a side effect, so
+        it belongs only on the retire path that actually ends the children. A caller
+        that is deciding whether to retire at all needs the answer without the
+        teardown, which this gives.
+
+        Matched against the same ``_agents`` and queue reads the snapshot uses, and
+        synchronous for the same reason: an ``await`` here would reopen the window
+        in which a cold start registers a successor under the key.
+        """
+        if not parent_session_key:
+            return False
+        for info in self._manager._agents.values():
+            if (
+                info.parent_session_key == parent_session_key
+                and not info.done
+                and not _parked_at_spawn_approval(info)
+            ):
+                return True
+        for params in [*self._manager._queue, *self._manager._undurable_in_dispatch.values()]:
+            if (
+                params.get("parent_session_key", "") == parent_session_key
+                and not params.get("_resume_id")
+                and str(params.get("_preassigned_id") or "")
+            ):
+                return True
+        return False
+
     def snapshot_teardown_children_impl(self, parent_session_key: str) -> tuple[str, ...]:
         """The run ids belonging to *parent_session_key*, read with no await.
 

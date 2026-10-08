@@ -7013,12 +7013,17 @@ class TestParentEndCancelsItsChildren:
         """
         snapshotted: list[str] = []
         cancelled: list[tuple[str, ...]] = []
+        probed: list[str] = []
         owned = children if children is not None else {}
 
         class _Handler:
             def snapshot_teardown_children(self, parent_session_key: str) -> tuple[str, ...]:
                 snapshotted.append(parent_session_key)
                 return owned.get(parent_session_key, ("run-1",))
+
+            def has_live_or_queued_children(self, parent_session_key: str) -> bool:
+                probed.append(parent_session_key)
+                return bool(owned.get(parent_session_key, ("run-1",)))
 
             async def cancel_for_teardown(
                 self,
@@ -7030,6 +7035,7 @@ class TestParentEndCancelsItsChildren:
                 cancelled.append(tuple(agent_ids))
                 return len(tuple(agent_ids))
 
+        _Handler.probed = probed  # type: ignore[attr-defined]
         return snapshotted, cancelled, _Handler()
 
     @pytest.mark.asyncio
@@ -7201,10 +7207,80 @@ class TestParentEndCancelsItsChildren:
         await mgr.close_all()
 
     @pytest.mark.asyncio
-    async def test_identity_retire_cancels_children(self, cfg):
-        """An identity-store change retires a session, so its children end too."""
+    async def test_identity_retire_spares_an_idle_parent_with_children(self, cfg):
+        """An idle parent waiting on ``spawn_run`` children is NOT retired on the
+        per-turn identity-change sweep (``spare_children=True``).
+
+        It is idle by the semaphore test, so retiring it would cancel its children
+        ("provider shutdown") on every turn any chat takes while the sweep stays
+        incomplete. The sweep instead defers it the way a mid-turn session is
+        deferred: kept in the map, flagged ``retire_on_identity_change``, and the
+        sweep reports incomplete.
+        """
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
-        _snapshotted, seen, cb = self._recorder()
+        # The default recorder reports ("run-1",) for any key: this parent has a
+        # live child.
+        snapshotted, seen, cb = self._recorder()
+        mgr.set_child_teardown_handler(cb)
+        await mgr.get_or_create("dashboard:chat-9")
+        mgr.release("dashboard:chat-9")
+
+        with patch(
+            "kiro_crew.session._provider_uses_kiro_identity_store",
+            return_value=True,
+        ):
+            retired, complete = await mgr.retire_kiro_identity_sessions(spare_children=True)
+
+        assert retired == []
+        assert seen == []  # the child was never cancelled
+        # The spare decision uses the side-effect-free probe, not the teardown
+        # snapshot: the snapshot arms the delivery gate and tears down follow-ups,
+        # which would drop the very completions the sparing preserves.
+        assert "dashboard:chat-9" in cb.probed
+        assert snapshotted == []
+        assert complete is False  # the sweep stays incomplete, as for a busy holder
+        assert "dashboard:chat-9" in mgr._sessions
+        assert mgr._sessions["dashboard:chat-9"].retire_on_identity_change is True
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_signout_retires_an_idle_parent_with_live_children(self, cfg):
+        """Sign-out (the default ``spare_children=False``) retires an idle parent
+        with live children and cancels them.
+
+        ``_retire_runtimes_after_sign_out`` calls the sweep with no fingerprint and
+        no ``spare_children``: the account is gone, so a parent and its children
+        MUST be retired, or the children keep running on the signed-out account's
+        in-memory credential. Only the per-turn identity-change sweep opts into the
+        deferral; sign-out keeps the cancel path.
+        """
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        # The default recorder reports ("run-1",) for any key: this parent has a
+        # live child the sign-out must cancel.
+        snapshotted, seen, cb = self._recorder()
+        mgr.set_child_teardown_handler(cb)
+        await mgr.get_or_create("dashboard:chat-9")
+        mgr.release("dashboard:chat-9")
+
+        with patch(
+            "kiro_crew.session._provider_uses_kiro_identity_store",
+            return_value=True,
+        ):
+            retired, complete = await mgr.retire_kiro_identity_sessions()
+
+        assert retired == ["dashboard:chat-9"]  # retired, not spared
+        assert seen == [("run-1",)]  # the child WAS cancelled
+        assert snapshotted == ["dashboard:chat-9"]  # teardown snapshot taken
+        assert complete is True
+        assert "dashboard:chat-9" not in mgr._sessions
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_identity_retire_still_retires_an_idle_childless_parent(self, cfg):
+        """A parent with no live children is still retired by the sweep."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        # No child for this key, so nothing keeps the sweep from retiring it.
+        _snapshotted, seen, cb = self._recorder({"dashboard:chat-9": ()})
         mgr.set_child_teardown_handler(cb)
         await mgr.get_or_create("dashboard:chat-9")
         mgr.release("dashboard:chat-9")
@@ -7216,7 +7292,8 @@ class TestParentEndCancelsItsChildren:
             retired, _complete = await mgr.retire_kiro_identity_sessions()
 
         assert retired == ["dashboard:chat-9"]
-        assert seen == [("run-1",)]
+        assert seen == [()]  # cancel invoked for the retired key, but with no run id
+        assert "dashboard:chat-9" not in mgr._sessions
         await mgr.close_all()
 
     @pytest.mark.asyncio
@@ -7447,6 +7524,73 @@ class TestParentEndCancelsItsChildren:
             "an approval-parked child escaped the teardown entirely, so approving it "
             "later injects into whatever session that key serves by then"
         )
+
+    @pytest.mark.asyncio
+    async def test_has_live_or_queued_children_is_a_pure_live_queued_probe(self):
+        """The deferral probe answers live-or-queued, and mutates nothing.
+
+        It is the read the identity sweep uses to decide whether to DEFER a parent
+        rather than retire it. Unlike ``snapshot_teardown_children_impl`` it arms no
+        delivery gate, clears no follow-ups and cancels no watcher, so a spared
+        parent keeps its children's completion path intact.
+        """
+        from types import SimpleNamespace
+
+        from kiro_crew.subagent_manager.cancellation import CancellationCoordinator
+
+        def _run(agent_id, *, done, awaiting=False, started=123.0):
+            return SimpleNamespace(
+                id=agent_id,
+                parent_session_key="dashboard:chat-9",
+                done=done,
+                _awaiting_approval=awaiting,
+                _exec_started=started,
+                pending_followups=["fu-1"],
+            )
+
+        class _Manager:
+            def __init__(self, agents, queue=None, dispatch=None):
+                self._agents = agents
+                self._queue = queue or []
+                self._undurable_in_dispatch = dispatch or {}
+                self._teardown_cancelled_ids = set()
+                self._followup_watchers: dict = {}
+                self._followup_watcher_infos: dict = {}
+
+        # A live child -> True.
+        live_mgr = _Manager({"run-1": _run("run-1", done=False)})
+        live = CancellationCoordinator(live_mgr)  # type: ignore[arg-type]
+        assert live.has_live_or_queued_children_impl("dashboard:chat-9") is True
+        # Pure: nothing was marked or torn down.
+        assert live_mgr._teardown_cancelled_ids == set()
+        assert live_mgr._agents["run-1"].pending_followups == ["fu-1"]
+
+        # A queued child with a preassigned id -> True.
+        queued_mgr = _Manager(
+            {},
+            queue=[{"parent_session_key": "dashboard:chat-9", "_preassigned_id": "q-1"}],
+        )
+        queued = CancellationCoordinator(queued_mgr)  # type: ignore[arg-type]
+        assert queued.has_live_or_queued_children_impl("dashboard:chat-9") is True
+
+        # Only a finished child, or one parked at a spawn approval, or a resume
+        # row -> False (nothing a retirement would cancel).
+        idle_mgr = _Manager(
+            {
+                "done": _run("done", done=True),
+                "parked": _run("parked", done=False, awaiting=True, started=None),
+            },
+            queue=[
+                {
+                    "parent_session_key": "dashboard:chat-9",
+                    "_preassigned_id": "r-1",
+                    "_resume_id": "r-1",
+                }
+            ],
+        )
+        idle = CancellationCoordinator(idle_mgr)  # type: ignore[arg-type]
+        assert idle.has_live_or_queued_children_impl("dashboard:chat-9") is False
+        assert idle.has_live_or_queued_children_impl("") is False
 
     @pytest.mark.asyncio
     async def test_a_finished_but_undelivered_child_is_gated_without_being_cancelled(self):
@@ -8074,9 +8218,11 @@ class TestParentEndCancelsItsChildren:
         the one path nobody exercises -- which is why it is parametrized over every site
         rather than demonstrated once.
 
-        The verbs keep their own error contracts: ``reset`` re-raises after the cancel,
-        ``retire_kiro_identity_sessions`` turns the failure into a warning and leaves the
-        key unretired, and the rest propagate. None of them may lose the children.
+        ``reset`` re-raises after the cancel and the rest propagate; none may lose the
+        children. ``retire_kiro_identity_sessions`` runs on its default
+        ``spare_children=False`` (the sign-out / external-logout path): the deferral is
+        gated behind ``spare_children``, so this path retires an idle parent even with
+        live children and must still cancel them when the shutdown raises.
         """
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         _snapshotted, cancelled, handler = self._recorder()
@@ -8098,7 +8244,12 @@ class TestParentEndCancelsItsChildren:
             # ``first_turn``, and nothing holding the semaphore.
             mgr.release("dashboard:chat-9")
             mgr._sessions["dashboard:chat-9"].first_turn = object()
-        elif verb == "retire_kiro_identity_sessions":
+
+        if verb == "retire_kiro_identity_sessions":
+            # The sweep acts only on an idle (released) session whose provider uses the
+            # kiro identity store, and on its default path (spare_children=False) it
+            # retires the parent even though it has a live child -- so the failing
+            # shutdown must still cancel that child.
             mgr.release("dashboard:chat-9")
 
         if verb == "reset":
@@ -8108,22 +8259,55 @@ class TestParentEndCancelsItsChildren:
         else:
             await_call = getattr(mgr, verb)("dashboard:chat-9")
 
-        with contextlib.suppress(RuntimeError):
-            if verb == "retire_kiro_identity_sessions":
-                # The identity marker is what selects a session for this sweep, and the
-                # sweep reports a failure rather than raising it.
-                with patch(
-                    "kiro_crew.session._provider_uses_kiro_identity_store",
-                    return_value=True,
-                ):
+        if verb == "retire_kiro_identity_sessions":
+            with patch(
+                "kiro_crew.session._provider_uses_kiro_identity_store",
+                return_value=True,
+            ):
+                with contextlib.suppress(RuntimeError):
                     await mgr.retire_kiro_identity_sessions()
-            else:
+        else:
+            with contextlib.suppress(RuntimeError):
                 await await_call
 
         assert cancelled == [("run-1",)], (
             f"{verb}: a failing provider shutdown skipped the child cancel, so the "
             f"children outlived the parent: {cancelled}"
         )
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_failing_retire_shutdown_warns_and_leaves_the_key(self, cfg):
+        """A childless retire whose provider shutdown raises becomes a warning.
+
+        This exercises the retire path with no child present (distinct from the
+        parametrized case above, which proves a child IS cancelled on a failing
+        shutdown). The contract: a shutdown that raises is turned into a warning and
+        the key is left unretired, rather than propagating out of the sweep.
+        """
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        # Childless, so the sweep retires it and reaches the shutdown path.
+        _snapshotted, cancelled, handler = self._recorder({"dashboard:chat-9": ()})
+        mgr.set_child_teardown_handler(handler)
+        await mgr.get_or_create("dashboard:chat-9")
+        mgr.release("dashboard:chat-9")
+
+        async def _boom():
+            raise RuntimeError("provider shutdown failed")
+
+        mgr._sessions["dashboard:chat-9"].provider.shutdown = _boom  # type: ignore[method-assign]
+
+        with patch(
+            "kiro_crew.session._provider_uses_kiro_identity_store",
+            return_value=True,
+        ):
+            retired, complete = await mgr.retire_kiro_identity_sessions()
+
+        # The failing shutdown is swallowed into a warning: the key is not reported
+        # retired, and the sweep reports incomplete.
+        assert retired == []
+        assert complete is False
+        assert cancelled == [()]  # cancel still runs in the finally, with no run id
         await mgr.close_all()
 
     @pytest.mark.asyncio

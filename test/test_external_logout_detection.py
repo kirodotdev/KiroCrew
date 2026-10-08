@@ -1494,7 +1494,9 @@ class TestLatchNarrowingPolicy:
             self._complete = complete
             self.calls = 0
 
-        async def retire_kiro_identity_sessions(self, fingerprint: str = ""):
+        async def retire_kiro_identity_sessions(
+            self, fingerprint: str = "", *, spare_children: bool = False
+        ):
             self.calls += 1
             return ([], self._complete)
 
@@ -1666,11 +1668,15 @@ class TestReturnToBaselineAfterIncompleteSweep:
             self._complete = complete
             self.calls = 0
             self.swept_with: list[str] = []
+            self.spare_children_calls: list[bool] = []
             self.pending_identity_sweep_fingerprint = ""
 
-        async def retire_kiro_identity_sessions(self, fingerprint: str = ""):
+        async def retire_kiro_identity_sessions(
+            self, fingerprint: str = "", *, spare_children: bool = False
+        ):
             self.calls += 1
             self.swept_with.append(fingerprint)
+            self.spare_children_calls.append(spare_children)
             # Kept while a sweep stays incomplete; cleared the moment one completes.
             self.pending_identity_sweep_fingerprint = "" if self._complete else fingerprint
             return ([], self._complete)
@@ -1693,7 +1699,9 @@ class TestReturnToBaselineAfterIncompleteSweep:
         state = self._State(service, sessions)
         await chat_runner._retire_sessions_on_identity_change(state)
         assert sessions.calls == 1
-        # Incomplete, so the baseline stayed at A while B is outstanding.
+        # The per-turn identity-change path opts into the live-children deferral
+        # (sign-out keeps the default and cancels).
+        assert sessions.spare_children_calls == [True]
         assert service._session_identity == fp_a
         pending_b = sessions.pending_identity_sweep_fingerprint
         assert pending_b and pending_b != fp_a
@@ -1719,6 +1727,49 @@ class TestReturnToBaselineAfterIncompleteSweep:
         assert sessions.calls == 2, "the B holders were left serving under B"
         # The retry is captured afresh under the account now in use, not B's.
         assert sessions.swept_with[-1] != pending_b
+
+    @pytest.mark.asyncio
+    async def test_an_external_logout_cancels_children_on_the_per_turn_path(
+        self, tmp_path: Path
+    ) -> None:
+        """An external ``kiro-cli logout`` is the fail-safe case, not a defer.
+
+        The per-turn sweep is the only path that catches an external logout (it
+        never goes through the sign-out handler). There the live fingerprint is
+        empty, the account is gone, and an idle parent's children MUST be
+        cancelled rather than deferred -- so the per-turn caller passes
+        ``spare_children=bool(live)``, which is False here. Only a switch
+        between two real accounts (non-empty live) defers.
+        """
+
+        from kiro_crew.dashboard import chat_runner
+
+        db = kp.kiro_identity_store_path("linux", tmp_path, {})
+        _write_store(db)
+        service = kp.KiroPrerequisiteService(home=tmp_path, environ={}, platform_name="linux")
+        fp_a = await service.current_identity_fingerprint()
+        service._stamp_probe(fp_a)
+        service.note_sessions_reconciled(fp_a)
+
+        # External logout: the store is wiped, so the live read is empty.
+        con = sqlite3.connect(str(db))
+        with con:
+            con.execute("DELETE FROM auth_kv")
+            con.execute("DELETE FROM state")
+        con.close()
+        _expire_identity_cache(service)
+
+        changed, live = await service.identity_changed_since_sessions()
+        assert changed is True and live == ""
+
+        sessions = self._Sessions(complete=True)
+        state = self._State(service, sessions)
+        await chat_runner._retire_sessions_on_identity_change(state)
+
+        assert sessions.calls == 1
+        assert sessions.swept_with == [""]
+        # Empty live => the deferral is NOT requested => children are cancelled.
+        assert sessions.spare_children_calls == [False]
 
     @pytest.mark.asyncio
     async def test_an_incomplete_sweep_retries_even_for_the_live_account(

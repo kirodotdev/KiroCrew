@@ -3156,7 +3156,16 @@ async def _retire_sessions_on_identity_change(state: Any) -> None:
             pending = getattr(sessions, "pending_identity_sweep_fingerprint", "")
             if not pending:
                 return
-        retired, complete = await sessions.retire_kiro_identity_sessions(fingerprint=live)
+        # Defer an idle parent's live children only when the live fingerprint
+        # is a real account: an empty ``live`` is an external logout (or an
+        # unreadable store), where the children must be cancelled rather than
+        # left running on a credential that is gone -- the same fail-safe the
+        # sign-out path takes. Only a proven switch between two real accounts
+        # (non-empty ``live``) defers, which is the per-turn regression being
+        # fixed.
+        retired, complete = await sessions.retire_kiro_identity_sessions(
+            fingerprint=live, spare_children=bool(live)
+        )
         # Advance THIS consumer's baseline ONLY on a complete sweep AND a real
         # identity. Anything left running -- a busy session, a child that would not
         # shut down, a start still in flight -- is still holding the previous

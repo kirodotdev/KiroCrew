@@ -6278,6 +6278,15 @@ class SubagentManager:
     async def cancel_for_parent(self, parent_session_key: str) -> tuple[int, int]:
         return await self._cancellation.cancel_for_parent_impl(parent_session_key)
 
+    def has_live_or_queued_children(self, parent_session_key: str) -> bool:
+        """Whether *parent_session_key* owns a live or queued run, read with no await.
+
+        A side-effect-free query, unlike :meth:`snapshot_teardown_children` which
+        arms the delivery gate and tears down follow-ups. Lets a caller decide whether
+        to defer a parent's retirement without touching its children's completion path.
+        """
+        return self._cancellation.has_live_or_queued_children_impl(parent_session_key)
+
     def snapshot_teardown_children(self, parent_session_key: str) -> tuple[str, ...]:
         """Run ids under *parent_session_key*, taken with no await. Parent-end use.
 

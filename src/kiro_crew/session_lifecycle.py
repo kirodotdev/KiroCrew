@@ -510,6 +510,8 @@ class _ChildTeardownHandler(Protocol):
 
     def snapshot_teardown_children(self, parent_session_key: str) -> tuple[str, ...]: ...
 
+    def has_live_or_queued_children(self, parent_session_key: str) -> bool: ...
+
     async def cancel_for_teardown(
         self,
         agent_ids: "Sequence[str]",
@@ -1696,6 +1698,26 @@ class SessionLifecycleService:
         # caller's own identity is not lost: the line's ``key`` carries it.
         await self._cancel_parent_children(key, teardown_children, verb="end_children_for")
 
+    def _parent_has_live_children(self, key: str) -> bool:
+        """Whether *key* owns a live or queued run, read synchronously and purely.
+
+        The deferral decision needs the live/queued answer WITHOUT the teardown:
+        :meth:`_snapshot_parent_children` arms the delivery gate, clears
+        ``pending_followups`` and cancels the follow-up watchers as it reads, so
+        calling it when the parent is being SPARED would discard exactly the
+        children's completions the sparing is meant to preserve. This asks the
+        same question with no side effect. Called under ``owner._lock`` for the
+        same no-drift reason the snapshot is.
+        """
+        handler = self._child_teardown
+        if handler is None or not key:
+            return False
+        try:
+            return handler.has_live_or_queued_children(key)
+        except Exception:
+            self._deps.logger.exception("Parent end %s: reading sub-agents failed", key)
+            return False
+
     def _snapshot_parent_children(self, key: str) -> tuple[str, ...]:
         """The runs *key* owns, read synchronously so the answer cannot drift.
 
@@ -1962,7 +1984,9 @@ class SessionLifecycleService:
             )
         return flagged
 
-    async def retire_kiro_identity_sessions(self, fingerprint: str = "") -> tuple[list[str], bool]:
+    async def retire_kiro_identity_sessions(
+        self, fingerprint: str = "", *, spare_children: bool = False
+    ) -> tuple[list[str], bool]:
         """Retire idle Kiro-backed processes after an identity-store change.
 
         The start-permit barrier is acquired before the registry scan, making
@@ -1980,6 +2004,19 @@ class SessionLifecycleService:
         nor counted against completeness -- because retiring it buys nothing
         and costs its in-flight children (see the loop). Empty means the store
         could not be read: nothing is spared (and see the comment at the fence).
+
+        *spare_children* is the per-turn identity-change path opting an idle
+        parent with live ``spawn_run`` children OUT of retirement: the sweep
+        there fires on every chat turn, so cancelling those children as a
+        "provider shutdown" each turn is a regression, and deferring the parent
+        lets them finish. It is False by default so the sign-out path
+        (``_retire_runtimes_after_sign_out``) keeps the cancel behaviour: on
+        sign-out the parent and its children MUST be retired, or the children
+        keep running on the signed-out account's in-memory credential. The
+        chat-turn caller passes ``bool(live)``: it defers only on a switch
+        between two real accounts, and an empty live fingerprint (an external
+        logout, which never reaches the sign-out handler) keeps the cancel
+        path for the same reason sign-out does.
         """
         owner = self._owner
         logger = self._deps.logger
@@ -2054,6 +2091,41 @@ class SessionLifecycleService:
                                 else "busy"
                             )
                             waiting_on.append(f"{key} ({holder})")
+                            continue
+                        # An idle parent that ended its turn with ``spawn_run``
+                        # children still running passes the semaphore test above,
+                        # so retiring it here cancels those children as "provider
+                        # shutdown" every turn any chat takes while the sweep stays
+                        # incomplete. Treat live children the same way a mid-turn
+                        # session is treated: defer with ``retire_on_identity_change``
+                        # and leave the sweep incomplete, so the children outlive the
+                        # turn and the parent is recycled only once it is idle.
+                        #
+                        # The probe is the side-effect-free
+                        # ``_parent_has_live_children``, NOT ``_snapshot_parent_children``:
+                        # the snapshot arms the delivery gate, clears follow-ups and
+                        # cancels follow-up watchers, which would drop the completions
+                        # the sparing is meant to keep. A deferred parent is refused a
+                        # turn by session allocation (``_claim_turn`` sees
+                        # ``retire_on_identity_change``) and evicted by
+                        # ``_evict_stale_session``, which shuts the parent's provider
+                        # down WITHOUT ``_cancel_parent_children`` -- so the children
+                        # survive the eviction and their completions reach the successor
+                        # under the key.
+                        #
+                        # Only when ``spare_children`` is set: the per-turn
+                        # identity-change sweep opts in, because it fires every turn and
+                        # cancelling live children each time is the regression. That
+                        # caller passes ``bool(live)``, so it defers only on a switch
+                        # between two real accounts; an empty live fingerprint (an
+                        # external logout) and the sign-out path both leave it False --
+                        # there the parent AND its children must be retired, or the
+                        # children keep running on a credential that is gone.
+                        if spare_children and self._parent_has_live_children(key):
+                            sess.retire_on_identity_change = True
+                            invalidated_keys.append(key)
+                            skipped = True
+                            waiting_on.append(f"{key} (subagents)")
                             continue
                         del owner._sessions[key]
                         owner._advance_session_generation(key)
