@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type HTMLAttributes, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type HTMLAttributes, type ReactNode, type Ref } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { AlarmClock, Brain, ChevronLeft, ChevronRight, Cpu, FolderOpen, Goal, IdCard, NotebookPen, Pencil, Route, Shield, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -14,6 +14,10 @@ import ErrorNotice from '../../components/ErrorNotice'
 /** The card's four tabs, in strip order (crewmate-panel IA sketch). */
 export const PROFILE_TABS = ['profile', 'schedule', 'sessions', 'goals'] as const
 export type ProfileTab = (typeof PROFILE_TABS)[number]
+/** The head face's side. Exported so the page's face flight can render its
+ *  copy at this size (the larger of the two faces, so the pill-sized end is a
+ *  scale-down and never a blurry scale-up). */
+export const PROFILE_FACE_PX = 84
 
 /** A page the card pushes OVER its tabs (iOS push: one back control pointing at
  *  the card), for the things a tab opens in place: the full description, the
@@ -32,10 +36,14 @@ export interface CrewProfilePanelProps {
   memoryLabel: string
   /** Which tab opens first. */
   initialTab?: ProfileTab
-  /** Shared-layout id for the head face. Set when the card took the header
-   *  pill's place, so the pill's face slides into this one (one face on screen,
-   *  never two); undefined when the pill stays (the card floats beside it). */
-  faceLayoutId?: string
+  /** The head face's element, for the page's face flight (#18236): the page
+   *  measures where this face sits to fly the pill's face into it (and out of
+   *  it again) ABOVE the card, since this face lives inside the card's clipped,
+   *  scrolling body and could never travel there itself. */
+  faceRef?: Ref<HTMLSpanElement>
+  /** Hold the head face's place but paint nothing: the page's flight copy is
+   *  the one face on screen until it lands here. */
+  faceHidden?: boolean
   /** The schedules that wake this crewmate, as the page already reads them. */
   schedules: CronJob[]
   schedulesLoading: boolean
@@ -250,9 +258,14 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
           {...coveredProps}
         >
           <div className="relative flex flex-col items-center gap-1.5 pt-5 pb-3 text-center">
-            <motion.span layoutId={p.faceLayoutId} className="flex rounded-full" data-testid="crew-profile-face">
-              <CrewStateAvatar seed={p.member.name} avatar={p.member.avatar} slotKey={p.slotKey} running={p.running} size={84} working="full" />
-            </motion.span>
+            <span
+              ref={p.faceRef}
+              className="flex rounded-full"
+              style={p.faceHidden ? { visibility: 'hidden' } : undefined}
+              data-testid="crew-profile-face"
+            >
+              <CrewStateAvatar seed={p.member.name} avatar={p.member.avatar} slotKey={p.slotKey} running={p.running} size={PROFILE_FACE_PX} working="full" />
+            </span>
             {/* Face and name only: the id, the role and the activity line were
                 dropped from the head (they live in the pill and the editor). */}
             <div className="mt-1 text-[19px] font-bold tracking-tight text-text-strong leading-tight" data-testid="crew-profile-name">{name}</div>

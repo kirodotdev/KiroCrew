@@ -1021,9 +1021,24 @@ the chat
 SidePanel is closed on a non-phone viewport, Profile takes a 34%-of-row in-flow
 column and narrows the thread. On phones it always floats over the thread: the
 composed column is wider than a 320px viewport and must never be added there. The
-pill unmounts in the non-phone column state and its `CrewStateAvatar` shares a Framer
-Motion `layoutId` with the card's head avatar: one face moves from the pill to the
-card rather than two faces cross-fading. Opening SidePanel collapses that Profile
+pill unmounts in the non-phone column state and its face flies to the card's head:
+one face moves rather than two faces cross-fading. The flight is `CrewFaceFlight`, a
+copy of the face portaled to `document.body` (`fixed`, `z-[60]`, `pointer-events-none`,
+`data-testid="crew-face-flight"`) tweened on framer's own default layout
+clock (`FACE_FLIGHT_SECS`, the `defaultLayoutTransition` the `layoutId` flight ran on) from the departing face's box to the landing face's box, which is
+re-read every frame because the landing face moves while the column reveals or folds;
+both real faces hold their place with `visibility: hidden` until it lands, and reduced
+motion or a face with no box (jsdom) is a plain swap. It is NOT a framer `layoutId`
+shared by the two faces (#18236): a shared element travels inside whichever surface
+owns it, so the card's face was clipped by the card's rounded `overflow-hidden`
+shell, its scrolling body and the width-revealing aside until it was already inside
+them, and the pill's face was painted under the thread and the folding card, both
+later siblings of the header. The docked column's `AnimatePresence` keeps one slot
+in both placements, so closing it runs its width exit and the leaving card's face
+stays measurable as the flight's origin; the presence is keyed on the card's
+placement, so a column RE-PLACED as the floating card (the window crossed below
+`md`) is dropped at once with no exit and no flight — a phone-width viewport never
+holds the column beside the floating card. Opening SidePanel collapses that Profile
 column and restores the pill. If SidePanel is already open, or the viewport is a
 phone, the pill opens Profile as a full-height, rounded hover card centred
 horizontally in the chat width the open SidePanel leaves; both surfaces remain

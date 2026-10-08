@@ -1153,6 +1153,88 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(screen.getAllByTestId('crew-profile-face')).toHaveLength(1)
     expect(screen.getByTestId('crew-profile-name')).toHaveTextContent('oncall')
     expect(screen.getByTestId('crew-profile-tabs')).toBeInTheDocument()
+    // jsdom lays nothing out, so the pill's face had no box to depart from: a
+    // plain swap, no flight copy — the one-face invariant holds the cheap way.
+    expect(screen.queryByTestId('crew-face-flight')).toBeNull()
+    expect(screen.getByTestId('crew-profile-face')).not.toHaveStyle({ visibility: 'hidden' })
+  })
+
+  it('docking Profile flies the face as its own copy above the page, then lands it in the card', async () => {
+    // #18236: the face used to be a framer `layoutId` shared by the pill and
+    // the card head, travelling INSIDE the card — clipped by its rounded shell
+    // and scrolling body, and under the thread on the way back. The flight is
+    // now a portaled copy, and both real faces hold their place unpainted while
+    // it is up, so there is still exactly one face on screen.
+    localStorage.setItem(PANEL_OPEN_KEY, '0')
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    const pillFace = await screen.findByTestId('member-pill-face')
+    // Give the departing face the box a laid-out pill has.
+    vi.spyOn(pillFace, 'getBoundingClientRect').mockReturnValue(
+      { x: 640, y: 14, left: 640, top: 14, right: 670, bottom: 44, width: 30, height: 30, toJSON: () => ({}) } as DOMRect,
+    )
+    fireEvent.click(screen.getByTestId('member-identity-pill'))
+
+    const flight = await screen.findByTestId('crew-face-flight')
+    // Above every surface, outside the card's clip chain, and not a target.
+    expect(flight.parentElement).toBe(document.body)
+    expect(flight).toHaveAttribute('aria-hidden', 'true')
+    expect(flight.className).toMatch(/\bfixed\b/)
+    expect(flight.className).toMatch(/pointer-events-none/)
+    // The copy is the crewmate's face (decorative img, as the real ones are).
+    expect(flight.querySelector('img')).not.toBeNull()
+    // One face: the card's own is unpainted until the copy lands on it.
+    expect(screen.getByTestId('crew-profile-face')).toHaveStyle({ visibility: 'hidden' })
+
+    await waitFor(() => expect(screen.queryByTestId('crew-face-flight')).toBeNull(), { timeout: 3000 })
+    expect(screen.getByTestId('crew-profile-face')).not.toHaveStyle({ visibility: 'hidden' })
+  })
+
+  it('re-docking during the undock exit leaves the card face painted once the flight lands', async () => {
+    // The undock hides the LEAVING card's face by an inline style, since props
+    // cannot reach an exiting AnimatePresence child. A re-dock opens a new card
+    // (keyed on its open nonce), so that node, and its style, never comes back.
+    localStorage.setItem(PANEL_OPEN_KEY, '0')
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    const box = (left: number, size: number) =>
+      ({ x: left, y: 14, left, top: 14, right: left + size, bottom: 14 + size, width: size, height: size, toJSON: () => ({}) }) as DOMRect
+    vi.spyOn(await screen.findByTestId('member-pill-face'), 'getBoundingClientRect').mockReturnValue(box(640, 30))
+    fireEvent.click(screen.getByTestId('member-identity-pill'))
+    await screen.findByTestId('crew-face-flight')
+    await waitFor(() => expect(screen.queryByTestId('crew-face-flight')).toBeNull(), { timeout: 3000 })
+    // Undock with a measurable card face, then re-dock before anything settles.
+    vi.spyOn(screen.getByTestId('crew-profile-face'), 'getBoundingClientRect').mockReturnValue(box(900, 84))
+    fireEvent.click(screen.getByTestId('crew-profile-close'))
+    await screen.findByTestId('crew-face-flight')
+    vi.spyOn(await screen.findByTestId('member-pill-face'), 'getBoundingClientRect').mockReturnValue(box(640, 30))
+    fireEvent.click(screen.getByTestId('member-identity-pill'))
+    await waitFor(() => expect(screen.queryByTestId('crew-face-flight')).toBeNull(), { timeout: 3000 })
+    const faces = screen.getAllByTestId('crew-profile-face')
+    expect(faces).toHaveLength(1)
+    expect(faces[0]).not.toHaveStyle({ visibility: 'hidden' })
+  })
+
+  it('leaving the crewmate mid-flight drops the flight, so the next open starts with a painted pill face', async () => {
+    // The copy unmounts with the crewmate before its onComplete; without the
+    // clear, the stale flight replayed the old face and hid the next pill face.
+    localStorage.setItem(PANEL_OPEN_KEY, '0')
+    await renderPage([
+      row({ name: 'oncall', slug: 'oncall', bound: true, slot_key: 'member-oncall' }),
+      row({ name: 'research', slug: 'research', bound: true, slot_key: 'member-research' }),
+    ])
+    fireEvent.click(await rosterRow('oncall'))
+    const pillFace = await screen.findByTestId('member-pill-face')
+    vi.spyOn(pillFace, 'getBoundingClientRect').mockReturnValue(
+      { x: 640, y: 14, left: 640, top: 14, right: 670, bottom: 44, width: 30, height: 30, toJSON: () => ({}) } as DOMRect,
+    )
+    fireEvent.click(screen.getByTestId('member-identity-pill'))
+    await screen.findByTestId('crew-face-flight')
+
+    fireEvent.click(await rosterRow('research'))
+    await waitFor(() => expect(screen.getByTestId('member-identity-pill')).toHaveTextContent('research'))
+    expect(screen.queryByTestId('crew-face-flight')).toBeNull()
+    expect(screen.getByTestId('member-pill-face')).not.toHaveStyle({ visibility: 'hidden' })
   })
 
   it('opening the side panel folds a docked profile away and restores the pill', async () => {
@@ -1213,6 +1295,11 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     fireEvent.click(await rosterRow('oncall'))
     fireEvent.click(await screen.findByTestId('member-identity-pill'))
     await screen.findByTestId('crew-profile-docked')
+    // Give the docked card's face a box: a re-placement must not read it as a
+    // close and fly the face out (the floating card takes over the same ref).
+    vi.spyOn(screen.getByTestId('crew-profile-face'), 'getBoundingClientRect').mockReturnValue(
+      { x: 900, y: 60, left: 900, top: 60, right: 984, bottom: 144, width: 84, height: 84, toJSON: () => ({}) } as DOMRect,
+    )
     // useIsMobile re-reads matchMedia on a window resize and re-keys on the
     // function's identity, so swapping the function and firing `resize` is a
     // live breakpoint crossing. Restored BY VALUE below: happy-dom exposes
@@ -1233,10 +1320,21 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
       }))
       setWindowWidth(390)
       act(() => { window.dispatchEvent(new Event('resize')) })
-      await waitFor(() => expect(screen.queryByTestId('crew-profile-docked')).toBeNull())
+      // The column is dropped AT ONCE, without its width exit: a phone-width
+      // viewport never holds the in-flow column beside the floating card, not
+      // even for the exit's 0.26s, and only one card and one card face exist.
+      await screen.findByTestId('crew-profile-modal')
+      expect(screen.queryByTestId('crew-profile-docked')).toBeNull()
+      expect(screen.getAllByTestId('crew-profile-card')).toHaveLength(1)
+      expect(screen.getAllByTestId('crew-profile-face')).toHaveLength(1)
       expect(screen.getByTestId('crew-profile-modal')).toBeInTheDocument()
       expect(screen.getByTestId('crew-profile-panel')).toBeInTheDocument()
       expect(screen.getByTestId('member-identity-pill')).toHaveAttribute('aria-expanded', 'true')
+      // Still one card, no flight: the floating card's face is painted, the
+      // pill's face too, and no copy is in the air.
+      expect(screen.queryByTestId('crew-face-flight')).toBeNull()
+      expect(screen.getByTestId('crew-profile-face')).not.toHaveStyle({ visibility: 'hidden' })
+      expect(screen.getByTestId('member-pill-face')).not.toHaveStyle({ visibility: 'hidden' })
     } finally {
       window.matchMedia = orig
       setWindowWidth(WIDE_WINDOW)

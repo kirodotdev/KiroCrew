@@ -40,7 +40,7 @@
  * it shows the New crewmate hero instead. Below md nothing auto-opens (the
  * phone's two-level list rule).
  */
-import { Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, Check, ChevronRight, Circle, Goal, LayoutDashboard, Loader2, MessageCircleQuestionMark, Plus, RotateCw, Sparkles, Square, Star, Users, X, Zap } from 'lucide-react'
 import { usePreviewFlag } from '../../hooks/usePreviewFlag'
@@ -118,7 +118,7 @@ import type { ThreadHooks } from '../../app-sdk/messageRenderers'
 import { threadsApi, threadsQueryKey } from '../../api/threads'
 import ThreadPanel from './ThreadPanel'
 import CrewmateSwitcher from './CrewmateSwitcher'
-import CrewProfilePanel, { type ProfileTab } from './CrewProfilePanel'
+import CrewProfilePanel, { PROFILE_FACE_PX, type ProfileTab } from './CrewProfilePanel'
 import { createPortal } from 'react-dom'
 import { useCrewmateThreadsFlag } from '../../hooks/useCrewmateThreadsFlag'
 import { CrewDashboardFrame } from './CrewWebview'
@@ -143,7 +143,7 @@ import {
   type MemberSignals, type MemberSort, type MemberSourceFilter, type MemberStatusFilter, type RosterQuery,
 } from './rosterFilter'
 import { defaultAgentQuery } from '../../api/defaultAgentQuery'
-import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
+import { AnimatePresence, animate, motion, useReducedMotion } from 'framer-motion'
 import { isSidePanelHidden, shouldMountSidePanel, sidePanelDockMotion } from '../chat/sidePanelMount'
 import SidePanel, { SIDE_PANEL_MIN_W, SIDE_PANEL_RESERVED_W, type SidePanelLeadingTab, type SidePanelWithholdable } from '../chat/SidePanel'
 import { useRailWidth } from '../../hooks/useRailWidth'
@@ -357,10 +357,81 @@ const SORT_KEY = 'mc-members-sort'
  *  a per-member state, so the choice follows the user across members and
  *  reloads exactly as the chat page's own panel flag does. */
 const PANEL_OPEN_KEY = 'mc-members-panel-open'
-/** Shared-layout id of the crewmate's face: the pill's face and the docked
- *  card's head face are the SAME element, so only one is ever on screen and the
- *  one slides into the other (framer `layoutId`). */
-const CREW_FACE_LAYOUT_ID = 'crew-identity-face'
+/** The crewmate's face in flight between the identity pill and the docked
+ *  Profile card's head: one face moves, two never cross-fade. It used to be a
+ *  framer `layoutId` shared by the two faces, but the shared element travels
+ *  INSIDE whichever surface owns it: the card's face is clipped by the card's
+ *  rounded `overflow-hidden` shell, its scrolling body and the width-revealing
+ *  aside until it is already inside them, and the pill's face is painted under
+ *  the thread and the closing card, both later siblings of the header (#18236).
+ *  So the flight is its own copy, portaled to `document.body` above every
+ *  surface, while both real faces hold their place unpainted. `from` is the
+ *  departing face measured before it went; `to` is read live each frame because
+ *  the landing face moves while the card's column reveals or folds. */
+interface FaceFlight {
+  key: number
+  seed: string
+  avatar: unknown
+  slotKey: string
+  running: boolean
+  from: DOMRect
+  to: () => DOMRect | null
+}
+/** Framer's own `defaultLayoutTransition` (motion-dom, create-projection-node:
+ *  0.45s, cubic-bezier 0.4/0/0.1/1) — the clock the shared `layoutId` flight
+ *  ran on, kept to the number so the copy moves exactly as that one did and
+ *  the only visible change is that it stays on top. */
+const FACE_FLIGHT_SECS = 0.45
+const FACE_FLIGHT_EASE: [number, number, number, number] = [0.4, 0, 0.1, 1]
+
+function CrewFaceFlight({ flight, onDone }: { flight: FaceFlight; onDone: () => void }) {
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    // The copy is drawn at the card face's side and scaled, so its pill-sized
+    // end is a scale-down of a sharp raster, not a blurry scale-up. The scale
+    // would shrink the face's corner radius and hairline border with it, while
+    // the real faces at either end draw both at their fixed CSS size — the
+    // corner visibly snapped on landing — so the two are counter-scaled to
+    // hold their on-screen size for the whole flight.
+    const img = el.querySelector('img')
+    const rest = img ? getComputedStyle(img) : null
+    const restRadius = rest ? parseFloat(rest.borderRadius) || 0 : 0
+    const restBorder = rest ? parseFloat(rest.borderWidth) || 0 : 0
+    const place = (left: number, top: number, side: number) => {
+      const k = side / PROFILE_FACE_PX
+      el.style.transform = `translate(${left}px, ${top}px) scale(${k})`
+      if (img) {
+        img.style.borderRadius = `${restRadius / k}px`
+        img.style.borderWidth = `${restBorder / k}px`
+      }
+    }
+    const { from } = flight
+    place(from.left, from.top, from.width)
+    const ctrl = animate(0, 1, {
+      duration: FACE_FLIGHT_SECS,
+      ease: FACE_FLIGHT_EASE,
+      onUpdate: (p) => {
+        const to = flight.to() ?? from
+        place(from.left + (to.left - from.left) * p, from.top + (to.top - from.top) * p, from.width + (to.width - from.width) * p)
+      },
+      onComplete: onDone,
+    })
+    return () => ctrl.stop()
+  }, [flight, onDone])
+  return createPortal(
+    <div
+      ref={ref}
+      className="fixed left-0 top-0 z-[60] pointer-events-none origin-top-left will-change-transform"
+      aria-hidden="true"
+      data-testid="crew-face-flight"
+    >
+      <CrewStateAvatar seed={flight.seed} avatar={flight.avatar} slotKey={flight.slotKey} running={flight.running} size={PROFILE_FACE_PX} working="full" />
+    </div>,
+    document.body,
+  )
+}
 /** Static key per menu row — a map, not a template, so `check-i18n-keys` can
  *  resolve every reference (assembled keys are a counted blind spot there). */
 const SOURCE_LABEL_KEY: Record<Exclude<MemberSourceFilter, 'all'>, string> = {
@@ -1276,7 +1347,16 @@ export default function MembersPage() {
   // window widens.
   const [dockedOpen, setDockedOpen] = usePersistedBool(PANEL_OPEN_KEY, true)
   const { panelVisible, showOpener } = panelChrome({ beside, dockedOpen, overlayOpen })
+  // The two real faces the flight copy departs from and lands on (#18236), and
+  // the pill face's box taken HERE, on open: by the time the dock commits the
+  // pill has already given way to its placeholder and there is nothing left to
+  // measure. Undock measures the card face in the layout effect instead — the
+  // closing column stays mounted through its exit.
+  const pillFaceRef = useRef<HTMLSpanElement>(null)
+  const cardFaceRef = useRef<HTMLSpanElement>(null)
+  const flightFromRef = useRef<DOMRect | null>(null)
   const openProfile = useCallback((tab: ProfileTab = 'profile') => {
+    flightFromRef.current = pillFaceRef.current?.getBoundingClientRect() ?? null
     setProfile((current) => ({
       tab,
       placement: isMobile || panelVisible ? 'floating' : 'column',
@@ -2617,6 +2697,48 @@ export default function MembersPage() {
   // The roster badge's mount/unmount tween honours the OS motion preference:
   // the state change still happens, it just cuts instead of fading.
   const reduceMotion = useReducedMotion()
+  // Whether Profile holds its in-flow column right now — the state whose two
+  // flips the face flies on. Floating opens and closes fly nothing: the pill
+  // stays, so the face never changes place.
+  const profileDocked = !!activeView && !!profile && profile.placement === 'column'
+  const [faceFlight, setFaceFlight] = useState<FaceFlight | null>(null)
+  const flightKeyRef = useRef(0)
+  const wasDockedRef = useRef(profileDocked)
+  useLayoutEffect(() => {
+    const was = wasDockedRef.current
+    wasDockedRef.current = profileDocked
+    if (was === profileDocked) return
+    // A column re-placed as the floating card (the window crossed below md) is
+    // still the open card, not a close: the pill comes back beside it and the
+    // face does not move. Measuring here would read the floating card's face,
+    // which took over `cardFaceRef`, and hide it.
+    if (!profileDocked && profile) { flightFromRef.current = null; return }
+    const from = profileDocked ? flightFromRef.current : cardFaceRef.current?.getBoundingClientRect() ?? null
+    flightFromRef.current = null
+    // No box to depart from (reduced motion, a never-laid-out face, a dock that
+    // came from somewhere other than the pill) means a plain swap, not a flight.
+    if (reduceMotion || !active || !from || from.width === 0) return
+    // The folding card is AnimatePresence's exiting child, re-rendered with the
+    // props it left with — `faceHidden` can no longer reach it — so its face is
+    // unpainted here, on the element, for the rest of its exit.
+    if (!profileDocked && cardFaceRef.current) cardFaceRef.current.style.visibility = 'hidden'
+    const target = profileDocked ? cardFaceRef : pillFaceRef
+    setFaceFlight({
+      key: ++flightKeyRef.current,
+      seed: active.name,
+      avatar: active.avatar,
+      slotKey: activeSlot || active.slot_key || '',
+      running: !!isRunning(active),
+      from,
+      to: () => target.current?.getBoundingClientRect() ?? null,
+    })
+  }, [profileDocked, profile, reduceMotion, active, activeSlot, isRunning])
+  const endFaceFlight = useCallback(() => setFaceFlight(null), [])
+  // A flight belongs to the crewmate it was measured on. Leaving that crewmate
+  // mid-flight (Back, a bare /members, a team open) unmounts the copy before its
+  // `onComplete`, so the state is cleared here or the next crewmate's open would
+  // replay the old face from the old box and keep its own pill face hidden.
+  useEffect(() => { setFaceFlight(null) }, [activeName])
 
   // Open a member's thread and remember it as the last one opened. Called by
   // the URL sync effect only (plus the same-member re-click below), so every
@@ -3753,9 +3875,15 @@ export default function MembersPage() {
               >
                 {/* The same reactive CrewStateAvatar as before — a plain face,
                     no scrim, no badge (issue #9425). */}
-                {/* The face is a shared layout element: when the card docks and the
-                    pill steps out, the same face slides into the card's head. */}
-                <motion.span layoutId={CREW_FACE_LAYOUT_ID} className="relative flex shrink-0 rounded-full">
+                {/* When the card docks and the pill steps out, the face flies to
+                    the card's head as `CrewFaceFlight`'s copy, above everything;
+                    this one holds its place unpainted while a flight is up. */}
+                <span
+                  ref={pillFaceRef}
+                  className="relative flex shrink-0 rounded-full"
+                  style={faceFlight ? { visibility: 'hidden' } : undefined}
+                  data-testid="member-pill-face"
+                >
                   <CrewStateAvatar
                     seed={active.name}
                     avatar={active.avatar}
@@ -3765,7 +3893,7 @@ export default function MembersPage() {
                     working="full"
                   />
                   <CrewLoopIndicator on={isLoopOn(active)} testId="member-pill-loop-indicator" />
-                </motion.span>
+                </span>
                 <div className="min-w-0 leading-tight">
                   {/* Title row = name (+ the ID when a label covers it). */}
                   <div className="min-w-0 flex items-center gap-1.5" data-testid="member-title-row">
@@ -4317,7 +4445,8 @@ export default function MembersPage() {
               newScheduleBody={schedulesBody}
               sessionsBody={sessionsBody}
               notesBody={notesBody}
-              faceLayoutId={profile.placement === 'column' ? CREW_FACE_LAYOUT_ID : undefined}
+              faceRef={cardFaceRef}
+              faceHidden={!!faceFlight}
               onClose={requestCloseProfile}
               onRequestBack={requestProfileBack}
               onEdit={() => setEditingCrew(active.name)}
@@ -4333,11 +4462,15 @@ export default function MembersPage() {
           // containing block, which is exactly the chat width the side panel leaves),
           // and a click outside it closes it. No scrim: the thread stays readable
           // beside it.
-          const profileDocked = !!profilePanel && profile?.placement === 'column'
           // The column reveals on the chat page's width axis (so the thread
           // narrows instead of jumping), while the face slides over from the pill.
+          // Keyed on the placement: a column RE-PLACED as the floating card (the
+          // window crossed below md) remounts the presence and drops the aside at
+          // once, with no width exit — the floating card is already up, and a
+          // phone-width viewport must never hold the in-flow column, not even for
+          // the 0.26s the exit would take. A close keeps the key and plays it.
           const dockedSurface = (
-            <AnimatePresence initial={false}>
+            <AnimatePresence initial={false} key={profile?.placement === 'floating' ? 'crew-profile-re-placed' : 'crew-profile-column'}>
               {profileDocked && (
                 <motion.aside
                   key="crew-profile-docked"
@@ -4450,7 +4583,13 @@ export default function MembersPage() {
             ? { initial: { x: 0 }, animate: { x: 0 }, exit: { x: 0 } }
             : { initial: { x: '100%' }, animate: { x: 0 }, exit: { x: '100%' } }
           return (<>
-            {profileDocked ? profileSurface : <>{dockedSurface}{profileSurface}</>}
+            {faceFlight && <CrewFaceFlight key={faceFlight.key} flight={faceFlight} onDone={endFaceFlight} />}
+            {/* The docked column's AnimatePresence keeps ONE slot in both states,
+                so folding it runs its exit (a column that swapped against a
+                fragment here was unmounted outright, no width tween) and the
+                leaving card's face stays measurable for the flight. */}
+            {dockedSurface}
+            {profileDocked ? null : profileSurface}
             <AnimatePresence initial={false}>
               {panelMounted && (
                 <motion.div
