@@ -36,6 +36,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_END_TURN,
     AcpEvent,
 )
+from kiro_crew.dashboard.state import row_mid
 
 
 class _FakeSlot:
@@ -61,6 +62,10 @@ class _FakeSlot:
             }
         )
         return fut
+
+    def approval_instance(self, request_id: str, message: dict | None = None) -> str | None:
+        """No row here carries a mid, so no request reports one."""
+        return None
 
     def resolved_for(self, request_id: str) -> str | None:
         for msg in self.messages:
@@ -186,10 +191,15 @@ class TestRunnerBackstopContract:
         ``UnboundLocalError`` and the card is never retired -- the orphan.
         """
         record = await run_turn(_prompt_turn(answers={"req-1": CANCEL_TURN}))
+        [card] = [row for row in record.window if row.get("role") == "permission"]
+        # A native frame names its origin and the card it retires, so a client
+        # removes that card and not another request's under the same id.
         assert record.frames("approval_resolved")[-1].payload == {
             "id": "req-1",
             "approved": False,
             "slot": "chat-1",
+            "origin": "native",
+            "mid": row_mid(card),
         }
         assert _card_resolution(record) == "rejected"
         assert record.stop_reason == "failed: CancelledError"

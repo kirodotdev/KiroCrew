@@ -61,17 +61,34 @@ describe('dynamic dashboard facade contracts', () => {
     expect(fetchMock.mock.calls).toEqual([['/api/sessions/slot%20a%2Fb/crew-log/projection/work', { headers: { 'X-Session-Key': 'dashboard:ui' } }]])
   })
 
-  it('retains approval purpose and coordinator scope without changing legacy resolution', async () => {
+  it('retains approval purpose and coordinator scope, and offers no bare-id decide', async () => {
     const approvals = [{ id: 'request/id', tool_purpose: 'Check changes', slot: 'slack:thread/id' }]
     fetchMock.mockResolvedValue(res(200, approvals))
     await expect(api.approvals()).resolves.toEqual(approvals)
     expect(fetchMock.mock.calls[0]).toEqual(['/api/approvals'])
-    await api.resolveApproval('request/id', 'reject_once', { origin: 'coordinator', slot: 'slack:thread/id', instance: 'inst-1' })
+    await api.decideApproval({ origin: 'coordinator', id: 'request/id', slot: 'slack:thread/id', instance: 'inst-1' }, 'reject_once')
     expect(lastCall()).toEqual(['/api/approvals/request%2Fid/reject_once?origin=coordinator&slot=slack%3Athread%2Fid&instance=inst-1', {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Session-Key': 'dashboard:ui' }, body: '{}',
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Session-Key': 'dashboard:ui' }, body: expect.stringMatching(/^\{"response_id":"r_[^"]+"\}$/),
     }])
-    await api.resolveApproval('legacy', 'reject_once')
-    expect(lastCall()[0]).toBe('/api/approvals/legacy/reject_once')
+    // The bare-id decide is gone: an id alone recurs and names no request.
+    expect(Object.hasOwn(api, 'resolveApproval')).toBe(false)
+  })
+
+  it('every decide names its click: a response id is minted when the caller passes none', async () => {
+    fetchMock.mockResolvedValue(res(200, { ok: true }))
+    await api.decideApproval({ origin: 'native', id: 'ap-1', slot: 's1', mid: 'm1' }, 'approve')
+    expect(JSON.parse(lastCall()[1].body as string).response_id).toMatch(/^r_/)
+    await api.decideApproval({ origin: 'coordinator', id: 'ap-2', slot: 's1', instance: 'i1' }, 'approve')
+    expect(JSON.parse(lastCall()[1].body as string).response_id).toMatch(/^r_/)
+    // A caller's own id is sent as given, so a retry of one click replays.
+    await api.decideApproval({ origin: 'native', id: 'ap-1', slot: 's1', mid: 'm1' }, 'approve', 'r_fixed')
+    expect(JSON.parse(lastCall()[1].body as string).response_id).toBe('r_fixed')
+  })
+
+  it('decides a slotless task gate by its instance alone', async () => {
+    fetchMock.mockResolvedValue(res(200, { ok: true }))
+    await api.decideApproval({ origin: 'coordinator', id: 'task-gate-1-ab', slot: '', instance: 'inst-1' }, 'approve')
+    expect(lastCall()[0]).toBe('/api/approvals/task-gate-1-ab/approve?origin=coordinator&slot=&instance=inst-1')
   })
 })
 

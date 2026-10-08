@@ -210,18 +210,18 @@ describe('useWebSocket connection lifecycle', () => {
 
   it('rehydrates approvals and question cards the socket missed', async () => {
     ;(api.approvals as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
-      { id: 'ap-missed', slot: ACTIVE, source: 'cron', tool: 'execute_bash', tool_input: '{}', tool_call_id: 'tc-1', ts: 3 },
-      // Already in the feed: skipped rather than delivered twice.
-      { id: 'ap-known', slot: ACTIVE, source: 'cron', tool: 'execute_bash', ts: 4 },
+      { id: 'ap-missed', instance: 'inst-ap-missed', slot: ACTIVE, source: 'cron', tool: 'execute_bash', tool_input: '{}', tool_call_id: 'tc-1', ts: 3 },
+      // Already in the feed: its note is not delivered twice.
+      { id: 'ap-known', instance: 'inst-ap-known', slot: ACTIVE, source: 'cron', tool: 'execute_bash', ts: 4 },
       // No slot: feed only.
-      { id: 'ap-global' },
+      { id: 'ap-global', instance: 'inst-ap-global' },
     ])
     ;(api.pendingQuestions as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
       { ask_id: 'ask-missed', slot: ACTIVE, questions: [{ question: 'Resume?', options: [{ label: 'Yes' }] }] },
     ])
     // The dedupe check reads the SINGLETON feed.
     globalStore.dispatch(addNotification({
-      kind: 'approval', title: 'known', body: '', ts: '4', approval_id: 'ap-known',
+      kind: 'approval', title: 'known', body: '', ts: '4', approval_id: 'ap-known', approval_instance: 'inst-ap-known', slot: ACTIVE,
     } as Parameters<typeof addNotification>[0]))
 
     try {
@@ -233,8 +233,11 @@ describe('useWebSocket connection lifecycle', () => {
       expect(notifs.filter(n => n.approval_id === 'ap-missed')).toHaveLength(1)
       expect(notifs.some(n => n.approval_id === 'ap-known')).toBe(false)
       expect(notifs.some(n => n.approval_id === 'ap-global')).toBe(true)
-      // Only the slot-owning approval got an inline card.
-      expect(testStore.getState().chat.messages.filter(m => m.role === 'permission')).toHaveLength(1)
+      // Each slot-owning approval gets its inline card, including the one the
+      // feed already held (a fresh tab has the stored note but no chat row);
+      // the slotless one gets none.
+      expect(testStore.getState().chat.messages.filter(m => m.role === 'permission').map(m => m.meta?.approval_id))
+        .toEqual(['ap-missed', 'ap-known'])
       expect(testStore.getState().chat.pendingQuestions[ACTIVE]?.ask_id).toBe('ask-missed')
       expect(result.current.forceReconnect).toBeTypeOf('function')
     } finally {

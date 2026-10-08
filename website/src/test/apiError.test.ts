@@ -98,6 +98,8 @@ describe('isTerminalApprovalRefusal', () => {
     ['a duck-typed 404 from a mocked client', Object.assign(new Error('gone'), { status: 404 }), true],
     ['an auth-required 404', new ApiError(404, 'sign in again', '', true), false],
     ['any other 400', new ApiError(400, 'unknown action'), false],
+    ['a lost race: 409 already_resolved', new ApiError(409, 'already answered', JSON.stringify({ code: 'already_resolved' })), true],
+    ['any other 409', new ApiError(409, 'conflict', JSON.stringify({ code: 'busy' })), false],
     ['a transport failure', new Error('Failed to fetch'), false],
     ['a non-object rejection', 'nope', false],
   ])('classifies %s', (_label, err, terminal) => {
