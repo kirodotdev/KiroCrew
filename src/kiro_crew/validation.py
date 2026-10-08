@@ -2161,6 +2161,21 @@ _ARTIFACT_KIND_RE = re.compile(r"^(widget|html|markdown|svg|json|text|image|weba
 # must be alphanumeric so a value can never be parsed as a CLI flag, and the
 # charset covers real model ids (gpt-5.6-sol, claude-sonnet-4.6) only.
 MODEL_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$")
+# Model identifiers stored in the model-picker VISIBILITY list
+# (``dashboard.model_picker_hidden_models``). Unlike ``MODEL_ID_RE`` these are
+# never passed to a CLI; they are display-only state that mirrors a provider's
+# OWN advertised catalog, which carries fully-qualified ids the CLI grammar
+# forbids -- ``provider/model``, ``vendor/~profile/model``, ``model:batch``,
+# ``model[1m]`` and dotted/colon inference-profile ids such as
+# ``anthropic.claude-sonnet-4-20250514-v1:0``. So the charset is widened to the
+# punctuation those catalog ids use, while still barring whitespace and control
+# characters (first char alphanumeric, bounded length) so a value can never be
+# an empty/blank entry or a control-character injection.
+MODEL_PICKER_HIDDEN_MODEL_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._:/~\[\]@-]{0,254}$")
+#: Upper bound on entries in a single model-picker visibility delta. Large
+#: adapter catalogs can hold many hundreds of models; this bound stays generous
+#: while keeping the request size finite.
+MODEL_PICKER_HIDDEN_MODELS_MAX = 2048
 _ARTIFACT_SOURCE_RE = re.compile(r"^(chat|cron|subagent|manual|import)$")
 # Single source of truth: the MCP save/update field cap MUST equal the store's
 # own content cap, else the tool path rejects content the store would accept

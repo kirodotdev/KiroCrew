@@ -285,6 +285,8 @@ from kiro_crew.security import (  # noqa: F401
 from kiro_crew.validation import (  # noqa: F401
     FILE_READ_SCHEMA,
     MODEL_ID_RE,
+    MODEL_PICKER_HIDDEN_MODEL_ID_RE,
+    MODEL_PICKER_HIDDEN_MODELS_MAX,
     ValidationError,
     validate_tool_args,
 )

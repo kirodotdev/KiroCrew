@@ -143,12 +143,24 @@ async def test_dashboard_put_rejects_invalid_delta_values(handler_app, field):
 
 @pytest.mark.asyncio
 async def test_dashboard_put_rejects_oversized_list(handler_app):
+    from kiro_crew.validation import MODEL_PICKER_HIDDEN_MODELS_MAX
+
     async with TestClient(TestServer(handler_app)) as client:
+        # A delta at the cap is accepted; one entry over the cap is rejected.
+        at_cap = [f"model-{i}" for i in range(MODEL_PICKER_HIDDEN_MODELS_MAX)]
         response = await client.put(
             "/api/dashboard/config",
-            json={"model_picker_hidden_models_add": [f"model-{i}" for i in range(129)]},
+            json={"model_picker_hidden_models_add": at_cap},
+        )
+        assert response.status == 200, await response.json()
+
+        over_cap = [f"model-{i}" for i in range(MODEL_PICKER_HIDDEN_MODELS_MAX + 1)]
+        response = await client.put(
+            "/api/dashboard/config",
+            json={"model_picker_hidden_models_add": over_cap},
         )
         assert response.status == 400
+        assert (await response.json())["code"] == "invalid_model_picker_hidden_models"
 
 
 @pytest.mark.asyncio
@@ -259,3 +271,90 @@ async def test_migrated_customizer_stays_configured_after_restore(handler_app, c
         )
         assert response.status == 200
         assert KiroCrewConfig.load().dashboard.model_picker_configured is True
+
+
+# ---------------------------------------------------------------------------
+# Catalog IDs and large catalogs.
+#
+# The visibility list stores advertised/catalog model IDs for display; it does
+# not run them as CLI arguments, so a visibility-specific grammar accepts the
+# qualified IDs a provider's own catalog carries, and the delta cap is sized
+# for large catalogs.
+# ---------------------------------------------------------------------------
+
+_CATALOG_IDS = [
+    "provider/model-a",
+    "provider/~vendor/model-a",
+    "provider/model-a:batch",
+    "provider/model-a[1m]",
+    "anthropic.claude-sonnet-4-20250514-v1:0",
+    "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "field",
+    ["model_picker_hidden_models_add", "model_picker_hidden_models_remove"],
+)
+@pytest.mark.parametrize("catalog_id", _CATALOG_IDS)
+async def test_dashboard_put_accepts_qualified_catalog_ids(handler_app, field, catalog_id):
+    async with TestClient(TestServer(handler_app)) as client:
+        response = await client.put("/api/dashboard/config", json={field: [catalog_id]})
+        assert response.status == 200, await response.json()
+
+
+@pytest.mark.asyncio
+async def test_dashboard_put_round_trips_qualified_catalog_ids(handler_app):
+    async with TestClient(TestServer(handler_app)) as client:
+        response = await client.put(
+            "/api/dashboard/config",
+            json={"model_picker_hidden_models_add": _CATALOG_IDS},
+        )
+        assert response.status == 200, await response.json()
+        body = await (await client.get("/api/dashboard/config")).json()
+        assert body["model_picker_hidden_models"] == _CATALOG_IDS
+
+        response = await client.put(
+            "/api/dashboard/config",
+            json={"model_picker_hidden_models_remove": ["provider/model-a:batch"]},
+        )
+        assert response.status == 200
+        body = await (await client.get("/api/dashboard/config")).json()
+        assert "provider/model-a:batch" not in body["model_picker_hidden_models"]
+        assert "provider/model-a" in body["model_picker_hidden_models"]
+
+
+@pytest.mark.asyncio
+async def test_dashboard_put_accepts_large_catalog_delta(handler_app):
+    async with TestClient(TestServer(handler_app)) as client:
+        ids = [f"model-{i}" for i in range(412)]
+        response = await client.put(
+            "/api/dashboard/config",
+            json={"model_picker_hidden_models_add": ids},
+        )
+        assert response.status == 200, await response.json()
+        body = await (await client.get("/api/dashboard/config")).json()
+        assert body["model_picker_hidden_models"] == ids
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bad_id",
+    [
+        "bad model",  # whitespace is still rejected
+        "has\ttab",  # control character
+        "has\nnewline",  # control character
+        "/leading-slash",  # first char must be alphanumeric
+        "-leading-dash",  # first char must be alphanumeric
+        "a" * 300,  # exceeds the per-item length bound
+    ],
+)
+async def test_dashboard_put_still_rejects_invalid_visibility_ids(handler_app, bad_id):
+    async with TestClient(TestServer(handler_app)) as client:
+        response = await client.put(
+            "/api/dashboard/config",
+            json={"model_picker_hidden_models_add": [bad_id]},
+        )
+        assert response.status == 400
+        assert (await response.json())["code"] == "invalid_model_picker_hidden_models"

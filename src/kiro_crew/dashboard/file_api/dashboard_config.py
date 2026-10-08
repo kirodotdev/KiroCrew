@@ -12,7 +12,8 @@ if TYPE_CHECKING:
         LINK_PATTERN_PATTERN_MAX_LEN,
         LINK_PATTERN_URL_MAX_LEN,
         LINK_PATTERNS_MAX,
-        MODEL_ID_RE,
+        MODEL_PICKER_HIDDEN_MODEL_ID_RE,
+        MODEL_PICKER_HIDDEN_MODELS_MAX,
         VALID_MEMORY_MODES,
         _body_err_code,
         _sel,
@@ -127,13 +128,16 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             # mypy checks this owner before the handlers module, defers the
             # function, and loses the outer narrowing of ``body`` here.
             val = body[field]  # type: ignore[index]
-            if not isinstance(val, list) or len(val) > 128:
+            if not isinstance(val, list) or len(val) > MODEL_PICKER_HIDDEN_MODELS_MAX:
                 _sel().log_tool_invocation(
                     session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
                 )
                 return None, web.json_response(
                     {
-                        "error": f"{field} must be an array of at most 128 model IDs",
+                        "error": (
+                            f"{field} must be an array of at most "
+                            f"{MODEL_PICKER_HIDDEN_MODELS_MAX} model IDs"
+                        ),
                         "code": "invalid_model_picker_hidden_models",
                     },
                     status=400,
@@ -157,7 +161,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
                 model = raw_model.strip()
                 if not model or model == "auto":
                     continue
-                if not MODEL_ID_RE.fullmatch(model):
+                if not MODEL_PICKER_HIDDEN_MODEL_ID_RE.fullmatch(model):
                     _sel().log_tool_invocation(
                         session_key="dashboard",
                         tool_name="dashboard_config_write",
