@@ -1792,6 +1792,14 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
         _cron_add_fail("message is required for an agent job (only --script/--command may omit it)")
     if agent and not _AGENT_NAME_RE.match(agent):
         _cron_add_fail("invalid agent name (alphanumeric, hyphens, underscores; 1-64 chars)")
+    # ``--agent`` is the CLI's only field for naming either a provider template or
+    # a crew member. Resolve the split the same way every create surface does, so
+    # a member name is captured as a member selection (``member_id``) instead of a
+    # bare template id the cron chat's reply path cannot resolve. ``agent_id`` stays
+    # a pure template field, as the record contract requires.
+    from kiro_crew.cron_service.identity import split_cron_agent_member
+
+    agent, member_id = split_cron_agent_member(agent, "")
     if timeout is not None:
         if not zero_token:
             _cron_add_fail("--timeout applies only to a --script or --command job")
@@ -1976,6 +1984,12 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
             timeout=int(timeout) if timeout else 0,
             timeout_secs=int(timeout_secs) if timeout_secs else 0,
         )
+        # ``member_id`` rides in the call ONLY when ``--agent`` resolved to a
+        # crew member; a non-member (template or default) agent keeps the exact
+        # add_job call shape the create contract pins, so no member kwarg leaks
+        # into the common path.
+        if member_id:
+            fields["member_id"] = member_id
         if managed_by is not None:
             job = svc.add_managed_job(managed_by, **fields)
         else:
