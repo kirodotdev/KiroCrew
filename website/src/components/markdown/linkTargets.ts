@@ -1,7 +1,7 @@
 import { useContext } from 'react'
 import type { Element as HastElement } from 'hast'
 import { safeHttpUrl } from '../../lib/safeUrl'
-import { sessionKeyFrom, sessionKeyFromShort } from '../../utils/sessionKeys'
+import { classifyShortName, sessionKeyFrom } from '../../utils/sessionKeys'
 import { LinkUnfurlCtx, type SessionActions, type SidebarFolderActions } from './contexts'
 
 /**
@@ -107,13 +107,60 @@ export function soleLinkInParagraph(node?: HastElement): { href: string; text: s
  * answer for is refused by the second rule above, like any other unknown key.
  */
 export function resolveSessionChip(raw: string, actions: SessionActions): { key: string; title: string } | null {
-  if (!actions.onSessionOpen || !actions.sessions) return null
-  const key = sessionKeyFrom(raw)
-    ?? sessionKeyFromShort(raw, actions.sessions.keys(), actions.writtenAtEpoch)
-  if (!key || key === actions.activeSession) return null
-  const title = actions.sessions.get(key)
-  if (title === undefined) return null
-  return { key, title }
+  // Delegate to the one classifier, the same way `sessionKeyFromShort` delegates
+  // to `classifyShortName`: the chip is exactly the switchable case, so there is
+  // no second copy of the handler / roster / active-key guard to drift from.
+  const c = classifySessionLink(raw, actions)
+  return c.kind === 'open' ? { key: c.key, title: c.title } : null
+}
+
+/**
+ * What a `?sid=` link's sid IS, from the ONE roster lookup — the SINGLE place the
+ * handler / roster / active-key guard lives. `MdAnchor` reads the affordance
+ * (muted vs live) and the hover tooltip off this, and `resolveSessionChip`
+ * returns its `open` case, so a link, a bare key and a chip naming one session
+ * can never disagree. A second copy drifts: a key spelling added to one lookup
+ * alone would leave the other saying the opposite, which is exactly the false
+ * "not open" tooltip this fixes.
+ *
+ *   - `open`      — resolves to a switchable session (the chip case). Live link.
+ *   - `active`    — resolves to the session the reader is already in. Muted, and
+ *                   NO "not open" tooltip: it is open, so that would be false.
+ *   - `not-open`  — a full key the roster does not hold, or a short name whose
+ *                   number no open slot answers to. Muted, and the only case that
+ *                   earns the "not open" tooltip, because here it is TRUE.
+ *   - `unresolved`— a short name we cannot pin to one open slot though it may name
+ *                   one: ambiguous (two open slots share the number) or no message
+ *                   timestamp. Muted, but SILENT — "not open" would be a guess.
+ *   - `not-routing`— the renderer cannot route sessions (handler or roster not
+ *                   wired). The link stays an ordinary navigating anchor.
+ */
+export type SessionLinkClass =
+  | { kind: 'open'; key: string; title: string }
+  | { kind: 'active' }
+  | { kind: 'not-open' }
+  | { kind: 'unresolved' }
+  | { kind: 'not-routing' }
+
+export function classifySessionLink(raw: string, actions: SessionActions): SessionLinkClass {
+  if (!actions.onSessionOpen || !actions.sessions) return { kind: 'not-routing' }
+  const roster = actions.sessions
+  // A full key names its generation exactly, independent of any write time. A
+  // short name goes through the roster ONCE, and its outcome also says WHY it did
+  // not resolve — the distinction a "not open" tooltip needs.
+  const fullKey = sessionKeyFrom(raw)
+  const short = fullKey ? null : classifyShortName(raw, roster.keys(), actions.writtenAtEpoch)
+  const key = fullKey ?? (short!.kind === 'resolved' ? short!.key : null)
+  if (key) {
+    if (key === actions.activeSession) return { kind: 'active' }
+    const title = roster.get(key)
+    // A key the roster does not hold is a session that is not open.
+    return title === undefined ? { kind: 'not-open' } : { kind: 'open', key, title }
+  }
+  // No key, so this is a short name (a full key always yields a key above).
+  // Distinguish "no open slot has this number" (truly not open) from "cannot pin
+  // to one" (ambiguous / no write time — may well be open, so stay silent).
+  return short!.kind === 'no-match' ? { kind: 'not-open' } : { kind: 'unresolved' }
 }
 
 /**

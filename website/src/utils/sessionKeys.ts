@@ -117,9 +117,48 @@ export function sessionKeyFromShort(
   keys: Iterable<string>,
   writtenAtEpoch: number | undefined,
 ): string | null {
-  if (writtenAtEpoch === undefined) return null
+  const outcome = classifyShortName(raw, keys, writtenAtEpoch)
+  return outcome.kind === 'resolved' ? outcome.key : null
+}
+
+/**
+ * WHY a short name did not resolve to one open slot, not merely THAT it did not.
+ *
+ * `sessionKeyFromShort` folds every non-match into `null`, which is right for a
+ * chip — a nickname that cannot be pinned to exactly one open slot must stay
+ * plain text. But a disabled-link tooltip has to tell two of those cases apart:
+ *
+ *   - `no-match` — the roster holds no open slot with this number. The session
+ *     really is not open, so a "not open" tooltip is TRUE.
+ *   - `ambiguous` (two open slots share the number) and `no-timestamp` (the
+ *     message carries no write time, so the across-time collision cannot be
+ *     ruled out) — the named session may well be open; we simply cannot say
+ *     WHICH one. A "not open" tooltip would be a FALSE statement, so the caller
+ *     must stay silent.
+ *
+ * `not-short` means `raw` is not a short name at all (it may still be a full
+ * key — that is `sessionKeyFrom`'s job, resolved before this is consulted).
+ *
+ * The resolution loop lives here and `sessionKeyFromShort` delegates to it, so
+ * the chip and the tooltip can never disagree about which slot a nickname names.
+ */
+export type ShortNameOutcome =
+  | { kind: 'resolved'; key: string }
+  | { kind: 'no-match' }
+  | { kind: 'ambiguous' }
+  | { kind: 'no-timestamp' }
+  | { kind: 'not-short' }
+
+export function classifyShortName(
+  raw: string,
+  keys: Iterable<string>,
+  writtenAtEpoch: number | undefined,
+): ShortNameOutcome {
   const short = normalizeRunSessionKey(raw.trim())
-  if (!SESSION_SHORT_RE.test(short)) return null
+  if (!SESSION_SHORT_RE.test(short)) return { kind: 'not-short' }
+  // The write time closes the across-time collision (a slot number reused by a
+  // later generation), so without it no short name resolves — fail-closed.
+  if (writtenAtEpoch === undefined) return { kind: 'no-timestamp' }
   // The separator is part of the prefix: without it `chat-138` also claims
   // `chat-1380-…`, which is a different session.
   const prefix = `${short}-`
@@ -133,10 +172,10 @@ export function sessionKeyFromShort(
     if (!canonical.startsWith(prefix)) continue
     if (!SESSION_KEY_RE.test(canonical)) continue
     if (mintEpoch(canonical) > writtenAtEpoch) continue
-    if (found) return null
+    if (found) return { kind: 'ambiguous' }
     found = canonical
   }
-  return found
+  return found ? { kind: 'resolved', key: found } : { kind: 'no-match' }
 }
 
 /** The mint time a slot key carries, in epoch seconds. */
