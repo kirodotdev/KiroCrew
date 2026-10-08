@@ -4074,7 +4074,14 @@
       "session_approval_confirm_title": "Allow “{{name}}” to control your chats?",
       "session_approval_reconsent_notice": "{{name}} is disabled because it newly asks to control your chats. Review the permission on this page before enabling it.",
       "approve_new_permissions": "Approve new permissions",
-      "grants_reconsent_notice": "{{name}} requests new permissions in this version: {{entries}}. They stay off, and the app keeps its earlier permissions, until you approve them."
+      "grants_reconsent_notice": "This version of {{name}} asks for new permissions. They stay off until you approve them.",
+      "grants_reconsent_keep": "Ignore this to keep {{name}} on the permissions you already approved.",
+      "grants_reconsent_undo": "After you approve, you can stop {{name}} using them by disabling it.",
+      "grants_reconsent_notice_disabled": "{{name}} is off. Turn it on, then approve these new permissions here.",
+      "grant_not_approved": "not approved",
+      "grants_reconsent_api": "API access: lets the app call these {{productName}} API paths with its own token.",
+      "grants_reconsent_events": "WebSocket events: lets the app receive or send these real-time dashboard events.",
+      "grants_approved": "Approved: {{entries}}. The app can use them now."
     },
     "appsPage": {
       "action_failed": "Failed to {{action}} {{name}}",

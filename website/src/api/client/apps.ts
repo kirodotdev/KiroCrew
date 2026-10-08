@@ -79,7 +79,8 @@ export function createAppsEndpoints({ get, post, put, del, j, jfetch: fetch, ses
     getApp: (name: string) => fetch('/api/apps/' + encodeURIComponent(name)).then(j).then(normalizeInstalledApp),
     getAppManifest: (name: string) => fetch('/api/apps/' + encodeURIComponent(name) + '/manifest').then(j),
     installApp: (source: string) => post('/api/apps/install', { source }).then(j),
-    enableApp: (name: string, sessionApprovalConsent = false, grantsConsent = false) => post('/api/apps/' + encodeURIComponent(name) + '/enable', { sessionApprovalConsent, grantsConsent }).then(j),
+    // grantsConsent names the staged entries the owner was shown; only those are approved.
+    enableApp: (name: string, sessionApprovalConsent = false, grantsConsent?: { api: string[]; events: string[] }) => post('/api/apps/' + encodeURIComponent(name) + '/enable', grantsConsent ? { sessionApprovalConsent, grantsConsent } : { sessionApprovalConsent }).then(j),
     disableApp: (name: string) => post('/api/apps/' + encodeURIComponent(name) + '/disable').then(j),
     openApp: (name: string) => post('/api/apps/' + encodeURIComponent(name) + '/open').then(j),
     uninstallApp: (name: string, keepData = true, keepDependencies?: boolean, keepSpecific?: string[]) =>

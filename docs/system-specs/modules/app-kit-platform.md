@@ -1579,22 +1579,65 @@ is written disabled, SEL caller `app_register`). App updates retain the prior
 tree until the replacement and its metadata are durable, so a failed update
 restores the old manifest and enabled state together. A replacement manifest
 that removes the flag clears any lingering `sessionApprovalConsentPending` bit.
+
 `permissions.api` and `permissions.events` are read live as well, and an update
-that adds any entry to either is staged rather than disabled: `update_app` and
-`register_external_app` record the entries the owner last approved in
-`installed.json` `consentedGrants` (SEL operation `grants_widened`, outcome
-`staged`) and return `notice: "grants_reconsent"`; the app stays enabled, and
-every enforcement point -- `token_auth._app_api_allowlist`,
+that adds any entry to either is held back rather than disabled. Each app stores
+the entries the owner has approved in `approved-grants.json`
+(`{"api": [...], "events": [...]}`) beside `installed.json`, and every
+enforcement point -- `token_auth._app_api_allowlist`,
 `ws_event_scope._read_declared_events`, and the hook context's event bus via
-`approved_manifest_permissions` -- grants only declared entries that are also in
-that set (`staged_app_grants`). A later update keeps the original baseline, and
-one back inside it clears the record. The detail page lists the held-back entries
-and its "Approve new permissions" button posts `/enable` with `grantsConsent:
-true` (owner-gated), which clears the record; the caches pick it up within their
-refresh interval. Failure direction is closed: an unreadable old manifest gives an
-empty baseline, a malformed `consentedGrants` record approves nothing, and an app
-directory with no readable record (corrupt, or mid-update between the tree swap
-and the new record) grants no `permissions.api` entry.
+`approved_manifest_permissions` -- grants only entries the live manifest
+declares AND that file holds (`staged_app_grants`, which reads the manifest,
+the record and the file fresh on each call). The set has its own file so that
+the many `installed.json` writers (dev mode, enable/disable, provenance, the
+builtin sync) structurally cannot write a stale copy of it: only the
+grant-owning paths below touch it, each with one atomic write, and no lock is
+needed.
+
+- **Writing the set.** `install_app` and a first `register_external_app` store
+  what the manifest declares (installing is the consent moment), before the
+  record. `update_app` and a re-registration store the previous set limited to
+  what the new manifest still declares, so an added entry is not approved and a
+  dropped one must be approved again if a later version brings it back; when
+  anything is held back `update_app` logs SEL `grants_widened` / `staged`
+  (caller `app_update`, or `app_register` for a re-registration) and says so in
+  its message, and the app stays enabled. The set only ever narrows on these
+  paths, so it is written before the manifest it goes with. `update_app` writes
+  it into the new tree before the record (the file is in `_COPY_IGNORE`, so a
+  source tree cannot ship one), and a failed update's rollback restores the old
+  tree's file with the old tree; a failed re-registration puts back the prior
+  file, or removes it if there was none. Gateway-shipped builtins carry no set:
+  they change with the gateway, not through an update.
+- **Backfill.** An install with no `approved-grants.json` (from before the file,
+  or a builtin) approves what its manifest declares, so no app loses access on
+  upgrade; its first update or re-registration takes that as the previous set.
+- **Approval.** The detail page lists the held-back entries under "API access"
+  and "WebSocket events" (the Permissions card's labels) with a plain-words line
+  for each group, and tags them "not approved" on the Permissions card. Its
+  "Approve new permissions" button posts `/enable` with `grantsConsent:
+  {"api": [...], "events": [...]}` naming the entries the owner was shown
+  (owner-gated; any other value approves nothing). `enable_app` adds only those
+  entries, and only while the live manifest still declares them, to the file;
+  an entry declared after the owner looked stays held back (SEL
+  `grants_approved` / `partial`). It refuses with `grants_manifest_unreadable`,
+  changing nothing, while the manifest cannot be read. The button is offered
+  only while the app is enabled, because the enable route would also switch a
+  disabled app on; a disabled app is told to turn it on, then approve the new
+  entries there. `get_app` and `list_apps` rows carry the set as
+  `approvedGrants`. The approved event set is part of `hook_signature`, so
+  approving events reloads the app's hooks and rebuilds its event bus; the API
+  and WebSocket caches pick an approval up within their refresh interval.
+  `get_app` is read-only, like `list_apps`.
+- **Failure direction is closed.** An install without the file whose old
+  manifest is unreadable gives an empty previous set on update; an
+  `approved-grants.json` that cannot be read, or holds anything but a mapping
+  (including `[]`, `false`, `null`), approves nothing; and an app directory with
+  no readable record (corrupt, or mid-update between the tree swap and the new
+  record) grants no entry.
+
+`sessionApprovalConsentPending` keeps its own disable-until-consent shape: that
+grant is enforced through the enabled flag on several session routes rather
+than at one gate, so it is not folded into the approved set.
 
 **Prefix grants are narrowed to owned resources on the cross-session routes.**
 `permissions.api` is a prefix match, so the routes below are judged per resource

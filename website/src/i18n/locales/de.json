@@ -9803,7 +9803,14 @@
       "session_approval_confirm_title": "„{{name}}“ die Steuerung deiner Chats erlauben?",
       "session_approval_reconsent_notice": "{{name}} ist deaktiviert, weil die App neu darum bittet, deine Chats zu steuern. Prüfe die Berechtigung auf dieser Seite, bevor du sie aktivierst.",
       "approve_new_permissions": "Neue Berechtigungen genehmigen",
-      "grants_reconsent_notice": "{{name}} fordert in dieser Version neue Berechtigungen an: {{entries}}. Sie bleiben aus, und die App behält ihre bisherigen Berechtigungen, bis du sie genehmigst."
+      "grants_reconsent_notice": "Diese Version von {{name}} fordert neue Berechtigungen an. Sie bleiben aus, bis du sie genehmigst.",
+      "grants_reconsent_keep": "Ignoriere dies, damit {{name}} bei den bereits genehmigten Berechtigungen bleibt.",
+      "grants_reconsent_undo": "Nach der Genehmigung kannst du {{name}} die Nutzung entziehen, indem du die App deaktivierst.",
+      "grants_reconsent_notice_disabled": "{{name}} ist aus. Schalte die App ein und genehmige diese neuen Berechtigungen dann hier.",
+      "grant_not_approved": "nicht genehmigt",
+      "grants_reconsent_api": "API-Zugriff: erlaubt der App, diese {{productName}}-API-Pfade mit ihrem eigenen Token aufzurufen.",
+      "grants_reconsent_events": "WebSocket-Ereignisse: erlaubt der App, diese Echtzeit-Ereignisse des Dashboards zu empfangen oder zu senden.",
+      "grants_approved": "Genehmigt: {{entries}}. Die App kann sie jetzt nutzen."
     },
     "appPage": {
       "loading_app": "App wird geladen…",

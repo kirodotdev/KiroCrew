@@ -78,8 +78,10 @@ def hook_signature(app_info: dict[str, Any]) -> tuple[Any, ...]:
 
     Folds ONLY hook-relevant inputs so a metadata write that does not touch hook
     code never forces a reload: the app version, a digest of the declared hook
-    source files' (path, mtime, size), and the ``.app_secret`` mtime (a reinstall
-    rotates it, and the live module must pick up the new secret). Deliberately
+    source files' (path, mtime, size), the ``.app_secret`` mtime (a reinstall
+    rotates it, and the live module must pick up the new secret), and the
+    approved events in ``approvedGrants`` (approving them changes what the hook context's
+    event bus may publish, and the bus is built once per load). Deliberately
     EXCLUDES two things:
 
     * ``installed.json`` mtime -- a dashboard permissions/config edit rewrites
@@ -130,6 +132,21 @@ def hook_signature(app_info: dict[str, Any]) -> tuple[Any, ...]:
         str(app_info.get("version", "")),
         digest,
         secret_mtime,
+        # The approved event set the hook context's EventBus is built from: an
+        # owner approving held-back events (``installed.json`` only, no code
+        # change) must reload the hooks, or the bus keeps refusing them.
+        _approved_events_marker(app_info),
+    )
+
+
+def _approved_events_marker(app_info: dict[str, Any]) -> tuple[str, ...] | None:
+    """``None`` for a record without an approved set, else its events, sorted."""
+    record = app_info.get("approvedGrants")
+    if record is None:
+        return None
+    events = record.get("events") if isinstance(record, dict) else None
+    return (
+        tuple(sorted(e for e in events if isinstance(e, str))) if isinstance(events, list) else ()
     )
 
 

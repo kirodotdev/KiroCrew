@@ -9932,7 +9932,14 @@
       "session_approval_confirm_title": "Consentire a «{{name}}» di controllare le tue chat?",
       "session_approval_reconsent_notice": "{{name}} è disattivata perché ora chiede di controllare le tue chat. Controlla l’autorizzazione in questa pagina prima di attivarla.",
       "approve_new_permissions": "Approva le nuove autorizzazioni",
-      "grants_reconsent_notice": "{{name}} richiede nuove autorizzazioni in questa versione: {{entries}}. Restano disattivate, e l’app mantiene le autorizzazioni precedenti, finché non le approvi."
+      "grants_reconsent_notice": "Questa versione di {{name}} chiede nuove autorizzazioni. Restano disattivate finché non le approvi.",
+      "grants_reconsent_keep": "Ignora questo avviso per lasciare {{name}} con le autorizzazioni già approvate.",
+      "grants_reconsent_undo": "Dopo l'approvazione, puoi impedire a {{name}} di usarle disattivando l'app.",
+      "grants_reconsent_notice_disabled": "{{name}} è disattivata. Attivala, poi approva qui queste nuove autorizzazioni.",
+      "grant_not_approved": "non approvata",
+      "grants_reconsent_api": "Accesso all’API: consente all’app di chiamare questi percorsi dell’API di {{productName}} con il proprio token.",
+      "grants_reconsent_events": "Eventi WebSocket: consente all’app di ricevere o inviare questi eventi della dashboard.",
+      "grants_approved": "Approvate: {{entries}}. L'app può usarle da ora."
     },
     "appPage": {
       "loading_app": "Caricamento dell'app…",

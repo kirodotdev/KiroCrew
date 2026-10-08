@@ -2008,11 +2008,20 @@ async def handle_enable_app(request: web.Request) -> web.Response:
             # same "no body" path as malformed JSON, not a 500.
             pass
     session_approval_consent = body.get("sessionApprovalConsent") is True
-    grants_consent = body.get("grantsConsent") is True
-    if session_approval_consent or grants_consent:
+    # The entries the owner was shown, as {"api": [...], "events": [...]}.
+    # Anything else approves nothing: a bare flag cannot say what was seen.
+    raw_grants = body.get("grantsConsent")
+    grants_consent: dict[str, list[str]] | None = None
+    if isinstance(raw_grants, dict):
+        grants_consent = {
+            family: [e for e in raw_grants.get(family) or [] if isinstance(e, str)]
+            for family in ("api", "events")
+            if isinstance(raw_grants.get(family) or [], list)
+        }
+    if session_approval_consent or grants_consent is not None:
         # Consent hands an app control of the OWNER's sessions, so only the
         # owner can give it. Same gate the other machine-global mutations use.
-        # Approving staged api/events grants widens the app the same way.
+        # Approving held-back api/events entries widens the app the same way.
         from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 
         denied = await require_owner_dashboard_request(request, "app_enable_session_consent")

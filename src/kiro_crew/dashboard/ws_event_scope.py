@@ -1195,11 +1195,13 @@ def _read_declared_events(app: str) -> tuple[bool, frozenset[str]]:
     if not enabled:
         return (False, frozenset())
     try:
-        manifest = get_app_manifest(app)
-        if manifest is None:
-            return (True, frozenset())
+
+        def _declared() -> list[str] | None:
+            manifest = get_app_manifest(app)
+            return None if manifest is None else list(manifest.permissions.events)
+
         # An update's added entries stay out until the owner approves them.
-        approved = staged_app_grants(app, "events", list(manifest.permissions.events))
+        approved = staged_app_grants(app, "events", _declared)
         return (True, build_allowed_event_set(approved))
     except Exception:
         logger.debug("ws_event_scope: could not reload declarations for %r", app)

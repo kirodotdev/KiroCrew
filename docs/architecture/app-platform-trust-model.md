@@ -169,10 +169,10 @@ already-trusted app from a store card shows no dialog. At first install the
 dialog's session row comes from the catalog or registry projection, not from the
 cloned manifest, so a projection that omits the flag under-discloses. The two
 sibling grants that are live-enforced, `permissions.api` and
-`permissions.events`, are staged on update instead of disabling the app: an
-added entry is withheld by every enforcement point, and the app keeps the set
-the owner approved, until the owner approves the new entries from the detail
-page (App Kit platform contracts §13). The first-install disclosure of those
+`permissions.events`, are held back on update instead of disabling the app: the
+app stores the set the owner approved in its own `approved-grants.json`, every enforcement point grants
+only declared entries in that set, and the owner approves added entries from
+the detail page (App Kit platform contracts §13). The first-install disclosure of those
 two lists, and a structured enable-route refusal that drives the dialog, are
 not covered.
 

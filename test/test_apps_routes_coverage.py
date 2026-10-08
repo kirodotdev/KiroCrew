@@ -1994,6 +1994,36 @@ class TestEnableRefusesAppTokens:
         assert routes_mod.get_app(APP)["enabled"] is True
 
     @pytest.mark.asyncio
+    async def test_grants_consent_must_name_the_entries_shown(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A bare flag cannot say what the owner saw, so it approves nothing;
+        # the object form approves exactly the entries it names.
+        from kiro_crew.apps.manager import enable_app, update_app
+
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path, permissions={"api": ["/api/sessions"]})
+        assert enable_app(APP).ok
+        v2 = tmp_path / "v2"
+        v2.mkdir()
+        assert update_app(
+            _make_app_source(
+                v2, version="2.0.0", permissions={"api": ["/api/sessions", "/api/memory"]}
+            )
+        ).ok
+        monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: None)
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+            resp = await client.post(f"/api/apps/{APP}/enable", json={"grantsConsent": True})
+            assert resp.status == 200
+            assert routes_mod.get_app(APP)["approvedGrants"]["api"] == ["/api/sessions"]
+            resp = await client.post(
+                f"/api/apps/{APP}/enable",
+                json={"grantsConsent": {"api": ["/api/memory"], "events": []}},
+            )
+            assert resp.status == 200
+        assert routes_mod.get_app(APP)["approvedGrants"]["api"] == ["/api/sessions", "/api/memory"]
+
+    @pytest.mark.asyncio
     async def test_non_owner_dashboard_user_cannot_consent(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -9674,7 +9674,14 @@
       "session_approval_confirm_title": "「{{name}}」にチャットの操作を許可しますか？",
       "session_approval_reconsent_notice": "{{name}} は新たにチャットの制御を要求するため、無効になっています。有効にする前に、このページで権限を確認してください。",
       "approve_new_permissions": "新しい権限を承認",
-      "grants_reconsent_notice": "{{name}} はこのバージョンで新しい権限を要求しています: {{entries}}。承認するまでこれらは無効のままで、アプリは以前の権限で動作します。"
+      "grants_reconsent_notice": "このバージョンの {{name}} は新しい権限を求めています。承認するまでオフのままです。",
+      "grants_reconsent_keep": "無視すると、{{name}} は承認済みの権限のまま動作します。",
+      "grants_reconsent_undo": "承認後に使用を止めるには、{{name}} を無効にします。",
+      "grants_reconsent_notice_disabled": "{{name}} はオフです。オンにしてから、ここでこれらの新しい権限を承認してください。",
+      "grant_not_approved": "未承認",
+      "grants_reconsent_api": "API アクセス: アプリが自身のトークンでこれらの {{productName}} API パスを呼び出せるようにします。",
+      "grants_reconsent_events": "WebSocket イベント: アプリがこれらのダッシュボードのリアルタイムイベントを受信または送信できるようにします。",
+      "grants_approved": "承認しました: {{entries}}。アプリは今から使用できます。"
     },
     "appPage": {
       "loading_app": "アプリを読み込み中…",

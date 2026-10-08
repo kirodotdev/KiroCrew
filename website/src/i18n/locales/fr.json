@@ -9932,7 +9932,14 @@
       "session_approval_confirm_title": "Autoriser « {{name}} » à contrôler tes chats ?",
       "session_approval_reconsent_notice": "{{name}} est désactivée, car elle demande maintenant à contrôler tes chats. Vérifie l’autorisation sur cette page avant de l’activer.",
       "approve_new_permissions": "Approuver les nouvelles autorisations",
-      "grants_reconsent_notice": "{{name}} demande de nouvelles autorisations dans cette version : {{entries}}. Elles restent désactivées, et l’app garde ses autorisations précédentes, jusqu’à ce que tu les approuves."
+      "grants_reconsent_notice": "Cette version de {{name}} demande de nouvelles autorisations. Elles restent désactivées tant que tu ne les approuves pas.",
+      "grants_reconsent_keep": "Ignore ceci pour que {{name}} garde les autorisations que tu as déjà approuvées.",
+      "grants_reconsent_undo": "Après approbation, désactive {{name}} pour l’empêcher de les utiliser.",
+      "grants_reconsent_notice_disabled": "{{name}} est désactivée. Active-la, puis approuve ces nouvelles autorisations ici.",
+      "grant_not_approved": "non approuvée",
+      "grants_reconsent_api": "Accès à l’API : permet à l’app d’appeler ces chemins de l’API {{productName}} avec son propre jeton.",
+      "grants_reconsent_events": "Événements WebSocket : permet à l’app de recevoir ou d’envoyer ces événements du tableau de bord en temps réel.",
+      "grants_approved": "Approuvées : {{entries}}. L’app peut les utiliser dès maintenant."
     },
     "appPage": {
       "loading_app": "Chargement de l'application…",

@@ -9674,7 +9674,14 @@
       "session_approval_confirm_title": "允许“{{name}}”控制你的聊天？",
       "session_approval_reconsent_notice": "{{name}} 已被禁用，因为它新增了控制你对话的请求。请在此页面查看该权限，然后再启用它。",
       "approve_new_permissions": "批准新权限",
-      "grants_reconsent_notice": "{{name}} 在此版本中请求了新权限：{{entries}}。在你批准之前，这些权限保持关闭，应用继续使用之前的权限。"
+      "grants_reconsent_notice": "此版本的 {{name}} 请求了新权限。在你批准之前，它们保持关闭。",
+      "grants_reconsent_keep": "忽略此提示，{{name}} 将继续只使用你已批准的权限。",
+      "grants_reconsent_undo": "批准后，可以通过禁用 {{name}} 让它停止使用这些权限。",
+      "grants_reconsent_notice_disabled": "{{name}} 已关闭。请先开启它，然后在此批准这些新权限。",
+      "grant_not_approved": "未批准",
+      "grants_reconsent_api": "API 访问：允许应用用自己的令牌调用这些 {{productName}} API 路径。",
+      "grants_reconsent_events": "WebSocket 事件：允许应用接收或发送这些仪表板实时事件。",
+      "grants_approved": "已批准：{{entries}}。应用现在可以使用它们。"
     },
     "appPage": {
       "loading_app": "加载应用…",

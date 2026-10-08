@@ -9932,7 +9932,14 @@
       "session_approval_confirm_title": "Permitir que “{{name}}” controle seus chats?",
       "session_approval_reconsent_notice": "{{name}} está desativado porque passou a pedir para controlar seus chats. Revise a permissão nesta página antes de ativá-lo.",
       "approve_new_permissions": "Aprovar novas permissões",
-      "grants_reconsent_notice": "{{name}} pede novas permissões nesta versão: {{entries}}. Elas ficam desativadas, e o app mantém as permissões anteriores, até você aprová-las."
+      "grants_reconsent_notice": "Esta versão de {{name}} pede novas permissões. Elas ficam desativadas até você aprová-las.",
+      "grants_reconsent_keep": "Ignore isto para manter {{name}} com as permissões que você já aprovou.",
+      "grants_reconsent_undo": "Depois de aprovar, você pode impedir que {{name}} as use desativando o app.",
+      "grants_reconsent_notice_disabled": "{{name}} está desativado. Ative-o e depois aprove estas novas permissões aqui.",
+      "grant_not_approved": "não aprovada",
+      "grants_reconsent_api": "Acesso à API: permite que o app chame estes caminhos da API do {{productName}} com o próprio token.",
+      "grants_reconsent_events": "Eventos WebSocket: permite que o app receba ou envie estes eventos do painel em tempo real.",
+      "grants_approved": "Aprovadas: {{entries}}. O app já pode usá-las."
     },
     "appPage": {
       "loading_app": "Carregando app…",
