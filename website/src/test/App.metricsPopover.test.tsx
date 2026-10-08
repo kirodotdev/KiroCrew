@@ -286,6 +286,24 @@ describe('top-bar metrics control — collapsed band opens a popover', () => {
     expect(card.textContent).toMatch(/40\/100\s*GB[\s\S]*build-box-7[\s\S]*macOS/)
   })
 
+  it('keeps the tooltip on a long dotless hostname the line truncates', async () => {
+    localStorage.setItem('mc-topbar-metrics', '1')
+    // No dots means the short form is the whole name, but the line still
+    // truncates at its max width, so the tooltip is the only way to read it.
+    const longHost = 'dev-dsk-someone-big-1a-0123456789abcdef'
+    vi.mocked(api.system).mockReset().mockResolvedValue({
+      mem_used_gb: 4.0, mem_total_gb: 16.0, cpu_pct: 25.0, disk_total_gb: 100.0, disk_free_gb: 60.0,
+      hostname: longHost, os: 'Linux 6.1.0', cpu_count: 96,
+    })
+    renderWithProviders(<App />, { route: '/chat' })
+    const readout = (await screen.findByText(/CPU 25%/)).closest('button')!
+    fireEvent.mouseEnter(readout)
+
+    const card = await screen.findByRole('tooltip', { name: /System metrics/ })
+    const host = await within(card).findByText(longHost)
+    expect(host.closest('[title]')?.getAttribute('title')).toBe(longHost)
+  })
+
   it('uses the singular form for one core and omits what the frame does not carry', async () => {
     localStorage.setItem('mc-topbar-metrics', '1')
     vi.mocked(api.system).mockReset().mockResolvedValue({

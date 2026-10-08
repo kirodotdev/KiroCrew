@@ -433,13 +433,14 @@ export function MetricsCard({ metrics }: { metrics: MetricsReadout }) {
             ))}
             {/* Which machine these readings belong to. Every instance tab
                 renders this same card from its own gateway, so the numbers
-                alone cannot say whose they are. The full name is the
-                tooltip; the line shows its first label so a long FQDN does
-                not widen the card. */}
+                alone cannot say whose they are. The line shows the first
+                label so a long FQDN does not widen the card. The tooltip
+                always carries the full name: the line truncates, so even a
+                dotless name the short form left whole can be cut off. */}
             {id && (
               <div className="border-t border-border pt-1.5 flex flex-col gap-px">
                 {id.host && (
-                  <div className="flex items-center gap-1.5 min-w-0 text-[11px] text-text" title={id.fullHost !== id.host ? id.fullHost : undefined}>
+                  <div className="flex items-center gap-1.5 min-w-0 text-[11px] text-text" title={id.fullHost}>
                     <Monitor aria-hidden="true" size={11} className="shrink-0 text-muted" />
                     <span className="font-mono truncate max-w-[13rem]">{id.host}</span>
                   </div>
