@@ -1127,8 +1127,16 @@ against sweep completeness, and are torn down at `close_all`.
   axis only: the owner-gone axis below still reaps a listed session whose owning
   slot has closed, and the RSS recycle never consults the list. A listed key that
   no slot ever claimed, such as a cron job that runs without a tab, is reaped on
-  neither axis, so only the RSS recycle, when enabled, or a restart ends it, even
-  after its job is deleted.
+  neither axis, even after its job is deleted. The RSS recycle, when enabled, or
+  a restart still ends it. So does the identity sweep
+  (`retire_kiro_identity_sessions`, which reads no list). Before each dashboard
+  chat turn (`_retire_sessions_on_identity_change` in `chat_runner.py`) it
+  retires a kiro-backed one once the live Kiro account is no longer the one it
+  was spawned under, so an account change made outside the dashboard reaches
+  such a session at the next dashboard chat turn. A Kiro sign-out from the
+  dashboard runs it at once with no live account, which retires every idle
+  kiro-backed session, whatever account each signed in with; a busy one is
+  flagged and retired later (see "Account-identity retirement").
   A session is also expired on a second, clock-independent axis: its owning
   dashboard slot is gone. `SessionCleanup._owner_is_gone()` answers that, and it
   asks a deliberately different question of two populations. A

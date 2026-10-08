@@ -2049,9 +2049,13 @@ class SessionConfig:
             "Closing a dashboard or cron tab still ends its process; a channel thread's "
             "session belongs to the channel, so closing its viewer does not. The Watchdog "
             "RSS Limit, when set, still applies. A listed session with no tab, such as a "
-            "cron job that runs without one, is reaped only by that limit or a gateway "
-            "restart, even after its job is deleted, so take a deleted job's key off the "
-            "list. At most 10 keys are kept.",
+            "cron job that runs without one, keeps running even after its job is deleted, "
+            "so take a deleted job's key off the list. The RSS limit or a gateway restart "
+            "still ends it. On the kiro-cli or KAS backend, a Kiro sign-out from the dashboard "
+            "ends it at once, whatever account it signed in with, and the next dashboard chat "
+            "turn ends it after any other switch or sign-out of the Kiro account it signed in "
+            "with. A session that is mid-turn then ends later instead, when its next turn "
+            "starts or at a later dashboard chat turn. At most 10 keys are kept.",
         ),
     )
     empty_response_auto_continue: bool = field(
