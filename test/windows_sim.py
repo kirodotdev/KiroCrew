@@ -165,6 +165,36 @@ def read_sharing_violation(
 
 
 @contextmanager
+def read_text_sharing_violation(
+    *, match: Optional[str] = None, times: int = 1
+) -> Iterator[dict]:
+    """Make ``Path.read_text()`` raise a Windows-style sharing violation.
+
+    The ``read_text`` counterpart to :func:`read_sharing_violation`. Patching
+    ``builtins.open`` does not reach ``Path.read_text``, which opens through
+    ``io.open``, so a reader that slurps a small sidecar with ``read_text``
+    needs this one. Raises ``PermissionError`` (``WinError 32``) for the first
+    *times* matching reads, then delegates to the real call. *match* filters on
+    the path (basename-equality or substring); ``None`` faults every read.
+    Yields a ``{"n": count}`` dict of how many matching reads were seen.
+    """
+    real_read_text = pathlib.Path.read_text
+    state = {"n": 0}
+
+    def _patched(self: pathlib.Path, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if match is None or self.name == match or match in str(self):
+            state["n"] += 1
+            if state["n"] <= times:
+                raise PermissionError(
+                    f"[WinError 32] simulated sharing violation reading {self}"
+                )
+        return real_read_text(self, *args, **kwargs)
+
+    with mock.patch.object(pathlib.Path, "read_text", _patched):
+        yield state
+
+
+@contextmanager
 def replace_sharing_violation(
     *, match: Optional[str] = None, times: int = 1
 ) -> Iterator[dict]:

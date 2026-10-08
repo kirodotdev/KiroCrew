@@ -33,7 +33,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from chat_test_helpers import _make_state
-from windows_sim import builtin_open_sharing_violation
+from windows_sim import builtin_open_sharing_violation, read_text_sharing_violation
 
 from kiro_crew.dashboard.chat_persistence import (
     ENV_AUTHORITY_RESTORED,
@@ -1688,6 +1688,43 @@ def test_context_snapshot_prune_runs_after_restore(tmp_path, monkeypatch):
 
     persisted = json.loads(snap_path.read_text())
     assert set(persisted) == {"chat-1-live"}, "a dead key survived the post-restore prune"
+
+
+def test_context_snapshot_write_skipped_when_pre_restore_read_fails(tmp_path, monkeypatch):
+    """A failed snapshot read before restore must not replace the file.
+
+    The flush merges the disk readings into memory before it writes. If that
+    read fails transiently (a Windows sharing violation) and the failure were
+    latched as an empty, loaded map, the write would replace the file with
+    only the boot-time reading and destroy every other tab's saved reading.
+    The write is skipped instead, the same rule as the open_slots.json seed.
+    """
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    snap_path = tmp_path / "context_snapshots.json"
+    snap_path.write_text(json.dumps({"chat-1-idle": {"pct": 42}, "chat-2-idle": {"pct": 7}}))
+    before = snap_path.read_bytes()
+
+    state = _make_state(tmp_path / "sessions")
+    assert state.open_slots_restored is False
+    with state._context_snapshots_lock:
+        state._context_snapshots["chat-9-newtab"] = {"pct": 1}
+        state._context_snapshots_dirty = True
+
+    with read_text_sharing_violation(match="context_snapshots.json", times=1) as seen:
+        state._persist_context_snapshots()
+
+    assert seen["n"] == 1, "the simulator never intercepted the snapshot read"
+    assert snap_path.read_bytes() == before, (
+        "a transient pre-restore snapshot read failure replaced the saved "
+        "snapshots instead of skipping the write"
+    )
+    assert state._context_snapshots_loaded is False, "a failed read was latched as loaded"
+    assert state._context_snapshots_dirty is True, "the skipped write is owed, not lost"
+
+    # The next flush reads the intact file and writes the union.
+    state._persist_context_snapshots()
+    persisted = json.loads(snap_path.read_text())
+    assert set(persisted) == {"chat-1-idle", "chat-2-idle", "chat-9-newtab"}
 
 
 def test_push_slots_update_survives_a_partially_constructed_state():

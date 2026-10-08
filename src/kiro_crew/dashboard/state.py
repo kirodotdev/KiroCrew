@@ -10478,8 +10478,8 @@ class DashboardState:
     def broadcast_context_usage(self, slot_key: str, payload: dict) -> None:
         _persistence_for(self).broadcast_context_usage(self, slot_key, payload)
 
-    def ensure_context_snapshots_loaded(self) -> None:
-        _persistence_for(self).ensure_context_snapshots_loaded(self)
+    def ensure_context_snapshots_loaded(self) -> bool:
+        return _persistence_for(self).ensure_context_snapshots_loaded(self)
 
     def context_snapshot_for(self, slot_key: str) -> dict | None:
         return _persistence_for(self).context_snapshot_for(self, slot_key)
