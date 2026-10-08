@@ -1878,18 +1878,27 @@ def _ensure_auth_staging_parent(home: Path) -> Path:
     # it before mkdir so boot self-heals. UNLINK rather than rename-aside: the
     # staging root holds credential material, and moving an unexpected file to a
     # sibling name would leave its (possibly sensitive) contents readable outside
-    # the sandbox-hidden staging prefix. unlink() acts on the symlink itself,
-    # never its target.
-    if staging_parent.is_symlink() or (staging_parent.exists() and not staging_parent.is_dir()):
+    # the sandbox-hidden staging prefix.
+    #
+    # The predicate is ``is_link_or_junction``, not ``Path.is_symlink()``: a
+    # Windows directory junction answers ``is_symlink() == False`` and
+    # ``is_dir() == True``, so a symlink-only check certifies a planted junction
+    # as the private root and stages credential material THROUGH it into the
+    # junction's target. The removal is ``unlink_link_or_junction``, its
+    # documented pair: it removes a symlink with ``unlink`` and a junction with
+    # ``rmdir``, so the reparse point itself is cleared and its target is left
+    # untouched. On POSIX the two match ``islink`` / ``unlink``.
+    if platform_compat.is_link_or_junction(staging_parent) or (
+        staging_parent.exists() and not staging_parent.is_dir()
+    ):
         try:
-            staging_parent.unlink()
+            platform_compat.unlink_link_or_junction(str(staging_parent))
         except OSError as exc:
-            # A concurrent gateway boot may have won the race and already cleared
-            # the stray path (FileNotFoundError) or replaced it with the real
-            # private directory. Only abort if a non-directory we cannot clear is
-            # STILL sitting here; otherwise fall through to the idempotent mkdir.
-            # (#561, concurrent-boot race)
-            if staging_parent.is_symlink() or (
+            # A concurrent gateway boot may win the race and clear the stray path
+            # first (FileNotFoundError), or replace it with the real private
+            # directory. Only abort if a non-directory we cannot clear is still
+            # sitting here; otherwise fall through to the idempotent mkdir.
+            if platform_compat.is_link_or_junction(staging_parent) or (
                 staging_parent.exists() and not staging_parent.is_dir()
             ):
                 raise OSError(
@@ -1897,7 +1906,7 @@ def _ensure_auth_staging_parent(home: Path) -> Path:
                     "directory and could not be reset"
                 ) from exc
     staging_parent.mkdir(parents=True, exist_ok=True)
-    if staging_parent.is_symlink() or not staging_parent.is_dir():
+    if platform_compat.is_link_or_junction(staging_parent) or not staging_parent.is_dir():
         raise OSError("Kiro auth staging root is not a private directory")
     if platform_compat.IS_POSIX:
         platform_compat.chmod_safe(str(staging_parent), 0o700)
