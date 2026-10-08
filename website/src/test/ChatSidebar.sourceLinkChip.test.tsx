@@ -214,14 +214,29 @@ describe('ChatSidebar – PR chip', () => {
   })
 
   it('releases focus on a pointer click so the row action strip can hide', () => {
-    // The action strip is revealed on the row's focus-within; a chip left
-    // focused after a click would keep it showing once the pointer has gone.
+    // The action strip reveals on `:focus-visible` inside the row; a chip left
+    // focused after a click must not be able to keep it showing.
     renderSidebar({ onOpenSource: took() })
     const a = chip()
     a.focus()
     expect(a).toHaveFocus()
     clickChip(a, { detail: 1 })
     expect(a).not.toHaveFocus()
+  })
+
+  it('the row action strip reveals on hover and keyboard focus, not after a click', () => {
+    // A click focuses the row's own button; a `focus-within` reveal pinned the
+    // strip open once the pointer left. `:focus-visible` keeps it for keyboard.
+    renderSidebar()
+    const bar = screen.getAllByRole('button', { name: 'More options' })
+      .map(b => b.parentElement as HTMLElement)
+      .find(p => p.className.includes('right-1.5')) as HTMLElement
+    expect(bar.className).toContain('opacity-0')
+    expect(bar.className).toContain('group-hover:opacity-100')
+    expect(bar.className).toContain('group-focus-visible:opacity-100')
+    expect(bar.className).toContain('group-has-[:focus-visible]:opacity-100')
+    expect(bar.className).toContain('has-[[data-state=open]]:opacity-100')
+    expect(bar.className).not.toContain('focus-within')
   })
 
   it('keeps focus on the chip when it is activated from the keyboard', () => {
