@@ -272,7 +272,7 @@ describe('chatSlice prototype-pollution guards', () => {
     const store = makeStore()
     for (const bad of POISON) {
       store.dispatch(setQuestionCard({ slot: bad, questions: [{ question: 'q', options: [] }] }))
-      store.dispatch(setQuestionDraft({ slot: bad, active: true }))
+      store.dispatch(setQuestionDraft({ slot: bad, answers: { q: 'draft' } }))
       store.dispatch(clearQuestionCard({ slot: bad }))
       store.dispatch(setFollowupCard({ slot: bad, items: [{ title: 't', description: 'd', prompt: 'p' }] }))
       store.dispatch(clearFollowupCard({ slot: bad }))
@@ -526,21 +526,30 @@ describe('chatSlice question cards', () => {
     // applier keeps. A blocking ask is different: its future is already settled.
     const store = makeStore()
     store.dispatch(setQuestionCard({ slot: 'front', card_id: 'card-live', questions: [{ question: 'q', options: [] }] }))
-    store.dispatch(setQuestionDraft({ slot: 'front', active: true }))
+    store.dispatch(setQuestionDraft({ slot: 'front', answers: { q: 'draft' } }))
     store.dispatch(resolveQuestionCard({ card_id: 'card-live' }))
     expect(chat(store).pendingQuestions.front).toBeDefined()
 
     // Once the draft is gone the same retirement clears it.
-    store.dispatch(setQuestionDraft({ slot: 'front', active: false }))
+    store.dispatch(setQuestionDraft({ slot: 'front', answers: {} }))
     store.dispatch(resolveQuestionCard({ card_id: 'card-live' }))
     expect(chat(store).pendingQuestions.front).toBeUndefined()
   })
 
-  it('clears a blocking card even mid-draft, since its ask is already settled', () => {
+  it('drops a drafted blocking card when its server wait retires', () => {
     const store = makeStore()
     store.dispatch(setQuestionCard({ slot: 'front', ask_id: 'ask-9', questions: [{ question: 'q', options: [] }] }))
-    store.dispatch(setQuestionDraft({ slot: 'front', active: true }))
+    store.dispatch(setQuestionDraft({ slot: 'front', answers: { q: 'draft' } }))
     store.dispatch(resolveQuestionCard({ ask_id: 'ask-9' }))
+    // The websocket owner restores the published answers before this pure reducer runs.
+    expect(chat(store).pendingQuestions.front).toBeUndefined()
+  })
+
+  it('a settled local clear drops a blocking card even mid-draft', () => {
+    const store = makeStore()
+    store.dispatch(setQuestionCard({ slot: 'front', ask_id: 'ask-9', questions: [{ question: 'q', options: [] }] }))
+    store.dispatch(setQuestionDraft({ slot: 'front', answers: { q: 'draft' } }))
+    store.dispatch(resolveQuestionCard({ ask_id: 'ask-9', settled: true }))
     expect(chat(store).pendingQuestions.front).toBeUndefined()
   })
 
@@ -548,11 +557,11 @@ describe('chatSlice question cards', () => {
     const store = makeStore()
     store.dispatch(setActiveSlot('front'))
     store.dispatch(setQuestionCard({ slot: 'front', questions: [{ question: 'q', options: [] }] }))
-    store.dispatch(setQuestionDraft({ slot: 'front', active: true }))
+    store.dispatch(setQuestionDraft({ slot: 'front', answers: { q: 'draft' } }))
     store.dispatch(sseChatMessage({ slot: 'front', role: 'nudge', content: 'keep going' }))
     expect(chat(store).pendingQuestions.front).toBeDefined()
 
-    store.dispatch(setQuestionDraft({ slot: 'front', active: false }))
+    store.dispatch(setQuestionDraft({ slot: 'front', answers: {} }))
     store.dispatch(sseChatMessage({ slot: 'front', role: 'subagent', content: 'agent finished' }))
     expect(chat(store).pendingQuestions.front).toBeDefined()
     store.dispatch(sseChatMessage({ slot: 'front', role: 'user', content: 'answer' }))
@@ -565,7 +574,7 @@ describe('chatSlice question cards', () => {
     store.dispatch(setQuestionCard({ slot: 'back', questions: [{ question: 'q', options: [] }] }))
     store.dispatch(sseChatMessage({ slot: 'back', role: 'user', content: 'answered elsewhere' }))
     expect(chat(store).pendingQuestions.back).toBeUndefined()
-    store.dispatch(setQuestionDraft({ slot: 'back', active: true }))
+    store.dispatch(setQuestionDraft({ slot: 'back', answers: { q: 'draft' } }))
     expect(chat(store).pendingQuestions.back).toBeUndefined()
   })
 })

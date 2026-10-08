@@ -61,6 +61,24 @@ export class ApiError extends Error {
 export const isNotFoundError = (e: unknown): boolean =>
   typeof e === 'object' && e !== null && (e as { status?: unknown }).status === 404
 
+/**
+ * The machine-readable `code` a refusal body carries, or `''` when the failure
+ * is not an {@link ApiError} with a JSON object body naming one. Callers branch
+ * on this instead of matching the human `error` text, which is prose and may be
+ * localized or reworded.
+ */
+export const apiErrorCode = (e: unknown): string => {
+  if (!(e instanceof ApiError)) return ''
+  try {
+    const parsed = JSON.parse(e.body) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return ''
+    const code = (parsed as { code?: unknown }).code
+    return typeof code === 'string' ? code : ''
+  } catch {
+    return ''
+  }
+}
+
 /** True when an approval refusal is terminal — the approval itself is gone (404,
  *  or the endpoint's `no pending approval` 400). Duck-typed like {@link isNotFoundError}. */
 export const isTerminalApprovalRefusal = (e: unknown): boolean => {

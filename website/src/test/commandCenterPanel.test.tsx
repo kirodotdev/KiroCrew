@@ -1,12 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
-import { api } from '../api/client'
+import { api, ApiError } from '../api/client'
 import * as transport from '../chat-core/transport/sendTurn'
 import { createTestStore, renderWithProviders } from './helpers'
 import { sseConnected, sseDisconnected, sseSlots } from '../store/dashboardSlice'
 import CommandCenterPanel from '../pages/chat/command-center/CommandCenterPanel'
 import CommandCenterDock from '../pages/chat/command-center/CommandCenterDock'
+import PendingQuestionCard from '../components/PendingQuestionCard'
+import { setQuestionCard } from '../store/chatSlice'
 import { REQUEST_PUBLISHED_VIEW } from '../pages/chat/command-center/commandCenter.prompt'
+import { __resetForTests, loadDrafts } from '../utils/chatDrafts'
 import { __resetSettledLatchesForTests } from '../pages/chat/command-center/useCommandCenter'
 
 vi.mock('../pages/chat/command-center/TaskDashboardFrame', () => ({
@@ -29,6 +32,7 @@ describe('task dashboard host controls', () => {
     vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({ dashboard: { dynamic_dashboard_cards: false } })
     vi.spyOn(api, 'dashboardCard').mockResolvedValue({ card: null, status: 'waiting', published_at: null, content_event_at: null, stale: false })
     localStorage.clear()
+    __resetForTests()
     // happy-dom has no layout; establish the panel width that selects tabs.
     vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(480)
     vi.spyOn(api, 'pendingQuestions').mockResolvedValue([])
@@ -216,6 +220,32 @@ describe('task dashboard host controls', () => {
     expect(screen.getByRole('button', { name: 'Send answer', hidden: true })).not.toBeVisible()
   })
 
+  it('restores the Command Center draft when the chat card gets an unanswered 404', async () => {
+    vi.mocked(api.pendingQuestions).mockResolvedValue([{ slot: 'worker', ask_id: 'ask-cross', questions: [
+      { question: 'Command Center choice?', options: [{ label: 'Command Center draft' }] },
+    ] }])
+    vi.spyOn(api, 'answerQuestion').mockRejectedValue(new ApiError(404, 'gone', JSON.stringify({ reason: 'expired' })))
+    const store = taskStore()
+    store.dispatch(setQuestionCard({ slot: 'worker', ask_id: 'ask-cross', questions: [
+      { question: 'Chat choice?', options: [{ label: 'Chat draft' }] },
+    ] }))
+    const fallback = vi.fn()
+    const { queryClient } = renderWithProviders(<>
+      <PendingQuestionCard slotKey="worker" onFallbackSend={fallback} />
+      <CommandCenterPanel slot="root" active />
+    </>, { store })
+    fireEvent.click(await screen.findByRole('radio', { name: 'Questions 1' }))
+    fireEvent.click(screen.getByText('Command Center draft'))
+    fireEvent.click(screen.getByText('Chat draft'))
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }))
+
+    await waitFor(() => expect(fallback).toHaveBeenCalledWith('Chat draft', [{ question: 'Chat choice?', options: [{ label: 'Chat draft' }] }]))
+    expect(store.getState().chat.questionsSettled['ask-cross']).toBeUndefined()
+    vi.mocked(api.pendingQuestions).mockResolvedValue([])
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ['command-center', 'questions'] }) })
+    await waitFor(() => expect(loadDrafts().worker).toBe('Command Center draft'))
+  })
+
   it.each(['custom', 'option'])('retains a retired stateless %s draft across polls and section navigation', async kind => {
     vi.mocked(api.pendingQuestions).mockResolvedValue([{ slot: 'dashboard:worker', card_id: 'card-1', native: true, questions: [
       { question: 'Which contract?', options: [{ label: 'Stable API' }] },
@@ -235,6 +265,126 @@ describe('task dashboard host controls', () => {
     if (kind === 'custom') fireEvent.change(input, { target: { value: '' } })
     else fireEvent.click(screen.getByText('Stable API'))
     await waitFor(() => expect(screen.queryByText('Which contract?')).not.toBeInTheDocument())
+  })
+
+  it('restores a blocking draft when the Command Center inventory retires it', async () => {
+    vi.mocked(api.pendingQuestions).mockResolvedValue([{ slot: 'worker', ask_id: 'ask-1', questions: [
+      { question: 'Which contract?', options: [{ label: 'Stable API' }] },
+    ] }])
+    const store = taskStore()
+    const { queryClient } = renderWithProviders(<CommandCenterPanel slot="root" active />, { store })
+    fireEvent.click(await screen.findByRole('radio', { name: 'Questions 1' }))
+    fireEvent.click(screen.getByText('Stable API'))
+
+    vi.mocked(api.pendingQuestions).mockResolvedValue([])
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ['command-center', 'questions'] }) })
+
+    await waitFor(() => expect(loadDrafts().worker).toBe('Stable API'))
+    expect(screen.queryByText('Which contract?')).not.toBeInTheDocument()
+    const restoredNotice = () => screen.queryAllByRole('status').find(el => /that session's composer/.test(el.textContent ?? ''))
+    const notice = restoredNotice()
+    expect(notice).toBeDefined()
+    // Names the session and the question, so the user knows which composer holds the text.
+    expect(notice).toHaveTextContent('The agent in "Review worker" stopped waiting for "Which contract?"')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ['command-center', 'questions'] }) })
+    expect(restoredNotice()).toBe(notice)
+    fireEvent.click(within(notice!).getByRole('button', { name: 'Dismiss' }))
+    await waitFor(() => expect(restoredNotice()).toBeUndefined())
+  })
+
+  it('lists a restored question notice without counting it as input needed', async () => {
+    vi.mocked(api.pendingQuestions).mockResolvedValue([{ slot: 'worker', ask_id: 'ask-1', questions: [
+      { question: 'Which contract?', options: [{ label: 'Stable API' }] },
+    ] }])
+    const { queryClient } = renderWithProviders(<CommandCenterPanel slot="root" active />, { store: taskStore() })
+    fireEvent.click(await screen.findByRole('radio', { name: 'Questions 1' }))
+    fireEvent.click(screen.getByText('Stable API'))
+
+    vi.mocked(api.pendingQuestions).mockResolvedValue([])
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ['command-center', 'questions'] }) })
+
+    const notice = await screen.findByRole('status')
+    expect(notice).toHaveTextContent('The agent in "Review worker" stopped waiting for "Which contract?"')
+    expect(screen.getByRole('radio', { name: 'Questions' })).toBeVisible()
+  })
+
+  it('clears an accepted blocking answer before the inventory retires it', async () => {
+    vi.mocked(api.pendingQuestions).mockResolvedValue([{ slot: 'worker', ask_id: 'ask-1', questions: [
+      { question: 'Which contract?', options: [{ label: 'Stable API' }] },
+    ] }])
+    const answer = vi.spyOn(api, 'answerQuestion').mockResolvedValue({ ok: true })
+    const { queryClient } = renderWithProviders(<CommandCenterPanel slot="root" active />, { store: taskStore() })
+    fireEvent.click(await screen.findByRole('radio', { name: 'Questions 1' }))
+    fireEvent.click(screen.getByText('Stable API'))
+    vi.mocked(api.pendingQuestions).mockResolvedValue([])
+    fireEvent.click(screen.getByRole('button', { name: 'Send answer' }))
+
+    await waitFor(() => expect(answer).toHaveBeenCalledWith('ask-1', { 'Which contract?': 'Stable API' }))
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ['command-center', 'questions'] }) })
+    expect(loadDrafts().worker).toBeUndefined()
+    expect(screen.queryByText(/stopped waiting for/)).not.toBeInTheDocument()
+  })
+
+  it('does not restore a blocking draft retired while its answer is pending', async () => {
+    vi.mocked(api.pendingQuestions).mockResolvedValue([{ slot: 'worker', ask_id: 'ask-1', questions: [
+      { question: 'Which contract?', options: [{ label: 'Stable API' }] },
+    ] }])
+    let releaseAnswer!: (value: { ok: boolean }) => void
+    const answerPending = new Promise<{ ok: boolean }>(resolve => { releaseAnswer = resolve })
+    vi.spyOn(api, 'answerQuestion').mockReturnValue(answerPending)
+    const { queryClient } = renderWithProviders(<CommandCenterPanel slot="root" active />, { store: taskStore() })
+    fireEvent.click(await screen.findByRole('radio', { name: 'Questions 1' }))
+    fireEvent.click(screen.getByText('Stable API'))
+    fireEvent.click(screen.getByRole('button', { name: 'Send answer' }))
+    await waitFor(() => expect(api.answerQuestion).toHaveBeenCalledWith('ask-1', { 'Which contract?': 'Stable API' }))
+
+    vi.mocked(api.pendingQuestions).mockResolvedValue([])
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ['command-center', 'questions'] }) })
+    expect(queryClient.getQueryData(['command-center', 'questions'])).toEqual([])
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    expect(loadDrafts().worker).toBeUndefined()
+    expect(screen.getByText('Which contract?')).toBeInTheDocument()
+    expect(screen.queryByText(/stopped waiting for/)).not.toBeInTheDocument()
+
+    await act(async () => { releaseAnswer({ ok: true }); await answerPending })
+    await waitFor(() => expect(screen.queryByText('Which contract?')).not.toBeInTheDocument())
+    expect(loadDrafts().worker).toBeUndefined()
+  })
+
+  it('does not resurrect an accepted stateless answer after refetch', async () => {
+    vi.mocked(api.pendingQuestions).mockResolvedValue([{ slot: 'worker', card_id: 'card-1', questions: [
+      { question: 'Which contract?', options: [{ label: 'Stable API' }] },
+    ] }])
+    const send = vi.spyOn(transport, 'sendTurn').mockResolvedValue({ status: 'dispatched', body: {} })
+    vi.spyOn(api, 'dismissQuestionCard').mockResolvedValue({ ok: true })
+    const { queryClient } = renderWithProviders(<CommandCenterPanel slot="root" active />, { store: taskStore() })
+    fireEvent.click(await screen.findByRole('radio', { name: 'Questions 1' }))
+    fireEvent.click(screen.getByText('Stable API'))
+    vi.mocked(api.pendingQuestions).mockResolvedValue([])
+    fireEvent.click(screen.getByRole('button', { name: 'Send answer' }))
+
+    await waitFor(() => expect(send).toHaveBeenCalledWith({ slot: 'worker', message: 'Which contract?: Stable API' }))
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ['command-center', 'questions'] }) })
+    await waitFor(() => expect(screen.queryByText('Your response was recorded.')).not.toBeInTheDocument())
+    expect(screen.queryByText('Which contract?')).not.toBeInTheDocument()
+  })
+
+  it('keeps a failed blocking answer draft for retirement recovery', async () => {
+    vi.mocked(api.pendingQuestions).mockResolvedValue([{ slot: 'worker', ask_id: 'ask-1', questions: [
+      { question: 'Which contract?', options: [{ label: 'Stable API' }] },
+    ] }])
+    vi.spyOn(api, 'answerQuestion').mockRejectedValue(new Error('Offline'))
+    const { queryClient } = renderWithProviders(<CommandCenterPanel slot="root" active />, { store: taskStore() })
+    fireEvent.click(await screen.findByRole('radio', { name: 'Questions 1' }))
+    fireEvent.click(screen.getByText('Stable API'))
+    fireEvent.click(screen.getByRole('button', { name: 'Send answer' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Offline')
+
+    vi.mocked(api.pendingQuestions).mockResolvedValue([])
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ['command-center', 'questions'] }) })
+    await waitFor(() => expect(loadDrafts().worker).toBe('Stable API'))
+    expect(screen.queryAllByRole('status').some(el => /The agent in "Review worker" stopped waiting for "Which contract\?"/.test(el.textContent ?? ''))).toBe(true)
   })
 
   it.each(['disconnected', 'query failure'])('announces a stale dock through the shared error notice (%s)', async (failure) => {

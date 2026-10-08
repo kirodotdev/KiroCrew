@@ -7858,6 +7858,8 @@
       "next": "次へ",
       "next_question": "次の質問",
       "or_type_a_custom_answer": "またはカスタム回答を入力…",
+      "chars_left_other": "残り {{count}} 文字",
+      "answer_at_limit_other": "回答は {{count}} 文字で切り詰められました",
       "previous_question": "前の質問",
       "question_x_of_y": "質問 {{current}} / {{total}}",
       "submit": "送信"
@@ -9029,6 +9031,13 @@
     },
     "pendingQuestionCard": {
       "answer_failed": "回答を送信できませんでした。エージェントはまだ待機しているので、もう一度お試しください。",
+      "answer_sent_card_open": "質問カードはまだ回答を待っています。カードに回答するか、閉じてください。メッセージは送信されました。",
+      "answer_restored": "エージェントはこの質問への回答を待たなくなったため、回答は送信されませんでした。回答は入力欄に入っています。まだ送りたい場合は送信してください。",
+      "answer_restored_question": "エージェントは「{{question}}」への回答を待たなくなったため、回答は送信されませんでした。回答は入力欄に入っています。まだ送りたい場合は送信してください。",
+      "answer_restored_command_center": "エージェントはこの質問への回答を待たなくなったため、回答は送信されませんでした。回答はそのセッションの入力欄に入っています。まだ送りたい場合は送信してください。",
+      "answer_restored_command_center_question": "エージェントは「{{question}}」への回答を待たなくなったため、回答は送信されませんでした。回答はそのセッションの入力欄に入っています。まだ送りたい場合は送信してください。",
+      "answer_restored_command_center_session": "「{{session}}」のエージェントは「{{question}}」への回答を待たなくなったため、回答は送信されませんでした。回答はそのセッションの入力欄に入っています。まだ送りたい場合は送信してください。",
+      "answers_too_long": "回答が長すぎて送信できません。短くしてからもう一度送信してください。",
       "dismiss_failed": "この質問を閉じられませんでした。もう一度お試しください。",
       "qa_pair": "問 {{question}}\n答 {{answer}}"
     },
@@ -10803,7 +10812,9 @@
         "wait_end_now": "待機を終了",
         "wait_ending": "終了中…",
         "wait_remaining": "残り {{time}}",
+        "ask_answered_other": "{{count}} 件の質問に回答しました",
         "wait_status": "待機中",
+        "ask_wait_status": "回答を待っています",
         "end_wait_failed": "待機を終了できませんでした"
       },
       "toolDetails": {

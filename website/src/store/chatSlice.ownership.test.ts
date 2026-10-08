@@ -161,7 +161,7 @@ const REEXPORTS: Array<[string, Record<string, unknown>, string[]]> = [
     'OLDER_PAGE_LIMIT', 'OLDER_WALK_PAGE_LIMIT', 'SLOT_DETAIL_MAX_LIMIT', 'PANE_HYDRATE_LIMIT', 'REFRESH_LIMIT_CEILING',
     'slotSwitchFetchLimit', 'slotCoverageShortfall', 'countMatchedFetchLimit', 'isSupersededPagingRejection', 'abortActiveOlderFetch',
   ]],
-  ['composerCards', composerCards, ['FOLDER_SUGGESTION_MAX_TURNS', 'capturePendingAskId', 'pendingQuestionFor', 'shouldResolveAskOnSend']],
+  ['composerCards', composerCards, ['FOLDER_SUGGESTION_MAX_TURNS', 'capturePendingAskId', 'isAnsweredQuestionEnding', 'pendingQuestionFor', 'shouldResolveAskOnSend']],
   ['mcpApps', mcpApps, ['mcpAppKey']],
   ['subagents', subagents, [
     'isAwaitingSpawnApproval', 'selectSidebarApprovalCounts', 'selectSidebarStartedSubagentCounts', 'selectSidebarSubagentCounts', 'selectSlotPendingSpawnApprovals',

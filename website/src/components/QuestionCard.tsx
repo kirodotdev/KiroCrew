@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, memo, type RefObject } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, memo, type RefObject } from 'react'
 import { flushSync } from 'react-dom'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
@@ -6,6 +6,7 @@ import { Check, ChevronLeft, ChevronRight, MessageSquare } from 'lucide-react'
 import { Glass } from './Glass'
 
 import { i18nT } from '../i18n/t'
+import { ASK_MAX_ANSWER_LEN, NATIVE_MAX_ANSWER_LEN } from '../utils/askQuestionTool'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 interface QuestionOption {
   label: string
@@ -21,7 +22,11 @@ interface Question {
 
 interface QuestionCardProps {
   questions: Question[]
+  /** Present only when this card blocks an ask_question tool call. */
+  askId?: string
   onSubmit: (answers: Record<string, string>) => void
+  /** Stored answers to show again when a still-pending card remounts. */
+  draftAnswers?: Record<string, string>
   /** Unblock the agent with no answer, or — for a legacy card, where nothing is
    *  blocked — just take the card off screen. Always supplied by
    *  PendingQuestionCard: a card the user can neither answer nor remove sits on
@@ -32,19 +37,43 @@ interface QuestionCardProps {
   busy?: boolean
   /** Surface-specific action copy; other chat callers keep the standard label. */
   submitLabel?: string
-  /** Flips of "the user has an answer in progress" — a non-empty custom
-   *  input OR a pending option selection. All of that state lives only in
-   *  this component; publishing the boolean lets the store refuse to
-   *  auto-retire (unmount) a card whose half-entered answer would be
-   *  silently destroyed by a turn-consuming frame. */
-  onDraftChange?: (active: boolean) => void
+  /** Publishes the unsent answers so owners can restore them if authority disappears. */
+  onDraftChange?: (answers: Record<string, string>) => void
 }
 
-function QuestionCard({ questions, onSubmit, onDismiss, busy = false, onDraftChange, submitLabel }: QuestionCardProps) {
+function seedDraft(questions: Question[], answers: Record<string, string> | undefined) {
+  const selections: Record<number, Set<string>> = {}
+  const customInputs: Record<number, string> = {}
+  questions.forEach((question, index) => {
+    const stored = answers && Object.hasOwn(answers, question.question) ? answers[question.question] : undefined
+    const raw = typeof stored === 'string' ? stored : ''
+    const answer = raw.trim()
+    if (!answer) return
+    const labels = new Set(question.options.map(option => option.label))
+    // A multi-select draft is stored joined with ', ', so split it back when every part is an option.
+    const parts = question.multiSelect ? answer.split(', ') : []
+    if (labels.has(answer)) {
+      selections[index] = new Set([answer])
+    } else if (parts.length > 1 && parts.every(part => labels.has(part))) {
+      selections[index] = new Set(parts)
+    } else {
+      // Keep the raw text: a draft saved mid-answer ("New ") must resume with its
+      // trailing space, or continuing to type joins the words. Submit trims.
+      customInputs[index] = raw
+    }
+  })
+  return { selections, customInputs }
+}
+
+function QuestionCard({ questions, askId, onSubmit, draftAnswers, onDismiss, busy = false, onDraftChange, submitLabel }: QuestionCardProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const ime = useImeGuard()
-  const [selections, setSelections] = useState<Record<number, Set<string>>>({})
-  const [customInputs, setCustomInputs] = useState<Record<number, string>>({})
+  const answerLimit = askId ? ASK_MAX_ANSWER_LEN : NATIVE_MAX_ANSWER_LEN
+  const charsLeftHintAt = Math.floor(answerLimit * 0.9)
+  const initialDraft = useRef<ReturnType<typeof seedDraft> | null>(null)
+  if (initialDraft.current === null) initialDraft.current = seedDraft(questions, draftAnswers)
+  const [selections, setSelections] = useState<Record<number, Set<string>>>(initialDraft.current.selections)
+  const [customInputs, setCustomInputs] = useState<Record<number, string>>(initialDraft.current.customInputs)
   const reduceMotion = useReducedMotion()
   /* Which question is on screen. ONE index replaces the three mechanisms a
      stacked card needed to stay usable — a fold-all-but-the-first on mount, an
@@ -80,9 +109,10 @@ function QuestionCard({ questions, onSubmit, onDismiss, busy = false, onDraftCha
   const questionKey = JSON.stringify(questions)
   const [lastKey, setLastKey] = useState(questionKey)
   if (questionKey !== lastKey) {
+    const seeded = seedDraft(questions, draftAnswers)
     setLastKey(questionKey)
-    setSelections({})
-    setCustomInputs({})
+    setSelections(seeded.selections)
+    setCustomInputs(seeded.customInputs)
     setPage(0)
     setDirection(1)
   }
@@ -100,24 +130,6 @@ function QuestionCard({ questions, onSubmit, onDismiss, busy = false, onDraftCha
      `isLast`, the indicator, the arrows' disabled state, the per-question
      selection and custom-input lookups — agrees on the same in-range page. */
   const page = Math.max(0, Math.min(requestedPage, questions.length - 1))
-
-  /* Publish "answer in progress" to the store — pending option selections
-     count exactly like typed custom text: both are component-local work a
-     turn-consuming frame would silently destroy if the card auto-retired.
-     One effect observes EVERY mutation path (option toggles, custom-input
-     edits, the question-set reset above) instead of instrumenting each
-     handler, and the cleanup clears the flag on unmount so a card removed
-     for any other reason (self-answer, dismiss, resolution) cannot leave a
-     stale draftActive behind blocking a future card's retirement. */
-  const draftActive =
-    Object.values(selections).some(s => s.size > 0) ||
-    Object.values(customInputs).some(v => v.trim() !== '')
-  const draftRef = useRef(onDraftChange)
-  draftRef.current = onDraftChange
-  useEffect(() => {
-    draftRef.current?.(draftActive)
-  }, [draftActive])
-  useEffect(() => () => { draftRef.current?.(false) }, [])
 
   /** The answer for question *i*: a typed custom answer wins over picks, mirroring
    *  the mutual exclusion the two inputs enforce. `''` when unanswered. */
@@ -231,14 +243,27 @@ function QuestionCard({ questions, onSubmit, onDismiss, busy = false, onDraftCha
     }
   }
 
-  const handleSubmit = () => {
-    const answers: Record<string, string> = {}
+  /* The draft snapshot keeps custom text exactly as typed, so a card restored
+     after the user leaves mid-answer resumes with the same characters (including
+     a trailing space). Only the submitted map is trimmed. */
+  const currentDraftAnswers = useMemo(() => {
+    // Built from entries so any question text, `__proto__` included, stays an own key.
+    const entries: Array<[string, string]> = []
     questions.forEach((q, i) => {
-      const answer = answerOf(i)
-      if (answer) answers[q.question] = answer
+      const custom = customInputs[i] ?? ''
+      const selected = selections[i]
+      const answer = custom.trim() ? custom : selected?.size ? [...selected].join(', ') : ''
+      if (answer) entries.push([q.question, answer])
     })
-    onSubmit(answers)
-  }
+    return Object.fromEntries(entries) as Record<string, string>
+  }, [questions, selections, customInputs])
+  const draftRef = useRef(onDraftChange)
+  draftRef.current = onDraftChange
+  useEffect(() => {
+    draftRef.current?.(currentDraftAnswers)
+  }, [currentDraftAnswers])
+  const handleSubmit = () =>
+    onSubmit(Object.fromEntries(Object.entries(currentDraftAnswers).map(([q, a]) => [q, a.trim()])))
 
   /* Every question must be answered before Submit unlocks. The answer map is
      keyed by question text, so a partial submit resumes the blocked agent with
@@ -250,6 +275,10 @@ function QuestionCard({ questions, onSubmit, onDismiss, busy = false, onDraftCha
   const firstUnanswered = questions.findIndex((_, i) => !isAnswered(i))
   const paged = questions.length > 1
   const isLast = page === questions.length - 1
+  // The hint is the only sign a pasted answer reached this card's cap.
+  const customLength = (customInputs[page] || '').length
+  const showCharsLeft = customLength >= charsLeftHintAt
+  const atLimit = customLength >= answerLimit
   /* Which primary action the footer offers: Next on every question except the
      last, Submit only there. The button under the pointer is then always the one
      that moves the card forward — otherwise a multi-select (where auto-advance
@@ -433,7 +462,7 @@ function QuestionCard({ questions, onSubmit, onDismiss, busy = false, onDraftCha
                 type="text"
                 aria-label={i18nT('components.questionCard.custom_answer')}
                 placeholder={i18nT('components.questionCard.or_type_a_custom_answer')}
-                maxLength={2000}
+                maxLength={answerLimit}
                 value={customInputs[page] || ''}
                 onChange={e => {
                   if (page !== pageRef.current) return
@@ -464,6 +493,12 @@ function QuestionCard({ questions, onSubmit, onDismiss, busy = false, onDraftCha
                 }}
                 className="mt-2 w-full px-3 py-2 rounded-lg border border-border bg-bg text-text text-[13px] placeholder:text-muted focus-visible:border-accent focus:outline-hidden"
               />
+              {/* Always mounted so the live region exists before the count lands in it. */}
+              <p aria-live="polite" className="mt-1 text-[12px] leading-4 text-muted empty:hidden" data-testid="custom-answer-chars-left">
+                {atLimit
+                  ? i18nT('components.questionCard.answer_at_limit', { count: answerLimit })
+                  : showCharsLeft && i18nT('components.questionCard.chars_left', { count: answerLimit - customLength })}
+              </p>
             </motion.div>
           </AnimatePresence>
         </div>

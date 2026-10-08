@@ -11,7 +11,7 @@ import { fmtDateTime } from '../../../i18n/format'
 import { missingSourcesNotice, useCommandCenter } from './useCommandCenter'
 import TaskDashboardFrame from './TaskDashboardFrame'
 import SessionStatusFrame from './SessionStatusFrame'
-import AttentionCard from './AttentionCard'
+import AttentionCard, { RestoredQuestionNotice } from './AttentionCard'
 import { APPROVAL_MODE_KEYS, runTitle } from './model'
 import { PANEL_HEADING_ATTR } from './panelHeading'
 import { sendTurn } from '../../../chat-core/transport/sendTurn'
@@ -125,11 +125,25 @@ export default function CommandCenterPanel({ slot, active, publishedView, sessio
         can name a decision but only these cards can make it. */}
     <div className="p-3 space-y-3" hidden={!sessionReady || showingOverview} data-testid="command-center-attention">
       <PanelSectionHeader label={t('commandCenter.attention_filter')} />
-      {!data.stale && !data.attention.some(a => section === 'approvals' ? a.kind === 'approval' : a.kind !== 'approval') && <p className="text-sm text-muted p-3">{t('commandCenter.no_input')}</p>}
+      {!data.stale
+        && !data.attention.some(a => section === 'approvals' ? a.kind === 'approval' : a.kind !== 'approval')
+        && (section === 'approvals' || !data.restoredQuestionNotices.length)
+        && <p className="text-sm text-muted p-3">{t('commandCenter.no_input')}</p>}
       {data.attention.map(item => {
         const node = data.nodes.find(n => n.id === `session:${item.slot}`)!
         return <div key={`${slot}:${item.id}`} hidden={section === 'approvals' ? item.kind !== 'approval' : item.kind === 'approval'}>
-          <AttentionCard item={item} title={runTitle(node)} context={node.detail} onOpenSession={onOpenSession} onDraftChange={item.question ? active => data.onQuestionDraftChange(item.question!, active) : undefined} />
+          <AttentionCard item={item} title={runTitle(node)} context={node.detail} onOpenSession={onOpenSession} onDraftChange={item.question ? answers => data.onQuestionDraftChange(item.question!, answers) : undefined} />
+        </div>
+      })}
+      {data.restoredQuestionNotices.map(notice => {
+        const node = data.nodes.find(n => n.id === `session:${notice.slot}`)
+        return <div key={notice.id} hidden={section === 'approvals'}>
+          <RestoredQuestionNotice
+            slot={notice.slot}
+            question={notice.question}
+            title={node ? runTitle(node) : undefined}
+            onDismiss={() => data.dismissRestoredQuestionNotice(notice.id)}
+          />
         </div>
       })}
     </div>

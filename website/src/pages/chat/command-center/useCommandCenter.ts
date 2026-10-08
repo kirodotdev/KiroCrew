@@ -1,9 +1,12 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../../api/client'
 import { fmtList } from '../../../i18n/format'
 import { i18nT } from '../../../i18n/t'
-import { useAppSelector } from '../../../store'
+import { useAppDispatch, useAppSelector } from '../../../store'
+import { isAnsweredQuestionEnding, markQuestionSettled } from '../../../store/chatSlice'
+import { answersAsText, questionName } from '../../../utils/questionAnswers'
+import { restoreToComposer } from '../../../utils/composerRestore'
 import type { Artifact, SubagentActivity } from '../../../types'
 import { baselineOrHeld } from '../../../hooks/useWebSocket'
 import { buildCommandCenter, effectiveApprovalMode, scopedSlots, slotKey, type PendingQuestion, type WorkItem } from './model'
@@ -33,12 +36,18 @@ export function __resetSettledLatchesForTests() {
   settledLatches.clear()
 }
 
+/** One identity per card: a blocking ask by its ask_id, a stateless card by slot and
+ * card_id, a session's trailing `[OPTIONS:]` ask by its slot alone. */
+const questionId = (q: PendingQuestion) => q.ask_id ? JSON.stringify(['ask', q.ask_id])
+  : JSON.stringify([slotKey(q.slot), q.card_id || (q.followUp ? 'follow-up' : '')])
+
 /** Shared query keys let the dock and panel observe one read, not one per worker.
  * Nothing here polls: every source is refreshed by the frame that announces its
  * change (`approval*`, `question_card*`, `artifact_update`, the crew log's
  * `slot_projection` for the work board, workflow events into the store) and all
  * of them again on reconnect, so an open chat tab costs no periodic requests. */
 export function useCommandCenter(root: string | null, enabled = true, scope: 'task' | 'fleet' = 'task', { dock = false }: { dock?: boolean } = {}) {
+  const dispatch = useAppDispatch()
   const slots = useAppSelector(s => s.dashboard.slots)
   const approvalMode = useAppSelector(s => s.dashboard.approvalMode)
   const activeSlot = useAppSelector(s => s.chat.activeSlot)
@@ -61,53 +70,90 @@ export function useCommandCenter(root: string | null, enabled = true, scope: 'ta
     refetchOnWindowFocus: (query: { state: { status: string } }) => query.state.status === 'error',
   }
   const questions = useQuery({ queryKey: ['command-center', 'questions'], queryFn: api.pendingQuestions, ...sourceOptions })
-  // Only the mounted owner's actively drafted STATELESS cards survive retirement.
-  // This is presentation continuity, never a cache of live approval/ask authority.
+  // Stateless cards stay visible while blocking drafts restore when authority retires.
   const draftScope = JSON.stringify([scope, root])
-  const [drafts, setDrafts] = useState<{ scope: string; cards: Record<string, PendingQuestion> }>({ scope: draftScope, cards: {} })
-  if (drafts.scope !== draftScope) setDrafts({ scope: draftScope, cards: {} })
-  /* WHICH cards are being typed into, as ids only. Deliberately separate from
-     `drafts.cards` above, because the two answer different questions and only one
-     of them may include a blocking ask:
-       - `drafts.cards` RETAINS a card past its retirement, so it is limited to
-         stateless `card_id` questions. Retaining a blocking `ask_id` question
-         would resurrect a card whose authority the live list owns.
-       - this set only says "text is unsent", which is true of a blocking ask too,
-         and a HOST uses it to keep the subtree mounted.
-     Folding the second into the first is what made a blocking ask's typed answer
-     unprotected: its early return left the flag false, the host released the
-     panel, and the draft went with the unmount. */
-  const [draftIds, setDraftIds] = useState<{ scope: string; ids: string[] }>({ scope: draftScope, ids: [] })
-  if (draftIds.scope !== draftScope) setDraftIds({ scope: draftScope, ids: [] })
-  const onQuestionDraftChange = (question: PendingQuestion, active: boolean) => {
+  const [drafts, setDrafts] = useState<{
+    scope: string
+    cards: Record<string, { question: PendingQuestion; answers: Record<string, string> }>
+    notices: Record<string, { slot: string; question: string }>
+  }>({ scope: draftScope, cards: {}, notices: {} })
+  if (drafts.scope !== draftScope) setDrafts({ scope: draftScope, cards: {}, notices: {} })
+  const onQuestionDraftChange = (question: PendingQuestion, answers: Record<string, string>) => {
     // A trailing `[OPTIONS:]` ask (`followUp`) has neither id, but a pick in it
     // is unsent text all the same; one per session is all the model ever offers.
-    const key = question.ask_id || question.card_id || (question.followUp ? 'follow-up' : '')
-    if (!key) return
-    const draftId = JSON.stringify([slotKey(question.slot), key])
-    setDraftIds(previous => {
-      // A departing card's cleanup must not clear a new scope's draft.
-      if (previous.scope !== draftScope) return previous
-      const held = previous.ids.includes(draftId)
-      if (active === held) return previous
-      return { ...previous, ids: active ? [...previous.ids, draftId] : previous.ids.filter(id => id !== draftId) }
-    })
-    if (question.ask_id || !question.card_id) return
-    const id = JSON.stringify([slotKey(question.slot), question.card_id])
+    if (!question.ask_id && !question.card_id && !question.followUp) return
+    const id = questionId(question)
     setDrafts(previous => {
       if (previous.scope !== draftScope) return previous
-      if (active) return previous.cards[id] === question ? previous : { ...previous, cards: { ...previous.cards, [id]: question } }
+      if (Object.keys(answers).length) {
+        return { ...previous, cards: { ...previous.cards, [id]: { question, answers } } }
+      }
       if (!previous.cards[id]) return previous
       const cards = { ...previous.cards }
       delete cards[id]
       return { ...previous, cards }
     })
   }
+  const questionRequestsInFlight = useAppSelector(s => s.chat.questionRequestsInFlight)
+  const questionsSettled = useAppSelector(s => s.chat.questionsSettled)
+  const localQuestionReleases = useRef(new Set<string>())
+  useEffect(() => {
+    for (const [askId, provenance] of Object.entries(questionRequestsInFlight || {})) {
+      if (provenance === 'composer' || provenance === 'queued') localQuestionReleases.current.add(askId)
+    }
+  }, [questionRequestsInFlight])
   const visibleQuestions = useMemo(() => {
     const live = questions.data || []
-    const ids = new Set(live.map(q => JSON.stringify([slotKey(q.slot), q.card_id])))
-    return [...live, ...Object.values(drafts.scope === draftScope ? drafts.cards : {}).filter(q => !ids.has(JSON.stringify([slotKey(q.slot), q.card_id])))]
-  }, [questions.data, drafts, draftScope])
+    const ids = new Set(live.map(questionId))
+    const retained = Object.values(drafts.scope === draftScope ? drafts.cards : {})
+      .map(draft => draft.question)
+      // A trailing `[OPTIONS:]` ask is the slot's own, never retained past it.
+      .filter(question => !question.followUp && !ids.has(questionId(question))
+        && (!question.ask_id || (!questionsSettled?.[question.ask_id]
+          && questionRequestsInFlight?.[question.ask_id])))
+    return [...live, ...retained]
+  }, [questions.data, drafts, draftScope, questionRequestsInFlight, questionsSettled])
+  useEffect(() => {
+    if (!questions.data || drafts.scope !== draftScope) return
+    const liveIds = new Set(questions.data.map(questionId))
+    const retired = Object.entries(drafts.cards)
+      .filter(([id, draft]) => {
+        const askId = draft.question.ask_id
+        const answered = !!askId && isAnsweredQuestionEnding(questions.data?.resolved?.[askId])
+        return !!askId && !liveIds.has(id)
+          && (answered || questionsSettled?.[askId] || !questionRequestsInFlight?.[askId])
+      })
+    if (!retired.length) return
+    const restored = new Set<string>()
+    for (const [id, draft] of retired) {
+      const askId = draft.question.ask_id!
+      const answered = isAnsweredQuestionEnding(questions.data.resolved?.[askId])
+      const localRelease = localQuestionReleases.current.has(askId)
+      // A local composer/queued release settles the ask itself once its answer
+      // request returns; settling it here first would let the chat card drop the
+      // draft it retained for that release to hand back.
+      if (answered && !questionsSettled?.[askId] && !localRelease) {
+        dispatch(markQuestionSettled({ ask_id: askId }))
+      }
+      if ((answered || questionsSettled?.[askId]) && !localRelease) continue
+      const text = answersAsText(draft.answers)
+      if (text.trim()) {
+        restoreToComposer(slotKey(draft.question.slot), text)
+        restored.add(id)
+      }
+    }
+    for (const [, draft] of retired) localQuestionReleases.current.delete(draft.question.ask_id!)
+    setDrafts(previous => {
+      if (previous.scope !== draftScope) return previous
+      const cards = { ...previous.cards }
+      const notices = { ...previous.notices }
+      for (const [id, draft] of retired) {
+        delete cards[id]
+        if (restored.has(id)) notices[id] = { slot: slotKey(draft.question.slot), question: questionName(draft.question.questions) }
+      }
+      return { ...previous, cards, notices }
+    })
+  }, [questions.data, drafts, draftScope, questionRequestsInFlight, questionsSettled, dispatch])
   // The same inventory the app shell already keeps: one cache, one request per frame.
   const approvals = useQuery({ queryKey: ['global-approvals'], queryFn: () => api.approvals(), ...sourceOptions })
   const workflows = useQuery({ queryKey: ['command-center', 'workflows'], queryFn: api.workflowRuns, ...sourceOptions })
@@ -152,6 +198,23 @@ export function useCommandCenter(root: string | null, enabled = true, scope: 'ta
     return buildCommandCenter({ root: fleet ? null : root, slots: scoped, subagents, approvalMode, workflows: [...runs.values()],
       questions: visibleQuestions, approvals: approvals.data || [], work: work.isEnabled ? work.data?.value : undefined })
   }, [root, scoped, activeSlot, liveAgents, background, liveWorkflows, workflows.data, visibleQuestions, approvals.data, work.data, work.isEnabled, approvalMode, fleet])
+  // A pick in a trailing `[OPTIONS:]` ask is unsent text only while that ask is
+  // offered; once the session moves on the card is gone and so is its draft,
+  // never restored to the composer (the labels are the agent's, not typed text).
+  useEffect(() => {
+    if (drafts.scope !== draftScope) return
+    const gone = Object.entries(drafts.cards)
+      .filter(([, draft]) => draft.question.followUp
+        && !model.attention.some(a => a.question?.followUp && slotKey(a.slot) === slotKey(draft.question.slot)))
+      .map(([id]) => id)
+    if (!gone.length) return
+    setDrafts(previous => {
+      if (previous.scope !== draftScope) return previous
+      const cards = { ...previous.cards }
+      for (const id of gone) delete cards[id]
+      return { ...previous, cards }
+    })
+  }, [model.attention, drafts, draftScope])
   const sources = [questions, approvals, workflows, ...(work.isEnabled ? [work] : []), artifacts]
   // Questions and approvals are what a person must act on; the rest decorate.
   // An optional source failing (workflows answer 503 while their service starts)
@@ -191,23 +254,26 @@ export function useCommandCenter(root: string | null, enabled = true, scope: 'ta
   const [, rerenderSettledLatch] = useState(0)
   const latchKey = JSON.stringify([scope, root, dock ? 'dock' : 'panel'])
   const latched = settledLatches.get(latchKey) || false
-  const unsettledNow = (complete && !model.settled) || model.attention.length > 0
-  const finished = latched ? !unsettledNow : complete && model.settled
+  const restoredQuestionNotices = Object.entries(drafts.notices)
+    .map(([id, notice]) => ({ id, ...notice }))
+  const dismissRestoredQuestionNotice = (id: string) => setDrafts(previous => {
+    if (!previous.notices[id]) return previous
+    const notices = { ...previous.notices }
+    delete notices[id]
+    return { ...previous, notices }
+  })
+  const unsettledNow = (complete && !model.settled) || model.attention.length > 0 || restoredQuestionNotices.length > 0
+  const finished = latched ? !unsettledNow : complete && model.settled && !restoredQuestionNotices.length
   if (finished !== latched) {
     if (finished) settledLatches.set(latchKey, true)
     else settledLatches.delete(latchKey)
     rerenderSettledLatch(version => version + 1)
   }
-  // Whether ANY card on this scope is holding a half-entered answer -- a blocking
-  // ask as much as a stateless one. Read as one boolean so a HOST can keep its
-  // panel mounted while text is unsent: the Crewmates page does, because that
-  // draft lives nowhere but component state and an unmount is the text being
-  // thrown away. Taken from `draftIds`, not from the retention map, for the reason
-  // given where they are declared. Scope-guarded like the reads above: a departing
-  // scope's cards never answer for the new one.
-  const hasQuestionDraft = draftIds.scope === draftScope && draftIds.ids.length > 0
+  // Whether any card on this scope holds a half-entered answer, blocking ask included, so a HOST keeps its panel mounted while text is unsent.
+  const hasQuestionDraft = drafts.scope === draftScope && Object.keys(drafts.cards).length > 0
   return {
     ...model, dashboards, connected, onQuestionDraftChange, hasQuestionDraft,
+    restoredQuestionNotices, dismissRestoredQuestionNotice,
     approvalMode: effectiveApprovalMode(approvalMode, slots.find(s => s.key === root)),
     loading, stale, missing,
     // Real clock from completed reads. A websocket connection alone doesn't
@@ -218,7 +284,7 @@ export function useCommandCenter(root: string | null, enabled = true, scope: 'ta
     // Needs you tile is the dock's reason to exist. A lone session's TODO list is
     // deliberately NOT enough: TaskProgressBar already shows that plan above the
     // composer, and a second readout of the same numbers would only repeat it.
-    relevant: scoped.length > 1 || model.nodes.some(n => n.kind !== 'session') || model.workItems.length > 0 || dashboards.length > 0 || model.attention.length > 0,
+    relevant: scoped.length > 1 || model.nodes.some(n => n.kind !== 'session') || model.workItems.length > 0 || dashboards.length > 0 || model.attention.length > 0 || restoredQuestionNotices.length > 0,
     finished,
   }
 }

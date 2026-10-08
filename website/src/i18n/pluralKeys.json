@@ -253,5 +253,8 @@
   "pages.overview.memoryTab.consolidate_failed_session",
   "pages.overview.memoryTab.skipped_temporary_count",
   "pages.overview.memoryTab.skipped_incognito_count",
-  "pages.chat.crewLog.subagents_unmatched"
+  "pages.chat.crewLog.subagents_unmatched",
+  "pages.chat.toolCallLine.ask_answered",
+  "components.questionCard.chars_left",
+  "components.questionCard.answer_at_limit"
 ]

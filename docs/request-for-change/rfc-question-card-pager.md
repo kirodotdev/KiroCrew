@@ -202,8 +202,8 @@ answers up by position:
 
 ```
 User has answered your questions:
-"Which region?"="eu-west-1"
-"Which tier?"="Pro"
+"Which region?" -> "eu-west-1"
+"Which tier?" -> "Pro"
 ```
 
 The transcript folds it into a card headed "N questions answered" (pluralized per locale),
@@ -213,7 +213,7 @@ opening to each question and its answer. It is part of the tool row, so it survi
 
 | Ending | Tool result | Pinned by |
 |---|---|---|
-| Answered | `User has answered your questions:` plus one `"<question>"="<answer>"` line each | `test_answers_come_back_as_the_tool_result`; `reads each question and answer from an answered result` |
+| Answered | `User has answered your questions:` plus one `"<question>" -> "<answer>"` line each | `test_answers_come_back_as_the_tool_result`; `reads each question and answer from an answered result` |
 | Dismissed | `The user dismissed the question card without answering.` | `test_each_ending_is_told_apart` |
 | User typed in the composer instead | `The user replied in chat instead of answering the question card. Their message follows as the next user message …` The typed text arrives as the user's own words, and the card is dismissed, never submitted with that text | `test_answer_endpoint_marks_a_composer_reply`; `dismisses rather than submitting the typed text as the answer`; `resolves a QUEUED send too, so the two cannot deadlock` |
 | Not answered in time (default 30 min, at most 1 h) | `The user did not answer the question card in time, so it was withdrawn …` | `test_coordinator_expires_at_the_deadline_and_retires_the_card` |

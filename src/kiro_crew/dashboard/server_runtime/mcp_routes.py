@@ -396,14 +396,17 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/monitors/{monitor_id}/clear", api_monitor_clear)
     app.router.add_post("/api/monitors/{monitor_id}/restart", api_monitor_restart)
 
-    # Agent questions. The MCP ask_question tool does not post here: it returns
-    # a session directive and the dashboard posts a NON-BLOCKING card (see
-    # mcp_tools.control.ask_question). This API stays live because the UI reads
-    # /pending to rehydrate cards after a reload and answers or dismisses them
-    # through the routes below, and POST /api/ask-question still opens a blocking
-    # wait for any caller that uses it — so it must not be wrapped in any
-    # short-timeout middleware.
+    # Agent questions. The MCP ask_question tool opens a BLOCKING card through
+    # /api/agent-ask/* (strict internal paths, the caller's attested session
+    # only); with no attested identity or no attached dashboard it shows no card
+    # (see mcp_tools.control.ask_question). The UI reads /pending to rehydrate cards
+    # after a reload and answers or dismisses them through the routes below, and
+    # POST /api/ask-question still opens a blocking wait for any caller that
+    # uses it — so none of these may be wrapped in short-timeout middleware.
     from kiro_crew.dashboard.handlers.ask_question import (
+        api_agent_ask_open,
+        api_agent_ask_wait,
+        api_agent_ask_withdraw,
         api_ask_question,
         api_ask_question_answer,
         api_ask_question_dismiss,
@@ -416,6 +419,9 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get("/api/ask-question/pending", api_ask_question_pending)
     app.router.add_post("/api/ask-question/dismiss", api_ask_question_dismiss)
     app.router.add_post("/api/ask-question/{ask_id}/answer", api_ask_question_answer)
+    app.router.add_post("/api/agent-ask/open", api_agent_ask_open)
+    app.router.add_post("/api/agent-ask/{ask_id}/wait", api_agent_ask_wait)
+    app.router.add_post("/api/agent-ask/{ask_id}/withdraw", api_agent_ask_withdraw)
 
     # Artifacts — persistent, versioned LLM-generated UI
     app.router.add_get("/api/artifacts", api_artifacts_list)

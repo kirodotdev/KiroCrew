@@ -550,6 +550,13 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # ``local_only=False`` deployment reclassifies strict paths as mixed.
         "/api/computer-use/frame",
         "/api/session-keepalive",
+        # Blocking MCP ask_question: open / wait / withdraw. STRICT for the same
+        # reason as the keepalive above -- the only caller is the tool in an MCP
+        # subprocess, and the card is addressed by the attested X-Session-Key,
+        # which a browser bearer must not be able to assert. Its own prefix so
+        # the browser half of /api/ask-question is not swept in by the
+        # prefix-matched strict check.
+        "/api/agent-ask",
         # Session directives: the provider-neutral leg of the directive
         # protocol. STRICT for the same reasons as its sibling above — the
         # only legitimate caller is a Kiro Crew directive tool in an MCP

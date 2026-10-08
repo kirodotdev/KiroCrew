@@ -25,6 +25,9 @@ import type { ReactElement } from 'react'
 import type { ChatMessage } from '../types'
 import { mergeRenderers, resolveRenderer, type MessageRenderContext } from '../app-sdk/messageRenderers'
 import { createTranscriptRenderers, featureRequestRefusalIsNewest, sessionStartRepeatIsNewest } from '../pages/chat/transcriptRenderers'
+import { ErrorCard } from '../pages/chat/ErrorCard'
+import NoticeCard from '../pages/chat/NoticeCard'
+import { i18nT } from '../i18n/t'
 import { FEATURE_REQUEST_FORM_URL, FEATURE_REQUEST_ROW_META_KEY } from '../prompts/featureRequest'
 import { isWorkflowRunTool } from '../pages/chat/WorkflowRunCard'
 import { isSpawnRunTool } from '../pages/chat/SubagentRunCard'
@@ -198,6 +201,19 @@ describe('shape still beats role after the defaults are replaced', () => {
 describe('the error row offers Continue only where the single-chat surface does', () => {
   const errs = [msg('error', { content: 'first' }), msg('assistant', { content: 'x' }), msg('error', { content: 'last' })]
   const recoverable = { slot: 's1', continuable: true, interrupted: true, onContinue: () => undefined }
+
+  it('renders a restored-answer notice as a warn NoticeCard, not a red error', () => {
+    // The row the restore sites append: role 'notice' with NoticeCard's warn glyph.
+    const notice = msg('notice', {
+      content: '\u26A0\uFE0F ' + i18nT('components.pendingQuestionCard.answer_restored'),
+      cls: '',
+    })
+    expect(idFor(notice)).toBe('notice')
+    const el = render(notice, { slot: 's1' }, { messages: [notice] }) as ReactElement
+    expect(el.type).toBe(NoticeCard)
+    expect(el.type).not.toBe(ErrorCard)
+    expect(el.props.content).toContain(i18nT('components.pendingQuestionCard.answer_restored'))
+  })
 
   it('offers it on the last error only', () => {
     const last = render(errs[2], recoverable, { index: 2, messages: errs }) as ReactElement

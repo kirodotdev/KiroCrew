@@ -639,31 +639,62 @@ describe('QuestionCard — paging', () => {
     expect(screen.getByText(at(1, 2))).toBeInTheDocument()
   })
 
-  it('publishes draft-active for a pending option selection, and clears it on deselect', () => {
-    // GPT round-10: an unsubmitted option pick is in-progress work exactly
-    // like typed custom text — the store must know, or auto-retirement
-    // destroys it. Deselecting (single-select second click) must clear the
-    // flag so the card becomes retirable again.
+  it('publishes pending option answers and clears them on deselect', () => {
     const onDraftChange = vi.fn()
     render(<QuestionCard questions={singleQuestion} onSubmit={vi.fn()} onDraftChange={onDraftChange} />)
-    onDraftChange.mockClear() // initial effect publishes false
+    onDraftChange.mockClear()
     fireEvent.click(screen.getByText('Red').closest('button')!)
-    expect(onDraftChange).toHaveBeenLastCalledWith(true)
-    fireEvent.click(screen.getByText('Red').closest('button')!) // deselect
-    expect(onDraftChange).toHaveBeenLastCalledWith(false)
+    expect(onDraftChange).toHaveBeenLastCalledWith({ 'What is your favorite color?': 'Red' })
+    fireEvent.click(screen.getByText('Red').closest('button')!)
+    expect(onDraftChange).toHaveBeenLastCalledWith({})
   })
 
-  it('publishes draft-active for custom text and clears the flag on unmount', () => {
+  it('seeds an exact stored option as a selection', () => {
+    render(
+      <QuestionCard
+        questions={singleQuestion}
+        draftAnswers={{ 'What is your favorite color?': 'Red' }}
+        onSubmit={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('Red').closest('button')).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByPlaceholderText(/custom answer/i)).toHaveValue('')
+  })
+
+  it('seeds a multi-select draft of several picks back as selections', () => {
+    const multi = [{ question: 'Which toppings?', header: 'TOP', multiSelect: true, options: [{ label: 'Basil' }, { label: 'Olives' }, { label: 'Cheese' }] }]
+    render(<QuestionCard questions={multi} draftAnswers={{ 'Which toppings?': 'Basil, Olives' }} onSubmit={vi.fn()} />)
+    expect(screen.getByText('Basil').closest('button')).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByText('Olives').closest('button')).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByText('Cheese').closest('button')).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByPlaceholderText(/custom answer/i)).toHaveValue('')
+  })
+
+  it('ignores inherited keys when a question is named after an Object member', () => {
+    const named = [{ question: 'toString', header: 'Q', multiSelect: false, options: [{ label: 'Yes' }] }]
+    render(<QuestionCard questions={named} draftAnswers={{}} onSubmit={vi.fn()} />)
+    expect(screen.getByText('Yes').closest('button')).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByPlaceholderText(/custom answer/i)).toHaveValue('')
+  })
+
+  it('keeps a multi-select draft with a non-option part as custom text', () => {
+    const multi = [{ question: 'Which toppings?', header: 'TOP', multiSelect: true, options: [{ label: 'Basil' }, { label: 'Olives' }] }]
+    render(<QuestionCard questions={multi} draftAnswers={{ 'Which toppings?': 'Basil, anchovies' }} onSubmit={vi.fn()} />)
+    expect(screen.getByText('Basil').closest('button')).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByPlaceholderText(/custom answer/i)).toHaveValue('Basil, anchovies')
+  })
+
+  it('keeps the last custom-answer draft published on unmount', () => {
     const onDraftChange = vi.fn()
     const { unmount } = render(
       <QuestionCard questions={singleQuestion} onSubmit={vi.fn()} onDraftChange={onDraftChange} />,
     )
     fireEvent.change(screen.getByPlaceholderText(/custom answer/i), { target: { value: 'maybe teal' } })
-    expect(onDraftChange).toHaveBeenLastCalledWith(true)
-    // A card removed for any other reason (resolution, dismiss) must not
-    // leave a stale draftActive blocking a future card's retirement.
+    const expected = { 'What is your favorite color?': 'maybe teal' }
+    expect(onDraftChange).toHaveBeenLastCalledWith(expected)
     unmount()
-    expect(onDraftChange).toHaveBeenLastCalledWith(false)
+    expect(onDraftChange).toHaveBeenLastCalledWith(expected)
   })
 
   it('says what Dismiss does, on the row and on the control', () => {

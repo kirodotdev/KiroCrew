@@ -9,11 +9,12 @@ import { isNonInteractiveQueued, isSystemDelivery } from '../../../components/Qu
 import { useQueuedMessageActions } from '../../../hooks/useQueuedMessageActions'
 import { drainPendingChunks } from '../../../lib/pendingChunkDrain'
 import { store, type AppDispatch } from '../../../store'
-import { appendMessage, clearPendingPermissions, requestStop, selectComposerBusy, type pendingQuestionFor } from '../../../store/chatSlice'
+import { appendMessage, appendSlotMessage, capturePendingAskId, clearPendingPermissions, requestStop, selectComposerBusy, type pendingQuestionFor } from '../../../store/chatSlice'
 import type { ChatMessage, ChatSlot } from '../../../types'
 import { mergeIntoDraft, mergeRecoveredDraft, setDraft } from '../../../utils/chatDrafts'
 import { expandAll as expandPasteTokens } from '../../../utils/pasteTokens'
 import { handleStopPress, isEscalationState } from '../../../utils/stopDebounce'
+import { answerRejectedMessage } from '../../../utils/questionAnswers'
 import { interceptSlashCommand, isInterceptedSlashCommand } from '../ChatInput'
 import { mintSendId } from '../ChatPageMessageContent'
 import type { ComposerDraftStores } from './composerDrafts'
@@ -29,7 +30,7 @@ interface BusyTurnControlsOptions {
   /** The page's send, for the busy-but-not-running case and nothing else. */
   send: (optionText?: string, targetSlot?: string, steerNow?: boolean, isolated?: boolean) => Promise<boolean>
   /** The receipt-aware steer POST (ChatPage's `applySteerReceipt` adapter). */
-  steerMutation: { mutate: (vars: { text: string; sendId?: string; slot: string; auto?: boolean; quote?: MessageQuote | null }) => void }
+  steerMutation: { mutate: (vars: { text: string; sendId?: string; slot: string; auto?: boolean; quote?: MessageQuote | null; askId?: string | null }) => void }
   /** The whole-message quote stage (`useMessageQuote`): a steer consumes it
    *  like a send does, and a cancelled queued send hands its quote back here. */
   messageQuote: UseMessageQuote
@@ -143,6 +144,7 @@ export function useBusyTurnControls({
       steerText(optionText, activeSlot, opts?.auto === true)
       return
     }
+    const askAtSteer = capturePendingAskId(store.getState().chat.pendingQuestions, activeSlot)
     const raw = inputRef.current.trim()
     const files = pendingFilesRef.current
     // A staged quote alone is a payload; a slash command is not a send, so the
@@ -229,7 +231,7 @@ export function useBusyTurnControls({
     // is the answer every refusal keeps, so it is the honest guess while the POST
     // is in flight, and a queue answer replaces this row through the same
     // `queue_push` reconcile a manual queue uses.
-    steerMutation.mutate({ text: llmTxt, sendId: steerSendId, slot: activeSlot, auto: opts?.auto === true, quote: steerQuote })
+    steerMutation.mutate({ text: llmTxt, sendId: steerSendId, slot: activeSlot, auto: opts?.auto === true, quote: steerQuote, askId: askAtSteer })
     // Staged session references are deliberately NOT part of steering: neither
     // carried into the payload nor cleared. Only the TEXT has a restore path
     // (steerMutation hands it back on a refused, failed or unconfirmed steer);
@@ -311,7 +313,7 @@ export function useBusyTurnControls({
     if (action !== 'ignore') dispatch(clearPendingPermissions())
   }
   /** A question card's answer that could not be delivered (a 404): kept for an explicit retry. */
-  const keepQuestionAnswer = (text: string) => {
+  const keepQuestionAnswer = (text: string, questions?: { question: string }[]) => {
     // A 404 means the blocked wait is gone and the card has
     // already cleared. Keep the user's answer in the composer
     // for an explicit retry instead of auto-sending: even with
@@ -319,6 +321,8 @@ export function useBusyTurnControls({
     // example Kiro becoming unavailable), which would otherwise
     // leave the answer only in a non-persisted optimistic bubble.
     setInput((prev) => (prev.trim() ? `${prev}\n${text}` : text))
+    // The submit was rejected, so this is an error row (ErrorNotice), not a warn notice.
+    if (activeSlot) dispatch(appendSlotMessage({ slot: activeSlot, message: answerRejectedMessage(questions) }))
   }
   /** A question card's one-click answer. */
   const answerQuestionCard = (text: string) => {

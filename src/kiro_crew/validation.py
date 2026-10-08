@@ -23,7 +23,7 @@ import sys
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import PureWindowsPath
-from typing import Any
+from typing import Any, Iterable
 
 # The artifact tag rule lives with the store's other field grammar and is read
 # here so the tool gate and the store cannot disagree about a tag. Import-safe:
@@ -77,6 +77,7 @@ from kiro_crew.monitoring.registry import (
     publicly_armable_objectives,
 )
 from kiro_crew.project_scope import SCOPE_FRAGMENT_RE
+from kiro_crew.session_directive import MAX_TOOL_RESULT_CHARS
 from kiro_crew.work_vocab import (
     WORK_BLOCKED_REASONS,
     WORK_ITEM_STATES,
@@ -1941,21 +1942,62 @@ _ASK_MAX_HEADER_LEN = 50
 _ASK_MAX_LABEL_LEN = 200
 _ASK_MAX_DESC_LEN = 500
 # The answer side is bounded too: answers are echoed verbatim into the agent's
-# transcript, so an oversized custom answer would consume model context.
-_ASK_MAX_ANSWER_LEN = 2000
+# transcript, so an oversized custom answer would consume model context. The
+# bound is derived so that the worst-case tool result (the header line, then
+# one '"<question>" -> "<answer>"' line per question at the max question length)
+# fits MAX_TOOL_RESULT_CHARS; the aggregate guard in the answer handler stays
+# as the backstop for JSON escaping or redaction growing the text past this.
+_ASK_ANSWERS_HEADER = "User has answered your questions:"
+#: Between the two JSON strings of a pair. Neither `=` nor `:`: the transport
+#: scrub's key=value patterns accept a quote and either of those after a key
+#: name, so they would join a question ending in a key name to its answer.
+_ASK_PAIR_SEPARATOR = " -> "
+# Newline, the quotes around key and answer, and the separator between them.
+_ASK_ANSWER_LINE_OVERHEAD = len(f'\n""{_ASK_PAIR_SEPARATOR}""') + _ASK_MAX_QUESTION_LEN
+_ASK_MAX_ANSWER_LEN = (
+    MAX_TOOL_RESULT_CHARS
+    - len(_ASK_ANSWERS_HEADER)
+    - _ASK_MAX_QUESTIONS * _ASK_ANSWER_LINE_OVERHEAD
+) // _ASK_MAX_QUESTIONS
 
-# ask_question requests a NON-BLOCKING dashboard question card: the MCP tool
-# returns a session directive and the agent ends its turn, so no tool call is
-# held open (see mcp_tools.control.ask_question). `questions` is only
-# shape-checked here (a bounded list); the per-question/per-option limits are
-# enforced server-side by validate_ask_user_question, which is the single
-# source of truth for the card payload.
+#: One wait slice of a blocking ask, shared by the gateway and the MCP tool.
+#: Short enough that a cancelled tool call withdraws its card promptly and the
+#: keepalive between slices resets the ACP tool-stall watchdog long before its
+#: 600s; long enough that an idle card costs a request every ~20s.
+ASK_WAIT_SLICE_SECS = 20
+
+
+def format_ask_answers(pairs: Iterable[tuple[str, str]]) -> str:
+    """The answered tool result: the header, then one ``"<question>" -> "<answer>"`` line per pair."""
+    # Imported here: kiro_crew.agent_sdk pulls in the ACP stack this module otherwise avoids.
+    # The transport scrubs the serialized result again, and a scrub that cuts through
+    # a JSON escape leaves a line that does not decode. Scrubbing the decoded values
+    # first leaves it nothing to match, and the size guard sizes this same text.
+    from kiro_crew.agent_sdk import tool_row_text as _scrub
+
+    lines = [_ASK_ANSWERS_HEADER]
+    for q, a in pairs:
+        # JSON-escaped so a quote or newline in either side cannot forge another pair.
+        lines.append(
+            json.dumps(_scrub(q), ensure_ascii=False)
+            + _ASK_PAIR_SEPARATOR
+            + json.dumps(_scrub(a), ensure_ascii=False)
+        )
+    return "\n".join(lines)
+
+
+# ask_question opens a BLOCKING dashboard question card: the MCP tool holds the
+# call open and returns the answers as its result (see
+# mcp_tools.control.ask_question). `questions` is only shape-checked here (a
+# bounded list); the per-question/per-option limits are enforced server-side by
+# validate_ask_user_question, which is the single source of truth for the card
+# payload.
 ASK_QUESTION_SCHEMA = ToolSchema(
     tool_name="ask_question",
     fields=[
         FieldSpec("questions", list, required=True, max_items=_ASK_MAX_QUESTIONS),
-        # Accepted but IGNORED: the directive the tool returns carries only
-        # `questions`, so nothing downstream reads a timeout. The bound still
+        # Accepted but IGNORED: the tool opens the card with only `questions`,
+        # so nothing downstream reads a timeout. The bound still
         # mirrors DashboardState._QUESTION_TIMEOUT_MAX, which governs the legacy
         # blocking POST /api/ask-question path. Kept lenient rather than removed
         # so a caller still passing it gets its card instead of a validation

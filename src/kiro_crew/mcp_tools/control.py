@@ -65,6 +65,7 @@ from kiro_crew.security import (
 from kiro_crew.session_surface import has_dashboard_surface
 from kiro_crew.validation import (
     ASK_QUESTION_SCHEMA,
+    ASK_WAIT_SLICE_SECS,
     AUTONUDGE_STOP_SCHEMA,
     CHAT_TAG_SCHEMA,
     MONITOR_INSPECT_SCHEMA,
@@ -82,6 +83,7 @@ from kiro_crew.validation import (
     TASK_RUN_SCHEMA,
     WAIT_SCHEMA,
     ValidationError,
+    format_ask_answers,
     validate_ask_user_question,
     validate_judge_spec,
     validate_tool_args,
@@ -339,19 +341,21 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
             "description": (
                 "Ask the dashboard user 1-4 multiple-choice questions by posting a "
                 "question card to the chat: the user clicks an option (or types a "
-                "custom answer in the card's free-text field). The tool is "
-                "NON-BLOCKING — it returns as soon as the card is requested, so END "
-                "YOUR TURN immediately after calling it. The answer arrives as the "
-                "user's next ordinary message, NOT as this tool's result, so do not "
-                "re-ask or guess in the meantime. Use it when a decision is genuinely "
+                "custom answer in the card's free-text field). In a dashboard "
+                "session the call BLOCKS until the user responds and the answers "
+                'are this tool\'s result, one \'"<question>" -> "<answer>"\' line per '
+                "question — do NOT end your turn; continue with the answers. The "
+                "result instead says when the user dismissed the card, did not "
+                "answer in time, or replied in chat (then read their next message), "
+                "or why no card could be shown (then ask in plain text). "
+                "Use it when a decision is genuinely "
                 "needed before the work can continue (which of these approaches, "
-                "which account, confirm before I refactor). When you are ending your "
-                "turn anyway a final [OPTIONS: a | b | c] tag is cheaper and renders "
-                "on every channel — the card's advantage is several questions at "
-                "once, multi-select and the free-text field, not saving a turn. "
+                "which account, confirm before I refactor). When you are ending "
+                "your turn anyway a final [OPTIONS: a | b | c] tag is cheaper and "
+                "renders on every channel — the card's advantage is several "
+                "questions at once, multi-select and the free-text field. "
                 "Dashboard sessions only: from another surface the call returns an "
-                "[OPTIONS:] steer instead of a card, and if no dashboard client is "
-                "attached the card is dropped."
+                "[OPTIONS:] steer instead of a card."
             ),
             "inputSchema": {
                 "type": "object",
@@ -404,8 +408,7 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                             "required": ["question", "options"],
                         },
                     },
-                    # No timeout_secs: it would imply a wait this tool does not
-                    # perform. Still accepted for compatibility, never read.
+                    # No timeout_secs: the gateway sets the wait window.
                 },
                 "required": ["questions"],
             },
@@ -1508,45 +1511,170 @@ def autonudge_stop(name: str, args: dict[str, Any]) -> str:
 
 def ask_question(name: str, args: dict[str, Any]) -> str:
     args = validate_tool_args(args, ASK_QUESTION_SCHEMA)
-    # Stateless: return a directive. The session-aware consumer
-    # (chat_runner) broadcasts a NON-BLOCKING question card (no ask_id) to
-    # ITS OWN slot and the agent ends its turn; the user's answer arrives as
-    # an ordinary next message that resumes the session with full context.
-    # No server-side block, no identity resolved for the effect. A card needs
-    # a chat window, so the gate asks whether one is OPEN rather than where
-    # the session started — a channel-born session with its tab open can
-    # render it. Surfaces without a tab still get the [OPTIONS:] hint;
-    # an empty (default-install) key falls through to the directive.
-    # Resolve-half of the shared strict gate only: ask_question gates on the
-    # dashboard surface, not on identity, so an empty key is not a refusal.
+    # ALWAYS blocking. The tool opens a card on the calling session's own slot
+    # and waits for it, so the answers come back as this call's RESULT. There is
+    # deliberately no non-blocking fallback: that path sent the answers back as
+    # the user's next chat message, which hands agent-authored question text the
+    # user's authority. When no card can be shown the tool says so in its result
+    # and the agent asks in plain text instead.
     sk, _ = mcp_core.require_strict_session_key("ask_question")
-    if sk and not has_dashboard_surface(sk):
+    # Dashboard-born sessions only: a surfaced channel session is steered by its channel's members, not the owner.
+    if not sk or not sk.startswith("dashboard:") or not has_dashboard_surface(sk):
         return (
-            "ask_question only works from a dashboard chat session "
-            f"(current session_key={sk!r}). From other surfaces, end your "
-            "turn with an [OPTIONS: a | b | c] tag instead — it renders "
-            "clickable buttons on every channel that supports them."
+            "ask_question only works from a dashboard chat session with its tab "
+            "open. Ask in plain text instead, or end your turn with an "
+            "[OPTIONS: a | b | c] tag — it renders clickable buttons on every "
+            "channel that supports them."
         )
     # Deep per-question/option validation, AUTHORITATIVELY here rather than in
     # the shallow schema: a malformed nested question must be rejected before the
-    # model is told a card was posted, not surface later as a card-post failure.
-    # RETURNED, not raised: an escaped exception is turned into the same
-    # ``"Error: …"`` text by the JSON-RPC layer, but it escapes this server's own
-    # return path — so it is neither audited with the call's args nor tagged as a
-    # refusal, and the consumer reads a decline as a LOST DIRECTIVE MARKER.
-    # Returning keeps the model-facing text identical and keeps the
-    # "marker or refusal, nothing in between" invariant total.
+    # model is told a card was posted. Returned, not raised, so the refusal is
+    # audited with the call's args like any other result.
     try:
         questions = validate_ask_user_question(args)
     except ValidationError as exc:
         return f"Error: {exc}"
-    return _emit_directive(
-        "ask_question",
-        {"questions": questions},
-        "Question card requested for this session. End your turn now — if it "
-        "renders, the user's answer arrives as your next message (do NOT "
-        "re-ask or guess in the meantime). If no dashboard client is "
-        "attached the card is dropped, so ask in plain text instead.",
+    if mcp_core.directive_capture_active():
+        # A gateway-side replay (``derive_directive``) runs this handler on the
+        # gateway's own event loop, where a blocking loopback POST back to the
+        # same gateway can never be serviced and freezes every session
+        # (reproduced: the loop-stall watchdog fired). This tool publishes no
+        # directive, so the replay has nothing to derive.
+        return ""
+    return _ask_question_blocking(sk, questions)
+
+
+#: Consecutive failed wait round-trips (gateway restarting, transport error)
+#: before the tool gives up and reports the question withdrawn.
+ASK_WAIT_MAX_ERRORS = 6
+#: Tries for the open POST when its response is lost in transit.
+ASK_OPEN_ATTEMPTS = 3
+
+
+def _ask_question_blocking(sk: str, questions: list[dict]) -> str:
+    """Show a blocking card on *sk*'s slot and return the outcome as tool text.
+
+    Always returns the tool result: the user's answers, how the card ended, or
+    why no card could be shown. There is no fallback path.
+    """
+    # Client-chosen id: a retried open is idempotent, so a lost response never
+    # leaves a card on screen that this call cannot collect.
+    ask_id = uuid.uuid4().hex
+    opened: Any = None
+    for attempt in range(ASK_OPEN_ATTEMPTS):
+        opened = mcp_core._post(
+            "/api/agent-ask/open", {"questions": questions, "ask_id": ask_id}, session_key=sk
+        )
+        if not (isinstance(opened, dict) and opened.get("transport_error")):
+            break
+        if attempt + 1 < ASK_OPEN_ATTEMPTS:
+            mcp_core.time.sleep(1)
+    if isinstance(opened, dict) and opened.get("transport_error"):
+        # Unknown whether the gateway took it: poll by our own id, which finds
+        # the card if it was shown and returns not-found if it never was.
+        return _await_ask_outcome(sk, ask_id, confirmed=False)
+    if not (isinstance(opened, dict) and opened.get("ask_id") == ask_id):
+        code = (opened.get("code") or "") if isinstance(opened, dict) else ""
+        if isinstance(opened, dict) and "clients" in opened and not opened.get("clients"):
+            why = "no dashboard window is open to show it"
+        elif code == "slot_not_found":
+            why = "this session has no open dashboard tab"
+        else:
+            why = f"the dashboard refused it ({code or 'unreachable'})"
+        logger.warning("ask_question: card not shown: %s", why)
+        return _not_shown(why)
+    return _await_ask_outcome(sk, ask_id, confirmed=True)
+
+
+def _not_shown(why: str) -> str:
+    return (
+        f"The question card could not be shown: {why}. Ask in plain text "
+        "instead, or end your turn with an [OPTIONS: a | b | c] tag."
+    )
+
+
+def _withdraw_ask(sk: str, ask_id: str) -> None:
+    """Best-effort withdraw of *ask_id*'s card."""
+    try:
+        mcp_core._post(f"/api/agent-ask/{ask_id}/withdraw", {}, session_key=sk)
+    except Exception:
+        pass
+
+
+def _await_ask_outcome(sk: str, ask_id: str, *, confirmed: bool) -> str:
+    """Poll *ask_id* until it ends; *confirmed* is False when the open's reply was lost."""
+    errors = 0
+    while True:
+        if is_tool_cancelled():
+            _withdraw_ask(sk, ask_id)
+            raise ToolCancelled("ask_question cancelled; the question card was withdrawn")
+        try:
+            # Resets the stall watchdog and the staleness reaper, exactly as the
+            # ``wait`` tool's ping does. Best-effort: a missed ping costs nothing
+            # the next slice does not repair.
+            mcp_core._post("/api/session-keepalive", {}, session_key=sk)
+        except Exception:
+            pass
+        reply = mcp_core._post(
+            f"/api/agent-ask/{ask_id}/wait",
+            {},
+            timeout=ASK_WAIT_SLICE_SECS + 15,
+            session_key=sk,
+        )
+        status = reply.get("status") if isinstance(reply, dict) else None
+        if status == "pending":
+            errors = 0
+            confirmed = True
+            continue
+        if status:
+            return _format_ask_outcome(reply)
+        # A transport error is retried up to ASK_WAIT_MAX_ERRORS slices; a 404 is terminal.
+        errors += 1
+        not_found = isinstance(reply, dict) and reply.get("code") == "question_not_found"
+        if not confirmed and not_found:
+            return _not_shown("the dashboard did not confirm it")
+        if errors >= ASK_WAIT_MAX_ERRORS or not_found:
+            # A card the gateway still holds must not keep accepting answers nobody reads.
+            _withdraw_ask(sk, ask_id)
+            return (
+                "The question card was withdrawn before the user answered "
+                "(the dashboard restarted or this session's tab was reset). "
+                "Ask again if you still need the answer."
+            )
+        mcp_core.time.sleep(2)
+
+
+def _format_ask_outcome(reply: dict) -> str:
+    """The tool result for a finished ask. Stable wording: agents branch on it."""
+    status = reply.get("status")
+    if status == "answered":
+        answers = reply.get("answers") or {}
+        asked = [str(q.get("question") or "") for q in reply.get("questions") or []]
+        # An answer keyed by text the server did not ask is dropped rather than
+        # echoed: only the server's own copy of the question is quoted back.
+        return format_ask_answers((q, str(answers[q])) for q in asked if q in answers)
+    if status == "composer":
+        return (
+            "The user replied in chat instead of answering the question card. "
+            "Their message follows as the next user message — read it before "
+            "continuing."
+        )
+    if status == "queued":
+        return (
+            "The user replied in chat instead of answering the question card. "
+            "Their message is queued and arrives once this turn ends — finish "
+            "what you can without the answer, then read it."
+        )
+    if status == "dismissed":
+        return "The user dismissed the question card without answering."
+    if status == "expired":
+        return (
+            "The user did not answer the question card in time, so it was "
+            "withdrawn. Continue without the answer or ask again."
+        )
+    return (
+        "The question card was withdrawn before the user answered. "
+        "Ask again if you still need the answer."
     )
 
 

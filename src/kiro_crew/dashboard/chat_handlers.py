@@ -2886,11 +2886,10 @@ def _unblock_pending_waits(state: DashboardState, slot: _ChatSlot) -> None:
 
     * pending tool approvals (:func:`_reject_pending_approvals`)
     * pending agent questions that have a server-side wait
-      (:meth:`DashboardState.cancel_questions_for_slot`) — the blocked HTTP
-      request holds an MCP worker, so resolving the future is what lets that
-      socket close and the call return. Only the ``POST /api/ask-question``
-      path creates such a wait; the MCP ``ask_question`` tool posts a stateless
-      card and ends the turn, so it leaves nothing to release here.
+      (:meth:`DashboardState.cancel_questions_for_slot`). The blocking MCP
+      ``ask_question`` registers its card in ``_pending_questions`` under the
+      slot, so cancelling resolves its future as ``withdrawn`` and the tool call
+      returns; the legacy ``POST /api/ask-question`` wait is released the same way.
 
     They are combined here deliberately: a new blocking wait added later must
     be released from every stop path, and three separate call sites each

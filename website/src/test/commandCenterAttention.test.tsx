@@ -1,10 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { createTestStore, renderWithProviders } from './helpers'
-import AttentionCard from '../pages/chat/command-center/AttentionCard'
+import AttentionCard, { RestoredQuestionNotice } from '../pages/chat/command-center/AttentionCard'
 import { api, ApiError } from '../api/client'
 import * as transport from '../chat-core/transport/sendTurn'
 import { buildCommandCenter, type AttentionItem } from '../pages/chat/command-center/model'
+import { __resetPaneDraftsForTests } from '../utils/chatPaneDrafts'
+import { __resetForTests, loadDrafts } from '../utils/chatDrafts'
+import { registerMainComposer } from '../utils/composerRestore'
 
 /** Jev's consent for `Auto` mode, set per test rather than fetched. */
 const jev = vi.hoisted(() => ({ consented: false }))
@@ -12,6 +15,13 @@ vi.mock('../pages/chat/useJevAutoSend', () => ({ useJevAutoSend: () => jev.conse
 
 const approval: AttentionItem = { id: 'approval:child:r1', kind: 'approval', slot: 'child', native: true, approvalMode: 'normal', approval: { id: 'r1', instance: 'inst-r1', request_mid: 'row-r1', slot: 'dashboard:child', tool: 'shell', tool_input: 'git status' } }
 const question: AttentionItem = { id: 'question:q1', kind: 'question', slot: 'child', question: { slot: 'child', ask_id: 'q1', questions: [{ question: 'Which scope?', options: [{ label: 'Backend' }, { label: 'Frontend' }] }] } }
+
+const storeWithChatDraft = () => {
+  const initial = createTestStore().getState()
+  return createTestStore({ ...initial, chat: { ...initial.chat, pendingQuestions: {
+    child: { slot: 'child', ask_id: 'q1', questions: question.question!.questions, draftActive: true, draftAnswers: { 'Which scope?': 'Frontend' } },
+  } } })
+}
 
 describe('task dashboard input routing', () => {
   beforeEach(() => vi.restoreAllMocks())
@@ -222,13 +232,89 @@ describe('task dashboard input routing', () => {
   it('answers a blocking question by ID, never by sending to the active chat', async () => {
     const answer = vi.spyOn(api, 'answerQuestion').mockResolvedValue({ ok: true })
     const send = vi.spyOn(transport, 'sendTurn')
-    renderWithProviders(<AttentionCard item={question} title="Worker" />)
+    const store = createTestStore()
+    renderWithProviders(<AttentionCard item={question} title="Worker" />, { store })
     expect(screen.getByRole('heading', { name: 'Worker' })).toBeVisible()
     expect(screen.queryByText('From session: Worker')).not.toBeInTheDocument()
     fireEvent.click(screen.getByText('Backend'))
     fireEvent.click(screen.getByRole('button', { name: 'Send answer' }))
     await waitFor(() => expect(answer).toHaveBeenCalledWith('q1', { 'Which scope?': 'Backend' }))
+    await waitFor(() => expect(store.getState().chat.questionsSettled.q1).toBe(true))
     expect(send).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { reason: 'expired', body: JSON.stringify({ code: 'question_not_found', reason: 'expired' }) },
+    { reason: 'a legacy response', body: '' },
+  ])('restores both surface drafts when the ask ended $reason', async ({ body }) => {
+    __resetPaneDraftsForTests(); localStorage.clear(); __resetForTests()
+    vi.spyOn(api, 'answerQuestion').mockRejectedValue(new ApiError(404, 'gone', body))
+    const send = vi.spyOn(transport, 'sendTurn')
+    const store = storeWithChatDraft()
+    renderWithProviders(<AttentionCard item={question} title="Worker" />, { store })
+    fireEvent.click(screen.getByText('Backend'))
+    fireEvent.click(screen.getByRole('button', { name: 'Send answer' }))
+    await waitFor(() => expect(loadDrafts().child).toBe('Backend\n\nFrontend'))
+    expect(store.getState().chat.questionsSettled.q1).toBeUndefined()
+    expect(store.getState().chat.pendingQuestions.child).toBeUndefined()
+    // The submission was rejected, so it surfaces as an error (ErrorNotice), with
+    // no agent hand-off: the restored answer now sits in that session's composer.
+    // Names the session (the card's title) and the question, so it reads as its own ask.
+    expect(screen.getByRole('alert')).toHaveTextContent('The agent in "Worker" stopped waiting for "Which scope?", so your answers weren\'t sent. They\'re in that session\'s composer')
+    expect(screen.queryByRole('button', { name: /Ask the agent/i })).toBeNull()
+    expect(store.getState().chat.slotMessages?.child?.some(m => m.role === 'notice')).not.toBe(true)
+    expect(store.getState().chat.slotMessages?.child?.some(m => m.role === 'error' && /^The agent in "Worker" stopped waiting for "Which scope\?"/.test(m.content))).toBe(true)
+    expect(screen.queryByRole('button', { name: 'Send answer' })).not.toBeInTheDocument()
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it.each(['answered', 'composer', 'queued'])(
+    'discards both surface drafts when another window reports the ask as %s',
+    async (reason) => {
+      __resetPaneDraftsForTests(); localStorage.clear(); __resetForTests()
+      const body = JSON.stringify({ code: 'question_not_found', reason })
+      vi.spyOn(api, 'answerQuestion').mockRejectedValue(new ApiError(404, 'gone', body))
+      const send = vi.spyOn(transport, 'sendTurn')
+      const store = storeWithChatDraft()
+      renderWithProviders(<AttentionCard item={question} title="Worker" />, { store })
+      fireEvent.click(screen.getByText('Backend'))
+      fireEvent.click(screen.getByRole('button', { name: 'Send answer' }))
+      await waitFor(() => expect(store.getState().chat.questionsSettled.q1).toBe(true))
+      expect(store.getState().chat.pendingQuestions.child).toBeUndefined()
+      expect(loadDrafts().child).toBeUndefined()
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Send answer' })).not.toBeInTheDocument()
+      expect(send).not.toHaveBeenCalled()
+    },
+  )
+
+  it('names the fix when the server refuses the answers as too long', async () => {
+    __resetPaneDraftsForTests(); localStorage.clear(); __resetForTests()
+    const body = JSON.stringify({ error: 'answers together exceed 8000 characters', code: 'answers_too_long' })
+    vi.spyOn(api, 'answerQuestion').mockRejectedValue(new ApiError(400, 'answers together exceed 8000 characters', body))
+    const send = vi.spyOn(transport, 'sendTurn')
+    renderWithProviders(<AttentionCard item={question} title="Worker" />)
+    fireEvent.click(screen.getByText('Backend'))
+    fireEvent.click(screen.getByRole('button', { name: 'Send answer' }))
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('Your answers are too long to send. Shorten them and submit again.')
+    expect(alert).not.toHaveTextContent('exceed 8000')
+    // Retryable: the card stays, the draft is kept, nothing was sent.
+    expect(screen.getByRole('button', { name: 'Send answer' })).toBeInTheDocument()
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it('restores an expired answer into the main chat composer showing that session', async () => {
+    __resetPaneDraftsForTests(); localStorage.clear(); __resetForTests()
+    vi.spyOn(api, 'answerQuestion').mockRejectedValue(new ApiError(404, 'gone'))
+    const got: string[] = []
+    const unregister = registerMainComposer((slot, text) => { if (slot !== 'child') return false; got.push(text); return true })
+    renderWithProviders(<AttentionCard item={question} title="Worker" />)
+    fireEvent.click(screen.getByText('Backend'))
+    fireEvent.click(screen.getByRole('button', { name: 'Send answer' }))
+    await waitFor(() => expect(got).toEqual(['Backend']))
+    expect(loadDrafts().child).toBeUndefined()
+    unregister()
   })
 
   it('retires an expired approval without claiming it was approved or offering another submission', async () => {
@@ -396,5 +482,27 @@ describe('task dashboard follow-up answers follow the busy-send mode', () => {
     setMode('auto')
     const send = await answer({ running: true }, { consent: true })
     expect(send).toHaveBeenCalledWith({ slot: 'child', message: 'Keep it', steer: 'auto' })
+  })
+})
+
+describe('RestoredQuestionNotice', () => {
+  it('names the session and the question when both are known', () => {
+    renderWithProviders(<RestoredQuestionNotice slot="child" question="Which scope?" title="Worker" onDismiss={() => {}} />)
+    expect(screen.getByRole('status')).toHaveTextContent('The agent in "Worker" stopped waiting for "Which scope?"')
+    expect(screen.getByRole('link', { name: /Open session/ })).toHaveAttribute('href', '/chat?sid=child')
+  })
+
+  it('names only the question when the host has no title for the slot', () => {
+    renderWithProviders(<RestoredQuestionNotice slot="child" question="Which scope?" onDismiss={() => {}} />)
+    const text = screen.getByRole('status').textContent ?? ''
+    expect(text).toContain('stopped waiting for "Which scope?"')
+    expect(text).not.toContain('The agent in')
+  })
+
+  it('keeps the unnamed wording rather than empty quotes when no question is known', () => {
+    renderWithProviders(<RestoredQuestionNotice slot="child" title="Worker" onDismiss={() => {}} />)
+    const text = screen.getByRole('status').textContent ?? ''
+    expect(text).toContain('stopped waiting for this question')
+    expect(text).not.toContain('""')
   })
 })

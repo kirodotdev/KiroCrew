@@ -133,11 +133,13 @@ async def test_pending_endpoint_rehydrates_the_native_marker() -> None:
     await st.post_question_card("chat-1", _tool_input_questions("MCP card?"))
     # The MCP card superseded the native one (one stateless card per slot).
     request = _owner_request(st)
-    rows = json.loads((await api_ask_question_pending(request)).text)
+    payload = json.loads((await api_ask_question_pending(request)).text)
+    assert payload["resolved"] == {}
+    rows = payload["pending"]
     assert [(r["questions"][0]["question"], r["native"]) for r in rows] == [("MCP card?", False)]
 
     await _post_native_question_card(st, "chat-1", _tool_input("Native again?"))
-    rows = json.loads((await api_ask_question_pending(request)).text)
+    rows = json.loads((await api_ask_question_pending(request)).text)["pending"]
     assert [(r["questions"][0]["question"], r["native"]) for r in rows] == [("Native again?", True)]
 
 

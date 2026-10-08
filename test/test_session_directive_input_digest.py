@@ -1187,7 +1187,7 @@ class TestClaudeBackendResolvesTheTool:
 
 class TestKasWireTitleCarriesTheBackendPrefix:
     """A recorded KAS ``tool_call`` frame titled the MCP call
-    ``Running: @kirocrew-core/ask_question`` -- the backend's own ``Running: ``
+    ``Running: @kirocrew-core/suggest_followup`` -- the backend's own ``Running: ``
     prefix in front of the wrapper's ``@<server>/<tool>``. Matching the bare
     spelling only left that frame with no digest, so on a KAS session that emits
     no ``_meta.kiro`` the record parked and nothing claimed it: the tool answered
@@ -1196,12 +1196,12 @@ class TestKasWireTitleCarriesTheBackendPrefix:
     @pytest.mark.parametrize(
         "title,expected",
         [
-            ("Running: @kirocrew-core/ask_question", "ask_question"),
+            ("Running: @kirocrew-core/suggest_followup", "suggest_followup"),
             ("Running: @kirocrew-core/monitor_start", "monitor_start"),
             ("@kirocrew-core/monitor_start", "monitor_start"),
             ("Running: @other-server/monitor_start", ""),
             ("Running: Running: @kirocrew-core/monitor_start", ""),  # one prefix, not a loop
-            ("Loading tool: kirocrew-core::ask_question", ""),  # tool_search, not the call
+            ("Loading tool: kirocrew-core::suggest_followup", ""),  # tool_search, not the call
             ("Running: echo @kirocrew-core/monitor_start", ""),
         ],
     )
@@ -1249,8 +1249,8 @@ class TestDisplayStripKeepsAnEnvelopeReadable:
         [
             ("monitor_update", {"patch": {"message": 'say "hi" {twice}', "banner": "b"}}),
             (
-                "ask_question",
-                {"questions": [{"question": "pick {one}", "options": [{"label": "a"}]}]},
+                "suggest_followup",
+                {"items": [{"title": "pick {one}", "description": "d", "prompt": 'say "a"'}]},
             ),
             (
                 "suggest_followup",
@@ -1414,7 +1414,7 @@ class TestConcurrentDirectivesInOneSession:
         slot._titled = True
         a_args = {"message": "loop A", "interval_secs": 300}
         b_args = {"message": "loop B", "interval_secs": 600}
-        q_args = {"questions": [{"question": "which?", "options": [{"label": "x"}]}]}
+        q_args = {"items": [{"title": "which?", "description": "d", "prompt": "x"}]}
         child_args: dict = {}
 
         def call(tcid, tool, args):
@@ -1451,14 +1451,14 @@ class TestConcurrentDirectivesInOneSession:
             ),
             AcpEvent(kind=EVENT_SUBAGENT_ACTIVITY, sub_session_id="sub-1", tool_call_id="tc-child"),
             call("tc-a", "monitor_start", a_args),
-            call("tc-q", "ask_question", q_args),
+            call("tc-q", "suggest_followup", q_args),
             call("tc-child", "reset_conversation", child_args),
             call("tc-b", "monitor_start", b_args),
             # Results arrive out of call order.
             result("tc-b", "monitor_start", b_args),
             result("tc-child", "reset_conversation", child_args),
             result("tc-a", "monitor_start", a_args),
-            result("tc-q", "ask_question", q_args),
+            result("tc-q", "suggest_followup", q_args),
             AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok"),
             AcpEvent(kind=EVENT_COMPLETE),
         ]
@@ -1472,7 +1472,7 @@ class TestConcurrentDirectivesInOneSession:
                 sk = effective_session_key(slot)
                 for tool, args in (
                     ("monitor_start", a_args),
-                    ("ask_question", q_args),
+                    ("suggest_followup", q_args),
                     ("reset_conversation", child_args),  # the child's, under the parent key
                     ("monitor_start", b_args),
                 ):
@@ -1494,12 +1494,12 @@ class TestConcurrentDirectivesInOneSession:
         await chat_runner._run_chat(state, slot, "go", _directive_user_origin=True)
 
         applied = [
-            (c.args[3], c.args[4].get("message") or c.args[4].get("questions"))
+            (c.args[3], c.args[4].get("message") or c.args[4].get("items"))
             for c in spy.call_args_list
         ]
         assert ("monitor_start", "loop A") in applied
         assert ("monitor_start", "loop B") in applied
-        assert any(k == "ask_question" for k, _ in applied)
+        assert any(k == "suggest_followup" for k, _ in applied)
         assert all(k != "reset_conversation" for k, _ in applied), "child never reaches parent"
         assert len(applied) == 3
         assert directive_queue.depth(effective_session_key(slot)) == 0, "child record retired"

@@ -13,7 +13,7 @@
  * explicitly and reset it afterwards, matching useWebSocket.approvalRouting.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { renderHook, act } from '@testing-library/react'
+import { render, renderHook, act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { createElement } from 'react'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -27,7 +27,10 @@ import {
 } from '../hooks/useWebSocket'
 import { api } from '../api/client'
 import { store as globalStore } from '../store'
-import chatReducer, { PANE_HYDRATE_LIMIT, setActiveSlot, clearMessages, sseChatMessage, sseActivityEvent, setQuestionCard, resolveQuestionCard, sseAutomation, resolveByApprovalId } from '../store/chatSlice'
+import chatReducer, { PANE_HYDRATE_LIMIT, setActiveSlot, clearMessages, clearQuestionCard, sseChatMessage, sseActivityEvent, setQuestionCard, setQuestionDraft, setQuestionRequestInFlight, markQuestionSettled, resolveQuestionCard, sseAutomation, resolveByApprovalId } from '../store/chatSlice'
+import PendingQuestionCard from '../components/PendingQuestionCard'
+import { __resetForTests, loadDrafts } from '../utils/chatDrafts'
+import { registerMainComposer } from '../utils/composerRestore'
 import { sseSlots, addSlotOptimistic, armConfirmedCloseHold, removeSlotOptimistic } from '../store/dashboardSlice'
 import { addNotification, removeNotificationByTs } from '../store/notificationsSlice'
 import type { ChatSlot } from '../types'
@@ -38,6 +41,7 @@ import { AUTONUDGE_LOOPS_QUERY_KEY } from '../components/autoNudgeLoop'
 import { i18nT } from '../i18n/t'
 
 vi.mock('../api/client', () => ({
+  ApiError: class ApiError extends Error { status = 500 },
   api: {
     chatSlots: vi.fn().mockResolvedValue([]),
     voiceConfig: vi.fn().mockResolvedValue({ autoSpeak: false }),
@@ -47,6 +51,7 @@ vi.mock('../api/client', () => ({
     autonudgeList: vi.fn().mockResolvedValue({ enabled: false, loops: [] }),
     monitorsList: vi.fn().mockResolvedValue({ enabled: false, monitors: [] }),
     pendingQuestions: vi.fn().mockResolvedValue([]),
+    answerQuestion: vi.fn().mockResolvedValue({ ok: true }),
     voiceSynthesize: vi.fn().mockResolvedValue({ ok: true }),
     voiceCancel: vi.fn().mockResolvedValue({ ok: true }),
     sessions: vi.fn().mockResolvedValue({ sessions: [], has_more: false }),
@@ -1501,6 +1506,334 @@ describe('useWebSocket frame router', () => {
     expect(chat().pendingQuestions[ACTIVE]).toBeUndefined()
   })
 
+  it('restores a drafted blocking ask retired after its card unmounts', async () => {
+    localStorage.clear(); __resetForTests()
+    const { ws } = mount()
+    const card = setQuestionCard({
+      slot: ACTIVE,
+      ask_id: 'ask-unmounted',
+      questions: [{ question: 'Region?', options: [{ label: 'us-east-1' }] }],
+    })
+    act(() => {
+      globalStore.dispatch(card)
+      ws.simulateMessage({ type: 'question_card', data: card.payload })
+    })
+    const view = render(<Provider store={globalStore}><PendingQuestionCard slotKey={ACTIVE} onFallbackSend={vi.fn()} /></Provider>)
+    fireEvent.change(screen.getByPlaceholderText(/custom answer/i), { target: { value: 'eu-west-1' } })
+    await waitFor(() => expect(globalStore.getState().chat.pendingQuestions[ACTIVE]?.draftAnswers)
+      .toEqual({ 'Region?': 'eu-west-1' }))
+
+    view.unmount()
+    act(() => { ws.simulateMessage({ type: 'question_card_resolved', data: { ask_id: 'ask-unmounted', reason: 'expired' } }) })
+    render(<Provider store={testStore}><PendingQuestionCard slotKey={ACTIVE} onFallbackSend={vi.fn()} /></Provider>)
+
+    try {
+      await waitFor(() => expect(loadDrafts()[ACTIVE]).toBe('eu-west-1'))
+      expect(chat().pendingQuestions[ACTIVE]).toBeUndefined()
+      // Informational, so a polite status naming the question: nothing failed and the draft is in the composer.
+      expect(screen.getByRole('status')).toHaveTextContent(/stopped waiting for "Region\?"/)
+      expect(screen.queryByRole('alert')).toBeNull()
+    } finally {
+      globalStore.dispatch(resolveQuestionCard({ ask_id: 'ask-unmounted', settled: true }))
+      globalStore.dispatch(clearQuestionCard({ slot: ACTIVE, restored_notice: true }))
+    }
+  })
+
+  it('discards another window draft when the blocking ask was answered', async () => {
+    localStorage.clear(); __resetForTests()
+    const restored: string[] = []
+    const unregister = registerMainComposer((slot, text) => {
+      if (slot !== ACTIVE) return false
+      restored.push(text)
+      return true
+    })
+    const { ws } = mount()
+    const card = setQuestionCard({
+      slot: ACTIVE,
+      ask_id: 'ask-mounted',
+      questions: [{ question: 'Ship?', options: [{ label: 'Yes' }] }],
+    })
+    act(() => {
+      globalStore.dispatch(card)
+      ws.simulateMessage({ type: 'question_card', data: card.payload })
+    })
+    render(<Provider store={testStore}><PendingQuestionCard slotKey={ACTIVE} onFallbackSend={vi.fn()} /></Provider>)
+    fireEvent.click(screen.getByText('Yes'))
+    await waitFor(() => expect(chat().pendingQuestions[ACTIVE]?.draftAnswers).toEqual({ 'Ship?': 'Yes' }))
+    act(() => {
+      globalStore.dispatch(setQuestionDraft({ slot: ACTIVE, answers: { 'Ship?': 'Yes' } }))
+      ws.simulateMessage({ type: 'question_card_resolved', data: { ask_id: 'ask-mounted', reason: 'answered' } })
+    })
+
+    try {
+      await waitFor(() => expect(chat().pendingQuestions[ACTIVE]).toBeUndefined())
+      expect(restored).toEqual([])
+      expect(loadDrafts()[ACTIVE]).toBeUndefined()
+      expect(chat().messages.some(message => message.role === 'error')).toBe(false)
+      expect(chat().restoredQuestionNotices[ACTIVE]).toBeUndefined()
+    } finally {
+      unregister()
+      globalStore.dispatch(resolveQuestionCard({ ask_id: 'ask-mounted', settled: true }))
+    }
+  })
+
+  it('discards a draft settled by another surface before the resolution broadcast', () => {
+    localStorage.clear(); __resetForTests()
+    const restored: string[] = []
+    const unregister = registerMainComposer((slot, text) => {
+      restored.push(`${slot}:${text}`)
+      return true
+    })
+    const { ws } = mount()
+    const card = setQuestionCard({
+      slot: ACTIVE,
+      ask_id: 'ask-cross-surface',
+      questions: [{ question: 'Ship?', options: [{ label: 'Yes' }] }],
+    })
+    act(() => {
+      globalStore.dispatch(card)
+      globalStore.dispatch(setQuestionDraft({ slot: ACTIVE, answers: { 'Ship?': 'Yes' } }))
+      ws.simulateMessage({ type: 'question_card', data: card.payload })
+      testStore.dispatch(setQuestionDraft({ slot: ACTIVE, answers: { 'Ship?': 'Yes' } }))
+      globalStore.dispatch(setQuestionRequestInFlight({ ask_id: 'ask-cross-surface', inFlight: true }))
+      globalStore.dispatch(markQuestionSettled({ ask_id: 'ask-cross-surface' }))
+      globalStore.dispatch(setQuestionRequestInFlight({ ask_id: 'ask-cross-surface', inFlight: false }))
+      ws.simulateMessage({ type: 'question_card_resolved', data: { ask_id: 'ask-cross-surface' } })
+    })
+
+    try {
+      expect(restored).toEqual([])
+      expect(loadDrafts()[ACTIVE]).toBeUndefined()
+      expect(chat().pendingQuestions[ACTIVE]).toBeUndefined()
+      expect(chat().messages.some(message => message.role === 'error')).toBe(false)
+      expect(chat().restoredQuestionNotices[ACTIVE]).toBeUndefined()
+    } finally {
+      unregister()
+      globalStore.dispatch(resolveQuestionCard({ ask_id: 'ask-cross-surface', settled: true }))
+    }
+  })
+
+  it.each(['composer', 'queued'])('restores a draft typed during a local %s release race', async (reason) => {
+    localStorage.clear(); __resetForTests()
+    const askId = `ask-local-${reason}`
+    const restored: string[] = []
+    const unregister = registerMainComposer((slot, text) => {
+      if (slot !== ACTIVE) return false
+      restored.push(text)
+      return true
+    })
+    let releaseAnswer!: (value: { ok: boolean }) => void
+    const answerPending = new Promise<{ ok: boolean }>(resolve => { releaseAnswer = resolve })
+    vi.mocked(api.answerQuestion).mockReturnValueOnce(answerPending)
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const wrapper = ({ children }: { children: React.ReactNode }) => createElement(
+      Provider,
+      { store: globalStore },
+      createElement(QueryClientProvider, { client: queryClient }, children),
+    )
+    const hook = renderHook(() => useWebSocket(), { wrapper })
+    const ws = WS_INSTANCES[0]
+    act(() => {
+      ws.simulateOpen()
+      ws.simulateMessage({
+        type: 'question_card',
+        data: { slot: ACTIVE, ask_id: askId, questions: [{ question: 'Ship?', options: [{ label: 'Yes' }] }] },
+      })
+    })
+    const { resolveAskAfterSend } = await import('../lib/resolveAskAfterSend')
+    const release = resolveAskAfterSend(
+      { ok: true, ...(reason === 'queued' ? { queued: true } : {}) },
+      askId,
+      globalStore.dispatch,
+      ACTIVE,
+      globalStore.getState,
+    )
+    await waitFor(() => expect(globalStore.getState().chat.questionRequestsInFlight[askId]).toBe(reason))
+
+    act(() => {
+      globalStore.dispatch(setQuestionDraft({ slot: ACTIVE, answers: { 'Ship?': 'Wait for CI' } }))
+      ws.simulateMessage({ type: 'question_card_resolved', data: { ask_id: askId, reason } })
+    })
+    expect(globalStore.getState().chat.pendingQuestions[ACTIVE]).toBeUndefined()
+
+    await act(async () => { releaseAnswer({ ok: true }); await answerPending; await release })
+    try {
+      await waitFor(() => expect(restored).toEqual(['Wait for CI']))
+      expect(globalStore.getState().chat.restoredQuestionNotices[ACTIVE]).toEqual({
+        message: expect.stringContaining('composer'),
+        kind: 'restored',
+      })
+    } finally {
+      unregister()
+      hook.unmount()
+      globalStore.dispatch(resolveQuestionCard({ ask_id: askId, settled: true }))
+      globalStore.dispatch(clearQuestionCard({ slot: ACTIVE, restored_notice: true }))
+    }
+  })
+
+  it('does not restore a submitted draft when resolution arrives before the answer response', async () => {
+    localStorage.clear(); __resetForTests()
+    let releaseAnswer!: (value: { ok: boolean }) => void
+    const answerPending = new Promise<{ ok: boolean }>(resolve => { releaseAnswer = resolve })
+    vi.mocked(api.answerQuestion).mockReturnValueOnce(answerPending)
+    const { ws } = mount()
+    const card = setQuestionCard({
+      slot: ACTIVE,
+      ask_id: 'ask-submitting',
+      questions: [{ question: 'Ship?', options: [{ label: 'Yes' }] }],
+    })
+    act(() => {
+      globalStore.dispatch(card)
+      ws.simulateMessage({ type: 'question_card', data: card.payload })
+    })
+    render(<Provider store={globalStore}><PendingQuestionCard slotKey={ACTIVE} onFallbackSend={vi.fn()} /></Provider>)
+    fireEvent.click(screen.getByText('Yes'))
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }))
+    await waitFor(() => expect(api.answerQuestion).toHaveBeenCalledWith('ask-submitting', { 'Ship?': 'Yes' }))
+
+    try {
+      act(() => { ws.simulateMessage({ type: 'question_card_resolved', data: { ask_id: 'ask-submitting' } }) })
+      expect(loadDrafts()[ACTIVE]).toBeUndefined()
+      expect(chat().messages.some(message => (message.role === 'notice' || message.role === 'error') && message.content.includes('composer'))).toBe(false)
+      expect(chat().restoredQuestionNotices[ACTIVE]).toBeUndefined()
+    } finally {
+      await act(async () => { releaseAnswer({ ok: true }); await answerPending })
+      globalStore.dispatch(resolveQuestionCard({ ask_id: 'ask-submitting', settled: true }))
+    }
+    await waitFor(() => expect(globalStore.getState().chat.pendingQuestions[ACTIVE]).toBeUndefined())
+  })
+
+  it.each([
+    { outcome: 'request failure', settles: false, reason: undefined, restores: true },
+    { outcome: 'answered retirement', settles: false, reason: 'answered', restores: false },
+    { outcome: 'settlement', settles: true, reason: undefined, restores: false },
+  ])('retains an in-flight retirement until $outcome', async ({ settles, reason, restores }) => {
+    localStorage.clear(); __resetForTests()
+    const restored: string[] = []
+    const unregister = registerMainComposer((slot, text) => {
+      if (slot !== ACTIVE) return false
+      restored.push(text)
+      return true
+    })
+    let resolveAnswer!: (value: { ok: boolean }) => void
+    let rejectAnswer!: (error: Error) => void
+    const answerPending = new Promise<{ ok: boolean }>((resolve, reject) => {
+      resolveAnswer = resolve
+      rejectAnswer = reject
+    })
+    vi.mocked(api.answerQuestion).mockReturnValueOnce(answerPending)
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const globalWrapper = ({ children }: { children: React.ReactNode }) => createElement(
+      Provider,
+      { store: globalStore },
+      createElement(QueryClientProvider, { client: queryClient }, children),
+    )
+    const hook = renderHook(() => useWebSocket(), { wrapper: globalWrapper })
+    const ws = WS_INSTANCES[0]
+    act(() => { ws.simulateOpen() })
+    act(() => {
+      ws.simulateMessage({
+        type: 'question_card',
+        data: { slot: ACTIVE, ask_id: 'ask-retiring', questions: [{ question: 'Ship?', options: [{ label: 'Yes' }] }] },
+      })
+    })
+    const cardView = render(
+      <Provider store={globalStore}>
+        <PendingQuestionCard slotKey={ACTIVE} onFallbackSend={vi.fn()} />
+      </Provider>,
+    )
+    fireEvent.click(screen.getByText('Yes'))
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }))
+    await waitFor(() => expect(globalStore.getState().chat.questionRequestsInFlight['ask-retiring']).toBe(true))
+
+    act(() => { ws.simulateMessage({
+      type: 'question_card_resolved',
+      data: { ask_id: 'ask-retiring', ...(reason ? { reason } : {}) },
+    }) })
+    expect(globalStore.getState().chat.pendingQuestions[ACTIVE]).toBeUndefined()
+
+    if (settles) {
+      await act(async () => { resolveAnswer({ ok: true }); await answerPending })
+      await waitFor(() => expect(globalStore.getState().chat.questionRequestsInFlight['ask-retiring']).toBeUndefined())
+    } else {
+      await act(async () => { rejectAnswer(new Error('Offline')); await Promise.resolve(); await Promise.resolve() })
+    }
+    if (restores) {
+      await waitFor(() => expect(restored).toEqual(['Yes']))
+      // The hand-back is an informational, durable slice notice the chat_done refresh
+      // cannot drop; the submit that failed is recorded once, as an error row.
+      expect(globalStore.getState().chat.restoredQuestionNotices[ACTIVE]).toEqual({
+        message: expect.stringContaining('composer'),
+        kind: 'restored',
+      })
+      expect(globalStore.getState().chat.messages.some(message => message.role === 'notice')).toBe(false)
+      expect(globalStore.getState().chat.messages.filter(message => message.role === 'error')).toHaveLength(1)
+    } else {
+      expect(restored).toEqual([])
+      expect(globalStore.getState().chat.restoredQuestionNotices[ACTIVE]).toBeUndefined()
+      expect(globalStore.getState().chat.messages.some(message => message.role === 'error')).toBe(false)
+    }
+
+    unregister()
+    cardView.unmount()
+    hook.unmount()
+    globalStore.dispatch(resolveQuestionCard({ ask_id: 'ask-retiring', settled: true }))
+    globalStore.dispatch(clearQuestionCard({ slot: ACTIVE, restored_notice: true }))
+  })
+
+  it('restores an in-flight answer exactly once when retirement races a 404', async () => {
+    localStorage.clear(); __resetForTests()
+    const restored: string[] = []
+    const unregister = registerMainComposer((slot, text) => {
+      if (slot !== ACTIVE) return false
+      restored.push(text)
+      return true
+    })
+    let rejectAnswer!: (error: Error) => void
+    const answerPending = new Promise<{ ok: boolean }>((_resolve, reject) => { rejectAnswer = reject })
+    vi.mocked(api.answerQuestion).mockReturnValueOnce(answerPending)
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const wrapper = ({ children }: { children: React.ReactNode }) => createElement(
+      Provider,
+      { store: globalStore },
+      createElement(QueryClientProvider, { client: queryClient }, children),
+    )
+    const hook = renderHook(() => useWebSocket(), { wrapper })
+    const ws = WS_INSTANCES[0]
+    act(() => { ws.simulateOpen() })
+    act(() => { ws.simulateMessage({
+      type: 'question_card',
+      data: { slot: ACTIVE, ask_id: 'ask-404-race', questions: [{ question: 'Ship?', options: [{ label: 'Yes' }] }] },
+    }) })
+    const fallback = vi.fn((text: string) => { restored.push(text) })
+    const cardView = render(
+      <Provider store={globalStore}>
+        <PendingQuestionCard slotKey={ACTIVE} onFallbackSend={fallback} />
+      </Provider>,
+    )
+    fireEvent.click(screen.getByText('Yes'))
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }))
+    await waitFor(() => expect(globalStore.getState().chat.questionRequestsInFlight['ask-404-race']).toBe(true))
+
+    act(() => { ws.simulateMessage({
+      type: 'question_card_resolved',
+      data: { ask_id: 'ask-404-race', reason: 'expired' },
+    }) })
+    const { ApiError } = await import('../api/client')
+    const notFound = new ApiError(404, 'gone')
+    notFound.status = 404
+    await act(async () => { rejectAnswer(notFound); await answerPending.catch(() => undefined) })
+
+    await waitFor(() => expect(globalStore.getState().chat.questionRequestsInFlight['ask-404-race']).toBeUndefined())
+    expect(restored).toEqual(['Yes'])
+    expect(fallback).not.toHaveBeenCalled()
+
+    unregister()
+    cardView.unmount()
+    hook.unmount()
+    globalStore.dispatch(resolveQuestionCard({ ask_id: 'ask-404-race', settled: true }))
+  })
+
   it('records a resolution for a card it never held, so a later reconcile cannot resurrect it', async () => {
     let releaseSnapshot!: (v: unknown) => void
     const snapshot = new Promise(res => { releaseSnapshot = res })
@@ -2346,6 +2679,39 @@ describe('useWebSocket frame router', () => {
     mount()
     await act(async () => { await Promise.resolve() })
     expect(chat().pendingQuestions[ACTIVE]).toBeUndefined()
+  })
+
+  it('drops an answered blocking draft during snapshot reconciliation', async () => {
+    localStorage.clear(); __resetForTests()
+    const restored: string[] = []
+    const unregister = registerMainComposer((slot, text) => {
+      restored.push(`${slot}:${text}`)
+      return true
+    })
+    const held = setQuestionCard({
+      slot: ACTIVE,
+      ask_id: 'ask-snapshot-answered',
+      questions: [{ question: 'Ship?', options: [{ label: 'Yes' }] }],
+    })
+    const snapshot = Object.assign([], {
+      resolved: { 'ask-snapshot-answered': 'answered' },
+    })
+    ;(api.pendingQuestions as ReturnType<typeof vi.fn>).mockResolvedValueOnce(snapshot)
+    act(() => {
+      globalStore.dispatch(held)
+      globalStore.dispatch(setQuestionDraft({ slot: ACTIVE, answers: { 'Ship?': 'Yes' } }))
+      testStore.dispatch(held as never)
+      testStore.dispatch(setQuestionDraft({ slot: ACTIVE, answers: { 'Ship?': 'Yes' } }) as never)
+    })
+    mount()
+    try {
+      await waitFor(() => expect(chat().pendingQuestions[ACTIVE]).toBeUndefined())
+      expect(restored).toEqual([])
+      expect(chat().messages.some(message => message.role === 'error')).toBe(false)
+    } finally {
+      unregister()
+      globalStore.dispatch(resolveQuestionCard({ ask_id: 'ask-snapshot-answered', settled: true }))
+    }
   })
 
   it('replaces a held stateless card with the one the server now lists', async () => {

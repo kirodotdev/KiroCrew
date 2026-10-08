@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { lazy, memo, Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { shallowEqual } from 'react-redux'
 import { useAppSelector, useAppDispatch } from '../../store'
@@ -27,14 +27,19 @@ import McpAppFrame from '../../components/McpAppFrame'
 import DiffBlock, { extractFilePath as extractDiffHeaderPath } from '../../components/DiffBlock'
 import { presentToolDiff } from './toolDiff'
 import { FileDiff } from 'lucide-react'
+import { ASK_QUESTION_SERVER, isAskQuestionToolName } from '../../utils/askQuestionTool'
+import { isAskAnsweredOutput } from '../../utils/askQuestionAnswers'
 import { i18nT } from '../../i18n/t'
 import { fmtDateFields, fmtDuration as fmtDurationParts, fmtUnit } from '../../i18n/format'
 import { api } from '../../api/client'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import { isRejectedDecision } from '../../utils/approvalDecision'
-import { selectToolRowIndex, lookupLogEntry, denySiblingContent } from './toolRowIndex'
+import { selectToolRowIndex, lookupLogEntry, denySiblingContent, isNewestOccurrence } from './toolRowIndex'
 import type { ToolActivity } from '../../types'
 import { pathBasename } from '../../utils/pathBasename'
+
+// Lazy so the rarely-shown answers card stays out of the App chunk.
+const AskAnswersResult = lazy(() => import('./AskAnswersCard').then(m => ({ default: m.AskAnswersResult })))
 
 // Stable empties for slots with no per-slot state yet. A fresh `[]` per
 // selector run would change identity every dispatch and defeat the
@@ -232,6 +237,13 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
   // notice about this row's app. A row's meta is written with the row and no later
   // call can reassign it, which is the property the notice needs.
   const noticeServer = (message.meta?.mcp_server as string | undefined) || ''
+  // The answers card belongs to one ask occurrence; on a reused id only the newest row owns the log entry's output.
+  const isNewestRow = useAppSelector(s => {
+    const bg = slot && slot !== s.chat.activeSlot ? slot : null
+    const log = bg ? (s.chat.slotActivity[bg]?.toolLog ?? EMPTY_TOOL_LOG) : s.chat.toolLog
+    const msgs = bg ? (s.chat.slotMessages[bg] ?? EMPTY_MESSAGES) : s.chat.messages
+    return isNewestOccurrence(selectToolRowIndex(msgs, log), toolCallId, message)
+  })
 
   // Pull the matching toolLog entry. Returns purpose/input/output for the inline
   // expansion as well as completion status for the icon. All transcript scans go
@@ -384,7 +396,15 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
   // details panel is collapsed after approval. Whether the line is actually
   // SHOWN is decided below, once the elapsed clock is known — see
   // SHELL_ACTIVITY_MIN_SECS.
-  const liveShellActivity = isShell && turnRunning && !hasPendingPerm
+  // A blocking ask_question is waiting on the user, so its line says so instead of Running.
+  const askToolTitle = toolName.trim().replace(/^@/, '').toLowerCase()
+  const askToolServer = /^([^/]+)\/ask_question$/.exec(askToolTitle)?.[1]
+  const isAskTool = (mcpServer ? mcpServer === ASK_QUESTION_SERVER : !askToolServer || askToolServer === ASK_QUESTION_SERVER) && (
+    isAskQuestionToolName(trustedToolName)
+    || isAskQuestionToolName(askToolTitle)
+    || askToolTitle === `${ASK_QUESTION_SERVER}/ask_question`
+  )
+  const liveShellActivity = (isShell || isAskTool) && turnRunning && !hasPendingPerm
 
   // ── `wait` countdown ──
   // Matched to this pill by tool NAME, not by id: the wait_id is minted inside
@@ -528,6 +548,9 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
   // the command is already past the threshold rather than waiting another
   // ten ticks.
   const showShellActivity = liveShellActivity && elapsedSeconds >= SHELL_ACTIVITY_MIN_SECS
+  const activityLabel = isAskTool
+    ? i18nT('pages.chat.toolCallLine.ask_wait_status')
+    : i18nT('pages.chat.activityViewer.running')
 
   // Remaining time on the sleeping wait. Ceil so the label reads "1s" for the
   // final fractional second instead of flashing "0s" while the tool is still
@@ -650,6 +673,15 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
     () => (denied ? null : presentToolDiff(toolKind, input, inputCut)),
     [denied, toolKind, input, inputCut],
   )
+  // Blocking `ask_question`: the user's answers are this call's RESULT and
+  // appear nowhere else in the transcript, so they render as a card below the
+  // pill — a result, not a working step, the same class as the diff card. Keyed
+  // on the backend-recorded tool name, never the model-visible title, so no
+  // other tool's output can dress itself up as the user's answers. A third-party
+  // server can name its own tool ask_question, so the server must be ours too.
+  const askAnswered =
+    !denied && isNewestRow && mcpServer === ASK_QUESTION_SERVER && isAskQuestionToolName(trustedToolName)
+    && isAskAnsweredOutput(output)
   // Per-card density control, FOLDED by default: a turn that edits several
   // files stacks a full patch per file, so the answer the reader came for
   // scrolls off. The chip still states the three facts that decide whether to
@@ -1118,6 +1150,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
           <DiffBlock code={diffView.code} complete onFileOpen={onFileOpen} />
         </div>
       )}
+      {askAnswered && <Suspense fallback={null}><AskAnswersResult output={output} toolCallId={toolCallId} /></Suspense>}
 
       <StatusRow show={showShellActivity} snap={transcriptHot}>
         {/* ml-5 = the pill's icon (12px) + the pill BUTTON's gap-2 (8px), so
@@ -1125,9 +1158,9 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
             does. (The outer wrapper's gap-1 is between pill and file chip —
             not the icon-to-label gap.) */}
         <div className="ml-5 mt-1 text-[12px] leading-5 text-muted" data-testid="shell-activity">
-          <span className="sr-only" aria-live="polite">{i18nT('pages.chat.activityViewer.running')}</span>
+          <span className="sr-only" aria-live="polite">{activityLabel}</span>
           <span aria-hidden="true" className="tabular-nums font-mono">
-            {i18nT('pages.chat.activityViewer.running')} · {elapsedLabel}
+            {activityLabel} · {elapsedLabel}
           </span>
         </div>
       </StatusRow>

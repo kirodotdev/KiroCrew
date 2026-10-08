@@ -2715,22 +2715,25 @@ a backend that is no longer alive even when its handshake state reads ready.
 Two shapes are both correct; pick by whether the tool needs a value back inside
 the same turn.
 
-**`POST` to a gateway endpoint that holds the pending future.** The
-`/api/ask-question` handler (`dashboard/handlers/ask_question.py`) is the model:
-the pending question lives in `DashboardState._pending_questions` /
-`_question_futures`, keyed by `ask_id`, and is addressed to one slot resolved from
-the posted `session_key`. The handler refuses an unknown slot with 404 rather
-than blocking for the full window on a card nobody will render, and the answer is
-routed back by `ask_id` from `POST /api/ask-question/{ask_id}/answer`. A stateful
-version, parking the pending question in a module global and trusting env-var
-identity, would hand the answer to whichever session the shared process last saw
-and let a sub-agent's card land in its parent's slot.
+**`POST` to gateway endpoints that hold the pending future.** The blocking
+`ask_question` tool (`mcp_tools/control.py`) with its `/api/agent-ask/*` routes
+(`dashboard/handlers/ask_question.py`) is the model: the pending question lives in
+`DashboardState._agent_asks` / `_question_futures`, keyed by a client-chosen
+`ask_id`, and is addressed to the slot of the ATTESTED session making the call —
+the strict internal transport vouches for the `X-Session-Key`, never a body
+field. The open refuses a session with no dashboard tab (404) or no attached
+client (`clients: 0`) rather than blocking for the full window on a card nobody
+will render; the tool then waits in fixed 20s slices with a keepalive between
+them and the answer is routed back by `ask_id` from
+`POST /api/ask-question/{ask_id}/answer`. A stateful version, parking the pending
+question in a module global and trusting env-var identity, would hand the answer
+to whichever session the shared process last saw and let a sub-agent's card land
+in its parent's slot.
 
 **Return a session directive and let the session-aware consumer apply it.** This
-is what the `ask_question` MCP tool itself does, along with `nothing_to_do`,
-`monitor_start`, `monitor_watch`, `monitor_update`, `monitor_stop`,
-`autonudge_stop`, `set_project` and `suggest_followup`, `reset_conversation` and
-`chat_tag` (`session_directive.DIRECTIVE_TOOLS`). The tool validates its arguments and
+is what `nothing_to_do`, `monitor_start`, `monitor_watch`, `monitor_update`,
+`monitor_stop`, `autonudge_stop`, `set_project`, `suggest_followup`,
+`reset_conversation` and `chat_tag` do (`session_directive.DIRECTIVE_TOOLS`). The tool validates its arguments and
 returns a human-readable confirmation plus a marker line carrying the validated
 payload and **no session key**. `dashboard/chat_runner`'s tool-result handler
 decodes the marker, applies the effect against **its own** `slot.key`, then
@@ -2739,17 +2742,16 @@ structural rather than cryptographic: a sub-agent's tool result flows through th
 sub-agent's own runner, so it can only bind to the sub-agent's session. There is
 no walk to get wrong.
 
-**Terminal directives carry a structured turn-end signal.** Two directives are
-the turn's intended LAST act — a shown `ask_question` card and a recorded
-`nothing_to_do` quiet end (`session_directive_apply.TERMINAL_DIRECTIVES`). Their
+**Terminal directives carry a structured turn-end signal.** One directive is
+the turn's intended LAST act — a recorded `nothing_to_do` quiet end
+(`session_directive_apply.TERMINAL_DIRECTIVES`); `ask_question` is not a
+directive, because it blocks and returns the answers as its own result. The
 applier returns a `DirectiveOutcome(text, ends_turn=True)` through
 `apply_session_directive_outcome`, and only on the path where the effect landed
-(a card a client will render; a quiet step recorded): a refusal, an error text or
-a dropped card leaves `ends_turn` False. Both consumers read that flag — the
+(a quiet step recorded): a refusal or an error text leaves `ends_turn` False. Both consumers read that flag — the
 dashboard runner skips its empty-response ladder, the channel driver owes no
 empty-turn notice — and neither derives it from the outcome prose (the
-`QUESTION_CARD_SHOWN_PREFIX` match the first fix used was the thing #9324 asked
-to replace). The string-returning `apply_session_directive` remains for callers
+prose match the first fix used was the thing #9324 asked to replace). The string-returning `apply_session_directive` remains for callers
 that need the text alone. `nothing_to_do` exists for the turn-end contract the
 base prompt states: after its tool calls a turn ends with a closing text or with
 `nothing_to_do`, never by stopping bare after an ordinary tool — a bare stop

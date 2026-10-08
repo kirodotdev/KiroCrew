@@ -12,6 +12,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as chatSlice from './chatSlice'
 import reducer, {
+  isAnsweredQuestionEnding,
+  markQuestionSettled,
   selectSidebarApprovalCounts,
   selectSidebarAutomationRunningKeys,
   selectSidebarSubagentCounts,
@@ -34,13 +36,13 @@ const ACTION_CREATORS = [
   'clearSlotReveal', 'clearSlotState', 'clearSubagentsForSnapshot', 'clearSwitchSlotGone',
   'clearTerminalSubagents', 'clearUndeletableHistory', 'clearUnresumableResume',
   'clearWorkflowRun', 'confirmOptimisticSend', 'dismissFollowupItem', 'editQueuedMessage',
-  'endLocalTurn', 'finalizeAssistant', 'hydrateSlotMessages', 'markSendUnconfirmed', 'markSubagentApproving',
+  'endLocalTurn', 'finalizeAssistant', 'hydrateSlotMessages', 'markQuestionSettled', 'markSendUnconfirmed', 'markSubagentApproving',
   'openActivityPanel', 'openActivityToTab', 'openActivityToTool', 'reconcileSubagentQueuedFromSlots', 'reconcileWorkflowRuns',
   'removeAutomation', 'removeByApprovalId', 'removeQueuedMessage', 'removeThinking',
   'reorderQueuedMessages', 'replaceMessages', 'requestFolderReveal', 'requestSlotReveal',
   'resolveByApprovalId', 'resolveOptimisticSteer', 'resolveQuestionCard', 'selectSubagent',
   'setActiveSlot', 'setAgentSwitchNotice', 'setAutomations', 'setCloseRefused', 'setFolderSuggestion',
-  'setFollowupCard', 'setPendingInput', 'setQuestionCard', 'setQuestionDraft', 'setSlotRunning',
+  'setFollowupCard', 'setPendingInput', 'setQuestionCard', 'setQuestionDraft', 'setQuestionNotice', 'setQuestionRequestInFlight', 'setSlotRunning',
   'setSlotState', 'setSlotStatusDetail', 'setSlotStopping', 'setStopPressedAt', 'setVoiceAudio',
   'setVoicePlaying', 'settleStopNotRunning', 'sideClose', 'sideOptimisticAppend',
   'sideOptimisticRollback', 'sideReleaseConsumed', 'sseActivityEvent', 'sseAutomation',
@@ -70,7 +72,7 @@ const THUNKS: Record<string, string> = {
 
 const FUNCTIONS = [
   'abortActiveOlderFetch', 'batchedTextAboveFloor', 'capturePendingAskId', 'clampToolOutput',
-  'countMatchedFetchLimit', 'floorForGen', 'hasUnidentifiedDurableRow', 'isAwaitingSpawnApproval',
+  'countMatchedFetchLimit', 'floorForGen', 'hasUnidentifiedDurableRow', 'isAnsweredQuestionEnding', 'isAwaitingSpawnApproval',
   'isSupersededPagingRejection', 'isTerminalWorkflowStatus', 'mcpAppKey', 'missedChunkMarker',
   'pendingQuestionFor', 'queueEditBroadcastAt', 'queueEntryAttachments', 'queueEntryQuote', 'raiseChunkSeq',
   'selectActiveSlotProject', 'selectAutomationForSlot', 'selectComposerBusy', 'selectContinuable',
@@ -115,7 +117,7 @@ const INITIAL_STATE = {
   focusToolCallId: null, mcpApps: {}, slotActivity: {}, slotMessages: {}, slotPaneHasMore: {},
   slotPaneBounded: {}, slotServerTotal: {}, slotServerTotalSeq: {}, thinkingOrphans: {},
   slotRun: {}, slotHydrated: {}, slotLoading: false, slotSide: {}, slotSideClosed: {},
-  slotHistory: [], slotsSnapshotSeen: false, pendingQuestions: {}, followups: {},
+  slotHistory: [], slotsSnapshotSeen: false, pendingQuestions: {}, questionRequestsInFlight: {}, questionsSettled: {}, restoredQuestionNotices: {}, followups: {},
   folderSuggestions: {}, stopPressedAt: {}, runEpoch: {}, activeRunEpochAtEntry: 0,
   pendingTurnSlot: null,
   closeRefused: null,
@@ -162,6 +164,30 @@ describe('chatSlice public surface', () => {
     const init = reducer(undefined, { type: '@@INIT' })
     expect(Object.keys(init)).toEqual(Object.keys(INITIAL_STATE))
     expect(init).toStrictEqual(INITIAL_STATE)
+  })
+
+  it.each(['answered', 'composer', 'queued'])('treats %s as an answered question ending', reason => {
+    expect(isAnsweredQuestionEnding(reason)).toBe(true)
+  })
+
+  it.each(['dismissed', 'withdrawn', 'expired', 'no_client', undefined])(
+    'treats %s as an unanswered or unknown question ending',
+    reason => {
+      expect(isAnsweredQuestionEnding(reason)).toBe(false)
+    },
+  )
+
+  it('keeps only the newest settled question ids', () => {
+    let state = reducer(undefined, { type: '@@INIT' })
+    for (let i = 0; i < 201; i++) state = reducer(state, markQuestionSettled({ ask_id: `ask-${i}` }))
+    expect(Object.keys(state.questionsSettled)).toHaveLength(200)
+    expect(state.questionsSettled['ask-0']).toBeUndefined()
+    expect(state.questionsSettled['ask-200']).toBe(true)
+
+    state = reducer(state, markQuestionSettled({ ask_id: 'ask-1' }))
+    state = reducer(state, markQuestionSettled({ ask_id: 'ask-new' }))
+    expect(state.questionsSettled['ask-1']).toBe(true)
+    expect(state.questionsSettled['ask-2']).toBeUndefined()
   })
 
   it('an unrelated action returns the state object itself', () => {

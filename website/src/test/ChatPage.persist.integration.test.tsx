@@ -30,8 +30,8 @@ vi.mock('../components/ChatInput', async () => {
   }
 })
 vi.mock('../components/PendingQuestionCard', () => ({
-  default: ({ onFallbackSend }: { onFallbackSend: (text: string) => void }) => (
-    <button aria-label="send stale question fallback" onClick={() => onFallbackSend('Public only')}>
+  default: ({ onFallbackSend }: { onFallbackSend: (text: string, questions?: { question: string }[]) => void }) => (
+    <button aria-label="send stale question fallback" onClick={() => onFallbackSend('Public only', [{ question: 'Trust model' }])}>
       Send fallback
     </button>
   ),
@@ -187,7 +187,7 @@ describe('ChatPage unmount slot persistence (real component)', () => {
     localStorage.setItem('mc-chat-drafts', JSON.stringify({ 'chat-2': 'existing draft' }))
     localStorage.setItem('mc-chat-drafts-ts', JSON.stringify({ 'chat-2': Date.now() }))
 
-    renderChatPage(undefined, 'chat-2', allSlots, {
+    const { store } = renderChatPage(undefined, 'chat-2', allSlots, {
       pendingQuestions: {
         'chat-2': {
           slot: 'chat-2',
@@ -198,6 +198,11 @@ describe('ChatPage unmount slot persistence (real component)', () => {
     }, true)
 
     fireEvent.click(screen.getByRole('button', { name: 'send stale question fallback' }))
+    const { messages, slotMessages } = store.getState().chat
+    const rows = [...messages, ...(slotMessages['chat-2'] ?? [])]
+    // The row names the question it hands back, not "this question", and it is an
+    // error row: the submit was rejected (errors-use-error-notice).
+    expect(rows.some((m) => m.role === 'error' && /stopped waiting for "Trust model"/.test(m.content))).toBe(true)
 
     await waitFor(() => {
       expect(screen.getByLabelText('test chat input')).toHaveValue('existing draft\nPublic only')

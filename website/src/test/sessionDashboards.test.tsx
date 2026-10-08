@@ -63,6 +63,24 @@ describe('all session dashboards', () => {
     await waitFor(() => expect(approve).toHaveBeenCalledWith('approval-2', 'approve', { origin: 'coordinator', slot: 'slot-2', instance: 'inst-2' }))
   })
 
+  it('shows the restored-answer notice when the only pending question expires with a draft', async () => {
+    vi.mocked(api.approvals).mockResolvedValue([])
+    const initial = createTestStore().getState()
+    const idle = createTestStore({ ...initial, dashboard: { ...initial.dashboard, connected: true, slotsLoaded: true, slots: [
+      { key: 'slot-1', title: 'Session 1', messages: 2, running: false },
+    ] } })
+    const { queryClient } = renderWithProviders(<SessionDashboardsPage />, { store: idle })
+    const inbox = await screen.findByRole('region', { name: 'Needs you' })
+    fireEvent.change(await within(inbox).findByPlaceholderText(/type a custom answer/i), { target: { value: 'eu-west-1' } })
+    vi.mocked(api.pendingQuestions).mockResolvedValue([])
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ['command-center', 'questions'] }) })
+    expect(await screen.findByText(/The agent in "Session 1" stopped waiting for "Which release\?", so your answers weren't sent\. They're in that session's composer/)).toBeVisible()
+    expect(screen.queryByText('Which release?')).not.toBeInTheDocument()
+    // The notice is listed but not counted: nothing in it needs an answer.
+    expect(screen.getByRole('button', { name: 'Needs you (0)' })).toBeInTheDocument()
+    expect(within(inbox).getByTestId('panel-section-header')).toHaveTextContent('Needs you0')
+  })
+
   it('keeps cards in place on live activity, re-sorts on a filter change, and shows a builder\'s view on its conductor', async () => {
     const view = (slug: string, session: string): Artifact => ({ slug, session_key: session, name: slug, kind: 'html', source: 'chat', description: '', tags: ['task-dashboard'],
       version: 1, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', content: '<p>view</p>' })

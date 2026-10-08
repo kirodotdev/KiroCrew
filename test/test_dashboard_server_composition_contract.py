@@ -456,6 +456,7 @@ _LAZY_IMPORTS = {
     "kiro_crew.dashboard.chat": "_run_chat",
     "kiro_crew.dashboard.handlers": "wf_handlers work_ledger",
     "kiro_crew.dashboard.handlers.ask_question": (
+        "api_agent_ask_open api_agent_ask_wait api_agent_ask_withdraw "
         "api_ask_question api_ask_question_answer api_ask_question_dismiss "
         "api_ask_question_pending"
     ),
@@ -509,7 +510,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 76
+    assert len(expected) == 79
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:
@@ -1683,8 +1684,8 @@ def _routes(app: web.Application) -> list[tuple[str, str, str]]:
 #: SHA-256 of the MCP route table's ``"<method> <path> <handler>"`` rows in
 #: registration order, and their count. The table is shared by both entrypoints, so a
 #: route added to it on purpose updates these with it.
-_MCP_TABLE_ROWS = 243
-_MCP_TABLE_DIGEST = "64719190fbe9fb9e6aa8fb47a352017e81cffeb39734d741c8a1c60163b9a6d3"
+_MCP_TABLE_ROWS = 246
+_MCP_TABLE_DIGEST = "1fdbda52c6ceac1152d4dc654629a71a2ebd00c102795553d1db39b4bbd7cb48"
 
 
 def test_the_mcp_route_table_keeps_its_rows_and_order() -> None:

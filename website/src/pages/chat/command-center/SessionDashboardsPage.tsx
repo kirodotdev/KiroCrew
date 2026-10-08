@@ -12,7 +12,7 @@ import { fmtDateTime, fmtNumber } from '../../../i18n/format'
 import { lastActivityEpoch } from '../sessionOrder'
 import { missingSourcesNotice, useCommandCenter, type CommandCenterData } from './useCommandCenter'
 import { runTitle, scopedSlots, slotKey, type RunNode } from './model'
-import AttentionCard from './AttentionCard'
+import AttentionCard, { RestoredQuestionNotice } from './AttentionCard'
 import TaskDashboardFrame from './TaskDashboardFrame'
 import SessionStatusFrame from './SessionStatusFrame'
 
@@ -84,7 +84,10 @@ export default function SessionDashboardsPage() {
   const [query, setQuery] = useState('')
   const [attentionOnly, setAttentionOnly] = useState(false)
   const [limit, setLimit] = useState(12)
-  const attention = new Set(data.attention.map(item => item.slot))
+  const attention = new Set([
+    ...data.attention.map(item => item.slot),
+    ...data.restoredQuestionNotices.map(notice => notice.slot),
+  ])
   const blocked = new Set(data.nodes.filter(n => n.state === 'blocked').map(n => n.slot))
   const recency = new Map(slots.map(slot => [slot.key, lastActivityEpoch(slot)]))
   const priority = (node: RunNode) => attention.has(node.slot) ? 0 : blocked.has(node.slot) ? 1 : node.state === 'running' ? 2 : 3
@@ -105,12 +108,15 @@ export default function SessionDashboardsPage() {
   const matchingSlots = new Set(matching.map(n => n.slot))
   const sessionBySlot = new Map(nodes.map(n => [n.slot, n]))
   const pending = data.attention.filter(item => matchingSlots.has(item.slot))
+  // A restored-answer notice is listed but not counted: nothing in it needs an answer.
+  const pendingCount = pending.length
+  const hasRestored = data.restoredQuestionNotices.some(notice => matchingSlots.has(notice.slot))
   return <>
     <PageHeader title={t('commandCenter.all_title')} subtitle={t('commandCenter.all_description')} />
     <div className="px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0 space-y-4">
       <div className="flex flex-wrap items-center gap-2">
         <SearchInput className="flex-1 min-w-0" placeholder={t('pages.sessionsPage.search_placeholder')} value={query} onChange={e => { setQuery(e.target.value); setLimit(12) }} />
-        <Btn primary={attentionOnly} aria-pressed={attentionOnly} onClick={() => { setAttentionOnly(!attentionOnly); setLimit(12) }}>{t('commandCenter.attention_filter')} ({fmtNumber(pending.length)})</Btn>
+        <Btn primary={attentionOnly} aria-pressed={attentionOnly} onClick={() => { setAttentionOnly(!attentionOnly); setLimit(12) }}>{t('commandCenter.attention_filter')} ({fmtNumber(pendingCount)})</Btn>
       </div>
       {/* No hand-off: filtered-out inbox items retain their QuestionCard answer drafts. */}
       {data.stale && <ErrorNotice message={t('commandCenter.stale')} />}
@@ -118,18 +124,29 @@ export default function SessionDashboardsPage() {
       <ErrorNotice message={missingSourcesNotice(data.missing)} />
       {(!slotsLoaded || data.loading) && <p role="status" className="text-sm text-muted">{t('commandCenter.loading')}</p>}
       <section aria-label={t('commandCenter.attention_filter')} className="space-y-3">
-        <PanelSectionHeader label={t('commandCenter.attention_filter')} count={pending.length} />
+        <PanelSectionHeader label={t('commandCenter.attention_filter')} count={pendingCount} />
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-3 items-start">
           {/* Keep one control per request mounted through filters. The summary
               page limit must never hide a decision waiting for its owner. */}
           {data.attention.map(item => {
             const node = sessionBySlot.get(item.slot)!
             return <div key={item.id} hidden={!matchingSlots.has(item.slot)} className="min-w-0">
-              <AttentionCard item={item} title={runTitle(node)} context={node.detail} onDraftChange={item.question ? active => data.onQuestionDraftChange(item.question!, active) : undefined} />
+              <AttentionCard item={item} title={runTitle(node)} context={node.detail} onDraftChange={item.question ? answers => data.onQuestionDraftChange(item.question!, answers) : undefined} />
+            </div>
+          })}
+          {data.restoredQuestionNotices.map(notice => {
+            const node = sessionBySlot.get(notice.slot)
+            return <div key={notice.id} hidden={!matchingSlots.has(notice.slot)} className="min-w-0">
+              <RestoredQuestionNotice
+                slot={notice.slot}
+                question={notice.question}
+                title={node ? runTitle(node) : undefined}
+                onDismiss={() => data.dismissRestoredQuestionNotice(notice.id)}
+              />
             </div>
           })}
         </div>
-        {slotsLoaded && !data.loading && !data.stale && !pending.length && <p className="text-sm text-muted">{t('commandCenter.no_input')}</p>}
+        {slotsLoaded && !data.loading && !data.stale && !pendingCount && !hasRestored && <p className="text-sm text-muted">{t('commandCenter.no_input')}</p>}
       </section>
       {/* The automatic-cards switch lives in Settings > Developer > Feature
           Previews, inside the Dynamic Dashboard card: a setting belongs in

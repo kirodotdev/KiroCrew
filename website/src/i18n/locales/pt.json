@@ -8092,6 +8092,12 @@
       "next": "Avançar",
       "next_question": "Pergunta seguinte",
       "or_type_a_custom_answer": "Ou digite uma resposta personalizada...",
+      "chars_left_one": "Resta {{count}} caractere",
+      "chars_left_many": "Restam {{count}} caracteres",
+      "chars_left_other": "Restam {{count}} caracteres",
+      "answer_at_limit_one": "Resposta cortada em {{count}} caractere",
+      "answer_at_limit_many": "Resposta cortada em {{count}} caracteres",
+      "answer_at_limit_other": "Resposta cortada em {{count}} caracteres",
       "previous_question": "Pergunta anterior",
       "question_x_of_y": "Pergunta {{current}} de {{total}}",
       "submit": "Enviar"
@@ -9279,6 +9285,13 @@
     },
     "pendingQuestionCard": {
       "answer_failed": "Não foi possível enviar sua resposta. O agente ainda está aguardando, então tente novamente.",
+      "answer_sent_card_open": "O cartão de perguntas ainda está aguardando. Responda ou dispense o cartão. Sua mensagem foi enviada.",
+      "answer_restored": "O agente parou de esperar por esta pergunta, então suas respostas não foram enviadas. Elas estão na caixa de composição; envie-as se ainda quiser.",
+      "answer_restored_question": "O agente parou de esperar por “{{question}}”, então suas respostas não foram enviadas. Elas estão na caixa de composição; envie-as se ainda quiser.",
+      "answer_restored_command_center": "O agente parou de esperar por esta pergunta, então suas respostas não foram enviadas. Elas estão na caixa de composição dessa sessão; envie-as se ainda quiser.",
+      "answer_restored_command_center_question": "O agente parou de esperar por “{{question}}”, então suas respostas não foram enviadas. Elas estão na caixa de composição dessa sessão; envie-as se ainda quiser.",
+      "answer_restored_command_center_session": "O agente em “{{session}}” parou de esperar por “{{question}}”, então suas respostas não foram enviadas. Elas estão na caixa de composição dessa sessão; envie-as se ainda quiser.",
+      "answers_too_long": "Suas respostas são longas demais para enviar. Encurte-as e envie novamente.",
       "dismiss_failed": "Não foi possível descartar esta pergunta. Tente novamente.",
       "qa_pair": "P. {{question}}\nR. {{answer}}"
     },
@@ -11118,7 +11131,11 @@
         "wait_end_now": "Encerrar espera",
         "wait_ending": "Encerrando…",
         "wait_remaining": "restam {{time}}",
+        "ask_answered_one": "Você respondeu {{count}} pergunta",
+        "ask_answered_many": "Você respondeu {{count}} perguntas",
+        "ask_answered_other": "Você respondeu {{count}} perguntas",
         "wait_status": "Aguardando",
+        "ask_wait_status": "Aguardando sua resposta",
         "blocked_by_security_policy": "Bloqueado pela política de segurança",
         "end_wait_failed": "Não foi possível encerrar a espera"
       },

@@ -18,6 +18,8 @@ import chatReducer, {
   clearSlotReveal,
 } from './chatSlice'
 import { extractSpawnRunLaunch, isSpawnRunTool } from '../pages/chat/SubagentRunCard'
+import { ASK_ANSWERED_HEADER, isAskAnsweredToolMessage } from '../utils/askQuestionAnswers'
+import { ASK_QUESTION_SERVER } from '../utils/askQuestionTool'
 
 function makeStore() {
   return configureStore({
@@ -176,6 +178,33 @@ describe('sseToolResult — tool output also lands on the tool MESSAGE meta', ()
     expect((msg.meta as Record<string, unknown>).output).toBeUndefined()
     // The tool log still gets it — that path is bounded.
     expect(store.getState().chat.toolLog.length).toBeGreaterThanOrEqual(0)
+  })
+
+  it('patches meta.output for an answered ask_question so TurnBlock keeps the row out of its folds live', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot('active'))
+    const meta = { tool_call_id: 'call-ask', tool_name: 'ask_question', mcp_server: ASK_QUESTION_SERVER }
+    store.dispatch(sseChatMessage({ slot: 'active', role: 'tool', content: '🔧 ask_question', meta }))
+    const answered = `${ASK_ANSWERED_HEADER}\n"Which colour?" -> "Red"`
+
+    store.dispatch(sseToolResult({ slot: 'active', output: answered, tool_call_id: 'call-ask' }))
+
+    const msg = store.getState().chat.messages.find((m) => m.role === 'tool')!
+    expect((msg.meta as Record<string, unknown>).output).toBe(answered)
+    expect(isAskAnsweredToolMessage(msg)).toBe(true)
+  })
+
+  it('does not copy a dismissed ask_question result onto the message', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot('active'))
+    const meta = { tool_call_id: 'call-ask', tool_name: 'ask_question', mcp_server: ASK_QUESTION_SERVER }
+    store.dispatch(sseChatMessage({ slot: 'active', role: 'tool', content: '🔧 ask_question', meta }))
+
+    store.dispatch(sseToolResult({ slot: 'active', output: 'The user dismissed the question card without answering.', tool_call_id: 'call-ask' }))
+
+    const msg = store.getState().chat.messages.find((m) => m.role === 'tool')!
+    expect((msg.meta as Record<string, unknown>).output).toBeUndefined()
+    expect(isAskAnsweredToolMessage(msg)).toBe(false)
   })
 
   it('ignores a poisoned slot key instead of walking Object.prototype', () => {

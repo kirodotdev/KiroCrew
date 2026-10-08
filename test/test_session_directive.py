@@ -24,7 +24,6 @@ _CASES = {
     "autonudge_stop": {},
     "set_project": {"project": "/workspace/foo", "clear": False},
     "suggest_followup": {"items": [{"title": "t", "prompt": "p"}]},
-    "ask_question": {"questions": [{"question": "Which approach?", "options": [{"label": "A"}]}]},
     "nothing_to_do": {"note": "patrol: no new activity"},
     "reset_conversation": {},
     "chat_tag": {"set_state": "review"},

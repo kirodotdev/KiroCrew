@@ -7858,6 +7858,8 @@
       "next": "다음",
       "next_question": "다음 질문",
       "or_type_a_custom_answer": "또는 답변을 직접 입력하세요…",
+      "chars_left_other": "{{count}}자 남음",
+      "answer_at_limit_other": "답변이 {{count}}자에서 잘렸습니다",
       "previous_question": "이전 질문",
       "question_x_of_y": "질문 {{current}} / {{total}}",
       "submit": "제출"
@@ -9029,6 +9031,13 @@
     },
     "pendingQuestionCard": {
       "answer_failed": "답변을 보낼 수 없습니다. 에이전트가 아직 대기 중이므로 다시 시도하세요.",
+      "answer_sent_card_open": "질문 카드가 아직 응답을 기다리고 있습니다. 카드에 답하거나 닫으세요. 메시지는 전송되었습니다.",
+      "answer_restored": "에이전트가 이 질문에 대한 대기를 멈춰서 답변이 전송되지 않았습니다. 답변은 입력창에 있으니 원하면 보내세요.",
+      "answer_restored_question": "에이전트가 ‘{{question}}’에 대한 대기를 멈춰서 답변이 전송되지 않았습니다. 답변은 입력창에 있으니 원하면 보내세요.",
+      "answer_restored_command_center": "에이전트가 이 질문에 대한 대기를 멈춰서 답변이 전송되지 않았습니다. 답변은 해당 세션의 입력창에 있으니 원하면 보내세요.",
+      "answer_restored_command_center_question": "에이전트가 ‘{{question}}’에 대한 대기를 멈춰서 답변이 전송되지 않았습니다. 답변은 해당 세션의 입력창에 있으니 원하면 보내세요.",
+      "answer_restored_command_center_session": "‘{{session}}’의 에이전트가 ‘{{question}}’에 대한 대기를 멈춰서 답변이 전송되지 않았습니다. 답변은 해당 세션의 입력창에 있으니 원하면 보내세요.",
+      "answers_too_long": "답변이 너무 길어서 보낼 수 없습니다. 줄여서 다시 제출하세요.",
       "dismiss_failed": "이 질문을 닫을 수 없습니다. 다시 시도하세요.",
       "qa_pair": "문. {{question}}\n답. {{answer}}"
     },
@@ -10803,7 +10812,9 @@
         "wait_end_now": "대기 종료",
         "wait_ending": "종료 중…",
         "wait_remaining": "{{time}} 남음",
+        "ask_answered_other": "질문 {{count}}개에 답변했습니다",
         "wait_status": "대기 중",
+        "ask_wait_status": "답변을 기다리고 있습니다",
         "end_wait_failed": "대기를 종료할 수 없습니다"
       },
       "toolDetails": {

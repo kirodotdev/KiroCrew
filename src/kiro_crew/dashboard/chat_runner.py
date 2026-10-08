@@ -367,13 +367,12 @@ from kiro_crew.dashboard.recovery_replays import (
     replays_of,
 )
 
-# ``QUESTION_CARD_SHOWN_PREFIX`` and ``apply_session_directive`` are part of the
+# ``apply_session_directive`` is part of the
 # runner's base-names surface (``_BASE_NAMES`` in
 # test_chat_runner_composition_contract.py), which callers and tests read off
-# ``chat_runner`` directly; the ratchet keeps them bound here even though the
+# ``chat_runner`` directly; the ratchet keeps it bound here even though the
 # turn loop itself consumes the structured outcome.
 from kiro_crew.dashboard.session_directive_apply import (  # noqa: F401
-    QUESTION_CARD_SHOWN_PREFIX,
     DirectiveOutcome,
     apply_session_directive,
     apply_session_directive_outcome,
@@ -9296,8 +9295,8 @@ async def _run_chat(
     # text and overwrite the applied outcome in the transcript. Replaying the
     # stored output keeps every frame consistent and marker-free.
     _dir_consumed_out: dict[str, str] = {}
-    # A terminal directive APPLIED this turn (a shown question card, a recorded
-    # quiet end — ``session_directive_apply.TERMINAL_DIRECTIVES``) is the turn's
+    # A terminal directive APPLIED this turn (a recorded quiet end —
+    # ``session_directive_apply.TERMINAL_DIRECTIVES``) is the turn's
     # intended output. The tool tells the model to end without assistant text,
     # so empty-response recovery must not inject a closing continuation. The
     # signal is the applier's structured ``DirectiveOutcome.ends_turn``, never a

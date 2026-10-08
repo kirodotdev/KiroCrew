@@ -1,25 +1,30 @@
-"""Agent-question HTTP API — question-card state, and a blocking ask round-trip.
+"""Agent-question HTTP API — question-card state, and the blocking ask round-trip.
 
 Cards come in two kinds and these routes serve both. A card carrying an
 ``ask_id`` has a server-side wait behind it; a card carrying a ``card_id`` is
 stateless and blocks nothing. The MCP ``ask_question`` tool produces the
-stateless kind — it returns a session directive and the agent ends its turn (see
-:func:`kiro_crew.mcp_tools.control.ask_question`), so it does NOT call the POST
-below.
+BLOCKING kind through the ``/api/agent-ask/*`` routes at the bottom of this
+module (see :func:`kiro_crew.mcp_tools.control.ask_question`): the tool call
+holds until the user responds and the answers return as its tool result.
+
+``POST /api/agent-ask/open`` / ``/{ask_id}/wait`` / ``/{ask_id}/withdraw``
+    Machine routes for the tool. Strict internal paths whose caller is the
+    attested session key; the card goes to that session's own slot.
 
 ``POST /api/ask-question``
-    Opens a blocking ask: validates the payload, broadcasts a ``question_card``
-    with an ``ask_id`` to the owning slot's dashboard clients, and holds the
-    request open until the user answers or the window elapses. No in-tree caller
-    uses it now that the MCP tool is directive-based; it remains supported.
+    Opens a blocking ask addressed by body ``session_key``: validates the
+    payload, broadcasts a ``question_card`` with an ``ask_id`` to the owning
+    slot's dashboard clients, and holds the request open until the user answers
+    or the window elapses. Owner-only; no in-tree caller uses it now.
 
 ``POST /api/ask-question/{ask_id}/answer``
-    Called by the dashboard when the user submits or dismisses such a card.
-    Resolves the wait above.
+    Called by the dashboard when the user submits or dismisses a blocking card
+    of either origin. Resolves the wait.
 
 ``GET /api/ask-question/pending``
     Read-only rehydration after a reload or websocket reconnect, since
-    ``question_card`` is a one-shot broadcast. Returns both kinds.
+    ``question_card`` is a one-shot broadcast. Returns pending cards plus recent
+    blocking-card terminal reasons.
 
 ``POST /api/ask-question/dismiss``
     Retires a STATELESS card's pending state. It cannot resolve a blocking wait.
@@ -32,24 +37,34 @@ allow/deny boolean, and the card is addressed to a single slot.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import re
 import uuid
 
 from aiohttp import web
 
+from kiro_crew.agent_sdk import fits_tool_result
 from kiro_crew.dashboard.chat_utils import dashboard_slot_key
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.member_memory_auth import session_key_is_attested
 from kiro_crew.sel import sel
+from kiro_crew.session_directive import MAX_TOOL_RESULT_CHARS
 from kiro_crew.validation import (
     _ASK_MAX_ANSWER_LEN,
     _ASK_MAX_QUESTION_LEN,
     _ASK_MAX_QUESTIONS,
+    ASK_WAIT_SLICE_SECS,
     ValidationError,
+    format_ask_answers,
     validate_ask_user_question,
 )
 
 logger = logging.getLogger(__name__)
+_ASK_ID_RE = re.compile(r"[0-9a-f]{32}")
+#: Reasons a composer send may give when it retires a blocking card unanswered.
+_ASK_SEND_REASONS = frozenset({"composer", "queued"})
 
 
 def _slot_key_from_session(session_key: str) -> str:
@@ -81,9 +96,8 @@ def _deny_app_token(request: web.Request, operation: str) -> web.Response | None
     the sole party that can answer is the single dashboard owner — the actor the
     card is addressed to.
 
-    Callers are the ``ask_question`` flow (the session directive posts a
-    non-blocking question card to the owner's own slot) and the dashboard UI
-    itself, so no legitimate caller is an app.
+    Callers are the dashboard UI answering or dismissing a card, so no
+    legitimate caller is an app.
     """
     app_name = request.get("app", "")
     if not app_name:
@@ -300,7 +314,12 @@ async def api_ask_question_pending(request: web.Request) -> web.Response:
                     "ts": rec.get("ts", 0),
                 }
             )
-    return web.json_response(out)
+    return web.json_response(
+        {
+            "pending": out,
+            "resolved": state.recent_question_resolutions(),
+        }
+    )
 
 
 async def api_ask_question_dismiss(request: web.Request) -> web.Response:
@@ -389,8 +408,15 @@ async def api_ask_question_answer(request: web.Request) -> web.Response:
             {"error": "body must be a JSON object", "code": "invalid_body"}, status=400
         )
 
+    reason: str | None = None
     if body.get("dismissed"):
         answers: dict[str, str] | None = None
+        # A composer send that retires a waiting card (resolveAskAfterSend) says
+        # whether its message follows now ("composer") or pops at turn end
+        # ("queued"), so the agent neither reads the question as declined nor
+        # waits for a message that has not arrived yet.
+        raw_reason = body.get("reason")
+        reason = raw_reason if isinstance(raw_reason, str) and raw_reason in _ASK_SEND_REASONS else "dismissed"
     else:
         raw = body.get("answers")
         if not isinstance(raw, dict) or not raw:
@@ -436,13 +462,251 @@ async def api_ask_question_answer(request: web.Request) -> web.Response:
                     },
                     status=400,
                 )
+        if not fits_tool_result(format_ask_answers(answers.items()), MAX_TOOL_RESULT_CHARS):
+            # The tool row keeps only MAX_TOOL_RESULT_CHARS after redaction, so a bigger set would land cut.
+            return web.json_response(
+                {
+                    "error": (
+                        f"answers together exceed {MAX_TOOL_RESULT_CHARS} characters "
+                        "— shorten them and submit again"
+                    ),
+                    "code": "answers_too_long",
+                },
+                status=400,
+            )
 
-    if not state.resolve_question(ask_id, answers):
+    if not state.resolve_question(ask_id, answers, reason=reason):
+        recorded_reason = state.recent_question_resolutions().get(ask_id)
+        if recorded_reason:
+            return web.json_response(
+                {
+                    "error": "no pending question with that id (already answered or expired)",
+                    "code": "question_not_found",
+                    "reason": recorded_reason,
+                },
+                status=404,
+            )
         return web.json_response(
             {
                 "error": "no pending question with that id (already answered or expired)",
                 "code": "question_not_found",
             },
+            status=404,
+        )
+    return web.json_response({"ok": True})
+
+
+# ── Agent asks: the blocking MCP ``ask_question`` ─────────────────────────────
+#
+# ``POST /api/agent-ask/open``, ``/api/agent-ask/{ask_id}/wait`` and
+# ``/api/agent-ask/{ask_id}/withdraw`` are MACHINE endpoints: their only caller
+# is the ``ask_question`` tool in an MCP subprocess, so they are STRICT internal
+# paths (X-Internal-Secret, no cookie fall-through; see server.py). They sit under
+# their own prefix because the strict list is prefix-matched and the browser
+# half of ``/api/ask-question`` must stay reachable by the dashboard.
+#
+# Identity is the attested session key, never a body field: the card goes to
+# the slot of the session that is making the call, and a wait or withdraw for an
+# ask another session opened is refused as not found. A sub-agent resolves its
+# own key and has no dashboard slot, so it can never address its parent's tab.
+
+
+async def _attested_session(request: web.Request) -> str | None:
+    """The caller's session key when this transport can vouch for it, else None."""
+    if request.get("internal_auth") is not True:
+        return None
+    session_key = request.headers.get("X-Session-Key", "").strip()
+    if not session_key:
+        return None
+    # Attestation reads key files, so it runs off the event loop.
+    if not await asyncio.to_thread(session_key_is_attested, request, session_key):
+        return None
+    return session_key
+
+
+def _denied(
+    request: web.Request,
+    operation: str,
+    message: str,
+    response: web.Response,
+    *,
+    session_key: str | None = None,
+) -> web.Response:
+    """Audit and return an agent-ask authorization or ownership denial."""
+    try:
+        sel().log_api_access(
+            caller=session_key or str(request.get("user") or "anonymous"),
+            operation=operation,
+            outcome="denied",
+            source="agent_ask",
+            resources="/api/agent-ask",
+            error=message,
+        )
+    except Exception:
+        logger.warning("SEL audit failed for agent-ask denial", exc_info=True)
+    return response
+
+
+def _unattested(request: web.Request, operation: str) -> web.Response:
+    """Refuse a caller whose session the transport cannot vouch for."""
+    message = "caller session is not attested"
+    return _denied(
+        request,
+        operation,
+        message,
+        web.json_response(
+            {"error": message, "code": "session_unattested"}, status=403
+        ),
+    )
+
+
+async def api_agent_ask_open(request: web.Request) -> web.Response:
+    """POST /api/agent-ask/open — show a blocking card on the caller's own slot.
+
+    Body: ``{questions: [...], ask_id?}``. Responds ``{ask_id, clients}``. A
+    caller-chosen ``ask_id`` makes a retried open idempotent for its owner.
+    ``clients: 0`` means no dashboard is attached; nothing stays open and the
+    tool reports that no card could be shown.
+    """
+    state: DashboardState = request.app["state"]
+    session_key = await _attested_session(request)
+    if session_key is None:
+        return _unattested(request, "agent_ask_open")
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "body must be a JSON object", "code": "invalid_body"}, status=400
+        )
+    # A surfaced channel session answers to its channel, so the owner's card must not feed it.
+    if not session_key.startswith("dashboard:"):
+        message = "only dashboard sessions can ask the owner"
+        return _denied(
+            request,
+            "agent_ask_open",
+            message,
+            web.json_response(
+                {"error": message, "code": "not_dashboard_session"}, status=403
+            ),
+            session_key=session_key,
+        )
+    slot_key = _slot_key_from_session(session_key)
+    if not slot_key or slot_key not in state._slots:
+        return web.json_response(
+            {"error": "no dashboard tab for this session", "code": "slot_not_found"},
+            status=404,
+        )
+    try:
+        questions = validate_ask_user_question(body)
+    except ValidationError as exc:
+        return web.json_response({"error": str(exc), "code": "invalid_questions"}, status=400)
+    requested = body.get("ask_id")
+    if requested is None:
+        ask_id = uuid.uuid4().hex
+    elif isinstance(requested, str) and _ASK_ID_RE.fullmatch(requested):
+        ask_id = requested
+    else:
+        return web.json_response({"error": "ask_id must be 32 hex chars", "code": "invalid_ask_id"}, status=400)
+    existing = state._agent_asks.get(ask_id)
+    if existing is not None:
+        # A retried open whose first response was lost: the card is already up.
+        if existing["session_key"] != session_key:
+            message = "ask_id in use"
+            return _denied(
+                request,
+                "agent_ask_open",
+                message,
+                web.json_response(
+                    {"error": message, "code": "ask_id_conflict"}, status=409
+                ),
+                session_key=session_key,
+            )
+        return web.json_response({"ask_id": ask_id, "clients": 1})
+    try:
+        clients = await state.open_agent_ask(ask_id, slot_key, session_key, questions)
+    except ValueError as exc:
+        return web.json_response(
+            {"error": str(exc), "code": "duplicate_question_key"}, status=400
+        )
+    try:
+        sel().log_tool_invocation(
+            session_key=session_key,
+            source="mcp",
+            tool_name="ask_question",
+            outcome=(
+                "capacity" if clients is None else "blocking" if clients else "no_client"
+            ),
+            request_id=ask_id,
+        )
+    except Exception:
+        logger.warning("SEL audit failed for ask_question", exc_info=True)
+    if clients is None:
+        return web.json_response(
+            {
+                "error": "too many agent questions are already waiting",
+                "code": "agent_ask_capacity",
+            },
+            status=429,
+        )
+    return web.json_response({"ask_id": ask_id if clients else "", "clients": clients})
+
+
+async def api_agent_ask_wait(request: web.Request) -> web.Response:
+    """POST /api/agent-ask/{ask_id}/wait — wait one fixed slice for the answer.
+
+    No body. Responds ``{status: "pending"}`` or the final outcome
+    ``{status, questions, answers}``; 404 once dropped or for another session.
+    """
+    state: DashboardState = request.app["state"]
+    session_key = await _attested_session(request)
+    if session_key is None:
+        return _unattested(request, "agent_ask_wait")
+    ask_id = request.match_info["ask_id"]
+    ask = state._agent_asks.get(ask_id)
+    outcome = await state.wait_agent_ask(ask_id, session_key, ASK_WAIT_SLICE_SECS)
+    if outcome is None:
+        if ask is not None and ask["session_key"] != session_key:
+            message = "no such ask for this session"
+            return _denied(
+                request,
+                "agent_ask_wait",
+                message,
+                web.json_response(
+                    {"error": message, "code": "question_not_found"}, status=404
+                ),
+                session_key=session_key,
+            )
+        return web.json_response(
+            {"error": "no such ask for this session", "code": "question_not_found"},
+            status=404,
+        )
+    return web.json_response(outcome)
+
+
+async def api_agent_ask_withdraw(request: web.Request) -> web.Response:
+    """POST /api/agent-ask/{ask_id}/withdraw — the tool call was cancelled."""
+    state: DashboardState = request.app["state"]
+    session_key = await _attested_session(request)
+    if session_key is None:
+        return _unattested(request, "agent_ask_withdraw")
+    ask_id = request.match_info["ask_id"]
+    ask = state._agent_asks.get(ask_id)
+    if not state.withdraw_agent_ask(ask_id, session_key):
+        if ask is not None and ask["session_key"] != session_key:
+            message = "no such ask for this session"
+            return _denied(
+                request,
+                "agent_ask_withdraw",
+                message,
+                web.json_response(
+                    {"error": message, "code": "question_not_found"}, status=404
+                ),
+                session_key=session_key,
+            )
+        return web.json_response(
+            {"error": "no such ask for this session", "code": "question_not_found"},
             status=404,
         )
     return web.json_response({"ok": True})

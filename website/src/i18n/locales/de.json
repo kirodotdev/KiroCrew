@@ -7975,6 +7975,10 @@
       "next": "Weiter",
       "next_question": "Nächste Frage",
       "or_type_a_custom_answer": "Oder geben Sie eine eigene Antwort ein…",
+      "chars_left_one": "Noch {{count}} Zeichen",
+      "chars_left_other": "Noch {{count}} Zeichen",
+      "answer_at_limit_one": "Antwort bei {{count}} Zeichen abgeschnitten",
+      "answer_at_limit_other": "Antwort bei {{count}} Zeichen abgeschnitten",
       "previous_question": "Vorherige Frage",
       "question_x_of_y": "Frage {{current}} von {{total}}",
       "submit": "Absenden"
@@ -9154,6 +9158,13 @@
     },
     "pendingQuestionCard": {
       "answer_failed": "Ihre Antwort konnte nicht gesendet werden. Der Agent wartet noch; bitte erneut versuchen.",
+      "answer_sent_card_open": "Die Fragenkarte wartet noch. Beantworte oder schließe sie. Deine Nachricht wurde gesendet.",
+      "answer_restored": "Der Agent wartet nicht mehr auf diese Frage, daher wurden deine Antworten nicht gesendet. Du findest sie im Eingabefeld; sende sie, wenn du noch möchtest.",
+      "answer_restored_question": "Der Agent wartet nicht mehr auf „{{question}}“, daher wurden deine Antworten nicht gesendet. Du findest sie im Eingabefeld; sende sie, wenn du noch möchtest.",
+      "answer_restored_command_center": "Der Agent wartet nicht mehr auf diese Frage, daher wurden deine Antworten nicht gesendet. Du findest sie im Eingabefeld dieser Sitzung; sende sie, wenn du noch möchtest.",
+      "answer_restored_command_center_question": "Der Agent wartet nicht mehr auf „{{question}}“, daher wurden deine Antworten nicht gesendet. Du findest sie im Eingabefeld dieser Sitzung; sende sie, wenn du noch möchtest.",
+      "answer_restored_command_center_session": "Der Agent in „{{session}}“ wartet nicht mehr auf „{{question}}“, daher wurden deine Antworten nicht gesendet. Du findest sie im Eingabefeld dieser Sitzung; sende sie, wenn du noch möchtest.",
+      "answers_too_long": "Deine Antworten sind zu lang zum Senden. Kürze sie und sende sie erneut.",
       "dismiss_failed": "Diese Frage konnte nicht verworfen werden. Bitte erneut versuchen.",
       "qa_pair": "F. {{question}}\nA. {{answer}}"
     },
@@ -10960,7 +10971,10 @@
         "wait_end_now": "Warten beenden",
         "wait_ending": "Wird beendet…",
         "wait_remaining": "{{time}} übrig",
+        "ask_answered_one": "Du hast {{count}} Frage beantwortet",
+        "ask_answered_other": "Du hast {{count}} Fragen beantwortet",
         "wait_status": "Wartet",
+        "ask_wait_status": "Wartet auf deine Antwort",
         "blocked_by_security_policy": "Durch Sicherheitsrichtlinie blockiert",
         "end_wait_failed": "Das Warten konnte nicht beendet werden"
       },

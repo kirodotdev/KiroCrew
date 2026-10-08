@@ -7858,6 +7858,8 @@
       "next": "下一步",
       "next_question": "下一个问题",
       "or_type_a_custom_answer": "或输入自定义回答…",
+      "chars_left_other": "还可输入 {{count}} 个字符",
+      "answer_at_limit_other": "回答已截断至 {{count}} 个字符",
       "previous_question": "上一个问题",
       "question_x_of_y": "问题 {{current}} / {{total}}",
       "submit": "提交"
@@ -9029,6 +9031,13 @@
     },
     "pendingQuestionCard": {
       "answer_failed": "无法发送你的回答。智能体仍在等待，请重试。",
+      "answer_sent_card_open": "问题卡片仍在等待处理。回答或关闭该卡片。消息已发送。",
+      "answer_restored": "智能体已不再等待这个问题的回答，因此你的答案没有发送。答案已放回输入框；如仍需要，请手动发送。",
+      "answer_restored_question": "智能体已不再等待“{{question}}”的回答，因此你的答案没有发送。答案已放回输入框；如仍需要，请手动发送。",
+      "answer_restored_command_center": "智能体已不再等待这个问题的回答，因此你的答案没有发送。答案已放回该会话的输入框；如仍需要，请手动发送。",
+      "answer_restored_command_center_question": "智能体已不再等待“{{question}}”的回答，因此你的答案没有发送。答案已放回该会话的输入框；如仍需要，请手动发送。",
+      "answer_restored_command_center_session": "“{{session}}”中的智能体已不再等待“{{question}}”，因此你的答案没有发送。答案已放回该会话输入框；如仍需要，请手动发送。",
+      "answers_too_long": "你的回答太长，无法发送。请缩短后重新提交。",
       "dismiss_failed": "无法关闭此问题。请重试。",
       "qa_pair": "问：{{question}}\n答：{{answer}}"
     },
@@ -10802,7 +10811,9 @@
         "wait_end_now": "结束等待",
         "wait_ending": "正在结束…",
         "wait_remaining": "剩余 {{time}}",
+        "ask_answered_other": "你已回答 {{count}} 个问题",
         "wait_status": "等待中",
+        "ask_wait_status": "等待你的回答",
         "blocked_by_security_policy": "已被安全策略阻止",
         "end_wait_failed": "无法结束等待"
       },

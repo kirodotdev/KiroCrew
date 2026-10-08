@@ -905,6 +905,7 @@ export function useWebSocket() {
   useEffect(() => {
     socket.resume()
     connect()
+    const detachQuestionRetirements = store.subscribe(cards.onQuestionStateChange)
     const detachVoice = voice.attachWindowEvents()
     const detachFocus = attachFocusRelay({
       socket,
@@ -916,10 +917,11 @@ export function useWebSocket() {
       buffers.flushForUnmount()
       socket.closeForUnmount()
       voice.dispose()
+      detachQuestionRetirements()
       detachVoice()
       detachFocus()
     }
-  }, [socket, connect, voice, buffers])
+  }, [socket, connect, voice, buffers, cards])
 
   return { subscribeLogs: socket.subscribeLogs, subscribeSubagents: socket.subscribeSubagents, forceReconnect }
 }

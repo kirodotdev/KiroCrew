@@ -730,6 +730,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // survey's baseline capture until the real transcript has settled.
   const slotSwitchTarget = useAppSelector(s => s.chat.slotSwitchTarget)
   const pendingQuestion = useAppSelector(s => pendingQuestionFor(s.chat.pendingQuestions, s.chat.activeSlot))
+  const restoredQuestionNotice = useAppSelector(s => (s.chat.activeSlot ? s.chat.restoredQuestionNotices?.[s.chat.activeSlot] : undefined))
   const pendingFollowup = useAppSelector(s => (s.chat.activeSlot ? s.chat.followups?.[s.chat.activeSlot] : undefined))
   const folderSuggestion = useAppSelector(s => (s.chat.activeSlot ? s.chat.folderSuggestions?.[s.chat.activeSlot] : undefined))
   const followupTsBySlot = useAppSelector(s => s.chat.followups) ?? EMPTY_FOLLOWUPS
@@ -1053,9 +1054,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // (`decisions/points/message_steer.py`). The receipt policy below is unchanged,
     // because the answer arrives as the `dispatched` of a steer or the `queued` of
     // a queue -- both rulings `applySteerReceipt` already owns.
-    mutationFn: ({ text, sendId, slot, auto, quote }: { text: string; sendId?: string; slot: string; auto?: boolean; quote?: MessageQuote | null }) =>
+    mutationFn: ({ text, sendId, slot, auto, quote }: { text: string; sendId?: string; slot: string; auto?: boolean; quote?: MessageQuote | null; askId?: string | null }) =>
       sendTurn({ message: text, slot, steer: auto ? 'auto' : true, ...(sendId ? { meta: { sendId, ...(quote ? { quote } : {}) } } : {}) }),
-    onSuccess: (receipt, { text, sendId, slot, quote }) => {
+    onSuccess: (receipt, { text, sendId, slot, quote, askId }) => {
       // Receipt policy for a steer, owned once in chat-core (issue #9457):
       // applySteerReceipt decides WHICH ruling applies; the adapter below is
       // ChatPage's HOW. The composer was cleared at submit and the optimistic
@@ -1125,6 +1126,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         // demotion via the helper's queued path.
         stashDemoted: () => undefined,
       })
+      // Release a blocking card only once the gateway accepted the steer, so the agent is told to read a message that arrived.
+      if (askId && (receipt.status === 'dispatched' || receipt.status === 'queued')) {
+        void resolveAskAfterSend(receipt.body, askId, dispatch, slot)
+      }
     },
   })
   const {
@@ -2549,7 +2554,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     }
     // The user answered in the composer instead of the card; a blocking card
     // is resolved over the network, so this cannot be a store-only retirement.
-    void resolveAskAfterSend(body, slot === entrySendSlot ? askAtSend : null, dispatch)
+    void resolveAskAfterSend(body, slot === entrySendSlot ? askAtSend : null, dispatch, slot)
     // The delivery verdict (see the callback's doc above). Only an explicit
     // `refused` reads as not-delivered here; `unknown` (a 2xx whose body did
     // not parse) may have started a turn, so it counts as delivered for the
@@ -6302,7 +6307,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   onSkip={() => knowledgeFetch.clearResults()}
                 />
               ) : null}
-              {pendingQuestion && (
+              {(pendingQuestion || restoredQuestionNotice) && (
                 <div className="px-4 pb-2 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
                   <PendingQuestionCard
                     slotKey={activeSlot}

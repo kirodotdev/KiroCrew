@@ -105,6 +105,7 @@ import {
 
 
 import { i18nT } from '../i18n/t'
+import { answerRejectedMessage } from '../utils/questionAnswers'
 import { fetchDashboardConfig } from '../api/dashboardConfigQuery'
 
 /**
@@ -1254,7 +1255,7 @@ export default function ChatPane({
       // receipt. Guarded independently of the rulings above so a `steered` or
       // `queued` receipt still settles the ask correctly.
       if (!askAtSend) return
-      void resolveAskAfterSend(receipt.body, askAtSend, dispatch)
+      void resolveAskAfterSend(receipt.body, askAtSend, dispatch, slotKey)
     })
   }, [input, pendingFiles, pasteBlocks, setPasteBlocks, busy, slotKey, dispatch, restoreIntoComposer, reportSendFailure, scrollToBottom, consumeQuote, recoverQuoteInto])
 
@@ -1281,6 +1282,7 @@ export default function ChatPane({
     // demotes to the text-only queue still carries them).
     if (!running) { doSend(undefined, true); return }
     const raw = input.trim()
+    const askAtSteer = capturePendingAskId(store.getState().chat.pendingQuestions, slotKey)
     const files = pendingFiles
     const sentQuote = consumeQuote('').quote
     // A steer cannot restore what it cleared on an empty payload, so refuse a
@@ -1351,6 +1353,10 @@ export default function ChatPane({
         // with the card, so the token alone would restore as a dead chip.
         stashDemoted: (queueId) => queuedSendStash.set(queueId, { raw: steerPastes.length ? expandPasteTokens(raw, steerPastes) : raw, files, sent: txt, ...(sentQuote ? { quote: sentQuote } : {}) }),
       })
+      // Release a blocking card only once the gateway accepted the steer, so the agent is told to read a message that arrived.
+      if (askAtSteer && (receipt.status === 'dispatched' || receipt.status === 'queued')) {
+        void resolveAskAfterSend(receipt.body, askAtSteer, dispatch, slotKey)
+      }
     })
   }, [running, doSend, input, pendingFiles, pasteBlocks, setPasteBlocks, slotKey, dispatch, reportSendFailure, restoreIntoComposer, consumeQuote, recoverQuoteInto])
 
@@ -1878,26 +1884,14 @@ export default function ChatPane({
             full window. */}
         <PendingQuestionCard
           slotKey={slotKey}
-          /* doSend() reads the composer state, so the fallback sends directly
-             through the chat-core transport. The card is already cleared by
-             the time this runs, so a swallowed failure would destroy the
-             user's answer outright; on refusal, transport failure, or
-             the abort deadline it goes back into the composer through the
-             same recovery `doSend` uses. `response-late` restores HERE unlike
-             the composer send: a deadline can fire before the POST ever
-             reached the gateway, and with the card gone a silently lost
-             answer has no other trace — the worst case is a duplicate answer,
-             which the user can see and delete. `unknown` stays silent — a 2xx
-             proves the request was accepted, so the answer may well have
-             landed, and handing it back would invite a second answer to a
-             question already gone. */
-          onFallbackSend={(text) => {
-            const fail = (reason?: string, status?: SendReceiptStatus) => { reportSendFailure(reason, status); restoreIntoComposer(text, [], [], slotKey) }
-            void sendTurn({ message: text, slot: slotKey }).then((receipt) => {
-              if (receipt.status === 'refused' || receipt.status === 'transport-error' || receipt.status === 'response-late') {
-                fail(receipt.reason, receipt.status)
-              }
-            })
+          onFallbackSend={(text, questions) => {
+            // The wait is gone (404), so the answer cannot become a tool result
+            // any more. Hand it back to the composer rather than sending it: the
+            // text quotes the agent's own questions, and only the user may
+            // decide to send that as their message. Same recovery as ChatPage.
+            restoreIntoComposer(text, [], [], slotKey)
+            // The submit was rejected, so this is an error row (ErrorNotice), not a warn notice.
+            dispatch(appendSlotMessage({ slot: slotKey, message: answerRejectedMessage(questions) }))
           }}
           /* No-ask_id card: the card IS the interaction, answered in one click.
              A native AskUserQuestion card is raised while its own turn is still

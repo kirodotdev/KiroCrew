@@ -733,6 +733,11 @@ def redact_text(text: str) -> str:
     return _redact(text)
 
 
+def fits_tool_result(text: str, limit: int) -> bool:
+    """Whether *text* stays within *limit* after the tool-row scrub, so it lands uncut."""
+    return len(_redact(text)) <= limit
+
+
 # Display cap for a backend-authored JSON-RPC id in a log line / exception
 # text. Applied AFTER redaction (redact-before-bound): a slice taken before the
 # redactor ran could sever a credential at the cut and leak the fragment.

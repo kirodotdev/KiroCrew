@@ -67,6 +67,7 @@ import dashboardReducer, { addSlotOptimistic, setSidebarOrder } from '../store/d
 import notificationsReducer from '../store/notificationsSlice'
 import instancesReducer from '../store/instancesSlice'
 import { SPAWN_LAUNCH_MARKER } from '../pages/chat/types'
+import { ASK_ANSWERED_HEADER, ASK_QUESTION_SERVER, MAX_TOOL_RESULT_CHARS } from '../utils/askQuestionTool'
 import type { ChatMessage, ChatSlot } from '../types'
 import type { RootState } from '../store'
 import { __resetErrorJournalForTests, recordError } from '../utils/errorReport'
@@ -1243,6 +1244,57 @@ describe('chatSlice message patching', () => {
     expect(outs[4]).toContain('Spawned 2')
     expect(outs[2]).toBeUndefined()
     expect(outs[1]).toBeUndefined()
+  })
+
+  it('does not copy answered output onto a third-party ask_question row', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot('A'))
+    store.dispatch(replaceMessages([
+      msg({
+        role: 'tool',
+        content: '🔧 ask_question',
+        meta: { tool_call_id: 'tc-ask', tool_name: 'ask_question', mcp_server: ASK_QUESTION_SERVER },
+      }),
+      msg({
+        role: 'tool',
+        content: '🔧 ask_question',
+        meta: { tool_call_id: 'tc-ask', tool_name: 'ask_question', mcp_server: 'third-party' },
+      }),
+    ]))
+    const output = `${ASK_ANSWERED_HEADER}\n"Question" -> "Answer"`
+    store.dispatch(sseToolResult({ slot: 'A', tool_call_id: 'tc-ask', output }))
+    expect(chat(store).messages[0].meta?.output).toBe(output)
+    expect(chat(store).messages[1].meta?.output).toBeUndefined()
+  })
+
+  it('copies answered output onto a kirocrew-core ask_question row', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot('A'))
+    store.dispatch(replaceMessages([
+      msg({
+        role: 'tool',
+        content: '🔧 ask_question',
+        meta: { tool_call_id: 'tc-ask', tool_name: 'ask_question', mcp_server: ASK_QUESTION_SERVER },
+      }),
+    ]))
+    const output = `${ASK_ANSWERED_HEADER}\n"Question" -> "Answer"`
+    store.dispatch(sseToolResult({ slot: 'A', tool_call_id: 'tc-ask', output }))
+    expect(chat(store).messages[0].meta?.output).toBe(output)
+  })
+
+  it('does not copy oversized answered output into message meta', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot('A'))
+    store.dispatch(replaceMessages([
+      msg({
+        role: 'tool',
+        content: '🔧 ask_question',
+        meta: { tool_call_id: 'tc-ask', tool_name: 'ask_question', mcp_server: ASK_QUESTION_SERVER },
+      }),
+    ]))
+    const output = `${ASK_ANSWERED_HEADER}\n${'x'.repeat(MAX_TOOL_RESULT_CHARS)}`
+    store.dispatch(sseToolResult({ slot: 'A', tool_call_id: 'tc-ask', output }))
+    expect(chat(store).messages[0].meta?.output).toBeUndefined()
   })
 })
 

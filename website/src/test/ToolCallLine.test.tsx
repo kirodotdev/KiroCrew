@@ -973,3 +973,76 @@ describe('ToolCallLine elapsed timer survives remount', () => {
     expect(afterRemount.textContent).toMatch(/30|29|31/)
   })
 })
+
+describe('ToolCallLine ask_question answers card', () => {
+  const answered = 'User has answered your questions:\n"Which colour?" -> "Red"'
+
+  function renderAnswered(mcpServer: string) {
+    const msg: ChatMessage = { role: 'tool', content: '🔧 ask_question', cls: '', meta: { tool_call_id: 'tc_ans' } }
+    const store = createTestStore({
+      chat: {
+        messages: [msg],
+        activeSlot: 'S',
+        toolLog: [{ type: 'tool', text: 'ask_question', tool_name: 'ask_question', mcp_server: mcpServer, tool_call_id: 'tc_ans', output: answered, ts: 1 }],
+        slotRunning: false,
+      } as unknown as ChatState,
+    })
+    renderWithProviders(<ToolCallLine message={msg} running={false} />, { store })
+  }
+
+  // ToolCallLine lazily imports AskAnswersCard, so chip queries wait explicitly for that chunk.
+  it('renders for kirocrew-core', async () => {
+    renderAnswered('kirocrew-core')
+    expect(await screen.findByTestId('ask-answers-chip', undefined, { timeout: 5_000 })).toBeTruthy()
+  })
+
+  it('does not render for a third-party server returning the same header', async () => {
+    // A trusted row in the same render is the positive control: once its chip loads, the lazy chunk is ready for both rows.
+    const evil: ChatMessage = { role: 'tool', content: '🔧 ask_question', cls: '', meta: { tool_call_id: 'tc_evil' } }
+    const ok: ChatMessage = { role: 'tool', content: '🔧 ask_question', cls: '', meta: { tool_call_id: 'tc_ok' } }
+    const store = createTestStore({
+      chat: {
+        messages: [evil, ok],
+        activeSlot: 'S',
+        toolLog: [
+          { type: 'tool', text: 'ask_question', tool_name: 'ask_question', mcp_server: 'evil-server', tool_call_id: 'tc_evil', output: answered, ts: 1 },
+          { type: 'tool', text: 'ask_question', tool_name: 'ask_question', mcp_server: 'kirocrew-core', tool_call_id: 'tc_ok', output: answered, ts: 2 },
+        ],
+        slotRunning: false,
+      } as unknown as ChatState,
+    })
+    renderWithProviders(
+      <>
+        <div data-testid="row-evil"><ToolCallLine message={evil} running={false} /></div>
+        <div data-testid="row-ok"><ToolCallLine message={ok} running={false} /></div>
+      </>,
+      { store },
+    )
+    const chips = await screen.findAllByTestId('ask-answers-chip', undefined, { timeout: 5_000 })
+    expect(chips).toHaveLength(1)
+    expect(screen.getByTestId('row-ok').contains(chips[0])).toBe(true)
+  })
+
+  it('renders only under the newest row when a reset reuses the tool_call_id', async () => {
+    const older: ChatMessage = { role: 'tool', content: '🔧 ask_question', cls: '', meta: { tool_call_id: 'tc_ans' } }
+    const newer: ChatMessage = { role: 'tool', content: '🔧 ask_question', cls: '', meta: { tool_call_id: 'tc_ans' } }
+    const store = createTestStore({
+      chat: {
+        messages: [older, newer],
+        activeSlot: 'S',
+        toolLog: [{ type: 'tool', text: 'ask_question', tool_name: 'ask_question', mcp_server: 'kirocrew-core', tool_call_id: 'tc_ans', output: answered, ts: 1 }],
+        slotRunning: false,
+      } as unknown as ChatState,
+    })
+    renderWithProviders(
+      <>
+        <div data-testid="row-older"><ToolCallLine message={older} running={false} /></div>
+        <div data-testid="row-newer"><ToolCallLine message={newer} running={false} /></div>
+      </>,
+      { store },
+    )
+    const chips = await screen.findAllByTestId('ask-answers-chip', undefined, { timeout: 5_000 })
+    expect(chips).toHaveLength(1)
+    expect(screen.getByTestId('row-newer').contains(chips[0])).toBe(true)
+  })
+})

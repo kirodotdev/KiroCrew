@@ -397,9 +397,9 @@ Each cycle:
    already-green pull request, which is exactly why the claim and the condition
    are separate fields.
 
-   **A `human_approval` item is verified by asking, and the ask is fragile.** The evaluator answers `pending` for it forever, so put the decision to the user with `ask_question`, which ends your turn. Leave the loop and its interval as they are: the `work-ledger` watch already makes a quiet cycle free, and the cycle after the user answers reads it.
+   **A `human_approval` item is verified by asking.** The evaluator answers `pending` for it forever, so put the decision to the user with `ask_question`. The call BLOCKS until the user responds and returns the answers as its tool result, so your turn does not end and no later patrol cycle has to pick the answer up: read the result and record the verdict in the same turn. The card waits up to 30 minutes; if the result says it expired, was dismissed, or that the user replied in chat instead, act on that outcome (re-ask, or read their next message) rather than inventing an answer.
 
-   If the user says the card is gone, re-issue it. A report that the card vanished is not an answer.
+   A result saying the card was withdrawn (dashboard restarted, tab reset) is not an answer: re-issue it.
 4. `work_ledger_record` `action=close` with the item's `state` when an item is
    finally done with — that is what ends it. **Closing the item and closing
    its session happen together.** When a work item reaches a terminal verdict
@@ -634,7 +634,7 @@ what the composer renders:
 
 ## Known limits of this version
 
-- **A question card can be displaced by your own later turns.** `ask_question` posts a card into the dashboard transcript, and every patrol turn you take while it is outstanding can push it out of the user's view. A quiet cycle takes no turn under the `work-ledger` watch, but a worker's report does. So while any question is open, put it first in every turn that speaks to the user ("Needs you" on the task board), with the one answer that unblocks it.
+- **A question card holds your turn open.** `ask_question` blocks until the user responds, so nothing else runs in this session meanwhile; keep patrol work out of the turn that asks, and ask only when the goal genuinely cannot advance without the answer.
 - **The session and ledger tools may not be in your tool list yet.** With MCP
   Tool Search active their specs are deferred, so a first `session_create` fails
   with `A tool with the name 'session_create' does not exist`. That means

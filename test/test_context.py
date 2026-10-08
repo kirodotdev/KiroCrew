@@ -273,12 +273,11 @@ class TestContextBuilder:
             "done", is_new_session=False, interactive=True, session_key="dashboard:chat-1"
         )
         assert "ask_question" in dash, "dashboard session must get the question nudge"
-        # Pin the CONTRACT, not a keyword. The wording this replaces ("BEFORE you
-        # can continue the current turn") described a blocking round-trip the tool
-        # does not perform, so the nudge has to say the card does not block, that
-        # the agent ends its turn, and that [OPTIONS:] is the end-of-turn choice.
-        assert "END YOUR TURN" in dash
-        assert "NON-BLOCKING" in dash
+        # The nudge must say ask_question blocks and returns the answers as its result.
+        assert "BLOCKS until the" in dash
+        assert "tool result" in dash
+        assert "END YOUR TURN" not in dash
+        assert "NON-BLOCKING" not in dash
         assert "[OPTIONS:]" in dash
         # A card is an interruption, so the nudge must also carry the restraint
         # contract: silence is the default and only a human-only decision that

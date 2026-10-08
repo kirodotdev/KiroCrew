@@ -66,17 +66,16 @@ from kiro_crew.session_surface import has_dashboard_surface
 
 logger = logging.getLogger(__name__)
 
-QUESTION_CARD_SHOWN_PREFIX = "Question card shown in this session."
 QUIET_END_OUTCOME_PREFIX = "Nothing new to report."
 
 # The directives whose SUCCESSFUL application is the turn's intended terminal
-# output: the tool tells the model to end without a closing reply, so the
+# output: the model ends the turn without a closing reply, so the
 # runner must not read the textless end as a failed generation. Membership
 # here is documentation and a test pin; the runtime signal is
 # ``DirectiveOutcome.ends_turn``, set by the applier only on the path where the
-# effect actually landed (a card the user can see; a quiet end recorded), never
+# effect actually landed (a quiet end recorded), never
 # derived from the outcome prose.
-TERMINAL_DIRECTIVES = frozenset({"ask_question", "nothing_to_do"})
+TERMINAL_DIRECTIVES = frozenset({"nothing_to_do"})
 
 
 @dataclass(frozen=True)
@@ -97,8 +96,9 @@ class DirectiveOutcome:
 
 # Card directives require a connected dashboard surface. ``set_project`` is
 # admitted by the user-surface provenance gate below, then separately requires
-# the current turn to own the slot it would mutate.
-_DASHBOARD_ONLY_DIRECTIVES = frozenset({"suggest_followup", "ask_question"})
+# the current turn to own the slot it would mutate. (``ask_question`` is not a
+# directive: it blocks and returns the answers as its own tool result.)
+_DASHBOARD_ONLY_DIRECTIVES = frozenset({"suggest_followup"})
 _USER_SURFACE_DIRECTIVES = frozenset({"set_project", "reset_conversation", "chat_tag"})
 # Directives whose effect is "this session will be woken later". A refusal of
 # one of these is the failure the caller can least observe: the MCP tool has
@@ -483,8 +483,6 @@ async def apply_session_directive_outcome(
             result = await _apply_chat_tag(state, slot, session_key, args)
         elif kind == "suggest_followup":
             result = await _suggest_followup(state, slot, args)
-        elif kind == "ask_question":
-            result = await _ask_question(state, slot, args)
         elif kind == "nothing_to_do":
             result = _nothing_to_do(
                 args,
@@ -2074,28 +2072,6 @@ async def _suggest_followup(state: Any, slot: Any, args: dict[str, Any]) -> str:
             "suggest they scope a project first (the composer's Project chip)."
         )
     return "Follow-up card shown below the composer."
-
-
-async def _ask_question(state: Any, slot: Any, args: dict[str, Any]) -> DirectiveOutcome:
-    """Post a NON-BLOCKING question card to this session's slot. The card
-    carries no ask_id, so the frontend submit sends the answers as an ordinary
-    next message that resumes the session — the agent must END its turn now.
-    Only the SHOWN path ends the turn: a dropped card leaves the model owing a
-    plain-text question, so the empty-response recovery stays armed."""
-    post = getattr(state, "post_question_card", None)
-    if post is None:
-        return DirectiveOutcome("Question card could not be delivered (no card channel).")
-    clients = int(await post(slot.key, args.get("questions") or []))
-    if clients == 0:
-        return DirectiveOutcome(
-            "Question posted, but no dashboard client is attached to see it — "
-            "ask in plain text and end your turn instead."
-        )
-    return DirectiveOutcome(
-        f"{QUESTION_CARD_SHOWN_PREFIX} End your turn now — the user's "
-        "answer will arrive as your next message; do not re-ask or guess.",
-        ends_turn=True,
-    )
 
 
 QUIET_END_REFUSED_USER_TURN = (

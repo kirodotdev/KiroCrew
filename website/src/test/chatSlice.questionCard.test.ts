@@ -13,7 +13,7 @@
  * event from an earlier question cannot wipe a newer card.
  */
 import { describe, it, expect } from 'vitest'
-import reducer, { setQuestionCard, setQuestionDraft, resolveQuestionCard, clearQuestionCard, sseChatMessage, appendMessage, appendSlotMessage, appendQueuedMessage, removeQueuedMessage, cancelQueuedMessage } from '../store/chatSlice'
+import reducer, { setQuestionNotice, setQuestionCard, setQuestionDraft, resolveQuestionCard, clearQuestionCard, sseChatMessage, appendMessage, appendSlotMessage, appendQueuedMessage, removeQueuedMessage, cancelQueuedMessage } from '../store/chatSlice'
 import { reconcileQuestions } from '../hooks/useWebSocket'
 
 const initial = reducer(undefined, { type: '@@INIT' })
@@ -280,7 +280,7 @@ describe('stateless card staleness on turn-consuming frames', () => {
     // Unlike the server's retirement broadcast, Dismiss is the user's own
     // decision about this card, typed text included.
     let state = legacy('chat-1')
-    state = reducer(state, setQuestionDraft({ slot: 'chat-1', active: true }))
+    state = reducer(state, setQuestionDraft({ slot: 'chat-1', answers: { 'Which approach?': 'A' } }))
     state = reducer(state, clearQuestionCard({ slot: 'chat-1', card_id: 'card-1' }))
     expect(state.pendingQuestions['chat-1']).toBeUndefined()
   })
@@ -361,11 +361,11 @@ describe('stateless card staleness on turn-consuming frames', () => {
     // user's work. While draftActive, even a `user` frame leaves the card;
     // once the draft is cleared, retirement resumes on the next one.
     let state = { ...legacy('chat-1'), activeSlot: 'chat-1' }
-    state = reducer(state, setQuestionDraft({ slot: 'chat-1', active: true }))
+    state = reducer(state, setQuestionDraft({ slot: 'chat-1', answers: { 'Which approach?': 'A' } }))
     state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'user', content: 'something else entirely' }))
     expect(state.pendingQuestions['chat-1']).toBeDefined()
     // Draft cleared -> the next user frame retires the card.
-    state = reducer(state, setQuestionDraft({ slot: 'chat-1', active: false }))
+    state = reducer(state, setQuestionDraft({ slot: 'chat-1', answers: {} }))
     state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'user', content: 'and another' }))
     expect(state.pendingQuestions['chat-1']).toBeUndefined()
   })
@@ -377,7 +377,7 @@ describe('stateless card staleness on turn-consuming frames', () => {
     // or the next user frame silently destroys the draft.
     let state = { ...legacy('chat-1'), activeSlot: 'chat-1' }
     const questions = state.pendingQuestions['chat-1'].questions
-    state = reducer(state, setQuestionDraft({ slot: 'chat-1', active: true }))
+    state = reducer(state, setQuestionDraft({ slot: 'chat-1', answers: { 'Which approach?': 'A' } }))
     state = reducer(state, setQuestionCard({ slot: 'chat-1', card_id: 'card-1', questions: JSON.parse(JSON.stringify(questions)) }))
     expect(state.pendingQuestions['chat-1'].draftActive).toBe(true)
     state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'user', content: 'unrelated send' }))
@@ -393,7 +393,7 @@ describe('stateless card staleness on turn-consuming frames', () => {
     // component (draft genuinely gone), so its entry starts clean.
     let state = { ...legacy('chat-1'), activeSlot: 'chat-1' }
     const questions = state.pendingQuestions['chat-1'].questions
-    state = reducer(state, setQuestionDraft({ slot: 'chat-1', active: true }))
+    state = reducer(state, setQuestionDraft({ slot: 'chat-1', answers: { 'Which approach?': 'A' } }))
     state = reducer(state, setQuestionCard({ slot: 'chat-1', card_id: 'card-2', questions: JSON.parse(JSON.stringify(questions)) }))
     expect(state.pendingQuestions['chat-1'].serverCardId).toBe('card-2')
     expect(state.pendingQuestions['chat-1'].draftActive).toBe(true)
@@ -404,7 +404,7 @@ describe('stateless card staleness on turn-consuming frames', () => {
     state = reducer(state, setQuestionCard({ slot: 'chat-1', card_id: 'card-3', questions: other }))
     expect(state.pendingQuestions['chat-1'].draftActive).toBeUndefined()
     // A draft that was already cleared is not resurrected by an identical re-ask.
-    state = reducer(state, setQuestionDraft({ slot: 'chat-1', active: false }))
+    state = reducer(state, setQuestionDraft({ slot: 'chat-1', answers: {} }))
     state = reducer(state, setQuestionCard({ slot: 'chat-1', card_id: 'card-4', questions: other }))
     expect(state.pendingQuestions['chat-1'].draftActive).toBeUndefined()
   })
@@ -530,5 +530,32 @@ describe('an unanswered stateless card survives later turns and a reload', () =>
     state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'nudge', content: '[auto-nudge cycle 1]\ngo' }))
     state = reducer(state, clearQuestionCard({ slot: 'chat-1', card_id: 'card-a' }))
     expect(state.pendingQuestions['chat-1']).toBeUndefined()
+  })
+})
+describe('release-failed notice lifetime', () => {
+  const failed = (state = withCard('chat-1', 'abc')) =>
+    reducer(state, setQuestionNotice({ slot: 'chat-1', message: 'still waiting', kind: 'release_failed' }))
+
+  it('drops the release-failed notice when its card is answered', () => {
+    const state = reducer(failed(), resolveQuestionCard({ ask_id: 'abc', settled: true }))
+    expect(state.pendingQuestions['chat-1']).toBeUndefined()
+    expect(state.restoredQuestionNotices?.['chat-1']).toBeUndefined()
+  })
+
+  it('drops the release-failed notice when its card is cleared', () => {
+    const state = reducer(failed(), clearQuestionCard({ slot: 'chat-1' }))
+    expect(state.restoredQuestionNotices?.['chat-1']).toBeUndefined()
+  })
+
+  it('keeps a restored-draft notice when the card is resolved', () => {
+    let state = withCard('chat-1', 'abc')
+    state = reducer(state, setQuestionNotice({ slot: 'chat-1', message: 'restored', kind: 'restored' }))
+    state = reducer(state, resolveQuestionCard({ ask_id: 'abc', settled: true }))
+    expect(state.restoredQuestionNotices?.['chat-1']?.kind).toBe('restored')
+  })
+
+  it('a resolve for another ask leaves the notice in place', () => {
+    const state = reducer(failed(), resolveQuestionCard({ ask_id: 'other', settled: true }))
+    expect(state.restoredQuestionNotices?.['chat-1']?.kind).toBe('release_failed')
   })
 })

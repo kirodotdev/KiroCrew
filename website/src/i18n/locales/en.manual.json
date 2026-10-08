@@ -3630,6 +3630,13 @@
     },
     "pendingQuestionCard": {
       "answer_failed": "Couldn’t send your answer. The agent is still waiting, so try again.",
+      "answer_sent_card_open": "The question card is still waiting. Answer or dismiss it. Your message was sent.",
+      "answer_restored": "The agent stopped waiting for this question, so your answers weren't sent. They're in the composer; send them if you still want to.",
+      "answer_restored_question": "The agent stopped waiting for \"{{question}}\", so your answers weren't sent. They're in the composer; send them if you still want to.",
+      "answer_restored_command_center": "The agent stopped waiting for this question, so your answers weren't sent. They're in that session's composer; send them if you still want to.",
+      "answer_restored_command_center_question": "The agent stopped waiting for \"{{question}}\", so your answers weren't sent. They're in that session's composer; send them if you still want to.",
+      "answer_restored_command_center_session": "The agent in \"{{session}}\" stopped waiting for \"{{question}}\", so your answers weren't sent. They're in that session's composer; send them if you still want to.",
+      "answers_too_long": "Your answers are too long to send. Shorten them and submit again.",
       "dismiss_failed": "Couldn’t dismiss this question. Try again.",
       "qa_pair": "Q. {{question}}\nA. {{answer}}"
     },
@@ -3776,7 +3783,11 @@
       "origin_diff_failed": "Could not load the original template to compare changes."
     },
     "questionCard": {
-      "dismiss_hint": "Dismissing the question stops the agent waiting for an answer."
+      "dismiss_hint": "Dismissing the question stops the agent waiting for an answer.",
+      "chars_left_one": "{{count}} character left",
+      "chars_left_other": "{{count}} characters left",
+      "answer_at_limit_one": "Answer cut at {{count}} character",
+      "answer_at_limit_other": "Answer cut at {{count}} characters"
     },
     "restartRequiredBadge": {
       "label": "changes need a restart",
@@ -4643,7 +4654,10 @@
         "wait_end_now": "End wait",
         "wait_ending": "Ending…",
         "wait_remaining": "{{time}} left",
+        "ask_answered_one": "You answered {{count}} question",
+        "ask_answered_other": "You answered {{count}} questions",
         "wait_status": "Waiting",
+        "ask_wait_status": "Waiting for your answer",
         "end_wait_failed": "Couldn't end the wait"
       },
       "sessionSummary": {

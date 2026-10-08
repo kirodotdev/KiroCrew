@@ -8092,6 +8092,12 @@
       "next": "Avanti",
       "next_question": "Domanda successiva",
       "or_type_a_custom_answer": "Oppure digita una risposta personalizzata...",
+      "chars_left_one": "Resta {{count}} carattere",
+      "chars_left_many": "Restano {{count}} caratteri",
+      "chars_left_other": "Restano {{count}} caratteri",
+      "answer_at_limit_one": "Risposta troncata a {{count}} carattere",
+      "answer_at_limit_many": "Risposta troncata a {{count}} caratteri",
+      "answer_at_limit_other": "Risposta troncata a {{count}} caratteri",
       "previous_question": "Domanda precedente",
       "question_x_of_y": "Domanda {{current}} di {{total}}",
       "submit": "Invia"
@@ -9279,6 +9285,13 @@
     },
     "pendingQuestionCard": {
       "answer_failed": "Impossibile inviare la tua risposta. L’agente è ancora in attesa, quindi riprova.",
+      "answer_sent_card_open": "La scheda della domanda è ancora in attesa. Rispondi o chiudila. Il tuo messaggio è stato inviato.",
+      "answer_restored": "L’agente ha smesso di attendere questa domanda, quindi le tue risposte non sono state inviate. Sono nel campo di scrittura; inviale se vuoi ancora.",
+      "answer_restored_question": "L’agente ha smesso di attendere «{{question}}», quindi le tue risposte non sono state inviate. Sono nel campo di scrittura; inviale se vuoi ancora.",
+      "answer_restored_command_center": "L’agente ha smesso di attendere questa domanda, quindi le tue risposte non sono state inviate. Sono nel campo di scrittura di quella sessione; inviale se vuoi ancora.",
+      "answer_restored_command_center_question": "L’agente ha smesso di attendere «{{question}}», quindi le tue risposte non sono state inviate. Sono nel campo di scrittura di quella sessione; inviale se vuoi ancora.",
+      "answer_restored_command_center_session": "L’agente in «{{session}}» ha smesso di attendere «{{question}}», quindi le tue risposte non sono state inviate. Sono nel campo di scrittura di quella sessione; inviale se vuoi ancora.",
+      "answers_too_long": "Le tue risposte sono troppo lunghe per essere inviate. Accorciale e invia di nuovo.",
       "dismiss_failed": "Impossibile ignorare questa domanda. Riprova.",
       "qa_pair": "D. {{question}}\nR. {{answer}}"
     },
@@ -11118,7 +11131,11 @@
         "wait_end_now": "Termina attesa",
         "wait_ending": "Terminazione…",
         "wait_remaining": "{{time}} rimanenti",
+        "ask_answered_one": "Hai risposto a {{count}} domanda",
+        "ask_answered_many": "Hai risposto a {{count}} domande",
+        "ask_answered_other": "Hai risposto a {{count}} domande",
         "wait_status": "In attesa",
+        "ask_wait_status": "In attesa della tua risposta",
         "blocked_by_security_policy": "Bloccato dalla policy di sicurezza",
         "end_wait_failed": "Impossibile terminare l’attesa"
       },

@@ -110,6 +110,23 @@ from kiro_crew.agent_sdk.host_auth import (
 )
 from kiro_crew.agent_sdk.native_commands import NativeCommandBatch, run_kiro_native_commands
 
+
+def fits_tool_result(text: str, limit: int) -> bool:
+    """Whether *text* stays within *limit* after the tool-row scrub, so it lands uncut."""
+    # Imported lazily: kiro_crew.acp imports back into this package at load time.
+    from kiro_crew.acp._dispatch import fits_tool_result as _fits
+
+    return _fits(text, limit)
+
+
+def tool_row_text(text: str) -> str:
+    """*text* as the tool-row scrub leaves it, for a caller that must apply it before serializing."""
+    # Imported lazily for the same reason as fits_tool_result.
+    from kiro_crew.acp._dispatch import redact_text as _scrub
+
+    return _scrub(text)
+
+
 TURN_STOP_REASON_CANCELLED = "cancelled"
 TURN_STOP_REASON_END_TURN = "end_turn"
 
@@ -122,6 +139,7 @@ class AgentTurnUsage(Protocol):
 
 
 __all__ = [
+    "tool_row_text",
     "ContextPromptProvider",
     "ContextStreamEvent",
     "CONTEXT_EVENT_AGENT_CHANGED",
@@ -155,6 +173,7 @@ __all__ = [
     "NativeCommandBatch",
     "clear_probe_cache",
     "finish_suspended_spawn",
+    "fits_tool_result",
     "forget_for_recheck",
     "probe_backend",
     "probe_backends",

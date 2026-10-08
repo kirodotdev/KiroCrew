@@ -8092,6 +8092,12 @@
       "next": "Suivant",
       "next_question": "Question suivante",
       "or_type_a_custom_answer": "Ou saisissez une réponse personnalisée...",
+      "chars_left_one": "Il reste {{count}} caractère",
+      "chars_left_many": "Il reste {{count}} caractères",
+      "chars_left_other": "Il reste {{count}} caractères",
+      "answer_at_limit_one": "Réponse coupée à {{count}} caractère",
+      "answer_at_limit_many": "Réponse coupée à {{count}} caractères",
+      "answer_at_limit_other": "Réponse coupée à {{count}} caractères",
       "previous_question": "Question précédente",
       "question_x_of_y": "Question {{current}} sur {{total}}",
       "submit": "Envoyer"
@@ -9279,6 +9285,13 @@
     },
     "pendingQuestionCard": {
       "answer_failed": "Impossible d’envoyer votre réponse. L’agent attend toujours, réessayez.",
+      "answer_sent_card_open": "La carte de questions attend toujours. Réponds-y ou ferme-la. Ton message a été envoyé.",
+      "answer_restored": "L’agent n’attend plus cette question, tes réponses n’ont donc pas été envoyées. Elles sont dans le champ de saisie ; envoie-les si tu le souhaites encore.",
+      "answer_restored_question": "L’agent n’attend plus « {{question}} », tes réponses n’ont donc pas été envoyées. Elles sont dans le champ de saisie ; envoie-les si tu le souhaites encore.",
+      "answer_restored_command_center": "L’agent n’attend plus cette question, tes réponses n’ont donc pas été envoyées. Elles sont dans le champ de saisie de cette session ; envoie-les si tu le souhaites encore.",
+      "answer_restored_command_center_question": "L’agent n’attend plus « {{question}} », tes réponses n’ont donc pas été envoyées. Elles sont dans le champ de saisie de cette session ; envoie-les si tu le souhaites encore.",
+      "answer_restored_command_center_session": "L’agent de « {{session}} » n’attend plus « {{question}} », tes réponses n’ont donc pas été envoyées. Elles sont dans le champ de saisie de cette session ; envoie-les si tu le souhaites encore.",
+      "answers_too_long": "Tes réponses sont trop longues pour être envoyées. Raccourcis-les et renvoie-les.",
       "dismiss_failed": "Impossible d’ignorer cette question. Réessayez.",
       "qa_pair": "Q. {{question}}\nR. {{answer}}"
     },
@@ -11118,7 +11131,11 @@
         "wait_end_now": "Arrêter l’attente",
         "wait_ending": "Arrêt en cours…",
         "wait_remaining": "Il reste {{time}}",
+        "ask_answered_one": "Tu as répondu à {{count}} question",
+        "ask_answered_many": "Tu as répondu à {{count}} questions",
+        "ask_answered_other": "Tu as répondu à {{count}} questions",
         "wait_status": "En attente",
+        "ask_wait_status": "En attente de ta réponse",
         "blocked_by_security_policy": "Bloqué par la politique de sécurité",
         "end_wait_failed": "Impossible d’arrêter l’attente"
       },

@@ -76,7 +76,7 @@ class TestNothingToDoTool:
 
     def test_terminal_set_is_a_subset_of_the_directive_tools(self):
         assert sda.TERMINAL_DIRECTIVES <= session_directive.DIRECTIVE_TOOLS
-        assert sda.TERMINAL_DIRECTIVES == {"ask_question", "nothing_to_do"}
+        assert sda.TERMINAL_DIRECTIVES == {"nothing_to_do"}
 
     def test_every_directive_has_a_not_applied_outcome_line(self):
         """The runner's dropped-effect row names what did not happen for EVERY
@@ -195,30 +195,13 @@ class TestApplierTerminalSignal:
         )
         assert out.ends_turn is True
 
-    def test_shown_question_card_ends_the_turn_structurally(self, monkeypatch):
-        monkeypatch.setattr(sda, "has_dashboard_surface", lambda _k: True)
-        state = MagicMock()
-        state.post_question_card = AsyncMock(return_value=1)
-        slot = MagicMock()
-        slot.key = "chat-1"
-        out = _apply("ask_question", {"questions": []}, slot=slot, state=state)
-        assert out.ends_turn is True
-        assert out.text.startswith(sda.QUESTION_CARD_SHOWN_PREFIX)
-
-    def test_dropped_question_card_does_not_end_the_turn(self, monkeypatch):
-        """No client saw the card, so the model still owes a plain-text question
-        and the empty-reply handling must stay armed."""
-        monkeypatch.setattr(sda, "has_dashboard_surface", lambda _k: True)
-        state = MagicMock()
-        state.post_question_card = AsyncMock(return_value=0)
-        slot = MagicMock()
-        slot.key = "chat-1"
-        out = _apply("ask_question", {"questions": []}, slot=slot, state=state)
-        assert out.ends_turn is False
-
-    def test_refused_question_card_does_not_end_the_turn(self, monkeypatch):
-        monkeypatch.setattr(sda, "has_dashboard_surface", lambda _k: False)
-        out = _apply("ask_question", {"questions": []}, slot=None, session_key="slack:C1:t1")
+    def test_ask_question_is_not_a_directive_and_never_ends_the_turn(self):
+        """``ask_question`` blocks and returns the answers as its own tool
+        result, so it is not a session directive: the turn that asked continues
+        with them. An ``ask_question`` marker reaching the applier is unknown and
+        cannot end the turn quietly."""
+        assert "ask_question" not in session_directive.DIRECTIVE_TOOLS
+        out = _apply("ask_question", {"questions": []}, slot=MagicMock())
         assert out.ends_turn is False
         assert out.text.startswith("Error:")
 
