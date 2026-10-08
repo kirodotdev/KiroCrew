@@ -13338,7 +13338,8 @@
         "skipped_modes_unknown": "一時またはシークレット",
         "skipped_modes_help": "一時的は空の状態で始まり、何も保存しません。シークレットは既知の情報を使いますが、新しいメモリは保存しません。",
         "skipped_temporary_session_other": "一時セッション",
-        "summarize_now_help": "「今すぐ要約」は会話に含まれる事実・決定・学びをメモリに書き込みます。会話そのものには手を加えません。",
+        "summarize_now_help": "「今すぐ要約」はセッションに含まれる事実・決定・学びをメモリに書き込みます。セッションそのものには手を加えません。",
+        "dismiss_summary_result": "要約結果を閉じる",
         "summarize_now": "今すぐ要約",
         "tool": "ツール",
         "when": "時間"

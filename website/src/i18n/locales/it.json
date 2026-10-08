@@ -13790,7 +13790,8 @@
         "skipped_temporary_session_many": "sessioni temporanee",
         "skipped_temporary_session_one": "sessione temporanea",
         "skipped_temporary_session_other": "sessioni temporanee",
-        "summarize_now_help": "«Riepiloga ora» scrive in memoria i fatti, le decisioni e le lezioni delle tue conversazioni; le conversazioni stesse restano intatte.",
+        "summarize_now_help": "«Riepiloga ora» scrive in memoria i fatti, le decisioni e le lezioni delle tue sessioni; le sessioni stesse restano intatte.",
+        "dismiss_summary_result": "Chiudi il risultato del riepilogo",
         "summarize_now": "Riepiloga ora",
         "tool": "strumento",
         "when": "Quando"

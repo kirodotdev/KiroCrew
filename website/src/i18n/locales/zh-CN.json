@@ -13338,7 +13338,8 @@
         "skipped_modes_unknown": "临时或隐身",
         "skipped_modes_help": "临时模式从空白开始，不保存任何记忆。隐身模式会使用已知信息，但不保存新记忆。",
         "skipped_temporary_session_other": "临时会话",
-        "summarize_now_help": "“立即总结”会将对话中的事实、决定和经验写入记忆；对话本身不会被改动。",
+        "summarize_now_help": "“立即总结”会将会话中的事实、决定和经验写入记忆；会话本身不会被改动。",
+        "dismiss_summary_result": "关闭总结结果",
         "summarize_now": "立即总结",
         "tool": "工具",
         "when": "时间"

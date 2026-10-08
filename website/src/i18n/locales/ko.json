@@ -13338,7 +13338,8 @@
         "skipped_modes_unknown": "임시 또는 시크릿",
         "skipped_modes_help": "임시 모드는 빈 상태로 시작하고 아무것도 저장하지 않습니다. 시크릿 모드는 아는 내용을 사용하지만 새 메모리를 저장하지 않습니다.",
         "skipped_temporary_session_other": "임시 세션",
-        "summarize_now_help": "\"지금 요약\"은 대화의 사실, 결정, 교훈을 메모리에 기록하며 대화 자체는 그대로 둡니다.",
+        "summarize_now_help": "\"지금 요약\"은 세션의 사실, 결정, 교훈을 메모리에 기록하며 세션 자체는 그대로 둡니다.",
+        "dismiss_summary_result": "요약 결과 닫기",
         "summarize_now": "지금 요약",
         "tool": "도구",
         "when": "시점"

@@ -13564,7 +13564,8 @@
         "skipped_modes_help": "Temporär startet ohne Vorwissen und speichert nichts. Inkognito nutzt vorhandenes Wissen, speichert aber nichts Neues.",
         "skipped_temporary_session_one": "temporäre Sitzung",
         "skipped_temporary_session_other": "temporäre Sitzungen",
-        "summarize_now_help": "„Jetzt zusammenfassen“ schreibt die Fakten, Entscheidungen und Lektionen aus deinen Unterhaltungen in die Erinnerung; die Unterhaltungen selbst bleiben unangetastet.",
+        "summarize_now_help": "„Jetzt zusammenfassen“ schreibt die Fakten, Entscheidungen und Lektionen aus deinen Sitzungen in die Erinnerung; die Sitzungen selbst bleiben unangetastet.",
+        "dismiss_summary_result": "Zusammenfassungsergebnis schließen",
         "summarize_now": "Jetzt zusammenfassen",
         "tool": "Werkzeug",
         "when": "Wann"

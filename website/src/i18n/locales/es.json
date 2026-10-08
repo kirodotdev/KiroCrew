@@ -13790,7 +13790,8 @@
         "skipped_temporary_session_many": "sesiones temporales",
         "skipped_temporary_session_one": "sesión temporal",
         "skipped_temporary_session_other": "sesiones temporales",
-        "summarize_now_help": "«Resumir ahora» escribe en la memoria los hechos, decisiones y lecciones de tus conversaciones; las conversaciones en sí quedan intactas.",
+        "summarize_now_help": "«Resumir ahora» escribe en la memoria los hechos, decisiones y lecciones de tus sesiones; las sesiones en sí quedan intactas.",
+        "dismiss_summary_result": "Descartar el resultado del resumen",
         "summarize_now": "Resumir ahora",
         "tool": "herramienta",
         "when": "Cuándo"

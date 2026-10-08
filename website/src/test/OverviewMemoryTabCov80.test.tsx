@@ -672,7 +672,7 @@ describe('MemoryTab — manual consolidation', () => {
     // button's name.
     const help = screen.getByTestId('summarize-now-help')
     expect(help.textContent).toBe(
-      'Summarize now writes the facts, decisions and lessons from your conversations into memory; the conversations themselves stay untouched.',
+      'Summarize now writes the facts, decisions and lessons from your sessions into memory; the sessions themselves stay untouched.',
     )
     expect(help.closest('button')).toBeNull()
   })
@@ -924,6 +924,39 @@ describe('MemoryTab — manual consolidation', () => {
 
     await act(async () => { vi.advanceTimersByTime(4000) })
     expect(screen.queryByText(/Summarized/)).toBeNull()
+  })
+
+  it('keeps a tally with skips, and its opened tip, until it is dismissed', async () => {
+    // Reading the skip tally and its "?" takes most of four seconds; on the
+    // timer the tip unmounted mid-read and only a whole new pass brought it back.
+    vi.useFakeTimers()
+    api.sessions.mockResolvedValue({ sessions: [{ key: 'zzq-s1' }, { key: 'zzq-s2' }, { key: 'zzq-s3' }] })
+    api.consolidateMemory
+      .mockResolvedValueOnce({ ok: true })
+      .mockRejectedValueOnce(restrictedTarget('temporary'))
+      .mockRejectedValueOnce(restrictedTarget('incognito'))
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    await act(async () => {})
+    fireEvent.click(screen.getByRole('button', { name: /Summarize now/i }))
+    await act(async () => {})
+    const msg = screen.getByTestId('consolidate-msg')
+    expect(msg.textContent).toContain('2 private sessions skipped')
+    fireEvent.click(within(msg).getByRole('button', { name: 'More information' }))
+    expect(screen.getByRole('tooltip')).toBeInTheDocument()
+
+    await act(async () => { vi.advanceTimersByTime(10000) })
+    expect(screen.getByTestId('consolidate-msg').textContent).toContain('2 private sessions skipped')
+    expect(screen.getByRole('tooltip')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss summary result' }))
+    expect(screen.queryByTestId('consolidate-msg')).toBeNull()
+  })
+
+  it('gives the all-success tally no dismiss control, since it clears itself', async () => {
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    await userEvent.click(await screen.findByRole('button', { name: /Summarize now/i }))
+    expect((await screen.findByTestId('consolidate-msg')).textContent).toContain('Summarized 2 sessions')
+    expect(screen.queryByRole('button', { name: 'Dismiss summary result' })).toBeNull()
   })
 
   it('keeps a second press\'s tally for its own four seconds', async () => {

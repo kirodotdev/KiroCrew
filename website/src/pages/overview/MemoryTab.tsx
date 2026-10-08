@@ -2,9 +2,9 @@ import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } fro
 import { Trans } from 'react-i18next'
 import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { XCircle, CheckCircle, RefreshCw, Hourglass, Check, BookOpen, SlidersHorizontal } from 'lucide-react'
+import { XCircle, CheckCircle, RefreshCw, Hourglass, Check, BookOpen, SlidersHorizontal, X } from 'lucide-react'
 import { api } from '../../api/client'
-import { Card, CardTitle, Btn, SendBtn, Input, Badge, EmptyState, Skeleton } from '../../components/ui'
+import { Card, CardTitle, Btn, SendBtn, Input, Badge, EmptyState, Skeleton, IconButton } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 import SimpleSelect from '../../components/SimpleSelect'
 import { esc } from '../../api/helpers'
@@ -209,6 +209,9 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange }: { refreshTrigger: nu
   const [consolidating, setConsolidating] = useState(false)
   const [consolidateMsg, setConsolidateMsg] = useState<ReactNode>('')
   const [consolidateOk, setConsolidateOk] = useState(false)
+  // A tally with skips (and no failure) is not on the clear timer, so it gets
+  // its own dismiss control; this says whether the shown tally is that one.
+  const [consolidateStanding, setConsolidateStanding] = useState(false)
   // A failed press, apart from the status message: it reports rejected
   // requests, so it renders through ErrorNotice like every other failure.
   // `session` is the first failed request's session key, `count` how many failed.
@@ -306,7 +309,7 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange }: { refreshTrigger: nu
       timeoutsRef.current = timeoutsRef.current.filter(t => t !== consolidateClearRef.current)
       consolidateClearRef.current = null
     }
-    setConsolidating(true); setConsolidateMsg(''); setConsolidateOk(false); setConsolidateFailure(null)
+    setConsolidating(true); setConsolidateMsg(''); setConsolidateOk(false); setConsolidateFailure(null); setConsolidateStanding(false)
     // The list is the press's first request. A gateway that is down or answers
     // 500 is a FAILURE of the press, not an empty list: it renders through the
     // same notice as a failed per-session request, with the server's reply as
@@ -416,7 +419,12 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange }: { refreshTrigger: nu
       setConsolidateMsg(<><CheckCircle className="lucide-inline" /> {i18nT('pages.overview.memoryTab.consolidated')} {i18nT('pages.overview.memoryTab.session', { count: succeeded })}</>); setConsolidateOk(true)
     }
     setConsolidating(false)
-    if (failed === 0) consolidateClearRef.current = scheduleClear(() => { consolidateClearRef.current = null; setConsolidateMsg('') }, 4000)
+    // Only the plain all-success tally clears itself. A tally with skips is a
+    // ~12-word line plus a "?" tip the reader opens, which four seconds does not
+    // cover, so it stands until the next press or its own dismiss control; a
+    // failure stands until the notice is dismissed.
+    setConsolidateStanding(failed === 0 && skipped > 0)
+    if (failed === 0 && skipped === 0) consolidateClearRef.current = scheduleClear(() => { consolidateClearRef.current = null; setConsolidateMsg('') }, 4000)
   }
   const addLesson = async () => {
     if (!rule) return
@@ -527,6 +535,15 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange }: { refreshTrigger: nu
           />
         )}
         {consolidateMsg && <span className={`text-[13px] ${consolidateOk ? 'text-ok' : 'text-danger'}`} data-testid="consolidate-msg">{consolidateMsg}</span>}
+        {consolidateMsg && consolidateStanding && (
+          <IconButton
+            aria-label={i18nT('pages.overview.memoryTab.dismiss_summary_result')}
+            title={i18nT('pages.overview.memoryTab.dismiss_summary_result')}
+            onClick={() => { setConsolidateMsg(''); setConsolidateStanding(false) }}
+          >
+            <X size={13} aria-hidden="true" />
+          </IconButton>
+        )}
 
         {migrated && <span className="text-[12px] text-muted ml-2">{i18nT('pages.overview.memoryTab.semantic_memory_active_text_files_are_read_only')}</span>}
       </div>

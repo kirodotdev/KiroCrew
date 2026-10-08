@@ -6165,7 +6165,8 @@
         "skipped_modes_help": "Temporary starts blank and saves no new memory. Incognito uses what it knows but saves no new memory.",
         "skipped_temporary_session_one": "temporary session",
         "skipped_temporary_session_other": "temporary sessions",
-        "summarize_now_help": "Summarize now writes the facts, decisions and lessons from your conversations into memory; the conversations themselves stay untouched."
+        "summarize_now_help": "Summarize now writes the facts, decisions and lessons from your sessions into memory; the sessions themselves stay untouched.",
+        "dismiss_summary_result": "Dismiss summary result"
       },
       "promptsTab": {
         "failed_to_load_prompts": "Failed to load prompts",
