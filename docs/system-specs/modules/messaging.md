@@ -3958,6 +3958,11 @@ session key. The label remains button text rather than callback data, keeping CJ
 emoji labels out of Telegram's 64-byte payload budget; at the 25-button ceiling the
 largest payload is 19 ASCII bytes.
 
+Rows hold two buttons while every label fits `_HALF_WIDTH_LABEL_CELLS` (16) display
+cells, measured by `messaging.tables.display_width` so a CJK ideograph counts as two;
+once any label is wider, every button gets its own row, keeping the keyboard a uniform
+width. The 25-button ceiling, not this rule, bounds the keyboard's height.
+
 The callback retires the keyboard, rejects an untagged legacy button, and re-dispatches
 the recovered label with command interpretation disabled. The dispatcher compares the
 tag before reading busy state, refuses every tagged press while that session is busy,
