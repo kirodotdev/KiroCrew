@@ -3114,8 +3114,14 @@ function stuckHolderHarness({
   owner = OWN_GATEWAY_COMMAND, healthy = false, lockPid = 4242, holdsLock = true,
   response = 0, ppid = 500, stopFails = false, rebinds = false, swapAfterDialog = false,
   replacedBy = 0, pidAfterDialog = 0, lockRealPath = "", exitsDuringDialog = false,
-  refusedForPid = 0, platform = "linux",
+  refusedForPid = 0, platform = "linux", env = { KIROCREW_PORT: "9999" },
+  bundledBin = false,
 } = {}) {
+  // The one bundled launcher candidate findKirocrewBin probes first for this
+  // harness's arch (arm64) + resourcesPath. When bundledBin is set, accessSync
+  // answers X_OK for it, so resolveGatewayBin returns the bundled binary and
+  // both the stop and the follow-on spawn run it (the real stuck-restart flow).
+  const BUNDLED_STUCK_BIN = "/virtual/resources/backend-dist/kirocrew-backend-arm64/bin/kirocrew";
   const execCalls = [];
   const dialogs = [];
   const state = { listening: true, quits: 0 };
@@ -3140,7 +3146,7 @@ function stuckHolderHarness({
     : rejectingHttp();
   const instance = harness({
     processRef: {
-      platform, arch: "arm64", env: { KIROCREW_PORT: "9999" }, resourcesPath: "/virtual/resources",
+      platform, arch: "arm64", env, resourcesPath: "/virtual/resources",
       kill(_pid, signal) {
         if (signal === 0) { const error = new Error("gone"); error.code = "ESRCH"; throw error; }
         throw new Error("the supervisor must never signal the stuck gateway itself");
@@ -3149,7 +3155,10 @@ function stuckHolderHarness({
     fsMod: {
       constants: { X_OK: 1 },
       mkdirSync() {},
-      accessSync() { const error = new Error("not found"); error.code = "ENOENT"; throw error; },
+      accessSync(target) {
+        if (bundledBin && target === BUNDLED_STUCK_BIN) return;
+        const error = new Error("not found"); error.code = "ENOENT"; throw error;
+      },
       existsSync() { return false; },
       openSync() { return 41; },
       closeSync() {},
@@ -3258,6 +3267,37 @@ test("a stuck gateway for this data folder is stopped through the CLI, then the 
   assert.equal(stops[0].options.env.KIROCREW_PORT, undefined);
   assert.equal(built.spawnCalls.length, 1, "the bundled backend starts after the stop");
   assert.deepEqual(built.spawnCalls[0][1].slice(0, 4), ["gateway", "--no-open", "--port", "5476"]);
+});
+
+test("the stuck-gateway stop strips PYTHONPATH/PYTHONHOME from the bundled binary's env", async () => {
+  // runGatewayStop execFile's the SAME bundled binary the launch path spawns, so
+  // it must inherit the same scrubbed environment. A bundled Python left with an
+  // inherited PYTHONPATH/PYTHONHOME from a dev shell would import checkout code
+  // instead of its packaged tree -- the override isolation this PR exists to
+  // enforce, applied only to the launch path, left a hole on the stop path.
+  const built = stuckHolderHarness({
+    bundledBin: true,
+    env: {
+      KIROCREW_PORT: "9999",
+      PYTHONPATH: "/home/dev/checkout/src",
+      PYTHONHOME: "/home/dev/other-python",
+      PATH: "/usr/bin",
+    },
+  });
+  assert.equal(await built.supervisor.start(), true);
+  const stops = built.stopCalls();
+  assert.equal(stops.length, 1, "the lock-checked CLI stop ran once");
+  // The binary it stops is the bundled one (under backend-dist), so the scrub
+  // applies -- the same bin the follow-on spawn uses.
+  assert.ok(stops[0].file.includes("backend-dist"), "the stop runs the bundled binary");
+  const stopEnv = stops[0].options.env;
+  assert.equal(stopEnv.PYTHONPATH, undefined, "PYTHONPATH must be stripped for the bundled stop");
+  assert.equal(stopEnv.PYTHONHOME, undefined, "PYTHONHOME must be stripped for the bundled stop");
+  // The scrub is narrow: KIROCREW_HOME is still set, KIROCREW_PORT still dropped,
+  // and an unrelated inherited var (PATH) is preserved.
+  assert.equal(stopEnv.KIROCREW_HOME, "/virtual/kirocrew-home");
+  assert.equal(stopEnv.KIROCREW_PORT, undefined);
+  assert.equal(stopEnv.PATH, "/usr/bin", "an unrelated inherited var is preserved");
 });
 
 test("declining the stuck-gateway restart quits without stopping or spawning", async () => {

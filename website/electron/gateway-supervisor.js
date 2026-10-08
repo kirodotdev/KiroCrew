@@ -866,11 +866,19 @@ function createGatewaySupervisor({
   // only: its one caller is behind sameHomeGatewayPid.
   function runGatewayStop(pid) {
     const { KIROCREW_PORT: _ignored, ...cleanEnv } = processObj.env;
+    // The stop runs the same bundled binary the launch path spawns, so it must
+    // inherit the same scrubbed environment: a bundled Python left with an
+    // inherited PYTHONPATH/PYTHONHOME from a dev shell would import checkout
+    // code instead of its packaged tree. Route it through the one helper that
+    // strips those for a bundled binary (gateway-env.js), detecting bundled the
+    // same way the spawn does (resolveGatewayBin lands under backend-dist).
+    const bin = resolveGatewayBin();
+    const bundled = bin.includes("backend-dist");
     return new Promise((resolve) => {
-      execFile(resolveGatewayBin(), ["stop", "--port", String(PORT), "--expect-pid", String(pid)], {
+      execFile(bin, ["stop", "--port", String(PORT), "--expect-pid", String(pid)], {
         timeout: STUCK_GATEWAY_STOP_TIMEOUT_MS,
         windowsHide: true,
-        env: { ...cleanEnv, KIROCREW_HOME },
+        env: buildGatewayEnvironment({ ...cleanEnv, KIROCREW_HOME }, { bundled, platform: processObj.platform }),
       }, (error, stdout, stderr) => {
         const output = `${stdout || ""}${stderr || ""}`.trim();
         if (error) glog(`stuck gateway: \`kirocrew stop --port ${PORT}\` failed: ${error.message}${output ? ` — ${output.slice(0, 200)}` : ""}`);
