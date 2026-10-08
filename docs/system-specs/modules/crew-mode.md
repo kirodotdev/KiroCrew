@@ -107,12 +107,12 @@ for assistive technology either way. Callers that do not opt in, and any name-on
 roster, render flat as before. Unless the config key
 `dashboard.crewmates_in_agent_picker` is on (off by default, read from the shared
 `/api/config/kirocrew` query), `useAgents.ts` withholds from `choices` every member
-row a listed template already COVERS (`withoutCoveredCrewmates`): a template of the
-same name is listed, or the member has no memory of its own (`memory_store` is
-`default`) and runs a listed template, which is the identical binding (the built-in
-`default` crew is this case). A crewmate no template covers stays pickable: one made
-by hand with its own memory, and one running its own private copy, which the catalog
-never lists as a template. Withholding those left the agent unreachable from any
+row a listed template already COVERS (`withoutCoveredCrewmates`): the member has no
+memory of its own (`memory_store` is `default`) and runs a listed template, which is
+the identical binding (the built-in `default` crew is this case). A shared name alone
+does not cover: a template pick binds the shared `default` store, so a member with
+its own memory stays pickable even beside a template of its name, as does one
+running its own private copy, which the catalog never lists as a template. Withholding those left the agent unreachable from any
 chat, since neither group offered it. Turning the key on lists every member and
 restores the two groups; the folded `agents` list and the request contract below
 are unaffected either way.

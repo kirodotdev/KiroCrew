@@ -134,25 +134,24 @@ export function useAgents(refreshTrigger: number, sessionKey?: string, projectDi
 
 /**
  * The pop-up's rows while `dashboard.crewmates_in_agent_picker` is off (the
- * default). A crewmate is withheld
- * only when a listed template already reaches the same thing:
+ * default). A crewmate is withheld only when a listed template already reaches
+ * the same thing: it has no memory of its own (`memory_store === 'default'`) and
+ * runs a listed template, so picking that template is the identical binding (the
+ * built-in `default` crew is this case).
  *
- * - a template of the SAME name is listed, or
- * - the crewmate has no memory of its own (`memory_store === 'default'`) and runs
- *   a listed template -- picking that template is the identical binding (the
- *   built-in `default` crew is this case).
- *
- * Every other crewmate stays: one made by hand under its own name with its own
- * memory, and one whose agent is its own private copy (the catalog never lists a
- * private copy as a template). Withholding those left no way to pick them from a
- * chat at all.
+ * A shared name is not enough. A template pick binds the shared `default` store,
+ * so a crewmate with its own memory is a different binding even when a template
+ * of its name is listed; withholding it left the template as the only row and
+ * seated every pick on the shared memory. Every crewmate with its own memory
+ * stays, as does one whose agent is its own private copy (the catalog never
+ * lists a private copy as a template).
  */
 export function withoutCoveredCrewmates(choices: KiroCrewAgent[]): KiroCrewAgent[] {
   const templates = new Set(
     choices.filter(c => c.selection_kind === 'template').map(c => c.name),
   )
   const covered = (c: KiroCrewAgent) =>
-    templates.has(c.name) || (c.memory_store === 'default' && templates.has(c.kiro_agent))
+    c.memory_store === 'default' && templates.has(c.kiro_agent)
   return choices.filter(c => c.selection_kind !== 'member' || !covered(c))
 }
 

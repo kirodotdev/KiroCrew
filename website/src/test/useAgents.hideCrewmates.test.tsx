@@ -35,6 +35,7 @@ const catalog = [
 ]
 
 const COVERED_HIDDEN = [
+  ['member', 'reviewer'],
   ['template', 'reviewer'],
   ['template', 'atlas'],
   ['template', 'kirocrew'],
@@ -60,7 +61,7 @@ describe('useAgents keeps covered crewmates out of the picker unless the config 
     configApi.mockResolvedValue(cfg as never)
     const { result } = renderHookWithProviders(() => useAgents(0))
     await waitFor(() => expect(configApi).toHaveBeenCalled())
-    await waitFor(() => expect(result.current.choices).toHaveLength(5))
+    await waitFor(() => expect(result.current.choices).toHaveLength(6))
 
     expect(result.current.choices.map(c => [c.selection_kind, c.name])).toEqual(COVERED_HIDDEN)
   })
@@ -83,13 +84,27 @@ describe('useAgents keeps covered crewmates out of the picker unless the config 
     )
   })
 
-  it('withholds a same-name crewmate and an identity-less one on a listed template', () => {
+  it('withholds an identity-less crewmate on a listed template', () => {
     const rows = withoutCoveredCrewmates(catalog as never)
     const members = rows.filter(r => r.selection_kind === 'member').map(r => r.name)
-    // `reviewer` shares its name with a template; `default` has no memory of its
-    // own and runs the listed `kirocrew` template -- both are the same binding.
-    expect(members).not.toContain('reviewer')
+    // `default` has no memory of its own and runs the listed `kirocrew`
+    // template -- picking that template is the same binding.
     expect(members).not.toContain('default')
+  })
+
+  it('keeps a same-name crewmate that has its own memory', () => {
+    // A template pick binds the shared `default` store, so the `reviewer`
+    // template does not reach the `reviewer` crewmate's own memory.
+    const rows = withoutCoveredCrewmates(catalog as never)
+    expect(rows.filter(r => r.name === 'reviewer').map(r => r.selection_kind)).toEqual(['member', 'template'])
+  })
+
+  it('withholds a same-name crewmate with no memory of its own', () => {
+    const rows = withoutCoveredCrewmates([
+      { name: 'shared', kiro_agent: 'shared', memory_store: 'default', selection_kind: 'member' },
+      { name: 'shared', kiro_agent: 'shared', memory_store: 'default', selection_kind: 'template' },
+    ] as never)
+    expect(rows.map(r => r.selection_kind)).toEqual(['template'])
   })
 
   it('keeps a crewmate whose own-memory binding is not a template pick', () => {
