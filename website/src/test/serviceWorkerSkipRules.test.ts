@@ -241,6 +241,17 @@ describe('hashed-asset 5xx retry', () => {
     expect((await r.result).status).toBe(200)
     expect(r.attempts()).toBe(2)
   })
+
+  it('retries /pcm-worklet.js, the boot-critical dictation module', async () => {
+    // addModule('/pcm-worklet.js') is called once with no retry, and a voice
+    // session cannot start without it. This proves the worker now retries a
+    // transient 5xx on that path to a 200 — the same recovery /assets/ and
+    // /vendor/ get. (It proves the retry, not that any particular toast was
+    // caused by a 5xx here.)
+    const r = assetRequest([503, 200], '/pcm-worklet.js')
+    expect((await r.result).status).toBe(200)
+    expect(r.attempts()).toBe(2)
+  })
 })
 
 // A sign-in link (`/?token=...`, from `kirocrew token`) is honoured only by the
