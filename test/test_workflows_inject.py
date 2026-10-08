@@ -177,6 +177,8 @@ def test_inject_routes_to_originating_slot_and_broadcasts_live() -> None:
     # mid-less and render as a duplicate bubble.
     assert len(origin.delivered) == 1
     assert origin.delivered[0]["meta"]["mid"] == origin.messages[0]["meta"]["mid"]
+    # The route kind rides meta, which both delivery doors carry.
+    assert origin.delivered[0]["meta"]["kind"] == "workflow_result"
     assert [p for k, p in state.broadcasts if k == "chat_message"] == []
 
 

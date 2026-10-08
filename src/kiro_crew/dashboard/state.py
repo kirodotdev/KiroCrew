@@ -1177,6 +1177,103 @@ def is_quiet_end_row(m: dict) -> bool:
     )
 
 
+def chat_message_note(slot_key: str, msg: dict, *, workspace: str | None) -> dict[str, Any]:
+    """Build the ``chat_message`` broadcast note for an appended row.
+
+    The ONE builder shared by the append door (``_broadcast_chat_message``) and
+    the reader-suppressed frame in ``append_and_surface``, so a row leaves the
+    backend in one form whichever door delivers it. *workspace* scopes the
+    allowed-link hosts, as in ``_prepare_messages``.
+    """
+    role = msg.get("role", "")
+    content = msg.get("content", "")
+    # This site and _prepare_messages (the HTTP history path) share ONE
+    # helper — chat_utils.redact_display_content — so a row's *content*
+    # leaves the backend in one byte form regardless of which consumer
+    # receives it, including structured (list/dict) legacy content, which
+    # is redacted recursively rather than skipped. Scope: content only —
+    # `cls` / `meta` and the live `chat_chunk` stream are deliberately not
+    # covered (see the direct_meta comment below). Gate is `!= "user"` for
+    # the same reason as there: every non-user role can carry model/tool
+    # output, and user-authored content stays raw (the user typed it and
+    # is the only one who sees it back).
+    # Deferred import: chat_utils imports from this module at module
+    # level, so the reverse import must stay function-level.
+    from kiro_crew.dashboard.chat_utils import (
+        redact_display_content,
+        serialize_wire_content,
+        with_allowed_links_restored,
+    )
+
+    restored_meta: dict | None = None
+    if role != "user" and content:
+        # The same allowed-host scope as _prepare_messages, so the live
+        # frame and the history agree on an allowed link: its placeholder
+        # becomes the address again, then the display pass runs.
+        from kiro_crew.security.exfil import scoped_exempt_hosts
+        from kiro_crew.security.redaction_allow import allowed_hosts_for
+
+        with scoped_exempt_hosts(allowed_hosts_for(workspace)):
+            if isinstance(content, str) and isinstance(msg.get("meta"), dict):
+                shown = with_allowed_links_restored({"content": content, "meta": msg["meta"]})
+                content = shown["content"]
+                restored_meta = shown["meta"]
+            content = redact_display_content(content)
+    else:
+        # The wire-string invariant covers EVERY row: a structured user
+        # row or a falsy container serializes to text without redaction.
+        content = serialize_wire_content(content)
+    payload: dict[str, Any] = {
+        "_type": "chat_message",
+        "slot": slot_key,
+        "role": role,
+        "content": content,
+        "ts": msg.get("ts", ""),
+    }
+    # Include cls for backward compatibility
+    cls_val = msg.get("cls", "")
+    if cls_val:
+        payload["cls"] = cls_val
+        # Parse cls as JSON to send structured meta field for new frontend
+        meta = parse_cls_meta(cls_val)
+        if meta is not None:
+            payload["meta"] = meta
+    # Also include direct meta (e.g. tool_call_id on tool messages).
+    #
+    # Deliberately NOT redacted here, unlike the `cls` branch above (which is
+    # sanitised by parse_cls_meta). Two reasons, both load-bearing:
+    #
+    # 1. This is the LIVE oauth banner's egress path. _emit_mcp_oauth_request
+    #    appends the banner with a real `oauth_url`, already gated by
+    #    security.oauth_url_contains_credential — the shared security gate, which
+    #    exempts standard high-entropy OAuth values only at exact code-owned
+    #    authorization endpoints while scanning everything else fail-closed.
+    #    Running _redact_meta_for_role here would blank a genuine
+    #    Google/GitHub consent URL and break the user's ability to authorize
+    #    an MCP server.
+    # 2. chat_utils imports from this module, so importing the redactors the
+    #    other way would be a cycle.
+    #
+    # What makes that safe: live tool meta is redacted at source (_tool_meta),
+    # and a DISK-LOADED message reaches this path only when the caller opts
+    # in per-role. Both restore loops pass broadcast=False, and the ONE
+    # exception is refresh_channel_window, which replays a channel
+    # transcript's tail and passes broadcast_user=True so a message typed in
+    # Slack renders at all (nothing rendered it optimistically here). That
+    # exception cannot carry unredacted meta: ConversationLog.append writes
+    # only role/content/ts/source_thread/source_user for such a row -- no
+    # meta dict -- so the arm below never fires for it, and the row's
+    # content is human-typed, which is deliberately raw at every other
+    # boundary too. The invariant is pinned by
+    # test_rehydrate_does_not_broadcast_replayed_messages and
+    # test_restore_recent_sessions_does_not_broadcast_either. Do not relax
+    # it further without re-checking that meta is still absent.
+    direct_meta = restored_meta if restored_meta is not None else msg.get("meta")
+    if direct_meta and isinstance(direct_meta, dict):
+        payload["meta"] = {**(payload.get("meta") or {}), **direct_meta}
+    return payload
+
+
 def is_stop_event_row(m: dict) -> bool:
     """True when *m* is the card recorded because the user pressed Stop.
 
@@ -1603,7 +1700,6 @@ def append_and_surface(
     *,
     meta: dict | None = None,
     broadcast_user: bool = False,
-    extra: dict | None = None,
 ) -> dict[str, Any]:
     """Append a row and surface it live -- through exactly one identity-carrying door.
 
@@ -1632,9 +1728,12 @@ def append_and_surface(
     ``broadcast_user=True`` and get the same single identity-carrying delivery.
 
     Redaction is the caller's job (unchanged from the sites this replaces):
-    content passed here must already be display-safe. The append path re-redacts
-    non-user content in ``_broadcast_chat_message``; the reader-suppressed frame
-    below does not, matching the manual frames it replaces.
+    content passed here must already be display-safe. Both doors also run the
+    same display pass on non-user content: the reader-suppressed frame below is
+    built by ``chat_message_note`` + ``chat_message_frame``, the same builders
+    the append door's WebSocket arm uses, so the frame is identical whether or
+    not a stream reader is attached. A route kind belongs in ``meta``, which
+    both doors carry.
 
     Returns the appended row (so callers can read ``row_mid`` off it).
     """
@@ -1643,20 +1742,11 @@ def append_and_surface(
     else:
         msg = slot.append(role, content, cls, meta=meta)
     if getattr(slot, "_has_reader", False):
-        frame: dict[str, Any] = {
-            "slot": slot.key,
-            "role": role,
-            "content": content,
-            "ts": msg.get("ts", ""),
-        }
-        if cls:
-            frame["cls"] = cls
-        row_meta = msg.get("meta")
-        if isinstance(row_meta, dict) and row_meta:
-            frame["meta"] = row_meta
-        if extra:
-            frame.update(extra)
-        state.broadcast_ws("chat_message", frame)
+        workspace = getattr(slot, "workspace", None)
+        note = chat_message_note(
+            slot.key, msg, workspace=workspace if isinstance(workspace, str) else None
+        )
+        state.broadcast_ws("chat_message", chat_message_frame(note, include_metadata=True))
     return msg
 
 
@@ -7995,94 +8085,10 @@ class DashboardState:
 
     def _broadcast_chat_message(self, slot_key: str, msg: dict) -> None:
         """Push a chat message to all SSE clients via the global stream."""
-        role = msg.get("role", "")
-        content = msg.get("content", "")
-        # This site and _prepare_messages (the HTTP history path) share ONE
-        # helper — chat_utils.redact_display_content — so a row's *content*
-        # leaves the backend in one byte form regardless of which consumer
-        # receives it, including structured (list/dict) legacy content, which
-        # is redacted recursively rather than skipped. Scope: content only —
-        # `cls` / `meta` and the live `chat_chunk` stream are deliberately not
-        # covered (see the direct_meta comment below). Gate is `!= "user"` for
-        # the same reason as there: every non-user role can carry model/tool
-        # output, and user-authored content stays raw (the user typed it and
-        # is the only one who sees it back).
-        # Deferred import: chat_utils imports from this module at module
-        # level, so the reverse import must stay function-level.
-        from kiro_crew.dashboard.chat_utils import (
-            redact_display_content,
-            serialize_wire_content,
-            with_allowed_links_restored,
-        )
-
-        restored_meta: dict | None = None
-        if role != "user" and content:
-            # The same allowed-host scope as _prepare_messages, so the live
-            # frame and the history agree on an allowed link: its placeholder
-            # becomes the address again, then the display pass runs.
-            from kiro_crew.security.exfil import scoped_exempt_hosts
-            from kiro_crew.security.redaction_allow import allowed_hosts_for
-
-            _slot = self.get_slot(slot_key)
-            with scoped_exempt_hosts(allowed_hosts_for(getattr(_slot, "workspace", None))):
-                if isinstance(content, str) and isinstance(msg.get("meta"), dict):
-                    shown = with_allowed_links_restored({"content": content, "meta": msg["meta"]})
-                    content = shown["content"]
-                    restored_meta = shown["meta"]
-                content = redact_display_content(content)
-        else:
-            # The wire-string invariant covers EVERY row: a structured user
-            # row or a falsy container serializes to text without redaction.
-            content = serialize_wire_content(content)
-        payload: dict[str, Any] = {
-            "_type": "chat_message",
-            "slot": slot_key,
-            "role": role,
-            "content": content,
-            "ts": msg.get("ts", ""),
-        }
-        # Include cls for backward compatibility
-        cls_val = msg.get("cls", "")
-        if cls_val:
-            payload["cls"] = cls_val
-            # Parse cls as JSON to send structured meta field for new frontend
-            meta = parse_cls_meta(cls_val)
-            if meta is not None:
-                payload["meta"] = meta
-        # Also include direct meta (e.g. tool_call_id on tool messages).
-        #
-        # Deliberately NOT redacted here, unlike the `cls` branch above (which is
-        # sanitised by parse_cls_meta). Two reasons, both load-bearing:
-        #
-        # 1. This is the LIVE oauth banner's egress path. _emit_mcp_oauth_request
-        #    appends the banner with a real `oauth_url`, already gated by
-        #    security.oauth_url_contains_credential — the shared security gate, which
-        #    exempts standard high-entropy OAuth values only at exact code-owned
-        #    authorization endpoints while scanning everything else fail-closed.
-        #    Running _redact_meta_for_role here would blank a genuine
-        #    Google/GitHub consent URL and break the user's ability to authorize
-        #    an MCP server.
-        # 2. chat_utils imports from this module, so importing the redactors the
-        #    other way would be a cycle.
-        #
-        # What makes that safe: live tool meta is redacted at source (_tool_meta),
-        # and a DISK-LOADED message reaches this path only when the caller opts
-        # in per-role. Both restore loops pass broadcast=False, and the ONE
-        # exception is refresh_channel_window, which replays a channel
-        # transcript's tail and passes broadcast_user=True so a message typed in
-        # Slack renders at all (nothing rendered it optimistically here). That
-        # exception cannot carry unredacted meta: ConversationLog.append writes
-        # only role/content/ts/source_thread/source_user for such a row -- no
-        # meta dict -- so the arm below never fires for it, and the row's
-        # content is human-typed, which is deliberately raw at every other
-        # boundary too. The invariant is pinned by
-        # test_rehydrate_does_not_broadcast_replayed_messages and
-        # test_restore_recent_sessions_does_not_broadcast_either. Do not relax
-        # it further without re-checking that meta is still absent.
-        direct_meta = restored_meta if restored_meta is not None else msg.get("meta")
-        if direct_meta and isinstance(direct_meta, dict):
-            payload["meta"] = {**(payload.get("meta") or {}), **direct_meta}
-        self._broadcast(payload)
+        workspace = None
+        if msg.get("role", "") != "user" and msg.get("content", ""):
+            workspace = getattr(self.get_slot(slot_key), "workspace", None)
+        self._broadcast(chat_message_note(slot_key, msg, workspace=workspace))
 
     def _record_member_row(self, slot_key: str, msg: dict) -> None:
         """Append one ``member/message`` for a row landing in a member DM slot.

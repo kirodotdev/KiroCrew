@@ -207,7 +207,7 @@ def inject_workflow_result(
                     "assistant",
                     msg,
                     "msg msg-a",
-                    extra={"kind": "workflow_result"},
+                    meta={"kind": "workflow_result"},
                 )
             )
             # Persist so a follow-up chat turn has the result as context.

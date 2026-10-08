@@ -651,9 +651,7 @@ def _append_compaction_notice(state: DashboardState, slot: _ChatSlot, msg_text: 
     msg_text, _ = redact_credentials(msg_text)
     msg_text, _ = redact_exfiltration_urls(msg_text)
     meta = {"kind": "compaction"}
-    append_and_surface(
-        state, slot, "assistant", msg_text, "msg msg-a", meta=meta, extra={"kind": "compaction"}
-    )
+    append_and_surface(state, slot, "assistant", msg_text, "msg msg-a", meta=meta)
 
 
 def _broadcast_compaction_result(
