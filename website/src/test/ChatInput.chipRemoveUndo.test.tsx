@@ -65,4 +65,58 @@ describe('ChatInput chip remove undo boundary', () => {
     undo()
     expect(input().value).toBe('hi')
   })
+
+  // #14675 (GPT 6.1 review): after switching between two slots whose drafts are
+  // BYTE-IDENTICAL, the value prop never changes, so the undo effect does not
+  // re-run to clear its "settling" flag — the flag stays set. The next edit was
+  // the atomic mention delete, whose onChange was not marked as a user edit, so
+  // the settling branch reseeded history at the post-delete value and Ctrl+Z
+  // had nothing to restore. keyboard.ts now sets valueFromUserRef before that
+  // onChange, so the atomic delete records a real undo entry.
+  it('an atomic mention delete after a same-draft slot switch is undoable (#14675, GPT 6.1 review)', () => {
+    // A minimal atomic onMentionKey: a Backspace just past `@a.ts` removes the
+    // whole mention (and the trailing space), exactly what the real handler does.
+    const onMentionKey = (text: string, selStart: number, _selEnd: number, key: string) => {
+      const at = text.indexOf('@a.ts')
+      if (key !== 'Backspace' || at < 0) return null
+      const end = at + '@a.ts'.length
+      if (selStart < end || selStart > end + 1) return null
+      let e = end
+      if (text[e] === ' ') e++
+      return { value: text.slice(0, at) + text.slice(e), caret: at }
+    }
+    function SwitchHarness() {
+      const [value, setValue] = useState('see @a.ts here')
+      const [afk, setAfk] = useState('slot-a')
+      return (
+        <>
+          <button onClick={() => setAfk('slot-b')}>switch</button>
+          <ChatInput
+            value={value}
+            onChange={setValue}
+            onSend={vi.fn()}
+            autoFocusKey={afk}
+            onMentionKey={onMentionKey}
+          />
+        </>
+      )
+    }
+    renderWithProviders(<SwitchHarness />)
+    advance(1000)
+    // Switch slots: the new slot's draft is byte-identical, so `value` does not
+    // change and the undo effect leaves its settling flag set.
+    act(() => { fireEvent.click(screen.getByText('switch')) })
+    advance(100)
+    // Atomic mention delete: caret just past `@a.ts`, Backspace removes it whole.
+    const ta = input()
+    const caret = 'see @a.ts'.length
+    ta.setSelectionRange(caret, caret)
+    act(() => { fireEvent.keyDown(ta, { key: 'Backspace' }) })
+    advance(100)
+    expect(ta.value).toBe('see here')
+
+    // The removal must be undoable — it was recorded as a real user edit.
+    undo()
+    expect(input().value).toBe('see @a.ts here')
+  })
 })

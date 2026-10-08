@@ -14,6 +14,16 @@ import type { PromptHistoryItem } from '../composerPromptHistory'
 /** Busy-composer send affordance — see `ChatInputProps.busyMode`. */
 export type ComposerBusyMode = 'split' | 'steer-only'
 
+/** The modifier state a Backspace/Delete keydown carries into `onMentionKey`,
+ *  so the host can tell a plain or Shift-held delete (treated alike) from a
+ *  word-delete chord (Ctrl/Alt), the way the paste-token atom does. */
+export interface MentionKeyMods {
+  meta: boolean
+  ctrl: boolean
+  alt: boolean
+  shift: boolean
+}
+
 export interface ChatInputProps {
   /** The editor text. Omit it under a `<Composer draft>` root, which hands the
    *  text over through its store so the host does not re-render per keystroke. */
@@ -293,11 +303,19 @@ export interface ChatInputProps {
   clampDropOffset?: (text: string, at: number) => number
   /** Backspace/Delete on or next to a STAGED file mention: the host returns
    *  the atomic-delete result (new text + caret) that removes the whole
-   *  `@mention` as one unit, or null to let the key do its default
-   *  one-character edit. Keeps an edited mention from leaving a half-reference
-   *  whose chip then silently unstages (#14675). Absent: mentions delete one
-   *  character at a time, as before. */
-  onMentionKey?: (text: string, selStart: number, selEnd: number, key: string, mods: boolean) => { value: string; caret: number } | null
+   *  `@mention` as one unit, or null to let the key do its default edit.
+   *  Keeps an edited mention from leaving a half-reference whose chip then
+   *  silently unstages (#14675). Covers a collapsed Backspace/Delete, a
+   *  Shift-held one, a word-delete chord (Ctrl/Alt, including across the
+   *  whitespace next to the mention), and a selection that overlaps a mention.
+   *  Absent: mentions delete one character at a time, as before.
+   *  KEYBOARD BACKSPACE/DELETE ONLY: it runs on the keydown, so a mention
+   *  erased through the value-change seam — cut, typing over a selection, or
+   *  pasting over one — is NOT caught here (tracked in the #14675 follow-up).
+   *  TEXTAREA ONLY: the plain-textarea composer passes the key here; the
+   *  Lexical composer (`inlineMarkdown` on) edits a node model and does not
+   *  call this (also tracked in the #14675 follow-up). */
+  onMentionKey?: (text: string, selStart: number, selEnd: number, key: string, mods: MentionKeyMods) => { value: string; caret: number } | null
   onFileOpen?: (path: string) => void
   project?: string
   /** Checked-out branch of the active project (or short SHA when detached). */

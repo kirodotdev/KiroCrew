@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { ReactNode } from 'react'
-import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, act, waitFor, createEvent } from '@testing-library/react'
 import type { RootState } from '../store'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -62,6 +62,7 @@ vi.mock('../pages/chat/SidePanel', () => ({
     <>
       <div><button onClick={() => onAddToContext?.('/repo/report', 'file')}>Add to chat: report</button></div>
       <div><button onClick={() => onAddToContext?.('/repo/report,', 'file')}>Add to chat: report,</button></div>
+      <div><button onClick={() => onAddToContext?.('/repo/report final.pdf', 'file')}>Add to chat: report final.pdf</button></div>
       <div><button onClick={() => onAddToContext?.('/repo/src/main.ts', 'file')}>Add to chat: main.ts</button></div>
     </>
   ),
@@ -377,6 +378,39 @@ describe('ChatPage file chip remove + undo', { timeout: 15_000 }, () => {
     expect(llm).not.toMatch(/\[attached_file \d\]/)
   })
 
+  // #14675 (GPT 6.1 review): when one staged alias is a space-boundary prefix
+  // of another (`report` vs `report final.pdf`), the atomic delete must match
+  // the WHOLE mention at the caret, not let the shorter alias `report` match
+  // inside `@report final.pdf` (where the space after `report` is a valid
+  // mention boundary). Deleting inside the longer mention must remove it
+  // whole, not leave `final.pdf` behind and drop the longer file's chip.
+  // FAILS without the longest-first sort: the short `report` wins the scan.
+  it('atomic delete picks the whole mention, not a shorter space-boundary prefix sibling (#14675, GPT 6.1 review)', async () => {
+    const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
+    await renderPage(store)
+    act(() => { store.dispatch(openActivityPanel()) })
+    fireEvent.click(await screen.findByText('Add to chat: report'))
+    await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(1))
+    fireEvent.click(await screen.findByText('Add to chat: report final.pdf'))
+    await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(2))
+    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    fireEvent.change(ta, { target: { value: 'see @report and @report final.pdf please' } })
+    await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(2))
+    // Caret just past the `@report` prefix INSIDE the longer `@report
+    // final.pdf` mention -- the exact spot where the short alias `report`
+    // (space-boundary) would wrongly match without the longest-first sort.
+    const caret = 'see @report and @report'.length
+    ta.setSelectionRange(caret, caret)
+    await act(async () => { fireEvent.keyDown(ta, { key: 'Backspace' }) })
+
+    // The whole longer mention is gone -- NOT reduced to `final.pdf` by a
+    // short-alias match -- and the standalone `@report` is untouched.
+    await waitFor(() => expect(ta.value).toBe('see @report and please'))
+    expect(ta.value).not.toContain('final.pdf')
+    expect(ta.value).toContain('@report ')
+    await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(1))
+  })
+
   // The mirror of the above for the forward Delete key, caret just BEFORE the
   // `@`. Same atomic removal, same chip unstage.
   it('Delete just before a staged mention removes the whole mention atomically (#14675)', async () => {
@@ -392,5 +426,208 @@ describe('ChatPage file chip remove + undo', { timeout: 15_000 }, () => {
     await waitFor(() => expect(ta.value).not.toContain('@src/main.ts'))
     expect(ta.value).toBe('please review for the bug')
     await waitFor(() => expect(screen.queryByLabelText('Remove')).not.toBeInTheDocument())
+  })
+
+  // #14675 (crew-pr-reviewer): a word-delete chord (Ctrl/Alt+Backspace) next to
+  // a staged mention must remove the WHOLE mention, not the native word-back
+  // delete that leaves `@src/main.` -- the same half-reference the plain key
+  // avoids. Mirrors the paste-token atom's word-delete handling.
+  it('Ctrl+Backspace (word delete) next to a staged mention removes the whole mention (#14675, crew-pr-reviewer)', async () => {
+    const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
+    await renderPage(store)
+    const ta = await pickFile()
+    fireEvent.change(ta, { target: { value: 'please review @src/main.ts for the bug' } })
+    await waitFor(() => expect(ta.value).toContain('@src/main.ts'))
+    const caret = 'please review @src/main.ts'.length // just past the mention
+    ta.setSelectionRange(caret, caret)
+    await act(async () => { fireEvent.keyDown(ta, { key: 'Backspace', ctrlKey: true }) })
+
+    expect(ta.value).toBe('please review for the bug')
+    expect(ta.value).not.toContain('@src/main.')
+    await waitFor(() => expect(screen.queryByLabelText('Remove')).not.toBeInTheDocument())
+  })
+
+  // #14675 (crew-pr-reviewer, 22:12 review): a word-delete chord with the caret
+  // INSIDE the mention must take the whole mention, the same as a plain
+  // Backspace inside it does -- the two paths must agree, else Ctrl+Backspace
+  // mid-mention falls through to the native word delete that leaves `@src/main.`.
+  it('Ctrl+Backspace (word delete) with the caret inside a staged mention removes the whole mention (#14675, crew-pr-reviewer)', async () => {
+    const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
+    await renderPage(store)
+    const ta = await pickFile()
+    fireEvent.change(ta, { target: { value: 'please review @src/main.ts for the bug' } })
+    await waitFor(() => expect(ta.value).toContain('@src/main.ts'))
+    const caret = 'please review @src/ma'.length // strictly inside the mention
+    ta.setSelectionRange(caret, caret)
+    await act(async () => { fireEvent.keyDown(ta, { key: 'Backspace', ctrlKey: true }) })
+
+    expect(ta.value).toBe('please review for the bug')
+    expect(ta.value).not.toContain('@src/main.')
+    await waitFor(() => expect(screen.queryByLabelText('Remove')).not.toBeInTheDocument())
+  })
+
+  // #14675 (crew-pr-reviewer, 22:12 review): a word delete deletes back across
+  // whitespace to the token, so Ctrl+Backspace with the caret AFTER the
+  // mention's trailing space must treat that space as adjacent and take the
+  // whole mention (and the space), not leave the half-reference `@src/main.`.
+  it('Ctrl+Backspace (word delete) after the mention\'s trailing space removes the whole mention (#14675, crew-pr-reviewer)', async () => {
+    const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
+    await renderPage(store)
+    const ta = await pickFile()
+    fireEvent.change(ta, { target: { value: 'please review @src/main.ts for the bug' } })
+    await waitFor(() => expect(ta.value).toContain('@src/main.ts'))
+    const caret = 'please review @src/main.ts '.length // just past the trailing space
+    ta.setSelectionRange(caret, caret)
+    await act(async () => { fireEvent.keyDown(ta, { key: 'Backspace', ctrlKey: true }) })
+
+    expect(ta.value).toBe('please review for the bug')
+    expect(ta.value).not.toContain('@src/main.')
+    await waitFor(() => expect(screen.queryByLabelText('Remove')).not.toBeInTheDocument())
+  })
+
+  // #14675 (crew-pr-reviewer): Shift+Backspace is a plain Backspace -- Shift
+  // alone must not fall through to the native one-character edit that leaves a
+  // half-reference whose chip then unstages.
+  it('Shift+Backspace at the end of a staged mention removes the whole mention (#14675, crew-pr-reviewer)', async () => {
+    const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
+    await renderPage(store)
+    const ta = await pickFile()
+    fireEvent.change(ta, { target: { value: 'please review @src/main.ts for the bug' } })
+    await waitFor(() => expect(ta.value).toContain('@src/main.ts'))
+    const caret = 'please review @src/main.ts'.length
+    ta.setSelectionRange(caret, caret)
+    await act(async () => { fireEvent.keyDown(ta, { key: 'Backspace', shiftKey: true }) })
+
+    expect(ta.value).toBe('please review for the bug')
+    expect(ta.value).not.toContain('@src/main.')
+    await waitFor(() => expect(screen.queryByLabelText('Remove')).not.toBeInTheDocument())
+  })
+
+  // #14675 (crew-pr-reviewer / Opus, 06:04 review): Shift+Delete over a
+  // selection is the native Cut chord on Windows/Linux. The atomic handler
+  // must NOT claim it -- preventDefault-ing the cut would delete the selection
+  // and the mention while nothing reaches the clipboard, so the user loses the
+  // text. The keydown must fall through (not prevented), the handler returns
+  // null, and the mention stays (jsdom performs no real cut; the point is the
+  // handler does not swallow the chord). Cut is the deferred #18263 seam.
+  it('Shift+Delete over a selection is left to the native cut, not swallowed (#14675, Opus review)', async () => {
+    const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
+    await renderPage(store)
+    const ta = await pickFile()
+    fireEvent.change(ta, { target: { value: 'please review @src/main.ts for the bug' } })
+    await waitFor(() => expect(ta.value).toContain('@src/main.ts'))
+    // Select across the mention (`review @src/main.ts`) -- a selection, which
+    // is what makes Shift+Delete the Cut chord.
+    const selStart = 'please '.length
+    const selEnd = 'please review @src/main.ts'.length
+    ta.setSelectionRange(selStart, selEnd)
+    let prevented = true
+    await act(async () => {
+      const ev = createEvent.keyDown(ta, { key: 'Delete', shiftKey: true })
+      fireEvent(ta, ev)
+      prevented = ev.defaultPrevented
+    })
+
+    // The handler returned null, so the keydown was NOT prevented and the
+    // mention text is untouched -- the browser's cut will handle the selection.
+    expect(prevented).toBe(false)
+    expect(ta.value).toContain('@src/main.ts')
+    expect(screen.queryByLabelText('Remove')).toBeInTheDocument()
+  })
+  // mention must still delete the WHOLE mention, not slice it to a half-
+  // reference. Select from mid-text into the middle of `@src/main.ts` and press
+  // Backspace -- the entire mention goes, and its chip unstages.
+  it('a selection partly overlapping a staged mention deletes the whole mention (#14675, crew-pr-reviewer)', async () => {
+    const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
+    await renderPage(store)
+    const ta = await pickFile()
+    fireEvent.change(ta, { target: { value: 'please review @src/main.ts for the bug' } })
+    await waitFor(() => expect(ta.value).toContain('@src/main.ts'))
+    // Select from inside the word "review" to the middle of the mention
+    // (`@src/ma|in.ts`) -- a partial cover of the mention.
+    const selStart = 'please re'.length
+    const selEnd = 'please review @src/ma'.length
+    ta.setSelectionRange(selStart, selEnd)
+    await act(async () => { fireEvent.keyDown(ta, { key: 'Backspace' }) })
+
+    // No `@src/...` fragment survives, and the chip unstages.
+    expect(ta.value).not.toContain('@src/ma')
+    expect(ta.value).not.toContain('@src/main.ts')
+    await waitFor(() => expect(screen.queryByLabelText('Remove')).not.toBeInTheDocument())
+  })
+
+  // #14675 (GPT 6.1 review): a selection inside the LONGER of a prefix-sibling
+  // pair (`@report` is a space-boundary prefix of `@report final.pdf`) must
+  // remove the WHOLE longer mention. Both spans share the `@report` start, so
+  // the shorter one can sort last on `at`; spanning its end would truncate the
+  // longer mention to `final.pdf` and drop the longer file's chip. The removal
+  // must span the furthest end across all overlapping hits.
+  it('a selection inside the longer of a prefix-sibling pair removes the whole longer mention, not a truncation (#14675, GPT 6.1 review)', async () => {
+    const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
+    const view = await renderPage(store)
+    act(() => { store.dispatch(openActivityPanel()) })
+    fireEvent.click(await screen.findByText('Add to chat: report'))
+    await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(1))
+    fireEvent.click(await screen.findByText('Add to chat: report final.pdf'))
+    await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(2))
+    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    fireEvent.change(ta, { target: { value: 'see @report and @report final.pdf please' } })
+    await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(2))
+    // Select `@rep` INSIDE the second (longer) mention -- a partial cover whose
+    // span starts at the shared `@report` start.
+    const selStart = 'see @report and '.length // the `@` of the longer mention
+    const selEnd = 'see @report and @rep'.length
+    ta.setSelectionRange(selStart, selEnd)
+    await act(async () => { fireEvent.keyDown(ta, { key: 'Backspace' }) })
+
+    // The whole longer mention is gone -- NOT truncated to `final.pdf` -- and
+    // the standalone `@report` is untouched. (A selection removes the mention
+    // whole but does not dedupe the surrounding spaces, so the collapsed gap
+    // is two spaces -- the point is that no `final.pdf` fragment survives.)
+    await waitFor(() => expect(ta.value).toBe('see @report and  please'))
+    expect(ta.value).not.toContain('final.pdf')
+    expect(ta.value).toContain('@report ')
+    await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(1))
+    void view
+  })
+
+  // #14675 (crew-pr-reviewer): while the prompt optimizer runs, the textarea is
+  // readOnly and must not accept a chip edit -- a Backspace next to a staged
+  // mention must NOT unstage it, or the optimizer silently discards its result
+  // against a now-shorter draft. The keydown handler skips the mention branch
+  // when `optimizingRef.current` is set.
+  it('a Backspace next to a staged mention is ignored while the optimizer runs (#14675, crew-pr-reviewer)', async () => {
+    // Hold the optimize request open so the composer stays in its readOnly
+    // optimizing state across the Backspace.
+    let release!: (v: unknown) => void
+    const pending = new Promise(res => { release = res })
+    const realFetch = globalThis.fetch
+    vi.stubGlobal('fetch', (url: string) => {
+      if (typeof url === 'string' && url.includes('/api/optimizer/optimize')) {
+        return pending.then(() => ({ ok: true, json: async () => ({ changed: false, optimized: null }) }))
+      }
+      return Promise.resolve({ ok: true, json: async () => [] } as unknown as Response)
+    })
+    try {
+      const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
+      await renderPage(store)
+      const ta = await pickFile()
+      fireEvent.change(ta, { target: { value: 'please review @src/main.ts for the bug' } })
+      await waitFor(() => expect(ta.value).toContain('@src/main.ts'))
+      // Enter the optimizing (readOnly) state and wait for it.
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Optimize prompt' })) })
+      await waitFor(() => expect(ta).toHaveAttribute('readonly'))
+
+      const caret = 'please review @src/main.ts'.length
+      ta.setSelectionRange(caret, caret)
+      await act(async () => { fireEvent.keyDown(ta, { key: 'Backspace' }) })
+
+      // The mention and its chip are untouched -- the optimizer owns the draft.
+      expect(ta.value).toContain('@src/main.ts')
+      expect(screen.getByLabelText('Remove')).toBeInTheDocument()
+    } finally {
+      await act(async () => { release(null) })
+      vi.stubGlobal('fetch', realFetch)
+    }
   })
 })
