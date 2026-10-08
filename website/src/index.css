@@ -231,6 +231,107 @@
                  U+3200-32FF, U+3300-33FF, U+3400-4DBF, U+4E00-9FFF, U+A960-A97F,
                  U+AC00-D7AF, U+D7B0-D7FF, U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF;
 }
+/* Kana-only and Hangul-only fallback faces (#13085). The default
+   --script-fallbacks token below names no face that draws kana or Hangul, so
+   under a non-ja/ko UI (e.g. <html lang="en">) Japanese and Korean CONTENT
+   falls to the browser's per-script OS fallback, which on the Linux Electron
+   AppImage renders missing-glyph boxes (tofu) in chat and the Markdown preview.
+   These two aliases are added to the default token so kana and Hangul draw a
+   real face on EVERY surface regardless of UI language.
+
+   Their unicode-range is deliberately NARROWER than 'KC Japanese Fallback' /
+   'KC Korean Fallback': kana and Hangul ONLY, with NO Han range. The regional
+   faces claim the shared Han ideographs (U+4E00-9FFF etc.), so putting one in
+   the default token would force Japanese or Korean Han glyph forms onto all
+   bare-Han content under an English UI — the exact regression the
+   :root/html:lang() split exists to avoid. A kana/Hangul-only range draws only
+   the code points that are tofu today; bare Han is left to the OS/browser
+   locale-aware cascade exactly as before, and when the UI IS ja/ko the
+   html:lang() rules still swap in the full regional faces (which lead these in
+   the stack). local() names mirror the regional faces so no new host font is
+   required. unicode-range keeps them off Latin, so the user's Font Family
+   preference and every Latin stack are byte-identical to before. */
+@font-face {
+  font-family: 'KC Kana Fallback';
+  font-style: normal; font-weight: 400;
+  src: local('Hiragino Sans W3'), local('HiraginoSans-W3'),
+       local('Yu Gothic Regular'), local('YuGothic-Regular'),
+       local('Yu Gothic UI Regular'), local('YuGothicUI-Regular'), local('Meiryo'),
+       local('Noto Sans CJK JP'), local('NotoSansCJKjp-Regular'),
+       local('Noto Sans JP'), local('NotoSansJP-Regular'),
+       local('IPAexGothic'), local('IPAGothic'), local('TakaoPGothic'),
+       local('VL PGothic'), local('VLPGothic-Regular'),
+       local('Source Han Sans JP'), local('SourceHanSansJP-Regular'),
+       local('Droid Sans Fallback');
+  unicode-range: U+3040-309F, U+30A0-30FF, U+31F0-31FF, U+FF65-FF9F;
+}
+@font-face {
+  font-family: 'KC Kana Fallback';
+  font-style: normal; font-weight: 700;
+  src: local('Hiragino Sans W6'), local('HiraginoSans-W6'),
+       local('Yu Gothic Bold'), local('YuGothic-Bold'),
+       local('Yu Gothic UI Bold'), local('YuGothicUI-Bold'), local('Meiryo Bold'),
+       local('Meiryo-Bold'), local('Noto Sans CJK JP Bold'),
+       local('NotoSansCJKjp-Bold'), local('Noto Sans JP Bold'),
+       local('NotoSansJP-Bold'), local('IPAexGothic'), local('IPAGothic'),
+       local('TakaoPGothic'), local('VL PGothic'),
+       local('Source Han Sans JP Bold'), local('SourceHanSansJP-Bold'),
+       local('Droid Sans Fallback');
+  unicode-range: U+3040-309F, U+30A0-30FF, U+31F0-31FF, U+FF65-FF9F;
+}
+@font-face {
+  font-family: 'KC Hangul Fallback';
+  font-style: normal; font-weight: 400;
+  src: local('Apple SD Gothic Neo'), local('AppleSDGothicNeo-Regular'),
+       local('Malgun Gothic'), local('MalgunGothic'), local('Noto Sans CJK KR'),
+       local('NotoSansCJKkr-Regular'), local('Noto Sans KR'), local('NotoSansKR-Regular'),
+       local('Source Han Sans KR'), local('SourceHanSansKR-Regular'),
+       local('Nanum Gothic'), local('NanumGothic'), local('UnDotum'),
+       local('Baekmuk Gulim'), local('Droid Sans Fallback');
+  unicode-range: U+1100-11FF, U+3130-318F, U+A960-A97F, U+AC00-D7AF, U+D7B0-D7FF;
+}
+@font-face {
+  font-family: 'KC Hangul Fallback';
+  font-style: normal; font-weight: 700;
+  src: local('Apple SD Gothic Neo Bold'), local('AppleSDGothicNeo-Bold'),
+       local('Malgun Gothic Bold'), local('MalgunGothic-Bold'),
+       local('Noto Sans CJK KR Bold'), local('NotoSansCJKkr-Bold'),
+       local('Noto Sans KR Bold'), local('NotoSansKR-Bold'),
+       local('Source Han Sans KR Bold'), local('SourceHanSansKR-Bold'),
+       local('Nanum Gothic Bold'), local('NanumGothic-Bold'), local('UnDotum Bold'),
+       local('Baekmuk Gulim'), local('Droid Sans Fallback');
+  unicode-range: U+1100-11FF, U+3130-318F, U+A960-A97F, U+AC00-D7AF, U+D7B0-D7FF;
+}
+@font-face {
+  font-family: 'KC Kana Mono Fallback';
+  font-style: normal; font-weight: 400;
+  src: local('Sarasa Mono J'), local('SarasaMonoJ-Regular'),
+       local('Noto Sans Mono CJK JP'), local('NotoSansMonoCJKjp-Regular');
+  unicode-range: U+3040-309F, U+30A0-30FF, U+31F0-31FF, U+FF65-FF9F;
+}
+@font-face {
+  font-family: 'KC Kana Mono Fallback';
+  font-style: normal; font-weight: 700;
+  src: local('Sarasa Mono J Bold'), local('SarasaMonoJ-Bold'),
+       local('Noto Sans Mono CJK JP Bold'), local('NotoSansMonoCJKjp-Bold');
+  unicode-range: U+3040-309F, U+30A0-30FF, U+31F0-31FF, U+FF65-FF9F;
+}
+@font-face {
+  font-family: 'KC Hangul Mono Fallback';
+  font-style: normal; font-weight: 400;
+  src: local('D2Coding'), local('D2Coding-Regular'), local('Sarasa Mono K'),
+       local('SarasaMonoK-Regular'), local('Noto Sans Mono CJK KR'),
+       local('NotoSansMonoCJKkr-Regular');
+  unicode-range: U+1100-11FF, U+3130-318F, U+A960-A97F, U+AC00-D7AF, U+D7B0-D7FF;
+}
+@font-face {
+  font-family: 'KC Hangul Mono Fallback';
+  font-style: normal; font-weight: 700;
+  src: local('D2Coding Bold'), local('D2Coding-Bold'), local('Sarasa Mono K Bold'),
+       local('SarasaMonoK-Bold'), local('Noto Sans Mono CJK KR Bold'),
+       local('NotoSansMonoCJKkr-Bold');
+  unicode-range: U+1100-11FF, U+3130-318F, U+A960-A97F, U+AC00-D7AF, U+D7B0-D7FF;
+}
 @font-face {
   font-family: 'KC Devanagari Fallback';
   font-style: normal; font-weight: 400;
@@ -427,8 +528,8 @@
      same reason, fixing the straight-quote glyph (#6374) in every UI language.
      It is sans-only: the mono stacks resolve to JetBrains Mono, whose straight
      quotes are already correct. */
-  --script-fallbacks:'KC Straight Quotes','KC Devanagari Fallback','KC Bengali Fallback';
-  --script-fallbacks-mono:'KC Devanagari Fallback','KC Bengali Fallback';
+  --script-fallbacks:'KC Straight Quotes','KC Kana Fallback','KC Hangul Fallback','KC Devanagari Fallback','KC Bengali Fallback';
+  --script-fallbacks-mono:'KC Kana Mono Fallback','KC Kana Fallback','KC Hangul Mono Fallback','KC Hangul Fallback','KC Devanagari Fallback','KC Bengali Fallback';
   /* An installed theme pack fills --theme-font-sans / --theme-font-mono with its
      own faces (see hooks/themeCss.ts). Reading them here means code surfaces
      follow a pack's monospace face without the user having to switch the whole UI
@@ -448,21 +549,31 @@
 html:lang(zh-CN) {
   /* Isolated Simplified aliases for Chinese UI. Not :lang(zh): that also
      matches zh-TW / zh-HK / zh-Hant. Document-level only — :root/--font-body
-     and useZoom already resolve var(--script-fallbacks) on <html>. */
-  --script-fallbacks:'KC Straight Quotes','KC Han Fallback','KC Devanagari Fallback','KC Bengali Fallback';
-  --script-fallbacks-mono:'KC Han Mono Fallback','KC Han Fallback','KC Devanagari Fallback','KC Bengali Fallback';
+     and useZoom already resolve var(--script-fallbacks) on <html>.
+     'KC Han Fallback' draws neither kana nor Hangul, so the kana/Hangul-only
+     aliases follow it: Japanese and Korean CONTENT under a Chinese UI (#13085)
+     otherwise falls to the OS cascade and renders as tofu. They carry no Han
+     range, so they never override the leading Simplified Han face. */
+  --script-fallbacks:'KC Straight Quotes','KC Han Fallback','KC Kana Fallback','KC Hangul Fallback','KC Devanagari Fallback','KC Bengali Fallback';
+  --script-fallbacks-mono:'KC Han Mono Fallback','KC Han Fallback','KC Kana Mono Fallback','KC Kana Fallback','KC Hangul Mono Fallback','KC Hangul Fallback','KC Devanagari Fallback','KC Bengali Fallback';
 }
 html:lang(ja) {
   /* Never retain the SC aliases here. If no named Japanese face is installed,
-     falling through lets the browser use its lang-aware Japanese fallback. */
-  --script-fallbacks:'KC Straight Quotes','KC Japanese Fallback','KC Devanagari Fallback','KC Bengali Fallback';
-  --script-fallbacks-mono:'KC Japanese Mono Fallback','KC Japanese Fallback','KC Devanagari Fallback','KC Bengali Fallback';
+     falling through lets the browser use its lang-aware Japanese fallback.
+     'KC Japanese Fallback' covers kana but NOT Hangul, so the Hangul-only alias
+     follows it: Korean content under a Japanese UI (#13085) would otherwise be
+     tofu. No Han range on it, so the leading Japanese face still wins Han. */
+  --script-fallbacks:'KC Straight Quotes','KC Japanese Fallback','KC Hangul Fallback','KC Devanagari Fallback','KC Bengali Fallback';
+  --script-fallbacks-mono:'KC Japanese Mono Fallback','KC Japanese Fallback','KC Hangul Mono Fallback','KC Hangul Fallback','KC Devanagari Fallback','KC Bengali Fallback';
 }
 html:lang(ko) {
   /* Never retain the SC or JP aliases here. Neither draws Hangul, so leaving one
-     in front only delays resolution to the browser's lang-aware Korean fallback. */
-  --script-fallbacks:'KC Straight Quotes','KC Korean Fallback','KC Devanagari Fallback','KC Bengali Fallback';
-  --script-fallbacks-mono:'KC Korean Mono Fallback','KC Korean Fallback','KC Devanagari Fallback','KC Bengali Fallback';
+     in front only delays resolution to the browser's lang-aware Korean fallback.
+     'KC Korean Fallback' covers Hangul but NOT kana, so the kana-only alias
+     follows it: Japanese content under a Korean UI (#13085) would otherwise be
+     tofu. No Han range on it, so the leading Korean face still wins Han. */
+  --script-fallbacks:'KC Straight Quotes','KC Korean Fallback','KC Kana Fallback','KC Devanagari Fallback','KC Bengali Fallback';
+  --script-fallbacks-mono:'KC Korean Mono Fallback','KC Korean Fallback','KC Kana Mono Fallback','KC Kana Fallback','KC Devanagari Fallback','KC Bengali Fallback';
 }
 /* Dark theme shadows */
 :root,[data-theme="dark"],[data-theme="monokai-dark"],[data-theme="solarized-dark"],[data-theme="amber-dark"],[data-theme="nord-dark"],[data-theme="dracula-dark"],[data-theme="rosepine-dark"],[data-theme="catppuccin-dark"],[data-theme="tokyonight-dark"],[data-theme="gruvbox-dark"],[data-theme="ice-dark"]{
