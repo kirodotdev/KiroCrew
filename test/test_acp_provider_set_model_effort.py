@@ -15,6 +15,7 @@ import pytest
 from kiro_crew import model_registry
 from kiro_crew.acp.client import AcpClient, AcpError
 from kiro_crew.acp.types import (
+    ACP_BACKEND_AGY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_DEEPSEEK,
@@ -30,6 +31,7 @@ from kiro_crew.providers.acp import AcpProvider
 #: model takes an effort write). deepseek's models carry no effort selector in
 #: the registry, so its fallback stays write-free exactly as before.
 BACKEND_CASES = {
+    ACP_BACKEND_AGY: ("agy-model-1", "agy-model-2", False),
     ACP_BACKEND_CLAUDE: ("claude-opus-4.7", "claude-sonnet-4.6", True),
     ACP_BACKEND_CODEX: ("openai.gpt-6-astra", "openai.gpt-5.5-codex", True),
     ACP_BACKEND_DEEPSEEK: ("deepseek-3.2", "deepseek-v4", False),

@@ -1,4 +1,18 @@
 {
+  "agy": {
+    "argv": [
+      "/opt/bin/agy-acp"
+    ],
+    "env_added": {
+      "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
+      "KIROCREW_SESSION_KEY": "golden-session",
+      "KIROCREW_SPAWNED": "1",
+      "KIROCREW_STUB_SESSION_TOKEN": "<session-token>",
+      "PATH": "<augmented-path>"
+    },
+    "spawn_label": "agy-acp",
+    "stderr_label": "agy-acp"
+  },
   "claude": {
     "argv": [
       "/opt/bin/node",

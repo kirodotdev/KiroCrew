@@ -150,6 +150,7 @@ from kiro_crew.acp.transport_framing import (
     write_response_frame_bounded,
 )
 from kiro_crew.acp.types import (
+    ACP_BACKEND_AGY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_DEEPSEEK,
@@ -357,6 +358,7 @@ PROTOCOL_VERSION_GOOSE = launch_for(ACP_BACKEND_GOOSE).protocol_version
 # so it speaks the SPEC dialect too. Verified off its own wire, and its own literal
 # for the same reason the two above have one (harness-parity H10).
 PROTOCOL_VERSION_DEEPSEEK = launch_for(ACP_BACKEND_DEEPSEEK).protocol_version
+PROTOCOL_VERSION_AGY = launch_for(ACP_BACKEND_AGY).protocol_version
 #: Handshake dialect per harness. A TABLE, not an if-chain: the handshake runs on
 #: the construction path kiro-cli shares with every adapter, and harness-parity H13
 #: keeps that path free of conditionals added in service of one. A harness added
@@ -2473,6 +2475,10 @@ class AcpClient:
         return self.backend == ACP_BACKEND_DEEPSEEK
 
     @property
+    def _is_agy(self) -> bool:
+        return self.backend == ACP_BACKEND_AGY
+
+    @property
     def _model_registry_namespace(self) -> str:
         """The model_registry namespace key for this backend (``claude_code`` /
         ``acp``). A registry index selector, NOT a provider-identity check — see
@@ -3183,6 +3189,10 @@ class AcpClient:
             self._session_id,
         )
         return servers
+
+    def _agy_session_mcp_servers(self) -> list:
+        """MCP server array passed to an agy ``session/new`` / ``session/load``."""
+        return self._session_mcp_servers()
 
     def _claude_local_settings_path(self) -> Path:
         return self._work_dir / ".claude" / "settings.local.json"
@@ -6975,6 +6985,7 @@ class AcpClient:
                 *(self._claude_session_mcp_servers() if self._is_claude else []),
                 *(self._opencode_session_mcp_servers() if self._is_opencode else []),
                 *(self._goose_session_mcp_servers() if self._is_goose else []),
+                *(self._agy_session_mcp_servers() if self._is_agy else []),
                 *(await asyncio.to_thread(self._pooled_mcp_servers)),
             ],
         }
@@ -7196,6 +7207,7 @@ class AcpClient:
                             *(self._claude_session_mcp_servers() if self._is_claude else []),
                             *(self._opencode_session_mcp_servers() if self._is_opencode else []),
                             *(self._goose_session_mcp_servers() if self._is_goose else []),
+                            *(self._agy_session_mcp_servers() if self._is_agy else []),
                             *(await asyncio.to_thread(self._pooled_mcp_servers)),
                         ],
                     }

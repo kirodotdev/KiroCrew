@@ -19,6 +19,7 @@ REFUSES a backend with no harness rather than serving it as kiro-cli.
 
 from __future__ import annotations
 
+from kiro_crew.acp.harness.agy import AgyLaunch
 from kiro_crew.acp.harness.base import (
     HarnessAdapter,
     LaunchAdapter,
@@ -40,6 +41,7 @@ from kiro_crew.acp.harness.kiro import KiroHarness
 from kiro_crew.acp.harness.opencode import OpencodeLaunch
 from kiro_crew.acp.harness.pi import PiLaunch
 from kiro_crew.acp.types import (
+    ACP_BACKEND_AGY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_DEEPSEEK,
@@ -51,6 +53,7 @@ from kiro_crew.acp.types import (
 )
 
 __all__ = [
+    "AgyLaunch",
     "ClaudeLaunch",
     "CodexHarness",
     "DeepseekLaunch",
@@ -114,6 +117,7 @@ _PROCESS_ADAPTERS: dict[str, type[ProcessAdapter]] = {
     ACP_BACKEND_GOOSE: GooseLaunch,
     ACP_BACKEND_PI: PiLaunch,
     ACP_BACKEND_DEEPSEEK: DeepseekLaunch,
+    ACP_BACKEND_AGY: AgyLaunch,
 }
 
 

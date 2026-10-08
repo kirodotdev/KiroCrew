@@ -24,6 +24,7 @@ Homepage = "https://github.com/kirodotdev/KiroCrew"
 
 [project.scripts]
 kirocrew = "kiro_crew._bootstrap:main"
+agy-acp = "kiro_crew.acp.adapters.agy:main"
 
 [dependency-groups]
 # Pinned dev tool versions for reproducible CI. Bump as needed.
