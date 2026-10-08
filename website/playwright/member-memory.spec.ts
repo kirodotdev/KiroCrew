@@ -365,6 +365,8 @@ test('an empty private memory opens its exact member conversation and reuses the
   await identityPill.click()
   const profileCard = page.getByTestId('crew-profile-panel')
   await expect(profileCard).toBeVisible()
+  // The card opens on Sessions; the Notes door is on the Profile tab.
+  await profileCard.getByRole('tab', { name: 'Profile', exact: true }).click()
   await profileCard.getByTestId('crew-profile-notes').click()
   const notes = page.getByTestId('member-notes')
   await expect(notes).toBeVisible()

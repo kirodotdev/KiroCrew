@@ -1009,8 +1009,8 @@ Glass chip is a door, since the switcher chip beside it is another Glass chip
 with faces in it. The pill is a toggle, as its `aria-expanded` says: with Profile
 already open a press CLOSES it through the same schedule-draft guard as the
 card's own close control (`requestCloseProfile`). It must not re-open on the
-Profile tab: `profile.tab` is part of the card's React key, so a card opened on
-another tab (the quiet-chat Sessions link) would be remounted and a New schedule
+default tab: `profile.tab` is part of the card's React key, so a card the reader
+moved to another tab (Schedules, say) would be remounted and a New schedule
 draft inside it destroyed with no question asked. Pointer users rarely reach the
 pill under the floating card's scrim; keyboard users reach it every time. The
 pill's title row is the display name plus the exact ID in mono when a label
@@ -1075,7 +1075,10 @@ name + requested tab + accepted-open nonce).
 
 Profile uses the shared `Tablist` component with `labels="active"`: all four tabs
 carry Lucide icons and accessible labels, while only the selected tab paints its
-word. The tabs are **Profile**, **Schedules**, **Sessions**, and **Goals**. No
+word. The tabs are, in strip order, **Sessions**, **Schedules**, **Goals**, and
+**Profile** (the work first, the identity card last). The card opens on Sessions
+unless the opener names a tab (`openProfile(tab)`; today only the quiet-chat link
+calls it, and it asks for Sessions too). No
 tab carries a count, and there is no placeholder tab for a view that does not
 exist yet.
 

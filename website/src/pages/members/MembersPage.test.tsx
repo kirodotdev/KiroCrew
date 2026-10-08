@@ -1272,8 +1272,8 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     fireEvent.click(await rosterRow('oncall'))
     fireEvent.click(await screen.findByTestId('member-identity-pill'))
     await screen.findByTestId('crew-profile-docked')
-    fireEvent.click(screen.getByRole('tab', { name: 'Sessions' }))
-    expect(screen.getByTestId('crew-profile-panel')).toHaveAttribute('data-tab', 'sessions')
+    fireEvent.click(screen.getByRole('tab', { name: 'Goals' }))
+    expect(screen.getByTestId('crew-profile-panel')).toHaveAttribute('data-tab', 'goals')
 
     fireEvent.click(screen.getByTestId('crewmate-switcher'))
     const rows = await screen.findAllByTestId('crewmate-switcher-row')
@@ -1282,9 +1282,9 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     await waitFor(() => expect(screen.queryByTestId('crew-profile-docked')).toBeNull())
     expect(screen.queryByTestId('crew-profile-panel')).toBeNull()
     expect(screen.getByTestId('member-identity-pill')).toHaveAttribute('aria-expanded', 'false')
-    // Opening it again starts on Profile, not where the last crewmate's card was left.
+    // Opening it again starts on Sessions, not where the last crewmate's card was left.
     fireEvent.click(screen.getByTestId('member-identity-pill'))
-    expect(await screen.findByTestId('crew-profile-panel')).toHaveAttribute('data-tab', 'profile')
+    expect(await screen.findByTestId('crew-profile-panel')).toHaveAttribute('data-tab', 'sessions')
   })
 
   it('a window that narrows below md while Profile holds its column re-places the card as floating, keeping it open', async () => {
@@ -1450,8 +1450,10 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     fireEvent.click(screen.getByRole('tab', { name: 'Files' }))
     const files = await screen.findByTestId('files-home-stub')
     expect(files).toHaveAttribute('data-project-dir', '/home/me/repos/oncall-desk')
-    // The Profile's Workspace tile still names the workspace, as a name.
+    // The Profile's Workspace tile still names the workspace, as a name. The
+    // card opens on Sessions, so the Profile tab is selected first.
     fireEvent.click(await screen.findByTestId('member-identity-pill'))
+    fireEvent.click(await screen.findByRole('tab', { name: 'Profile' }))
     expect(await screen.findByTestId('crew-profile-workspace')).toHaveTextContent('default')
   })
 

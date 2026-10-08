@@ -63,6 +63,9 @@ function setup(overrides: Partial<Parameters<typeof CrewProfilePanel>[0]> = {}):
       newScheduleBody={<div data-testid="host-create-form">host form</div>}
       sessionsBody={<div data-testid="host-sessions">host sessions</div>}
       notesBody={<div data-testid="host-notes">host notes</div>}
+      // Most cases read the Profile tab's body; the card's own default is the
+      // strip's first tab (Sessions), which the rail cases assert explicitly.
+      initialTab="profile"
       {...h}
       {...overrides}
     />,
@@ -87,18 +90,19 @@ describe('CrewProfilePanel rail (Tablist labels="active")', () => {
     setup()
     const rail = screen.getByRole('tablist', { name: 'Profile' })
     expect(within(rail).getAllByRole('tab').map((t) => t.getAttribute('title')))
-      .toEqual(['Profile', 'Schedules', 'Sessions', 'Goals'])
-    expect(PROFILE_TABS).toEqual(['profile', 'schedule', 'sessions', 'goals'])
+      .toEqual(['Sessions', 'Schedules', 'Goals', 'Profile'])
+    expect(PROFILE_TABS).toEqual(['sessions', 'schedule', 'goals', 'profile'])
     for (const name of ['Profile', 'Schedules', 'Sessions', 'Goals']) {
       expect(tab(name)).toBeInTheDocument()
     }
   })
 
   it('shows the word on the SELECTED tab only; the others are icon-only with a hidden name', () => {
-    setup()
-    expect(tab('Profile')).toHaveAttribute('aria-selected', 'true')
-    expect(visibleLabel(tab('Profile'))).toBe('Profile')
-    for (const name of ['Schedules', 'Sessions', 'Goals']) {
+    setup({ initialTab: undefined })
+    // Opens on the first tab of the strip: Sessions.
+    expect(tab('Sessions')).toHaveAttribute('aria-selected', 'true')
+    expect(visibleLabel(tab('Sessions'))).toBe('Sessions')
+    for (const name of ['Schedules', 'Goals', 'Profile']) {
       expect(visibleLabel(tab(name))).toBe('')
       // Still named: the label rides an sr-only span, and the tooltip carries it too.
       expect(tab(name)).toHaveAccessibleName(name)
@@ -107,7 +111,7 @@ describe('CrewProfilePanel rail (Tablist labels="active")', () => {
     // The word travels with the selection.
     fireEvent.click(tab('Goals'))
     expect(visibleLabel(tab('Goals'))).toBe('Goals')
-    expect(visibleLabel(tab('Profile'))).toBe('')
+    expect(visibleLabel(tab('Sessions'))).toBe('')
     expect(screen.getByTestId('crew-profile-panel')).toHaveAttribute('data-tab', 'goals')
   })
 

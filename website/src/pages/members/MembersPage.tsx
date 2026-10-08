@@ -1355,7 +1355,9 @@ export default function MembersPage() {
   const pillFaceRef = useRef<HTMLSpanElement>(null)
   const cardFaceRef = useRef<HTMLSpanElement>(null)
   const flightFromRef = useRef<DOMRect | null>(null)
-  const openProfile = useCallback((tab: ProfileTab = 'profile') => {
+  // The card opens on Sessions — what the crewmate is doing — unless a caller
+  // names another tab (today only the quiet-chat link, which also asks for Sessions).
+  const openProfile = useCallback((tab: ProfileTab = 'sessions') => {
     flightFromRef.current = pillFaceRef.current?.getBoundingClientRect() ?? null
     setProfile((current) => ({
       tab,
@@ -1377,9 +1379,9 @@ export default function MembersPage() {
   // Closing the card asks the Schedules draft question like every other exit. Hoisted
   // above the header because the identity pill is one of those exits: with Profile
   // floating, the pill reads `aria-expanded` and a press on it CLOSES the card rather
-  // than re-opening it. Re-opening set `profile.tab` back to `profile`, and the tab
-  // is part of the card's React key, so a card opened on another tab (the quiet-chat
-  // Sessions link) was remounted by that press and a New schedule draft inside it
+  // than re-opening it. Re-opening set `profile.tab` back to the default, and the tab
+  // is part of the card's React key, so a card the reader had moved to another tab
+  // (Schedules, say) was remounted by that press and a New schedule draft inside it
   // destroyed — with no question asked. Pointer users reach the pill rarely (the
   // floating card's scrim covers the header), keyboard users reach it every time.
   const requestCloseProfile = useCallback(() => {
@@ -3866,8 +3868,8 @@ export default function MembersPage() {
                 // Profile is the read surface; its pencil owns the editor door.
                 // A toggle, as `aria-expanded` says: with the card already open the
                 // press closes it (through the draft guard — see requestCloseProfile)
-                // instead of re-opening on the Profile tab, which remounted the card.
-                onClick={() => { if (profile) requestCloseProfile(); else openProfile('profile') }}
+                // instead of re-opening on the default tab, which remounted the card.
+                onClick={() => { if (profile) requestCloseProfile(); else openProfile() }}
                 className="glass-shadow flex items-center gap-2.5 pl-2.5 pr-3 py-1.5 min-w-0 max-w-full justify-self-center cursor-pointer text-left focus-ring"
                 title={t('pages.membersPage.profile_card')}
                 aria-expanded={!!profile}

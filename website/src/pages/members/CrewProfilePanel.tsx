@@ -12,7 +12,7 @@ import { cn } from '../../lib/utils'
 import ErrorNotice from '../../components/ErrorNotice'
 
 /** The card's four tabs, in strip order (crewmate-panel IA sketch). */
-export const PROFILE_TABS = ['profile', 'schedule', 'sessions', 'goals'] as const
+export const PROFILE_TABS = ['sessions', 'schedule', 'goals', 'profile'] as const
 export type ProfileTab = (typeof PROFILE_TABS)[number]
 /** The head face's side. Exported so the page's face flight can render its
  *  copy at this size (the larger of the two faces, so the pill-sized end is a
@@ -139,7 +139,7 @@ function Tile({ icon, tone, label, value, title, onClick, testId }: {
 export default function CrewProfilePanel(p: CrewProfilePanelProps) {
   const { t } = useTranslation()
   const reduce = useReducedMotion()
-  const [tab, setTab] = useState<ProfileTab>(p.initialTab ?? 'profile')
+  const [tab, setTab] = useState<ProfileTab>(p.initialTab ?? PROFILE_TABS[0])
   const [pushed, setPushed] = useState<Pushed | null>(null)
   const rootRef = useRef<HTMLDivElement>(null)
   const backRef = useRef<HTMLButtonElement>(null)
@@ -187,11 +187,13 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
     }
   }, [pushed])
 
+  // Strip order = PROFILE_TABS: the work first (what the crewmate is doing,
+  // when it wakes, what it is after), the identity card last.
   const tabs: Array<TablistTab<ProfileTab>> = [
-    { key: 'profile', label: t('pages.membersPage.profile_tab'), icon: <IdCard size={15} aria-hidden="true" /> },
-    { key: 'schedule', label: t('pages.membersPage.schedules_tab'), icon: <AlarmClock size={15} aria-hidden="true" /> },
     { key: 'sessions', label: t('pages.membersPage.profile_sessions_tab'), icon: <Route size={15} aria-hidden="true" /> },
+    { key: 'schedule', label: t('pages.membersPage.schedules_tab'), icon: <AlarmClock size={15} aria-hidden="true" /> },
     { key: 'goals', label: t('pages.membersPage.profile_goals_tab'), icon: <Goal size={15} aria-hidden="true" /> },
+    { key: 'profile', label: t('pages.membersPage.profile_tab'), icon: <IdCard size={15} aria-hidden="true" /> },
   ]
   const pushedTitle = pushed === 'about'
     ? t('pages.membersPage.profile_about')
@@ -220,7 +222,7 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
     >
       {/* Bar: one back control while a page is pushed (pointing at the card), the
           title, and the close. Sticky by construction — only the body scrolls. */}
-      <div className="h-11 shrink-0 flex items-center gap-1 px-2 border-b border-border">
+      <div className="h-11 shrink-0 flex items-center gap-1 px-2">
         {pushed ? (
           <button
             type="button"
@@ -257,7 +259,8 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
           transition={{ duration: 0.22, ease: [0.2, 0.8, 0.2, 1] }}
           {...coveredProps}
         >
-          <div className="relative flex flex-col items-center gap-1.5 pt-5 pb-3 text-center">
+          {/* No hairline under the title bar, so the head starts right below it. */}
+          <div className="relative flex flex-col items-center gap-1.5 pt-1 pb-3 text-center">
             <span
               ref={p.faceRef}
               className="flex rounded-full"
@@ -272,7 +275,7 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
             <button
               type="button"
               onClick={p.onEdit}
-              className="absolute right-0 top-4 w-9 h-9 rounded-full grid place-items-center bg-bg border border-border text-muted hover:text-accent hover:border-accent transition-colors cursor-pointer focus-ring"
+              className="absolute right-0 top-0 w-9 h-9 rounded-full grid place-items-center bg-bg border border-border text-muted hover:text-accent hover:border-accent transition-colors cursor-pointer focus-ring"
               aria-label={t('pages.membersPage.edit_member')}
               title={t('pages.membersPage.edit_member')}
               data-testid="crew-profile-edit"
