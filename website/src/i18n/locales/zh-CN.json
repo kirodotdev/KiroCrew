@@ -7294,6 +7294,7 @@
       "click_to_open_shift_click_to_reveal_in_finder": "点击打开 / Shift+点击在 Finder 中显示",
       "click_to_open_shift_click_to_show_in_file_manager": "点击打开 / Shift+点击在文件管理器中显示",
       "click_to_switch_to_this_session": "点击切换到此会话",
+      "session_closed_link_disabled": "会话未打开 — 链接已禁用",
       "close": "关闭",
       "copied": "已复制！",
       "ctrl_click_to_copy": "Ctrl/Cmd+点击复制",

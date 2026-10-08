@@ -7518,6 +7518,7 @@
       "click_to_open_shift_click_to_reveal_in_finder": "Cliquer pour ouvrir / Shift+clic pour afficher dans le Finder",
       "click_to_open_shift_click_to_show_in_file_manager": "Cliquer pour ouvrir / Shift+clic pour afficher dans le gestionnaire de fichiers",
       "click_to_switch_to_this_session": "Cliquer pour passer à cette session",
+      "session_closed_link_disabled": "Session non ouverte — lien désactivé",
       "close": "Fermer",
       "copied": "Copié !",
       "ctrl_click_to_copy": "Ctrl/Cmd+clic pour copier",
