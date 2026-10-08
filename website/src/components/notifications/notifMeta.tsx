@@ -23,36 +23,10 @@ import { fmtTime as fmtClockTime, fmtDateTime, fmtDateFields, fmtRelative as fmt
  * construction rather than managing it with a storage migration.
  */
 
-export function parseTs(ts: string | number): Date {
-  // A numeric epoch (number, or an all-digits string) can arrive in any unit —
-  // seconds, milliseconds, microseconds, or nanoseconds — depending on the
-  // producer. Detect the unit by magnitude and normalize to milliseconds.
-  //
-  // Detecting the unit up front (rather than `new Date(ts)` with a
-  // `new Date(parseFloat(ts) * 1000)` fallback) is required because a
-  // millisecond epoch passed as a string is Invalid Date in V8, so the fallback
-  // would treat it as seconds and render the year as ~58527. It also handles the
-  // microsecond-as-number case.
-  const num =
-    typeof ts === 'number'
-      ? ts
-      : /^\s*\d+(\.\d+)?\s*$/.test(ts)
-        ? parseFloat(ts)
-        : NaN
-  let d: Date
-  if (!isNaN(num)) {
-    let ms: number
-    if (num >= 1e17) ms = num / 1e6 // nanoseconds → ms
-    else if (num >= 1e14) ms = num / 1e3 // microseconds → ms
-    else if (num >= 1e11) ms = num // milliseconds (already)
-    else ms = num * 1e3 // seconds → ms
-    d = new Date(ms)
-  } else {
-    d = new Date(ts) // ISO 8601 / RFC date string
-  }
-  if (isNaN(d.getTime()) || d.getTime() < Date.UTC(2020, 0, 1)) return new Date(NaN)
-  return d
-}
+// Lives in utils so the notifications store can order rows by the same
+// parser the feed renders them with; re-exported for the feed's callers.
+import { parseTs } from '../../utils/notificationTimestamp'
+export { parseTs }
 
 export function dateGroup(d: Date): string {
   const now = new Date()
@@ -321,17 +295,15 @@ export const MAC_ACTION_BTN_CLASS = 'bg-[color-mix(in_srgb,var(--bg-hover)_80%,t
 
 /** The sentence a failed Approve/Reject press shows, on a feed row and in the
  *  detail panel alike. A quoted reason is the decide route's own sentence.
- *  Anything else (a 5xx, or no response) may have landed. A row that names
- *  its request (`targeted`: slot and instance) is refused once that request
- *  is settled, so it says pressing again is safe. A row decided by id alone
- *  could reach a later request under a recurring id, so it keeps the chat
- *  card's plain hedge. After a frame ended the request (`ended`, shown
+ *  Anything else (a 5xx, or no response) may have landed. Every decide names
+ *  its request (slot and instance; a row that names none is refused with
+ *  nothing sent), and is refused once that request is settled, so it says
+ *  pressing again is safe. After a frame ended the request (`ended`, shown
  *  beside "no longer pending") there is nothing to retry, so an unquoted
  *  failure adds nothing beside that line. */
-export function decisionFailedCopy(reason: string, opts: { ended?: boolean; targeted?: boolean } = {}): string | null {
+export function decisionFailedCopy(reason: string, opts: { ended?: boolean } = {}): string | null {
   if (reason) return i18nT('components.approvalCard.decision_not_recorded_error', { error: reason })
   if (opts.ended) return null
-  if (!opts.targeted) return i18nT('components.approvalCard.decision_failed')
   return i18nT('components.notifications.notificationFeed.decision_failed_retry')
 }
 

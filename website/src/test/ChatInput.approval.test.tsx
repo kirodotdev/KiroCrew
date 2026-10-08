@@ -8,6 +8,7 @@ import { renderWithProviders, createTestStore } from './helpers'
 import ChatInput from '../components/ChatInput'
 import { api, ApiError } from '../api/client'
 import { i18nT } from '../i18n/t'
+import { sseSubagentPending, sseSubagentSpawn, sseSubagentTool } from '../store/chatSlice'
 import type { RootState } from '../store'
 import { reconcileGoneSubagent, sseChatMessage } from '../store/chatSlice'
 
@@ -31,6 +32,7 @@ vi.mock('../api/client', () => {
   return {
     api: {
       resolveApproval: vi.fn(() => Promise.resolve({})),
+      decideApproval: vi.fn(() => Promise.resolve({})),
       approveChatSlot: vi.fn(() => Promise.resolve({})),
       spawnList: vi.fn(() => Promise.resolve({ agents: [] })),
       // A personal Crew by default: no Shared Crew capability is reported.
@@ -42,6 +44,11 @@ vi.mock('../api/client', () => {
     ApiError: MockApiError,
   }
 })
+
+/** The request the fixture row names: the runner's own, in slot-1. */
+const NATIVE = { origin: 'native', id: 'ap-123', slot: 'slot-1', mid: 'mid-123' }
+/** A pending spawn's coordinator request. */
+const spawnTarget = (agent: string) => ({ origin: 'coordinator' as const, id: `spawn:${agent}`, slot: 'slot-1', instance: `inst-${agent}` })
 
 const defaultProps = {
   value: '',
@@ -68,6 +75,8 @@ function stateWithApproval(meta: Record<string, unknown> = {}): Partial<RootStat
           content: 'Running: ls /tmp',
           meta: {
             approval_id: 'ap-123',
+            // The runner's row identity: with the slot, it names the request.
+            mid: 'mid-123',
             request_id: 'req-123',
             tool_input: '{"command":"ls /tmp"}',
             is_read_only: '1',
@@ -122,6 +131,7 @@ describe('ChatInput approval flow', () => {
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     expect(screen.getByText('Trust')).toBeInTheDocument()
+    // A card that can take Trust needs no line explaining its absence.
   })
 
   it('offers both rejection tiers behind ONE Reject trigger', () => {
@@ -138,12 +148,63 @@ describe('ChatInput approval flow', () => {
     expect(items.some(x => x.startsWith('Reject all'))).toBe(true)
   })
 
-  it('Allow once calls resolveApproval with approve', async () => {
+  it('a coordinator card is decided by its own target and offers no slot-scoped Trust', async () => {
+    // The same id under the coordinator: the card names the record's instance,
+    // so the decide reaches that request and never the runner's under the id.
+    const state = stateWithApproval()
+    const row = (state.chat!.messages as unknown as { meta: Record<string, unknown> }[])[1]
+    const target = { origin: 'coordinator', id: 'ap-123', slot: 'slot-1', instance: 'inst-123' }
+    row.meta = { ...row.meta, mid: undefined, registry: 'coordinator', approval_target: target }
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(state) })
+    expect(screen.queryByText('Trust')).not.toBeInTheDocument()
+    // Withheld as for any unattended source on the base: no extra line.
+    expect(screen.queryByTestId('approval-trust-unavailable')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByText('Allow once'))
+    await waitFor(() => {
+      expect(api.decideApproval).toHaveBeenCalledWith(target, 'approve', expect.stringMatching(/^r_/))
+    })
+    expect(api.approveChatSlot).not.toHaveBeenCalled()
+  })
+
+  it('after a takeover, Allow once settles the replacement and leaves the replaced row stale', async () => {
+    // Request A's row was retired as stale when B took its id over; the bar
+    // shows B. The decision names B, so A's row must not read as approved.
+    const state = stateWithApproval()
+    const messages = state.chat!.messages as unknown as { role: string; content: string; meta: Record<string, unknown> }[]
+    const target = (instance: string) => ({ origin: 'coordinator', id: 'ap-123', slot: 'slot-1', instance })
+    const rowA = messages[1]
+    rowA.meta = { ...rowA.meta, mid: undefined, registry: 'coordinator', approval_target: target('inst-a'), resolved: 'stale' }
+    messages.push({ ...rowA, meta: { ...rowA.meta, approval_target: target('inst-b'), resolved: undefined, tool_call_id: 'tc-2' } })
+    const store = createTestStore(state)
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByText('Allow once'))
+    await waitFor(() => {
+      expect(api.decideApproval).toHaveBeenCalledWith(target('inst-b'), 'approve', expect.stringMatching(/^r_/))
+    })
+    await waitFor(() => expect(store.getState().chat.messages[2].meta!.resolved).toBe('approved'))
+    expect(store.getState().chat.messages[1].meta!.resolved).toBe('stale')
+  })
+
+  it('a card that names no request sends nothing and says it is no longer pending', async () => {
+    const state = stateWithApproval()
+    const row = (state.chat!.messages as unknown as { meta: Record<string, unknown> }[])[1]
+    row.meta = { ...row.meta, mid: undefined }
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(state) })
+    fireEvent.click(screen.getByText('Allow once'))
+    await waitFor(() => {
+      expect(screen.getByRole('status')).toHaveTextContent(i18nT('components.approvalCard.approval_no_longer_pending'))
+    })
+    expect(screen.queryByTestId('approval-decision-error')).toBeNull()
+    expect(api.decideApproval).not.toHaveBeenCalled()
+    expect(api.approveChatSlot).not.toHaveBeenCalled()
+  })
+
+  it('Allow once calls decideApproval with approve', async () => {
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     fireEvent.click(screen.getByText('Allow once'))
     await waitFor(() => {
-      expect(api.resolveApproval).toHaveBeenCalledWith('ap-123', 'approve', undefined, expect.stringMatching(/^r_/))
+      expect(api.decideApproval).toHaveBeenCalledWith(NATIVE, 'approve', expect.stringMatching(/^r_/))
     })
     expect(api.approveChatSlot).not.toHaveBeenCalled()
   })
@@ -158,9 +219,7 @@ describe('ChatInput approval flow', () => {
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     fireEvent.click(screen.getByText('Allow once'))
     await waitFor(() => {
-      expect(api.approveChatSlot).toHaveBeenCalledWith('slot-1', 'approved', {
-        request_id: 'ap-123', response_id: expect.stringMatching(/^r_/), origin: 'native', request_mid: 'mid-7',
-      })
+      expect(api.decideApproval).toHaveBeenCalledWith({ ...NATIVE, mid: 'mid-7' }, 'approve', expect.stringMatching(/^r_/))
     })
     expect(api.resolveApproval).not.toHaveBeenCalled()
   })
@@ -208,28 +267,28 @@ describe('ChatInput approval flow', () => {
     expect(screen.queryByRole('textbox', { name: i18nT('components.rejectDropdown.reason_placeholder') })).not.toBeInTheDocument()
   })
 
-  it('a coordinator card keeps the id route even with a card row', async () => {
+  it('a coordinator card that names no target sends no bare-id decide', async () => {
     const state = stateWithApproval()
     const card = (state.chat!.messages as { meta?: Record<string, unknown> }[])[1]
     card.meta = { ...card.meta, mid: 'mid-7', registry: 'coordinator' }
     const store = createTestStore(state)
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     rejectVia('Reject once')
-    await waitFor(() => {
-      expect(api.resolveApproval).toHaveBeenCalledWith('ap-123', 'reject_once', undefined, expect.stringMatching(/^r_/))
-    })
+    await waitFor(() => expect(store.getState().chat.messages.find(m => m.meta?.mid === 'mid-7')?.meta?.resolved).toBe('stale'))
+    expect(api.resolveApproval).not.toHaveBeenCalled()
+    expect(api.decideApproval).not.toHaveBeenCalled()
     expect(api.approveChatSlot).not.toHaveBeenCalled()
   })
 
   it.each([
     ['Reject all', 'reject'],
     ['Reject once', 'reject_once'],
-  ])('%s calls resolveApproval with %s', async (label, decision) => {
+  ])('%s calls decideApproval with %s', async (label, decision) => {
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     rejectVia(label as 'Reject once' | 'Reject all')
     await waitFor(() => {
-      expect(api.resolveApproval).toHaveBeenCalledWith('ap-123', decision, undefined, expect.stringMatching(/^r_/))
+      expect(api.decideApproval).toHaveBeenCalledWith(NATIVE, decision, expect.stringMatching(/^r_/))
     })
     expect(api.approveChatSlot).not.toHaveBeenCalled()
   })
@@ -243,10 +302,10 @@ describe('ChatInput approval flow', () => {
     fireEvent.click(cmdBtn)
     await waitFor(() => {
       expect(api.approveChatSlot).toHaveBeenCalledWith(
-        'slot-1', 'trust_command', { response_id: expect.stringMatching(/^r_/), request_id: 'ap-123', pattern: 'ls /tmp' }
+        'slot-1', 'trust_command', { response_id: expect.stringMatching(/^r_/), request_id: 'ap-123', origin: 'native', request_mid: 'mid-123', pattern: 'ls /tmp' }
       )
     })
-    expect(api.resolveApproval).not.toHaveBeenCalled()
+    expect(api.decideApproval).not.toHaveBeenCalled()
   })
 
   it('Trust dropdown trust_base calls approveChatSlot with glob pattern', async () => {
@@ -258,10 +317,10 @@ describe('ChatInput approval flow', () => {
     fireEvent.click(baseBtn)
     await waitFor(() => {
       expect(api.approveChatSlot).toHaveBeenCalledWith(
-        'slot-1', 'trust_base', { response_id: expect.stringMatching(/^r_/), request_id: 'ap-123', pattern: 'ls *' }
+        'slot-1', 'trust_base', { response_id: expect.stringMatching(/^r_/), request_id: 'ap-123', origin: 'native', request_mid: 'mid-123', pattern: 'ls *' }
       )
     })
-    expect(api.resolveApproval).not.toHaveBeenCalled()
+    expect(api.decideApproval).not.toHaveBeenCalled()
   })
 
   it('Trust dropdown timed command row sends ttl_seconds and says when it ends', async () => {
@@ -272,7 +331,7 @@ describe('ChatInput approval flow', () => {
     fireEvent.click(timed)
     await waitFor(() => {
       expect(api.approveChatSlot).toHaveBeenCalledWith(
-        'slot-1', 'trust_command', { response_id: expect.stringMatching(/^r_/), request_id: 'ap-123', pattern: 'ls /tmp', ttl_seconds: 3600 }
+        'slot-1', 'trust_command', { response_id: expect.stringMatching(/^r_/), request_id: 'ap-123', origin: 'native', request_mid: 'mid-123', pattern: 'ls /tmp', ttl_seconds: 3600 }
       )
     })
     expect(api.resolveApproval).not.toHaveBeenCalled()
@@ -304,7 +363,7 @@ describe('ChatInput approval flow', () => {
     fireEvent.click(screen.getAllByRole('menuitem').find(b => b.textContent?.startsWith('Trust any ls command for an hour'))!)
     await waitFor(() => {
       expect(api.approveChatSlot).toHaveBeenCalledWith(
-        'slot-1', 'trust_base', { response_id: expect.stringMatching(/^r_/), request_id: 'ap-123', pattern: 'ls *', ttl_seconds: 3600 }
+        'slot-1', 'trust_base', { response_id: expect.stringMatching(/^r_/), request_id: 'ap-123', origin: 'native', request_mid: 'mid-123', pattern: 'ls *', ttl_seconds: 3600 }
       )
     })
     expect(await screen.findByText(/^Trusted any “ls” command until .+, then it asks again$/)).toBeInTheDocument()
@@ -317,10 +376,10 @@ describe('ChatInput approval flow', () => {
     fireEvent.click(screen.getByText('Trust all tools for this session'))
     await waitFor(() => {
       expect(api.approveChatSlot).toHaveBeenCalledWith(
-        'slot-1', 'trust', { response_id: expect.stringMatching(/^r_/), request_id: 'ap-123' }
+        'slot-1', 'trust', { response_id: expect.stringMatching(/^r_/), request_id: 'ap-123', origin: 'native', request_mid: 'mid-123' }
       )
     })
-    expect(api.resolveApproval).not.toHaveBeenCalled()
+    expect(api.decideApproval).not.toHaveBeenCalled()
   })
 
   it('Trust reads calls approveChatSlot for read-only commands', async () => {
@@ -333,7 +392,7 @@ describe('ChatInput approval flow', () => {
     fireEvent.click(screen.getByText('Trust read-only commands'))
     await waitFor(() => {
       expect(api.approveChatSlot).toHaveBeenCalledWith(
-        'slot-1', 'trust_reads', { response_id: expect.stringMatching(/^r_/), request_id: 'ap-123' }
+        'slot-1', 'trust_reads', { response_id: expect.stringMatching(/^r_/), request_id: 'ap-123', origin: 'native', request_mid: 'mid-123' }
       )
     })
   })
@@ -408,13 +467,13 @@ describe('ChatInput approval flow', () => {
   })
 
   it('handles API error gracefully without crashing', async () => {
-    vi.mocked(api.resolveApproval).mockRejectedValueOnce(new Error('network'))
+    vi.mocked(api.decideApproval).mockRejectedValueOnce(new Error('network'))
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     fireEvent.click(screen.getByText('Allow once'))
     // Should not throw — error is caught internally
     await waitFor(() => {
-      expect(api.resolveApproval).toHaveBeenCalled()
+      expect(api.decideApproval).toHaveBeenCalled()
     })
   })
 
@@ -588,7 +647,7 @@ describe('ChatInput orphaned approval (404)', () => {
       responder: { id: 'p_b', kind: 'human', display: { name: 'Bob', login: '', captured_at: null } },
       outcome: 'rejected', resolved_at: 10,
     }
-    vi.mocked(api.resolveApproval).mockRejectedValueOnce(
+    vi.mocked(api.decideApproval).mockRejectedValueOnce(
       new ApiError(409, 'already answered', JSON.stringify({ code: 'already_resolved', decision: winner })),
     )
     const store = createTestStore(stateWithApproval())
@@ -611,7 +670,7 @@ describe('ChatInput orphaned approval (404)', () => {
       responder: { id: 'p_l', kind: 'human', display: { name: 'local-app', login: '', captured_at: null } },
       outcome: 'rejected', resolved_at: 10,
     }
-    vi.mocked(api.resolveApproval).mockRejectedValueOnce(
+    vi.mocked(api.decideApproval).mockRejectedValueOnce(
       new ApiError(409, 'already answered', JSON.stringify({ code: 'already_resolved', decision: winner })),
     )
     const store = createTestStore(stateWithApproval())
@@ -632,8 +691,7 @@ describe('ChatInput orphaned approval (404)', () => {
       outcome: 'approved', resolved_at: 10,
     }
     let reject: (e: unknown) => void = () => {}
-    // A card with a row decides on the slot route, naming that row.
-    vi.mocked(api.approveChatSlot).mockImplementationOnce(() => new Promise((_, r) => { reject = r }))
+    vi.mocked(api.decideApproval).mockImplementationOnce(() => new Promise((_, r) => { reject = r }))
     const base = stateWithApproval()
     const first = base.chat!.messages[1]
     const store = createTestStore({ ...base, chat: { ...base.chat!, messages: [base.chat!.messages[0], { ...first, meta: { ...first.meta, mid: 'm-old' } }] } })
@@ -648,7 +706,7 @@ describe('ChatInput orphaned approval (404)', () => {
   })
 
   it('clears the approval bar when Allow once 404s', async () => {
-    vi.mocked(api.resolveApproval).mockRejectedValueOnce(notFound())
+    vi.mocked(api.decideApproval).mockRejectedValueOnce(notFound())
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     fireEvent.click(screen.getByText('Allow once'))
@@ -658,7 +716,7 @@ describe('ChatInput orphaned approval (404)', () => {
   })
 
   it('explains why the click did nothing instead of failing silently', async () => {
-    vi.mocked(api.resolveApproval).mockRejectedValueOnce(notFound())
+    vi.mocked(api.decideApproval).mockRejectedValueOnce(notFound())
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     rejectVia('Reject all')
@@ -669,14 +727,14 @@ describe('ChatInput orphaned approval (404)', () => {
 
   it('a 404 on a row-scoped Allow once retires only the clicked row, not a newer one reusing its id', async () => {
     let rejectCall: (e: unknown) => void = () => {}
-    vi.mocked(api.approveChatSlot).mockImplementationOnce(() => new Promise((_res, rej) => { rejectCall = rej }))
+    vi.mocked(api.decideApproval).mockImplementationOnce(() => new Promise((_res, rej) => { rejectCall = rej }))
     const state = stateWithApproval()
     const card = (state.chat!.messages as { meta?: Record<string, unknown> }[])[1]
     card.meta = { ...card.meta, mid: 'mid-1' }
     const store = createTestStore(state)
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     fireEvent.click(screen.getByText('Allow once'))
-    await waitFor(() => expect(api.approveChatSlot).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(api.decideApproval).toHaveBeenCalledTimes(1))
     // A replacement request reuses the id with a new card row before the reply.
     const first = store.getState().chat.messages.find(m => m.meta?.mid === 'mid-1')!
     store.dispatch(sseChatMessage({ slot: 'slot-1', role: 'permission', content: first.content, meta: { ...first.meta, mid: 'mid-2' } }))
@@ -691,7 +749,7 @@ describe('ChatInput orphaned approval (404)', () => {
   })
 
   it('keeps the bar up on a non-404 failure so the user can retry', async () => {
-    vi.mocked(api.resolveApproval).mockRejectedValueOnce(new ApiError(503, 'busy'))
+    vi.mocked(api.decideApproval).mockRejectedValueOnce(new ApiError(503, 'busy'))
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     fireEvent.click(screen.getByText('Allow once'))
@@ -715,6 +773,7 @@ function stateWithPendingSpawn(count = 1): Partial<RootState> {
       id: `a${i}`, task: `task ${i}`, agent: '', status: 'pending',
       streaming: '', lastTool: '', startedAt: Date.now(), elapsed: 0,
       approval_id: `spawn:a${i}`,
+      approval_target: spawnTarget(`a${i}`),
     }
   }
   return {
@@ -768,8 +827,8 @@ describe('ChatInput sub-agent spawn-approval banner', () => {
     const store = createTestStore(stateWithPendingSpawn(3))
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     fireEvent.click(screen.getByRole('button', { name: 'Approve sub-agent: task 2' }))
-    expect(api.resolveApproval).toHaveBeenCalledWith('spawn:a2', 'approve')
-    expect(api.resolveApproval).toHaveBeenCalledTimes(1)
+    expect(api.decideApproval).toHaveBeenCalledWith(spawnTarget('a2'), 'approve')
+    expect(api.decideApproval).toHaveBeenCalledTimes(1)
     expect(store.getState().chat.subagents.a2.approving).toBe(true)
     expect(store.getState().chat.subagents.a1.approving).toBeFalsy()
   })
@@ -778,8 +837,8 @@ describe('ChatInput sub-agent spawn-approval banner', () => {
     const store = createTestStore(stateWithPendingSpawn(3))
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     fireEvent.click(screen.getByRole('button', { name: 'Reject sub-agent: task 3' }))
-    expect(api.resolveApproval).toHaveBeenCalledWith('spawn:a3', 'reject')
-    expect(api.resolveApproval).toHaveBeenCalledTimes(1)
+    expect(api.decideApproval).toHaveBeenCalledWith(spawnTarget('a3'), 'reject')
+    expect(api.decideApproval).toHaveBeenCalledTimes(1)
   })
 
   /**
@@ -813,10 +872,47 @@ describe('ChatInput sub-agent spawn-approval banner', () => {
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     fireEvent.click(screen.getByRole('button', { name: /^Approve$/ }))
     await waitFor(() => {
-      expect(api.resolveApproval).toHaveBeenCalledWith('spawn:a1', 'approve')
+      expect(api.decideApproval).toHaveBeenCalledWith(spawnTarget('a1'), 'approve')
     })
     // Approval must NOT synthesize a terminal state — the real run reports it.
     expect(store.getState().chat.subagents.a1.status).toBe('pending')
+  })
+
+  it('a late 404 from the losing tab leaves a spawn the winning tab already started running', async () => {
+    let refuse: (e: unknown) => void = () => {}
+    vi.mocked(api.decideApproval).mockReturnValueOnce(new Promise((_res, rej) => { refuse = rej }))
+    const store = createTestStore(stateWithPendingSpawn(1))
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByRole('button', { name: /^Approve$/ }))
+    // The other tab won: its spawn frame marks the card running and the
+    // stream starts, before this tab's POST answers.
+    act(() => {
+      store.dispatch(sseSubagentSpawn({ slot: 'slot-1', id: 'a1', task: 'task 1', agent: 'kirocrew' }))
+      store.dispatch(sseSubagentTool({ slot: 'slot-1', id: 'a1', tool: 'shell' }))
+    })
+    const before = store.getState().chat.subagents.a1
+    await act(async () => { refuse(new ApiError(404, 'no pending approval')) })
+    const after = store.getState().chat.subagents.a1
+    expect(after.status).toBe(before.status)
+    expect(after.status).not.toBe('error')
+    expect(after.error).toBeUndefined()
+    expect(after.streaming).toBe(before.streaming)
+  })
+
+  it('a 404 for a request the card no longer names leaves the newer pending card alone', async () => {
+    let refuse: (e: unknown) => void = () => {}
+    vi.mocked(api.decideApproval).mockReturnValueOnce(new Promise((_res, rej) => { refuse = rej }))
+    const store = createTestStore(stateWithPendingSpawn(1))
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByRole('button', { name: /^Approve$/ }))
+    // A new request under the same spawn id replaces the card before the
+    // old request's refusal answers.
+    act(() => {
+      store.dispatch(sseSubagentPending({ slot: 'slot-1', id: 'a1', task: 'task 1', approval_id: 'spawn:a1', approval_target: { ...spawnTarget('a1'), instance: 'inst-a1-new' } }))
+    })
+    await act(async () => { refuse(new ApiError(404, 'no pending approval')) })
+    expect(store.getState().chat.subagents.a1.status).toBe('pending')
+    expect(store.getState().chat.subagents.a1.error).toBeUndefined()
   })
 
   it('per-agent rejection terminates only the rejected sub-agent', async () => {
@@ -850,7 +946,7 @@ describe('ChatInput sub-agent spawn-approval banner', () => {
     const store = createTestStore(stateWithPendingSpawn(1))
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     fireEvent.click(screen.getByRole('button', { name: /^Approve$/ }))
-    expect(api.resolveApproval).toHaveBeenCalledWith('spawn:a1', 'approve')
+    expect(api.decideApproval).toHaveBeenCalledWith(spawnTarget('a1'), 'approve')
     // Card is marked resolving so the buttons can't be double-submitted.
     expect(store.getState().chat.subagents.a1.approving).toBe(true)
   })
@@ -859,17 +955,50 @@ describe('ChatInput sub-agent spawn-approval banner', () => {
     const store = createTestStore(stateWithPendingSpawn(1))
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     fireEvent.click(screen.getByRole('button', { name: /^Reject$/ }))
-    expect(api.resolveApproval).toHaveBeenCalledWith('spawn:a1', 'reject')
+    expect(api.decideApproval).toHaveBeenCalledWith(spawnTarget('a1'), 'reject')
+  })
+
+  it('a press on a spawn that names no request sends nothing and withdraws it as gone', async () => {
+    // Nothing live can be decided without a target, so the press takes the
+    // same gone verdict a refused one does: the banner withdraws the spawn and
+    // says why, and the spawn inventory settles whether it started.
+    const base = stateWithPendingSpawn(1) as { chat: { subagents: Record<string, { approval_target?: unknown }> } }
+    delete base.chat.subagents.a1.approval_target
+    const store = createTestStore(base as Partial<RootState>)
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByRole('button', { name: /^Approve$/ }))
+    expect(api.decideApproval).not.toHaveBeenCalled()
+    expect(store.getState().chat.subagents.a1.approvalGone).toBe('spawn:a1')
+    await waitFor(() => expect(screen.queryByText(/awaiting your approval to run/)).not.toBeInTheDocument())
+    expect(screen.getByTestId('approval-decision-error')).toHaveTextContent(
+      i18nT('components.approvalCard.approval_no_longer_pending'),
+    )
+  })
+
+  it('a refusal on request A does not hold back a replacement B under the same approval id', async () => {
+    vi.mocked(api.decideApproval).mockRejectedValueOnce(new ApiError(404, 'no pending approval'))
+    const store = createTestStore(stateWithPendingSpawn(1))
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByRole('button', { name: /^Approve$/ }))
+    await waitFor(() => expect(screen.queryByTestId('spawn-approval-card')).not.toBeInTheDocument())
+    // B replaces A: same approval id, a new instance.
+    act(() => {
+      store.dispatch(sseSubagentPending({
+        slot: 'slot-1', id: 'a1', task: 'task 1', approval_id: 'spawn:a1',
+        approval_target: { ...spawnTarget('a1'), instance: 'inst-b' },
+      }))
+    })
+    expect(await screen.findByRole('button', { name: /^Approve$/ })).toBeInTheDocument()
   })
 
   it('Approve all resolves every pending spawn', () => {
     const store = createTestStore(stateWithPendingSpawn(3))
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     fireEvent.click(screen.getByRole('button', { name: /Approve all/ }))
-    expect(api.resolveApproval).toHaveBeenCalledWith('spawn:a1', 'approve')
-    expect(api.resolveApproval).toHaveBeenCalledWith('spawn:a2', 'approve')
-    expect(api.resolveApproval).toHaveBeenCalledWith('spawn:a3', 'approve')
-    expect(api.resolveApproval).toHaveBeenCalledTimes(3)
+    expect(api.decideApproval).toHaveBeenCalledWith(spawnTarget('a1'), 'approve')
+    expect(api.decideApproval).toHaveBeenCalledWith(spawnTarget('a2'), 'approve')
+    expect(api.decideApproval).toHaveBeenCalledWith(spawnTarget('a3'), 'approve')
+    expect(api.decideApproval).toHaveBeenCalledTimes(3)
   })
 
   it('clicking Review in panel opens the Subagents panel and resolves nothing', () => {
@@ -878,7 +1007,7 @@ describe('ChatInput sub-agent spawn-approval banner', () => {
     fireEvent.click(screen.getByRole('button', { name: /Review in panel/ }))
     expect(store.getState().chat.activityTab).toBe('subagents')
     expect(store.getState().chat.activityOpen).toBe(true)
-    expect(api.resolveApproval).not.toHaveBeenCalled()
+    expect(api.decideApproval).not.toHaveBeenCalled()
   })
 
   it('shows a Resolving state instead of buttons once all pending spawns are approving', () => {
@@ -928,7 +1057,7 @@ describe('ChatInput sub-agent spawn-approval banner', () => {
    * id and must not keep offering a retry that can never succeed, silently.
    */
   it('withdraws the banner and says why when the spawn approval is already gone', async () => {
-    vi.mocked(api.resolveApproval).mockRejectedValueOnce(new ApiError(404, 'not found or expired'))
+    vi.mocked(api.decideApproval).mockRejectedValueOnce(new ApiError(404, 'not found or expired'))
     const store = createTestStore(stateWithPendingSpawn(1))
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     fireEvent.click(screen.getByRole('button', { name: /^Approve$/ }))
@@ -945,7 +1074,7 @@ describe('ChatInput sub-agent spawn-approval banner', () => {
     )
     const gone = i18nT('components.approvalCard.approval_no_longer_pending')
     expect(screen.queryAllByRole('status').filter(el => el.textContent?.includes(gone))).toEqual([])
-    expect(api.resolveApproval).toHaveBeenCalledTimes(1)
+    expect(api.decideApproval).toHaveBeenCalledTimes(1)
     // The empty authoritative process inventory retires the card after the
     // controls disappear; it does not survive reconnect as pending.
     await waitFor(() => expect(store.getState().chat.subagents.a1.status).toBe('stopped'))
@@ -953,7 +1082,7 @@ describe('ChatInput sub-agent spawn-approval banner', () => {
   })
 
   it('reports a failed liveness read after a gone verdict and leaves the card unresolved', async () => {
-    vi.mocked(api.resolveApproval).mockRejectedValueOnce(new ApiError(404, 'not found or expired'))
+    vi.mocked(api.decideApproval).mockRejectedValueOnce(new ApiError(404, 'not found or expired'))
     vi.mocked(api.spawnList).mockRejectedValueOnce(new ApiError(503, 'unavailable'))
     const store = createTestStore(stateWithPendingSpawn(1))
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
@@ -985,7 +1114,7 @@ describe('ChatInput sub-agent spawn-approval banner', () => {
   })
 
   it('drops the liveness notice once another reader settles the card, keeping the refusal', async () => {
-    vi.mocked(api.resolveApproval).mockRejectedValueOnce(new ApiError(404, 'not found or expired'))
+    vi.mocked(api.decideApproval).mockRejectedValueOnce(new ApiError(404, 'not found or expired'))
     vi.mocked(api.spawnList).mockRejectedValueOnce(new ApiError(503, 'unavailable'))
     const store = createTestStore(stateWithPendingSpawn(1))
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
@@ -1003,7 +1132,7 @@ describe('ChatInput sub-agent spawn-approval banner', () => {
   })
 
   it('dismisses the liveness notice on its own, leaving the refusal and the unresolved card', async () => {
-    vi.mocked(api.resolveApproval).mockRejectedValueOnce(new ApiError(404, 'not found or expired'))
+    vi.mocked(api.decideApproval).mockRejectedValueOnce(new ApiError(404, 'not found or expired'))
     vi.mocked(api.spawnList).mockRejectedValueOnce(new ApiError(503, 'unavailable'))
     const store = createTestStore(stateWithPendingSpawn(1))
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
@@ -1020,7 +1149,7 @@ describe('ChatInput sub-agent spawn-approval banner', () => {
   })
 
   it('keeps the buttons and reports the failure after a refusal that is not terminal', async () => {
-    vi.mocked(api.resolveApproval).mockRejectedValueOnce(new ApiError(500, 'boom'))
+    vi.mocked(api.decideApproval).mockRejectedValueOnce(new ApiError(500, 'boom'))
     const store = createTestStore(stateWithPendingSpawn(1))
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     fireEvent.click(screen.getByRole('button', { name: /^Approve$/ }))
@@ -1038,12 +1167,12 @@ describe('ChatInput sub-agent spawn-approval banner', () => {
     expect(store.getState().chat.subagents.a1.approvalGone).toBeUndefined()
     expect(screen.queryByText(i18nT('components.approvalCard.approval_no_longer_pending'))).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /^Approve$/ }))
-    expect(api.resolveApproval).toHaveBeenCalledTimes(2)
+    expect(api.decideApproval).toHaveBeenCalledTimes(2)
     expect(store.getState().chat.subagents.a1.approving).toBe(true)
   })
 
   it('withdraws only the gone sub-agent from a multi-agent banner', async () => {
-    vi.mocked(api.resolveApproval).mockRejectedValueOnce(new ApiError(404, 'not found or expired'))
+    vi.mocked(api.decideApproval).mockRejectedValueOnce(new ApiError(404, 'not found or expired'))
     const store = createTestStore(stateWithPendingSpawn(3))
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     fireEvent.click(screen.getByRole('button', { name: 'Approve sub-agent: task 2' }))
@@ -1120,13 +1249,13 @@ describe('ChatInput unattended-source approvals', () => {
     if (label === 'Allow once') fireEvent.click(screen.getByText(label))
     else rejectVia(label as 'Reject once' | 'Reject all')
     await waitFor(() => {
-      expect(api.resolveApproval).toHaveBeenCalledWith('ap-123', decision, undefined, expect.stringMatching(/^r_/))
+      expect(api.decideApproval).toHaveBeenCalledWith(NATIVE, decision, expect.stringMatching(/^r_/))
     })
     expect(api.approveChatSlot).not.toHaveBeenCalled()
   })
 
   it('names the source when an unattended request already timed out', async () => {
-    vi.mocked(api.resolveApproval).mockRejectedValueOnce(new ApiError(404, 'gone'))
+    vi.mocked(api.decideApproval).mockRejectedValueOnce(new ApiError(404, 'gone'))
     const store = createTestStore(withSource('cron'))
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     fireEvent.click(screen.getByText('Allow once'))
@@ -1135,13 +1264,13 @@ describe('ChatInput unattended-source approvals', () => {
     })
   })
 
-  it('keeps the generic copy for an ordinary expired approval', async () => {
-    vi.mocked(api.resolveApproval).mockRejectedValueOnce(new ApiError(404, 'gone'))
+  it('reads the shared refused-press sentence for an ordinary gone approval', async () => {
+    vi.mocked(api.decideApproval).mockRejectedValueOnce(new ApiError(404, 'gone'))
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     fireEvent.click(screen.getByText('Allow once'))
     await waitFor(() => {
-      expect(screen.getByRole('status')).toHaveTextContent(/approval request expired/i)
+      expect(screen.getByRole('status')).toHaveTextContent(i18nT('components.approvalCard.approval_no_longer_pending'))
     })
   })
 })
@@ -1183,7 +1312,7 @@ describe('ChatInput approval bar survives a steered user message (#1667)', () =>
     // Click Allow once — it must still call with the original approval_id
     fireEvent.click(screen.getByText('Allow once'))
     await waitFor(() => {
-      expect(api.resolveApproval).toHaveBeenCalledWith('ap-123', 'approve', undefined, expect.stringMatching(/^r_/))
+      expect(api.decideApproval).toHaveBeenCalledWith(NATIVE, 'approve', expect.stringMatching(/^r_/))
     })
   })
 

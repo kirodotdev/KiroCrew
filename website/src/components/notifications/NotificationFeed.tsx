@@ -720,7 +720,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                       variant="inline"
                       className="mt-1"
                       testId="notif-approval-notice"
-                      message={decideReason !== null ? decisionFailedCopy(decideReason.reason, { targeted: !!n.approval_instance })
+                      message={decideReason !== null ? decisionFailedCopy(decideReason.reason)
                         : endedFailure !== null ? decisionFailedCopy(endedFailure, { ended: true }) : null}
                     />
                     {/* A decide this tab sent was refused as no longer pending: that request

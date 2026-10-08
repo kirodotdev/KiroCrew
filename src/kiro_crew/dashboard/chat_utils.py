@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 from kiro_crew import _facade_mirror
 from kiro_crew.context_blocks import attributable_user_chars
-from kiro_crew.dashboard.chat_utils_display import redact_display_content
+from kiro_crew.dashboard.chat_utils_display import _carry_row_mid, redact_display_content
 from kiro_crew.dashboard.state import (
     DashboardState,
     _ChatSlot,
@@ -164,6 +164,8 @@ def _build_stream_chunk(msg: dict) -> str:
     except Exception:
         logger.warning("Failed to parse cls meta for permission message", exc_info=True)
         meta = None
+    if meta is not None:
+        meta = _carry_row_mid(meta, msg)
     if meta:
         meta = _redact_deep(meta)
     # One shared guard for content: redact recursively and hold the

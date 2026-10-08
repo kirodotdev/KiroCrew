@@ -1,11 +1,11 @@
-import { createElement, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { createElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Trans } from 'react-i18next'
 import { shallowEqual } from 'react-redux'
 import { useAppSelector, type useAppDispatch } from '../../store'
-import { pendingQuestionFor, resolveByApprovalId, openActivityToTool, openActivityToTab, selectSlotPendingApproval, selectSlotPendingSpawnApprovals, selectSlotSubagents, isSpawnApprovalGone, markSubagentApproving, markSubagentApprovalGone, reconcileGoneSubagent, sseSubagentDone } from '../../store/chatSlice'
+import { pendingQuestionFor, resolveApprovalRow, resolveShownApprovalRow, openActivityToTool, openActivityToTab, selectSlotMessages, selectSlotPendingApproval, selectSlotPendingSpawnApprovals, selectSlotSubagents, isSpawnApprovalGone, markSubagentApproving, markSubagentApprovalGone, reconcileGoneSubagent, sseSubagentDone } from '../../store/chatSlice'
 import { useToolPillVisible } from '../../store/toolPillRegistry'
-import { api, ApiError } from '../../api/client'
-import { isTerminalApprovalRefusal } from '../../api/apiError'
+import { api } from '../../api/client'
+import { isNotFoundError, isTerminalApprovalRefusal, noPendingApprovalError } from '../../api/apiError'
 import { safeSetItem, safeGetItem } from '../../utils/safeStorage'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import { useSimplifiedToolNames } from '../../hooks/useSimplifiedToolNames'
@@ -15,8 +15,9 @@ import { deriveToolCallTitle } from '../../utils/toolCallTitle'
 import { toApiDecision } from '../../utils/approvalDecision'
 import { alreadyResolvedDecision, decisionVerdict, mintResponseId, resolvedByLine, settledElsewhereLine, settledNoticeKind } from './sharedDecision'
 import { baseCommandLabel, truncateCommandLabel } from '../../utils/trustPatterns'
+import { permissionRowTarget } from '../../types/approvalTarget'
 import { APPROVAL_MODE_ADJUSTED_LS_KEY } from '../ApprovalModePicker'
-import type { SubagentActivity } from '../../types'
+import type { CoordinatorApprovalTarget, SubagentActivity } from '../../types'
 import { i18nT } from '../../i18n/t'
 import { fmtTime } from '../../i18n/format'
 import { crewRootOf } from '../../lib/crewMode'
@@ -32,7 +33,7 @@ import { REJECT_APPROVAL_EVENT } from '../../pages/chat/composerFocus'
    composer renders the bar; `SpawnApprovalCard` renders the spawns. */
 
 type AppDispatch = ReturnType<typeof useAppDispatch>
-// Decisions resolved through the ONE-SHOT `api.resolveApproval` endpoint are
+// One-shot decisions sent through `api.decideApproval` are
 // mapped by the shared `toApiDecision` (utils/approvalDecision.ts), which is
 // fail-closed and is the only place that mapping is spelled — see that module
 // for why a local ternary here cannot be caught by any downstream guard (#5400,
@@ -46,8 +47,6 @@ type AppDispatch = ReturnType<typeof useAppDispatch>
  *  Allow once / Reject are offered. Kept in sync with the backend's
  *  `_BACKGROUND_APPROVAL_SOURCES` minus `autonudge`, which does run in-session. */
 const TRUST_DECISIONS = ['trust_command', 'trust_base', 'trust', 'trust_reads']
-// The one-shot decisions the slot route takes with a card row (`request_mid`).
-const ONE_SHOT_DECISIONS = ['approved', 'rejected', 'rejected_once']
 
 export const UNATTENDED_APPROVAL_SOURCES = new Set(['cron', 'heartbeat', 'taskrunner'])
 
@@ -74,6 +73,12 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
   // Suppressed at the READ so every consumer (bar, ghost, pill, rounded-corner
   // class) follows one judgment instead of each render site re-deciding.
   const pendingApproval = slotApprovalChrome ? pendingApprovalRaw : null
+  // Where the bar's row sits, so a refusal of a row that names no request
+  // settles that row and no other (resolveShownApprovalRow).
+  const pendingApprovalIndex = useAppSelector(s => {
+    const shown = selectSlotPendingApproval(s, slotId)
+    return shown ? (slotId ? selectSlotMessages(s, slotId) : s.chat.messages).indexOf(shown) : -1
+  })
   const hasApproval = !!pendingApproval
   const [approvalSubmitting, setApprovalSubmitting] = useState(false)
   // A2: bumping this opens the footer ApprovalModePicker with a spotlight
@@ -148,8 +153,11 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
   useEffect(() => clearResolvedLine, [slotId, clearResolvedLine])
   // A pending card says whose turn raised it when that is someone else.
   const approvalRaisedBy = useRaisedBy(slotId, approvalId ? id => id.endsWith(`:${approvalId}`) : null)
+  /** The request this card shows (types/approvalTarget). Every decide is
+   *  bound to it: the id recurs, and a chat runner's id can collide with a
+   *  coordinator one. */
+  const approvalTarget = useMemo(() => permissionRowTarget(approvalMeta, slotId), [approvalMeta, slotId])
   const approvalMid = typeof approvalMeta?.mid === 'string' ? approvalMeta.mid : undefined
-  const approvalRegistry = typeof approvalMeta?.registry === 'string' ? approvalMeta.registry : undefined
   const approvalToolInput = (approvalMeta?.tool_input as string) || ''
   const approvalIsReadOnly = !!(approvalMeta?.is_read_only)
   const approvalFullCommand = (approvalMeta?.full_command as string) || ''
@@ -199,7 +207,7 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
   const approvalIsUnattended = UNATTENDED_APPROVAL_SOURCES.has(approvalSource)
   /** True when a standing Trust grant can actually be RECORDED for this card.
    *  FAIL-CLOSED: the Trust affordances are withheld unless this holds, because
-   *  the only other resolve path is the one-shot `api.resolveApproval`, which
+   *  the only other resolve path is a one-shot `api.decideApproval`, which
    *  has no trust verb — offering Trust there claims a standing grant the
    *  backend never records (#5400, #5434, #5486).
    *  - `activeSlot`: `api.approveChatSlot` is slot-scoped, so with no slot the
@@ -208,6 +216,10 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
    *  - `!approvalIsUnattended`: session trust is incoherent for a job that is
    *    not this session (see `approvalSource` above). */
   const approvalTrustGrantable = !!activeSlot && !approvalIsUnattended
+    // A standing grant is recorded on the slot that raised the request, which
+    // only a chat runner's own request has: a coordinator approval parked in
+    // this chat is answered one-shot, by its own target.
+    && approvalTarget?.origin === 'native'
   const simplified = useSimplifiedToolNames()
   const uiLang = useLanguage().resolved
   const approvalLabelRaw = sanitizeLlmOutput(pendingApproval?.content || '').replace(/^🔧\s*/, '')
@@ -282,23 +294,17 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
     setApprovalSubmitting(true)
     setApprovalNotice(null)
     const responseId = mintResponseId()
-    // The clicked row: a later request may reuse the same approval id.
-    const clickedMid = approvalMid
     // A security-rule override is bound to the card row it was clicked on.
     const isDenyOverride = decision === 'deny_override_once' || decision === 'deny_override_session'
-    // Request ids recur across sessions, so a one-shot decision on this
-    // session's own request names its session and card row on the slot route.
-    // A coordinator card (cron, subagent, task) is not this slot's request and
-    // keeps the id route, which refuses an id pending in two sessions.
-    const isNativeOneShot = !!activeSlot && !!clickedMid && !approvalIsUnattended
-      && approvalRegistry !== 'coordinator' && ONE_SHOT_DECISIONS.includes(decision)
-    // A decide that named its card row settled (or missed) only that row.
-    const rowScoped = !!clickedMid && (isDenyOverride || isNativeOneShot)
+    const settle = (outcome: string) => {
+      if (approvalTarget) dispatch(resolveApprovalRow({ target: approvalTarget, decision: outcome }))
+      else if (pendingApprovalIndex >= 0) {
+        const key = (approvalMeta?.clientTs as string | undefined) ?? pendingApproval?.ts
+        dispatch(resolveShownApprovalRow({ slot: activeSlot, index: pendingApprovalIndex, key, id: approvalId, decision: outcome }))
+      }
+    }
     const finish = () => {
-      // An override settles the row it named; request ids recur.
-      dispatch(resolveByApprovalId({
-        id: approvalId, slot: activeSlot || undefined, decision, ...(rowScoped ? { mid: clickedMid } : {}),
-      }))
+      settle(decision)
       setApprovalSubmitting(false)
       // A timed grant says what it covers and when it ends, since the card that
       // offered the lifetime is gone the moment the decision lands. The time
@@ -337,7 +343,7 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
       const settled = alreadyResolvedDecision(err)
       if (settled) {
         // It answered the request this tab clicked, not every row with that id.
-        dispatch(resolveByApprovalId({ id: approvalId, slot: activeSlot || undefined, decision: decisionVerdict(settled), mid: clickedMid }))
+        settle(decisionVerdict(settled))
         setApprovalNoticeKind(settledNoticeKind(settled))
         markSettled(settled)
         resolvedLine.current = teamAttribution ? resolvedByLine(settled, viewerId) : settledElsewhereLine(settled)
@@ -348,22 +354,19 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
       // was stopped, timed out, or the process was replaced. The card is an
       // orphan: leaving it up makes every button look broken, so clear it and
       // say why instead of only logging to the console.
-      if (err instanceof ApiError && err.status === 404) {
-        // An override names its card row (`request_mid`), so its 404 proves only
-        // that row is gone: a replacement request reusing the id may still be
-        // pending, and must keep its card. A bare-id 404 proves none is pending.
-        dispatch(resolveByApprovalId(rowScoped
-          ? { id: approvalId, slot: activeSlot || undefined, decision: 'stale', mid: clickedMid }
-          : { id: approvalId, slot: activeSlot || undefined, decision: 'stale', allPending: true }))
-        // Say WHOSE turn expired. Unattended sources deny-fast on a short
-        // window (minutes), so by the time a human reads the card the job has
-        // usually already been denied and moved on — "expired" alone reads as
-        // a dashboard bug rather than the job's documented timeout.
+      if (isNotFoundError(err)) {
+        settle('stale')
+        // Say WHOSE request timed out when it was unattended: those sources
+        // deny-fast on a short window, so by the time a human reads the card
+        // the job has usually been denied and moved on. Otherwise the sentence
+        // every approval surface uses for a refused press: the request may have
+        // expired, been decided elsewhere or been replaced, and a 404 does not
+        // say which.
         setApprovalNoticeKind('status')
         setApprovalNotice(
           approvalIsUnattended
             ? i18nT('components.chatInput.that_request_already_timed_out_and_was_denied', { source: approvalSource })
-            : i18nT('components.chatInput.that_approval_expired_the_turn_it_belonged_to_is')
+            : i18nT('components.approvalCard.approval_no_longer_pending')
         )
         return
       }
@@ -372,43 +375,45 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
       setApprovalNoticeKind('error')
       setApprovalNotice(i18nT('components.chatInput.could_not_submit_that_decision_see_the_console_f'))
     }
-    if (isDenyOverride) {
-      // A security-rule override is slot-scoped and owner-only on the server;
-      // there is no one-shot fallback for it, so with no slot it is not sent.
-      // It names the exact card row it was clicked on (`request_mid`): request
-      // ids recur, and the server refuses an override that does not match the
-      // card it would settle.
-      if (!activeSlot || !clickedMid) { setApprovalSubmitting(false); return }
-      api.approveChatSlot(activeSlot, decision, {
-        request_id: approvalId, response_id: responseId, origin: 'native', request_mid: clickedMid,
-      }).then(finish).catch(fail)
+    // A card that names no request has nothing live behind it.
+    if (!approvalTarget) {
+      fail(noPendingApprovalError())
       return
     }
-    if (TRUST_DECISIONS.includes(decision) && activeSlot) {
+    // A security-rule override is slot-scoped and owner-only on the server,
+    // bound to the card row it was clicked on (`request_mid`): there is no
+    // one-shot fallback for it, so with no slot or no native row it is not sent.
+    if (isDenyOverride && (!activeSlot || approvalTarget.origin !== 'native')) {
+      setApprovalSubmitting(false)
+      return
+    }
+    if ((isDenyOverride || TRUST_DECISIONS.includes(decision)) && activeSlot) {
       // Defence in depth: the Trust controls are not rendered for unattended
-      // sources, but never let a trust grant be applied on their behalf. The
-      // grant would land on THIS slot (api.approveChatSlot is slot-scoped),
-      // widening its auto-approval surface for a job that is not this session.
-      // Downgrade to a one-shot allow instead of silently over-granting.
-      if (approvalIsUnattended) {
-        api.resolveApproval(approvalId, 'approve', undefined, responseId).then(finish).catch(fail)
+      // sources or coordinator requests, but never let a trust grant be applied
+      // on their behalf. The grant would land on THIS slot (api.approveChatSlot
+      // is slot-scoped), widening its auto-approval surface for work that is not
+      // this session. Downgrade to a one-shot allow instead of over-granting.
+      if (approvalTarget.origin !== 'native' || (!isDenyOverride && approvalIsUnattended)) {
+        api.decideApproval(approvalTarget, 'approve', responseId).then(finish).catch(fail)
         return
       }
-      const extra: Record<string, string | number> = { request_id: approvalId, response_id: responseId }
+      // Bound to the row this card showed, like every other decide: a stale
+      // card's grant must not land on a same-id request that replaced it.
+      const extra: Record<string, string | number> = { request_id: approvalTarget.id, origin: 'native', request_mid: approvalTarget.mid, response_id: responseId }
       if (pattern) extra.pattern = pattern
       if (ttlSeconds !== undefined) extra.ttl_seconds = ttlSeconds
       api.approveChatSlot(activeSlot, decision, extra).then(finish).catch(fail)
-    } else if (isNativeOneShot && activeSlot && clickedMid) {
-      // A rejection's reason travels only on this route, the one the server takes it on.
+    } else if (reason && decision !== 'approved' && activeSlot && approvalTarget.origin === 'native' && !approvalIsUnattended) {
+      // A rejection's reason travels only on the slot route, the one the server
+      // takes it on, bound to the row this card showed like every other decide.
       const extra: Record<string, string> = {
-        request_id: approvalId, response_id: responseId, origin: 'native', request_mid: clickedMid,
+        request_id: approvalTarget.id, response_id: responseId, origin: 'native', request_mid: approvalTarget.mid, reason,
       }
-      if (reason && decision !== 'approved') extra.reason = reason
       api.approveChatSlot(activeSlot, decision, extra).then(finish).catch(fail)
     } else {
-      api.resolveApproval(approvalId, toApiDecision(decision), undefined, responseId).then(finish).catch(fail)
+      api.decideApproval(approvalTarget, toApiDecision(decision), responseId).then(finish).catch(fail)
     }
-  }, [approvalId, approvalMid, approvalRegistry, activeSlot, approvalIsUnattended, approvalSource, approvalMode, approvalFullCommand, approvalBaseCommand, dispatch, teamAttribution, viewerId, markSettled])
+  }, [approvalId, approvalTarget, approvalMeta, pendingApproval, pendingApprovalIndex, activeSlot, approvalIsUnattended, approvalSource, approvalMode, approvalFullCommand, approvalBaseCommand, dispatch, teamAttribution, viewerId, markSettled])
 
   // The reject-approval chord reaches this pane's bar as an event on its action
   // row (`rejectPendingApproval`). State, not a ref: the row mounts with the
@@ -446,7 +451,7 @@ export function useSpawnApprovals({ slotId, slotApprovalChrome, dispatch, showAp
   // Reject all and each sub-agent gets its own row with per-agent Approve/Reject
   // (so one can be run and another rejected). "Review in panel" opens the
   // Subagents tab for the fuller per-agent view (task + streaming output).
-  // Resolution goes through the same api.resolveApproval + markSubagentApproving
+  // Resolution goes through the same api.decideApproval + markSubagentApproving
   // path the panel uses, so the two surfaces stay consistent for a given id.
   const pendingSpawnApprovalsRaw = useAppSelector(s => selectSlotPendingSpawnApprovals(s, slotId), shallowEqual)
   const pendingSpawnApprovals = slotApprovalChrome ? pendingSpawnApprovalsRaw : EMPTY_SPAWN_APPROVALS
@@ -479,10 +484,40 @@ export function useSpawnApprovals({ slotId, slotApprovalChrome, dispatch, showAp
     ? i18nT('pages.chat.subagentProgressBar.liveness_check_failed')
     : null
   const dismissSpawnLivenessError = useCallback(() => setLivenessFailedFor(null), [])
+  // A refusal that proves the approval gone, or a card that names no request
+  // (nothing live to decide, so nothing is sent), is withdrawn through the one
+  // owner both surfaces read (#11180), instead of leaving buttons that can only
+  // re-send it. The refusal names the request the card was raised for, so a
+  // newer request that took over the id keeps its card live.
+  const withdrawGoneSpawn = useCallback((a: SubagentActivity, target: CoordinatorApprovalTarget | null) => {
+    const approvalId = a.approval_id
+    if (!approvalId) return
+    dispatch(markSubagentApprovalGone({ id: a.id, approval_id: approvalId, target }))
+    // A rejected request, so an error surface, and the only one: the
+    // refusal is reported once, by the surface that sent it. The chip and
+    // the activity card show this id's liveness as neutral status.
+    showApprovalError(i18nT('components.approvalCard.approval_no_longer_pending'))
+    // The liveness read that settles the card. A refusal leaves it
+    // unresolved (the chip's poll retries) and is reported, not swallowed,
+    // on its own notice so the refusal above stays on screen: until the
+    // read answers, the composer stays blocked on this card.
+    if (slotId) {
+      dispatch(reconcileGoneSubagent({ slot: slotId, id: a.id, approval_id: approvalId })).unwrap()
+        .then(() => setLivenessFailedFor(prev => (prev === a.id ? null : prev)))
+        .catch(() => setLivenessFailedFor(a.id))
+    }
+  }, [dispatch, slotId, showApprovalError])
   const resolveOneSpawn = useCallback((a: SubagentActivity, action: 'approve' | 'reject') => {
     if (!a.approval_id || a.approving) return
+    // Bound to the request the spawn card was raised for; one that names none
+    // has nothing live to decide.
+    const target = a.approval_target
+    if (!target) {
+      withdrawGoneSpawn(a, null)
+      return
+    }
     dispatch(markSubagentApproving({ id: a.id, approving: true }))
-    api.resolveApproval(a.approval_id, action).then(() => {
+    api.decideApproval(target, action).then(() => {
       // Terminate a rejected card optimistically so the banner does not depend
       // on a WebSocket round trip. The slot-scoped `approval_resolved` frame
       // converges this state idempotently when it arrives. An approved spawn
@@ -494,24 +529,8 @@ export function useSpawnApprovals({ slotId, slotApprovalChrome, dispatch, showAp
         dispatch(sseSubagentDone({ slot: slotId, id: a.id, elapsed: 0, error: i18nT('hooks.useWebSocket.approval_rejected') }))
       }
     }).catch((err: unknown) => {
-      // The panel resolves this same id; a refusal that proves the approval
-      // gone is withdrawn through the one owner both surfaces read (#11180),
-      // instead of leaving buttons that can only re-send it.
-      if (isTerminalApprovalRefusal(err) && a.approval_id) {
-        dispatch(markSubagentApprovalGone({ id: a.id, approval_id: a.approval_id }))
-        // A rejected request, so an error surface, and the only one: the
-        // refusal is reported once, by the surface that sent it. The chip and
-        // the activity card show this id's liveness as neutral status.
-        showApprovalError(i18nT('components.approvalCard.approval_no_longer_pending'))
-        // The liveness read that settles the card. A refusal leaves it
-        // unresolved (the chip's poll retries) and is reported, not swallowed,
-        // on its own notice so the refusal above stays on screen: until the
-        // read answers, the composer stays blocked on this card.
-        if (slotId) {
-          dispatch(reconcileGoneSubagent({ slot: slotId, id: a.id, approval_id: a.approval_id })).unwrap()
-            .then(() => setLivenessFailedFor(prev => (prev === a.id ? null : prev)))
-            .catch(() => setLivenessFailedFor(a.id))
-        }
+      if (isTerminalApprovalRefusal(err)) {
+        withdrawGoneSpawn(a, target)
         return
       }
       // Any other failure left the decision unrecorded: the buttons come back
@@ -523,7 +542,7 @@ export function useSpawnApprovals({ slotId, slotApprovalChrome, dispatch, showAp
         ? i18nT('components.approvalCard.decision_not_recorded_error', { error: reason })
         : i18nT('components.approvalCard.decision_failed'))
     })
-  }, [dispatch, slotId, showApprovalError])
+  }, [dispatch, slotId, showApprovalError, withdrawGoneSpawn])
   const resolveSpawnApprovals = useCallback((action: 'approve' | 'reject') => {
     for (const a of pendingSpawnApprovals) resolveOneSpawn(a, action)
   }, [pendingSpawnApprovals, resolveOneSpawn])

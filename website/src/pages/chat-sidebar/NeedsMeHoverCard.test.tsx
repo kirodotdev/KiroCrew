@@ -18,6 +18,7 @@ vi.mock('../../hooks/sharedCrew/sendRevisionSeed', () => ({ baseRevisionForPress
 
 const api = vi.hoisted(() => ({
   approveChatSlot: vi.fn(),
+  decideApproval: vi.fn(),
   resolveApproval: vi.fn(),
   sessionSummary: vi.fn(),
   chatSlotDetail: vi.fn(),
@@ -105,7 +106,7 @@ beforeEach(() => {
       ? [permission({ approval_id: 'req-9', mid: 'mid-9', deny_override_rule: 'rm-rf' })]
       : [permission()],
   }))
-  api.approveChatSlot.mockResolvedValue({ ok: true })
+  api.decideApproval.mockResolvedValue({ ok: true })
   sendTurn.mockResolvedValue({ status: 'dispatched' })
 })
 afterEach(() => {
@@ -221,7 +222,7 @@ describe('NeedsMeHoverCard', () => {
 
   it('names the verdict when another tab answered first', async () => {
     const { ApiError } = await vi.importActual<typeof import('../../api/client')>('../../api/client')
-    api.approveChatSlot.mockRejectedValue(new ApiError(409, 'already resolved', JSON.stringify({ code: 'already_resolved', decision: { decision_id: 'd1', outcome: 'rejected' } })))
+    api.decideApproval.mockRejectedValue(new ApiError(409, 'already resolved', JSON.stringify({ code: 'already_resolved', decision: { decision_id: 'd1', outcome: 'rejected' } })))
     mount()
     hover('gate')
     fireEvent.click(await screen.findByRole('button', { name: 'Approve Shell' }))
@@ -295,13 +296,13 @@ describe('NeedsMeHoverCard', () => {
     hover('gate')
     fireEvent.click(await screen.findByRole('button', { name: 'Approve Shell' }))
     await screen.findByText('Approved')
-    expect(api.approveChatSlot).toHaveBeenCalledTimes(1)
-    const [slot, action, extra] = api.approveChatSlot.mock.calls[0]
-    expect(slot).toBe('gate')
-    expect(action).toBe('approved')
-    expect(extra).toMatchObject({ origin: 'native', request_id: 'req-1', request_mid: 'mid-1' })
-    expect(typeof extra.response_id).toBe('string')
+    expect(api.decideApproval).toHaveBeenCalledTimes(1)
+    const [target, action, responseId] = api.decideApproval.mock.calls[0]
+    expect(target).toEqual({ origin: 'native', id: 'req-1', slot: 'gate', mid: 'mid-1' })
+    expect(action).toBe('approve')
+    expect(typeof responseId).toBe('string')
     expect(api.resolveApproval).not.toHaveBeenCalled()
+    expect(api.approveChatSlot).not.toHaveBeenCalled()
     expect(screen.queryByRole('button', { name: 'Approve Shell' })).toBeNull()
   })
 
@@ -310,8 +311,8 @@ describe('NeedsMeHoverCard', () => {
     hover('gate')
     fireEvent.click(await screen.findByRole('button', { name: 'Deny Shell' }))
     await screen.findByText('Denied')
-    expect(api.approveChatSlot.mock.calls[0][1]).toBe('rejected_once')
-    expect(api.approveChatSlot.mock.calls[0][2]).toMatchObject({ origin: 'native', request_mid: 'mid-1' })
+    expect(api.decideApproval.mock.calls[0][1]).toBe('reject_once')
+    expect(api.decideApproval.mock.calls[0][0]).toMatchObject({ origin: 'native', mid: 'mid-1' })
   })
 
   it('shows a Crew Mode worker approval without decision buttons', async () => {

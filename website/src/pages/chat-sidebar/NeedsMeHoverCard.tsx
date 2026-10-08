@@ -19,7 +19,7 @@ import { useTranslation } from 'react-i18next'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { ArrowUp, Check, FileText, MessageCircleQuestionMark, Reply, ShieldCheck, X } from 'lucide-react'
 import { store, useAppDispatch, useAppSelector } from '../../store'
-import { capturePendingAskId, resolveByApprovalId } from '../../store/chatSlice'
+import { capturePendingAskId, resolveApprovalRow } from '../../store/chatSlice'
 import { resolveAskAfterSend } from '../../lib/resolveAskAfterSend'
 import { api, ApiError } from '../../api/client'
 import { OverlayPortal, useCloseWhenCrewHidden } from '../../components/overlayRoot'
@@ -31,6 +31,7 @@ import { adoptSendRaceRevision, baseRevisionFor, isSendRaceConflict, sendIdempot
 import { baseRevisionForPress } from '../../hooks/sharedCrew/sendRevisionSeed'
 import { ROW_META_CLS, ROW_STATUS_CLS } from '../../components/listShell'
 import { alreadyResolvedDecision, decisionVerdict, mintResponseId } from '../../components/chat-input/sharedDecision'
+import { toApiDecision } from '../../utils/approvalDecision'
 import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { isPeerRow, sessionRowIdentity } from './rowIdentity'
 import type { ChatSlot } from '../../types'
@@ -234,23 +235,22 @@ function NeedsMeCard({ identity, drafts, inFlight, row, focusReply, cardRef, dra
 
   const decide = useCallback((a: Extract<NeedsMeAsk, { kind: 'approval' }>, approve: boolean) => {
     if (!a.requestMid) return
+    const rowTarget = { origin: 'native' as const, id: a.requestId, slot: slotKey, mid: a.requestMid }
     const k = approvalKey(a.requestId, a.requestMid)
     setOutcomes(o => ({ ...o, [k]: 'pending' }))
     const set = (v: Outcome) => setOutcomes(o => ({ ...o, [k]: v }))
     const decision = approve ? 'approved' : 'rejected_once'
-    api.approveChatSlot(slotKey, decision, {
-      request_id: a.requestId, request_mid: a.requestMid, origin: 'native', response_id: mintResponseId(),
-    }).then(() => {
+    api.decideApproval(rowTarget, toApiDecision(decision), mintResponseId()).then(() => {
       set(approve ? 'approved' : 'denied')
-      dispatch(resolveByApprovalId({ id: a.requestId, slot: slotKey, decision, mid: a.requestMid }))
+      dispatch(resolveApprovalRow({ target: rowTarget, decision }))
     }).catch((err: unknown) => {
       const elsewhere = alreadyResolvedDecision(err)
       if (elsewhere) {
         set(decisionVerdict(elsewhere) === 'approved' ? 'elsewhere_approved' : 'elsewhere_denied')
-        dispatch(resolveByApprovalId({ id: a.requestId, slot: slotKey, decision: decisionVerdict(elsewhere), mid: a.requestMid }))
+        dispatch(resolveApprovalRow({ target: rowTarget, decision: decisionVerdict(elsewhere) }))
       } else if (err instanceof ApiError && err.status === 404) {
         set('expired')
-        dispatch(resolveByApprovalId({ id: a.requestId, slot: slotKey, decision: 'stale', mid: a.requestMid }))
+        dispatch(resolveApprovalRow({ target: rowTarget, decision: 'stale' }))
       } else {
         set('error')
       }

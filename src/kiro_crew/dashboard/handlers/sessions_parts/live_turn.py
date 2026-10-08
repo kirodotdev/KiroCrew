@@ -136,18 +136,28 @@ async def api_approval_resolve(request: web.Request) -> web.Response:
     request_app = str(request.get("app") or "")
     if request_app:
         return await _resolve_app_approval(request, state, request_app, approval_id, action)
+
+    async def _response_id(request: web.Request, shared_decisions: Any) -> tuple[str, bool]:
+        """The click's ``response_id`` from the decide body, and whether it is valid."""
+        try:
+            raw_body = await request.json() if request.can_read_body is True else {}
+        except ValueError:
+            raw_body = {}
+        return shared_decisions.read_response_id(raw_body if isinstance(raw_body, dict) else {})
+
     if "origin" in request.query:
         # Dynamic Dashboard echoes the inventory record's origin, exact slot and
         # instance. Do not fall through to native futures when that displayed
         # record expires. The instance binds the decision to the request the card
         # showed: the request id is minted by the caller and can recur in the same
         # slot, so a card left up from an expired record would otherwise resolve
-        # the request that replaced it. An approval with no owning slot (a cron,
-        # autonudge or task-runner request) names its slot as empty, which only
-        # a record whose own slot is empty matches.
-        slot = request.query.get("slot", "")
+        # the request that replaced it.
+        # ``slot`` must be present but may be empty: a coordinator approval
+        # raised with no owning slot (a cron job's) is bound by its instance
+        # alone, and the record's own empty slot must still match.
+        slot = request.query.get("slot")
         instance = request.query.get("instance", "")
-        if request.query["origin"] != "coordinator" or "slot" not in request.query or not instance:
+        if request.query["origin"] != "coordinator" or slot is None or not instance:
             return web.json_response(
                 {"error": "invalid approval target", "code": "invalid_approval_target"}, status=400
             )
@@ -166,46 +176,55 @@ async def api_approval_resolve(request: web.Request) -> web.Response:
                     },
                     status=403,
                 )
+        # Shared Crew: the targeted decide settles through the same decision
+        # registry as the bare one, naming the verified responder, so a retry of
+        # this click replays and a different collaborator's later click gets 409
+        # with the winner. The slot and instance check above stays the fence.
+        from kiro_crew.dashboard.interaction_coordinator import settled_coordinator_target
         from kiro_crew.shared_crew import decisions as shared_decisions
 
-        try:
-            raw_target_body = await request.json() if request.can_read_body is True else {}
-        except ValueError:
-            raw_target_body = {}
-        target_response_id, target_response_id_ok = shared_decisions.read_response_id(
-            raw_target_body if isinstance(raw_target_body, dict) else {}
-        )
-        if not target_response_id_ok:
+        response_id, response_id_ok = await _response_id(request, shared_decisions)
+        if not response_id_ok:
             return web.json_response(
                 {"error": "invalid response_id", "code": "invalid_response_id"}, status=400
             )
+        decision = (
+            "approved"
+            if action == "approve"
+            else "rejected_once" if action == "reject_once" else "rejected"
+        )
         pending = state._pending_approvals.get(approval_id)
-        # No await between checking the record and resolving its state-only
-        # future. The registry records the verified responder, as the by-id
-        # path below does.
+        # No await between checking the record and resolving its state-only future.
+        current = (
+            pending.get("instance") if pending and (pending.get("slot") or "") == slot else None
+        )
         # A settled future whose record the wait has not popped yet is a lost
         # race: resolving again would reopen the decision the winner settled.
         future = state._approval_futures.get(approval_id)
-        if (
-            pending
-            and (pending.get("slot") or "") == slot
-            and pending.get("instance") == instance
-            and future is not None
-            and not future.done()
+        if current == instance and (future is None or future.done()):
+            reply = None
+        elif current == instance:
+            reply = shared_decisions.resolve_state_approval(
+                state, request, approval_id, action == "approve", decision, response_id
+            )
+        elif pending is not None or settled_coordinator_target(state, approval_id) != (
+            slot,
+            instance,
         ):
-            outcome = {"approve": "approved", "reject_once": "rejected_once"}.get(
-                action, "rejected"
-            )
-            target_reply = shared_decisions.resolve_state_approval(
+            # Another request holds the id now, or the decision kept under it
+            # settled a different request: neither outcome is this click's.
+            reply = None
+        else:
+            # Only the state decision: a native request in this slot can hold
+            # the same id, and its decision is not this click's outcome.
+            reply = shared_decisions.settled_state_reply(
                 state,
-                request,
                 approval_id,
-                action == "approve",
-                outcome,
-                target_response_id,
+                response_id,
+                shared_decisions.request_principal(request),
             )
-            if target_reply is not None:
-                return shared_decisions.respond(target_reply)
+        if reply is not None:
+            return shared_decisions.respond(reply)
         ok = False
     else:
         # Imported here: chat_handlers imports this package at module scope.
@@ -226,13 +245,7 @@ async def api_approval_resolve(request: web.Request) -> web.Response:
         # with the winning decision, a retry of the same click replays it.
         from kiro_crew.shared_crew import decisions as shared_decisions
 
-        try:
-            raw_body = await request.json() if request.can_read_body is True else {}
-        except ValueError:
-            raw_body = {}
-        response_id, response_id_ok = shared_decisions.read_response_id(
-            raw_body if isinstance(raw_body, dict) else {}
-        )
+        response_id, response_id_ok = await _response_id(request, shared_decisions)
         if not response_id_ok:
             return web.json_response(
                 {"error": "invalid response_id", "code": "invalid_response_id"}, status=400
