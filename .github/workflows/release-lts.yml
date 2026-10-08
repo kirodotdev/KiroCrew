@@ -42,12 +42,13 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           # lts-vX.Y.Z maps to version X.Y.Z, nothing else: an LTS release is
           # always a bare release, so the wheel, desktop and feed versions agree.
           VERSION="${TAG#lts-v}"
           if [ "lts-v${VERSION}" != "$TAG" ] || ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::an LTS release tag must be exactly lts-vX.Y.Z with numeric components, not ${TAG}"
+            err "an LTS release tag must be exactly lts-vX.Y.Z with numeric components, not ${TAG}"
             exit 1
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -84,10 +85,11 @@ jobs:
 
       - name: Verify exact candidate SHA
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           ACTUAL_SHA="$(git rev-parse HEAD)"
           if [ "$ACTUAL_SHA" != "$GITHUB_SHA" ]; then
-            echo "::error::checked out ${ACTUAL_SHA}, expected release candidate ${GITHUB_SHA}"
+            err "checked out ${ACTUAL_SHA}, expected release candidate ${GITHUB_SHA}"
             exit 1
           fi
 
