@@ -14,7 +14,7 @@ import type { ChatMessage, ChatSlot } from '../../../types'
 import { mergeIntoDraft, mergeRecoveredDraft, setDraft } from '../../../utils/chatDrafts'
 import { expandAll as expandPasteTokens } from '../../../utils/pasteTokens'
 import { handleStopPress, isEscalationState } from '../../../utils/stopDebounce'
-import { interceptSlashCommand, isInterceptedSlashCommand } from '../ChatInput'
+import { interceptSlashCommand, isInterceptedSlashCommand, type SlashInterceptResult } from '../ChatInput'
 import { mintSendId } from '../ChatPageMessageContent'
 import type { ComposerDraftStores } from './composerDrafts'
 import type { ComposerStaging } from './composerStaging'
@@ -44,6 +44,10 @@ interface BusyTurnControlsOptions {
   /** Per-slot time of the last soft-stop press (the force-stop arming window). */
   softStopAtMapRef: MutableRefObject<Map<string, number>>
   dispatch: AppDispatch
+  /** The page's handling of a slash command that settled after the steer path
+   *  cleared the composer: follow a `/rewind` fork, or show a `/rewind`
+   *  refusal's reason. The page owns both, because owners never switch slots. */
+  onSlashSettled?: (res: SlashInterceptResult, originSlot: string | null) => void
 }
 
 /**
@@ -71,6 +75,7 @@ export function useBusyTurnControls({
   pendingQuestion,
   softStopAtMapRef,
   dispatch,
+  onSlashSettled,
 }: BusyTurnControlsOptions) {
   const { drafts, fileDrafts, pasteDrafts, saveDrafts } = stores
   const { pendingFilesRef, pasteBlocksRef, setPasteBlocks, setPendingFiles, pickedFileTokens, mergeSlotTokens } = staging
@@ -177,6 +182,11 @@ export function useBusyTurnControls({
       // recovered question (same contract as the hand-off paths).
       const originSlot = activeSlotRef.current
       void interceptSlashCommand(cmdTxt, originSlot, dispatch).then(res => {
+        // /rewind settled while the turn ran: the page follows its fork or
+        // reports its refusal. The composer was cleared below before this
+        // resolved, so a fork has nothing of the command left to park.
+        if (res.intercepted && (res.switchTo || (res.failed && res.stage === 'rewind'))) onSlashSettled?.(res, originSlot)
+        if (res.intercepted && res.switchTo) return
         if (!res.intercepted || !res.failed || !originSlot) return
         const onScreen = originSlot === activeSlotRef.current && composerSlotRef.current === originSlot
         if (onScreen) {
@@ -237,7 +247,7 @@ export function useBusyTurnControls({
     setInput(''); setPendingFiles([]); delete pickedFileTokens.current[activeSlot]; setPasteBlocks([])
     delete drafts.current[activeSlot]; delete fileDrafts.current[activeSlot]; delete pasteDrafts.current[activeSlot]
     saveDrafts()
-  }, [activeSlot, slotRunning, connected, send, steerText, steerMutation, messageQuote, saveDrafts, dispatch, setInput,
+  }, [activeSlot, slotRunning, connected, send, steerText, steerMutation, messageQuote, saveDrafts, dispatch, setInput, onSlashSettled,
     // Refs and state setters: stable, so none of these re-creates the callback.
     activeSlotRef, composerRef, composerSlotRef, inputRef, drafts, fileDrafts, pasteDrafts,
     pendingFilesRef, pasteBlocksRef, setPasteBlocks, setPendingFiles, pickedFileTokens])

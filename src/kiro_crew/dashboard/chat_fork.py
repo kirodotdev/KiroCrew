@@ -56,6 +56,52 @@ _FORK_DIRECTION_HEAD = "head"
 _FORK_DIRECTION_TAIL = "tail"
 _FORK_DIRECTIONS = (_FORK_DIRECTION_HEAD, _FORK_DIRECTION_TAIL)
 _MAX_MESSAGE_ID_CHARS = 256
+# Bound on ``turns_back``: far past any real transcript, small enough that a
+# typo like ``/rewind 99999999999`` is a clear refusal rather than a count.
+_MAX_TURNS_BACK = 10_000
+
+
+def _starts_turn(message: dict) -> bool:
+    """Whether *message* opens a turn: a ``user`` row that is not a mid-turn steer."""
+    if message.get("role") != "user":
+        return False
+    meta = message.get("meta")
+    return not (isinstance(meta, dict) and meta.get("steer"))
+
+
+def _index_before_turn(visible: list[dict], turns_back: int) -> "int | web.Response":
+    """The visible-row index a head fork keeps up to, ``turns_back`` user turns ago.
+
+    A turn starts at a ``user`` row, so rewinding N turns keeps every row before
+    the Nth-last turn-starting row. A steer is a ``user`` row too, but it lands in
+    the MIDDLE of the turn it redirects (``meta.steer``, written by
+    ``chat_delivery``), so it does not start a turn: counting it would cut between
+    a bad prompt and its steer and keep the very turn the person asked to drop.
+    Rewinding past the first turn would keep nothing, which is a fresh chat rather
+    than a fork, so it is refused with the count instead.
+    """
+    user_rows = [i for i, m in enumerate(visible) if _starts_turn(m)]
+    if turns_back > len(user_rows):
+        return web.json_response(
+            {
+                "error": (
+                    f"This chat has only {len(user_rows)} of your messages to go back to, "
+                    f"so it cannot go back {turns_back}."
+                ),
+                "code": "turns_back_out_of_range",
+            },
+            status=400,
+        )
+    target = user_rows[-turns_back]
+    if target == 0:
+        return web.json_response(
+            {
+                "error": "Nothing comes before that message, so there is nothing to keep.",
+                "code": "no_messages_before_turn",
+            },
+            status=400,
+        )
+    return target - 1
 
 
 def drop_persisted_tail_prefix(full_disk: list[dict], tail: list[dict]) -> list[dict]:
@@ -223,8 +269,12 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
     only the messages after ``at_message_index``; the head is dropped.
     An optional ``prompt`` is returned so the frontend can send it.
 
-    Body: ``{ at_message_index?: number, at_message_id?: string, prompt?: string,
-    mode?: string, direction?: "head"|"tail" }``
+    ``turns_back`` (the ``/rewind [N]`` command) names the fork point as "before
+    the Nth-last user message" instead of by index; it is head-only and excludes
+    ``at_message_index`` / ``at_message_id``.
+
+    Body: ``{ at_message_index?: number, at_message_id?: string, turns_back?: number,
+    prompt?: string, mode?: string, direction?: "head"|"tail" }``
     """
 
     state: DashboardState = request.app["state"]
@@ -300,6 +350,41 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    # ``turns_back`` is the dashboard ``/rewind [N]`` command: fork right before
+    # the Nth-last user message, so the child holds the conversation as it stood
+    # before those N turns. It names the fork point by counting user turns over
+    # the server's whole corpus, which the reader's paged window cannot do, and
+    # it is a third way to name the fork point -- so it excludes the other two.
+    turns_back = body.get("turns_back")
+    if turns_back is not None:
+        if (
+            isinstance(turns_back, bool)
+            or not isinstance(turns_back, int)
+            or not 1 <= turns_back <= _MAX_TURNS_BACK
+        ):
+            return web.json_response(
+                {
+                    "error": f"turns_back must be an integer from 1 to {_MAX_TURNS_BACK}",
+                    "code": "invalid_field_type",
+                },
+                status=400,
+            )
+        if at_index is not None or at_message_id is not None:
+            return web.json_response(
+                {
+                    "error": "turns_back cannot be combined with at_message_index or at_message_id",
+                    "code": "conflicting_fork_point",
+                },
+                status=400,
+            )
+        if body.get("direction", _FORK_DIRECTION_HEAD) != _FORK_DIRECTION_HEAD:
+            return web.json_response(
+                {
+                    "error": "turns_back only supports a head fork",
+                    "code": "invalid_direction",
+                },
+                status=400,
+            )
     prompt = body.get("prompt")
     mode_override = _coerce_requested_mode(body.get("mode"))
     if mode_override is not None and mode_override != "":
@@ -354,6 +439,7 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
         source,
         at_index=at_index,
         at_message_id=at_message_id,
+        turns_back=turns_back,
         direction=direction,
         prompt=prompt,
         mode_override=mode_override,
@@ -410,6 +496,7 @@ async def fork_slot(
     audit_operation: str = FORK_AUDIT_OPERATION,
     stamp: "Callable[[_ChatSlot], None] | None" = None,
     recheck: "Callable[[], None] | None" = None,
+    turns_back: int | None = None,
 ) -> "ForkResult | web.Response":
     """Copy *source*'s transcript up to (or after) the fork point into a new slot.
 
@@ -836,6 +923,10 @@ async def fork_slot(
             {"error": "no messages to fork", "code": "no_messages_to_fork"},
             status=400,
         )
+    if turns_back is not None:
+        at_index = _index_before_turn(visible, turns_back)
+        if isinstance(at_index, web.Response):
+            return at_index
     if at_message_id is not None:
         matches = []
         for index, message in enumerate(visible):

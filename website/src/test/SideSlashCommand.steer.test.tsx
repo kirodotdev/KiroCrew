@@ -225,6 +225,19 @@ describe('/side while a turn is running', () => {
     await waitFor(() => expect((input as HTMLTextAreaElement).value).toBe('/side my precious question'))
   })
 
+  // /rewind rides the same mid-turn interception; its refusal must say why
+  // (the page's refused-press notice), not only put the command back.
+  it('/rewind refused mid-turn shows its reason and restores the command', async () => {
+    const store = renderRunningChatPage()
+    const input = await screen.findByLabelText('Message input')
+    fireEvent.change(input, { target: { value: '/rewind 9' } })
+    await armRunning(store)
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect((input as HTMLTextAreaElement).value).toBe('/rewind 9'))
+    expect(await screen.findByText("Couldn't rewind")).toBeInTheDocument()
+    expect(mockSendChat).not.toHaveBeenCalled()
+  })
+
   it('merges the rejected question below text typed while the rejection was in flight', async () => {
     let rejectTurn: (e: Error) => void = () => {}
     mockSideTurn.mockImplementationOnce(

@@ -802,6 +802,21 @@ no longer destroy older turns.
   loading the full visible history. Restore paths preserve a missing legacy `mid`
   rather than minting an in-memory-only identity that full-history operations cannot
   resolve.
+- **Fork N turns back** (`turns_back`, the composer's `/rewind [N]`): names the
+  fork point as "the row before the Nth-last turn-starting `user` row" of the same
+  complete visible corpus, so it works without loading earlier pages either. A
+  mid-turn steer (`meta.steer`) is a `user` row but not a turn, so the cut never
+  lands between a prompt and the steer that redirected it. The composer leaves
+  `/rewind` to the harness when the harness's own slash list reports one (the
+  claude provider forwards every leading slash), and follows the fork only while
+  its composer still belongs to the chat the command was typed in. It is a head
+  fork only and travels alone -- beside `at_message_index`, `at_message_id` or a
+  tail direction it is refused (`conflicting_fork_point`, `invalid_direction`). A
+  count past the session's turns answers `turns_back_out_of_range` with the count;
+  rewinding to the first turn would keep nothing and answers
+  `no_messages_before_turn`. Like every fork it copies conversation only: file
+  edits, commands and anything else the agent did after the fork point stay as
+  they are, and the parent is untouched.
 - **Tail-only fork** (`direction="tail"`): copies only `visible[at_index+1:]`
   into the new slot instead of the head `visible[:at_index+1]`. The head is
   always dropped -- there is no summarize option. Gated server-side by
