@@ -1147,7 +1147,7 @@ class TestAttemptCap:
         log = _seed_log(tmp_path)
         c = _make_consolidator(log)
         seen: list[tuple[str, int, str]] = []
-        c.on_abandoned = lambda key, count, reason, char_count=0: seen.append(
+        c.on_abandoned = lambda key, count, reason, char_count=0, last_slice=False: seen.append(
             (key, count, reason)
         )
         with history_mod.allow_on_loop_persist():
@@ -1169,7 +1169,7 @@ class TestAttemptCap:
         log = _seed_log(tmp_path)
         c = _make_consolidator(log)
         seen: list[tuple[str, int, str]] = []
-        c.on_abandoned = lambda key, count, reason, char_count=0: seen.append(
+        c.on_abandoned = lambda key, count, reason, char_count=0, last_slice=False: seen.append(
             (key, count, reason)
         )
 
@@ -1184,7 +1184,9 @@ class TestAttemptCap:
         log = _seed_log(tmp_path)
         c = _make_consolidator(log)
 
-        def _boom(key: str, count: int, reason: str, char_count: int = 0) -> None:
+        def _boom(
+            key: str, count: int, reason: str, char_count: int = 0, last_slice: bool = False
+        ) -> None:
             raise RuntimeError("bell unavailable")
 
         c.on_abandoned = _boom

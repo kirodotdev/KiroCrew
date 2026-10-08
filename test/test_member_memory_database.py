@@ -471,9 +471,7 @@ async def test_lost_transcript_ack_recovers_committed_prefix_without_another_mod
 
 
 @pytest.mark.asyncio
-async def test_v2_member_memory_extracts_an_over_budget_head_slice_by_slice(
-    member_db, monkeypatch
-):
+async def test_v2_member_memory_extracts_an_over_budget_head_slice_by_slice(member_db, monkeypatch):
     """On the V2 member store: a non-final sub-slice of an over-budget
     head COMMITS (its receipt satisfies the source-total guard and the replay
     digest hashes the slice), the sub-offset advances, and the message marker

@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kiro_crew import history as history_mod
+from kiro_crew import history_consolidation as history_consolidation_mod
 from kiro_crew import memory_stores
 from kiro_crew.history import (
     _CONSOLIDATION_MAX_ATTEMPTS,
@@ -29,6 +30,12 @@ from kiro_crew.history import (
     _consolidation_chunk,
     _fmt_message,
 )
+from kiro_crew.history_consolidation import (
+    _head_exceeds_budget,
+    _prompt_rows,
+    _slice_head_for_budget,
+)
+from kiro_crew.image_refs import STRIPPED_IMAGE_MARKER
 
 KEY = "dashboard:chat-bounds"
 
@@ -396,9 +403,9 @@ class TestABoundedAttemptIsNotReleasedByGrowth:
             "the head drains slice-by-slice and the marker moves past it exactly "
             "once, after the final slice is abandoned"
         )
-        assert not meta.get("consolidation_sub_offset"), (
-            "the sub-offset is cleared once the marker moves past the whole head"
-        )
+        assert not meta.get(
+            "consolidation_sub_offset"
+        ), "the sub-offset is cleared once the marker moves past the whole head"
         assert log.unconsolidated_count(KEY), "the tail behind the head must survive"
 
     @pytest.mark.asyncio
@@ -428,9 +435,9 @@ class TestABoundedAttemptIsNotReleasedByGrowth:
         # The marker has NOT moved past the message — only the sub-offset advanced.
         assert meta.get("last_consolidated", 0) == 0, "the whole head was not abandoned"
         first_slice_end = int(meta["consolidation_sub_offset"])
-        assert 0 < first_slice_end < _CONSOLIDATION_PROMPT_BUDGET_CHARS * 2, (
-            "the sub-offset advanced past exactly the first slice"
-        )
+        assert (
+            0 < first_slice_end < _CONSOLIDATION_PROMPT_BUDGET_CHARS * 2
+        ), "the sub-offset advanced past exactly the first slice"
         # The abandoned-slice budget was cleared, so the next slice starts fresh.
         assert log.consolidation_retry_state(KEY, 1)[0] == 0
 
@@ -455,17 +462,17 @@ class TestABoundedAttemptIsNotReleasedByGrowth:
         head = log.snapshot_for_consolidation(KEY)[0][0]
         expected_slice, start, _end, _last = _slice_head_for_budget(head, first_slice_end)
         assert start == first_slice_end, "the second slice begins at the durable sub-offset"
-        assert expected_slice["content"] and expected_slice["content"] in captured["prompt"], (
-            "the second pass resumes slicing from the durable sub-offset"
-        )
-        assert len(expected_slice["content"]) < _CONSOLIDATION_PROMPT_BUDGET_CHARS, (
-            "a resumed slice's content is within one budget, not the whole head"
-        )
+        assert (
+            expected_slice["content"] and expected_slice["content"] in captured["prompt"]
+        ), "the second pass resumes slicing from the durable sub-offset"
+        assert (
+            len(expected_slice["content"]) < _CONSOLIDATION_PROMPT_BUDGET_CHARS
+        ), "a resumed slice's content is within one budget, not the whole head"
         from kiro_crew.history import _fmt_message
 
-        assert len(_fmt_message(expected_slice)) <= _CONSOLIDATION_PROMPT_BUDGET_CHARS, (
-            "the rendered slice (content plus envelope) fits the budget"
-        )
+        assert (
+            len(_fmt_message(expected_slice)) <= _CONSOLIDATION_PROMPT_BUDGET_CHARS
+        ), "the rendered slice (content plus envelope) fits the budget"
 
 
 class TestSubChunkingDrainsAnOversizedHead:
@@ -532,9 +539,7 @@ class TestSubChunkingDrainsAnOversizedHead:
 
         # One successful slice advances the durable sub-offset without moving the
         # message marker.
-        with patch.object(
-            c, "_call_llm", AsyncMock(return_value={"history_entry": "e"})
-        ):
+        with patch.object(c, "_call_llm", AsyncMock(return_value={"history_entry": "e"})):
             with history_mod.allow_on_loop_persist():
                 log.update_metadata(KEY, {"consolidation_retry_at": 0.0})
             await c._consolidate(KEY, include_history=True)
@@ -756,3 +761,422 @@ class TestTheReceiptDescribesThePromptedSpan:
         assert 0 < marked < before, "fixture must exercise a bounded prompt"
         assert kwargs["source_total"] == marked, "the receipt must not claim the whole snapshot"
         assert len(kwargs["messages"]) == marked
+
+
+class TestNoticeRowsDoNotSkipSlicing:
+    """An oversized head next to a display-only row must still be sliced.
+
+    ``_consolidation_chunk`` carries display-only rows (a ``notice`` such as an
+    AutoNudge) inside the prefix even though no prompt renders them, so a chunk
+    holding one oversized head plus a notice is two rows long. A slicing guard
+    keyed on ``len(chunk)`` would skip slicing for that shape, prompt the whole
+    head, and abandon the entire message at the attempt cap WITHOUT extraction —
+    the data loss the sub-chunking path exists to prevent. The guard must key on
+    the PROMPTED rows instead.
+    """
+
+    def _notice(self, content: str) -> dict:
+        return {"ts": "2026-09-09T12:00:00", "role": "notice", "content": content, "tools": []}
+
+    def test_a_notice_after_an_oversized_head_leaves_one_prompt_row(self) -> None:
+        head = _msg("x" * (_CONSOLIDATION_PROMPT_BUDGET_CHARS * 3), "assistant")
+        chunk = _consolidation_chunk([head, self._notice("AutoNudge: keep going")])
+        # The chunk keeps the notice, so it is two rows long...
+        assert len(chunk) == 2
+        # ...but exactly one row is rendered into a prompt, and it is the head.
+        rows = _prompt_rows(chunk)
+        assert len(rows) == 1
+        assert _head_exceeds_budget(rows[0])
+
+    def test_a_notice_before_an_oversized_head_leaves_one_prompt_row(self) -> None:
+        head = _msg("x" * (_CONSOLIDATION_PROMPT_BUDGET_CHARS * 3), "assistant")
+        chunk = _consolidation_chunk([self._notice("AutoNudge: keep going"), head])
+        assert len(chunk) == 2
+        rows = _prompt_rows(chunk)
+        assert len(rows) == 1
+        assert _head_exceeds_budget(rows[0])
+
+
+class TestASliceRendersWithinTheBudget:
+    """``_slice_head_for_budget`` must render within the budget, not just slice raw.
+
+    ``_fmt_message`` runs ``strip_image_refs``, which replaces each image
+    reference with a longer content-free marker. A slice sized against the raw
+    content length can therefore render OVER the budget once that expansion
+    applies — handing a provider the over-ceiling prompt the slicing avoids.
+    """
+
+    def test_an_image_ref_dense_head_slices_within_the_rendered_budget(self, monkeypatch) -> None:
+        # Shrink the budget to a few KB so the image-ref-dense fixture stays
+        # small. ``strip_image_refs`` (run by ``_fmt_message``) is superlinear in
+        # the number of references, so a budget-sized fixture at the real 64 KB
+        # ceiling means thousands of refs and a single render that runs for tens
+        # of seconds — enough to trip the suite's per-test timeout. The slicing
+        # behaviour under test is budget-relative, so a small budget exercises it
+        # identically. ``_slice_head_for_budget`` and ``_head_exceeds_budget``
+        # both read this module global at call time.
+        budget = 2048
+        monkeypatch.setattr(
+            history_consolidation_mod,
+            "_CONSOLIDATION_PROMPT_BUDGET_CHARS",
+            budget,
+        )
+        ref = "![](/a.png)\n"
+        assert len(STRIPPED_IMAGE_MARKER) > len(
+            ref.rstrip("\n")
+        ), "fixture only exercises expansion if the marker is longer than the ref"
+        content = ref * (budget // len(ref) + 50)
+        head = _msg(content, "assistant")
+        # The raw content is over the budget, so this is a genuine oversized head.
+        assert _head_exceeds_budget(head)
+        sliced, start, end, _is_last = _slice_head_for_budget(head, 0)
+        # The slice must make progress and render within the budget despite the
+        # image-reference expansion. A raw slice sized at ``budget - envelope``
+        # would render larger than the budget once each ref expands, so a slice
+        # that renders within the budget proves the rendered-size shrink engaged.
+        assert end > start
+        assert len(_fmt_message(sliced)) <= budget
+
+
+class TestSlicingStripsImageRefsOnceOverTheWholeHead:
+    """Opus review: slicing raw ``content[start:end]`` can cut inside a fenced
+    code block, flipping the fence parity the slice presents to
+    ``strip_image_refs``. ``strip_image_refs`` masks fenced spans (a path inside
+    a fence is documentation), so a slice that opens mid-fence reads as prose and
+    an image reference the whole-head scan would MASK gets stripped — or, cut the
+    other way, a real reference is left to be inlined into the prompt the
+    sub-chunking path exists to keep image-free. Stripping once over the whole
+    head before slicing removes the ambiguity.
+    """
+
+    def test_a_ref_inside_a_fence_does_not_leak_into_any_slice(self, monkeypatch) -> None:
+        budget = 2048
+        monkeypatch.setattr(
+            history_consolidation_mod,
+            "_CONSOLIDATION_PROMPT_BUDGET_CHARS",
+            budget,
+        )
+        # A head whose stripped length spans several slices, with a real image
+        # reference OUTSIDE any fence (so strip_image_refs replaces it) and a
+        # fenced block that, if a slice cut inside it, would flip parity.
+        body = "intro line\n" "```\n" + (
+            "filler /not/stripped/in/code.png line\n" * 40
+        ) + "```\n" + "![real](/leaked.png)\n" + ("tail text line\n" * 80)
+        head = _msg(body, "assistant")
+        assert _head_exceeds_budget(head)
+
+        # Walk every slice the head produces; none may contain the raw image
+        # reference that strip_image_refs replaces over the whole head.
+        stripped_whole = history_consolidation_mod._consolidation_head_content(head)
+        assert "/leaked.png" not in stripped_whole, "the ref outside the fence is stripped"
+
+        sub = 0
+        seen = ""
+        for _ in range(50):
+            sliced, start, end, is_last = _slice_head_for_budget(head, sub)
+            # Every slice is drawn from the already-stripped content, so the raw
+            # reference can never appear in a prompted slice.
+            assert "/leaked.png" not in sliced["content"], "a slice leaked a raw image ref"
+            seen += sliced["content"]
+            if is_last:
+                break
+            sub = end
+        # The slices reassemble the stripped whole (progress + no gaps/overlap).
+        assert seen == stripped_whole
+
+    def test_a_mid_fence_slice_is_rendered_without_a_second_strip(self) -> None:
+        """GPT 6.1 (blocking, upheld): a slice is rendered with
+        ``prestripped=True`` so ``_fmt_message`` does NOT run ``strip_image_refs``
+        a second time. The head is stripped ONCE over its whole content, but a
+        slice that begins inside a fenced block shows a different fence parity, so
+        a re-strip would read the fenced block as prose and replace a path the
+        whole-head pass deliberately preserved — silently corrupting the
+        extraction prompt. The pre-strip removed the mid-fence AMBIGUITY in the
+        slice's content; this test pins that the RENDER path does not reintroduce
+        it.
+        """
+        from kiro_crew.image_refs import strip_image_refs
+
+        png = "/illustrative/diagram.png"
+        # An open fence, filler long enough to force a boundary before the path,
+        # then the path still INSIDE the fence, then more filler and the close.
+        body = (
+            "```json\n"
+            + ("x" * (_CONSOLIDATION_PROMPT_BUDGET_CHARS + 5000))
+            + "\n"
+            + f'value = "{png}"\n'
+            + ("y" * 2000)
+            + "\n```\n"
+        )
+        head = _msg(body, "assistant")
+        assert _head_exceeds_budget(head)
+        stripped_whole = history_consolidation_mod._consolidation_head_content(head)
+        # Inside the fence, the path is documentation — the whole-head pass keeps it.
+        assert png in stripped_whole
+
+        # Walk to the slice that carries the path and render it both ways.
+        sub = 0
+        rendered_prestripped = None
+        for _ in range(60):
+            sliced, start, end, is_last = _slice_head_for_budget(head, sub)
+            if png in sliced["content"]:
+                rendered_prestripped = history_consolidation_mod._fmt_message(
+                    sliced, prestripped=True
+                )
+                break
+            if is_last:
+                break
+            sub = end
+        assert rendered_prestripped is not None, "no slice carried the fenced path"
+        # The fix (the real contract): the preserved path survives into the
+        # rendered prompt because ``prestripped=True`` quotes the already-stripped
+        # slice verbatim and does NOT run ``strip_image_refs`` a second time.
+        assert png in rendered_prestripped
+        # Pin that invariant directly rather than relying on the re-strip
+        # happening to corrupt THIS slice (whether a mid-fence re-strip removes
+        # the path depends on exactly where the boundary falls, which varies with
+        # line endings across platforms — a brittle thing to assert). The slice
+        # content is already stripped, so re-stripping it inside the render would
+        # be the only way the path could change; assert the prestripped render is
+        # exactly the render of the verbatim slice content.
+        assert sliced["content"] in rendered_prestripped
+        # And the whole-head content remains idempotent under re-strip.
+        assert strip_image_refs(stripped_whole) == stripped_whole
+
+
+class TestARotationDiscardsAStaleSubOffsetFromTheCap:
+    """The attempt cap must read the sub-offset through its generation stamp.
+
+    A rotation resets ``last_consolidated`` and bumps ``rotation_generation`` but
+    leaves ``consolidation_sub_offset`` at its old nonzero value. Comparing the
+    attempt's stamped sub-offset against that RAW value reads every failure on
+    the new span as a different slice and resets the cap each time, so the
+    abandon path is never reached. Reading it through
+    ``_sub_offset_for_generation`` makes the comparison see the ``0`` the slicer
+    uses for the new generation, so the cap holds across failures.
+    """
+
+    def test_a_stale_sub_offset_from_a_prior_generation_does_not_reset_the_cap(
+        self, tmp_path
+    ) -> None:
+        log = ConversationLog(base_dir=tmp_path / "sessions")
+        log.init()
+        # Post-rotation: generation 2, marker reset to 0, but the raw sub-offset
+        # still holds generation 1's 5000. The attempt was charged on the new
+        # generation at sub-offset 0 (re-sliced from the head's start).
+        meta = {
+            "rotation_generation": 2,
+            "last_consolidated": 0,
+            "consolidation_sub_offset": 5000,
+            "consolidation_sub_offset_generation": 1,
+            "consolidation_attempts_generation": 2,
+            "consolidation_attempts_offset": 0,
+            "consolidation_attempts_sub_offset": 0,
+        }
+        # The generation-honoured read discards the stale offset...
+        assert ConversationLog._sub_offset_for_generation(meta, 2) == 0
+        # ...so the attempt still describes the current span and the cap holds.
+        assert log._attempts_describe_current_span(meta, None) is True
+
+    def test_an_advanced_sub_offset_in_the_current_generation_resets_the_cap(
+        self, tmp_path
+    ) -> None:
+        log = ConversationLog(base_dir=tmp_path / "sessions")
+        log.init()
+        # Same generation, but an earlier slice succeeded and advanced the
+        # durable sub-offset past where this attempt was charged — a genuinely
+        # different slice, so the cap SHOULD reset.
+        meta = {
+            "rotation_generation": 2,
+            "last_consolidated": 0,
+            "consolidation_sub_offset": 5000,
+            "consolidation_sub_offset_generation": 2,
+            "consolidation_attempts_generation": 2,
+            "consolidation_attempts_offset": 0,
+            "consolidation_attempts_sub_offset": 0,
+        }
+        assert ConversationLog._sub_offset_for_generation(meta, 2) == 5000
+        assert log._attempts_describe_current_span(meta, None) is False
+
+
+class TestAPerHeadSliceCeilingBoundsTheCost:
+    """A single over-budget head is sliced a bounded number of times — about
+    ``_CONSOLIDATION_MAX_HEAD_SLICES`` for near-span lines, up to roughly twice
+    that for lines that advance well under a span — before a genuinely
+    multi-slice remainder is retired, so one pathological message cannot spawn
+    an unbounded run of sequential consolidation LLM calls that holds up every
+    message behind it. A head whose remainder fits one more slice is never
+    retired; it drains in full. The retired remainder is FAIL-SAFE: the marker
+    is advanced past the whole head WITH a logged reason and the user-facing
+    abandon notice, never silently.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_ten_megabyte_head_makes_at_most_the_ceiling_of_llm_calls(
+        self, tmp_path
+    ) -> None:
+        ceiling = history_consolidation_mod._CONSOLIDATION_MAX_HEAD_SLICES
+        # A head far larger than ceiling * budget: without the ceiling it would
+        # slice into ~160 pieces (10 MB / 64 KB). Each line is kept short so the
+        # boundary search cuts cleanly on a newline.
+        big = ("a" * 4096 + "\n") * (10 * 1024 * 1024 // 4097)
+        log = _log_with(tmp_path, [big])
+        c = _make_consolidator(log)
+
+        notices: list[dict] = []
+        c.on_abandoned = lambda key, count, reason, char_count=0, last_slice=False, retired=False: notices.append(
+            {
+                "key": key,
+                "count": count,
+                "reason": reason,
+                "char_count": char_count,
+                "last_slice": last_slice,
+                "retired": retired,
+            }
+        )
+
+        llm = AsyncMock(return_value={"history_entry": "e"})
+        passes = 0
+        with patch.object(c, "_call_llm", llm):
+            # Drive passes until the head is retired (marker moved) or we exceed
+            # a hard bound that proves the ceiling failed.
+            while log.unconsolidated_count(KEY) and passes < ceiling + 5:
+                with history_mod.allow_on_loop_persist():
+                    log.update_metadata(KEY, {"consolidation_retry_at": 0.0})
+                await c._consolidate(KEY, include_history=True)
+                passes += 1
+
+        # The head is retired, not re-sliced forever.
+        assert log.unconsolidated_count(KEY) == 0, "the head must be retired, not looped"
+        meta = log.get_metadata(KEY)
+        assert meta.get("last_consolidated") == 1, "the marker moved past the whole head"
+        assert not meta.get("consolidation_sub_offset"), "the sub-offset was cleared on retire"
+        # The worst-case pin: the per-head cost is a small constant, not the
+        # ~160 an unbounded slicer would make. The ceiling is N whole spans of
+        # the durable sub-offset; a near-span head reaches it after N slices and
+        # retires its multi-slice remainder on the next pass (N + 1 prompts),
+        # and content that advances well under a span per cut takes up to roughly
+        # 2 * N + 1 — bounded either way.
+        assert llm.call_count <= 2 * ceiling + 1, (
+            f"made {llm.call_count} LLM calls; the per-head cost must stay a "
+            f"small constant (<= {2 * ceiling + 1}), far below the ~160 an "
+            f"unbounded slicer makes"
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_retired_remainder_fires_a_fail_safe_abandon_notice(self, tmp_path) -> None:
+        ceiling = history_consolidation_mod._CONSOLIDATION_MAX_HEAD_SLICES
+        big = ("b" * 4096 + "\n") * (10 * 1024 * 1024 // 4097)
+        log = _log_with(tmp_path, [big])
+        c = _make_consolidator(log)
+
+        notices: list[dict] = []
+        c.on_abandoned = lambda key, count, reason, char_count=0, last_slice=False, retired=False: notices.append(
+            {
+                "reason": reason,
+                "char_count": char_count,
+                "last_slice": last_slice,
+                "retired": retired,
+            }
+        )
+
+        with patch.object(c, "_call_llm", AsyncMock(return_value={"history_entry": "e"})):
+            passes = 0
+            while log.unconsolidated_count(KEY) and passes < ceiling + 5:
+                with history_mod.allow_on_loop_persist():
+                    log.update_metadata(KEY, {"consolidation_retry_at": 0.0})
+                await c._consolidate(KEY, include_history=True)
+                passes += 1
+
+        # Exactly one retire notice, and it is a FAIL-SAFE record: it names the
+        # dropped remainder (char_count > 0), says the message is now fully
+        # consolidated (last_slice), gives the ceiling as the reason, and marks
+        # the drop as a DELIBERATE retire (retired=True) rather than a failure —
+        # the remainder is NEVER marked silently.
+        retire = [n for n in notices if "ceiling" in n["reason"]]
+        assert len(retire) == 1, f"expected one retire notice, got {notices}"
+        assert retire[0]["char_count"] > 0, "the notice names the dropped remainder size"
+        assert retire[0]["last_slice"] is True, "the marker moved past the whole message"
+        assert retire[0]["retired"] is True, "a ceiling retire is deliberate, not a failure"
+
+    @pytest.mark.asyncio
+    async def test_a_head_within_the_ceiling_is_fully_extracted_without_retiring(
+        self, tmp_path
+    ) -> None:
+        """A head needing fewer than the ceiling of slices drains normally: no
+        retire notice, every slice extracted, the marker moving only at the end.
+        """
+        # Three budgets' worth: well under the ceiling, so it drains in full.
+        log = _log_with(tmp_path, ["c" * (_CONSOLIDATION_PROMPT_BUDGET_CHARS * 3)])
+        c = _make_consolidator(log)
+
+        notices: list[dict] = []
+        c.on_abandoned = lambda key, count, reason, char_count=0, last_slice=False: notices.append(
+            {"reason": reason}
+        )
+
+        with patch.object(c, "_call_llm", AsyncMock(return_value={"history_entry": "e"})):
+            passes = 0
+            while log.unconsolidated_count(KEY) and passes < 10:
+                with history_mod.allow_on_loop_persist():
+                    log.update_metadata(KEY, {"consolidation_retry_at": 0.0})
+                await c._consolidate(KEY, include_history=True)
+                passes += 1
+
+        assert log.unconsolidated_count(KEY) == 0
+        assert log.get_metadata(KEY).get("last_consolidated") == 1
+        assert not any(
+            "ceiling" in n["reason"] for n in notices
+        ), "a head under the ceiling must not be retired"
+
+    @pytest.mark.asyncio
+    async def test_a_head_whose_remainder_fits_one_more_slice_is_never_retired(
+        self, tmp_path
+    ) -> None:
+        """The retire fires only when MORE THAN one slice of content remains.
+
+        A head that drains in exactly the ceiling of slices — or one more — keeps
+        its final short slice: there is no span that would fit in one more slice
+        yet is dropped unread. This pins the retire condition's lower edge, so a
+        head whose remainder is a single slice is prompted in full rather than
+        marked consolidated unread.
+        """
+        ceiling = history_consolidation_mod._CONSOLIDATION_MAX_HEAD_SLICES
+
+        # A base64-style blob with NO whitespace: _slice_boundary falls back to
+        # the bare cut, so every slice advances exactly one span and the content
+        # drains in a predictable number of slices. Size it to just over the
+        # ceiling of whole spans (ceiling + 0.4), the exact "remainder fits one
+        # more slice" shape the retire gate must let drain in full.
+        env = len(history_consolidation_mod._fmt_message({"role": "user", "content": ""}))
+        span = max(1, _CONSOLIDATION_PROMPT_BUDGET_CHARS - env)
+        blob = "A" * int(span * (ceiling + 0.4))
+        log = _log_with(tmp_path, [blob])
+        c = _make_consolidator(log)
+
+        notices: list[dict] = []
+        c.on_abandoned = lambda key, count, reason, char_count=0, last_slice=False, retired=False: notices.append(
+            {"reason": reason, "retired": retired}
+        )
+
+        llm = AsyncMock(return_value={"history_entry": "e"})
+        with patch.object(c, "_call_llm", llm):
+            passes = 0
+            while log.unconsolidated_count(KEY) and passes < ceiling + 5:
+                with history_mod.allow_on_loop_persist():
+                    log.update_metadata(KEY, {"consolidation_retry_at": 0.0})
+                await c._consolidate(KEY, include_history=True)
+                passes += 1
+
+        # The whole head was read: the marker moved past it and NO retire fired.
+        assert log.unconsolidated_count(KEY) == 0, "the head must drain, not loop"
+        assert log.get_metadata(KEY).get("last_consolidated") == 1
+        assert not any(
+            n["retired"] for n in notices
+        ), "a head whose remainder fits one more slice must NOT be retired"
+        # It drained in ceiling + 1 slices (the final short slice IS prompted),
+        # not retired at the ceiling with a lost tail.
+        assert llm.call_count == ceiling + 1, (
+            f"a {ceiling + 0.4:.1f}-span head should drain in {ceiling + 1} slices; "
+            f"made {llm.call_count}"
+        )

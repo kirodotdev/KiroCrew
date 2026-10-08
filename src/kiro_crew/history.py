@@ -3538,15 +3538,25 @@ class ConversationLog:
         # the sub-offset moved between the charge and now, the attempt covered a
         # DIFFERENT slice of the same head (an earlier slice succeeded and
         # advanced it), so the cap it was charged against describes different
-        # content than what is in front of us — a fresh budget is correct. The live sub-offset
-        # here is the raw stored value: this runs on the event loop with no
-        # transcript read, and the generation test above already caught the case
-        # where that stored value belongs to a superseded generation.
+        # content than what is in front of us — a fresh budget is correct.
+        #
+        # The live sub-offset must be read through ``_sub_offset_for_generation``,
+        # not the raw stored value: a rotation resets ``last_consolidated`` and
+        # bumps the generation but leaves ``consolidation_sub_offset`` at its old
+        # nonzero value, while the snapshot path (``_sub_offset_for_generation``)
+        # correctly reads 0 for the new generation. Comparing the attempt's stamp
+        # (0, re-sliced from the start under the new generation) against that
+        # stale raw value would read every failure on the new span as a "different
+        # slice" and reset the cap each time, so the abandon path would never be
+        # reached — the exact indefinite-retry the cap exists to prevent. Reading
+        # the generation-honoured value makes the comparison see the same 0 the
+        # slicer used, so a genuinely-advanced earlier slice still resets the cap
+        # while a bare rotation does not.
         if "consolidation_attempts_sub_offset" in meta:
             try:
-                if int(meta.get("consolidation_attempts_sub_offset", 0) or 0) != int(
-                    meta.get("consolidation_sub_offset", 0) or 0
-                ):
+                current_generation = int(meta.get("rotation_generation", 0) or 0)
+                live_sub_offset = self._sub_offset_for_generation(meta, current_generation)
+                if int(meta.get("consolidation_attempts_sub_offset", 0) or 0) != live_sub_offset:
                     return False
             except (TypeError, ValueError, OverflowError):
                 pass

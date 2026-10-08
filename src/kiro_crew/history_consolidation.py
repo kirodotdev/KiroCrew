@@ -65,6 +65,25 @@ _HISTORY_LOGGER = logging.getLogger("kiro_crew.history")
 
 _CONSOLIDATION_THRESHOLD = 30
 _CONSOLIDATION_MAX_ATTEMPTS = 5
+# Budget-sized slices one over-budget head message may be prompted in before the
+# fallback retires its remainder. A message near the transcript cap
+# (:data:`~kiro_crew.history._SESSION_MAX_BYTES`, 10 MB) would otherwise slice
+# into ~160 budget-sized pieces, each a sequential consolidation LLM call that
+# holds up every message behind it — the per-head cost would scale with the
+# message's size with no ceiling. Once the durable sub-offset has advanced
+# ``N`` whole budget spans into the head AND more than one slice still remains
+# (see :func:`_head_slice_ceiling_reached`) the head is retired the same bounded
+# way the attempt cap retires an unprocessable span: its remainder is marked
+# consolidated WITH a logged reason and the user-facing abandon notice (never
+# silently), so the cost of one pathological message is bounded and the tail
+# behind it still consolidates. The bound is on CHARACTERS, so near-span lines
+# are prompted about ``N`` times (``N`` whole 64 KB spans ≈ 512 KB covered, and
+# a head that drains within one more slice keeps its final short slice) while
+# content whose lines advance well under a span (e.g. minified ~32 KB lines) can
+# take up to roughly ``2 * N`` calls — a small constant either way, far past any
+# genuine conversation turn; the retired remainder is a pasted blob memory
+# extraction has no use for.
+_CONSOLIDATION_MAX_HEAD_SLICES = 8
 _CONSOLIDATION_BACKOFF_BASE_SECS = 900.0
 _CONSOLIDATION_BACKOFF_MAX_SECS = 86400.0
 _SKILL_DETECTION_WINDOW = 200
@@ -455,7 +474,7 @@ def _persistence_disabled() -> bool:
     return not KiroCrewConfig.load().memory.persistence_enabled
 
 
-def _fmt_message(message: dict) -> str:
+def _fmt_message(message: dict, *, prestripped: bool = False) -> str:
     """Render one transcript message for a consolidation prompt.
 
     The row's image references are replaced with a content-free marker before
@@ -467,12 +486,22 @@ def _fmt_message(message: dict) -> str:
     image data around 600 KB of conversation, and the background session's own
     transcript grew by that whole record on each retry until its KAS process
     held 1.9 GB. Memory extraction reads text; it has no use for the pixels.
+
+    *prestripped* must be set when ``message['content']`` is a SLICE of a head
+    whose image references were already stripped over the whole head
+    (:func:`_consolidation_head_content`). Stripping is NOT slice-local:
+    ``strip_image_refs`` masks fenced code spans, and a slice that begins inside
+    a fence hides from ``_mask_code_spans`` where that fence opened, so a
+    re-strip would read the fenced block as prose and replace an image path the
+    whole-head pass deliberately preserved — silently corrupting the extraction
+    prompt and advancing past the corrupted slice. When *prestripped* is set the
+    second strip is skipped and the already-resolved slice content is quoted
+    verbatim. A WHOLE message (not a slice) must leave this False so its own
+    refs are stripped once here.
     """
     tools = f" [tools: {', '.join(message['tools'])}]" if message.get("tools") else ""
-    return (
-        f"[{message.get('ts', '?')[:16]}] {message['role'].upper()}"
-        f"{tools}: {strip_image_refs(message['content'])}"
-    )
+    content = message["content"] if prestripped else strip_image_refs(message["content"])
+    return f"[{message.get('ts', '?')[:16]}] {message['role'].upper()}{tools}: {content}"
 
 
 def _prompt_rows(messages: list[dict]) -> list[dict]:
@@ -565,13 +594,44 @@ def _slice_boundary(content: str, start: int, span: int) -> int:
     return end
 
 
+def _consolidation_head_content(message: dict) -> str:
+    """The head's prompt-ready content: image references stripped ONCE, whole.
+
+    Slicing operates on THIS, not the raw content, for two reasons the Opus
+    review flagged. ``strip_image_refs`` masks fenced code spans
+    (``_mask_code_spans``) so a path inside a code fence stays readable. A raw
+    ``content[start:end]`` cut can land inside a fenced block, flipping the
+    fence parity the slice presents to ``strip_image_refs`` relative to the
+    whole head — so a slice that opens mid-fence looks like prose and an image
+    reference the whole-head scan would mask gets stripped (or, cut the other
+    way, a real reference is left to be inlined into the prompt the sub-chunking
+    path exists to keep image-free). Resolving references once over the WHOLE
+    head removes the ambiguity: every reference is classified against the head's
+    real fence structure, and the slices carry the already-resolved text.
+
+    It is also what makes a slice's size honest. ``_fmt_message`` must NOT run
+    ``strip_image_refs`` again when it renders a slice: a slice that begins
+    inside a fence shows a different fence parity than the whole head, so a
+    re-strip reads the fenced block as prose and replaces a path the whole-head
+    pass preserved. So the slice is rendered with ``prestripped=True`` (the
+    second strip is skipped) and the raw slice width predicts the rendered width
+    directly, rather than being inflated — or corrupted — by a slice-local strip
+    the slicer could not see.
+    """
+    content = message.get("content") or ""
+    if not isinstance(content, str):
+        content = str(content)
+    return strip_image_refs(content)
+
+
 def _slice_head_for_budget(message: dict, sub_offset: int) -> tuple[dict, int, int, bool]:
     """Slice *message* from *sub_offset* to one budget-sized prompt-safe chunk.
 
     Returns ``(sliced_message, start, new_sub_offset, is_last_slice)``:
 
     * ``sliced_message`` is a shallow copy of *message* whose ``content`` is the
-      slice ``content[start:new_sub_offset]``. It renders within the budget
+      slice ``content[start:new_sub_offset]`` of the HEAD'S STRIPPED content
+      (see :func:`_consolidation_head_content`). It renders within the budget
       because the slice width leaves room for the envelope ``_fmt_message`` adds
       (``[ts] ROLE[tools]: ``), which is charged against the budget too.
     * ``start`` is the clamped offset the slice actually began at — equal to
@@ -580,15 +640,15 @@ def _slice_head_for_budget(message: dict, sub_offset: int) -> tuple[dict, int, i
       accounting with this, not the raw argument, so the recorded slice identity
       matches the content that was prompted.
     * ``new_sub_offset`` is the absolute character offset extraction has now
-      reached in the ORIGINAL content, to be made durable so a later pass
+      reached in the head's STRIPPED content, to be made durable so a later pass
       resumes here (or, when ``is_last_slice``, so the marker moves past the
-      whole message).
+      whole message). The stripping is deterministic and idempotent, so the same
+      head always strips to the same string and a durable sub-offset describes
+      the same position on every pass.
     * ``is_last_slice`` is True when the slice reaches the end of the content, so
       the caller advances the durable message marker instead of the sub-offset.
     """
-    content = message.get("content") or ""
-    if not isinstance(content, str):
-        content = str(content)
+    content = _consolidation_head_content(message)
     start = sub_offset
     if start < 0 or start >= len(content):
         start = 0
@@ -598,8 +658,79 @@ def _slice_head_for_budget(message: dict, sub_offset: int) -> tuple[dict, int, i
     envelope = len(_fmt_message({**message, "content": ""}))
     span = max(1, _CONSOLIDATION_PROMPT_BUDGET_CHARS - envelope)
     end = _slice_boundary(content, start, span)
+    # The content is already image-ref-stripped (``_consolidation_head_content``)
+    # and the final prompt renders this slice with ``prestripped=True`` (so
+    # ``_fmt_message`` does NOT re-strip it — re-stripping a slice that begins
+    # mid-fence corrupts preserved paths), hence a slice sized against the budget
+    # renders at its raw width. Measure with the SAME ``prestripped=True`` here so
+    # the shrink loop predicts the real rendered width. The loop is kept as a
+    # cheap belt-and-braces check: should rendering ever add width (an envelope
+    # wider than measured, a future renderer), shrink the raw slice until it
+    # renders within the budget, keeping at least one character of progress.
+    #
+    # The next span is scaled by how far over budget the current slice rendered
+    # (``budget / rendered``), so a slice dense with expanding refs converges in
+    # a handful of steps rather than one character at a time. Each step is also
+    # forced strictly below the current slice length — ``_slice_boundary`` cuts
+    # on the last line/word boundary, so without that cap a line-aligned slice
+    # would re-find the same boundary and never shrink — and a boundary search
+    # that still does not move falls back to a bare character cut. ``end`` drops
+    # every iteration and a smaller raw slice cannot render larger, so the loop
+    # converges.
+    budget = _CONSOLIDATION_PROMPT_BUDGET_CHARS
+    while end > start + 1:
+        rendered = len(_fmt_message({**message, "content": content[start:end]}, prestripped=True))
+        if rendered <= budget:
+            break
+        length = end - start
+        scaled = int(length * budget / rendered)
+        span = max(1, min(length - 1, scaled))
+        candidate = _slice_boundary(content, start, span)
+        end = candidate if candidate < end else start + span
     sliced = {**message, "content": content[start:end]}
     return sliced, start, end, end >= len(content)
+
+
+def _head_slice_ceiling_reached(message: dict, sub_offset: int) -> bool:
+    """True when *message* has been sliced to its per-head ceiling already.
+
+    A head near the transcript cap would otherwise slice into ~160 budget-sized
+    pieces, each a sequential consolidation LLM call (see
+    :data:`_CONSOLIDATION_MAX_HEAD_SLICES`). The ceiling is a CHARACTER bound on
+    the head's stripped content — ``_CONSOLIDATION_MAX_HEAD_SLICES`` whole slice
+    spans — read off the durable sub-offset alone, so it needs no extra persisted
+    state and is exact across passes: *sub_offset* is where the next slice would
+    begin. The retire fires only once BOTH hold: the sub-offset has reached that
+    bound AND more than one slice of content still remains. A remainder that fits
+    in one more slice is always prompted, never retired, so a head that drains in
+    N (or N + 1) slices keeps its final short slice — there is no span that would
+    have fit in one more slice yet is dropped unread (the earlier ``- 1`` bound
+    dropped exactly that span).
+
+    The bound is a count of CHARACTERS, not of slices. A slice cuts on the LAST
+    line/word boundary at or before the span (``_slice_boundary``), so it
+    advances the sub-offset by at most one span but, on content with no boundary
+    near the span (very long lines, e.g. minified JSON ~32K-char lines), it can
+    advance well under one span. So the number of LLM calls before the retire
+    fires is about ``_CONSOLIDATION_MAX_HEAD_SLICES`` for near-span lines but can
+    be up to roughly ``2 * _CONSOLIDATION_MAX_HEAD_SLICES`` for lines that advance
+    about half a span each — bounded by a small constant either way, which is the
+    point (it caps the per-head cost near the transcript limit at a dozen-odd
+    calls instead of ~160). In all cases the retired remainder is handled
+    fail-safe (logged + user notice), never marked consolidated silently.
+    """
+    content = _consolidation_head_content(message)
+    envelope = len(_fmt_message({**message, "content": ""}))
+    span = max(1, _CONSOLIDATION_PROMPT_BUDGET_CHARS - envelope)
+    ceiling_chars = max(1, _CONSOLIDATION_MAX_HEAD_SLICES * span)
+    resume = sub_offset if 0 <= sub_offset < len(content) else 0
+    # Retire ONLY when the ceiling is reached AND more than one slice of content
+    # still remains. A remainder that fits in a single slice is always prompted,
+    # never retired, so a head that drains in N (or N+1) slices keeps its final
+    # short slice — the log/notice then report the budget-span bound rather than
+    # an exact slice count, since the actual slice count ranges from N (near-span
+    # lines) to about 2N (lines that advance well under a span per cut).
+    return resume >= ceiling_chars and (len(content) - resume) > span
 
 
 _PLACEHOLDER_BODIES = frozenset(
@@ -928,15 +1059,20 @@ class HistoryConsolidator:
         self._last_lifecycle: float = 0.0
         self._running: set[str] = set()
         self._tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
-        # Called as ``on_abandoned(key, message_count, reason, char_count=0)``
-        # when a span is abandoned at the attempt cap, so the owner can tell the
-        # user. ``message_count`` is the whole messages given up; ``char_count``
-        # is non-zero only when the abandon dropped ONE budget-sized slice of an
-        # over-budget head message (sub-chunking) rather than whole messages, so
-        # the notice can name the size of a partial-message loss. Without the
-        # callback the only trace of the dropped span is a WARNING in a rotating
-        # log. Set by the gateway once its notification surface exists; None
-        # skips it.
+        # Called as ``on_abandoned(key, message_count, reason, char_count=0,
+        # last_slice=False, retired=False)`` when a span is abandoned, so the
+        # owner can tell the user. ``message_count`` is the whole messages
+        # given up; ``char_count`` is non-zero only when the abandon dropped ONE
+        # budget-sized slice of an over-budget head message (sub-chunking)
+        # rather than whole messages, so the notice can name the size of a
+        # partial-message loss. ``last_slice`` is True when that dropped slice
+        # was the message's final one (the marker has moved past the whole
+        # message, so there is no next slice to resume from). ``retired`` is True
+        # when the span was dropped DELIBERATELY by the per-head slice ceiling (a
+        # cost cap) rather than after repeated failures, so the notice can avoid
+        # failure/underlying-error wording. Without the callback the only trace
+        # of the dropped span is a WARNING in a rotating log. Set by the gateway
+        # once its notification surface exists; None skips it.
         self.on_abandoned: Callable[..., None] | None = None
         # Track last activity per session for idle-based history consolidation
         self._last_activity: dict[str, float] = {}
@@ -1051,7 +1187,8 @@ class HistoryConsolidator:
         (``prompted`` still at ``offset``, i.e. the message marker was told not to
         move). That case advances the durable sub-offset to ``sub_prompted`` so
         the next pass resumes at the next slice; every other case — a final slice
-        (``prompted`` moved to ``offset + 1``) or an ordinary message-aligned
+        (``prompted`` moved past the whole chunk prefix, head plus any
+        display-only rows carried with it) or an ordinary message-aligned
         chunk — advances ``last_consolidated`` to ``prompted`` and clears the
         sub-offset. Both run off the event loop (blocking file IO).
         """
@@ -1064,9 +1201,7 @@ class HistoryConsolidator:
                 span.generation,
             )
             return
-        await asyncio.to_thread(
-            self._log.mark_consolidated, key, span.prompted, span.generation
-        )
+        await asyncio.to_thread(self._log.mark_consolidated, key, span.prompted, span.generation)
 
     async def _note_failed_attempt(self, key: str, span: AttemptedSpan, reason: str) -> None:
         """Charge one attempt for a billed turn that never reached the marker.
@@ -1121,14 +1256,40 @@ class HistoryConsolidator:
         # the next pass tries the next slice. Report the slice's character span so
         # the warning and the user notice name the real size of the loss rather
         # than "0 messages".
-        is_sub_slice_abandon = span.sub_prompted > span.sub_offset and span.prompted <= span.offset
+        # A sub-slice abandon drops ONE budget-sized slice of an over-budget
+        # head, not whole messages. It is identified by the slice having prompted
+        # some of the head's content (``sub_prompted > sub_offset``) — true for
+        # the final slice as much as a non-final one. Reading ``prompted <=
+        # offset`` as well would exclude the FINAL slice (whose ``prompted``
+        # advances past the whole chunk prefix), so abandoning the last slice of
+        # an over-budget head would report ``0`` characters and the user notice
+        # would miscount it as whole messages even though earlier slices were
+        # extracted. Report the slice's character span whenever any was prompted.
+        is_sub_slice_abandon = span.sub_prompted > span.sub_offset
         slice_chars = span.sub_prompted - span.sub_offset if is_sub_slice_abandon else 0
-        if is_sub_slice_abandon:
+        # The FINAL slice of an over-budget head advances the marker past the
+        # whole chunk prefix (``prompted > offset``), so there is no "next
+        # slice" to resume from — the message is now fully consolidated. A
+        # non-final slice leaves the marker put (``prompted == offset``) and the
+        # next pass continues from the slice after this one. Only the latter may
+        # say so.
+        is_last_slice = is_sub_slice_abandon and span.prompted > span.offset
+        if is_sub_slice_abandon and not is_last_slice:
             self._logger.warning(
                 "Abandoning consolidation for %s after %d failed attempts (%s): "
                 "giving up one %d-character slice of an over-budget message "
                 "WITHOUT a memory pass; the next pass continues from the slice "
                 "after it",
+                key,
+                attempts,
+                reason,
+                slice_chars,
+            )
+        elif is_sub_slice_abandon:
+            self._logger.warning(
+                "Abandoning consolidation for %s after %d failed attempts (%s): "
+                "giving up the last %d-character slice of an over-budget message "
+                "WITHOUT a memory pass; the message is now fully consolidated",
                 key,
                 attempts,
                 reason,
@@ -1155,7 +1316,13 @@ class HistoryConsolidator:
         callback = self.on_abandoned
         if callback is not None:
             try:
-                callback(key, span.prompted - span.offset, reason, char_count=slice_chars)
+                callback(
+                    key,
+                    span.prompted - span.offset,
+                    reason,
+                    char_count=slice_chars,
+                    last_slice=is_last_slice,
+                )
             except Exception:
                 self._logger.debug(
                     "Abandoned-consolidation callback failed for %s", key, exc_info=True
@@ -1661,16 +1828,106 @@ class HistoryConsolidator:
             sub_offset_prompted = 0
             sub_slice_is_last = False
             is_sub_slice = False
-            if include_history and len(chunk) == 1 and _head_exceeds_budget(chunk[0]):
+            # The chunk is message-aligned and may carry display-only rows (a
+            # ``notice`` such as an AutoNudge) alongside the one rendered head —
+            # ``_consolidation_chunk`` keeps those rows inside the prefix even
+            # though no prompt renders them. The slicing decision is about the
+            # PROMPTED rows, so test ``_prompt_rows(chunk)``: a sole rendered head
+            # that alone exceeds the budget is sliced regardless of how many
+            # display-only rows sit beside it. Guarding on ``len(chunk) == 1``
+            # instead let a notice next to an oversized head make the chunk two
+            # rows long, skip slicing, prompt the whole head, and abandon the
+            # entire message at the attempt cap without extraction — the exact
+            # data loss this path exists to prevent.
+            prompt_rows = _prompt_rows(chunk) if include_history else chunk
+            if include_history and len(prompt_rows) == 1 and _head_exceeds_budget(prompt_rows[0]):
+                # Per-head slice ceiling. Each pass slices one budget-sized piece
+                # of an over-budget head and the next pass resumes at the durable
+                # sub-offset, so a head near the transcript cap would slice into
+                # ~160 sequential consolidation LLM calls, each holding up every
+                # message behind it — the per-head cost would scale with the
+                # message's size unbounded. Once the sub-offset has reached
+                # ``_CONSOLIDATION_MAX_HEAD_SLICES`` whole spans into the head AND
+                # more than one slice of content still remains, retire the
+                # remainder the same bounded, FAIL-SAFE way the attempt cap
+                # retires an unprocessable span: advance the marker past the
+                # whole chunk, log the reason, and fire the user-facing abandon
+                # notice — never silently (silently marking unread content
+                # consolidated is the very bug this PR fixes). A head whose
+                # remainder fits one more slice is NOT retired; it drains in full,
+                # so no span that would fit a single extra slice is dropped
+                # unread. The already-sliced prefix keeps whatever it extracted;
+                # the tail behind the head consolidates on the next pass with its
+                # own fresh budget.
+                if _head_slice_ceiling_reached(prompt_rows[0], sub_offset_at_snapshot):
+                    stripped = _consolidation_head_content(prompt_rows[0])
+                    resume = (
+                        sub_offset_at_snapshot if 0 <= sub_offset_at_snapshot < len(stripped) else 0
+                    )
+                    remainder = max(0, len(stripped) - resume)
+                    reason = (
+                        f"per-head slice ceiling reached "
+                        f"(~{_CONSOLIDATION_MAX_HEAD_SLICES} budget spans consolidated)"
+                    )
+                    self._logger.warning(
+                        "Retiring consolidation head for %s after ~%d budget "
+                        "spans (%s): the message's remaining %d characters are "
+                        "marked consolidated WITHOUT a memory pass to bound the "
+                        "per-head cost; the tail behind it consolidates next pass",
+                        key,
+                        _CONSOLIDATION_MAX_HEAD_SLICES,
+                        reason,
+                        remainder,
+                    )
+                    try:
+                        await asyncio.to_thread(
+                            self._log.mark_consolidated,
+                            key,
+                            offset + len(chunk),
+                            generation_at_snapshot,
+                        )
+                    except Exception:
+                        self._logger.warning(
+                            "Could not retire consolidation head for %s", key, exc_info=True
+                        )
+                        return _CONSOLIDATION_REFUSED
+                    callback = self.on_abandoned
+                    if callback is not None:
+                        try:
+                            callback(
+                                key,
+                                len(chunk),
+                                reason,
+                                char_count=remainder,
+                                last_slice=True,
+                                retired=True,
+                            )
+                        except Exception:
+                            self._logger.debug(
+                                "Abandoned-consolidation callback failed for %s",
+                                key,
+                                exc_info=True,
+                            )
+                    return None
                 is_sub_slice = True
                 (
                     sliced_head,
                     sub_slice_start,
                     sub_offset_prompted,
                     sub_slice_is_last,
-                ) = _slice_head_for_budget(chunk[0], sub_offset_at_snapshot)
-                chunk = [sliced_head]
-                # The message marker advances past the head ONLY on the final
+                ) = _slice_head_for_budget(prompt_rows[0], sub_offset_at_snapshot)
+                # Keep the display-only rows in the span's prompted extent: the
+                # marker must advance past them with the head on the final slice,
+                # or they would be re-counted into the next chunk forever. Rebuild
+                # the chunk as the display-only rows in their original order with
+                # the single rendered head replaced by its slice.
+                chunk = [
+                    sliced_head if m is prompt_rows[0] else m
+                    for m in chunk
+                    if m is prompt_rows[0] or m.get("role") in DISPLAY_ONLY_ROLES
+                ]
+                # The message marker advances past the WHOLE chunk prefix (head
+                # plus the display-only rows carried with it) ONLY on the final
                 # slice; a non-final slice leaves it at ``offset`` and records
                 # progress through the sub-offset. ``sub_prompted`` carries the
                 # char offset this slice reached so the retry accounting can tell
@@ -1681,7 +1938,7 @@ class HistoryConsolidator:
                     total=total,
                     generation=generation_at_snapshot,
                     offset=offset,
-                    prompted=offset + (1 if sub_slice_is_last else 0),
+                    prompted=offset + (len(chunk) if sub_slice_is_last else 0),
                     sub_offset=sub_slice_start,
                     sub_prompted=sub_offset_prompted,
                 )
@@ -1766,9 +2023,7 @@ class HistoryConsolidator:
                 ]
                 if is_sub_slice:
                     source_id_parts.append(attempted.sub_offset)
-                source_id = hashlib.sha256(
-                    json.dumps(source_id_parts).encode("utf-8")
-                ).hexdigest()
+                source_id = hashlib.sha256(json.dumps(source_id_parts).encode("utf-8")).hexdigest()
                 committed = await asyncio.to_thread(vector_store.consolidation_receipt, source_id)
                 if committed is not None:
                     from kiro_crew.vector_memory import consolidation_source_digest
@@ -1816,7 +2071,16 @@ class HistoryConsolidator:
                             )
                     return None
 
-            conversation = "\n".join(_fmt_message(m) for m in _prompt_rows(chunk))
+            # The sub-slice chunk carries a head already image-ref-stripped over
+            # the WHOLE head (:func:`_consolidation_head_content`); render it with
+            # ``prestripped=True`` so ``_fmt_message`` does not strip a second
+            # time. A re-strip of a slice that begins mid-fence misreads the
+            # fenced block as prose and would replace a preserved path. A plain
+            # message-aligned prefix (``is_sub_slice`` False) is a whole message
+            # and is stripped once in ``_fmt_message`` as before.
+            conversation = "\n".join(
+                _fmt_message(m, prestripped=is_sub_slice) for m in _prompt_rows(chunk)
+            )
 
             current_prefs, current_projects = await asyncio.to_thread(
                 lambda: (memory.read_preferences(), memory.read_projects())
