@@ -4362,6 +4362,15 @@ def _prepare_messages_scoped(messages: list[dict], running: bool, *, live_child:
             ]
         meta = parse_cls_meta(m.get("cls", ""))
         if meta is not None:
+            # cls replaces meta, but a permission row's delivery id (`meta.mid`,
+            # stamped by _ChatSlot.append) is not in cls, and its approval is
+            # bound to that id (register_approval). Keep it for permission rows
+            # only, so every other row's wire meta stays exactly as before.
+            stored = m.get("meta")
+            stored_mid = stored.get("mid") if isinstance(stored, dict) else None
+            keep_mid = isinstance(stored_mid, str) and stored_mid and "mid" not in meta
+            if role == "permission" and keep_mid:
+                meta = {**meta, "mid": stored_mid}
             msg_out["meta"] = _expire_dead_child_oauth_meta(
                 role, _redact_meta_for_role(role, meta), live_child
             )

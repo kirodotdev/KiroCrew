@@ -27,6 +27,14 @@ export const BasePathCtx = createContext<string | null>(null)
 export const CompactImagesCtx = createContext<boolean>(false)
 
 /**
+ * When true, every fenced code block in the subtree renders copy-only (the
+ * plain CodeBlock), as the `readOnlyCode` prop does for one renderer. For a
+ * transcript whose code is another machine's (a crew window): Edit and Run in
+ * terminal would act on THIS machine. Default false.
+ */
+export const ReadOnlyCodeCtx = createContext<boolean>(false)
+
+/**
  * A per-message token appended to local image URLs.
  *
  * `/api/file-raw?path=…` addresses a file by PATH, so every impression of a file

@@ -5,32 +5,45 @@
  *  pending approval are the peer's, read through `/api/instances/{id}/proxy/`,
  *  and every action (send, stop, approve, continue, regenerate, rewind) calls
  *  the peer's own route for its own slot. The hub's proxy redacts every reply
- *  before it reaches this component, so peer text renders as delivered. */
-import { useEffect, useMemo, useRef, useState } from 'react'
+ *  before it reaches this component, so peer text renders as delivered.
+ *
+ *  The rows and the composer are the dashboard's shared ones (the transcript
+ *  list and row set a split pane draws, the composer the side panel mounts),
+ *  fed with the peer's slot data, so tool lines, attachments and new row types
+ *  reach a crew session without a copy here. What stays here is what only a
+ *  peer has: the proxied reads, the peer's event feed, and the peer routes
+ *  every action posts to (see `crewWindowRenderers.tsx` for the rows a hub
+ *  must not draw from its own state). */
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Loader2, Server, X } from 'lucide-react'
+import { Server, X } from 'lucide-react'
 import { api } from '../../../api/client'
 import { crewPeerUrl } from '../../../api/client/instances'
 import { useAppSelector } from '../../../store'
-import { Btn, SendBtn } from '../../../components/ui'
+import { Btn } from '../../../components/ui'
 import ErrorNotice from '../../../components/ErrorNotice'
 import Glass from '../../../components/Glass'
-import MarkdownRenderer from '../../../components/MarkdownRenderer'
+import ChatInput from '../../../components/ChatInput'
+import ChatMessageList from '../../../app-sdk/ChatMessageList'
+import ChatFooter from '../ChatFooter'
+import { ReadOnlyCodeCtx } from '../../../components/markdown/contexts'
+import { SlotProvider } from '../../../providers/SlotContext'
 import { i18nT } from '../../../i18n/t'
 import { errMessage } from '../../../utils/thunkError'
+import type { ChatMessage } from '../../../types'
 import { closeCrewWindow, coverSiblings, markCrewWindowShown, readCrewDraft, subscribeCrewDraft, writeCrewDraft, type CrewWindowTarget } from './crewWindowStore'
+import { createCrewWindowRenderers, crewWindowSlot } from './crewWindowRenderers'
 import { mergeRecoveredDraft } from '../../../utils/chatDrafts'
-import { useImeGuard } from '../../../hooks/useImeGuard'
 
-interface PeerMessage { role?: string; content?: string; ts?: string }
-interface PeerApproval { origin?: string; request_id?: string; request_mid?: string; tool?: string; tool_input?: string; tool_purpose?: string }
+interface PeerApproval { origin?: string; request_id?: string; request_mid?: string }
 interface PeerSlot { key?: string; title?: string; running?: boolean; interrupted?: boolean; pending_approval_info?: PeerApproval | null }
-interface PeerDetail { title?: string; running?: boolean; messages?: PeerMessage[] }
+interface PeerDetail { title?: string; running?: boolean; messages?: ChatMessage[] }
 
 /** How long a burst of peer frames waits before one transcript re-read. */
 const REFETCH_THROTTLE_MS = 300
 /** How often an unmatched (or unreachable) crew's version is re-read. */
 const CAPS_RETRY_MS = 5000
+const NO_MESSAGES: ChatMessage[] = []
 
 export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { target: CrewWindowTarget; onClose?: () => void }) {
   const { instanceId, key } = target
@@ -110,11 +123,10 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
   }, [instanceId, key, queryClient, slotKeyQ, detailKeyQ, feedGen, versionOk])
 
   const [draft, setDraftState] = useState(() => readCrewDraft(target))
-  const setDraft = (next: string | ((cur: string) => string)) => setDraftState(cur => {
-    const value = typeof next === 'function' ? next(cur) : next
+  const setDraft = useCallback((value: string) => {
     writeCrewDraft(target, value)
-    return value
-  })
+    setDraftState(value)
+  }, [target])
   const [rewindTs, setRewindTs] = useState<string | null>(null)
   // A rewind's edit is held beside the draft, never in it, so the session's
   // own unsent text survives a close or a rejected rewind untouched.
@@ -123,7 +135,6 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
   // follow it so the reopened composer shows the recovered text.
   useEffect(() => subscribeCrewDraft(target, setDraftState), [target])
   useEffect(() => markCrewWindowShown(onClose), [onClose])
-  const inputRef = useRef<HTMLTextAreaElement>(null)
   // The dock's height, so the transcript's last row clears the glass.
   const dockRef = useRef<HTMLDivElement>(null)
   const [dockH, setDockH] = useState(0)
@@ -134,11 +145,10 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
     ro.observe(el)
     return () => ro.disconnect()
   }, [])
-  const ime = useImeGuard()
-  const settle = () => {
+  const settle = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: slotKeyQ })
     void queryClient.invalidateQueries({ queryKey: detailKeyQ })
-  }
+  }, [queryClient, slotKeyQ, detailKeyQ])
   const action = useMutation({
     mutationFn: ({ path, body }: { path: string; body?: object; message?: string; rewindTs?: string | null }) =>
       api.crewPeerPost(instanceId, path, body),
@@ -160,7 +170,7 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
   })
   const send = () => {
     const message = (rewindTs ? rewindText : draft).trim()
-    if (!message || action.isPending) return
+    if (!message || action.isPending || !connected) return
     const req = rewindTs
       ? { path: slotPath + '/rewind', body: { ts: rewindTs, content: message } }
       : { path: 'api/chat?ws=1', body: { message, slot: key } }
@@ -177,18 +187,44 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
   // Only a native approval names its transcript row, and the peer's strict
   // check needs that row's id so a stale card cannot decide a newer request.
   const nativeApproval = approval?.origin === 'native' && approval.request_id && approval.request_mid ? approval : null
-  const decide = (decision: 'approved' | 'rejected') => {
-    if (!nativeApproval) return
-    action.mutate({
-      path: slotPath + '/approve',
-      body: { action: decision, request_id: nativeApproval.request_id, request_mid: nativeApproval.request_mid, origin: 'native' },
-    })
-  }
-  const messages = detailQ.data?.messages ?? []
+  // The shared permission row answers by its `approval_id`. A peer reuses
+  // request ids, so the id alone cannot say WHICH request a card showed: each
+  // row's own `meta.mid` rides in the id it hands back, and only the row the
+  // peer reports pending (same id AND same mid) is answered, with that mid. A
+  // stale card for a reused id makes no peer call.
+  const messages = useMemo(() => (detailQ.data?.messages ?? NO_MESSAGES).map(m => {
+    const aid = m.meta?.approval_id
+    if (m.role !== 'permission' || typeof aid !== 'string') return m
+    const mid = typeof m.meta?.mid === 'string' ? m.meta.mid : ''
+    return { ...m, meta: { ...m.meta, approval_id: JSON.stringify([aid, mid]) } }
+  }), [detailQ.data?.messages])
+  const approve = useCallback((approvalId: string, decision: string) => {
+    let row: unknown
+    try { row = JSON.parse(approvalId) } catch { row = null }
+    const [id, mid] = Array.isArray(row) ? row : []
+    if (!nativeApproval || id !== nativeApproval.request_id || !mid || mid !== nativeApproval.request_mid || (decision !== 'approved' && decision !== 'rejected')) {
+      return Promise.reject(new Error('approval not pending on ' + name))
+    }
+    return api.crewPeerPost(instanceId, slotPath + '/approve', {
+      action: decision, request_id: id, request_mid: mid, origin: 'native',
+    }).finally(settle)
+  }, [nativeApproval, instanceId, slotPath, settle, name])
   const lastTurn = [...messages].reverse().find(m => m.role === 'user' || m.role === 'assistant')
   const title = slotQ.data?.title || detailQ.data?.title || key
   const loadError = detailQ.error ?? slotQ.error ?? instancesQ.error ?? capsQ.error
   const versionMismatch = capsQ.data && !capsQ.data.version_match ? capsQ.data : null
+  const rewindPending = action.isPending
+  const renderers = useMemo(() => createCrewWindowRenderers({
+    instanceId,
+    key,
+    name,
+    // A rewind replaces the conversation from that row on, so none is offered
+    // mid-turn, and none on a row the hub redacted (its text is not the
+    // peer's, so resending it would rewrite the session with the redaction).
+    canRewind: m => !running && !!m.ts && !m.content?.includes('[REDACTED'),
+    onRewind: m => { setRewindTs(m.ts || null); setRewindText(m.content || '') },
+    rewindDisabled: rewindPending,
+  }), [instanceId, key, name, running, rewindPending])
   const rootRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const root = rootRef.current
@@ -196,6 +232,7 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
     root?.focus()
     return cover ? coverSiblings(cover) : undefined
   }, [])
+  const placeholder = i18nT('pages.chat.crewWindow.placeholder', { name })
 
   return (
     <div ref={rootRef} tabIndex={-1} className="flex flex-col h-full min-h-0 outline-none" data-testid="crew-chat-window">
@@ -207,99 +244,84 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
         <Btn className="shrink-0" onClick={onClose}><X size={14} aria-hidden="true" />{i18nT('pages.chat.crewWindow.close')}</Btn>
       </div>
       <div className="relative flex-1 min-h-0">
-      <div className="absolute inset-0 overflow-y-auto px-4 pt-3 flex flex-col gap-3" aria-live="polite" style={{ paddingBottom: dockH + 16 }}>
-        {/* No hand-off: the composer below may hold an unsent draft. */}
-        {loadError && <ErrorNotice title={i18nT('pages.chat.crewWindow.load_failed', { name })} message={errMessage(loadError)} />}
-        {/* No hand-off: the composer below may hold an unsent draft. */}
-        {versionMismatch && <ErrorNotice message={i18nT('pages.chat.crewWindow.version_mismatch', { peer: versionMismatch.version || '?', local: versionMismatch.local_version })} />}
-        {/* No hand-off: the composer below may hold an unsent draft. */}
-        {feedLost && (
-          <div className="flex items-start gap-2">
-            <ErrorNotice title={i18nT('pages.chat.crewWindow.feed_lost', { name })} message={i18nT('pages.chat.crewWindow.feed_lost_hint')} />
-            <Btn onClick={() => { setFeedLost(false); setFeedGen(g => g + 1) }}>{i18nT('pages.chat.crewWindow.retry')}</Btn>
-          </div>
-        )}
-        {!loadError && !detailQ.isPending && messages.length === 0 && <div className="text-muted">{i18nT('pages.chat.crewWindow.empty')}</div>}
-        {messages.map((m, i) => {
-          const text = m.content || ''
-          if (m.role === 'user') {
-            return (
-              <div key={m.ts || i} className="self-end max-w-[80%] flex flex-col items-end gap-1" data-testid="crew-window-user">
-                <div className="rounded-lg bg-bg-elevated px-3 py-2 whitespace-pre-wrap break-words">{text}</div>
-                {!running && m.ts && !text.includes('[REDACTED') && (
-                  <Btn disabled={action.isPending} onClick={() => { if (action.isPending) return; setRewindTs(m.ts || null); setRewindText(text); inputRef.current?.focus() }}>
-                    {i18nT('pages.chat.crewWindow.rewind')}
-                  </Btn>
-                )}
-              </div>
-            )
-          }
-          if (m.role === 'assistant' || m.role === 'chunk') {
-            return <div key={m.ts || i} data-testid="crew-window-assistant"><MarkdownRenderer content={text} softBreaks readOnlyCode /></div>
-          }
-          return <div key={m.ts || i} className="text-muted truncate">{text}</div>
-        })}
-        {nativeApproval && (
-          <div className="rounded-lg border border-border p-3 flex flex-col gap-2" data-testid="crew-window-approval">
-            <span className="font-semibold">{i18nT('pages.chat.crewWindow.approval_title', { name, tool: nativeApproval.tool || '?' })}</span>
-            {nativeApproval.tool_purpose && <span className="break-words">{nativeApproval.tool_purpose}</span>}
-            <span className="break-words text-muted">{nativeApproval.tool}</span>
-            {nativeApproval.tool_input && <pre className="whitespace-pre-wrap break-words text-muted">{nativeApproval.tool_input}</pre>}
-            <span className="text-muted">{i18nT('pages.chat.crewWindow.approval_hint')}</span>
-            <div className="flex gap-2">
-              <Btn primary disabled={action.isPending} onClick={() => decide('approved')}>{i18nT('pages.chat.crewWindow.approve')}</Btn>
-              <Btn danger disabled={action.isPending} onClick={() => decide('rejected')}>{i18nT('pages.chat.crewWindow.reject')}</Btn>
+      <div className="absolute inset-0 overflow-y-auto pt-3 flex flex-col gap-1" aria-live="polite" style={{ paddingBottom: dockH + 16 }}>
+        <div className="px-4 flex flex-col gap-3">
+          {/* No hand-off: the composer below may hold an unsent draft. */}
+          {loadError && <ErrorNotice title={i18nT('pages.chat.crewWindow.load_failed', { name })} message={errMessage(loadError)} />}
+          {/* No hand-off: the composer below may hold an unsent draft. */}
+          {versionMismatch && <ErrorNotice message={i18nT('pages.chat.crewWindow.version_mismatch', { peer: versionMismatch.version || '?', local: versionMismatch.local_version })} />}
+          {/* No hand-off: the composer below may hold an unsent draft. */}
+          {feedLost && (
+            <div className="flex items-start gap-2">
+              <ErrorNotice title={i18nT('pages.chat.crewWindow.feed_lost', { name })} message={i18nT('pages.chat.crewWindow.feed_lost_hint')} />
+              <Btn onClick={() => { setFeedLost(false); setFeedGen(g => g + 1) }}>{i18nT('pages.chat.crewWindow.retry')}</Btn>
             </div>
-            <div className="flex">
-              <Btn onClick={() => action.mutate({ path: slotPath + '/stop' })}>{i18nT('pages.chat.crewWindow.stop')}</Btn>
+          )}
+          {!loadError && !detailQ.isPending && messages.length === 0 && <div className="text-muted">{i18nT('pages.chat.crewWindow.empty')}</div>}
+        </div>
+        {/* Every code fence here is the peer's: copy only, never Edit or Run
+            in THIS machine's terminal. */}
+        <ReadOnlyCodeCtx.Provider value={true}>
+          <ChatMessageList messages={messages} running={running} renderers={renderers} onApprove={approve} />
+        </ReadOnlyCodeCtx.Provider>
+        <ChatFooter running={running && !approval?.request_id} stopping={false} state="" lastRole={messages[messages.length - 1]?.role ?? ''} />
+        <div className="px-4 flex flex-col gap-3">
+          {nativeApproval && <div className="text-muted mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }} data-testid="crew-window-approval-hint">{i18nT('pages.chat.crewWindow.approval_hint')}</div>}
+          {approval?.request_id && !nativeApproval && (
+            <div className="text-muted" data-testid="crew-window-approval-elsewhere">{i18nT('pages.chat.crewWindow.approval_elsewhere', { name })}</div>
+          )}
+          {!running && slotQ.data?.interrupted && (
+            <div className="flex items-center gap-2 text-muted" data-testid="crew-window-interrupted">
+              {i18nT('pages.chat.crewWindow.interrupted')}
+              <Btn disabled={!connected || action.isPending} onClick={() => action.mutate({ path: slotPath + '/continue' })}>{i18nT('pages.chat.crewWindow.continue')}</Btn>
             </div>
-          </div>
-        )}
-        {approval?.request_id && !nativeApproval && (
-          <div className="text-muted" data-testid="crew-window-approval-elsewhere">{i18nT('pages.chat.crewWindow.approval_elsewhere', { name })}</div>
-        )}
-        {running && !approval?.request_id && (
-          <div className="flex items-center gap-2 text-muted" data-testid="crew-window-running">
-            <Loader2 size={14} className="animate-spin" aria-hidden="true" />
-            {i18nT('pages.chatSidebar.thinking')}
-            <Btn onClick={() => action.mutate({ path: slotPath + '/stop' })}>{i18nT('pages.chat.crewWindow.stop')}</Btn>
-          </div>
-        )}
-        {!running && slotQ.data?.interrupted && (
-          <div className="flex items-center gap-2 text-muted" data-testid="crew-window-interrupted">
-            {i18nT('pages.chat.crewWindow.interrupted')}
-            <Btn disabled={!connected || action.isPending} onClick={() => action.mutate({ path: slotPath + '/continue' })}>{i18nT('pages.chat.crewWindow.continue')}</Btn>
-          </div>
-        )}
-        {!running && !slotQ.data?.interrupted && lastTurn?.role === 'assistant' && (
-          <div>
-            <Btn disabled={!connected || action.isPending} onClick={() => action.mutate({ path: slotPath + '/regenerate' })}>{i18nT('pages.chat.crewWindow.regenerate')}</Btn>
-          </div>
-        )}
+          )}
+          {!running && !slotQ.data?.interrupted && lastTurn?.role === 'assistant' && (
+            <div>
+              <Btn disabled={!connected || action.isPending} onClick={() => action.mutate({ path: slotPath + '/regenerate' })}>{i18nT('pages.chat.crewWindow.regenerate')}</Btn>
+            </div>
+          )}
+        </div>
       </div>
       {/* Glass pins its own root to position: relative, so a plain box places
           the dock; the transcript above pays for it with padding. */}
       <div ref={dockRef} className="absolute left-0 right-0 bottom-0">
-      <Glass thickness="thin" radius={0} className="border-t border-border px-4 py-3 flex flex-col gap-2">
-        {/* No hand-off: the composer below may hold an unsent draft. */}
-        {action.error && <ErrorNotice title={i18nT('pages.chat.crewWindow.action_failed', { name })} message={errMessage(action.error)} onDismiss={() => action.reset()} />}
-        {!connected && <div className="text-muted">{i18nT('pages.chat.crewWindow.offline', { name })}</div>}
-        {rewindTs && (
-          <div className="flex items-center gap-2 text-muted">
-            {i18nT('pages.chat.crewWindow.rewinding')}
-            <Btn onClick={() => { setRewindTs(null); setRewindText('') }}>{i18nT('pages.chat.crewWindow.cancel_rewind')}</Btn>
-          </div>
-        )}
-        <div className="flex gap-2 items-end">
-          <textarea ref={inputRef} value={rewindTs ? rewindText : draft} rows={2} disabled={!connected}
-            aria-label={i18nT('pages.chat.crewWindow.placeholder', { name })}
-            placeholder={i18nT('pages.chat.crewWindow.placeholder', { name })}
-            className="flex-1 min-w-0 resize-none rounded-lg border border-border bg-bg px-3 py-2"
-            onChange={e => (rewindTs ? setRewindText : setDraft)(e.target.value)}
-            {...ime.bindComposition()}
-            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { if (ime.claimEnter(e)) send() } }} />
-          <SendBtn disabled={!connected || !(rewindTs ? rewindText : draft).trim() || action.isPending} onClick={send}>{i18nT('pages.chat.crewWindow.send')}</SendBtn>
+      <Glass thickness="thin" radius={0} className="border-t border-border py-3 flex flex-col gap-2">
+        <div className="px-4 flex flex-col gap-2">
+          {/* No hand-off: the composer below may hold an unsent draft. */}
+          {action.error && <ErrorNotice title={i18nT('pages.chat.crewWindow.action_failed', { name })} message={errMessage(action.error)} onDismiss={() => action.reset()} />}
+          {!connected && <div className="text-muted">{i18nT('pages.chat.crewWindow.offline', { name })}</div>}
+          {rewindTs && (
+            <div className="flex items-center gap-2 text-muted">
+              {i18nT('pages.chat.crewWindow.rewinding')}
+              <Btn onClick={() => { setRewindTs(null); setRewindText('') }}>{i18nT('pages.chat.crewWindow.cancel_rewind')}</Btn>
+            </div>
+          )}
         </div>
+        {/* The shared composer, under a slot key no local session can carry:
+            its store reads (approvals, tool log, busy mode) then find nothing
+            of the hub's own sessions. Menus, the optimizer and the approval
+            chrome are off, as in the side panel: each acts on a LOCAL slot.
+            Offline, a disabled fieldset turns the whole composer off, as the
+            RFC's "input disabled" says; the composer's own offline state would
+            name the hub's gateway, not this crew. */}
+        <fieldset disabled={!connected} className="contents">
+        <SlotProvider slotId={crewWindowSlot(instanceId, key)}>
+          <ChatInput
+            value={rewindTs ? rewindText : draft}
+            onChange={rewindTs ? setRewindText : setDraft}
+            onSend={send}
+            onStop={() => action.mutate({ path: slotPath + '/stop' })}
+            isRunning={running}
+            autoFocusKey={rewindTs}
+            placeholder={placeholder}
+            inputAriaLabel={placeholder}
+            typedCommandMenus={false}
+            slotApprovalChrome={false}
+            promptOptimizer={false}
+          />
+        </SlotProvider>
+        </fieldset>
       </Glass>
       </div>
       </div>

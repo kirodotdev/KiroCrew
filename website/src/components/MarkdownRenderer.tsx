@@ -77,6 +77,7 @@ import {
   MdSourceCtx,
   PathActionCtx,
   PathProbeCtx,
+  ReadOnlyCodeCtx,
   SessionActionCtx,
   type LinkUnfurl,
   type PathActions,
@@ -913,6 +914,7 @@ function extractPathHintFromText(text: string | undefined): string | undefined {
 }
 
 function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, slotKey, glow, smooth, softBreaks, live, unfurl, collapseDiffs, mdCardToggle, readOnlyCode, markers }: { block: ContentBlock; prevBlock?: ContentBlock; onFileOpen?: (path: string) => void; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; live?: boolean; unfurl?: boolean; collapseDiffs?: boolean; mdCardToggle?: boolean; readOnlyCode?: boolean; markers?: RedactionMarkers }) {
+  const readOnlyCodeCtx = useContext(ReadOnlyCodeCtx)
   // A fence holding lock tags renders them in place whatever its language:
   // the diagram, diff and formatted-markdown renderers would show the
   // placeholder without its tag and card (see RedactedCodeBlock).
@@ -984,7 +986,7 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, slo
       // Raw scratch editor edits a local copy that is never written back, so a
       // pencil there lets someone edit the block and then Approve the ORIGINAL
       // command while looking at their edit. Plain CodeBlock keeps copy only.
-      const node = readOnlyCode
+      const node = readOnlyCode || readOnlyCodeCtx
         ? <CodeBlock code={block.content} lang={block.language} complete={block.complete} />
         : <EditableCodeBlock code={block.content} lang={block.language} complete={block.complete} />
       // Height-grow only — streaming code renders as one plain <pre> text node

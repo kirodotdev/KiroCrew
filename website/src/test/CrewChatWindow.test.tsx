@@ -21,9 +21,21 @@ const mocks = vi.hoisted(() => ({
   // slot they are what answered 409.
   continueSlot: vi.fn(), regenerateSlot: vi.fn(), rewind: vi.fn(), approveChatSlot: vi.fn(),
 }))
-vi.mock('../api/client', () => ({ api: mocks }))
+// Every other client call (the shared composer's own reads) answers empty.
+vi.mock('../api/client', async () => ({
+  ApiError: (await vi.importActual<typeof import('../api/client')>('../api/client')).ApiError,
+  api: new Proxy(mocks as Record<string | symbol, unknown>, {
+    get: (t, prop) => {
+      if (!(prop in t)) t[prop] = vi.fn().mockResolvedValue(prop === 'slashCommands' ? [] : {})
+      return t[prop]
+    },
+  }),
+  SEARCH_MIN_CHARS: 2,
+}))
 
 import CrewChatWindow from '../pages/chat/crew-window/CrewChatWindow'
+import { createCrewWindowRenderers, PEER_SAFE_ROWS } from '../pages/chat/crew-window/crewWindowRenderers'
+import { createTranscriptRenderers } from '../pages/chat/transcriptRenderers'
 import {
   openCrewWindow, closeCrewWindow, useCrewWindow, reloadCrewWindowForTest, writeCrewDraft,
 } from '../pages/chat/crew-window/crewWindowStore'
@@ -63,6 +75,19 @@ function renderWindow() {
 
 const posted = () => mocks.crewPeerPost.mock.calls.map(c => [c[1], c[2]])
 
+/** A peer row lands only after two chained queries (capabilities, then the
+ *  slot detail), so its waits get an explicit deadline, not the default. */
+const PEER_ROW_WAIT = { timeout: 5000 }
+
+/** A pending native approval row as the peer's slot detail sends it: the
+ *  runner's request data in `cls` (parsed into `meta` by the peer's
+ *  `_prepare_messages`), plus the row's own `mid`, which that serializer
+ *  carries over from the stored row because the approval is bound to it. */
+const permissionRow = (id: string, mid = 'm-' + id) => {
+  const cls = JSON.stringify({ request_id: id, approval_id: id, tool_call_id: 'tc', tool_input: 'ls' })
+  return { role: 'permission', content: 'shell', cls, ts: 'tp', meta: { ...JSON.parse(cls), mid } }
+}
+
 beforeEach(() => {
   FakeEventSource.all = []
   vi.stubGlobal('EventSource', FakeEventSource)
@@ -87,6 +112,7 @@ afterEach(() => {
 describe('CrewChatWindow', () => {
   it('approves the PEER\'s pending approval with the row id its strict check needs', async () => {
     slotRow = { ...slotRow, running: true, pending_approval_info: { origin: 'native', request_id: '7', request_mid: 'm-7', tool: 'shell', tool_input: 'ls' } }
+    detail = { running: true, messages: [{ role: 'user', content: 'hi', ts: 't1' }, permissionRow('7')] }
     renderWindow()
     fireEvent.click(await screen.findByRole('button', { name: 'Approve' }))
     await waitFor(() => expect(posted()).toContainEqual([
@@ -98,9 +124,10 @@ describe('CrewChatWindow', () => {
 
   it('keeps Stop reachable while an approval is pending', async () => {
     slotRow = { ...slotRow, running: true, pending_approval_info: { origin: 'native', request_id: '7', request_mid: 'm-7', tool: 'shell' } }
+    detail = { running: true, messages: [{ role: 'user', content: 'hi', ts: 't1' }, permissionRow('7')] }
     renderWindow()
-    await screen.findByTestId('crew-window-approval')
-    fireEvent.click(screen.getByRole('button', { name: 'Stop' }))
+    await screen.findByRole('button', { name: 'Approve' })
+    fireEvent.click(screen.getByRole('button', { name: 'Stop generation' }))
     await waitFor(() => expect(posted()).toContainEqual(['api/chat/slots/k1/stop', undefined]))
   })
 
@@ -166,7 +193,7 @@ describe('CrewChatWindow', () => {
     // A reload re-reads the open window from sessionStorage.
     reloadCrewWindowForTest()
     renderWindow()
-    expect(await screen.findByTestId('crew-window-running')).toHaveTextContent('Thinking…')
+    expect(await screen.findByRole('status', { name: 'Thinking…' })).toBeInTheDocument()
     expect(screen.queryByText('Turn interrupted')).toBeNull()
   })
 
@@ -208,7 +235,7 @@ describe('CrewChatWindow', () => {
     await waitFor(() => expect(posted()).toContainEqual(['api/chat?ws=1', { message: 'next', slot: 'k1' }]))
     const es = FakeEventSource.all[0]
     act(() => es.emit('slots', [{ ...slotRow, running: true }]))
-    fireEvent.click(await screen.findByRole('button', { name: 'Stop' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop generation' }))
     await waitFor(() => expect(posted()).toContainEqual(['api/chat/slots/k1/stop', undefined]))
   })
 
@@ -258,9 +285,10 @@ describe('CrewChatWindow', () => {
 
   it('shows the approval, not a second running label, while one is pending', async () => {
     slotRow = { ...slotRow, running: true, pending_approval_info: { origin: 'native', request_id: '7', request_mid: 'm-7', tool: 'shell' } }
+    detail = { running: true, messages: [{ role: 'user', content: 'hi', ts: 't1' }, permissionRow('7')] }
     renderWindow()
-    await screen.findByTestId('crew-window-approval')
-    expect(screen.queryByTestId('crew-window-running')).toBeNull()
+    await screen.findByRole('button', { name: 'Approve' })
+    expect(screen.queryByRole('status', { name: 'Thinking…' })).toBeNull()
   })
 
   it('offers no rewind on a message the hub redacted', async () => {
@@ -277,6 +305,7 @@ describe('CrewChatWindow', () => {
     expect(mocks.crewPeerGet).not.toHaveBeenCalled()
     expect(FakeEventSource.all).toHaveLength(0)
     expect(screen.getByRole('textbox', { name: 'Message the agent on devbox…' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
   })
 
   it('keeps an unsent draft across switching to another crew session and back', async () => {
@@ -383,6 +412,110 @@ describe('CrewChatWindow', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Rewind to here' }))
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Rewind to here' })).toBeDisabled())
+  })
+
+  // The rows below are the shared transcript's, not a copy kept here.
+  it('draws a peer tool call as the shared tool line, not its raw text', async () => {
+    slotRow = { ...slotRow, running: true }
+    detail = { running: true, messages: [
+      { role: 'user', content: 'list it', ts: 't1' },
+      { role: 'tool', content: '🔧 Running: ls -la', cls: '', ts: 't2', meta: { tool_call_id: 'c1', tool_input: 'ls -la' } },
+    ] }
+    renderWindow()
+    expect(await screen.findByTestId('tool-pill-label', undefined, PEER_ROW_WAIT)).toBeInTheDocument()
+    expect(screen.queryByText('🔧 Running: ls -la')).toBeNull()
+  })
+
+  it('draws a peer file as its name, never as the hub outbox file of that name', async () => {
+    detail = { running: false, messages: [
+      { role: 'user', content: 'send it', ts: 't1' },
+      { role: 'file', content: JSON.stringify({ filename: 'report.pdf', mime: 'application/pdf' }), cls: '', ts: 't2' },
+    ] }
+    const { container } = renderWindow()
+    expect(await screen.findByTestId('crew-window-file', undefined, PEER_ROW_WAIT)).toHaveTextContent('The agent on devbox sent report.pdf. The file stays on devbox.')
+    expect(container.querySelector('[href*="/api/outbox/"], [src*="/api/outbox/"]')).toBeNull()
+  })
+
+  it('answers only the approval the peer itself reports pending', async () => {
+    // The transcript row names request 9; the peer's slot says 7 is the live one.
+    slotRow = { ...slotRow, running: true, pending_approval_info: { origin: 'native', request_id: '7', request_mid: 'm-7', tool: 'shell' } }
+    detail = { running: true, messages: [{ role: 'user', content: 'hi', ts: 't1' }, permissionRow('9')] }
+    renderWindow()
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve' }, PEER_ROW_WAIT))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Approve' })).not.toBeDisabled(), PEER_ROW_WAIT)
+    expect(mocks.crewPeerPost).not.toHaveBeenCalled()
+  })
+
+  it('answers nothing for a row from an older peer that sends no mid', async () => {
+    slotRow = { ...slotRow, running: true, pending_approval_info: { origin: 'native', request_id: '7', request_mid: 'm-7', tool: 'shell' } }
+    const { mid: _dropped, ...meta } = permissionRow('7').meta
+    const row = { ...permissionRow('7'), meta }
+    detail = { running: true, messages: [{ role: 'user', content: 'hi', ts: 't1' }, row] }
+    renderWindow()
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve' }, PEER_ROW_WAIT))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Approve' })).not.toBeDisabled(), PEER_ROW_WAIT)
+    expect(mocks.crewPeerPost).not.toHaveBeenCalled()
+  })
+
+  it('answers no stale card whose request id the peer has reused', async () => {
+    // The card on screen is the OLD request 7 (row m-old); the peer's live 7 is m-new.
+    slotRow = { ...slotRow, running: true, pending_approval_info: { origin: 'native', request_id: '7', request_mid: 'm-new', tool: 'shell' } }
+    detail = { running: true, messages: [{ role: 'user', content: 'hi', ts: 't1' }, permissionRow('7', 'm-old')] }
+    renderWindow()
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve' }, PEER_ROW_WAIT))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Approve' })).not.toBeDisabled(), PEER_ROW_WAIT)
+    expect(mocks.crewPeerPost).not.toHaveBeenCalled()
+  })
+
+  it('says what Approve and Reject do while an approval is pending', async () => {
+    slotRow = { ...slotRow, running: true, pending_approval_info: { origin: 'native', request_id: '7', request_mid: 'm-7', tool: 'shell' } }
+    detail = { running: true, messages: [{ role: 'user', content: 'hi', ts: 't1' }, permissionRow('7')] }
+    renderWindow()
+    expect(await screen.findByTestId('crew-window-approval-hint', undefined, PEER_ROW_WAIT)).toHaveTextContent('Approve runs this one command.')
+  })
+
+  it('lets in only shared rows decided safe for a peer (a new row falls back)', () => {
+    // A new shared row must be added to PEER_SAFE_ROWS on purpose, or it draws
+    // through the store-free default instead of reading this hub's own state.
+    const ids = createTranscriptRenderers({}).map(r => r.id)
+    const decided = new Set([...PEER_SAFE_ROWS, 'workflow_run_tool', 'subagent_run_tool', 'file'])
+    expect(ids.filter(id => !decided.has(id))).toEqual([])
+    const crew = createCrewWindowRenderers({ instanceId: 'cd-1', key: 'k1', name: 'devbox', canRewind: () => false, onRewind: () => {}, rewindDisabled: false }).map(r => r.id)
+    expect(crew).not.toContain('workflow_run_tool')
+    expect(crew).not.toContain('subagent_run_tool')
+  })
+
+  it('draws a peer code fence copy-only, with no Run into this machine', async () => {
+    detail = { running: false, messages: [
+      { role: 'user', content: 'clean up', ts: 't1' },
+      { role: 'assistant', content: '```bash\nrm -f report.txt\n```', cls: '', ts: 't2', meta: { decisions_strip: { turn_id: 'peer-turn', points: [] } } },
+    ] }
+    renderWindow()
+    await waitFor(() => expect(screen.getByTestId('crew-window-assistant')).toHaveTextContent('rm -f report.txt'), PEER_ROW_WAIT)
+    expect(screen.queryByRole('button', { name: 'Edit code block' })).toBeNull()
+    expect(screen.queryByLabelText(/Run in terminal/)).toBeNull()
+  })
+
+  it('draws a code fence in a peer USER row copy-only too', async () => {
+    detail = { running: false, messages: [
+      { role: 'user', content: 'run this\n```bash\nrm -f report.txt\n```', ts: 't1' },
+      { role: 'assistant', content: 'ok', cls: '', ts: 't2' },
+    ] }
+    renderWindow()
+    await screen.findByText('ok')
+    await waitFor(() => expect(document.body.textContent).toContain('rm -f report.txt'), PEER_ROW_WAIT)
+    expect(screen.queryByRole('button', { name: 'Edit code block' })).toBeNull()
+    expect(screen.queryByLabelText(/Run in terminal/)).toBeNull()
+  })
+
+  it('still draws a peer system notice as its card, not as a reply', async () => {
+    detail = { running: false, messages: [
+      { role: 'user', content: 'hi', ts: 't1' },
+      { role: 'assistant', content: 'LONG CONTEXT SUMMARY', cls: '', ts: 't2', meta: { kind: 'compaction' } },
+    ] }
+    renderWindow()
+    await screen.findByText('hi')
+    expect(screen.queryByTestId('crew-window-assistant')).toBeNull()
   })
 
   it('holds the peer event feed only while the window is open', async () => {
