@@ -4959,7 +4959,7 @@ class TestDoctorMcpTools:
         assert issues == [
             f"{ref} auto-approve forbidden by ceiling (repair from the owning install)"
             for ref in ("@kirocrew-cron", "@kirocrew-core")
-        ] + ["agent config (auto-fix skipped: shared home)"]
+        ] + ["@kirocrew-guide config", "agent config (auto-fix skipped: shared home)"]
 
     def test_ceiling_revoke_drops_per_tool_grants_too(self, tmp_path, capsys):
         """Withholding auto-approve drops the bare ref and every ``@server/tool``
@@ -5036,6 +5036,25 @@ class TestDoctorMcpTools:
         # The other managed servers are unaffected — the carve-out is scoped.
         assert "@kirocrew-core" in updated["allowedTools"]
         assert "@kirocrew-cron" in updated["allowedTools"]
+
+    def test_auto_fix_never_blanket_allows_the_guide_set(self, tmp_path, capsys):
+        """The guide set is always on but granted per tool, so doctor mounts its
+        ref and never mints the whole-server grant: that would pre-approve a tool
+        added to the server later, before anyone reviewed it."""
+        from kiro_crew.cli_doctor import _doctor_mcp_tools
+
+        agent_path = tmp_path / "kirocrew.json"
+        _healthy_agent_file(agent_path)
+        data = json.loads(agent_path.read_text(encoding="utf-8"))
+        data["tools"] = []
+        data["allowedTools"] = []
+        agent_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        with self._mock_probe({}):
+            _doctor_mcp_tools(agent_path, [])
+        updated = json.loads(agent_path.read_text(encoding="utf-8"))
+        assert "@kirocrew-guide" in updated["tools"]
+        assert "@kirocrew-guide" not in updated["allowedTools"]
+        assert "@kirocrew-core" in updated["allowedTools"]
 
     def test_auto_fix_preserves_a_user_made_computer_use_grant(self, tmp_path, capsys):
         """Doctor never MINTS the grant, but never REMOVES a user's own either.

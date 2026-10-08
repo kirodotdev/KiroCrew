@@ -219,6 +219,47 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get(
         "/api/members/{slug}/dashboard", _deferred("member_dashboard", "api_member_dashboard")
     )
+    # UI guides (``kirocrew-guide``). The agent half is MCP-only and sits under
+    # the strict "/api/guide/agent" prefix; the browser half is cookie-authed and
+    # owner-only, deliberately OFF that prefix. Deferred like the panel: the server
+    # is opt-in, so most gateways never load the module. The paths are duplicated
+    # from ``guide.register_guide_routes``, and a test pins the two together.
+    for _method, _path, _name in (
+        ("GET", "/api/guide/agent/actions", "api_guide_agent_actions"),
+        ("POST", "/api/guide/agent/start", "api_guide_agent_start"),
+        ("GET", "/api/guide/agent/status", "api_guide_agent_status"),
+        ("POST", "/api/guide/agent/cancel", "api_guide_agent_cancel"),
+        ("POST", "/api/guide/agent/observe", "api_guide_agent_observe"),
+        ("GET", "/api/guide/agent/language", "api_guide_agent_language"),
+        ("GET", "/api/guide/pending", "api_guide_pending"),
+        ("POST", "/api/guide/claim", "api_guide_claim"),
+        ("POST", "/api/guide/progress", "api_guide_progress"),
+        ("POST", "/api/guide/heartbeat", "api_guide_heartbeat"),
+        ("POST", "/api/guide/cancel", "api_guide_cancel"),
+        ("POST", "/api/guide/dismiss", "api_guide_dismiss"),
+        ("POST", "/api/guide/replay", "api_guide_replay"),
+        ("POST", "/api/guide/refuse", "api_guide_refuse"),
+        ("POST", "/api/guide/replan", "api_guide_replan"),
+        ("POST", "/api/guide/observe", "api_guide_observe"),
+    ):
+        app.router.add_route(_method, _path, _deferred("guide", _name))
+    # Change cards. Same split as the guide: the agent half is MCP-only under the
+    # strict "/api/cards/agent" prefix, the browser half is owner-only cookie auth.
+    # The paths are duplicated from ``change_cards.register_change_card_routes``,
+    # and a test pins the two together.
+    for _method, _path, _name in (
+        ("GET", "/api/cards/agent/kinds", "api_cards_agent_kinds"),
+        ("GET", "/api/cards/agent/settings", "api_cards_agent_settings"),
+        ("GET", "/api/cards/agent/capabilities", "api_cards_agent_capabilities"),
+        ("GET", "/api/cards/agent/diagnose", "api_cards_agent_diagnose"),
+        ("POST", "/api/cards/agent/propose", "api_cards_agent_propose"),
+        ("GET", "/api/cards/agent/status", "api_cards_agent_status"),
+        ("GET", "/api/cards/pending", "api_cards_pending"),
+        ("POST", "/api/cards/{card_id}/preview", "api_cards_preview"),
+        ("POST", "/api/cards/{card_id}/cancel", "api_cards_cancel"),
+        ("POST", "/api/cards/{card_id}/dismiss", "api_cards_dismiss"),
+    ):
+        app.router.add_route(_method, _path, _deferred("change_cards", _name))
     app.router.add_get("/api/crons", handlers.api_crons)
     app.router.add_post("/api/crons", handlers.api_crons_create)
     app.router.add_delete("/api/crons", handlers.api_cron_batch_delete)

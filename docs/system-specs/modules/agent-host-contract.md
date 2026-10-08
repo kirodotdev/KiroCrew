@@ -154,10 +154,21 @@ separators; the floor re-joins them for the running platform.
 ### Which SESSION is calling — the same answer on every harness
 
 Distinct from the credential question above: this is how one of Crew's OWN MCP
-servers (`kirocrew-core`, `kirocrew-cron`, and the session-scoped
-`kirocrew-dashboard` / `kirocrew-work`) learns which session it is acting for. It is
+servers (`kirocrew-core`, `kirocrew-cron`, the platform guide set `kirocrew-guide`, and
+the session-scoped `kirocrew-dashboard` / `kirocrew-work`) learns which session it is
+acting for. It is
 a host question rather than a declared seam — a harness declares nothing about it —
 and the answer does not vary by backend.
+
+`kirocrew-guide` is emitted into the default spec (every crewmate and dashboard
+session on kiro-cli and KAS mounts it from there; the CC projection carries it like
+any spec entry). It is not part of the control plane, so the codex, opencode and
+goose mirrors withhold it on the same rule they withhold every other managed Crew
+server (a mirror mounts only the two re-derived control-plane entries
+credentialed), and pi and the other no-mirror backends never receive it. Those
+sessions answer where-is and how-to questions without it; `kirocrew doctor`'s
+`mcp tool refs` row names the unprojected `@kirocrew-guide` ref per harness, and
+nothing special-cases its absence.
 
 Every ACP session mints a per-session TOKEN (`mcp_gateway/claim.py`) and the gateway
 publishes a MAC-signed `token -> session_key` mapping (`session_token_sig.py`) at

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type HTMLAttributes, type ReactNode } from 'react'
+import { forwardRef, useEffect, useRef, useState, type HTMLAttributes, type ReactNode, type ForwardedRef } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { AlarmClock, Brain, ChevronLeft, ChevronRight, Cpu, FolderOpen, Goal, IdCard, NotebookPen, Pencil, Route, Shield, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -10,6 +10,8 @@ import type { CronJob } from '../../types'
 import CrewScheduleList from './CrewScheduleList'
 import { cn } from '../../lib/utils'
 import ErrorNotice from '../../components/ErrorNotice'
+import { forwardUiLocation, uiLocation } from '../../uiLocations/uiLocation'
+import type { UiLocationId } from '../../uiLocations/descriptors'
 
 /** The card's four tabs, in strip order (crewmate-panel IA sketch). */
 export const PROFILE_TABS = ['profile', 'schedule', 'sessions', 'goals'] as const
@@ -62,20 +64,23 @@ const TONE: Record<'accent' | 'ok' | 'warn' | 'info', string> = {
   info: 'bg-info-subtle text-info',
 }
 
-function Row({ icon, tone = 'accent', label, sub, onClick, testId }: {
+const Row = forwardRef(function Row({ icon, tone = 'accent', label, sub, onClick, testId, 'data-ui-location': uiLocationId }: {
   icon: ReactNode
   tone?: keyof typeof TONE
   label: string
   sub?: string
   onClick: () => void
   testId: string
-}) {
+  /** A registered find_ui location (`{...uiLocation(id)}` spread on the row). */
+  'data-ui-location'?: UiLocationId
+}, forwardedRef: ForwardedRef<HTMLButtonElement>) {
   return (
     <button
       type="button"
       onClick={onClick}
       className="flex items-center gap-3 w-full px-3.5 py-3 text-left border-t border-border first:border-t-0 hover:bg-bg-hover transition-colors cursor-pointer"
       data-testid={testId}
+      {...forwardUiLocation(uiLocationId, forwardedRef)}
     >
       <span className={cn('w-8 h-8 rounded-[9px] grid place-items-center shrink-0', TONE[tone])} aria-hidden="true">{icon}</span>
       <span className="flex-1 min-w-0 leading-tight">
@@ -85,7 +90,7 @@ function Row({ icon, tone = 'accent', label, sub, onClick, testId }: {
       <ChevronRight size={15} className="text-muted shrink-0" aria-hidden="true" />
     </button>
   )
-}
+})
 
 function Tile({ icon, tone, label, value, title, onClick, testId }: {
   icon: ReactNode
@@ -317,7 +322,7 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
 
                 <div className="rounded-2xl border border-border bg-bg overflow-hidden">
                   <Row icon={<NotebookPen size={16} />} tone="warn" label={t('pages.membersPage.notes_tab')} sub={t('pages.membersPage.profile_notes_sub')} onClick={() => push('notes')} testId="crew-profile-notes" />
-                  <Row icon={<Shield size={16} />} tone="ok" label={t('pages.membersPage.profile_permissions')} sub={t('pages.membersPage.profile_permissions_sub')} onClick={p.onEdit} testId="crew-profile-permissions" />
+                  <Row icon={<Shield size={16} />} tone="ok" label={t('pages.membersPage.profile_permissions')} sub={t('pages.membersPage.profile_permissions_sub')} onClick={p.onEdit} testId="crew-profile-permissions" {...uiLocation('members.permissions')} />
                   <Row icon={<Cpu size={16} />} tone="info" label={t('pages.membersPage.profile_model')} sub={p.member.model || t('pages.membersPage.profile_model_auto')} onClick={p.onEdit} testId="crew-profile-model" />
                 </div>
               </div>

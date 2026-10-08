@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { guideConfirm } from '../uiLocations/targetRegistry'
 
 import Modal from './Modal'
 import { Btn } from './ui'
@@ -101,7 +102,8 @@ export function useConfirm(): {
           <Btn onClick={() => settle(false)}>
             {i18nT('components.confirmDialog.cancel')}
           </Btn>
-          <Btn danger={opts.danger !== false} onClick={() => settle(true)}>
+          {/* What a guide's destructive step waits for: this press, never a cancel. */}
+          <Btn danger={opts.danger !== false} onClick={() => settle(true)} {...guideConfirm()}>
             {opts.confirmLabel}
           </Btn>
         </>

@@ -35,7 +35,7 @@ from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
 
 #: One path segment under a normalized root, with the separator run before it: a
 #: Windows spec spells ``<TMP>\\bin\\kirocrew`` where POSIX spells ``<TMP>/bin/kirocrew``.
-_UNDER_ROOT = re.compile(r"(<TMP>|<HOME>)((?:\\+[^\\\"\s]+)+)")
+_UNDER_ROOT = re.compile(r"(<TMP>|<HOME>|<PKG>)((?:\\+[^\\\"\s]+)+)")
 _SEPARATORS = re.compile(r"\\+")
 
 
@@ -136,14 +136,22 @@ class _Rig:
         A root is spelled as-is, JSON-escaped once (inside a spec file) or twice
         (inside a JSON value an event records). A path under a root then keeps the
         host's separator, so it is folded to ``/``: the goldens are the same bytes
-        on every platform.
+        on every platform. ``<PKG>`` is the installed ``kiro_crew`` package, which
+        the assistant prompt names as the packaged docs index: it is wherever this
+        checkout lives, so it is labelled like the scratch roots.
         """
-        roots = {
-            str(self.tmp): "<TMP>",
-            str(self.tmp.resolve()): "<TMP>",
-            str(self.home): "<HOME>",
-            str(self.home.resolve()): "<HOME>",
+        package = Path(agent.__file__).resolve().parent
+        bases = {
+            self.tmp: "<TMP>",
+            self.tmp.resolve(): "<TMP>",
+            self.home: "<HOME>",
+            self.home.resolve(): "<HOME>",
+            package: "<PKG>",
         }
+        # A spec may also write a root forward-slashed (``Path.as_posix()``, as a
+        # ``skill://`` resource does), which on Windows differs from ``str()``.
+        roots = {str(p): label for p, label in bases.items()}
+        roots.update({p.as_posix(): label for p, label in bases.items()})
         spellings: dict[str, str] = {}
         for root, label in roots.items():
             once = json.dumps(root)[1:-1]
@@ -414,8 +422,8 @@ GOLDEN: dict[str, dict[str, Any]] = {
             "kirocrew-pipeline-conductor.json": "15f792950cbe8a2957df0a7977fc199e6ca77b6ef65826ea9512023d2ca77b68",
             "kirocrew-research.json": "95db2f43ca38f7033495b8bd79d989fda7bb6147bc79ee0dc3b954b961fe0f94",
             "kirocrew-security-conductor.json": "8760687087c7f9b8300d24c08c04970e45382358b0557cdf62687c1340ceedd1",
-            "kirocrew-worker.json": "f9c9aeb9888571fc7955fa9d446d5d024462d4dc161c3e0bf39c5d945bf02323",
-            "kirocrew.json": "c17c9b5642e4ebbd5af51bfa87451f04ef49f575bab53cb255c0e47477ef1e34",
+            "kirocrew-worker.json": "258b01abd1750c385a1847462ffccdb425e0b0ae40fcc19563b994c28fb04027",
+            "kirocrew.json": "55a5761a9ec3ee64b5bffef493a3e5d852447d0ff12e43c0584a3da6420508e8",
             "kirocrew.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         },
         "state": "d704db8fc2311b53ecec035ace4d3145224e00ab26bbedeb0a2e6977a7c16aac",
@@ -435,8 +443,8 @@ GOLDEN: dict[str, dict[str, Any]] = {
             "kirocrew-pipeline-conductor.json": "15f792950cbe8a2957df0a7977fc199e6ca77b6ef65826ea9512023d2ca77b68",
             "kirocrew-research.json": "95db2f43ca38f7033495b8bd79d989fda7bb6147bc79ee0dc3b954b961fe0f94",
             "kirocrew-security-conductor.json": "8760687087c7f9b8300d24c08c04970e45382358b0557cdf62687c1340ceedd1",
-            "kirocrew-worker.json": "ae0e0fa838b0964a2317110a03c4190a66be73793df3b1d3965dc1499fd036de",
-            "kirocrew.json": "83d2b8b728cf5f1bdfcc3db34eb7af4d359dc4a4133dfdbfe2f9d0c95c4423a8",
+            "kirocrew-worker.json": "83b8785b3d089d182ac73a1566d17e5a703fbc54ed9afb67fa6f09e86a040bcc",
+            "kirocrew.json": "5a90ee91c4f63e66f0fafa0707fce0c8c84a627138aade63f4b68e78d0bf5a31",
             "kirocrew.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         },
         "state": "939d5770910a05fc49ac6fff3da064f2ff08347839f39e1eadebc5fa964eb6b5",
@@ -456,10 +464,10 @@ GOLDEN: dict[str, dict[str, Any]] = {
             "kirocrew-pipeline-conductor.json": "df61fdd14e749c5c5170a8a375f09dcd925126cfa832c651a125684c82f6ec2f",
             "kirocrew-research.json": "7f8cdc2b1236723558fcf2a72e285a516cc57295b5a4d333c60f2abff52cd7e9",
             "kirocrew-security-conductor.json": "deb661929eb4ed8421d9b606b4c7d401573fd23b0db57223d348958b7416f43e",
-            "kirocrew-worker.json": "6887c8fe4cba89f6665f3f11b7b9af3a53050e6a26b266286c770b820ab39f0c",
-            "kirocrew.json": "7fa7831f9144d5706d7dce7d66e84f325830f39c9ee3238bd3a9f6b3903b8cf0",
+            "kirocrew-worker.json": "dd1730955456322422bd34878f07e42441b1539b7d30b9db6df09505397a7746",
+            "kirocrew.json": "eba91cf07dead8c65080df9109acc69189d7d7672eb1e681702e03c02b5e899c",
             "kirocrew.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "my-crew.json": "a96a919c845078c29eafe40ee2ef5e224bfd4823c0bf7223547fcc4cc7455e8d",
+            "my-crew.json": "415fa49bfa7d99e56c2008b03c827521c966f764d08e00851373879eb20a8a64",
             "orphan-crew.json": "30c576d8c4eb514bdbb5139402df6588504cc92cfef8b580ec2e16bc98f74056",
         },
         "state": "cbb4cfdf2675dd8efeed9a8b77fc63ce287172f38fe4db9fad37ecb6654ed485",
@@ -479,8 +487,8 @@ GOLDEN: dict[str, dict[str, Any]] = {
             "kirocrew-pipeline-conductor.json": "df61fdd14e749c5c5170a8a375f09dcd925126cfa832c651a125684c82f6ec2f",
             "kirocrew-research.json": "73ebc574c2e06451ecf999e408277952084e0ace9c14dbb05d92279441c9e461",
             "kirocrew-security-conductor.json": "deb661929eb4ed8421d9b606b4c7d401573fd23b0db57223d348958b7416f43e",
-            "kirocrew-worker.json": "5ddc1ace56e014bc0a7570138f54166ea9bf49ed50db986732f15a0f5f48074a",
-            "kirocrew.json": "568c9b620c78294534f549d80e7151e46d0bf74b98861106528910d0420bd4d0",
+            "kirocrew-worker.json": "8061a163a73da7c3e60b049aabbddd64029ca3ebe7a21ee50508e099237b6953",
+            "kirocrew.json": "02f3f251265bb20f10e4233528a4dca8390bfddcb16ece2f48b00f46c47122eb",
             "kirocrew.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         },
         "state": "d704db8fc2311b53ecec035ace4d3145224e00ab26bbedeb0a2e6977a7c16aac",
@@ -500,8 +508,8 @@ GOLDEN: dict[str, dict[str, Any]] = {
             "kirocrew-pipeline-conductor.json": "15f792950cbe8a2957df0a7977fc199e6ca77b6ef65826ea9512023d2ca77b68",
             "kirocrew-research.json": "ad8e9fd513c46576706a7e1e20f457edc7cc12269253f0b1c49e70822ad2c35c",
             "kirocrew-security-conductor.json": "8760687087c7f9b8300d24c08c04970e45382358b0557cdf62687c1340ceedd1",
-            "kirocrew-worker.json": "aa17468395aaddb9fb955d9f79dbb8d14936b0a731eb74a988f70958f6270ed5",
-            "kirocrew.json": "a859e763ba7b11c6ea9547a9a5d5e45d2bd7c7d7fdb8c2d0df69b799ef9a07e5",
+            "kirocrew-worker.json": "1421f26fb72299830c5baace2078d13ae97e5e81deccae17c362f4cacc2e4edc",
+            "kirocrew.json": "f9dbfff549644e8487d4304f9e326d2b6467defe28d5fed4e2434ce6132543e2",
             "kirocrew.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         },
         "state": "939d5770910a05fc49ac6fff3da064f2ff08347839f39e1eadebc5fa964eb6b5",
@@ -521,8 +529,8 @@ GOLDEN: dict[str, dict[str, Any]] = {
             "kirocrew-pipeline-conductor.json": "d2b625fae62dd96700adad19b15a877e98e8eb541ec0f4431ad394fa57848408",
             "kirocrew-research.json": "bfa2bd9e571af9040c35d0ff1394d5248e504b8ff6888274f8c3b9071ce03e89",
             "kirocrew-security-conductor.json": "cdd1d8d0a0004552bc63b727a5e08ec403c57c53b66c9627d2578d89d93e526c",
-            "kirocrew-worker.json": "bead56d99508aef7123f770ef2230810d978a7a6d08f89fd852519eac3b5a8ad",
-            "kirocrew.json": "7027b1de70978314a306158f540b39fa0f2cedbc30777a1c0412b02ddea2be02",
+            "kirocrew-worker.json": "ae9c962a4947c02007be43ca67e758104221ff774170c0e017f42b9a29d6c952",
+            "kirocrew.json": "eafd9344f0907be9c54c4f6195ccce1d21bc6bda9287da0c4363dbbe6a4c631c",
             "kirocrew.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         },
         "state": "d704db8fc2311b53ecec035ace4d3145224e00ab26bbedeb0a2e6977a7c16aac",
@@ -542,8 +550,8 @@ GOLDEN: dict[str, dict[str, Any]] = {
             "kirocrew-pipeline-conductor.json": "eeb3d7c5c5547a0bde29b6a14f1bbd7daba80ef34ad95faebe316c6f60ca14aa",
             "kirocrew-research.json": "76f1490c68081e1b3bc5454f6b6b1a2e7c833b84d19c401652ec03639d5d3d01",
             "kirocrew-security-conductor.json": "8c2df56ffafc3ab3e9c9613b7a37f9ee6ceb34c1ba2f094afe239aa21f4d3272",
-            "kirocrew-worker.json": "e56813686ee5a04710918d1b28eab705508e46977409a48e2deebda6b5e50ec2",
-            "kirocrew.json": "1b6c280a7aa5772c6ed1d5457158f61e6a58fb5c8c290e25fe97dfe87b5c2bd5",
+            "kirocrew-worker.json": "6c9c866a3c11a0f762eaa86ff1ccaca66e8ea3774bffddedf8b8bd5fe80cca82",
+            "kirocrew.json": "e71167d80e8e1eb30778e00b2e979fca46166675eb102fe0bd11a67d31efee63",
             "kirocrew.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         },
         "state": "d704db8fc2311b53ecec035ace4d3145224e00ab26bbedeb0a2e6977a7c16aac",
@@ -563,8 +571,8 @@ GOLDEN: dict[str, dict[str, Any]] = {
             "kirocrew-pipeline-conductor.json": "ecdb121fc3044ec746ae1ec6dc1ad587c4267999dc8e6f084a72a4d89b3b9016",
             "kirocrew-research.json": "6347bfc693d07431fec38ad367d8fef920f9a1831d1d2bc083de293b2b3f7899",
             "kirocrew-security-conductor.json": "4bdb33a630d30ffff5cdaf9072e1ff54f3bfc69af5715250040dd70f593a0fcb",
-            "kirocrew-worker.json": "dbdbe7be8cb153695fd98df576e7715390b158bcc523b4995bf9b1cec67d46d4",
-            "kirocrew.json": "8c7296c3080cfb10b6429bd7b6b5650b984a0048cc5a35a04480d5af05bd8f3c",
+            "kirocrew-worker.json": "e0f658936411492f6215d584b2faccd4eea66fb2227e128c4e1f05681919bc98",
+            "kirocrew.json": "26d6fdb0fe844cbf6111e141297f3938581032082faee2b46e6ad3e0474d073c",
             "kirocrew.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         },
         "state": "d704db8fc2311b53ecec035ace4d3145224e00ab26bbedeb0a2e6977a7c16aac",

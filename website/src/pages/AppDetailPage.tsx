@@ -19,6 +19,7 @@ import { needsDesktopApp } from '../lib/electron'
 import { api } from '../api/client'
 import { isNotFoundError } from '../api/apiError'
 import { PageHeader, Card, CardTitle, Badge, Btn } from '../components/ui'
+import { uiLocation } from '../uiLocations/uiLocation'
 import SessionApprovalModes from '../components/appstore/SessionApprovalModes'
 import AppIcon from '../components/AppIcon'
 import TrustAppModal, {
@@ -1562,7 +1563,7 @@ export default function AppDetailPage() {
             {/* Actions */}
             <div className="flex items-center gap-2 flex-wrap">
               {!app.installed && !clientInstall && (
-                <Btn primary onClick={handleInstall} disabled={actionLoading === 'install' || installRefusedForGood} title={installDisabledTitle}>
+                <Btn {...uiLocation('apps.detail.install')} primary onClick={handleInstall} disabled={actionLoading === 'install' || installRefusedForGood} title={installDisabledTitle}>
                   {actionLoading === 'install' ? <><Loader2 size={14} className="animate-spin" /> {i18nT('pages.appDetailPage.installing')}</> : <><Download size={14} /> {i18nT('pages.appDetailPage.install')}</>}
                 </Btn>
               )}
@@ -1605,7 +1606,7 @@ export default function AppDetailPage() {
               {app.installed && !isSelfManaged && !isBuiltin && (
                 <>
                   {app.enabled ? (
-                    <Btn onClick={() => handleAction('disable')} disabled={actionLoading === 'disable'}><PowerOff size={14} /> {i18nT('pages.appDetailPage.disable')}</Btn>
+                    <Btn {...uiLocation('apps.detail.disable')} onClick={() => handleAction('disable')} disabled={actionLoading === 'disable'}><PowerOff size={14} /> {i18nT('pages.appDetailPage.disable')}</Btn>
                   ) : (
                     /* Enable stays available in a browser: enabling is a
                        server-side state change (backend, agents and crons run
@@ -1632,9 +1633,9 @@ export default function AppDetailPage() {
                   )}
                     </>
                   )}
-                  {canUpdate && app.updateAvailable && <Btn onClick={handleInstall} disabled={actionLoading === 'install' || installRefusedForGood} title={installDisabledTitle} className="!bg-[var(--info)] !text-white hover:!opacity-80">{actionLoading === 'install' ? <><Loader2 size={14} className="animate-spin" /> {i18nT('pages.appDetailPage.updating')}</> : <><ArrowUp size={14} /> {i18nT('pages.appDetailPage.update')}</>}</Btn>}
-                  {canUpdate && !app.updateAvailable && <Btn onClick={() => handleAction('update')} disabled={actionLoading === 'update'} title={i18nT('pages.appDetailPage.sync_app_from_its_source_directory')}><RefreshCw size={14} /> {i18nT('pages.appDetailPage.sync')}</Btn>}
-                  {canUninstall && <Btn danger onClick={() => handleAction('uninstall')} disabled={actionLoading === 'uninstall'}><Trash2 size={14} /> {i18nT('pages.appDetailPage.uninstall')}</Btn>}
+                  {canUpdate && app.updateAvailable && <Btn {...uiLocation('apps.detail.update')} onClick={handleInstall} disabled={actionLoading === 'install' || installRefusedForGood} title={installDisabledTitle} className="!bg-[var(--info)] !text-white hover:!opacity-80">{actionLoading === 'install' ? <><Loader2 size={14} className="animate-spin" /> {i18nT('pages.appDetailPage.updating')}</> : <><ArrowUp size={14} /> {i18nT('pages.appDetailPage.update')}</>}</Btn>}
+                  {canUpdate && !app.updateAvailable && <Btn {...uiLocation('apps.detail.sync')} onClick={() => handleAction('update')} disabled={actionLoading === 'update'} title={i18nT('pages.appDetailPage.sync_app_from_its_source_directory')}><RefreshCw size={14} /> {i18nT('pages.appDetailPage.sync')}</Btn>}
+                  {canUninstall && <Btn {...uiLocation('apps.detail.uninstall')} danger onClick={() => handleAction('uninstall')} disabled={actionLoading === 'uninstall'}><Trash2 size={14} /> {i18nT('pages.appDetailPage.uninstall')}</Btn>}
                 </>
               )}
             </div>

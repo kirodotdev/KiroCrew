@@ -93,6 +93,8 @@ import { deriveAutomationStatus, MONITOR_STATUS_KEYS } from '../monitoring/autom
 import MonitorRadar from '../components/MonitorRadar'
 
 import { i18nT } from '../i18n/t'
+import { uiLocation } from '../uiLocations/uiLocation'
+import { useGuideDisclosureScope } from '../guide/GuideRevealScope'
 import { agentOrDefaultLabel } from '../utils/agentLabel'
 import { useLaneScrollMemory } from '../hooks/useLaneScrollMemory'
 import { useScrollEdges } from '../hooks/useScrollEdges'
@@ -1619,21 +1621,24 @@ const SessionRow = memo(function SessionRow({ view, actions }: SessionRowProps) 
         </DropdownMenu>
       </div>
     ) : (
-      <IconButtonGroup reveal className="absolute top-1/2 -translate-y-1/2 right-1.5 has-[[data-state=open]]:opacity-100">
-        <DropdownMenu>
+      // The open session's row keeps its actions shown, so a guide can point
+      // at its ⋯ (sessions.row-menu, resolved to the open row's copy) with no
+      // pointer on the row.
+      <IconButtonGroup reveal className={`absolute top-1/2 -translate-y-1/2 right-1.5 has-[[data-state=open]]:opacity-100 ${isActive ? '!opacity-100' : ''}`}>
+        <DropdownMenu guideScope="menu:sessions.row-menu">
           <DropdownMenuTrigger asChild>
-            <IconButton title={i18nT('pages.chatSidebar.more')} aria-label={i18nT('pages.chatSidebar.more_options')} onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}><MoreVertical size={12} /></IconButton>
+            <IconButton title={i18nT('pages.chatSidebar.more')} aria-label={i18nT('pages.chatSidebar.more_options')} {...uiLocation('sessions.row-menu')} onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}><MoreVertical size={12} /></IconButton>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="min-w-[160px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
             <SessionActionsMenu variant="dropdown" {...rowMenuProps} />
           </DropdownMenuContent>
         </DropdownMenu>
-        <IconButton variant="accent" title={i18nT('pages.chatSidebar.duplicate')} aria-label={i18nT('pages.chatSidebar.duplicate')} onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onDuplicate(rowKey) }}><GitFork size={12} /></IconButton>
-        <IconButton variant="danger" title={closeReachLabel ?? i18nT('pages.chatSidebar.close')} aria-label={closeReachLabel ?? i18nT('pages.chatSidebar.close_session')} onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onCloseSession(rowKey) }}><X size={12} /></IconButton>
+        <IconButton variant="accent" title={i18nT('pages.chatSidebar.duplicate')} aria-label={i18nT('pages.chatSidebar.duplicate')} {...uiLocation('sessions.row-duplicate')} onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onDuplicate(rowKey) }}><GitFork size={12} /></IconButton>
+        <IconButton variant="danger" title={closeReachLabel ?? i18nT('pages.chatSidebar.close')} aria-label={closeReachLabel !== undefined ? i18nT('pages.chatSidebar.close_this_session_only') : i18nT('pages.chatSidebar.close_session')} {...uiLocation('sessions.row-close')} onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onCloseSession(rowKey) }}><X size={12} /></IconButton>
       </IconButtonGroup>
     )) : null
     // `langGen` (read with `void` above) because the labels are i18nT strings, which re-translate on a catalog load.
-    ), [renamingHere, foreignRow, isMobile, rowMenuProps, onMenuCloseAutoFocus, onDuplicate, onCloseSession, closeReachLabel, rowKey, langGen])
+    ), [renamingHere, foreignRow, isMobile, isActive, rowMenuProps, onMenuCloseAutoFocus, onDuplicate, onCloseSession, closeReachLabel, rowKey, langGen])
     const rowContextMenuContent = useMemo(() => (void langGen, !foreignRow ? (
       <ContextMenuContent className="min-w-[160px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
         <SessionActionsMenu variant="context" {...rowMenuProps} />
@@ -2717,6 +2722,7 @@ function ChatSidebar({
         type="button"
         data-testid={`older-sessions-hint-${lane}`}
         onClick={openHistoryPane}
+        {...uiLocation('sessions.show-all-older')}
         className="mt-1 mx-1 px-2 py-1.5 text-left text-[12px] text-muted hover:text-accent hover:bg-accent-subtle rounded-md cursor-pointer bg-transparent border-none transition-colors"
       >
         {i18nT('pages.chatSidebar.show_all_older_sessions')}
@@ -4139,9 +4145,14 @@ function ChatSidebar({
   const compactHeader = paintedSidebarWidth < 256
   const tinyHeader = paintedSidebarWidth < 200
 
+  // The Older Sessions pane's guide scope (`open:chat.older-sessions`).
+  useGuideDisclosureScope('chat.older-sessions', historyOpen)
+
   return (
     // stable theming hook 'sidebar' — see website/docs/theming-contract.md
-    <div ref={sidebarRootRef} onPointerOver={onRootPointerOver} onPointerLeave={releaseHoverPin} className={`${LIST_SHELL_CLS} flex flex-col shrink-0 relative h-full`} style={rootStyle}>
+    // The region is the session picker a guide's "choose the session" step
+    // points at (`sessions.list`): both layouts draw their rows inside it.
+    <div role="region" aria-label={i18nT('pages.chatSidebar.sessions')} {...uiLocation('sessions.list', sidebarRootRef)} onPointerOver={onRootPointerOver} onPointerLeave={releaseHoverPin} className={`${LIST_SHELL_CLS} flex flex-col shrink-0 relative h-full`} style={rootStyle}>
       {/* Drag handle — the shared column grip (components/ResizeHandle), so
           this edge looks and behaves exactly like the Crew Members roster's and
           the app workspaces'. Positioned absolutely on the card's right border
@@ -4176,12 +4187,12 @@ function ChatSidebar({
           {!tinyHeader && <span className={LIST_TITLE_CLS}>{i18nT('pages.chatSidebar.sessions')}</span>}
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
-          <DropdownMenu>
+          <DropdownMenu guideScope="menu:sessions.list-menu">
             <DropdownMenuTrigger asChild>
-              <button className="mc-touch-hit w-7 h-7 rounded-md border border-border bg-transparent text-muted cursor-pointer flex items-center justify-center hover:border-border-strong hover:text-text transition-all" title={i18nT('pages.chatSidebar.more_options')} aria-label={i18nT('pages.chatSidebar.more_options')}><MoreVertical size={14} /></button>
+              <button className="mc-touch-hit w-7 h-7 rounded-md border border-border bg-transparent text-muted cursor-pointer flex items-center justify-center hover:border-border-strong hover:text-text transition-all" title={i18nT('pages.chatSidebar.more_options')} aria-label={i18nT('pages.chatSidebar.more_options')} {...uiLocation('sessions.list-menu')}><MoreVertical size={14} /></button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="min-w-[180px]">
-              {dashboardPreview && <DropdownMenuItem onSelect={() => navigate('/session-dashboards')}>
+              {dashboardPreview && <DropdownMenuItem onSelect={() => navigate('/session-dashboards')} {...uiLocation('sessions.list-menu.dashboards')}>
                 <Monitor size={14} className="text-muted" />
                 {i18nT('commandCenter.all_title')}
               </DropdownMenuItem>}
@@ -4216,13 +4227,14 @@ function ChatSidebar({
                 if (next && !rawColumns.some(c => c.source === 'state' || c.name || (c.tag_ids || []).length || c.include_untagged)) {
                   seedStateLanesMutation.mutate()
                 }
-              }}>
+              }} {...uiLocation('sessions.list-menu.view')}>
                 <Columns3 size={14} className={tagColumnsEnabled && rawColumns.length > 0 ? 'text-accent' : 'text-muted'} />
                 {tagColumnsEnabled && rawColumns.length > 0 ? i18nT('pages.chatSidebar.switch_to_list_view') : i18nT('pages.chatSidebar.switch_to_board_view')}
               </DropdownMenuItem>
               {tagColumnsEnabled && rawColumns.length > 0 && missingLanes.length > 0 && (
                 <DropdownMenuItem
                   data-testid="add-state-lanes"
+                  {...uiLocation('sessions.list-menu.add-lanes')}
                   disabled={seedStateLanesMutation.isPending}
                   onClick={() => { if (!seedStateLanesMutation.isPending) seedStateLanesMutation.mutate() }}
                 >
@@ -4230,7 +4242,7 @@ function ChatSidebar({
                   {i18nT('pages.chatSidebar.add_state_lanes')}
                 </DropdownMenuItem>
               )}
-              <DropdownMenuItem onClick={() => { setCleanupOpen(!cleanupOpen); setCleanupExpanded(false); setCleanupError('') }}>
+              <DropdownMenuItem onClick={() => { setCleanupOpen(!cleanupOpen); setCleanupExpanded(false); setCleanupError('') }} {...uiLocation('sessions.list-menu.clean-up')}>
                 <BrushCleaning size={14} className="text-muted" />
                 {i18nT('pages.chatSidebar.clean_up_sessions')}
               </DropdownMenuItem>
@@ -4238,11 +4250,11 @@ function ChatSidebar({
                 <FolderX size={14} className="text-muted" />
                 {i18nT('pages.chatSidebar.clean_up_empty_folders_menu')}
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => { setBulkModelOpen(true); setBulkModel(''); setBulkSkipRunning(true); setBulkModelError('') }}>
+              <DropdownMenuItem onClick={() => { setBulkModelOpen(true); setBulkModel(''); setBulkSkipRunning(true); setBulkModelError('') }} {...uiLocation('sessions.list-menu.switch-model')}>
                 <Cpu size={14} className="text-muted" />
                 {i18nT('pages.chatSidebar.switch_all_to_model')}
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => setManageTagsOpen(o => !o)}>
+              <DropdownMenuItem onClick={() => setManageTagsOpen(o => !o)} {...uiLocation('sessions.list-menu.manage-tags')}>
                 <TagIcon size={14} className="text-muted" />
                 {i18nT('pages.chatSidebar.manage_tags')}
               </DropdownMenuItem>
@@ -4274,13 +4286,14 @@ function ChatSidebar({
               title={i18nT('pages.chatSidebar.new_chat')}
               aria-label={i18nT('pages.chatSidebar.new_chat_session')}
               aria-busy={creatingSlot}
+              {...uiLocation('chat.new-session')}
             >{creatingSlot ? <Loader2 size={15} className="animate-spin" /> : <Plus size={15} />}{!compactHeader && <span className="whitespace-nowrap">{creatingSlot ? i18nT('pages.chatSidebar.creating') : i18nT('pages.chatSidebar.new')}</span>}</button>
             <span className="w-px h-4 bg-accent-fg opacity-30" aria-hidden="true" />
-            <DropdownMenu open={newChatMenuOpen} onOpenChange={o => { setNewChatMenuOpen(o); if (!o) setRemoteCrewError('') }}>
+            <DropdownMenu guideScope="menu:sessions.create-menu" open={newChatMenuOpen} onOpenChange={o => { setNewChatMenuOpen(o); if (!o) setRemoteCrewError('') }}>
               <DropdownMenuTrigger asChild>
                 <button
                   className="mc-touch-hit-end flex items-center justify-center w-6 h-7 rounded-e-md cursor-pointer bg-transparent border-none text-accent-fg hover:bg-black/10 active:scale-95 transition-all"
-                  title={i18nT('pages.chatSidebar.create')} aria-label={i18nT('pages.chatSidebar.more_create_options')}><ChevronDown size={13} /></button>
+                  title={i18nT('pages.chatSidebar.create')} aria-label={i18nT('pages.chatSidebar.more_create_options')} {...uiLocation('sessions.create-menu')}><ChevronDown size={13} /></button>
               </DropdownMenuTrigger>
               {/* max-w bounds the menu: the mode descriptions below are full
                *  sentences, and without an upper bound a flex item's automatic
@@ -4305,7 +4318,7 @@ function ChatSidebar({
                 {(() => {
                   const ephemeralRows = (
                     <>
-                      <DropdownMenuItem className="items-start" data-testid="new-incognito-chat" disabled={creatingSlot} onClick={() => { createEphemeralChatMutation.mutate('incognito') }}>
+                      <DropdownMenuItem className="items-start" data-testid="new-incognito-chat" disabled={creatingSlot} onClick={() => { createEphemeralChatMutation.mutate('incognito') }} {...uiLocation('sessions.create-menu.incognito')}>
                         <EyeOff size={14} className="text-muted mt-[3px] shrink-0" />
                         <span className="flex min-w-0 flex-col gap-px">
                           <span>{i18nT('components.welcomeView.incognito')}</span>
@@ -4336,7 +4349,7 @@ function ChatSidebar({
                   }
                   return (
                   <DropdownMenuSub>
-                    <DropdownMenuSubTrigger>
+                    <DropdownMenuSubTrigger {...uiLocation('sessions.create-menu.ephemeral')}>
                       <Ghost size={14} className="text-muted" /> {i18nT('pages.chatSidebar.new_ephemeral_chat')}
                       <ChevronRight size={13} className="ml-auto text-muted" />
                     </DropdownMenuSubTrigger>
@@ -4372,16 +4385,11 @@ function ChatSidebar({
                   <Users size={14} className="text-muted mt-[3px] shrink-0" />
                   <span className="flex min-w-0 flex-col gap-px">
                     <span>{i18nT('pages.chatSidebar.open_crew_members')}</span>
-                    {/* The gloss tells the truth about where the click lands. While
-                     *  the page is preview-gated the entry detours to the Settings
-                     *  card that turns it on, and a gloss that still promised the
-                     *  page read as "offered and hidden at once" (UX review on
-                     *  #9519) — so it discloses the detour instead. */}
                     <span className="whitespace-normal text-[11px] leading-snug text-muted">{crewPreview ? i18nT('pages.chatSidebar.open_crew_members_desc') : i18nT('pages.chatSidebar.open_crew_members_gated_desc')}</span>
                   </span>
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={() => { setFolderModal({ mode: 'create', parentId: '' }) }}>
+                <DropdownMenuItem onClick={() => { setFolderModal({ mode: 'create', parentId: '' }) }} {...uiLocation('sessions.create-menu.new-folder')}>
                   <FolderPlus size={14} className="text-muted" /> {i18nT('pages.chatSidebar.new_folder')}
                 </DropdownMenuItem>
                 {folders.length > 0 && (() => {
@@ -6454,6 +6462,7 @@ function ChatSidebar({
       <div
         role="button"
         tabIndex={0}
+        {...uiLocation('chat.older-sessions')}
         onClick={() => { if (historyOpen) setHistoryOpen(false); else openHistoryPane() }}
         onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (historyOpen) setHistoryOpen(false); else openHistoryPane() } }}
         /* pt/pb are 14px, not py-3, so this row's top border lands on the same

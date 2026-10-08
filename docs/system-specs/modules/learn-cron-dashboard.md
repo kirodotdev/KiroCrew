@@ -5519,3 +5519,266 @@ Installed skill discovery resolves the signed session's active agent mapping and
 project. Search/list/read share that scope, return stable full keys, and use offset
 pagination. Search responses include an incomplete flag while bounded body indexing
 is still progressing; the MCP renderer makes this visible rather than claiming absence.
+
+### Registered-action guides
+
+Owner mutations intercepted for change-card history reject an incomplete, oversized or
+invalid JSON capture before calling the underlying route; a consumed prefix is never
+forwarded as if its remaining suffix were the complete request. Guide-marked HTML is
+parsed in an inert document and has reserved attributes removed without HTML assignment.
+Markdown-link detection scans delimiters linearly, including repeated unmatched brackets.
+
+The optional `kirocrew-guide` server offers an ordered list of registered actions
+through strict-internal `/api/guide/agent/*` routes. The caller's existing slot is
+derived from its verified session identity; a tool payload cannot select another
+slot. App, unattended and unresolved callers are refused. The default `kirocrew`
+template mounts this server and grants automatic approval only to `guide_list_actions`,
+`guide_status` and `guide_start`, filtered through the governance ceiling.
+`guide_start` only offers a card in the slot's chat that the owner must press
+Start on. Cancelling a guide still requires approval; no grant permits
+navigation or a configuration write.
+
+The owner browser reads `/api/guide/pending` and explicitly claims a guide before
+navigation or prefill. Claim, progress, heartbeat, cancel, dismiss, replay, refuse and
+observe are owner-only routes;
+revision checks and a per-tab lease prevent another tab from silently advancing
+it. An explicit takeover is distinct from Start. Pending state is held by this
+gateway, survives a browser reload, and is lost on gateway restart. Guides have
+a finite lifetime and closed-slot guides are retired on the next state check.
+A new offer in the same chat supersedes the chat's unfinished guide (status
+`cancelled`, reason `superseded`), so the chat never holds two live guides and
+the older offer's row settles to its result line.
+Cancellation does not undo an already-submitted save. A guide's offer is a
+row of its chat's conversation at the point it was offered (a `card` transcript row,
+`history.md` "Card rows"), so an ended guide keeps its result line there across a
+reload the way a change card does: `pending` serves each slot's newest ended guide
+for 24 hours (unless a newer guide is in progress, the slot was closed, or the owner
+dismissed it), the row itself records the final status for after that, and ended
+guides are pruned after seven days, within the store's fixed cap. When a cancelled or
+expired guide leaves the creation flow it opened untouched, the Crewmates page
+closes that flow so the chat and its result line show; a flow the user edited
+stays open.
+
+**The offering agent's own words.** The dashboard stays the source of truth for where and
+which control; the offering agent may add plain text of its own. `guide_start`
+takes an optional guide-level `intro` and an optional `note` per action (one
+note per action, never a per-step array: it is shown under the action's final
+step, which every action has and which is the target in every `ui.show`
+placement, so a note cannot outnumber or misalign with the steps).
+`guide_catalog.clean_guide_text` collapses line breaks and tabs to one space and
+REFUSES, with a message naming the field and the limit, rather than truncating:
+over 200 characters (`intro`) or 160 (`note`), any other control character or a
+bidirectional override/isolate, a link (`http(s)://`, `www.`), markup (`<`,
+`>`, a backtick, `[text](target)`), and any text the output redactors would
+change (`guide_catalog.needs_redaction`: the exfiltration-URL scrubber, then the
+credential redactor through the platform context) -- the text is shown as
+written, so a credential is refused (`invalid_text`), never stored redacted; a
+change card's `reason` follows the same rule. The stored text rides on the guide record
+(`intro`, `actions[i].note`) and is not written to the guide's transcript row or
+the crew log, which keep only action ids. The browser draws it only in the guide
+offer card (the intro, under the title) and the guide panel (the intro on the
+first step of the first action; a note on its action's final step; a step that
+is both shows one block, the note when the action has one, else the intro),
+always below the template line, which stays, and attributed with "From
+{name}" for the crewmate whose pinned thread offered the guide (`GuideAgentNote`,
+the guide's `slot_key` matched against the roster, muted theme tokens), as React
+text; a guide offered from an ordinary chat shows the words without a "From" line.
+
+**Guide panel details.** A select step whose pick was already made is held as a
+confirm step with Next; its line names the list only while the picker is drawn
+(`select_confirm_<entity>`), and while the picker is folded away (a crewmate
+chat hides the roster) the panel floats with `select_confirm_unseen_<entity>`,
+which says what Next does without sending the person to a list they cannot see.
+The finish chip ("Guide complete" plus the way back) shown away from the guide's
+chat leaves by itself `GUIDE_FINISHED_DISMISS_MS` (10 s) after the guide ended
+or on the second move to another page, whichever comes first. The 10 s count
+from the end as `GuideContext` first saw it (`finishedAt`), not from when the
+chip was last drawn, so a route change, the viewed chat settling (which hides
+and re-shows the chip) or a remount re-arms only what is left. Only keyboard
+focus inside the chip holds it (re-armed while a key, not a pointer press, was
+the last input); focus a click left there (Done, then focus following to the
+way back) does not, and when the chip leaves with focus in it focus goes back
+where it was before the panel took it, else to the main region; its X still closes it at once, and none of these
+writes a dismissal, so the chat's result line stays.
+
+The actions are `settings.show`, `crewmate.create`, `mcp.open_add` and `ui.show`.
+Routes and anchors come from product registries, never model-supplied selectors
+or scripts. Settings guidance excludes credential and access-control controls
+and reports no setting values. Crewmate drafts reuse the embedded creation flow.
+`mcp.open_add` carries no parameters and pre-fills nothing: it points at the
+existing MCP servers tab, then its Add Custom button, then the open form's
+server JSON box (where command, args and env go), and completes when the
+person presses Done there. It never reports an installed server; the user fills
+in and saves that form through the unchanged owner-only MCP save handler.
+`ui.show {location_id, pick?}` points at one indexed dashboard location, such as Older
+Sessions in the Sessions sidebar. `pick` (a name, accepted only for a plan with a
+choose step whose list's rows carry their entity's name: `agents.crew-list`,
+`members.roster-list`, `schedule.job-list`, `apps.library.app-list`, `artifacts.list`,
+`UI_SHOW_PICKABLE_PICKERS`) is the
+item the user named: the choose step outlines only the row whose
+registered pick name (`guidePick`) is exactly that name, never a row whose text merely contains
+it; when no row or several carry it, the whole list is outlined for the person
+to choose, never the only row in its place. The step completes only once that
+entity is the one open (or, for a one-job move, the one job ticked). Without a
+pick, the picker's only item is outlined, and the step is passed when that only
+item's next control already shows; a removal still asks the person to confirm
+first, naming the entity actually open. Moving one job to a folder has the
+person tick that job alone (`one_job_checked`), because the folder button moves
+every ticked job; moving them all is `schedule.select-all`'s. In Library, opening
+one app card's ⋯ menu picks that app (`app_tile_menu_open`, the card's name as
+it shows it; the choose step outlines that card's ⋯, its pick control): its
+Details, Disable and Uninstall items are the steps after it, and
+Uninstall, like every removal, never finishes on a press. A built-in app's card
+also registers its manifest name as an alias (`guidePickAlias`), so a pick of
+"Command Bar" finds and binds the card shown as 命令栏, and the panel names the
+card as it is shown. A pick can carry across a route: an artifact is chosen in
+the library (`artifacts.list`, `artifact_open`) by opening it, and its own page
+(`/artifacts/<slug>`, under the same placement route) reports the pick with the
+artifact's name, so Move to folder, Version and Comments stay bound to it there;
+opening another artifact's page is the choice changing, and the guide goes back
+to the choose step even though the library is not drawn. The open session's
+sidebar row is the pick of `session_open` (`aria-current`): a step bound to it
+whose control every row draws (the row's ⋯) points at that row's copy, and the
+open row keeps its actions shown, so Rename and Pin are planned without a
+pointer on the row. An open dialog on top of the target's (a confirm opened
+from inside a job's panel) hides the outline: the topmost modal is the one
+compared. In the crew editor the
+section a control is drawn in (Model, Workspace · Memory, Danger zone) is a
+step of its own, pointed at in the editor's section rail while it is closed. It is accepted only for a location whose
+generated plan ships with the find_ui index; the generator plans a registered
+location only when its prerequisites are a viewport, reveal steps or preview
+flags, it is not destructive (a fixed deny list plus a per-descriptor
+`guide: false`), and it has no guide action of its own. Settings stay with
+`settings.show`. A plan is version 2: one step list per placement (viewport),
+the lists may differ in length, and every step has an id. Starting the guide
+claims the current viewport's placement; the gateway records that placement's
+step ids, and the tab's reports may name only those, so a guide is never walked
+along another placement's list. A takeover from another viewport may switch
+placements only before the guide has moved past the first step of that action.
+The steps are the plan's: each reveal control or menu, then the location. Every
+step but the last names the reveal scope it opens, compiled with the plan from
+the descriptors' `shown_by`, their registered parents and the declared
+`UI_REVEAL_SCOPES`; the generator refuses a reveal cycle or a contradictory
+declaration. A reveal or menu step is done the moment its scope's owner reports
+it open (`<GuideRevealScope>`: the sessions sidebar and drawer in `ChatPage`,
+the shared dropdown menu, popover and tab panel through a `guideScope` prop, and
+the custom menus, sheet and tab of the planned locations at their call sites;
+the message box, the chat side panel, the navigation rail, the docked terminal
+panel, the phone menu and the crewmate roster report their own open state, and
+a disclosure such as Older Sessions reports through one shared disclosure hook),
+or as soon as a later step's control is on screen, so an open sidebar or menu is
+skipped. A reveal control's own runtime conditions (the sessions sidebar toggle
+is drawn only with an open session, in the full dashboard) travel with its step
+as live predicates from a closed vocabulary with one browser evaluator each;
+while the control is absent and a predicate is unmet the guide shows what is
+needed instead of pointing, and its reason reads `predicate_unmet`. A control
+needing a condition outside that vocabulary is not guided at all. A gate the
+path needs (developer mode, a preview flag) is a first step of its own: on, it
+passes at once; off, the guide pauses on a line naming the setting that turns
+it on, its reason reads `gate_off` with that setting's id, and it goes on by
+itself once the gate is on; the guide never changes the setting. A selection the
+path needs (a session, a crewmate or a job open) is a step pointing at that
+page's list with "Choose the <entity> you want…"; it is done only when the page
+reports that one is open, and with nothing to choose it says "There's no
+<entity> yet" (reason `needs_selection`) instead of pointing anywhere. Which
+entity was chosen never leaves the page. When the window crosses the phone
+width mid-guide, the tab asks the gateway to walk the new layout's steps from
+where it is; that is allowed only where both layouts have walked the same
+steps so far, otherwise the step shows its target missing as before. A reveal
+or menu step names where it leads, never the control it points at ("Press the
+highlighted button to show “Older Sessions”."), since an icon-only toggle's
+accessible name means nothing to someone looking at an icon. The last step
+is acknowledged and says what comes next ("“Older Sessions” is highlighted.
+Press it when you're ready, or Done to close the guide."). Pressing that
+highlighted control on a `ui.show` guide's last step ends the guide exactly as
+Done does (the same `observed` report, after the control's own handler), so the
+panel does not stay over whatever the press opened. A destructive control's last
+step (`caution: true` in its plan) is different: the panel adds a warning line in
+the warning tone ("This is a destructive action: anything it deletes or removes
+is gone for good. The guide only points at it; nothing happens unless you press
+it."), and a press on the control never ends the guide by itself. Only a press
+of a registered final control (`guideConfirm()`: a confirm dialog's Delete,
+the job panel's confirm, Library's Uninstall, TeamDialog's final "Delete
+team <name>") ends it (`guideConfirmWatch.ts`), or Done. The pressed control
+vanishing, or the dialog it was pressed in closing, is never read as
+confirmed: an inline confirm (TeamDialog's first "Delete team" only swaps in
+"Keep team" and the real delete) keeps the guide waiting while its dialog is
+open, "Keep team" is no answer, and the dialog closing without the final
+press is unknown. A dialog the press opened that showed a final control and
+closed any other way is cancelled; one that showed none is unknown. The
+settings resolver (`resolveSettingElementStrict`) never takes a
+`data-setting-*` row inside agent or file content (`data-guide-untrusted`),
+and the markdown and SVG sanitizers drop those attributes as they drop the
+guide's own markers. The open session's choice is frozen by its session key
+(`useGuideSelection` `identity`, kept in the tab), so opening another session
+on a later step sends the guide back to choosing. A crewmate's tools are
+reached on the Crewmates page: choose the crewmate, open its profile card from
+the header, then its Permissions row (`members.permissions`), which opens the
+editor. A target is exactly one visible element
+carrying that location's marker, otherwise the step is missing; when several
+copies are visible at once the missing report says so and the guide's reason is
+`ambiguous_target`. The guide opens
+the plan's page for the current viewport, keeps the address when the person is
+already there, and never clicks or saves anything.
+
+A `ui.show` guide carries the build digest of the index the gateway accepted it
+against, the same digest the dashboard bundle was generated with. A tab whose
+bundle carries another refuses the guide with "prepared for a different version
+of the dashboard" and tells the gateway, so the guide's reason reads
+`build_mismatch` until a reloaded tab takes it.
+
+The live UI map (`guide/liveRegistry.ts`) answers, for a curated location, what
+this tab shows right now: `pointable` (one copy, displayed, enabled, in the
+viewport), `offscreen`, `hidden`, `unmounted`, `disabled`, `ambiguous` (several
+displayed copies) or `unknown` (not this build's). It reads the trusted target
+registry the `uiLocation(id)` spread's ref fills (`uiLocations/targetRegistry.ts`),
+so no control registers twice and DOM that only copies the attribute is never a
+copy. An agent's
+`find_ui` asks one tab for these states, and for the open/closed/unknown state
+of the reveal scopes and the met/unmet/unknown state of the predicates on those
+locations' plans, through an owner-only frame and reply (ids and enum states
+only, never text, answered within the request's wait or reported
+`not_observed`); from them it names a result's `blocker`: `gate_off` (with the
+setting id), `needs_selection`, `predicate_unmet`,
+`hidden_in_scope` (a closed sidebar, menu or panel on the path) or
+`not_observed`. A tab that owns a guide and does not answer in time marks it
+`stale_tab` until its next heartbeat. Observations stay in memory and are never
+stored.
+
+`ui.show` also points at an auto location, a control the find_ui auto tier found
+without a registration, but only one the generator judged guidable: drawn by a
+reviewed shared primitive (Btn, SendBtn, IconButton, the Toggle switch, a
+TabsTrigger, a DropdownMenuItem), the only render site behind its search entry,
+not inside a menu, dialog, sheet or tab panel, on pages with no prerequisite of
+their own, not on or reached through the Security, Computer Use, Secrets or
+Instances settings tabs (denied: the agent's own ceiling), not deny-listed, and
+with a label the sensitive-word lint (sign out, approve, import, stop...) does
+not flag. A destructive one (a `danger` prop or variant, a delete/remove/clear
+label, or caution-listed) is guidable with the caution step above. A control a
+file several pages share is indexed under every one of those pages, and its plan
+has one placement per page, all at the same control: the guide walks the
+placement of the page the person is on when it is one of them, else the first,
+and the page's exactly-one rule decides whether the control there is the one
+visible instance. Every other auto location is search-only: find_ui returns it
+without a guide. The build stamps each guidable control with
+a `data-ui-auto` marker carrying its render-site id (a curated control keeps its
+own marker and is never stamped), and the guide is one step: open its page, point
+at that one control. The gateway accepts it only from the auto tier the dashboard
+bundle ships, when that tier was built against the shipped index; the guide then
+carries the auto tier's own digest, and a tab from another build refuses it as
+`build_mismatch`. With no auto tier (a source checkout that was never built), an
+auto location is not guidable at all. The live map reports such a control like a
+curated one, under the same exactly-one rule.
+
+The frontend may acknowledge navigation and form steps, but cannot declare a
+save successful. A guide-scoped request header associates the actual owner save
+with the waiting action before the request runs; only the handler's successful
+response with the created identity advances its commit step. A refused, ambiguous
+or cancelled save never becomes a successful guide result. Completion reports the
+actual saved identity, including a name the user edited in the draft.
+
+Guide instructions occupy space above the page, rather than covering its title.
+Only the non-interactive
+arrow and outline overlay a target. Missing controls stop the guide instead of
+falling back to another element. Existing form drafts and navigation guards remain
+in force.

@@ -131,7 +131,7 @@ describe('useMeetCrewmatesGate', () => {
     expect(localStorage.getItem('mc-crewmates-pending')).toBe('1')
     expect(result.current.theme.crewmatesOnboarded).toBe(false)
     // ...but it does not auto-fire again in THIS session (the user answered it once).
-    await new Promise(r => setTimeout(r, 20))
+    await act(async () => {})
     expect(result.current.gate.open).toBe(false)
     act(() => {
       window.dispatchEvent(new Event(START_MEET_CREWMATES_EVENT))
@@ -228,7 +228,7 @@ describe('useMeetCrewmatesGate', () => {
       await waitFor(() => expect(result.current.theme.crewmatesFlowSeen).toBe(true))
       // A second visit does not show it again.
       enterPage()
-      await new Promise(r => setTimeout(r, 20))
+      await act(async () => {})
       expect(result.current.gate.open).toBe(false)
     })
 
@@ -240,7 +240,7 @@ describe('useMeetCrewmatesGate', () => {
       const { result } = renderHookWithProviders(useBoth)
       await waitFor(() => expect(result.current.theme.themeBootReady).toBe(true))
       enterPage()
-      await new Promise(r => setTimeout(r, 20))
+      await act(async () => {})
       expect(result.current.gate.open).toBe(false)
     })
 
@@ -259,8 +259,24 @@ describe('useMeetCrewmatesGate', () => {
       const { result } = renderHookWithProviders(useBoth)
       await waitFor(() => expect(result.current.theme.themeBootReady).toBe(true))
       enterPage()
-      await new Promise(r => setTimeout(r, 20))
+      await act(async () => {})
       expect(result.current.gate.open).toBe(false)
     })
   })
+})
+
+
+it('keeps automatic and explicit hosts disjoint', async () => {
+  localStorage.clear()
+  const { result } = renderHookWithProviders(() => ({
+    automatic: useMeetCrewmatesGate({ explicit: false }),
+    embedded: useMeetCrewmatesGate({ automatic: false }),
+    theme: useTheme(),
+  }))
+  await waitFor(() => expect(result.current.theme.themeBootReady).toBe(true))
+  act(() => window.dispatchEvent(new Event(START_MEET_CREWMATES_EVENT)))
+  expect(result.current.automatic.open).toBe(false)
+  expect(result.current.embedded.open).toBe(true)
+  act(() => result.current.embedded.onDone('dismissed'))
+  await waitFor(() => expect(result.current.theme.crewmatesFlowSeen).toBe(true))
 })

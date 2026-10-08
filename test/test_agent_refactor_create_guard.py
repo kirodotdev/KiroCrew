@@ -610,6 +610,7 @@ def test_the_facade_is_found_under_every_name_src_binds_it_to() -> None:
             "conductor_agents",
             "default_spec_commit",
             "fork_refresh",
+            "guide_platform",
             "kiro_hooks",
             "managed_mcp",
             "mcp_aliases",

@@ -2487,6 +2487,7 @@ function DeniedCommandsSection({ draft, onDraftChange, noteDraft, onNoteDraftCha
       <Modal
         open={confirm !== null}
         onClose={() => setConfirm(null)}
+        guideTrustRoot
         title={confirm?.kind === 'disable-all'
           ? i18nT('pages.settings.securityPanel.disable_all_built_in_denies_2')
           : i18nT('pages.settings.securityPanel.disable_this_denied_command')}
@@ -2773,6 +2774,7 @@ function ThirdPartyAppsCard() {
       <Modal
         open={confirm !== null}
         onClose={() => setConfirm(null)}
+        guideTrustRoot
         title={confirm?.kind === 'trust-all'
           ? i18nT('pages.settings.securityPanel.trustedApps.allow_all_label')
           : confirm
@@ -3081,6 +3083,7 @@ function TrustedRegistriesCard() {
       <Modal
         open={confirm !== null}
         onClose={() => setConfirm(null)}
+        guideTrustRoot
         title={confirm
           ? i18nT('pages.settings.securityPanel.trustedRegistries.grant_confirm_title', { name: confirm.name })
           : ''}

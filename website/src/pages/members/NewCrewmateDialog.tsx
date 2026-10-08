@@ -29,7 +29,7 @@
  * nothing while closed, and the form state below is reset on every open so a
  * dismissed draft does not reappear.
  */
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, useMemo } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ChevronRight } from 'lucide-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -101,8 +101,15 @@ interface CreateBody {
   model?: string
 }
 
-export default function NewCrewmateDialog({ open, onClose, onCreated, existingNames }: {
+export default function NewCrewmateDialog({ open, onClose, onCreated, existingNames, embedded = false }: {
   open: boolean
+  /**
+   * Render the same complete form in place, inside the page region the host
+   * gives it, instead of as a modal: no portal, no scrim, no focus trap and no
+   * Escape/backdrop dismissal (Cancel is the way out). State, validation, the
+   * create write, reset-on-open and the leave guard are identical.
+   */
+  embedded?: boolean
   onClose: () => void
   /** Fired once the server has the record; the page takes it from there. */
   onCreated: (created: CreatedCrewmate) => void
@@ -495,12 +502,26 @@ export default function NewCrewmateDialog({ open, onClose, onCreated, existingNa
   // HERE as well would put two entries resolving to this one predicate in the
   // shell's set inside a layout, and `ask()` would raise this confirm twice for
   // a single navigation — the second Cancel vetoing a leave already approved.
+  // The shell keeps a SET of guards and stakes, so this form and the guided
+  // flow beside it on the Crewmates page each register their own.
   const atStake = open && (dirty || busy || (wsModalOpen && wsDirty))
   const mayLeave = () => {
     if (!atStake) return true
-    return window.confirm(t(busy ? 'pages.membersPage.create_leave_busy' : 'pages.membersPage.create_leave_draft'))
+    return window.confirm(busy ? t('pages.membersPage.create_leave_busy') : embedded ? t('components.meetCrewmatesFlow.leave_draft') : t('pages.membersPage.create_leave_draft'))
   }
   useSidePanelLeaveGuard(mayLeave, atStake, true)
+  // A reload or tab close loses the draft too.
+  useEffect(() => {
+    if (!atStake) return
+    const warn = (e: BeforeUnloadEvent) => {
+      e.preventDefault()
+      // Legacy browsers only show the prompt when returnValue is set.
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [atStake])
+  const titleId = useId()
 
   const submit = () => {
     setError(''); setHint(''); setUnconfirmed(false)
@@ -533,8 +554,190 @@ export default function NewCrewmateDialog({ open, onClose, onCreated, existingNa
     })
   }
 
+  const footerButtons = (
+    <>
+      <Btn onClick={onClose} disabled={busy || wsModalOpen}>{t('pages.membersPage.create_cancel')}</Btn>
+      <Btn primary type="submit" form={FORM_ID} disabled={busy || wsModalOpen} data-testid="crewmate-create-submit">
+        {busy ? t('pages.membersPage.create_submitting') : t('pages.membersPage.create_submit')}
+      </Btn>
+    </>
+  )
+  const formEl = (
+    <form
+      id={FORM_ID}
+      className="flex flex-col gap-5"
+      data-testid="crewmate-create-form"
+      onSubmit={(e) => { e.preventDefault(); if (!busy) submit() }}
+    >
+      {/* One lock for the whole form while the POST is in flight: a
+          disabled fieldset disables every control under it — the Advanced
+          toggle and the editor's own fields included, which take no
+          `disabled` prop of their own — so an edit cannot land after the
+          body was sent and vanish when success closes the dialog. */}
+      <fieldset
+        disabled={busy || wsModalOpen}
+        aria-busy={busy || undefined}
+        className="contents min-w-0 m-0 p-0 border-0"
+        data-testid="crewmate-create-fieldset"
+      >
+      <Field label={t('pages.membersPage.create_name')}>
+        <Input
+          value={name}
+          onChange={(e) => { setName(e.target.value); setHint(''); setError(''); setNameRefused(false); setUnconfirmed(false) }}
+          aria-label={t('pages.membersPage.create_name')}
+          aria-invalid={hint || nameRefused ? true : undefined}
+          aria-describedby={hint ? 'crewmate-create-name-hint' : undefined}
+          placeholder={t('pages.membersPage.create_name_placeholder')}
+          // The variant carries an attribute selector, so it outranks the
+          // base `border-border` whatever order the stylesheet emits them in.
+          className="aria-invalid:border-danger"
+          autoFocus
+          disabled={busy}
+        />
+        {/* A refusal, not a field hint: it reads in the error tone and the
+            field's border goes with it, so a blank submit never looks like
+            "the form before I typed anything". */}
+        {hint && (
+          <span id="crewmate-create-name-hint" role="alert" className="text-[11.5px] leading-relaxed text-danger" data-testid="crewmate-create-name-hint">
+            {hint}
+          </span>
+        )}
+      </Field>
+      <Field label={t('pages.membersPage.agent_template')} hint={t('pages.membersPage.built_from_hint')}>
+        <SimpleSelect
+          options={builtFromOptions}
+          optionLabels={builtFromLabels}
+          value={builtFromValue}
+          onChange={setBuiltFrom}
+          disabled={busy}
+          aria-label={t('pages.membersPage.agent_template')}
+        />
+      </Field>
+      <Field
+        label={`${t('pages.membersPage.create_job')} · ${t('pages.membersPage.create_optional')}`}
+        hint={t('pages.membersPage.create_job_hint')}
+      >
+        <Input
+          value={job}
+          onChange={(e) => setJob(e.target.value)}
+          aria-label={t('pages.membersPage.create_job')}
+          placeholder={t('pages.membersPage.create_job_placeholder')}
+          disabled={busy}
+        />
+      </Field>
+      <div className="flex flex-col gap-4">
+        <button
+          type="button"
+          onClick={() => setAdvanced((v) => !v)}
+          aria-expanded={advanced}
+          aria-controls="crewmate-create-advanced"
+          className="flex items-center gap-1 self-start -ml-1 px-1 py-0.5 rounded text-[12px] text-muted hover:text-text bg-transparent border-none cursor-pointer focus-ring"
+          data-testid="crewmate-create-advanced-toggle"
+        >
+          <ChevronRight
+            size={13}
+            className={`lucide-inline transition-transform duration-150 motion-reduce:transition-none ${advanced ? 'rotate-90' : ''}`}
+            aria-hidden="true"
+          />
+          {t('pages.membersPage.create_advanced')}
+        </button>
+        {/* The disclosure grows out of its toggle instead of appearing whole:
+            the same element, unfolding — so the reader sees where the extra
+            fields came from. Cut, not animated, under reduced motion. */}
+        <AnimatePresence initial={false}>
+          {advanced && (
+            <motion.div
+              key="advanced"
+              id="crewmate-create-advanced"
+              className="flex flex-col gap-4 overflow-hidden"
+              initial={reduceMotion ? false : { height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={reduceMotion ? { opacity: 0, transition: { duration: 0 } } : { height: 0, opacity: 0 }}
+              transition={{ duration: 0.18, ease: 'easeOut' }}
+              data-testid="crewmate-create-advanced"
+            >
+              <WorkspaceField
+                subject="member"
+                hint={t('pages.membersPage.create_workspace_hint')}
+                options={workspaceOptions}
+                value={workspace}
+                onChange={setWorkspace}
+                onNewWorkspace={openWsModal}
+              />
+              <ModelField
+                options={modelOptions}
+                value={model}
+                onChange={setModel}
+                hint={t('pages.kiroCrewAgentsPage.model_inherited_from_default')}
+              />
+              <TriggersField value={triggers} onChange={setTriggers} subject="member" />
+              <SessionColorField value={sessionColor} onChange={setSessionColor} subject="member" />
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+      {/* No hand-off on either notice: both sit over this unsaved form —
+          the name, job and every Advanced pick live only in local state —
+          and the hand-off navigates to the chat, unmounting the dialog
+          and the draft with it. */}
+      {/* A load that did not happen is a failure (errors-use-error-notice):
+          the shared notice, inline, naming WHICH list fell back so the
+          user knows what they are not being offered. The create still
+          works with the defaults. */}
+      {optionsError && !error && (
+        <ErrorNotice
+          message={t('pages.membersPage.create_options_failed', {
+            list: installedError
+              ? t('pages.membersPage.agent_template')
+              : workspacesError
+                ? t('pages.kiroCrewAgentsPage.workspace_2')
+                : t('pages.kiroCrewAgentsPage.model'),
+          })}
+          variant="inline"
+          testId="crewmate-create-options-error"
+        />
+      )}
+      </fieldset>
+      {/* An UNCONFIRMED create is not a failure like the others: its lead
+          says so in bold and it carries its own test id, so it can never
+          be read — by a user or a test — as one of the "nothing was
+          created, try again" notices. */}
+      {error && (
+        <ErrorNotice
+          message={error}
+          title={unconfirmed ? t('pages.membersPage.create_unconfirmed_title') : undefined}
+          // With a title, the block notice would leave the message as a
+          // bare text node beside the <strong> lead, so the exact message
+          // is no longer addressable on its own (an exact text lookup sees
+          // "Not confirmed Couldn't confirm…" as one element). `inline` is
+          // a span's default display, so the wrap it buys changes nothing
+          // on screen; it only gives the sentence its own element.
+          messageClassName={unconfirmed ? 'inline' : undefined}
+          testId={unconfirmed ? 'crewmate-create-unconfirmed' : 'crewmate-create-error'}
+        />
+      )}
+    </form>
+  )
+
   return (
     <>
+      {embedded ? (
+        /* In place: the SAME form, header and footer in a labelled page
+           region -- no portal, no scrim, no focus trap, no Escape. Cancel
+           is the explicit way out, exactly as in the modal. */
+        open && (
+          <div
+            role="region"
+            aria-labelledby={titleId}
+            className="flex w-full max-w-[560px] flex-col gap-5 self-start rounded-2xl border border-border bg-card p-5 sm:p-6"
+            data-testid="crewmate-create-embedded"
+          >
+            <h2 id={titleId} className="m-0 text-[15px] font-semibold text-text-strong">{t('pages.membersPage.add_member')}</h2>
+            {formEl}
+            <div className="flex flex-wrap items-center justify-end gap-2">{footerButtons}</div>
+          </div>
+        )
+      ) : (
       <Modal
         open={open}
         onClose={onClose}
@@ -547,170 +750,11 @@ export default function NewCrewmateDialog({ open, onClose, onCreated, existingNa
         // inert and its Tab trap stands down with it, or every Tab in that
         // form is pulled back here (the shared trap's stacked-dialog contract).
         interactionDisabled={wsModalOpen}
-        footer={
-          <>
-            <Btn onClick={onClose} disabled={busy || wsModalOpen}>{t('pages.membersPage.create_cancel')}</Btn>
-            <Btn primary type="submit" form={FORM_ID} disabled={busy || wsModalOpen} data-testid="crewmate-create-submit">
-              {busy ? t('pages.membersPage.create_submitting') : t('pages.membersPage.create_submit')}
-            </Btn>
-          </>
-        }
+        footer={footerButtons}
       >
-        <form
-          id={FORM_ID}
-          className="flex flex-col gap-5"
-          data-testid="crewmate-create-form"
-          onSubmit={(e) => { e.preventDefault(); if (!busy) submit() }}
-        >
-          {/* One lock for the whole form while the POST is in flight: a
-              disabled fieldset disables every control under it — the Advanced
-              toggle and the editor's own fields included, which take no
-              `disabled` prop of their own — so an edit cannot land after the
-              body was sent and vanish when success closes the dialog. */}
-          <fieldset
-            disabled={busy || wsModalOpen}
-            aria-busy={busy || undefined}
-            className="contents min-w-0 m-0 p-0 border-0"
-            data-testid="crewmate-create-fieldset"
-          >
-          <Field label={t('pages.membersPage.create_name')}>
-            <Input
-              value={name}
-              onChange={(e) => { setName(e.target.value); setHint(''); setError(''); setNameRefused(false); setUnconfirmed(false) }}
-              aria-label={t('pages.membersPage.create_name')}
-              aria-invalid={hint || nameRefused ? true : undefined}
-              aria-describedby={hint ? 'crewmate-create-name-hint' : undefined}
-              placeholder={t('pages.membersPage.create_name_placeholder')}
-              // The variant carries an attribute selector, so it outranks the
-              // base `border-border` whatever order the stylesheet emits them in.
-              className="aria-invalid:border-danger"
-              autoFocus
-              disabled={busy}
-            />
-            {/* A refusal, not a field hint: it reads in the error tone and the
-                field's border goes with it, so a blank submit never looks like
-                "the form before I typed anything". */}
-            {hint && (
-              <span id="crewmate-create-name-hint" role="alert" className="text-[11.5px] leading-relaxed text-danger" data-testid="crewmate-create-name-hint">
-                {hint}
-              </span>
-            )}
-          </Field>
-          <Field label={t('pages.membersPage.agent_template')} hint={t('pages.membersPage.built_from_hint')}>
-            <SimpleSelect
-              options={builtFromOptions}
-              optionLabels={builtFromLabels}
-              value={builtFromValue}
-              onChange={setBuiltFrom}
-              disabled={busy}
-              aria-label={t('pages.membersPage.agent_template')}
-            />
-          </Field>
-          <Field
-            label={`${t('pages.membersPage.create_job')} · ${t('pages.membersPage.create_optional')}`}
-            hint={t('pages.membersPage.create_job_hint')}
-          >
-            <Input
-              value={job}
-              onChange={(e) => setJob(e.target.value)}
-              aria-label={t('pages.membersPage.create_job')}
-              placeholder={t('pages.membersPage.create_job_placeholder')}
-              disabled={busy}
-            />
-          </Field>
-          <div className="flex flex-col gap-4">
-            <button
-              type="button"
-              onClick={() => setAdvanced((v) => !v)}
-              aria-expanded={advanced}
-              aria-controls="crewmate-create-advanced"
-              className="flex items-center gap-1 self-start -ml-1 px-1 py-0.5 rounded text-[12px] text-muted hover:text-text bg-transparent border-none cursor-pointer focus-ring"
-              data-testid="crewmate-create-advanced-toggle"
-            >
-              <ChevronRight
-                size={13}
-                className={`lucide-inline transition-transform duration-150 motion-reduce:transition-none ${advanced ? 'rotate-90' : ''}`}
-                aria-hidden="true"
-              />
-              {t('pages.membersPage.create_advanced')}
-            </button>
-            {/* The disclosure grows out of its toggle instead of appearing whole:
-                the same element, unfolding — so the reader sees where the extra
-                fields came from. Cut, not animated, under reduced motion. */}
-            <AnimatePresence initial={false}>
-              {advanced && (
-                <motion.div
-                  key="advanced"
-                  id="crewmate-create-advanced"
-                  className="flex flex-col gap-4 overflow-hidden"
-                  initial={reduceMotion ? false : { height: 0, opacity: 0 }}
-                  animate={{ height: 'auto', opacity: 1 }}
-                  exit={reduceMotion ? { opacity: 0, transition: { duration: 0 } } : { height: 0, opacity: 0 }}
-                  transition={{ duration: 0.18, ease: 'easeOut' }}
-                  data-testid="crewmate-create-advanced"
-                >
-                  <WorkspaceField
-                    subject="member"
-                    hint={t('pages.membersPage.create_workspace_hint')}
-                    options={workspaceOptions}
-                    value={workspace}
-                    onChange={setWorkspace}
-                    onNewWorkspace={openWsModal}
-                  />
-                  <ModelField
-                    options={modelOptions}
-                    value={model}
-                    onChange={setModel}
-                    hint={t('pages.kiroCrewAgentsPage.model_inherited_from_default')}
-                  />
-                  <TriggersField value={triggers} onChange={setTriggers} subject="member" />
-                  <SessionColorField value={sessionColor} onChange={setSessionColor} subject="member" />
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
-          {/* No hand-off on either notice: both sit over this unsaved form —
-              the name, job and every Advanced pick live only in local state —
-              and the hand-off navigates to the chat, unmounting the dialog
-              and the draft with it. */}
-          {/* A load that did not happen is a failure (errors-use-error-notice):
-              the shared notice, inline, naming WHICH list fell back so the
-              user knows what they are not being offered. The create still
-              works with the defaults. */}
-          {optionsError && !error && (
-            <ErrorNotice
-              message={t('pages.membersPage.create_options_failed', {
-                list: installedError
-                  ? t('pages.membersPage.agent_template')
-                  : workspacesError
-                    ? t('pages.kiroCrewAgentsPage.workspace_2')
-                    : t('pages.kiroCrewAgentsPage.model'),
-              })}
-              variant="inline"
-              testId="crewmate-create-options-error"
-            />
-          )}
-          </fieldset>
-          {/* An UNCONFIRMED create is not a failure like the others: its lead
-              says so in bold and it carries its own test id, so it can never
-              be read — by a user or a test — as one of the "nothing was
-              created, try again" notices. */}
-          {error && (
-            <ErrorNotice
-              message={error}
-              title={unconfirmed ? t('pages.membersPage.create_unconfirmed_title') : undefined}
-              // With a title, the block notice would leave the message as a
-              // bare text node beside the <strong> lead, so the exact message
-              // is no longer addressable on its own (an exact text lookup sees
-              // "Not confirmed Couldn't confirm…" as one element). `inline` is
-              // a span's default display, so the wrap it buys changes nothing
-              // on screen; it only gives the sentence its own element.
-              messageClassName={unconfirmed ? 'inline' : undefined}
-              testId={unconfirmed ? 'crewmate-create-unconfirmed' : 'crewmate-create-error'}
-            />
-          )}
-        </form>
+        {formEl}
       </Modal>
+      )}
       <WorkspaceModal
         open={wsModalOpen}
         onDirtyChange={setWsDirty}

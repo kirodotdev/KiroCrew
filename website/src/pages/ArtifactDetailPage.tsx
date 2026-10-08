@@ -55,6 +55,8 @@ import { PublishHub, publishNoticeKey } from '../components/PublishHub'
 import type { Artifact, ArtifactEvent, ArtifactComment, CommentAnchor, ChatSlot } from '../types'
 
 import { i18nT } from '../i18n/t'
+import { uiLocation } from '../uiLocations/uiLocation'
+import { useGuideSelection } from '../guide/guidePredicates'
 import { errMessage } from '../utils/thunkError'
 import { byRecentActivity } from '../utils/slotRecency'
 import { fmtDateFields } from '../i18n/format'
@@ -122,6 +124,7 @@ function FolderChip({ artifact }: { artifact: Artifact }) {
           }`}
           title={current ? i18nT('pages.artifactDetailPage.filed_in_click_to_move', { path }) : i18nT('pages.artifactDetailPage.not_in_a_folder_click_to_file')}
           aria-label={current ? i18nT('pages.artifactDetailPage.folder_move_to_folder', { path }) : i18nT('pages.artifactDetailPage.move_to_folder')}
+          {...uiLocation('artifacts.detail.move-to-folder')}
         >
           <FolderIcon size={10} className={current ? 'text-accent' : undefined} />
           {current ? current.name : 'folder'}
@@ -554,6 +557,9 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   // historical view still tracks the pointer it will return to. This also covers
   // /popout/artifact/:slug, which renders this page in its own window.
   useArtifactLiveReload(slug, detailQuery.data?.source_path)
+  // The open artifact is the guide's pick (artifact_open), named as its card
+  // in the library names it, so later steps stay about this one artifact.
+  useGuideSelection('artifact_open', { selected: !popout && !!detailQuery.data, available: true, name: popout ? undefined : detailQuery.data?.name })
 
   const versions = versionsQuery.data?.versions || []
   const effectiveVersion = selectedVersion ?? detailQuery.data?.version ?? null
@@ -1989,6 +1995,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
               // Named so it is distinguishable from the document-type control
               // beside it -- both for assistive tech and for tests.
               aria-label={i18nT('pages.artifactDetailPage.version')}
+              {...uiLocation('artifacts.detail.versions')}
               disabled={saving}
               options={versionOptions}
               optionLabels={versionOptionLabels}
@@ -2136,6 +2143,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
               title={panel === 'comments' ? i18nT('pages.artifactDetailPage.hide_comments') : i18nT('pages.artifactDetailPage.show_comments')}
               aria-label={i18nT('pages.artifactDetailPage.toggle_comments')}
               aria-pressed={panel === 'comments'}
+              {...uiLocation('artifacts.detail.comments')}
             >
               <span className="inline-flex items-center gap-1">
                 <MessageSquare size={13} />

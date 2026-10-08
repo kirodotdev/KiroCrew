@@ -235,6 +235,7 @@ A server that is genuinely broken reads **Error** with the reason next to it, no
 
 ```bash
 kirocrew status                          # is the gateway running?
+kirocrew logs -n 200                     # what did it log before it stopped?
 curl http://localhost:5476/api/status    # is it answering on the expected port?
 ```
 

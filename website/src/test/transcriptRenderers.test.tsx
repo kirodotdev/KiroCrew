@@ -31,6 +31,8 @@ import { isSpawnRunTool } from '../pages/chat/SubagentRunCard'
 import { isWorkflowCompletionMessage } from '../pages/chat/WorkflowCompletionCard'
 import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
 import { parseRecoveryMessage } from '../pages/chat/RecoveryCard'
+import CrewmateMessage from '../pages/chat/CrewmateMessage'
+import { CARD_ROLE } from '../cards/ConversationCard'
 
 const msg = (role: string, over: Partial<ChatMessage> = {}): ChatMessage =>
   ({ role, content: '', cls: '', ...over }) as ChatMessage
@@ -537,5 +539,30 @@ describe('the single-chat surface renders from THIS row set', () => {
     expect(chatPageSrc).toMatch(/i18nT\('components\.mcpApp\.from_app', \{ app: appLabel\.split\('\/'\)\[0\] \}\)/)
     expect(chatPageSrc).not.toMatch(/noteSource/)
     expect(chatPageSrc).not.toMatch(/from_note/)
+  })
+})
+
+describe("a change card in a crewmate's chat", () => {
+  const scout = { name: 'scout', label: 'Scout' }
+  const card = msg(CARD_ROLE, { meta: { card_id: 'c1' } })
+
+  it("is the crewmate's own message, opening the run when it comes first", () => {
+    const messages = [msg('user', { content: 'hi' }), card, msg('assistant', { content: 'Press Apply change.' })]
+    const el = render(card, { slot: 's1', crewmate: scout }, { index: 1, messages }) as ReactElement<{ pos: string }>
+    expect(el.type).toBe(CrewmateMessage)
+    // The author line belongs to the card: it is the first bubble of the run.
+    expect(el.props.pos).toBe('start')
+  })
+
+  it("continues the run its acknowledgement opened, so there is one author line", () => {
+    const messages = [msg('user', { content: 'hi' }), msg('assistant', { content: 'Checking.' }), card, msg('assistant', { content: 'Ready.' })]
+    const el = render(card, { slot: 's1', crewmate: scout }, { index: 2, messages }) as ReactElement<{ pos: string }>
+    expect(el.type).toBe(CrewmateMessage)
+    expect(el.props.pos).toBe('cont')
+  })
+
+  it('stays a plain card outside a crewmate chat', () => {
+    const el = render(card, { slot: 's1' }, { index: 0, messages: [card] }) as ReactElement
+    expect(el.type).not.toBe(CrewmateMessage)
   })
 })

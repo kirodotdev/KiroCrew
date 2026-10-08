@@ -28,8 +28,8 @@ Multi-session parallel chat with full Markdown rendering, syntax-highlighted cod
 
 - **Multiple tabs**: each tab runs its own agent session in parallel.
 - **Agent selection**: pick an agent before starting a chat, or switch mid-session.
-- **Session history**: closed sessions appear in the collapsible history sidebar.
-- **Resume**: click a history item to restore the full conversation.
+- **Session history**: closed sessions appear under **Older Sessions**, the collapsible footer at the bottom of the Sessions list on the left. Click the footer to expand it.
+- **Resume**: click a session under Older Sessions to restore the full conversation.
 - **Notifications**: click a notification to view it in the main pane.
 - **Auto-titles**: sessions get auto-generated titles after a few turns.
 - **Rename a session**: choose **Rename** from a sidebar row's `⋮` menu (or right-click the row), double-click the bold title in the row, or click the title in the session header. A name you set is kept: background title refreshes skip it, and only the **Regenerate title** button replaces it.

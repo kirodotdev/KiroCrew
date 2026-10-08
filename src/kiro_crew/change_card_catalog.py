@@ -1,0 +1,1643 @@
+"""The change-card catalog: what an agent may propose, and what each proposal does.
+
+A change card is an agent's proposal of ONE registered kind of change. The agent
+names the kind and fills in its parameters; it never supplies a route, a request
+body, markup or a risk level. Everything the browser later sends, and everything
+the card shows under "what changes", is derived HERE from the parameters and the
+gateway's own read of the current state:
+
+* :func:`validate_params` normalizes and bounds the parameters, refusing unknown
+  keys, so a card can only carry the fields its kind declares.
+* :func:`build_preview` turns parameters plus the current-state snapshot into the
+  card's title, product-written ``changes`` rows, the computed ``risk`` and the
+  ordered ``apply`` request plan against the EXISTING settings-page routes.
+* :func:`build_undo` derives the undo plan after apply, from the state before
+  the change and the identities the real routes returned (a created schedule's
+  id, a created crewmate's key). Undo restores the state before the change; when
+  that is impossible (an overwritten secret) the card says so instead.
+
+Risk is computed from the diff, never from the kind the agent picked: a plain
+``setting.change`` that turns on auto-approval is ``widen`` exactly like a trust
+card. ``code_exec`` marks a change that runs third-party code on this machine.
+
+A plan step is ``{method, path, body}`` with ``body`` canonical JSON (or ``None``).
+A field the gateway cannot know at proposal time is named in the step's ``fill``
+list and carries a ``{{...}}`` placeholder in ``body``: ``source: "user"`` is a
+value only the person types (a secret's value, never stored anywhere), and
+``source: "step"`` is a field a previous step's real response returned, which
+the gateway checks against what it recorded. A ``repeat`` step is a read the
+browser polls (an OAuth approval) and completes only on the state the route
+itself reports.
+
+Pure: no I/O. The dashboard layer (:mod:`kiro_crew.dashboard.change_cards`) reads
+the state and calls in here.
+"""
+
+from __future__ import annotations
+
+import copy
+import json
+import re
+import shlex
+import urllib.parse
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any
+
+from kiro_crew import guide_catalog
+
+KIND_SETTING_CHANGE = "setting.change"
+KIND_SCHEDULE_CREATE = "schedule.create"
+KIND_SCHEDULE_UPDATE = "schedule.update"
+KIND_CREWMATE_CREATE = "crewmate.create"
+KIND_CREWMATE_UPDATE = "crewmate.update"
+KIND_CREWMATE_CAPABILITIES = "crewmate.capabilities"
+KIND_TEMPLATE_UPDATE = "template.update"
+KIND_MCP_INSTALL = "mcp.install"
+KIND_MCP_ADD_CUSTOM = "mcp.add_custom"
+KIND_MCP_TOGGLE = "mcp.toggle"
+KIND_CONNECTION_CONNECT = "connection.connect"
+KIND_SECRET_SAVE = "secret.save"
+KIND_TRUST_APP = "trust.app"
+KIND_DENIED_COMMAND = "denied_command"
+
+LIST_OP_ADD = "add"
+LIST_OP_REMOVE = "remove"
+_LIST_OPS = (LIST_OP_ADD, LIST_OP_REMOVE)
+_LIST_ITEM_MAX = 200
+
+RISK_NORMAL = "normal"
+RISK_TIGHTEN = "tighten"
+RISK_WIDEN = "widen"
+RISK_CODE_EXEC = "code_exec"
+
+OP_APPLY = "apply"
+OP_UNDO = "undo"
+
+#: The crewmate template the create-a-crewmate flow builds from
+#: (``MeetCrewmatesFlow.tsx`` ``DEFAULT_TEMPLATE``).
+DEFAULT_CREWMATE_TEMPLATE = "kirocrew"
+
+REASON_MAX_CHARS = 500
+_NAME_MAX = 128
+_TEXT_MAX = 4000
+_CREWMATE_NAME_MAX = 24
+_CREWMATE_GOAL_MAX = 200
+_PATTERN_MAX = 500
+_MAX_CUSTOM_SERVERS = 8
+_MAX_LIST_ITEMS = 300
+_MAX_CAPABILITY_OPS = 100
+_PARAMS_MAX_BYTES = 32 * 1024
+
+#: The grammars the real routes enforce, so a card is never stricter than the
+#: Settings page: a template name (``validation.TEMPLATE_NAME_RE``) and an app
+#: grant name (``apps.execution.APP_NAME_RE``). Crewmate names follow
+#: ``members.validate_member_name`` (free text, any script); stored-credential
+#: names follow ``POST /api/secrets`` (any non-empty text).
+_TEMPLATE_NAME_RE = re.compile(r"^(?:[A-Za-z0-9][A-Za-z0-9_.-]{0,61}[A-Za-z0-9]|[A-Za-z0-9])$")
+_APP_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+_MCP_NAME_RE = re.compile(r"^[@a-zA-Z0-9][@a-zA-Z0-9/_.:-]*$")
+_CONFIG_PATH_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$")
+_SETTING_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+_CRON_EXPR_RE = re.compile(r"^[0-9*/,\- A-Za-z?#LW]{1,100}$")
+
+#: Settings whose change can widen what the agent may do without asking. Each
+#: entry orders the values from tightest to widest, so a move toward the end is
+#: ``widen`` and a move toward the start is ``tighten``.
+_SETTING_ORDER: dict[str, tuple[Any, ...]] = {
+    "agent.approval_mode": ("interactive", "auto"),
+    "agent.sandbox": ("strict", "auto", "off"),
+    "agent.yolo_duration": ("30m", "1h", "6h", "12h", "24h", "until_shutdown"),
+    "agent.sandbox_allow_no_isolation": (False, True),
+    "dashboard.tailscale.enabled": (False, True),
+    "dashboard.tailscale.trust_identity": (False, True),
+    "dashboard.tailscale.bind_refresh_chains": (True, False),
+    "instances.enabled": (False, True),
+    "skills.approval_required": (True, False),
+    "telemetry.beacon_enabled": (False, True),
+}
+
+_PLACEHOLDER = "{{%s}}"
+
+
+class CardCatalogError(ValueError):
+    """A proposal naming an unknown kind or carrying bad parameters."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+@dataclass(frozen=True)
+class KindDef:
+    id: str
+    summary: str
+    params_schema: dict[str, Any]
+    editable: tuple[str, ...]
+
+
+def _obj(props: dict[str, Any], required: list[str]) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": props,
+        "required": required,
+        "additionalProperties": False,
+    }
+
+
+_STR = {"type": "string"}
+_BOOL = {"type": "boolean"}
+_CRON_FIELDS = {
+    "cron_expr": {"type": "string", "description": "5-field cron, e.g. '0 9 * * 1-5'"},
+    "timezone": {"type": "string", "description": "IANA timezone, e.g. 'America/New_York'"},
+}
+
+#: A one-shot schedule's wall-clock time: an ISO-8601 local date-time with no
+#: offset, read in the card's ``timezone`` (the configured zone when omitted).
+_AT_FIELD = {
+    "type": "string",
+    "description": (
+        "One-time run: ISO-8601 local date-time, e.g. '2026-10-04T09:00', read in "
+        "`timezone`. Use instead of cron_expr."
+    ),
+}
+_AT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$")
+
+KINDS: dict[str, KindDef] = {
+    k.id: k
+    for k in (
+        KindDef(
+            KIND_SETTING_CHANGE,
+            "Change one setting. Pass `setting_id` from find_setting (preferred) "
+            "or a raw config `path`, and the new `value`. For a setting find_setting "
+            "reports as value_type 'string_list', pass `op` ('add' or 'remove') and "
+            "one `item` instead of `value`.",
+            _obj(
+                {
+                    "setting_id": _STR,
+                    "path": _STR,
+                    "value": {},
+                    "op": {"type": "string", "enum": [LIST_OP_ADD, LIST_OP_REMOVE]},
+                    "item": _STR,
+                },
+                [],
+            ),
+            ("value",),
+        ),
+        KindDef(
+            KIND_SCHEDULE_CREATE,
+            "Create a scheduled job that sends `message` to an agent. Give exactly "
+            "one of `cron_expr` (recurring) or `at` (runs ONCE, e.g. 'remind me "
+            "tomorrow at 9am'), plus the `timezone` either is read in.",
+            _obj(
+                {"name": _STR, "message": _STR, **_CRON_FIELDS, "at": _AT_FIELD},
+                ["name", "message"],
+            ),
+            ("name", "message", "cron_expr", "at", "timezone"),
+        ),
+        KindDef(
+            KIND_SCHEDULE_UPDATE,
+            "Change an existing schedule's name, message, cron or timezone.",
+            _obj(
+                {
+                    "id": _STR,
+                    "fields": _obj({"name": _STR, "message": _STR, **_CRON_FIELDS}, []),
+                },
+                ["id", "fields"],
+            ),
+            ("fields",),
+        ),
+        KindDef(
+            KIND_CREWMATE_CREATE,
+            "Create a crewmate that owns a goal, optionally on a daily/cron schedule.",
+            _obj(
+                {
+                    "name": {"type": "string", "maxLength": _CREWMATE_NAME_MAX},
+                    "goal": {"type": "string", "maxLength": _CREWMATE_GOAL_MAX},
+                    "schedule": _obj(dict(_CRON_FIELDS), ["cron_expr"]),
+                },
+                ["name", "goal"],
+            ),
+            ("name", "goal", "schedule"),
+        ),
+        KindDef(
+            KIND_CREWMATE_UPDATE,
+            "Change one crewmate's description, display name, model or effort.",
+            _obj(
+                {
+                    "name": _STR,
+                    "fields": _obj(
+                        {
+                            "description": _STR,
+                            "display_name": _STR,
+                            "model": _STR,
+                            "reasoning_effort": _STR,
+                        },
+                        [],
+                    ),
+                },
+                ["name", "fields"],
+            ),
+            ("fields",),
+        ),
+        KindDef(
+            KIND_CREWMATE_CAPABILITIES,
+            "Change one crewmate's tools / MCP servers / skills / autoApprove. `draft` is "
+            "{operations:[{section,id,action:set|remove|inherit,value?}], enroll?}.",
+            _obj(
+                {
+                    "member": _STR,
+                    "draft": _obj(
+                        {"operations": {"type": "array"}, "enroll": _BOOL},
+                        ["operations"],
+                    ),
+                },
+                ["member", "draft"],
+            ),
+            ("draft",),
+        ),
+        KindDef(
+            KIND_TEMPLATE_UPDATE,
+            "Change an agent template's tools, allowedTools, skills or model. Affects "
+            "every member built from it.",
+            _obj(
+                {
+                    "template": _STR,
+                    "fields": _obj(
+                        {
+                            "tools": {"type": "array", "items": _STR},
+                            "allowedTools": {"type": "array", "items": _STR},
+                            "skills": {"type": "array", "items": _STR},
+                            "model": _STR,
+                        },
+                        [],
+                    ),
+                },
+                ["template", "fields"],
+            ),
+            ("fields",),
+        ),
+        KindDef(
+            KIND_MCP_INSTALL,
+            "Install an MCP server from a discovery provider (runs third-party code).",
+            _obj({"provider": _STR, "id": _STR}, ["provider", "id"]),
+            (),
+        ),
+        KindDef(
+            KIND_MCP_ADD_CUSTOM,
+            "Add custom MCP server(s): {servers:{name:{command,args?,env?}|{url}}, enable}.",
+            _obj({"servers": {"type": "object"}, "enable": _BOOL}, ["servers"]),
+            ("enable",),
+        ),
+        KindDef(
+            KIND_MCP_TOGGLE,
+            "Enable/disable an MCP server ({name, enabled}) or one tool ({server, tool, enabled}).",
+            _obj({"name": _STR, "server": _STR, "tool": _STR, "enabled": _BOOL}, ["enabled"]),
+            ("enabled",),
+        ),
+        KindDef(
+            KIND_CONNECTION_CONNECT,
+            "Connect an account (OAuth) from the Connections registry by slug.",
+            _obj({"slug": _STR}, ["slug"]),
+            (),
+        ),
+        KindDef(
+            KIND_SECRET_SAVE,
+            "Ask the user to store a secret under `name`. The user types the value into the "
+            "card; you never see or send it.",
+            _obj({"name": _STR}, ["name"]),
+            (),
+        ),
+        KindDef(
+            KIND_TRUST_APP,
+            "Allow a third-party app's code to run (widens permissions).",
+            _obj({"name": _STR, "repository": _STR}, ["name"]),
+            (),
+        ),
+        KindDef(
+            KIND_DENIED_COMMAND,
+            "Add a user denied-command rule ({action:'add', pattern, note?}) or toggle one "
+            "({action:'toggle', id, enabled}).",
+            _obj(
+                {
+                    "action": {"type": "string", "enum": ["add", "toggle"]},
+                    "pattern": _STR,
+                    "note": _STR,
+                    "id": _STR,
+                    "enabled": _BOOL,
+                },
+                ["action"],
+            ),
+            ("note", "enabled"),
+        ),
+    )
+}
+
+
+def list_kinds() -> list[dict[str, Any]]:
+    """The catalog as the ``list_change_kinds`` tool returns it."""
+    return [
+        {
+            "id": k.id,
+            "summary": k.summary,
+            "params_schema": copy.deepcopy(k.params_schema),
+            "editable": list(k.editable),
+        }
+        for k in KINDS.values()
+    ]
+
+
+# ── parameter validation ──
+
+
+def _fail(code: str, message: str) -> CardCatalogError:
+    return CardCatalogError(code, message)
+
+
+def _clean_str(
+    params: dict[str, Any],
+    key: str,
+    *,
+    required: bool = True,
+    max_len: int = _NAME_MAX,
+    pattern: re.Pattern[str] | None = None,
+    allow_empty: bool = False,
+) -> str | None:
+    value = params.get(key)
+    if value is None:
+        if required:
+            raise _fail("missing_param", f"'{key}' is required")
+        return None
+    if not isinstance(value, str):
+        raise _fail("invalid_param", f"'{key}' must be a string")
+    value = value.strip()
+    if not value and not allow_empty:
+        raise _fail("invalid_param", f"'{key}' must not be empty")
+    if len(value) > max_len:
+        raise _fail("invalid_param", f"'{key}' must be at most {max_len} characters")
+    if any(ord(ch) < 0x20 and ch not in "\n\t" for ch in value):
+        raise _fail("invalid_param", f"'{key}' has control characters")
+    if pattern is not None and value and not pattern.fullmatch(value):
+        raise _fail("invalid_param", f"'{key}' has invalid characters")
+    return value
+
+
+def _member_name(params: dict[str, Any], key: str, *, max_len: int = _NAME_MAX) -> str:
+    """A crewmate name exactly as ``POST /api/agents`` accepts it (any script)."""
+    from kiro_crew.members import MemberNameError, validate_member_name
+
+    value = _clean_str(params, key, max_len=max_len)
+    assert value is not None
+    try:
+        return validate_member_name(value)
+    except MemberNameError as exc:
+        raise _fail("invalid_param", f"'{key}': {exc}") from None
+
+
+def _clean_bool(params: dict[str, Any], key: str, *, required: bool = True) -> bool | None:
+    value = params.get(key)
+    if value is None and not required:
+        return None
+    if not isinstance(value, bool):
+        raise _fail("invalid_param", f"'{key}' must be a boolean")
+    return value
+
+
+def _only(params: dict[str, Any], allowed: set[str], where: str = "params") -> None:
+    unknown = sorted(set(params) - allowed)
+    if unknown:
+        raise _fail("unknown_param", f"unknown field '{unknown[0][:64]}' in {where}")
+
+
+def _clean_cron(params: dict[str, Any], *, required: bool) -> tuple[str | None, str | None]:
+    expr = _clean_str(params, "cron_expr", required=required, max_len=100, pattern=_CRON_EXPR_RE)
+    if expr is not None and len(expr.split()) != 5:
+        raise _fail("invalid_cron", "'cron_expr' must have 5 fields")
+    tz = _clean_str(params, "timezone", required=False, max_len=64, allow_empty=True)
+    return expr, (tz or None)
+
+
+def _clean_at(params: dict[str, Any]) -> str:
+    """A one-shot ``at``: a real local date-time, normalized, with no offset.
+
+    An offset is refused rather than honoured so the card has ONE zone, the
+    ``timezone`` field the user sees and can edit; ``2026-10-04T09:00-04:00``
+    beside ``timezone: America/Los_Angeles`` would otherwise mean two instants.
+    """
+    value = _clean_str(params, "at", max_len=32, pattern=_AT_RE)
+    assert value is not None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        raise _fail("invalid_at", "'at' is not a real date and time") from None
+    return parsed.isoformat(timespec="minutes" if parsed.second == 0 else "seconds")
+
+
+def _str_list(value: Any, key: str) -> list[str]:
+    if not isinstance(value, list) or len(value) > _MAX_LIST_ITEMS:
+        raise _fail("invalid_param", f"'{key}' must be a list of at most {_MAX_LIST_ITEMS}")
+    out: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item or len(item) > 512:
+            raise _fail("invalid_param", f"'{key}' items must be non-empty strings")
+        if item not in out:
+            out.append(item)
+    return out
+
+
+def _check_mcp_spec_shapes(name: str, spec: dict[str, Any]) -> None:
+    """Refuse a custom MCP spec whose launch fields have the wrong type.
+
+    The preview builds a launch line from these and the apply step sends them
+    verbatim, so a wrong shape is a bad request (400), never a crash (500).
+    """
+    for key in ("command", "url"):
+        if key in spec and not isinstance(spec[key], str):
+            raise _fail("invalid_param", f"server '{name}' {key} must be a string")
+    if "args" in spec:
+        args = spec["args"]
+        if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+            raise _fail("invalid_param", f"server '{name}' args must be a list of strings")
+    for key in ("env", "headers"):
+        if key in spec:
+            values = spec[key]
+            if not isinstance(values, dict) or not all(
+                isinstance(k, str) and isinstance(v, str) for k, v in values.items()
+            ):
+                raise _fail("invalid_param", f"server '{name}' {key} must map strings to strings")
+
+
+def validate_params(kind: str, params: Any) -> dict[str, Any]:
+    """Normalize *params* for *kind*. Raises :class:`CardCatalogError`."""
+    if kind not in KINDS:
+        raise _fail("unknown_kind", f"unknown card kind '{str(kind)[:64]}'")
+    if not isinstance(params, dict):
+        raise _fail("invalid_params", "params must be an object")
+    try:
+        size = len(json.dumps(params, ensure_ascii=False))
+    except (TypeError, ValueError):
+        raise _fail("invalid_params", "params must be JSON") from None
+    if size > _PARAMS_MAX_BYTES:
+        raise _fail("invalid_params", "params are too large")
+    p = params
+    out: dict[str, Any]
+    f: dict[str, Any]
+    if kind == KIND_SETTING_CHANGE:
+        _only(p, {"setting_id", "path", "value", "op", "item"})
+        if ("setting_id" in p) == ("path" in p):
+            raise _fail("invalid_param", "give exactly one of 'setting_id' or 'path'")
+        if "setting_id" in p:
+            out = {"setting_id": _clean_str(p, "setting_id", max_len=200, pattern=_SETTING_ID_RE)}
+        else:
+            out = {"path": _clean_str(p, "path", max_len=200, pattern=_CONFIG_PATH_RE)}
+        if "op" in p or "item" in p:
+            # List membership: one item added to or removed from a string list.
+            if "value" in p:
+                raise _fail("invalid_param", "give either 'value' or 'op' with 'item', not both")
+            if p.get("op") not in _LIST_OPS:
+                raise _fail("invalid_param", "'op' must be 'add' or 'remove'")
+            if not isinstance(p.get("item"), str):
+                raise _fail("invalid_param", "'item' must be a string")
+            out["op"] = p["op"]
+            out["item"] = _clean_str(p, "item", max_len=_LIST_ITEM_MAX)
+            return out
+        if "value" not in p:
+            raise _fail("missing_param", "'value' is required")
+        if isinstance(p["value"], list):
+            raise _fail("invalid_param", "'value' must be a scalar or a record")
+        out["value"] = copy.deepcopy(p["value"])
+        return out
+    if kind == KIND_SCHEDULE_CREATE:
+        _only(p, {"name", "message", "cron_expr", "at", "timezone"})
+        if ("cron_expr" in p) == ("at" in p):
+            raise _fail("invalid_param", "give exactly one of 'cron_expr' or 'at'")
+        out = {
+            "name": _clean_str(p, "name"),
+            "message": _clean_str(p, "message", max_len=_TEXT_MAX),
+        }
+        if "at" in p:
+            out["at"] = _clean_at(p)
+            tz = _clean_str(p, "timezone", required=False, max_len=64, allow_empty=True)
+        else:
+            out["cron_expr"], tz = _clean_cron(p, required=True)
+        if tz:
+            out["timezone"] = tz
+        return out
+    if kind == KIND_SCHEDULE_UPDATE:
+        _only(p, {"id", "fields"})
+        job_id = _clean_str(p, "id", pattern=_ID_RE)
+        fields = p.get("fields")
+        if not isinstance(fields, dict) or not fields:
+            raise _fail("invalid_param", "'fields' must be a non-empty object")
+        _only(fields, {"name", "message", "cron_expr", "timezone"}, "fields")
+        f = {}
+        if "name" in fields:
+            f["name"] = _clean_str(fields, "name")
+        if "message" in fields:
+            f["message"] = _clean_str(fields, "message", max_len=_TEXT_MAX)
+        if "cron_expr" in fields:
+            f["cron_expr"] = _clean_cron(fields, required=True)[0]
+        if "timezone" in fields:
+            f["timezone"] = _clean_str(fields, "timezone", max_len=64, allow_empty=True) or ""
+        return {"id": job_id, "fields": f}
+    if kind == KIND_CREWMATE_CREATE:
+        _only(p, {"name", "goal", "schedule"})
+        out = {
+            "name": _member_name(p, "name", max_len=_CREWMATE_NAME_MAX),
+            "goal": _clean_str(p, "goal", max_len=_CREWMATE_GOAL_MAX),
+        }
+        schedule = p.get("schedule")
+        if schedule is not None:
+            if not isinstance(schedule, dict):
+                raise _fail("invalid_param", "'schedule' must be an object")
+            _only(schedule, {"cron_expr", "timezone"}, "schedule")
+            expr, tz = _clean_cron(schedule, required=True)
+            out["schedule"] = {"cron_expr": expr, **({"timezone": tz} if tz else {})}
+        return out
+    if kind == KIND_CREWMATE_UPDATE:
+        _only(p, {"name", "fields"})
+        name = _member_name(p, "name")
+        fields = p.get("fields")
+        if not isinstance(fields, dict) or not fields:
+            raise _fail("invalid_param", "'fields' must be a non-empty object")
+        _only(fields, {"description", "display_name", "model", "reasoning_effort"}, "fields")
+        f = {}
+        for key in fields:
+            f[key] = _clean_str(
+                fields, key, max_len=_TEXT_MAX if key == "description" else 64, allow_empty=True
+            )
+        return {"name": name, "fields": f}
+    if kind == KIND_CREWMATE_CAPABILITIES:
+        _only(p, {"member", "draft"})
+        member = _member_name(p, "member")
+        draft = p.get("draft")
+        if not isinstance(draft, dict):
+            raise _fail("invalid_param", "'draft' must be an object")
+        _only(draft, {"operations", "enroll"}, "draft")
+        ops = draft.get("operations")
+        if not isinstance(ops, list) or not ops or len(ops) > _MAX_CAPABILITY_OPS:
+            raise _fail("invalid_param", "'draft.operations' must be a non-empty list")
+        clean_ops = []
+        for op in ops:
+            if not isinstance(op, dict):
+                raise _fail("invalid_param", "each operation must be an object")
+            _only(op, {"section", "id", "action", "value"}, "operation")
+            if op.get("action") not in ("set", "remove", "inherit"):
+                raise _fail("invalid_param", "operation action must be set, remove or inherit")
+            if not isinstance(op.get("section"), str) or not isinstance(op.get("id"), str):
+                raise _fail("invalid_param", "operation needs section and id")
+            if op["action"] == "set" and "value" not in op:
+                raise _fail("invalid_param", "a set operation needs a value")
+            clean_ops.append(copy.deepcopy(op))
+        clean_draft: dict[str, Any] = {"operations": clean_ops}
+        if "enroll" in draft:
+            clean_draft["enroll"] = _clean_bool(draft, "enroll")
+        return {"member": member, "draft": clean_draft}
+    if kind == KIND_TEMPLATE_UPDATE:
+        _only(p, {"template", "fields"})
+        template = _clean_str(p, "template", pattern=_TEMPLATE_NAME_RE)
+        fields = p.get("fields")
+        if not isinstance(fields, dict) or not fields:
+            raise _fail("invalid_param", "'fields' must be a non-empty object")
+        _only(fields, {"tools", "allowedTools", "skills", "model"}, "fields")
+        f = {}
+        for key in ("tools", "allowedTools", "skills"):
+            if key in fields:
+                f[key] = _str_list(fields[key], key)
+        if "model" in fields:
+            f["model"] = _clean_str(fields, "model", max_len=64, allow_empty=True)
+        return {"template": template, "fields": f}
+    if kind == KIND_MCP_INSTALL:
+        _only(p, {"provider", "id"})
+        return {
+            "provider": _clean_str(p, "provider", max_len=32, pattern=_SLUG_RE),
+            "id": _clean_str(p, "id", max_len=256, pattern=_MCP_NAME_RE),
+        }
+    if kind == KIND_MCP_ADD_CUSTOM:
+        _only(p, {"servers", "enable"})
+        servers = p.get("servers")
+        if not isinstance(servers, dict) or not servers or len(servers) > _MAX_CUSTOM_SERVERS:
+            raise _fail("invalid_param", "'servers' must be a non-empty object of servers")
+        clean: dict[str, Any] = {}
+        for name, spec in servers.items():
+            if not isinstance(name, str) or not valid_mcp_name(name):
+                raise _fail("invalid_param", "invalid MCP server name")
+            if not isinstance(spec, dict) or not (
+                isinstance(spec.get("command"), str) or isinstance(spec.get("url"), str)
+            ):
+                raise _fail("invalid_param", f"server '{name}' needs a command or a url")
+            _check_mcp_spec_shapes(name, spec)
+            clean[name] = copy.deepcopy(spec)
+        enable = p.get("enable", True)
+        if not isinstance(enable, bool):
+            raise _fail("invalid_param", "'enable' must be a boolean")
+        return {"servers": clean, "enable": enable}
+    if kind == KIND_MCP_TOGGLE:
+        _only(p, {"name", "server", "tool", "enabled"})
+        enabled = _clean_bool(p, "enabled")
+        if "tool" in p or "server" in p:
+            if "name" in p:
+                raise _fail("invalid_param", "give either name, or server and tool")
+            return {
+                "server": _clean_str(p, "server", pattern=_MCP_NAME_RE),
+                "tool": _clean_str(p, "tool", max_len=256, pattern=_MCP_NAME_RE),
+                "enabled": enabled,
+            }
+        return {"name": _clean_str(p, "name", pattern=_MCP_NAME_RE), "enabled": enabled}
+    if kind == KIND_CONNECTION_CONNECT:
+        _only(p, {"slug"})
+        return {"slug": _clean_str(p, "slug", max_len=64, pattern=_SLUG_RE)}
+    if kind == KIND_SECRET_SAVE:
+        # No ``value`` field exists: a secret's value is typed by the person into
+        # the card and sent by the browser straight to the vault route.
+        _only(p, {"name"})
+        return {"name": _clean_str(p, "name", max_len=_NAME_MAX)}
+    if kind == KIND_TRUST_APP:
+        _only(p, {"name", "repository"})
+        out = {"name": _clean_str(p, "name", max_len=64, pattern=_APP_NAME_RE)}
+        repo = _clean_str(p, "repository", required=False, max_len=512)
+        if repo:
+            out["repository"] = repo
+        return out
+    # KIND_DENIED_COMMAND
+    action = p.get("action")
+    if action == "add":
+        _only(p, {"action", "pattern", "note"})
+        pattern = _clean_str(p, "pattern", max_len=_PATTERN_MAX)
+        try:
+            re.compile(pattern or "")
+        except re.error:
+            raise _fail("invalid_param", "'pattern' is not a valid regex") from None
+        note = _clean_str(p, "note", required=False, max_len=200, allow_empty=True) or ""
+        return {"action": "add", "pattern": pattern, "note": note}
+    if action == "toggle":
+        _only(p, {"action", "id", "enabled"})
+        return {
+            "action": "toggle",
+            "id": _clean_str(p, "id", pattern=_ID_RE),
+            "enabled": _clean_bool(p, "enabled"),
+        }
+    raise _fail("invalid_param", "'action' must be 'add' or 'toggle'")
+
+
+def valid_mcp_name(name: str) -> bool:
+    return (
+        bool(name)
+        and len(name) <= _NAME_MAX
+        and ".." not in name
+        and bool(_MCP_NAME_RE.fullmatch(name))
+    )
+
+
+def check_editable(kind: str, old: dict[str, Any], new: dict[str, Any]) -> None:
+    """Refuse a re-preview that changes a field the kind does not mark editable."""
+    editable = set(KINDS[kind].editable)
+    for key in set(old) | set(new):
+        if key not in editable and old.get(key) != new.get(key):
+            raise _fail("field_not_editable", f"'{key}' cannot be changed on this card")
+
+
+# ── plans ──
+
+
+def _q(segment: str) -> str:
+    return urllib.parse.quote(segment, safe="")
+
+
+def step(
+    method: str,
+    path: str,
+    body: Any = None,
+    *,
+    fill: list[dict[str, Any]] | None = None,
+    repeat: bool = False,
+) -> dict[str, Any]:
+    s: dict[str, Any] = {"method": method, "path": path, "body": body}
+    if fill:
+        s["fill"] = fill
+    if repeat:
+        s["repeat"] = True
+    return s
+
+
+def _user_fill(field: str) -> dict[str, Any]:
+    return {"field": field, "source": "user"}
+
+
+def _mcp_uninstall_step(names: list[str]) -> dict[str, Any]:
+    """Remove servers from every scope they were written to, as the MCP page does.
+
+    ``POST /api/mcp/remove`` clears only the Kiro global file; a server an add or
+    install wrote to the Kiro Crew store would survive it.
+    """
+    return step(
+        "POST", "/api/mcp/apply", {"changes": [{"name": n, "uninstall": True} for n in names]}
+    )
+
+
+def _step_fill(field: str, step_index: int, key: str) -> dict[str, Any]:
+    return {"field": field, "source": "step", "step": step_index, "key": key}
+
+
+def placeholder(fill: dict[str, Any]) -> str:
+    if fill["source"] == "user":
+        return _PLACEHOLDER % f"user:{fill['field']}"
+    return _PLACEHOLDER % f"step{fill['step']}.{fill['key']}"
+
+
+def _with_fills(body: dict[str, Any], fills: list[dict[str, Any]]) -> dict[str, Any]:
+    out = dict(body)
+    for f in fills:
+        out[f["field"]] = placeholder(f)
+    return out
+
+
+def _cron_body(fields: dict[str, Any]) -> dict[str, Any]:
+    body: dict[str, Any] = {}
+    for key in ("name", "message", "timezone"):
+        if key in fields:
+            body[key] = fields[key]
+    if "cron_expr" in fields:
+        body["cron"] = fields["cron_expr"]
+    return body
+
+
+def _list_diff(before: list[str], after: list[str]) -> tuple[list[str], list[str]]:
+    return [x for x in after if x not in before], [x for x in before if x not in after]
+
+
+def _setting_risk(path: str, before: Any, after: Any) -> str:
+    order = _SETTING_ORDER.get(path)
+    if order is not None and before in order and after in order:
+        b, a = order.index(before), order.index(after)
+        if a > b:
+            return RISK_WIDEN
+        if a < b:
+            return RISK_TIGHTEN
+        return RISK_NORMAL
+    segments = set(guide_catalog._SEGMENT_SPLIT.split(path.lower()))
+    if segments & guide_catalog._EXCLUDED_SETTING_SEGMENTS:
+        return RISK_WIDEN
+    return RISK_NORMAL
+
+
+STORE_KIROCREW = "kirocrew"
+STORE_DASHBOARD = "dashboard"
+
+#: Settings whose Settings-page control writes the DASHBOARD config
+#: (``PUT /api/dashboard/config``, partial body) rather than a config path: each
+#: registry id maps to the body key ``ChatPanel.tsx`` / ``BrowserPanel.tsx`` send
+#: and the values that control offers. A registry id absent here, with no
+#: editable ``configKey`` either, has no write path a card may use.
+_BOOL_VALUES: tuple[Any, ...] = (True, False)
+DASHBOARD_SETTINGS: dict[str, tuple[str, tuple[Any, ...]]] = {
+    "chat.response-verbosity": ("verbosity", ("default", "concise", "ultra", "answer_only")),
+    "chat.widget-density": ("widget_density", ("more", "less")),
+    "chat.quick-send": ("quick_send", _BOOL_VALUES),
+    "chat.merge-queued-messages": ("merge_queued_messages", _BOOL_VALUES),
+    "chat.link-previews": ("link_previews", _BOOL_VALUES),
+    "chat.mcp-apps-in-side-panel": ("mcp_app_panel", _BOOL_VALUES),
+    "chat.auto-open-git-in-side-panel": ("auto_open_git_panel", _BOOL_VALUES),
+    "chat.split-view-session-grid": ("session_grid", _BOOL_VALUES),
+    "chat.tail-only-fork": ("tail_fork_enabled", _BOOL_VALUES),
+    "chat.restore-sessions": ("restore_sessions", _BOOL_VALUES),
+    "chat.restore-window": ("restore_window_minutes", (15, 30, 60, 120, 360, 720, 1440, 0)),
+    "chat.pr-and-issue-chips-on-session-cards": ("session_card_source_links", _BOOL_VALUES),
+    "chat.folder-suggestions": ("folder_suggestions_enabled", _BOOL_VALUES),
+    "chat.default-memory-mode": ("default_memory_mode", ()),
+    "browser.use-the-built-in-browser": ("use_builtin_browser", _BOOL_VALUES),
+}
+#: Body keys of ``PUT /api/dashboard/config`` a card may write, by key.
+DASHBOARD_KEYS = {key: values for key, values in DASHBOARD_SETTINGS.values()}
+
+#: Dashboard settings whose value is a STRING LIST the Settings page edits one
+#: item at a time: registry id -> (stored key, add body key, remove body key),
+#: exactly the delta keys ``ChatPanel.tsx``'s Selectable Models control sends to
+#: ``PUT /api/dashboard/config``. A ``setting.change`` card on one of these takes
+#: ``op``/``item`` instead of ``value``.
+DASHBOARD_LIST_SETTINGS: dict[str, tuple[str, str, str]] = {
+    "chat.selectable-models": (
+        "model_picker_hidden_models",
+        "model_picker_hidden_models_add",
+        "model_picker_hidden_models_remove",
+    ),
+}
+#: The same, by stored key.
+DASHBOARD_LIST_KEYS = {v[0]: v for v in DASHBOARD_LIST_SETTINGS.values()}
+#: How a one-item edit of a list setting reads, by stored key: (row label, add
+#: title, remove title). The registry label names the Settings control, which
+#: can say the opposite of the stored list ("Selectable Models" edits the HIDDEN
+#: list), so the card names the list it really edits and says what the person
+#: will see. A list without an entry reads "Add X to <label>" / "Remove X from".
+LIST_SETTING_WORDING: dict[str, tuple[str, str, str]] = {
+    "model_picker_hidden_models": (
+        "Hidden models",
+        "Hide “{item}” from the model picker",
+        "Show “{item}” in the model picker",
+    ),
+}
+#: Delta body keys of those lists -> the stored key they edit.
+DASHBOARD_LIST_OP_KEYS = {
+    op_key: v[0] for v in DASHBOARD_LIST_SETTINGS.values() for op_key in (v[1], v[2])
+}
+
+
+def value_allowed(value: Any, allowed: tuple[Any, ...] | list[Any]) -> bool:
+    """Membership that does not let ``1`` stand for ``True`` (or the reverse)."""
+    return any(type(value) is type(a) and value == a for a in allowed)
+
+
+def _setting_risk_key(p: dict[str, Any], snapshot: dict[str, Any]) -> str:
+    key = str(snapshot.get("key") or p.get("path") or "")
+    if snapshot.get("store") == STORE_DASHBOARD:
+        return f"dashboard.{key}"
+    return key
+
+
+def string_items(value: Any) -> list[str]:
+    """*value*'s string entries, in order; anything else reads as an empty list."""
+    return [x for x in value if isinstance(x, str)] if isinstance(value, list) else []
+
+
+def list_after(before: Any, op: str, item: str) -> list[str]:
+    """The string list *before* with *item* added (appended) or removed."""
+    items = string_items(before)
+    if op == LIST_OP_ADD:
+        return items if item in items else [*items, item]
+    return [x for x in items if x != item]
+
+
+def list_op_step(target: dict[str, Any], op: str, item: str) -> dict[str, Any]:
+    """The Settings page's own one-item delta request for a string-list setting."""
+    _key, add_key, remove_key = DASHBOARD_LIST_KEYS[str(target.get("key"))]
+    return step(
+        "PUT", "/api/dashboard/config", {add_key if op == LIST_OP_ADD else remove_key: [item]}
+    )
+
+
+def setting_write_step(p: dict[str, Any], target: dict[str, Any], value: Any) -> dict[str, Any]:
+    """The one existing request that writes *value* to the setting's own store."""
+    key = target.get("key") or p.get("path")
+    if target.get("store") == STORE_DASHBOARD:
+        return step("PUT", "/api/dashboard/config", {key: value})
+    return step("PATCH", "/api/config/kirocrew", {"path": key, "value": value})
+
+
+def _short(value: Any, limit: int = 120) -> str:
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    text = " ".join(str(text).split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _plain(value: Any) -> str:
+    """A spec value as one display string: a string as itself, anything else as JSON."""
+    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+
+
+def _display(text: str) -> str:
+    """*text* through the credential redactor, for a value a card shows in full."""
+    from kiro_crew.platform import redact_via_context
+
+    return redact_via_context(text)
+
+
+def build_preview(
+    kind: str, params: dict[str, Any], snapshot: dict[str, Any], context: dict[str, Any]
+) -> dict[str, Any]:
+    """Title, changes, risk, scope and the apply plan for one proposal.
+
+    *snapshot* is the gateway's read of the state the change replaces; *context*
+    carries read-only facts used only for display (references, install details,
+    a next run time). Raises :class:`CardCatalogError` for a proposal that would
+    change nothing or cannot apply to the current state.
+    """
+    p = params
+    out: dict[str, Any] = {"risk": RISK_NORMAL, "changes": []}
+    rows: list[dict[str, Any]]
+    changed: dict[str, Any]
+    body: Any
+    if kind == KIND_SETTING_CHANGE and "op" in p:
+        if (
+            snapshot.get("store") != STORE_DASHBOARD
+            or snapshot.get("key") not in DASHBOARD_LIST_KEYS
+        ):
+            raise _fail("not_a_list", "'op'/'item' apply only to a string-list setting")
+        before = snapshot.get("value")
+        wording = LIST_SETTING_WORDING.get(str(snapshot.get("key")))
+        label = (
+            wording[0] if wording else snapshot.get("label") or p.get("setting_id") or p.get("path")
+        )
+        prior = string_items(before)
+        after = list_after(before, p["op"], p["item"])
+        if after == prior:
+            state = "already lists" if p["op"] == LIST_OP_ADD else "does not list"
+            raise _fail("no_change", f"'{label}' {state} '{p['item']}'")
+        adding = p["op"] == LIST_OP_ADD
+        if wording:
+            out["title"] = (wording[1] if adding else wording[2]).format(item=p["item"])
+        elif adding:
+            out["title"] = f"Add “{p['item']}” to {label}"
+        else:
+            out["title"] = f"Remove “{p['item']}” from {label}"
+        add, remove = _list_diff(prior, after)
+        out["changes"] = [
+            {"label": label, "before": prior, "after": after, "add": add, "remove": remove}
+        ]
+        # A one-item edit of a display list never widens what the agent may do.
+        out["apply"] = [list_op_step(snapshot, p["op"], p["item"])]
+    elif kind == KIND_SETTING_CHANGE:
+        before = snapshot.get("value")
+        label = snapshot.get("label") or p.get("setting_id") or p.get("path")
+        if snapshot.get("store") == STORE_DASHBOARD and snapshot.get("key") in DASHBOARD_LIST_KEYS:
+            raise _fail("list_setting", f"'{label}' is a list; pass 'op' and one 'item'")
+        if before == p["value"]:
+            raise _fail("no_change", f"'{label}' already has that value")
+        out["title"] = f"Change {label}"
+        out["changes"] = [{"label": label, "before": before, "after": p["value"]}]
+        out["risk"] = _setting_risk(_setting_risk_key(p, snapshot), before, p["value"])
+        out["apply"] = [setting_write_step(p, snapshot, p["value"])]
+    elif kind == KIND_SCHEDULE_CREATE and "at" in p:
+        # One-shot: the instant was resolved by the gateway's read of the zone
+        # (``context["at_ts"]``) and is sent as epoch ``at``, which
+        # ``POST /api/crons`` turns into a single-fire job deleted after its run.
+        at_ts = context.get("at_ts")
+        if isinstance(at_ts, bool) or not isinstance(at_ts, (int, float)):
+            raise _fail("invalid_at", "the run time could not be resolved")
+        tz = context.get("timezone") or p.get("timezone") or "UTC"
+        out["title"] = f"Create one-time reminder “{p['name']}”"
+        out["once"] = True
+        out["changes"] = [
+            {"label": "Name", "after": p["name"]},
+            {"field": "at", "label": "When", "after": p["at"], "once": True, "timezone": tz},
+            {"label": "Message", "after": _short(p["message"], 400)},
+        ]
+        body = {"name": p["name"], "message": p["message"], "timezone": tz, "at": int(at_ts)}
+        out["apply"] = [step("POST", "/api/crons", body)]
+    elif kind == KIND_SCHEDULE_CREATE:
+        out["title"] = f"Create schedule “{p['name']}”"
+        out["changes"] = [
+            {"label": "Name", "after": p["name"]},
+            {"field": "cron_expr", "label": "When", "after": p["cron_expr"]},
+            {"label": "Message", "after": _short(p["message"], 400)},
+        ]
+        out["apply"] = [step("POST", "/api/crons", _cron_body(p))]
+    elif kind == KIND_SCHEDULE_UPDATE:
+        if not snapshot.get("exists"):
+            raise _fail("not_found", "that schedule does not exist")
+        before = snapshot.get("fields") or {}
+        changed = {k: v for k, v in p["fields"].items() if before.get(k) != v}
+        if not changed:
+            raise _fail("no_change", "the schedule already has those values")
+        out["title"] = f"Update schedule “{snapshot.get('name') or p['id']}”"
+        out["changes"] = [
+            {"field": k, "label": k, "before": before.get(k), "after": v}
+            for k, v in changed.items()
+        ]
+        out["apply"] = [step("PATCH", f"/api/crons/{_q(p['id'])}", _cron_body(p["fields"]))]
+    elif kind == KIND_CREWMATE_CREATE:
+        if snapshot.get("exists"):
+            raise _fail("already_exists", f"a crewmate named '{p['name']}' already exists")
+        out["title"] = f"Create crewmate “{p['name']}”"
+        out["changes"] = [
+            {"label": "Name", "after": p["name"]},
+            {"label": "Goal", "after": p["goal"]},
+        ]
+        inherited = [s for s in snapshot.get("inherited_auto_approve") or () if isinstance(s, str)]
+        if inherited:
+            # The crewmate runs these without asking from its first turn; the
+            # click grants that, so the card says so and asks for the same
+            # acknowledgement any other widening change does.
+            out["changes"].append(
+                {
+                    "field": "auto_approve",
+                    "label": "Runs without asking",
+                    "after": ", ".join(inherited),
+                }
+            )
+            out["risk"] = RISK_WIDEN
+        apply = [
+            step(
+                "POST",
+                "/api/agents",
+                {
+                    "name": p["name"],
+                    "kiro_agent": DEFAULT_CREWMATE_TEMPLATE,
+                    "description": p["goal"],
+                    "source": "kirocrew",
+                },
+            )
+        ]
+        schedule = p.get("schedule")
+        if schedule:
+            out["changes"].append(
+                {"field": "cron_expr", "label": "When", "after": schedule["cron_expr"]}
+            )
+            fills = [_step_fill("member_id", 0, "member_id")]
+            body = {
+                "name": f"{p['name']} schedule",
+                "message": p["goal"],
+                "agent": DEFAULT_CREWMATE_TEMPLATE,
+                "silent": False,
+                "hide_in_chat": False,
+                "strict_schedule": True,
+                **_cron_body(schedule),
+            }
+            apply.append(step("POST", "/api/crons", _with_fills(body, fills), fill=fills))
+        out["apply"] = apply
+    elif kind == KIND_CREWMATE_UPDATE:
+        if not snapshot.get("exists"):
+            raise _fail("not_found", f"no crewmate named '{p['name']}'")
+        before = snapshot.get("fields") or {}
+        changed = {k: v for k, v in p["fields"].items() if before.get(k) != v}
+        if not changed:
+            raise _fail("no_change", "the crewmate already has those values")
+        out["title"] = f"Update crewmate “{p['name']}”"
+        out["changes"] = [
+            {"label": k, "before": before.get(k), "after": v} for k, v in changed.items()
+        ]
+        out["scope"] = {"members": [p["name"]], "count": 1, "only_this_member": True}
+        out["apply"] = [step("PUT", f"/api/agents/{_q(p['name'])}", changed)]
+    elif kind == KIND_CREWMATE_CAPABILITIES:
+        revision = snapshot.get("revision")
+        if not revision:
+            raise _fail("not_found", f"no capabilities to edit for '{p['member']}'")
+        impact = context.get("impact") or []
+        if not impact:
+            raise _fail("no_change", "these operations change nothing")
+        out["title"] = f"Change tools for “{p['member']}”"
+        out["changes"] = _impact_rows(impact)
+        out["scope"] = {"members": [p["member"]], "count": 1, "only_this_member": True}
+        if any(i.get("approval_expanded") for i in impact):
+            out["risk"] = RISK_WIDEN
+        elif all(i.get("change") == "removed" for i in impact):
+            out["risk"] = RISK_TIGHTEN
+        out["apply"] = _capability_plan(p["member"], revision, p["draft"])
+    elif kind == KIND_TEMPLATE_UPDATE:
+        if not snapshot.get("exists"):
+            raise _fail("not_found", f"no template named '{p['template']}'")
+        before = snapshot.get("fields") or {}
+        rows = []
+        changed = {}
+        widen = tighten = False
+        for key, value in p["fields"].items():
+            old = before.get(key)
+            if old == value:
+                continue
+            changed[key] = value
+            if isinstance(value, list):
+                add, remove = _list_diff(old if isinstance(old, list) else [], value)
+                rows.append({"label": key, "add": add, "remove": remove})
+                if key == "allowedTools":
+                    widen = widen or bool(add)
+                    tighten = tighten or bool(remove)
+            else:
+                rows.append({"label": key, "before": old, "after": value})
+        if not changed:
+            raise _fail("no_change", "the template already has those values")
+        out["title"] = f"Change template “{p['template']}”"
+        out["changes"] = rows
+        members = list(context.get("members") or [])
+        out["scope"] = {"members": members, "count": len(members)}
+        out["risk"] = RISK_WIDEN if widen else (RISK_TIGHTEN if tighten else RISK_NORMAL)
+        out["apply"] = [step("PATCH", f"/api/agents/detail/{_q(p['template'])}", changed)]
+    elif kind == KIND_MCP_INSTALL:
+        if snapshot.get("exists"):
+            raise _fail("already_exists", f"an MCP server '{snapshot.get('name')}' already exists")
+        detail = context.get("detail") or {}
+        out["title"] = f"Install MCP server “{snapshot.get('name') or p['id']}”"
+        out["changes"] = [
+            {"label": "Source", "after": f"{p['provider']}: {p['id']}"},
+            *(
+                [{"label": "Command", "after": _short(detail["command"], 300)}]
+                if detail.get("command")
+                else []
+            ),
+            *([{"label": "Version", "after": detail["version"]}] if detail.get("version") else []),
+            *(
+                [{"label": "Repository", "after": detail["repo_url"]}]
+                if detail.get("repo_url")
+                else []
+            ),
+        ]
+        out["risk"] = RISK_CODE_EXEC
+        out["apply"] = [step("POST", "/api/mcp/discover/install", dict(p))]
+    elif kind == KIND_MCP_ADD_CUSTOM:
+        existing = [n for n, present in (snapshot.get("exists") or {}).items() if present]
+        if existing:
+            raise _fail("already_exists", f"an MCP server '{existing[0]}' already exists")
+        out["title"] = "Add custom MCP server " + ", ".join(f"“{n}”" for n in p["servers"])
+        rows = []
+        for name, spec in p["servers"].items():
+            # Apply sends the whole spec, so the card shows the whole spec: the
+            # full launch line (the row wraps) and every env and header value.
+            # Agent-proposed values were already refused if any output redactor
+            # would change them (change_cards.check_param_text); the display
+            # pass below is defence in depth for anything else.
+            if spec.get("url"):
+                launch = str(spec["url"])
+            else:
+                launch = shlex.join(
+                    [str(spec.get("command"))] + [str(a) for a in spec.get("args") or []]
+                )
+            rows.append({"label": name, "after": _display(launch)})
+            for field, sep in (("env", "="), ("headers", ": ")):
+                values = spec.get(field)
+                if isinstance(values, dict) and values:
+                    rows.append(
+                        {
+                            "label": f"{name} {field}",
+                            "add": [
+                                f"{k}{sep}{_display(_plain(v))}" for k, v in sorted(values.items())
+                            ],
+                        }
+                    )
+            for field in sorted(set(spec) - {"command", "args", "url", "env", "headers"}):
+                rows.append({"label": f"{name} {field}", "after": _display(_plain(spec[field]))})
+        rows.append({"label": "Enabled", "after": p["enable"]})
+        out["changes"] = rows
+        out["risk"] = RISK_CODE_EXEC
+        out["apply"] = [
+            step("POST", "/api/mcp/custom", {"servers": p["servers"], "enable": p["enable"]})
+        ]
+    elif kind == KIND_MCP_TOGGLE:
+        if not snapshot.get("exists"):
+            raise _fail("not_found", "that MCP server is not configured")
+        if snapshot.get("enabled") == p["enabled"]:
+            raise _fail("no_change", "it is already in that state")
+        label = f"{p['server']} / {p['tool']}" if "tool" in p else p["name"]
+        verb = "Enable" if p["enabled"] else "Disable"
+        out["title"] = f"{verb} MCP {'tool' if 'tool' in p else 'server'} {label}"
+        out["changes"] = [
+            {"label": label, "before": snapshot.get("enabled"), "after": p["enabled"]}
+        ]
+        out["risk"] = RISK_NORMAL if p["enabled"] else RISK_TIGHTEN
+        out["apply"] = [_toggle_step(p, p["enabled"])]
+    elif kind == KIND_CONNECTION_CONNECT:
+        if not snapshot.get("known"):
+            raise _fail("not_found", f"no connection provider '{p['slug']}'")
+        if snapshot.get("granted"):
+            raise _fail("no_change", f"'{p['slug']}' is already connected")
+        out["title"] = f"Connect {p['slug']}"
+        out["changes"] = [{"label": "Account", "before": "not connected", "after": "connected"}]
+        out["apply"] = [
+            step("POST", "/api/connections/mint", {"slug": p["slug"]}),
+            step(
+                "GET",
+                "/api/connections/mint?" + urllib.parse.urlencode({"slug": p["slug"]}),
+                repeat=True,
+            ),
+        ]
+    elif kind == KIND_SECRET_SAVE:
+        out["title"] = f"Save secret {p['name']}"
+        out["changes"] = [
+            {
+                "label": p["name"],
+                "before": "stored" if snapshot.get("exists") else "not stored",
+                "after": "stored (value you type)",
+            }
+        ]
+        fills = [_user_fill("value")]
+        out["apply"] = [
+            step("POST", "/api/secrets", _with_fills({"name": p["name"]}, fills), fill=fills)
+        ]
+        if snapshot.get("exists"):
+            out["undo_unavailable_reason"] = "overwrites_existing"
+    elif kind == KIND_TRUST_APP:
+        if snapshot.get("trusted"):
+            raise _fail("no_change", f"'{p['name']}' is already trusted")
+        out["title"] = f"Trust app {p['name']}"
+        out["changes"] = [{"label": p["name"], "before": "not trusted", "after": "trusted"}]
+        out["risk"] = RISK_WIDEN
+        body = {"repository": p["repository"]} if p.get("repository") else None
+        out["apply"] = [step("POST", f"/api/security/trusted-apps/{_q(p['name'])}", body)]
+    else:  # KIND_DENIED_COMMAND
+        if p["action"] == "add":
+            if snapshot.get("exists"):
+                raise _fail("already_exists", "that denied-command pattern already exists")
+            out["title"] = "Add denied-command rule"
+            out["changes"] = [{"label": "Pattern", "add": [p["pattern"]]}]
+            out["risk"] = RISK_TIGHTEN
+            out["apply"] = [
+                step(
+                    "POST",
+                    "/api/security/denied-commands/user",
+                    {"pattern": p["pattern"], "note": p["note"]},
+                )
+            ]
+        else:
+            if not snapshot.get("exists"):
+                raise _fail("not_found", "no user denied-command rule with that id")
+            if snapshot.get("enabled") == p["enabled"]:
+                raise _fail("no_change", "the rule is already in that state")
+            verb = "Enable" if p["enabled"] else "Disable"
+            out["title"] = f"{verb} denied-command rule"
+            out["changes"] = [
+                {
+                    "label": _short(snapshot.get("pattern") or p["id"]),
+                    "before": snapshot.get("enabled"),
+                    "after": p["enabled"],
+                }
+            ]
+            out["risk"] = RISK_TIGHTEN if p["enabled"] else RISK_WIDEN
+            out["apply"] = [
+                step(
+                    "PATCH",
+                    f"/api/security/denied-commands/user/{_q(p['id'])}",
+                    {"enabled": p["enabled"]},
+                )
+            ]
+    return out
+
+
+def _toggle_step(p: dict[str, Any], enabled: bool) -> dict[str, Any]:
+    if "tool" in p:
+        return step(
+            "POST",
+            "/api/mcp/toggle-tool",
+            {"server": p["server"], "tool": p["tool"], "enabled": enabled},
+        )
+    return step("POST", "/api/mcp/toggle", {"name": p["name"], "enabled": enabled})
+
+
+def _capability_plan(member: str, revision: str, draft: dict[str, Any]) -> list[dict[str, Any]]:
+    base = {"revision": revision, **copy.deepcopy(draft)}
+    fills = [_step_fill("preview_token", 0, "preview_token")]
+    path = f"/api/agents/{_q(member)}/capabilities"
+    return [
+        step("POST", path + "/preview", base),
+        step("PUT", path, _with_fills(base, fills), fill=fills),
+    ]
+
+
+def _impact_rows(impact: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, list[str]]] = {}
+    for item in impact:
+        section = str(item.get("section") or "")
+        bucket = grouped.setdefault(section, {"add": [], "remove": [], "changed": []})
+        change = item.get("change")
+        key = "add" if change == "added" else "remove" if change == "removed" else "changed"
+        bucket[key].append(str(item.get("id") or ""))
+    rows = []
+    for section, bucket in grouped.items():
+        row: dict[str, Any] = {"label": section, "add": bucket["add"], "remove": bucket["remove"]}
+        if bucket["changed"]:
+            row["after"] = "changed: " + ", ".join(bucket["changed"])
+        rows.append(row)
+    return rows
+
+
+def capability_inverse(
+    draft: dict[str, Any], rows: list[dict[str, Any]]
+) -> list[dict[str, Any]] | None:
+    """Operations that restore each row *draft* touches to its state in *rows*.
+
+    ``None`` when a row cannot be restored exactly: an MCP server definition the
+    member set locally is shown redacted, so writing it back would not restore it.
+    """
+    by_key = {(r.get("section"), r.get("id")): r for r in rows if isinstance(r, dict)}
+    ops: list[dict[str, Any]] = []
+    for op in draft.get("operations") or []:
+        section, rid = op.get("section"), op.get("id")
+        row = by_key.get((section, rid)) or {}
+        state = row.get("state") or "inherited"
+        if state == "removed":
+            ops.append({"section": section, "id": rid, "action": "remove"})
+        elif state == "local":
+            if section == "mcpServers":
+                return None
+            ops.append({"section": section, "id": rid, "action": "set", "value": row.get("value")})
+        else:
+            ops.append({"section": section, "id": rid, "action": "inherit"})
+    return ops
+
+
+# ── evidence, undo, results ──
+
+
+def extract_evidence(
+    kind: str, op: str, step_index: int, data: dict[str, Any] | None
+) -> dict[str, Any]:
+    """The few identity fields a step's real 2xx response carried. Never values."""
+    if not isinstance(data, dict):
+        return {}
+
+    def pick(*keys: str) -> dict[str, Any]:
+        return {k: data[k] for k in keys if isinstance(data.get(k), (str, int, bool))}
+
+    if kind in (KIND_SCHEDULE_CREATE,) or (kind == KIND_CREWMATE_CREATE and step_index == 1):
+        return pick("id")
+    if kind == KIND_CREWMATE_CREATE and step_index == 0:
+        return pick("member_id", "name")
+    if kind == KIND_CREWMATE_CAPABILITIES and step_index == 0:
+        return pick("preview_token")
+    if kind == KIND_CREWMATE_CAPABILITIES:
+        return pick("revision")
+    if kind == KIND_MCP_INSTALL:
+        return pick("name")
+    if kind == KIND_MCP_ADD_CUSTOM:
+        added = data.get("added")
+        return (
+            {"added": [a for a in added if isinstance(a, str)]} if isinstance(added, list) else {}
+        )
+    if kind == KIND_CONNECTION_CONNECT:
+        return pick("state")
+    if kind == KIND_SECRET_SAVE:
+        return pick("name")
+    if kind == KIND_DENIED_COMMAND and op == OP_APPLY:
+        return {}
+    return {}
+
+
+def poll_outcome(kind: str, evidence: dict[str, Any]) -> str | None:
+    """For a ``repeat`` step: ``"done"``, ``"failed"`` or ``None`` (keep polling)."""
+    if kind == KIND_CONNECTION_CONNECT:
+        state = evidence.get("state")
+        if state == "granted":
+            return "done"
+        if state in ("failed", "expired", "idle"):
+            return "failed"
+    return None
+
+
+def build_undo(
+    kind: str,
+    params: dict[str, Any],
+    before: dict[str, Any],
+    evidence: list[dict[str, Any]],
+    applied_steps: int,
+    context: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]] | None, str | None]:
+    """``(plan, None)`` restoring the state before the change, or ``(None, reason)``.
+
+    *applied_steps* is how many apply steps succeeded, so a partial apply undoes
+    only what took effect.
+    """
+    return _build_undo(kind, params, before, evidence, applied_steps, context)
+
+
+def _build_undo(
+    kind: str,
+    params: dict[str, Any],
+    before: dict[str, Any],
+    evidence: list[dict[str, Any]],
+    applied_steps: int,
+    context: dict[str, Any] | None,
+) -> tuple[list[dict[str, Any]] | None, str | None]:
+    p = params
+    ev = lambda i: evidence[i] if i < len(evidence) else {}  # noqa: E731
+    if applied_steps <= 0:
+        return None, "nothing_applied"
+    if kind == KIND_SETTING_CHANGE and "op" in p:
+        # The reverse one-item delta, through the same route the apply used.
+        reverse = LIST_OP_REMOVE if p["op"] == LIST_OP_ADD else LIST_OP_ADD
+        return [list_op_step(before, reverse, p["item"])], None
+    if kind == KIND_SETTING_CHANGE:
+        return [setting_write_step(p, before, before.get("value"))], None
+    if kind == KIND_SCHEDULE_CREATE:
+        job_id = ev(0).get("id")
+        if not job_id:
+            return None, "identity_unknown"
+        return [step("DELETE", f"/api/crons/{_q(str(job_id))}")], None
+    if kind == KIND_SCHEDULE_UPDATE:
+        old = {k: (before.get("fields") or {}).get(k) for k in p["fields"]}
+        if any(v is None for k, v in old.items() if k != "timezone"):
+            return None, "previous_value_unknown"
+        old = {k: (v if v is not None else "") for k, v in old.items()}
+        return [step("PATCH", f"/api/crons/{_q(p['id'])}", _cron_body(old))], None
+    if kind == KIND_CREWMATE_CREATE:
+        plan = []
+        if applied_steps > 1 and ev(1).get("id"):
+            plan.append(step("DELETE", f"/api/crons/{_q(str(ev(1)['id']))}"))
+        name = ev(0).get("name") or p["name"]
+        plan.append(step("DELETE", f"/api/agents/{_q(str(name))}"))
+        return plan, None
+    if kind == KIND_CREWMATE_UPDATE:
+        fields = before.get("fields") or {}
+        old = {k: fields.get(k) if fields.get(k) is not None else "" for k in p["fields"]}
+        return [step("PUT", f"/api/agents/{_q(p['name'])}", old)], None
+    if kind == KIND_CREWMATE_CAPABILITIES:
+        ops = capability_inverse(p["draft"], before.get("rows") or [])
+        revision = (context or {}).get("after_revision")
+        if ops is None:
+            return None, "redacted_server_definition"
+        if not revision:
+            return None, "revision_unknown"
+        return _capability_plan(p["member"], revision, {"operations": ops}), None
+    if kind == KIND_TEMPLATE_UPDATE:
+        fields = before.get("fields") or {}
+        old = {
+            k: fields.get(k) if fields.get(k) is not None else ([] if k != "model" else "")
+            for k in p["fields"]
+        }
+        return [step("PATCH", f"/api/agents/detail/{_q(p['template'])}", old)], None
+    if kind == KIND_MCP_INSTALL:
+        name = ev(0).get("name") or before.get("name")
+        if not name:
+            return None, "identity_unknown"
+        return [_mcp_uninstall_step([name])], None
+    if kind == KIND_MCP_ADD_CUSTOM:
+        names = ev(0).get("added") or list(p["servers"])
+        return [_mcp_uninstall_step(names)], None
+    if kind == KIND_MCP_TOGGLE:
+        return [_toggle_step(p, bool(before.get("enabled")))], None
+    if kind == KIND_CONNECTION_CONNECT:
+        return [step("POST", "/api/connections/disconnect", {"slug": p["slug"]})], None
+    if kind == KIND_SECRET_SAVE:
+        if before.get("exists"):
+            return None, "overwrites_existing"
+        return [step("DELETE", f"/api/secrets/{_q(p['name'])}")], None
+    if kind == KIND_TRUST_APP:
+        return [step("DELETE", f"/api/security/trusted-apps/{_q(p['name'])}")], None
+    # KIND_DENIED_COMMAND
+    if p["action"] == "add":
+        rule_id = (context or {}).get("rule_id")
+        if not rule_id:
+            return None, "identity_unknown"
+        return [step("DELETE", f"/api/security/denied-commands/user/{_q(str(rule_id))}")], None
+    return [
+        step(
+            "PATCH",
+            f"/api/security/denied-commands/user/{_q(p['id'])}",
+            {"enabled": bool(before.get("enabled"))},
+        )
+    ], None
+
+
+def undo_label(kind: str) -> str:
+    """What the undo button actually does, for kinds where "Undo" would overstate it."""
+    if kind == KIND_CONNECTION_CONNECT:
+        return "disconnect"
+    if kind == KIND_SECRET_SAVE:
+        return "delete_secret"
+    return "undo"
+
+
+def result_summary(kind: str, params: dict[str, Any], status: str, title: str) -> str:
+    """One line for the collapsed card and the agent's results block."""
+    if status == "applied":
+        return f"Done: {title}"
+    if status == "partial":
+        if kind == KIND_CREWMATE_CREATE:
+            return f"Created crewmate “{params.get('name')}”, but its schedule was not saved"
+        return f"Partly applied: {title}"
+    if status == "undone":
+        return f"Restored: {title}"
+    if status == "failed":
+        return f"Failed: {title}"
+    if status == "cancelled":
+        return f"Cancelled: {title}"
+    if status == "expired":
+        return f"Expired: {title}"
+    return title
+
+
+# ── manual-change memory events ──
+
+
+def describe_manual_change(
+    route: tuple[str, str],
+    match_info: dict[str, str],
+    body: Any,
+    before: Any = None,
+) -> str | None:
+    """A concise memory line for an owner mutation, or ``None`` to record nothing.
+
+    Names only: never a secret value, an env value, a token or an MCP spec.
+    """
+    method, template = route
+    b = body if isinstance(body, dict) else {}
+    name = match_info.get("name") or match_info.get("job_id") or match_info.get("id") or ""
+
+    def s(value: Any, limit: int = 60) -> str:
+        return _short(value, limit)
+
+    if route == ("PATCH", "/api/config/kirocrew"):
+        path = b.get("path")
+        if not isinstance(path, str):
+            return None
+        segments = set(guide_catalog._SEGMENT_SPLIT.split(path.lower()))
+        if segments & {"token", "secret", "password", "key", "credential", "credentials"}:
+            return f"changed config {s(path)}"
+        return f"changed config {s(path)} {s(before)}→{s(b.get('value'))}"
+    if route == ("PUT", "/api/dashboard/config"):
+        prior = before if isinstance(before, dict) else {}
+        parts = [
+            (
+                f"{s(k)} {s(prior.get(k))}→{s(v)}"
+                if k in DASHBOARD_KEYS
+                else f"{s(k)} {s(v)}" if k in DASHBOARD_LIST_OP_KEYS else s(k)
+            )
+            for k, v in sorted(b.items())
+        ]
+        return f"changed dashboard setting {', '.join(parts[:6])}" if parts else None
+    if route == ("POST", "/api/crons"):
+        when = b.get("cron") or b.get("every") or ("once" if b.get("at") else "")
+        return f"created schedule “{s(b.get('name'))}” ({s(when)})"
+    if route == ("PATCH", "/api/crons/{job_id}"):
+        return f"updated schedule {s(name)} ({', '.join(sorted(str(k) for k in b)[:6])})"
+    if route == ("DELETE", "/api/crons/{job_id}"):
+        return f"deleted schedule {s(name)}"
+    if route == ("POST", "/api/agents"):
+        return f"created crewmate “{s(b.get('name'))}”"
+    if route == ("PUT", "/api/agents/{name}"):
+        return f"updated crewmate {s(name)} ({', '.join(sorted(str(k) for k in b)[:6])})"
+    if route == ("DELETE", "/api/agents/{name}"):
+        shown = before if isinstance(before, str) and before else name
+        return f"deleted crewmate “{s(shown)}”"
+    if route == ("PUT", "/api/agents/{name}/capabilities"):
+        raw_ops = b.get("operations")
+        ops: list[Any] = raw_ops if isinstance(raw_ops, list) else []
+        ids = [
+            f"{o.get('action')} {o.get('section')}:{o.get('id')}"
+            for o in ops
+            if isinstance(o, dict)
+        ]
+        return f"changed capabilities of {s(name)}: {s('; '.join(ids[:6]), 200)}"
+    if route == ("PATCH", "/api/agents/detail/{name}"):
+        return f"changed template {s(name)} ({', '.join(sorted(str(k) for k in b)[:6])})"
+    if route == ("POST", "/api/mcp/discover/install"):
+        return f"installed MCP server {s(b.get('id'))} from {s(b.get('provider'))}"
+    if route == ("POST", "/api/mcp/custom"):
+        servers = b.get("servers")
+        servers = servers if isinstance(servers, dict) else {}
+        return f"added custom MCP server(s) {s(', '.join(str(k) for k in servers))}"
+    if route == ("POST", "/api/mcp/remove"):
+        return f"removed MCP server {s(b.get('name'))}"
+    if route == ("POST", "/api/mcp/apply"):
+        changes = [c for c in (b.get("changes") or []) if isinstance(c, dict)]
+        names = ", ".join(s(c.get("name")) for c in changes[:6])
+        if changes and all(c.get("uninstall") is True for c in changes):
+            return f"ran MCP uninstall for {names}"
+        return f"changed MCP server scopes {names}" if names else None
+    if route == ("POST", "/api/mcp/toggle"):
+        return (
+            f"{'enabled' if b.get('enabled', True) else 'disabled'} MCP server {s(b.get('name'))}"
+        )
+    if route == ("POST", "/api/mcp/toggle-tool"):
+        verb = "enabled" if b.get("enabled", True) else "disabled"
+        return f"{verb} MCP tool {s(b.get('server'))}/{s(b.get('tool'))}"
+    if route == ("POST", "/api/connections/mint"):
+        return f"started connecting {s(b.get('slug'))}"
+    if route == ("POST", "/api/connections/disconnect"):
+        return f"disconnected {s(b.get('slug'))}"
+    if route == ("POST", "/api/secrets"):
+        return f"saved secret {s(b.get('name'))}"
+    if route == ("DELETE", "/api/secrets/{name}"):
+        return f"deleted secret {s(name)}"
+    if route == ("POST", "/api/security/trusted-apps/{name}"):
+        return f"trusted app {s(name)}"
+    if route == ("DELETE", "/api/security/trusted-apps/{name}"):
+        return f"revoked trust for app {s(name)}"
+    if route == ("POST", "/api/security/denied-commands/user"):
+        return f"added denied-command rule {s(b.get('pattern'))}"
+    if route == ("PATCH", "/api/security/denied-commands/user/{id}"):
+        verb = "enabled" if b.get("enabled") else "disabled"
+        return f"{verb} denied-command rule {s(name)}"
+    if route == ("DELETE", "/api/security/denied-commands/user/{id}"):
+        return f"deleted denied-command rule {s(name)}"
+    del method, template
+    return None
+
+
+#: Every existing route a plan may reference, by ``(method, route template)``.
+#: The gateway's card hook runs on exactly these. ``MEMORY_ROUTES`` is the subset
+#: that mutates and so becomes a memory event; the other two are reads a plan
+#: needs (a capability preview, an OAuth poll).
+HOOKED_ROUTES: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("PATCH", "/api/config/kirocrew"),
+        ("PUT", "/api/dashboard/config"),
+        ("POST", "/api/crons"),
+        ("PATCH", "/api/crons/{job_id}"),
+        ("DELETE", "/api/crons/{job_id}"),
+        ("POST", "/api/agents"),
+        ("PUT", "/api/agents/{name}"),
+        ("DELETE", "/api/agents/{name}"),
+        ("POST", "/api/agents/{name}/capabilities/preview"),
+        ("PUT", "/api/agents/{name}/capabilities"),
+        ("PATCH", "/api/agents/detail/{name}"),
+        ("POST", "/api/mcp/discover/install"),
+        ("POST", "/api/mcp/custom"),
+        ("POST", "/api/mcp/remove"),
+        ("POST", "/api/mcp/apply"),
+        ("POST", "/api/mcp/toggle"),
+        ("POST", "/api/mcp/toggle-tool"),
+        ("POST", "/api/connections/mint"),
+        ("GET", "/api/connections/mint"),
+        ("POST", "/api/connections/disconnect"),
+        ("POST", "/api/secrets"),
+        ("DELETE", "/api/secrets/{name}"),
+        ("POST", "/api/security/trusted-apps/{name}"),
+        ("DELETE", "/api/security/trusted-apps/{name}"),
+        ("POST", "/api/security/denied-commands/user"),
+        ("PATCH", "/api/security/denied-commands/user/{id}"),
+        ("DELETE", "/api/security/denied-commands/user/{id}"),
+    }
+)
+MEMORY_ROUTES: frozenset[tuple[str, str]] = HOOKED_ROUTES - {
+    ("POST", "/api/agents/{name}/capabilities/preview"),
+    ("GET", "/api/connections/mint"),
+}

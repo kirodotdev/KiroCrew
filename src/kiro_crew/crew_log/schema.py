@@ -186,6 +186,14 @@ TYPE_OWNERSHIP: dict[str, frozenset[str]] = {
             # separating "what did it publish" from "what did it assert" needs the
             # two to be separable at the type.
             "dashboard",
+            # Change cards and guide offers. Each proposal is a row of the
+            # session's conversation, and ``card/*`` / ``guide/*`` record the proposal
+            # and every outcome in the same session's history. The live state stays
+            # the card and guide stores'; these entries are what a reader of the
+            # session (or a reload, once a store has pruned the record) can still say
+            # about it.
+            "card",
+            "guide",
         }
     ),
 }

@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { unregisteredMarkers } from '../../test/guideTargets'
 import { render, screen, fireEvent, within, act, waitFor } from '@testing-library/react'
 import type { MemberRosterRow } from '../../api/client'
 import type { CronJob } from '../../types'
@@ -82,6 +83,9 @@ beforeEach(() => {
   localStorage.clear()
 })
 
+// The forwarding proof: every marker the render drew is registered by its ref.
+afterEach(() => { expect(unregisteredMarkers()).toEqual([]) })
+
 describe('CrewProfilePanel rail (Tablist labels="active")', () => {
   it('has the four tabs in strip order, every one named for assistive tech', () => {
     setup()
@@ -147,6 +151,15 @@ describe('CrewProfilePanel Profile tab', () => {
     fireEvent.click(screen.getByTestId('crew-profile-model'))
     fireEvent.click(screen.getByRole('button', { name: 'Edit crewmate' }))
     expect(h.onEdit).toHaveBeenCalledTimes(3)
+  })
+
+  it('puts the Permissions row\'s guide marker on the button a person presses, and only there', () => {
+    setup()
+    const marked = document.querySelectorAll('[data-ui-location]')
+    expect(marked).toHaveLength(1)
+    expect(marked[0]).toBe(screen.getByTestId('crew-profile-permissions'))
+    expect(marked[0].tagName).toBe('BUTTON')
+    expect(marked[0].getAttribute('data-ui-location')).toBe('members.permissions')
   })
 
   it('says there is no description instead of rendering an empty card', () => {

@@ -368,3 +368,38 @@ class TestQueueEditPrunesTheQuote:
         # A restored entry with an unhashable role refuses, never raises.
         assert quote_block({"role": ["user"], "text": "x"}) is None
         assert quote_block({"role": {"a": 1}, "text": "x"}) is None
+
+
+class TestQueuedSendKeepsItsTab:
+    """A send that lands on a busy slot (e.g. while an earlier turn is still
+    running) is queued and runs later with no request in hand. Which tab
+    sent it, and the language that tab shows, must still reach the guide tools
+    for that later turn, exactly as for an idle send."""
+
+    @pytest.mark.asyncio
+    async def test_the_busy_path_records_the_sending_tab_and_language(self, tmp_path, monkeypatch):
+        from aiohttp import web
+
+        from kiro_crew.dashboard.guide_observe import observation_hub_for
+
+        state, slot = _busy_state(tmp_path, monkeypatch)
+        app = _make_app(state)
+
+        @web.middleware
+        async def as_owner(request, handler):
+            request["app"] = ""
+            request["user"] = "local-app"
+            return await handler(request)
+
+        app.middlewares.insert(0, as_owner)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat",
+                json={"slot": "busy-chat", "message": "where is history?"},
+                headers={"X-Guide-Tab": "tab-A", "X-UI-Lang": "zh-CN"},
+            )
+            assert resp.status == 200
+            assert (await resp.json()).get("queued") is True
+        hub = observation_hub_for(state)
+        assert hub.sender_for("busy-chat") == "tab-A"
+        assert hub.ui_lang_for("busy-chat") == "zh-CN"

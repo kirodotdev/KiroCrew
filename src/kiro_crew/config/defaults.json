@@ -17,7 +17,8 @@
     "tool_search",
     "@kirocrew-cron",
     "@kirocrew-core",
-    "@kirocrew-computer"
+    "@kirocrew-computer",
+    "@kirocrew-guide"
   ],
   "allowedTools": [
     "fs_read",
@@ -35,7 +36,19 @@
     "@kirocrew-cron/cron_trigger",
     "@kirocrew-cron/cron_remove",
     "@kirocrew-cron/cron_remove_all",
-    "@kirocrew-core"
+    "@kirocrew-core",
+    "@kirocrew-guide/find_ui",
+    "@kirocrew-guide/search_docs",
+    "@kirocrew-guide/guide_list_actions",
+    "@kirocrew-guide/guide_start",
+    "@kirocrew-guide/guide_status",
+    "@kirocrew-guide/guide_cancel",
+    "@kirocrew-guide/list_change_kinds",
+    "@kirocrew-guide/find_setting",
+    "@kirocrew-guide/get_member_capabilities",
+    "@kirocrew-guide/diagnose_settings",
+    "@kirocrew-guide/propose_change",
+    "@kirocrew-guide/get_change_status"
   ],
   "resources": [
     "file://.kiro/steering/**/*.md"

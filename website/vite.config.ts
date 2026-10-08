@@ -22,6 +22,7 @@ import {
 } from './src/lib/vendorPaths'
 import { precompressPlugin } from './scripts/precompress.mjs'
 import { atomicPublishPlugin } from './scripts/publish-dist.mjs'
+import { uiAutoStampPlugin } from './scripts/lib/ui-auto-stamp.mjs'
 import { CONTEXT_SINGLETON_DEDUPE } from './vite.shared'
 import {
   parseBrandingConfig,
@@ -690,7 +691,16 @@ export default defineConfig({
   // `editionExtensionPlugin()` precedes `tailwindcss()` on purpose: both run
   // `enforce: 'pre'` transforms, and the edition `@source` must be spliced into
   // index.css before Tailwind compiles it (see the plugin's `transform`).
-  plugins: [react(), tokenProxyPlugin(), appImportMapPlugin(), vendorRuntimePlugin(), excalidrawFontsPlugin(), swVersionPlugin(), editionExtensionPlugin(), editionLanguagesPlugin(), tailwindcss(), bundleReportPlugin(), appWindowUrls(), precompressPlugin(), atomicPublishPlugin()],
+  plugins: [
+    // Before react(): it stamps JSX source text (see scripts/lib/ui-auto-stamp.mjs).
+    uiAutoStampPlugin({
+      root: fileURLToPath(new URL('.', import.meta.url)),
+      manifestPath: fileURLToPath(new URL('./node_modules/.cache/kc-ui-auto/sites.json', import.meta.url)),
+      artifactPath: fileURLToPath(new URL('./node_modules/.cache/kc-ui-auto/ui-index.auto.json', import.meta.url)),
+      readFile: (f: string) => readFileSync(f, 'utf-8'),
+      exists: existsSync,
+    }),
+    react(), tokenProxyPlugin(), appImportMapPlugin(), vendorRuntimePlugin(), excalidrawFontsPlugin(), swVersionPlugin(), editionExtensionPlugin(), editionLanguagesPlugin(), tailwindcss(), bundleReportPlugin(), appWindowUrls(), precompressPlugin(), atomicPublishPlugin()],
   // Worker bundles do not inherit `plugins`; the hljs worker needs the edition
   // languages module (see editionLanguagesPlugin).
   worker: { plugins: () => [editionLanguagesPlugin()] },

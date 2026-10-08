@@ -948,7 +948,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "chat.default-model",
     "label": "Default Model",
     "labelKey": "pages.settings.chatPanel.default_model",
-    "description": "Agents with their own configured model ignore this setting. 'Default' uses the model from the agent configuration, or the system default when none is configured. Changing this does not affect sessions that are already open. Which model new sessions start with when their agent pins none. Set a model per agent under Capabilities → Agents, or pick one inside a session to override it there.",
+    "description": "Agents with their own configured model ignore this setting. 'Default' uses the model from the agent configuration, or the system default when none is configured. Changing this does not affect sessions that are already open. Which model new sessions start with when their agent pins none. Set a model per agent under Customize → Crewmates, or pick one inside a session to override it there.",
     "tab": "chat",
     "type": "select",
     "occurrence": 1,

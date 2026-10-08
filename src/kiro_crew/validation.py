@@ -4718,6 +4718,97 @@ MCP_PANEL_SCHEMAS: dict[str, ToolSchema] = {
     "dashboard_rollback": DASHBOARD_ROLLBACK_SCHEMA,
 }
 
+
+# ── Tool Schemas (MCP Guide — server ``kirocrew-guide``) ──
+#
+# Its own registry because the guide tools ship in an opt-in server. The shape
+# checked here is the envelope only: which action ids exist and what their params
+# mean is the gateway's catalog (``guide_catalog.validate_actions``), which is the
+# one place that can resolve a setting id against the packaged registry.
+_GUIDE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+GUIDE_LIST_ACTIONS_SCHEMA = ToolSchema(tool_name="guide_list_actions")
+GUIDE_START_SCHEMA = ToolSchema(
+    tool_name="guide_start",
+    fields=[
+        FieldSpec("actions", list, required=True, item_type=dict, max_items=8),
+        # Content rules (no links, markup, control characters) are the gateway's
+        # (``guide_catalog.validate_intro``); this is only the envelope.
+        FieldSpec("intro", str, max_len=200),
+    ],
+)
+GUIDE_STATUS_SCHEMA = ToolSchema(
+    tool_name="guide_status",
+    fields=[FieldSpec("guide_id", str, max_len=64, pattern=_GUIDE_ID_PATTERN)],
+)
+GUIDE_CANCEL_SCHEMA = ToolSchema(
+    tool_name="guide_cancel",
+    fields=[FieldSpec("guide_id", str, required=True, max_len=64, pattern=_GUIDE_ID_PATTERN)],
+)
+
+MCP_GUIDE_SCHEMAS: dict[str, ToolSchema] = {
+    "guide_list_actions": GUIDE_LIST_ACTIONS_SCHEMA,
+    "guide_start": GUIDE_START_SCHEMA,
+    "guide_status": GUIDE_STATUS_SCHEMA,
+    "guide_cancel": GUIDE_CANCEL_SCHEMA,
+    "list_change_kinds": ToolSchema(tool_name="list_change_kinds"),
+    "find_setting": ToolSchema(
+        tool_name="find_setting",
+        fields=[FieldSpec("query", str, required=True, max_len=200)],
+    ),
+    "get_member_capabilities": ToolSchema(
+        tool_name="get_member_capabilities",
+        fields=[FieldSpec("member", str, required=True, max_len=128)],
+    ),
+    "diagnose_settings": ToolSchema(
+        tool_name="diagnose_settings",
+        fields=[FieldSpec("topic", str, max_len=200)],
+    ),
+    "propose_change": ToolSchema(
+        tool_name="propose_change",
+        fields=[
+            FieldSpec("kind", str, required=True, max_len=64),
+            FieldSpec("params", dict, required=True),
+            FieldSpec("reason", str, max_len=500),
+        ],
+    ),
+    "get_change_status": ToolSchema(
+        tool_name="get_change_status",
+        fields=[
+            FieldSpec("change_id", str, max_len=48, pattern=re.compile(r"^cc_[A-Za-z0-9_-]{8,40}$"))
+        ],
+    ),
+    "search_docs": ToolSchema(
+        tool_name="search_docs",
+        fields=[
+            FieldSpec("query", str, max_len=200),
+            FieldSpec("page", str, max_len=80),
+            FieldSpec("offset", int, min_val=0, max_val=10_000_000),
+        ],
+    ),
+    "find_ui": ToolSchema(
+        tool_name="find_ui",
+        fields=[
+            # Optional: a call passes `query` to search or `area` to browse.
+            FieldSpec("query", str, max_len=200),
+            FieldSpec(
+                "lang",
+                str,
+                max_len=16,
+                pattern=re.compile(r"^[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8})?$"),
+            ),
+            FieldSpec("surface", str, max_len=64, pattern=re.compile(r"^[a-z][a-z0-9-]{0,63}$")),
+            FieldSpec(
+                "area",
+                str,
+                max_len=82,
+                pattern=re.compile(r"^[a-z][a-z0-9-]{0,40}(?:\.[a-z0-9-]{1,40})?$"),
+            ),
+            FieldSpec("offset", int, min_val=0, max_val=100_000),
+        ],
+    ),
+}
+
 MCP_COMPUTER_SCHEMAS: dict[str, ToolSchema] = {
     _cu_types.TOOL_LIST_APPS: ToolSchema(tool_name=_cu_types.TOOL_LIST_APPS, fields=[]),
     _cu_types.TOOL_LAUNCH_APP: ToolSchema(

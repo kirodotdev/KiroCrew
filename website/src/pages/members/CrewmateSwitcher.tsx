@@ -8,6 +8,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '../../components/ui/pop
 import { fmtList } from '../../i18n/format'
 import { cn } from '../../lib/utils'
 import type { MemberSignals } from './rosterFilter'
+import { uiLocation } from '../../uiLocations/uiLocation'
 
 /** How many faces the closed chip stacks. Three is enough to read as "a crew"
  *  without the chip growing with the roster; the count beside them says how many
@@ -120,6 +121,7 @@ export default function CrewmateSwitcher({
 
   return (
     <Popover
+      guideScope="menu:members.switcher"
       open={open}
       onOpenChange={(next) => {
         setOpen(next)
@@ -136,10 +138,12 @@ export default function CrewmateSwitcher({
             className,
           )}
           aria-label={chipLabel}
-          title={chipLabel}
+          // A static name: the needs-you note rides the accessible name and the dot.
+          title={t('pages.membersPage.switch_crewmate')}
           aria-haspopup="dialog"
           aria-expanded={open}
           data-testid="crewmate-switcher"
+          {...uiLocation('members.switcher')}
           data-needs-you={othersNeedYou || undefined}
         >
           {/* `relative` so the needs-you dot can sit over the stack's corner
@@ -285,6 +289,7 @@ export default function CrewmateSwitcher({
                 }}
                 className="flex items-center gap-2.5 w-full px-2.5 py-2 rounded-xl text-left text-[13px] font-semibold text-accent hover:bg-bg-hover cursor-pointer"
                 data-testid="crewmate-switcher-create"
+                {...uiLocation('members.switcher.new')}
               >
                 <span className="w-8 h-8 rounded-full bg-accent-subtle grid place-items-center" aria-hidden="true">
                   <Plus size={15} />
@@ -302,6 +307,7 @@ export default function CrewmateSwitcher({
                 className="flex items-center gap-2.5 w-full px-2.5 py-2 rounded-xl text-left text-[13px] font-semibold text-text hover:bg-bg-hover cursor-pointer"
                 aria-pressed={rosterShown}
                 data-testid="crewmate-switcher-roster"
+                {...uiLocation('members.switcher.show-roster')}
               >
                 <span className="w-8 h-8 rounded-full bg-bg-hover grid place-items-center text-muted" aria-hidden="true">
                   <PanelLeft size={15} />

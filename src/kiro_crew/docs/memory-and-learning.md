@@ -111,10 +111,11 @@ silently dropped, and no existing private conversation is forgotten to make room
 Conversations already private keep their mode and can still be tightened.
 
 Every dashboard mode keeps its chat history. An Incognito or Temporary dashboard
-chat is saved to History exactly like a Persistent one, so you can reopen it --
-before or after a gateway restart -- to look up a question you asked or a command
-you ran. Channel-origin Incognito and Temporary chats are still not written to
-History. What the two restricted modes withhold is learning FROM the chat: nothing
+chat is saved under Older Sessions (the footer at the bottom of the Sessions
+list) exactly like a Persistent one, so you can reopen it -- before or after a
+gateway restart -- to look up a question you asked or a command you ran.
+Channel-origin Incognito and Temporary chats are still not written to session
+history. What the two restricted modes withhold is learning FROM the chat: nothing
 in it is consolidated
 into memory, no lesson is written (including lesson deletion), no session summary
 is generated, and it is never written into a workflow or task snapshot. Incognito

@@ -2,6 +2,8 @@ import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type R
 import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
+import { uiLocation } from '../../uiLocations/uiLocation'
+import { GuideRevealScope } from '../../guide/GuideRevealScope'
 import {
   AlertTriangle,
   CheckCircle2,
@@ -126,6 +128,7 @@ function safeApprovalUrl(value: string): string {
 import { isValidLoopbackReturnAddress, normalizeLoopbackReturnAddress } from '../../utils/loopbackReturnAddress'
 import { isElectron } from '../../lib/electron'
 import { useImeGuard } from '../../hooks/useImeGuard'
+import { guideAnchor } from '../../uiLocations/targetRegistry'
 
 export interface PendingConnect {
   kind: 'new' | 'reconnect'
@@ -1863,6 +1866,9 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
           </button>
           <button
             id="connections-mcp-tab"
+            // One spread: the anchor's registering ref rides in as the location's own.
+            {...uiLocation('connections.mcp-servers-tab', guideAnchor('mcp.servers-tab').ref)}
+            data-guide-anchor="mcp.servers-tab"
             type="button"
             role="tab"
             aria-selected={activeTab === 'mcp-servers'}
@@ -1881,6 +1887,10 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
         </div>
       </div>
 
+      {/* The MCP servers panel's scope owner: a guide walking to a control
+          on that panel points at its tab until this reads open. Outside the
+          panel conditional, so it says "closed" while the panel is unmounted. */}
+      <GuideRevealScope id="open:connections.mcp-servers-tab" open={activeTab === 'mcp-servers'}>
       {activeTab === 'services' ? (
         <div id="connections-services-panel" role="tabpanel" aria-labelledby="connections-services-tab">
           {servicesEnabled && <div className="mb-4 flex items-center gap-3">
@@ -1968,6 +1978,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
           <McpTab onManagedProviderClick={openProvider} />
         </div>
       )}
+      </GuideRevealScope>
     </section>
   )
 }

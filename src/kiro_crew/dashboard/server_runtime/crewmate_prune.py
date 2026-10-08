@@ -43,6 +43,29 @@ def _claimed_dashboard_slots(state: DashboardState) -> frozenset[str]:
         return frozenset()
 
 
+def _register_change_card_hook(app: web.Application) -> None:
+    """Innermost middleware on the settings routes a change card's plan may name.
+
+    Registered after the explicit chain, so the auth middleware has already
+    classified the caller. Only a request whose matched route is in
+    ``change_card_catalog.HOOKED_ROUTES`` reaches the hook module, so every other
+    request pays one set lookup and the module loads on first use.
+    """
+    from kiro_crew.change_card_catalog import HOOKED_ROUTES
+
+    @web.middleware  # type: ignore[misc]
+    async def _change_card_hook(request: web.Request, handler: Any) -> web.StreamResponse:
+        resource = getattr(request.match_info.route, "resource", None)
+        template = getattr(resource, "canonical", None)
+        if (request.method.upper(), template) not in HOOKED_ROUTES:
+            return await handler(request)
+        from kiro_crew.dashboard.handlers.change_cards import change_card_middleware
+
+        return await change_card_middleware(request, handler)
+
+    app.middlewares.append(_change_card_hook)
+
+
 def _register_crewmate_prune_gate(app: web.Application, state: DashboardState) -> None:
     """Arm the crewmate-prune barrier before bind; the pass itself runs after.
 

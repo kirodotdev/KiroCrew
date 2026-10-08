@@ -360,6 +360,12 @@ reopened.
 | `work` | The conductor work board: its header, items, bindings, worker reports and bounded per-item event tails. It interprets only `work/recorded`; entries naming another board are excluded. The header carries `last_entry_at`, the greatest accepted entry time in the current generation, which is where board age comes from; a checkpoint without it is discarded and cold-folded. |
 | `panel` | The crew's published webview, folded from `panel/published` entries in the member's own DM session log. |
 
+No fold interprets `card/*` or `guide/*`. They are declared in the type registry, so
+every fold's `known=` vocabulary includes them and a log holding them folds as
+before; the conversation they describe is drawn from the transcript's `card` rows,
+and a reader rebuilding it from the log alone pairs each opener with the newest
+closer of the same id (`crew-log-core.md` section 5, "Cards and guides").
+
 A slot-keyed fold is the module's stated exception to "one fold, one unit", and it
 is stated rather than assumed, because a reader has to know which kind of fold it
 holds. A slot owns one ACP session id at a time rather than for its whole life, so

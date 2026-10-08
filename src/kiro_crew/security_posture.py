@@ -105,6 +105,38 @@ class PostureControl:
 # Where a sink runs only ONE of the two scanners, its detail text says so.
 _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     (
+        "The settings diagnosis",
+        "dashboard/change_cards.py",
+        "Current and default values of every setting `diagnose_settings` reports, "
+        "on their way to an agent's model context. A credential-like key is "
+        "reduced to whether it is set, and every remaining string passes the "
+        "credential redactor, because a setting value can be a token the operator "
+        "pasted into a free-text field.",
+    ),
+    (
+        "Change-card and guide rows in a conversation",
+        "dashboard/chat_cards.py",
+        "The title and result text of each change card and guide row written "
+        "into a chat transcript and rendered in the browser. The text comes from "
+        "an agent's proposal or a gateway outcome, so each string passes the "
+        "exfiltration-URL then the credential redactor before it is stored.",
+    ),
+    (
+        "Change-card details shown before Apply",
+        "change_card_catalog.py",
+        "Values a change card shows in full so the user sees what Apply runs: an "
+        "MCP server's launch line, environment values and request headers. Each "
+        "value passes the credential redactor before it reaches the card.",
+    ),
+    (
+        "The symptom probes",
+        "diagnose_probes.py",
+        "Evidence strings the read-only `diagnose_settings` probes return to "
+        "an agent's model context: log lines, job errors and file excerpts read "
+        "from this host. Each string passes the credential redactor before it "
+        "leaves the probe.",
+    ),
+    (
         "Thread, GIL and loop-stall diagnostics",
         "diag/threads.py",
         "Python frames, folded stacks and loop-stall dump text, on their way to an "
@@ -1710,6 +1742,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # WOULD need redaction and refuses the pin when it would. Nothing is
         # emitted here; the chat routes that act on the answer are the sinks.
         "members.py",
+        # Gate-side, like `link_meta.py` above: the UI-guide catalog asks whether
+        # the redactor WOULD change a proposed crewmate name/goal or MCP command,
+        # args or url, and REFUSES the guide when it would. Nothing it returns is
+        # redacted text.
+        "guide_catalog.py",
         # Inbound / gate-side: redacts what comes IN or what a gate logs, not what
         # goes out to a human.
         "context.py",
@@ -2217,6 +2254,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # is the MODEL over the stdio transport -- the boundary is that transport,
         # not this module, exactly as for `mcp_dashboard.py` above.
         "mcp_panel.py",
+        # Same class as `mcp_panel.py`: the guide shim relays gateway results and
+        # redacts only the refusal prose it hands back to the model; the boundary
+        # is the stdio transport, not this module.
+        "mcp_guide.py",
         "mcp_gateway/backend.py",
         # The kirocrew-core tool handlers, moved out of mcp_core.py into their
         # domain modules. Same classification as mcp_core.py above for the same
@@ -2699,6 +2740,7 @@ _SCHEMA_REGISTRY_NAMES: tuple[str, ...] = (
     "MCP_DEBUG_SCHEMAS",
     "MCP_WORK_SCHEMAS",
     "MCP_PANEL_SCHEMAS",
+    "MCP_GUIDE_SCHEMAS",
 )
 
 

@@ -547,6 +547,8 @@ def test_the_ownership_registry_is_the_documented_partition():
         "work",
         "panel",
         "dashboard",
+        "card",
+        "guide",
     }
 
 
@@ -587,6 +589,11 @@ SESSION_VOCABULARY: tuple[str, ...] = (
     "radar/recorded",
     "work/recorded",
     "panel/published",
+    "card/proposed",
+    "card/finished",
+    "guide/offered",
+    "guide/started",
+    "guide/finished",
 )
 
 

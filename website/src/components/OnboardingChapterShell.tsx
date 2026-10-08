@@ -60,32 +60,35 @@ function FloatingGhost({
 // Exported so the Kiro CLI setup gate (KiroPrerequisiteGate) renders the SAME
 // panel — identical size, identical mascot positions — instead of a look-alike
 // copy that drifts.
-export function ShellAside({ copy }: { copy: ShellAsideCopy }) {
+export function ShellAside({ copy, compact = false }: { copy: ShellAsideCopy; compact?: boolean }) {
   return (
-    <aside className="relative flex min-h-[248px] w-full shrink-0 overflow-hidden bg-accent text-accent-fg sm:min-h-0 sm:w-[36%]">
-      <FloatingGhost className="-left-8 top-[24%] hidden h-24 w-20 rotate-90 sm:block lg:h-28 lg:w-24" delay={0.15} rotate={90} />
-      <FloatingGhost className="-right-5 top-5 hidden h-28 w-20 -rotate-12 sm:block lg:h-36 lg:w-28" delay={0.35} rotate={-12} />
+    <aside className={`relative flex ${compact ? 'min-h-[160px] sm:w-[36%] xl:w-[415px]' : 'min-h-[248px] sm:w-[36%]'} w-full shrink-0 overflow-hidden bg-accent text-accent-fg sm:min-h-0`}>
+      <FloatingGhost className={`-left-8 top-[24%] hidden h-24 w-20 rotate-90 ${compact ? 'xl:block xl:-left-3 xl:h-28 xl:w-24' : 'sm:block lg:h-28 lg:w-24'}`} delay={0.15} rotate={90} />
+      <FloatingGhost className={`-right-5 top-5 hidden h-28 w-20 -rotate-12 ${compact ? 'xl:block xl:h-36 xl:w-28' : 'sm:block lg:h-36 lg:w-28'}`} delay={0.35} rotate={-12} />
       {/* Peeks in 2rem from the panel edge: the mascot is near-white and the
           copy column paints in near-white too, so any overlap renders text
           white-on-white. The visible sliver stays inside the panel's own
           padding gutter, so no text in any of the shell's consumers can run
           under it, at any width or copy length. */}
-      <FloatingGhost className="bottom-[-6.5rem] right-[-10rem] hidden h-64 w-48 lg:block" delay={0.55} />
-      <FloatingGhost className="-top-20 left-[40%] hidden h-48 w-36 rotate-180 lg:block" delay={0.75} rotate={180} />
-      <div className="relative z-10 flex w-full flex-col p-7 sm:p-10">
+      {/* Embedded: the page's own navigation narrows this aside well below the
+          modal's. The original four-mascot set needs its 415px aside, reached
+          from xl; a narrower aside would run mascots over the brand and copy. */}
+      <FloatingGhost className={`bottom-[-6.5rem] right-[-10rem] hidden h-64 w-48 ${compact ? 'xl:block xl:bottom-[-4rem] xl:right-[-4.5rem]' : 'lg:block'}`} delay={0.55} />
+      <FloatingGhost className={`-top-20 left-[40%] hidden h-48 w-36 rotate-180 ${compact ? 'xl:block xl:-top-10' : 'lg:block'}`} delay={0.75} rotate={180} />
+      <div className={`relative z-10 flex w-full flex-col ${compact ? 'p-5' : 'p-7'} sm:p-10`}>
         <div className="flex items-center gap-3">
           <KiroGhost size={28} className="h-8 w-7" />
           <span className="text-[15px] font-semibold tracking-wide">{i18nT('components.onboardingChapterShell.kiro_crew')}</span>
         </div>
         <div className="mt-auto max-w-[290px]">
-          <h1 className="text-4xl font-semibold leading-[1.05] tracking-[-0.02em] sm:text-[clamp(2.2rem,4vw,3.5rem)]">
+          <h1 className={`${compact ? 'mt-4 text-2xl sm:mt-0' : 'text-4xl'} font-semibold leading-[1.05] tracking-[-0.02em] sm:text-[clamp(2.2rem,4vw,3.5rem)]`}>
             {copy.panelHeadline}
           </h1>
-          <p className="mt-5 max-w-[270px] text-sm leading-relaxed text-accent-fg/80">
+          <p className={`${compact ? 'hidden sm:block' : ''} mt-5 max-w-[270px] text-sm leading-relaxed text-accent-fg/80`}>
             {copy.panelBody}
           </p>
         </div>
-        <p className="mt-8 text-[12px] font-medium text-accent-fg/75">{copy.panelFootnote}</p>
+        {copy.panelFootnote && <p className="mt-8 text-[12px] font-medium text-accent-fg/75">{copy.panelFootnote}</p>}
       </div>
     </aside>
   )
@@ -115,6 +118,17 @@ export const PANEL_CLASS =
 // section scrolls internally and the footer is ordinary flow. Each footer adds
 // its own padding, bottom padding clearing the safe-area inset.
 export const PINNED_FOOTER_CLASS = 'sticky bottom-0 z-10 bg-card sm:static'
+
+// Embedded mode: the same aside + section, laid out inside a page region
+// instead of over the viewport. No `fixed`, no scrim, no viewport min-height:
+// the host gives the region its height (`h-full` in a flex column pane), from
+// `sm` up the section scrolls internally exactly as in the modal, and on a
+// narrow pane the chapter stacks and scrolls with the page, the footer sticking
+// to that scrollport's bottom (`overflow-clip`, never `overflow-hidden`, so the
+// panel does not become the sticky footer's scrollport).
+export const EMBEDDED_PANEL_CLASS =
+  'relative flex w-full min-h-0 flex-1 flex-col overflow-clip bg-card sm:h-full sm:flex-row sm:rounded-2xl sm:border sm:border-border'
+export const EMBEDDED_SECTION_CLASS = 'flex min-w-0 flex-1 flex-col bg-card sm:min-h-0'
 
 export interface ShellAsideCopy {
   ariaLabel: string
@@ -236,6 +250,8 @@ export default function OnboardingChapterShell({
   footer,
   dialogRef,
   ariaLabel,
+  embedded = false,
+  headerAction,
   children,
 }: {
   panelHeadline: string
@@ -259,9 +275,19 @@ export default function OnboardingChapterShell({
   // and this ref is unused (the flow reads the host's dialogRef for its trap).
   dialogRef: RefObject<HTMLDivElement>
   ariaLabel: string
+  // Render the chapter INSIDE the page (a labelled region) instead of as a
+  // viewport modal: no portal, no scrim, no `role="dialog"` / `aria-modal`, and
+  // an enclosing <OnboardingShellHost> is ignored. `dialogRef` then points at
+  // the region, which the flow may use to seat focus -- never to trap it.
+  embedded?: boolean
+  // An optional control rendered where "Skip all" sits (the eyebrow row), e.g.
+  // an embedded flow's way back to the page it was opened from.
+  headerAction?: ReactNode
   children: ReactNode
 }) {
-  const host = useContext(OnboardingShellContext)
+  const contextHost = useContext(OnboardingShellContext)
+  // An embedded chapter never joins the persistent modal host.
+  const host = embedded ? null : contextHost
   // Stable per-mount id so the flow's aside-copy registration can be cleared on
   // close/unmount without colliding with the other flow's registration.
   const id = useId()
@@ -280,7 +306,7 @@ export default function OnboardingChapterShell({
     <>
       <header className="shrink-0 px-6 pt-7 sm:px-10 sm:pt-10">
         <div className="flex items-center justify-between gap-4">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted">
+          <p className={`text-[11px] font-semibold uppercase text-muted ${embedded ? 'whitespace-nowrap tracking-[0.08em] sm:tracking-[0.18em]' : 'tracking-[0.18em]'}`}>
             {eyebrow}
           </p>
           {onSkipAll && (
@@ -294,6 +320,7 @@ export default function OnboardingChapterShell({
               {i18nT('components.onboardingChapterShell.skip_all')} <ArrowRight className="lucide-inline" />
             </button>
           )}
+          {headerAction}
         </div>
         {header}
       </header>
@@ -316,6 +343,22 @@ export default function OnboardingChapterShell({
   // Host mode: portal the right-column content into the persistent <section>.
   if (host) {
     return host.sectionSlot ? createPortal(sectionInner, host.sectionSlot) : null
+  }
+
+  // Embedded mode: the same two columns, in place, as a labelled page region.
+  if (embedded) {
+    return (
+      <div
+        ref={dialogRef}
+        role="region"
+        aria-label={ariaLabel}
+        className={EMBEDDED_PANEL_CLASS}
+        data-testid="onboarding-chapter-embedded"
+      >
+        <ShellAside compact copy={{ ariaLabel, panelHeadline, panelBody, panelFootnote }} />
+        <section className={EMBEDDED_SECTION_CLASS}>{sectionInner}</section>
+      </div>
+    )
   }
 
   // Standalone mode: render the full chrome ourselves.

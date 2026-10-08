@@ -294,11 +294,12 @@ describe('inline-code chips: each class names its own click', () => {
       // The flow container is the renderer's own per-message root: the element
       // that already carries the lightbox's `data-image-scope`, now also marked
       // `data-tip-flow` for the bubble — the hook's own attribute, so the two
-      // features share a root, not a meaning. Nothing else on the root changes
-      // (its click delegation and class list are main's).
+      // features share a root, not a meaning. The guide's `data-guide-untrusted`
+      // rides on the same root (authored content is never a guide target).
+      // Nothing else on the root changes (its click delegation and class list are main's).
       const root = document.querySelector('[data-tip-flow]') as HTMLElement | null
       expect(root).not.toBeNull()
-      expect(root!.getAttributeNames().filter(n => n.startsWith('data-'))).toEqual(['data-image-scope', 'data-tip-flow'])
+      expect(root!.getAttributeNames().filter(n => n.startsWith('data-'))).toEqual(['data-image-scope', 'data-tip-flow', 'data-guide-untrusted'])
       expect(root!.contains(screen.getByRole('button', { name: 'Copy npm test' }))).toBe(true)
       root!.getBoundingClientRect = () => rect(100, 0, 600, 140)
       const first = screen.getByRole('button', { name: 'Copy npm test' })

@@ -2947,6 +2947,8 @@ class _ChatSlot:
         "_steer_user_origin",
         "_steer_channel_origin",
         "_turn_channel_narrowed",
+        "_turn_channel_origin",
+        "_turn_user_sent",
         "_steer_admissions",
         "_steer_decision_strips",
         "_steer_possibly_delivered",
@@ -4043,6 +4045,20 @@ class _ChatSlot:
         # the turn, a declined or requeued steer included (narrowing is the direction
         # that cannot be wrong); the turn resets it at its end and at the next start.
         self._turn_channel_narrowed: bool = False
+        # The running turn's OPENER provenance: True while a turn a channel message
+        # opened (`_run_chat(_directive_channel_origin=True)`) is in flight. Set at
+        # the turn's outermost start and cleared at its end, beside
+        # `_turn_channel_narrowed`; read by gateway routes a tool call reaches
+        # mid-turn (the guide and card routes refuse a channel turn), which have
+        # no other way to learn where the turn came from.
+        self._turn_channel_origin: bool = False
+        # Whether the running turn is one the person sent from the dashboard
+        # (`_run_chat(_directive_user_origin=True)` and not a channel's): set at
+        # the turn's outermost start and cleared at its end beside
+        # `_turn_channel_origin`. A loop wake, a cron or app injection, a
+        # `session_send` and a sub-agent completion never set it, so the guide
+        # and card routes that start something on screen refuse them.
+        self._turn_user_sent: bool = False
         # The containment that held when an in-flight steer was AUTHORIZED, keyed by
         # the same message text and kept in the same LOCKSTEP. The requeue stamps it
         # on the queue entry instead of reading the slot again: its own moment is the
