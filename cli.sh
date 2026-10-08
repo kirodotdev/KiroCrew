@@ -1152,7 +1152,25 @@ else
     fi
     err "installing the wheel into $VENV failed. Re-run this installer to complete the install; until then the previous 'kirocrew' command may be unusable."
   fi
-  # Committed: the wheel landed, so the rebuilt venv is the install now.
+  # A zero exit from pip is not proof the install is usable: a pip that reports
+  # success but lands a venv with no importable `kiro_crew` and no
+  # `bin/kirocrew` console script (observed in the field as a rebuilt venv
+  # holding only pip) would otherwise be COMMITTED here -- the rollback
+  # disarmed and the pre-rebuild backup, the one working copy left, deleted --
+  # leaving a dangling ~/.local/bin/kirocrew and a service that will not start.
+  # Verify the rebuilt venv the same way install.sh verifies its own before
+  # committing, while the rollback is STILL armed, so a bad rebuild restores
+  # the previous install instead of destroying it. `-I` isolates the import
+  # from an inherited PYTHONPATH, as every other interpreter call here does.
+  if [ ! -x "$VENV/bin/kirocrew" ] || ! "$VENV/bin/python" -I -c 'import kiro_crew' >/dev/null 2>&1; then
+    if [ -n "$_VENV_BACKUP" ] && [ -d "$_VENV_BACKUP" ]; then
+      _venv_restore_after_failure \
+        "the wheel install into $VENV reported success but left no usable kirocrew (no importable kiro_crew or bin/kirocrew). The previous install was restored and keeps working; re-run this installer to retry." \
+        "the wheel install into $VENV reported success but left no usable kirocrew, and the previous install could not be restored from $_VENV_BACKUP. Re-run this installer to complete the install."
+    fi
+    err "the wheel install into $VENV reported success but left no usable kirocrew (no importable kiro_crew or bin/kirocrew). Re-run this installer to complete the install; until then the previous 'kirocrew' command may be unusable."
+  fi
+  # Committed: the wheel landed and imports, so the rebuilt venv is the install now.
   # Disarm the rollback BEFORE deleting the backup: a restore during that
   # delete would replace the finished venv with a half-deleted tree.
   _VENV_MOVED=0

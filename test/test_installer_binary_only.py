@@ -158,12 +158,25 @@ case " $* " in
 esac
 printf '%s\\n' "$@" > "$FAKE_ARGV_FILE"
 if [ -n "${FAKE_PIP_FAIL_WITH:-}" ]; then cat "$FAKE_PIP_FAIL_WITH" >&2; exit 1; fi
+# A real wheel install lands the console script and an importable package. The
+# venv root is two levels up from this `bin/pip`. FAKE_PIP_INSTALL_EMPTY=1
+# reproduces the field failure: pip exits 0 but the venv holds only pip (no
+# `bin/kirocrew`, no importable `kiro_crew`), as a rebuilt venv was observed to.
+_venv_bin="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+_venv_root="$(dirname -- "$_venv_bin")"
+if [ -z "${FAKE_PIP_INSTALL_EMPTY:-}" ]; then
+  printf '#!/bin/sh\\necho kirocrew\\n' > "$_venv_root/bin/kirocrew"
+  chmod 755 "$_venv_root/bin/kirocrew"
+  : > "$_venv_root/.kiro_crew_installed"
+fi
 """
 
 # A `python3` that answers `-m venv DIR` by laying out a venv whose pip is the
-# recorder above, and hands every other invocation (the signature and digest
-# checks, the symlink helper) to the real interpreter. cli.sh's venv branch is
-# otherwise unreachable without a network-facing pip.
+# recorder above and whose interpreter is this same wrapper (so the import
+# checks cli.sh runs against the rebuilt venv are answerable from a marker),
+# and hands every other invocation (the signature and digest checks, the
+# symlink helper) to the real interpreter. cli.sh's venv branch is otherwise
+# unreachable without a network-facing pip.
 _FAKE_PYTHON = """#!/bin/sh
 set -eu
 if [ "${1:-}" = "-m" ] && [ "${2:-}" = "venv" ]; then
@@ -171,9 +184,24 @@ if [ "${1:-}" = "-m" ] && [ "${2:-}" = "venv" ]; then
   printf 'home = %s\\n' "$FAKE_REAL_PYTHON" > "$3/pyvenv.cfg"
   cp "$FAKE_PIP_SCRIPT" "$3/bin/pip"
   chmod 755 "$3/bin/pip"
-  ln -sf "$FAKE_REAL_PYTHON" "$3/bin/python"
-  ln -sf "$FAKE_REAL_PYTHON" "$3/bin/python3"
+  # The venv's interpreter is this wrapper, not the base one: cli.sh verifies
+  # the rebuilt venv with `$VENV/bin/python -I -c 'import kiro_crew'`, which the
+  # base interpreter would always fail. The wrapper answers that import from the
+  # marker the fake pip writes on a successful install, and defers everything
+  # else to the real interpreter.
+  cp "$0" "$3/bin/python"
+  cp "$0" "$3/bin/python3"
+  chmod 755 "$3/bin/python" "$3/bin/python3"
   exit 0
+fi
+# The rebuilt-venv import check (`-I -c 'import kiro_crew'`, and the legacy
+# cleanup's unflagged form): succeed only when the fake pip marked the install.
+if { [ "${1:-}" = "-I" ] && [ "${2:-}" = "-c" ]; } || [ "${1:-}" = "-c" ]; then
+  case " $* " in
+    *"import kiro_crew"*)
+      _self_bin="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+      [ -f "$(dirname -- "$_self_bin")/.kiro_crew_installed" ] && exit 0 || exit 1 ;;
+  esac
 fi
 exec "$FAKE_REAL_PYTHON" "$@"
 """
@@ -501,6 +529,73 @@ def test_venv_failure_still_restores_the_previous_install(
     assert not list(case.glob("run/data-home-venv.pre-rebuild.*"))
 
 
+def _existing_managed_venv(case: Path) -> Path:
+    """A working managed venv from an earlier run, under the run's data home."""
+    data_home = case / "run" / "data-home"
+    venv = case / "run" / "data-home-venv"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text("home = /previous\n", encoding="utf-8")
+    (venv / "bin" / "kirocrew").write_text("#!/bin/sh\necho previous\n", encoding="utf-8")
+    (venv / "bin" / "kirocrew").chmod(0o755)
+    data_home.mkdir(parents=True)
+    return venv
+
+
+def test_venv_rebuild_that_lands_a_bare_venv_restores_the_previous_install(
+    tmp_path: Path, signing_key: SigningKey
+) -> None:
+    """A pip step that EXITS ZERO but leaves the rebuilt venv without an
+    importable ``kiro_crew`` or a ``bin/kirocrew`` console script (a rebuilt
+    managed venv holding only pip) is NOT a usable install and must not be
+    committed. The post-install verification runs while the rollback is still
+    armed, so such a rebuild restores the previous install instead of disarming
+    the rollback and deleting the pre-rebuild backup -- the one working copy --
+    on pip's exit code alone, which would leave a dangling launcher."""
+    case = tmp_path / "case"
+    venv = _existing_managed_venv(case)
+
+    result, _argv = _run_installer(
+        case, signing_key, with_pipx=False, extra_env={"FAKE_PIP_INSTALL_EMPTY": "1"}
+    )
+
+    assert result.returncode == 1
+    assert "left no usable kirocrew" in result.stderr
+    assert "The previous install was restored" in result.stderr
+    # The working copy is back at the venv path, whole, and the backup is gone.
+    assert (venv / "pyvenv.cfg").read_text(encoding="utf-8") == "home = /previous\n"
+    assert (venv / "bin" / "kirocrew").read_text(encoding="utf-8") == "#!/bin/sh\necho previous\n"
+    assert not list(case.glob("run/data-home-venv.pre-rebuild.*"))
+
+
+def test_venv_rebuild_that_lands_a_usable_venv_commits_and_drops_the_backup(
+    tmp_path: Path, signing_key: SigningKey
+) -> None:
+    """The verification is a gate, not a block: a rebuild whose pip DID land a
+    usable kirocrew (bin/kirocrew present and kiro_crew importable) commits
+    normally -- the new venv is in place and the pre-rebuild backup is removed."""
+    case = tmp_path / "case"
+    venv = _existing_managed_venv(case)
+
+    result, _argv = _run_installer(case, signing_key, with_pipx=False)
+
+    assert result.returncode == 0, result.stderr
+    assert (venv / "bin" / "kirocrew").read_text(encoding="utf-8") == "#!/bin/sh\necho kirocrew\n"
+    assert (venv / ".kiro_crew_installed").exists()
+    assert not list(case.glob("run/data-home-venv.pre-rebuild.*"))
+
+
+def test_venv_rebuild_verifies_before_dropping_the_backup() -> None:
+    """The import/console-script check sits inside the transactional span: it
+    runs after the wheel install and BEFORE _VENV_MOVED is cleared and the
+    backup deleted, so a failure still reaches the restore. Pin that order in
+    cli.sh so a later edit cannot move the verify past the commit."""
+    body = INSTALLER.read_text(encoding="utf-8")
+    verify = body.index("import kiro_crew' >/dev/null 2>&1; then")
+    commit = body.index("# Committed: the wheel landed and imports")
+    disarm = body.index("_VENV_MOVED=0\n  trap 'rm -rf \"$TMP\"' EXIT INT TERM")
+    assert verify < commit < disarm, (verify, commit, disarm)
+
+
 def test_pipx_failure_restores_the_previous_install(
     tmp_path: Path, signing_key: SigningKey
 ) -> None:
@@ -736,10 +831,10 @@ def test_restore_checks_the_path_is_gone_before_moving() -> None:
     by `mv backup target` remains, since that pair is what nests on residue."""
     body = INSTALLER.read_text(encoding="utf-8")
     # pipx rollback, the venv rebuild's EXIT rollback, and
-    # _venv_restore_after_failure, which the venv-create and wheel-install
-    # failure branches both call.
+    # _venv_restore_after_failure, which the venv-create, wheel-install and
+    # post-install-verification failure branches all call.
     assert body.count("_restore_tree ") == 3, body.count("_restore_tree ")
-    assert body.count("      _venv_restore_after_failure \\\n") == 2
+    assert body.count("      _venv_restore_after_failure \\\n") == 3
     assert 'if [ -e "$2" ] || [ -L "$2" ]; then\n    return 1' in body
     for target in ('"$_PIPX_VENV"', '"$VENV"'):
         assert f"rm -rf {target} 2>/dev/null || true\n      mv " not in body, target
