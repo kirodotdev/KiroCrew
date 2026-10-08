@@ -190,4 +190,41 @@ describe('useSessionActions', () => {
     expect(dispatchSpy).not.toHaveBeenCalled()
     dispatchSpy.mockRestore()
   })
+
+  it('close asks first for a session with a turn in flight, even with confirmCloseSession off', () => {
+    // The sidebar row ✕ and the session menu share this close. It must ask on
+    // the same busy rule Cmd+W uses, or a click stops live work with no warning.
+    // Its own key: an earlier test's close of SLOT is still settling.
+    const BUSY = 'chat-actions-busy'
+    store.dispatch(sseSlots([{ key: BUSY, title: BUSY, messages: 1, running: true, folder_id: '' }]))
+    cfgMock.loadChatConfig.mockReturnValue({ confirmCloseSession: false })
+    const decline = vi.fn(() => false)
+    vi.stubGlobal('confirm', decline)
+    const dispatchSpy = vi.spyOn(store, 'dispatch')
+    const a = renderActions()
+    dispatchSpy.mockClear()
+    act(() => a.current.close(BUSY))
+    expect(decline).toHaveBeenCalledTimes(1)
+    expect(dispatchSpy).not.toHaveBeenCalled()
+
+    // Accepting the ask closes it.
+    vi.stubGlobal('confirm', vi.fn(() => true))
+    act(() => a.current.close(BUSY))
+    expect(dispatchSpy).toHaveBeenCalled()
+    dispatchSpy.mockRestore()
+  })
+
+  it('close stays instant for an idle session with confirmCloseSession off', () => {
+    seed()
+    cfgMock.loadChatConfig.mockReturnValue({ confirmCloseSession: false })
+    const ask = vi.fn(() => false)
+    vi.stubGlobal('confirm', ask)
+    const dispatchSpy = vi.spyOn(store, 'dispatch')
+    const a = renderActions()
+    dispatchSpy.mockClear()
+    act(() => a.current.close(SLOT))
+    expect(ask).not.toHaveBeenCalled()
+    expect(dispatchSpy).toHaveBeenCalled()
+    dispatchSpy.mockRestore()
+  })
 })

@@ -8,6 +8,7 @@ import { emitSlotRead } from '../lib/slotReadRelay'
 import { copySessionLink } from '../utils/shareUrl'
 import { useMoveSlotToFolder } from './useMoveSlotToFolder'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
+import { sessionIsBusyForClose } from '../lib/closeBusyGate'
 import { commitPinnedSessionOperations, commitPinnedSessionSnapshot, readPinnedSessionOrder, reconcilePinnedSessionOrder } from '../utils/pinnedSessionOrder'
 import { i18nT } from '../i18n/t'
 import type { ChatSlot } from '../types'
@@ -338,8 +339,12 @@ export function useSessionActions(mode?: string): SessionActions {
 
   const reload = useCallback((slotKey: string) => { reloadMutate(slotKey) }, [reloadMutate])
 
+  // The sidebar row ✕ and every session menu close land here. A busy session
+  // always asks, on the same rule as Cmd+W (`sessionIsBusyForClose`); an idle
+  // one keeps the user's `confirmCloseSession` setting.
   const close = useCallback((slotKey: string) => {
-    if (!loadChatConfig().confirmCloseSession || confirm(i18nT('hooks.useSessionActions.close_this_session'))) dispatch(deleteSlot(slotKey))
+    const mustConfirm = loadChatConfig().confirmCloseSession || sessionIsBusyForClose(store.getState(), slotKey)
+    if (!mustConfirm || confirm(i18nT('hooks.useSessionActions.close_this_session'))) dispatch(deleteSlot(slotKey))
   }, [dispatch])
 
   return { duplicate, toggleRead, togglePin, copyLink, move, reload, close }

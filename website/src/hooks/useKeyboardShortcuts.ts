@@ -1,9 +1,8 @@
 import { useEffect, useCallback, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAppDispatch, useAppStore } from '../store'
-import { switchSlot, deleteSlot, openActivityToTab, selectSidebarStartedSubagentCounts, selectSidebarApprovalCounts, selectSidebarWorkflowActive, selectSidebarAutomationRunningKeys } from '../store/chatSlice'
-import { inferLane } from '../pages/chat/sessionLane'
-import { normalizeRunSessionKey } from '../apps/workflows/runModel'
+import { switchSlot, deleteSlot, openActivityToTab } from '../store/chatSlice'
+import { sessionIsBusyForClose } from '../lib/closeBusyGate'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
 import { focusComposerElement, queryComposerOrExpand, queryPendingApprovalAction, releaseComposerForKeyboardSwitch } from '../pages/chat/composerFocus'
 import { reportSeamCollision } from '../apps/seamCollision'
@@ -1021,39 +1020,17 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
         // ⌘N / Ctrl+N (alias Option/Alt+Shift+N): new session.
         'new-chat': () => onNewChat(),
         // ⌘W / Ctrl+W (alias Option/Alt+Shift+W): close the current session —
-        // same semantics as the header-menu close (gated by confirmCloseSession,
-        // dispatches deleteSlot). One addition for the NEW chord surface: a
-        // session that is not IDLE always confirms. ⌘W/Ctrl+W is the most
+        // same semantics as the header-menu / sidebar close (gated by
+        // confirmCloseSession, dispatches deleteSlot, and a session that is not
+        // idle always confirms — `sessionIsBusyForClose`). ⌘W/Ctrl+W is the most
         // habitual chord there is (it closed the WINDOW in the previous desktop
-        // release on Windows/Linux), and `confirmCloseSession` defaults off — a
-        // default calibrated for the hard-to-mispress ⌥⇧W. An idle session is
-        // losslessly reopenable from the sidebar's older-sessions list, so it
-        // keeps the user's confirm setting; anything else is where a stray
-        // keystroke costs work, so it asks.
-        //
-        // "Not idle" is the sidebar's own lane inference, not `slot.running`: that
-        // flag covers only the slot's own turn and reads FALSE between the cycles
-        // of an armed goal loop, during a dynamic workflow, and while background
-        // sub-agents run — all of which `deleteSlot` retires. Reusing `inferLane`
-        // with the same extras the sidebar computes keeps this gate and the
-        // Working/Waiting/Needs-approval lanes from ever disagreeing. Queued
-        // children are not in the lane (nothing has started), but closing
-        // retires them too, so they confirm on their own term.
+        // release on Windows/Linux). The ⌥⇧W alias keeps its shipped behaviour:
+        // only the user's confirm setting gates it.
         'close-chat': () => {
           if (!activeSlot) return
-          const slot = slots.find(s => s.key === activeSlot)
-          const state = appStore.getState()
-          const subagentsRunning = selectSidebarStartedSubagentCounts(state)[activeSlot] || 0
-          const subagentsQueued = state.chat.subagentQueued?.[activeSlot] || 0
-          const lane = slot ? inferLane(slot, {
-            subagentAwaiting: Math.min(selectSidebarApprovalCounts(state)[activeSlot] || 0, subagentsRunning),
-            workflowActive: normalizeRunSessionKey(activeSlot) in selectSidebarWorkflowActive(state),
-            goalLoopActive: selectSidebarAutomationRunningKeys(state).includes(activeSlot),
-            detailedSubagentsRunning: subagentsRunning > 0,
-          }) : 'idle'
           const modChord = e.metaKey || e.ctrlKey
           const mustConfirm = loadChatConfig().confirmCloseSession
-            || (modChord && (lane !== 'idle' || subagentsQueued > 0))
+            || (modChord && sessionIsBusyForClose(appStore.getState(), activeSlot))
           if (!mustConfirm || confirm(i18nT('hooks.useKeyboardShortcuts.close_this_session'))) {
             dispatch(deleteSlot(activeSlot))
           }
