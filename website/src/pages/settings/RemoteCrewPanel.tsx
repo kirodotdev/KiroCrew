@@ -527,7 +527,11 @@ function SigninPromptBlock({ job, onRestart, restarting, onFetch, fetching, noti
         {starting
           ? i18nT('pages.settings.remoteCrewPanel.sign_in_starting')
           : stale
-            ? i18nT('pages.settings.remoteCrewPanel.sign_in_unconfirmed')
+            // The "start over" sentence names the link below, so it is shown
+            // only where that link is: a crew that never registered has none.
+            ? canRestart
+              ? `${i18nT('pages.settings.remoteCrewPanel.sign_in_unconfirmed')} ${i18nT('pages.settings.remoteCrewPanel.sign_in_unconfirmed_expired')}`
+              : i18nT('pages.settings.remoteCrewPanel.sign_in_unconfirmed')
             : awaiting
               // Names the two sign-ins as ONE act. The reader could not tell
               // whether the Kiro sign-in step and the company SSO approval were
