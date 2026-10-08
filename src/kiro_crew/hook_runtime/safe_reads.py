@@ -9,6 +9,7 @@ from __future__ import annotations
 import errno
 import os
 import stat as _stat
+import sys
 import tempfile
 from collections.abc import Callable
 from typing import TYPE_CHECKING
@@ -467,6 +468,46 @@ def safe_read_prefix(raw: str, n: int) -> bytes | None:
         with os.fdopen(fd, "rb", closefd=False) as fh:
             return fh.read(n)
     except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
+def safe_read_range(raw: str, offset: int, n: int) -> bytes | None:
+    """Read *n* bytes starting at *offset* through :func:`safe_read_prefix`'s guards.
+
+    For a caller that probes a large file at a few offsets (a binary search of a
+    pack index) and so cannot read a prefix. ``validate_file_path``
+    canonicalizes via ``realpath`` (following symlinks) and rejects sensitive
+    resolved targets, so a symlink pointing into ``~/.aws`` etc. is refused
+    before any read. The open goes through
+    :func:`kiro_crew.platform_compat.open_file_no_reparse` as TOCTOU defense
+    against a final-component link swap after the check — a refusal that holds on
+    Windows too, where ``O_NOFOLLOW`` does not exist. A short read means the file
+    ends before ``offset + n``; the caller decides what that means.
+
+    Returns the bytes read, or None if the path is rejected or unreadable.
+    """
+    if n <= 0:
+        return b""
+    if offset < 0:
+        return None
+    if offset > sys.maxsize:
+        return None
+    path = validate_file_path(raw)
+    if path is None:
+        return None
+    try:
+        fd = platform_compat.open_file_no_reparse(path, nonblocking=True)
+    except OSError:
+        return None
+    try:
+        if not _opened_file_matches_validated_path(fd, path):
+            return None
+        with os.fdopen(fd, "rb", closefd=False) as fh:
+            fh.seek(offset)
+            return fh.read(n)
+    except (OSError, ValueError, OverflowError):
         return None
     finally:
         os.close(fd)

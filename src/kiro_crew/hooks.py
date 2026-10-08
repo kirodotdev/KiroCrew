@@ -140,6 +140,7 @@ from kiro_crew.hook_runtime.safe_reads import (  # noqa: F401
     safe_read_file_bytes_nolink,
     safe_read_file_bytes_with_identity,
     safe_read_prefix,
+    safe_read_range,
     stat_identity,
     validate_file_path,
 )

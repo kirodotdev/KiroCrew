@@ -1241,6 +1241,7 @@ def vet_and_audit(
     session_key: str,
     tool_name: str,
     app: str = "",
+    agent: str = "",
     fail_closed: bool = False,
     log_warning: bool = True,
 ) -> "object":
@@ -1266,6 +1267,7 @@ def vet_and_audit(
         scope,
         item,
         session_key=session_key,
+        agent=agent,
         app=app,
         log_warning=log_warning,
         fail_closed=fail_closed,

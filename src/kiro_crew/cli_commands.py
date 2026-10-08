@@ -115,6 +115,7 @@ from kiro_crew.external_text import external_text_requires_redaction
 from kiro_crew.history import ConversationLog
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.learn import LessonStore
+from kiro_crew.lesson_cites import capture_cites
 from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.mcp_cron import (
     _vet_cron_capability_governance,
@@ -3071,7 +3072,29 @@ def _learn(args: argparse.Namespace) -> None:
             # So there is no fallback here, not a narrowed one. There is no "vector
             # store unavailable" state to fall back from: ``vs`` is constructed and
             # ``init()``-ed unconditionally above.
-            result = vs.write_lesson(rule, category, negative)
+            # Cites resolve against the repository the command runs in. A cite that
+            # is not a readable file there is named and left out; the lesson is
+            # still saved.
+            captured = capture_cites(
+                getattr(args, "cite", None) or [], (rule, negative or ""), Path.cwd()
+            )
+            for cite_path, cite_reason in captured.refused:
+                print(f"Cite not recorded: {cite_path}: {cite_reason}", file=sys.stderr)
+            result = vs.write_lesson(
+                rule,
+                category,
+                negative,
+                cites=captured.cites,
+                cited_commit=captured.cited_commit,
+            )
+            # Reported only when the write landed: a refused or deduplicated lesson
+            # stored nothing, so its cites were not recorded.
+            if captured.from_text and result.wrote:
+                print(
+                    "Also recorded as cited files, because the rule's text names them: "
+                    + ", ".join(captured.from_text),
+                    file=sys.stderr,
+                )
             neg = f" ({negative})" if negative else ""
             # What the save COST. The store's dedup rules tombstone a stored lesson
             # the submitted rule contains or heavily overlaps, and printing "Saved:"

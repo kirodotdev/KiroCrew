@@ -58,17 +58,19 @@ class TestProjectScopeSatisfied:
         # puts a real `.git` above the fixture and the walk would stop THERE,
         # offering `tmp_path/src/pkg` for `deep` and turning this fail-closed
         # case into the descendant case. The seam the walk reads is the `.git`
-        # existence probe, so it is pinned to "absent" for exactly those
+        # entry probe, so it is pinned to "absent" for exactly those
         # ancestors; probes inside the fixture, and every other path, stay real.
-        real_exists = Path.exists
+        from kiro_crew import project_scope as ps
+
+        real_has_git = ps._has_git_entry
         above = set(tmp_path.resolve().parents)
 
-        def _no_repository_above(self_path: Path, *args, **kwargs) -> bool:
-            if self_path.name == ".git" and self_path.parent in above:
+        def _no_repository_above(directory: Path) -> bool:
+            if directory in above:
                 return False
-            return real_exists(self_path, *args, **kwargs)
+            return real_has_git(directory)
 
-        monkeypatch.setattr(Path, "exists", _no_repository_above)
+        monkeypatch.setattr(ps, "_has_git_entry", _no_repository_above)
 
         (tmp_path / "src" / "pkg").mkdir(parents=True)
         deep = tmp_path / "src" / "pkg" / "sub"

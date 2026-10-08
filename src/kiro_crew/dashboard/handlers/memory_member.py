@@ -11,6 +11,7 @@ from aiohttp import web
 
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.executors import run_in_embed_pool
+from kiro_crew.lesson_cites import run_for_session
 from kiro_crew.memory_recall import bound_recall_payload, recall_json, recall_terms
 from kiro_crew.session_surface import dashboard_surfaced_keys
 
@@ -231,10 +232,17 @@ async def api_memory_recall(request: web.Request) -> web.Response:
         # discarded -- and a retried recall would leave two rows for one tool call.
         decision_pending: list = []
         session = request.headers.get("X-Session-Key", "")
+        slot = (getattr(state, "_slots", {}) or {}).get(
+            session.split(":", 1)[-1] if ":" in session else session
+        )
+        slot_agent = getattr(slot, "agent", "") if slot is not None else ""
         result = (
             await run_in_embed_pool(
+                run_for_session,
+                session,
                 tier.recall,
                 query,
+                _cite_agent=slot_agent if isinstance(slot_agent, str) else "",
                 cap=3000,
                 project_dir=str(project) if project else None,
                 keep=_memory_recall_keep(session, query, decision_pending, name),

@@ -14,12 +14,18 @@ never rendered into the prompt at all.
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
 from kiro_crew.security import is_sensitive_path
 
-__all__ = ["SCOPE_FRAGMENT_RE", "project_scope_satisfied"]
+__all__ = [
+    "SCOPE_FRAGMENT_RE",
+    "find_repo_root",
+    "project_scope_satisfied",
+    "resolve_in_project",
+]
 
 # One segment: no separator, and no ":" so a drive-qualified fragment cannot pass
 # (``pathlib`` treats "C:/x" as absolute and would discard the project root). The
@@ -100,6 +106,8 @@ def scope_selector_is_inadmissible(raw: str) -> bool:
 def project_scope_satisfied(relpath: str, project_dir: str | Path | None) -> bool:
     """Whether an entry scoped to *relpath* applies to *project_dir*.
 
+    A boolean view of :func:`resolve_in_project`, which holds the rules below.
+
     *relpath* is a path fragment that identifies a repository by something it
     contains -- ``src/kiro_crew`` names the Kiro Crew source tree. The entry
     applies when *project_dir* or any ancestor of it holds that fragment, so a
@@ -163,20 +171,35 @@ def project_scope_satisfied(relpath: str, project_dir: str | Path | None) -> boo
     entry would silently apply everywhere. "Inside the repository identified by
     this fragment" is the question, so nothing above that repository can answer it.
     """
+    return resolve_in_project(relpath, project_dir) is not None
+
+
+def resolve_in_project(relpath: str, project_dir: str | Path | None) -> Path | None:
+    """The resolved path of *relpath* inside *project_dir*'s repository, or None.
+
+    The one resolver behind every question of the form "does this fragment name
+    something inside the session's repository": :func:`project_scope_satisfied`
+    asks whether it exists, and a caller that needs to READ what it names (a
+    lesson's cited file) takes the returned path. Every refusal -- an
+    inadmissible fragment, no or a relative project, a missing path, a symlink
+    that leaves the repository, a sensitive target -- answers the same ``None``, so
+    the result is never an existence oracle for a path the caller may not read.
+    The rules and their reasons are on :func:`project_scope_satisfied`.
+    """
     if not scope_is_admissible(relpath):
-        return False
+        return None
     rel = relpath.strip().replace("\\", "/").strip("/")
     if not project_dir:
-        return False
+        return None
     # Absolute FIRST: ``resolve()`` would anchor a relative project to
     # ``Path.cwd()``, which is the dependence the docstring rules out.
     try:
         given = Path(project_dir)
         if not given.is_absolute():
-            return False
+            return None
         root = given.resolve()
     except (OSError, RuntimeError, ValueError):
-        return False
+        return None
     for candidate in _walk_to_repo_root(root):
         # Resolve FIRST, then judge the resolved path. Checking the unresolved join
         # was a static bypass, not merely a race: a symlink already in the tree
@@ -198,18 +221,33 @@ def project_scope_satisfied(relpath: str, project_dir: str | Path | None) -> boo
         # it, whether or not that target is sensitive -- the sensitive check below
         # only ever covered the subset that is.
         if not resolved.is_relative_to(candidate):
-            return False
+            return None
         if is_sensitive_path(str(resolved)):
-            return False
-        return True
-    return False
+            return None
+        return resolved
+    return None
+
+
+def _has_git_entry(directory: Path) -> bool:
+    """Whether *directory* holds a ``.git`` entry, seen without following it.
+
+    ``lstat`` reports a link or junction as itself. ``exists()`` would follow it, and
+    on Windows a junction named ``.git`` can point at a UNC share, so the probe itself
+    would open an outbound SMB connection that authenticates as this process. A linked
+    ``.git`` still marks the boundary; it is just never traversed here.
+    """
+    try:
+        os.lstat(directory / ".git")
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    return True
 
 
 def _walk_to_repo_root(root: Path) -> list[Path]:
     """*root* and its ancestors, stopping at the repository root inclusive.
 
-    A ``.git`` entry marks that boundary -- tested with ``exists()`` rather than
-    ``is_dir()`` because a worktree's ``.git`` is a FILE, and a worktree is exactly
+    A ``.git`` entry marks that boundary -- tested for presence rather than as a
+    directory because a worktree's ``.git`` is a FILE, and a worktree is exactly
     where this repository's own contributors work.
 
     With no ``.git`` anywhere above it, only *root* itself is offered: a fragment
@@ -221,8 +259,31 @@ def _walk_to_repo_root(root: Path) -> list[Path]:
     for candidate in (root, *root.parents):
         chain.append(candidate)
         try:
-            if (candidate / ".git").exists():
+            if _has_git_entry(candidate):
                 return chain
         except OSError:
             break
     return [root]
+
+
+def find_repo_root(project_dir: str | Path | None) -> Path | None:
+    """The repository root above *project_dir*, or None when it is not in one.
+
+    Applies the same entry rules as :func:`resolve_in_project` (an absolute project
+    only, never the working directory) and the same bounded walk, so a caller that
+    reads repository metadata cannot be pointed above the checkout.
+    """
+    if not project_dir:
+        return None
+    try:
+        given = Path(project_dir)
+        if not given.is_absolute():
+            return None
+        root = given.resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    chain = _walk_to_repo_root(root)
+    try:
+        return chain[-1] if _has_git_entry(chain[-1]) else None
+    except OSError:
+        return None

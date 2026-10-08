@@ -27,8 +27,10 @@ if TYPE_CHECKING:
 SKIP = None
 
 
-def legacy_lessons(path: Path) -> Iterator[tuple[Any, Any, Any, Any, str | None] | None]:
-    """``(rule, category, negative, repo_scope, applies)`` per ``lessons.jsonl`` line.
+def legacy_lessons(
+    path: Path,
+) -> Iterator[tuple[Any, Any, Any, Any, str | None, Any, Any] | None]:
+    """``(rule, category, negative, repo_scope, applies, cites, cited_commit)`` per line.
 
     Yields :data:`SKIP` for a line that does not decode, and for one whose
     ``repo_scope`` is PRESENT but unusable: an absent scope means global, but a
@@ -44,6 +46,9 @@ def legacy_lessons(path: Path) -> Iterator[tuple[Any, Any, Any, Any, str | None]
     is normalized READ-safely (``authored_lesson_applies``, not the write path's
     raising form): this reads the file directly, so a hand-edited or
     future-schema value must migrate the row as unstated rather than abort.
+
+    Carries the cited files and commit too, so a row that was anchored to code stays
+    anchored; ``write_lesson`` normalizes both, so a malformed value arrives as none.
     """
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
@@ -62,7 +67,15 @@ def legacy_lessons(path: Path) -> Iterator[tuple[Any, Any, Any, Any, str | None]
         except (json.JSONDecodeError, KeyError):
             yield SKIP
             continue
-        yield rule, category, negative, raw_scope, applies
+        yield (
+            rule,
+            category,
+            negative,
+            raw_scope,
+            applies,
+            data.get("cites"),
+            data.get("cited_commit"),
+        )
 
 
 def preference_bullets(files: MemoryFiles, path: Path) -> Iterator[str]:

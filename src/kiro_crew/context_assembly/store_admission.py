@@ -120,14 +120,15 @@ def turn_lessons_block(
     with builder._lessons_shown_lock:
         snapshot = builder._live_shown_lessons(session_key).copy()
     try:
-        chosen = store.turn_lessons(
-            text,
-            shown=snapshot.shown,
-            project_dir=project,
-            max_rows=_TURN_LESSONS_MAX,
-            max_chars=_TURN_LESSONS_CHARS,
-            render_lesson=_markers._scrub_turn_lesson,
-        )
+        with ctx.cite_session(session_key):
+            chosen = store.turn_lessons(
+                text,
+                shown=snapshot.shown,
+                project_dir=project,
+                max_rows=_TURN_LESSONS_MAX,
+                max_chars=_TURN_LESSONS_CHARS,
+                render_lesson=_markers._scrub_turn_lesson,
+            )
     except (OSError, ValueError, RuntimeError, ctx.sqlite3.Error):
         logger.warning("Per-message lessons skipped: the lesson store could not be read")
         return ""
