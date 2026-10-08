@@ -1632,7 +1632,10 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "previews) that would otherwise cross to the dashboard verbatim, the "
         "same class the sibling `/activity` HTTP read redacts. "
         "`_redact_projection_value` runs the shared exfiltration-URL then "
-        "credential chain over the view before broadcast; it is applied at the "
+        "credential chain over the view before broadcast, plus the "
+        "URL-secret-parameter layer the sibling roster egress runs, so a short "
+        "credential carried as a URL query parameter cannot slip the two "
+        "heuristics; it is applied at the "
         "network boundary rather than the fold so the stored projection keeps "
         "its raw value for server-side folds while nothing leaves unredacted.",
     ),

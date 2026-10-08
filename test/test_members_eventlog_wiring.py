@@ -26,6 +26,7 @@ from chat_test_helpers import _make_state
 from kiro_crew import eventlog_hooks, members
 from kiro_crew.config.loader import KiroCrewAgentConfig
 from kiro_crew.dashboard.handlers import members as handlers_members
+from kiro_crew.dashboard.handlers.core import _SENSITIVE_MASK
 from kiro_crew.eventlog import types
 from kiro_crew.eventlog.service import get_service, set_service
 
@@ -675,6 +676,56 @@ class TestApiMembersProjections:
             "no avatar was projected, so this asserts nothing about redaction: " f"{sorted(roster)}"
         )
         assert roster["avatar"] != secret_url
+
+    @pytest.mark.asyncio
+    async def test_a_short_url_param_leaf_is_scrubbed_in_the_projection_as_in_the_row(
+        self, tmp_path, monkeypatch, live_config_stamp_matches
+    ):
+        """A short secret URL parameter must not survive in the roster projection.
+
+        ``GET /api/members`` ships the same config leaf twice: once as the row's
+        own field (through ``_roster_mask`` / ``redact_external_text``) and once
+        inside ``projections.values.roster`` (through ``_redact_projection_value``).
+        A value such as ``https://h.example/v1?api_key=abc123`` -- whose query is
+        far under the exfiltration pass's length floor and whose value is not
+        credential-shaped -- is masked in the ROW but, unless the projection chain
+        carries the same URL-secret-parameter layer, travels verbatim in the
+        projection block, and ``MembersPage`` renders the projection in preference
+        to the row. The two chains must agree, so the projection carries the mask
+        too and the secret appears nowhere in the response.
+        """
+        import json
+
+        leaf = "https://h.example/v1?api_key=abc123"
+        cfg = _fake_config({CREW: _agent(model=leaf)})
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.members.KiroCrewConfig.load", lambda: cfg)
+        slug = members.slug_for_name(CREW)
+        svc = get_service()
+        svc.ensure(slug, CREW)
+
+        state = _make_state(tmp_path)
+        async with TestClient(TestServer(_members_app(state))) as client:
+            data = await (await client.get("/api/members")).json()
+
+        row = data["members"][0]
+        # The row masks it: pinned so the projection assertion below is measured
+        # against a real divergence between the two egress chains.
+        assert row["model"] == _SENSITIVE_MASK, (
+            "the row does not mask the short URL-secret param, so this test does "
+            "not exercise the row/projection divergence it is about"
+        )
+        # The projection must carry the same mask as the row; the whole response
+        # must not ship the secret.
+        roster = row["projections"]["values"].get(types.PROJ_ROSTER)
+        assert roster is not None, "the roster view was dropped rather than redacted"
+        assert "model" in roster, (
+            "the model leaf was not projected, so this asserts nothing about the "
+            f"projection chain: {sorted(roster)}"
+        )
+        assert "abc123" not in json.dumps(data), (
+            "the roster projection ships the short URL-secret param while the row "
+            "masks it; the two egress chains disagree"
+        )
 
     @pytest.mark.asyncio
     async def test_editing_model_appends_one_member_config_changed_model(

@@ -88,14 +88,26 @@ def _redact_projection_value(value: object) -> object:
     reads use, recursively, so a credential- or presigned-URL-shaped value an
     operator planted in an activity ``project`` (or any nested string) cannot
     reach the browser through the live projection push.
+
+    The string branch also applies the URL-secret-parameter layer
+    (``external_text.redact_url_secret_params``) that the sibling roster/agents
+    egress chain (``external_text.redact_external_text``, via ``_roster_mask``)
+    carries, so the two chains agree by construction. That layer catches a short
+    URL-embedded credential such as ``https://h.example/v1?api_key=abc123`` -- a
+    query under the exfiltration pass's length floor whose value is not
+    credential-shaped -- which the exfiltration and credential passes leave
+    untouched. Both the roster projection block (``GET /api/members``) and the
+    live member-projection WS push fold this function, and the roster ROW masks
+    the same leaf, so projection and row render it the same way.
     """
+    from kiro_crew.external_text import redact_url_secret_params
     from kiro_crew.security.exfil import redact_exfiltration_urls
     from kiro_crew.security.redaction import redact_credentials
 
     if isinstance(value, str):
         text, _ = redact_exfiltration_urls(value)
         text, _ = redact_credentials(text)
-        return text
+        return redact_url_secret_params(text)
     if isinstance(value, dict):
         # Redact keys too, not just values: a contributed projection key is
         # app-authored (`<app>/<name>`) and a nested data key can be arbitrary

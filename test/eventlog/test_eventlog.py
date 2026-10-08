@@ -673,6 +673,28 @@ def test_redact_projection_value_scrubs_keys_not_just_values():
     assert "AKIAIOSFODNN7EXAMPLE" not in blob
 
 
+def test_redact_projection_value_scrubs_short_url_secret_param():
+    """A short URL-embedded credential whose query is under the exfiltration
+    heuristic's length floor and whose value is not credential-shaped
+    (`?api_key=abc123`) is not altered by the exfiltration or credential passes,
+    so the projection chain must apply the URL-secret-parameter layer the
+    sibling roster egress carries. The roster projection block of GET /api/members
+    and the live member-projection WS push both fold this function and the roster
+    ROW masks the same leaf, so the value is masked here too."""
+    from kiro_crew.eventlog.service import _redact_projection_value
+
+    leaf = "https://h.example/v1?api_key=abc123"
+    out = _redact_projection_value({"roster": {"model": leaf}})
+    assert out["roster"]["model"] == "https://h.example/v1?api_key=[REDACTED]"
+    assert "abc123" not in json.dumps(out)
+
+    # Nested-list leaf: the str branch runs under list recursion too, so a secret
+    # carried inside a list value is masked just as a nested dict value is.
+    nested = _redact_projection_value({"roster": {"models": [leaf]}})
+    assert nested["roster"]["models"] == ["https://h.example/v1?api_key=[REDACTED]"]
+    assert "abc123" not in json.dumps(nested)
+
+
 def test_service_broadcast_never_raises(tmp_path, monkeypatch):
     import kiro_crew.members as members
 
