@@ -113,9 +113,19 @@ same name is listed, or the member has no memory of its own (`memory_store` is
 `default` crew is this case). A crewmate no template covers stays pickable: one made
 by hand with its own memory, and one running its own private copy, which the catalog
 never lists as a template. Withholding those left the agent unreachable from any
-chat, since neither group offered it. Turning the key on lists every member and
-restores the two groups; the folded `agents` list and the request contract below
-are unaffected either way.
+chat, since neither group offered it. The member named as the default agent
+(`default_agent` in the catalog response) stays even when covered, unless a listed
+template shares its name: new chats start on the default, and the composer's chip
+and the default badge show its member name, so a user who switched away searches
+for that name and the pop-up has to answer with a row. A same-named template is
+that row (the identical binding under the name searched for; the alias "set as
+default" enrols for a template is this case, and listing it too would show one
+agent twice), while a template of another name is not (the built-in `default` crew
+runs the listed `kirocrew` template, and a search for `default` found nothing). With
+the key off, a stock install's pop-up therefore lists the built-in `default` crewmate
+(wearing the default badge) under **Crewmates** above the **Custom agents** group.
+Turning the key on lists every member; the folded `agents` list and the request
+contract below are unaffected either way.
 A pick sends `agent_kind` with the name on slot create and on
 `/api/chat/slots/{slot}/agent`; the slot stores the committed kind, persists it with
 the other slot-owned metadata (`SLOT_OWNED_META_KEYS`, so a restart restores a

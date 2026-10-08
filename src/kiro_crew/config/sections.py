@@ -2767,8 +2767,9 @@ class DashboardConfig:
             "templates, so a chat can be switched onto a crewmate (and its own "
             "workspace and memory) without opening it from the Crew page. Off by "
             "default: the picker lists templates plus any crewmate no listed "
-            "template already covers. Takes effect when the dashboard is reloaded; "
-            "no gateway restart.",
+            "template already covers; the default agent stays even when covered, "
+            "unless a template shares its name. Takes effect when the dashboard is "
+            "reloaded; no gateway restart.",
         ),
     )
     qr_session_until_restart: bool = field(

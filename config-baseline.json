@@ -7418,7 +7418,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Crewmates in the chat agent picker",
-      "help": "List crewmates in the chat composer's agent picker, beside the agent templates, so a chat can be switched onto a crewmate (and its own workspace and memory) without opening it from the Crew page. Off by default: the picker lists templates plus any crewmate no listed template already covers. Takes effect when the dashboard is reloaded; no gateway restart.",
+      "help": "List crewmates in the chat composer's agent picker, beside the agent templates, so a chat can be switched onto a crewmate (and its own workspace and memory) without opening it from the Crew page. Off by default: the picker lists templates plus any crewmate no listed template already covers; the default agent stays even when covered, unless a template shares its name. Takes effect when the dashboard is reloaded; no gateway restart.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false

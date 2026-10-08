@@ -27,7 +27,9 @@ import type { KiroCrewAgent } from '../components/AgentSelector'
  *   `dashboard.crewmates_in_agent_picker` config is `true` (read from the shared
  *   `['kirocrewConfig']` query, like `useCrewmateThreadsFlag`), a member row is
  *   withheld when a listed template reaches the same binding (see
- *   `withoutCoveredCrewmates`); a crewmate no template covers stays pickable.
+ *   `withoutCoveredCrewmates`); a crewmate no template covers stays pickable, and
+ *   so does the member named as the default agent unless a listed template
+ *   shares its name.
  *   With the key on, every member is listed, a member and a template of one name
  *   are two rows here, and picking one sends its kind.
  * @returns `agents` — the same catalog folded to ONE row per name for the
@@ -125,8 +127,8 @@ export function useAgents(refreshTrigger: number, sessionKey?: string, projectDi
   // Filtered AFTER the fold, so hiding a member from the pop-up never changes
   // which row a bare name resolves to for the name-only consumers.
   const pickerChoices = useMemo(
-    () => (memberChoices ? choices : withoutCoveredCrewmates(choices)),
-    [choices, memberChoices],
+    () => (memberChoices ? choices : withoutCoveredCrewmates(choices, defaultAgent)),
+    [choices, memberChoices, defaultAgent],
   )
 
   return { agents, displayAgents, choices: pickerChoices, defaultAgent, error, reload, reloading }
@@ -139,21 +141,31 @@ export function useAgents(refreshTrigger: number, sessionKey?: string, projectDi
  *
  * - a template of the SAME name is listed, or
  * - the crewmate has no memory of its own (`memory_store === 'default'`) and runs
- *   a listed template -- picking that template is the identical binding (the
- *   built-in `default` crew is this case).
+ *   a listed template -- picking that template is the identical binding.
  *
  * Every other crewmate stays: one made by hand under its own name with its own
  * memory, and one whose agent is its own private copy (the catalog never lists a
  * private copy as a template). Withholding those left no way to pick them from a
  * chat at all.
+ *
+ * The member named as `defaultAgent` stays even when covered, unless a listed
+ * template shares its name. New chats start on the default, and the composer's
+ * chip and the default badge show its MEMBER name, so a user who switched away
+ * searches for that name and the pop-up has to answer with a row. A same-named
+ * template is that row (the identical binding under the name searched for, so
+ * listing the member too would show one agent twice: the alias "set as default"
+ * enrols for a template is this case). A template of another name is not: the
+ * built-in `default` crew runs the listed `kirocrew` template, and a search for
+ * `default` found nothing (#18239).
  */
-export function withoutCoveredCrewmates(choices: KiroCrewAgent[]): KiroCrewAgent[] {
+export function withoutCoveredCrewmates(choices: KiroCrewAgent[], defaultAgent: string): KiroCrewAgent[] {
   const templates = new Set(
     choices.filter(c => c.selection_kind === 'template').map(c => c.name),
   )
   const covered = (c: KiroCrewAgent) =>
     templates.has(c.name) || (c.memory_store === 'default' && templates.has(c.kiro_agent))
-  return choices.filter(c => c.selection_kind !== 'member' || !covered(c))
+  const namesTheDefault = (c: KiroCrewAgent) => c.name === defaultAgent && !templates.has(c.name)
+  return choices.filter(c => c.selection_kind !== 'member' || namesTheDefault(c) || !covered(c))
 }
 
 /** One row per name, member first — see `agents` in the hook's docs. */

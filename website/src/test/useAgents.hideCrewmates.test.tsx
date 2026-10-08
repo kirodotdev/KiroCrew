@@ -4,7 +4,10 @@
  * withholds a member row only when a listed template already reaches the same
  * binding. A crewmate no template covers -- made by hand with its own memory, or
  * running its own private copy -- must stay pickable, or it cannot be chosen from
- * a chat at all. With the key on, every member is listed. Either way the folded
+ * a chat at all. The member named as the default agent stays even when covered,
+ * unless a listed template shares its name, so a chat switched away from it can
+ * find it by name again (#18239). With the key on,
+ * every member is listed. Either way the folded
  * `agents` list is NOT filtered -- cron, channel and project bindings still see
  * every name, and a bare name still resolves member-first -- so the picker
  * setting can never change what a name-only consumer dispatches.
@@ -36,6 +39,9 @@ const catalog = [
 
 const COVERED_HIDDEN = [
   ['template', 'reviewer'],
+  // The built-in default crew is covered by the listed `kirocrew` template, but
+  // it is the default agent, so it stays: a chat must be able to switch back to it.
+  ['member', 'default'],
   ['template', 'atlas'],
   ['template', 'kirocrew'],
   ['member', 'my-helper'],
@@ -60,7 +66,7 @@ describe('useAgents keeps covered crewmates out of the picker unless the config 
     configApi.mockResolvedValue(cfg as never)
     const { result } = renderHookWithProviders(() => useAgents(0))
     await waitFor(() => expect(configApi).toHaveBeenCalled())
-    await waitFor(() => expect(result.current.choices).toHaveLength(5))
+    await waitFor(() => expect(result.current.choices).toHaveLength(6))
 
     expect(result.current.choices.map(c => [c.selection_kind, c.name])).toEqual(COVERED_HIDDEN)
   })
@@ -84,19 +90,29 @@ describe('useAgents keeps covered crewmates out of the picker unless the config 
   })
 
   it('withholds a same-name crewmate and an identity-less one on a listed template', () => {
-    const rows = withoutCoveredCrewmates(catalog as never)
-    const members = rows.filter(r => r.selection_kind === 'member').map(r => r.name)
     // `reviewer` shares its name with a template; `default` has no memory of its
     // own and runs the listed `kirocrew` template -- both are the same binding.
+    // With some other agent named as the default, both are withheld.
+    const rows = withoutCoveredCrewmates(catalog as never, 'tuned')
+    const members = rows.filter(r => r.selection_kind === 'member').map(r => r.name)
     expect(members).not.toContain('reviewer')
     expect(members).not.toContain('default')
+  })
+
+  it('keeps the covered crewmate that is the default agent', () => {
+    // The same catalog with `default` named as the default: it is still the same
+    // binding as the `kirocrew` template, and it stays anyway (#18239).
+    const rows = withoutCoveredCrewmates(catalog as never, 'default')
+    const members = rows.filter(r => r.selection_kind === 'member').map(r => r.name)
+    expect(members).toContain('default')
+    expect(members).not.toContain('reviewer')
   })
 
   it('keeps a crewmate whose own-memory binding is not a template pick', () => {
     // Without its template listed, an identity-less crewmate stays too.
     const rows = withoutCoveredCrewmates([
       { name: 'orphan', kiro_agent: 'gone', memory_store: 'default', selection_kind: 'member' },
-    ] as never)
+    ] as never, '')
     expect(rows.map(r => r.name)).toEqual(['orphan'])
   })
 
