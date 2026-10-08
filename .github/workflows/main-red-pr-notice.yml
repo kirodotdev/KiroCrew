@@ -105,6 +105,8 @@ jobs:
           PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
           BASE_SHA: ${{ github.event.workflow_run.pull_requests[0].base.sha }}
         run: |
+          warn() { printf '::%s::%s\n' warning "$*"; }
+          notice() { printf '::%s::%s\n' notice "$*"; }
           set -euo pipefail
           notice=.github/scripts/main_red_pr_notice.py
           nodeids=.github/scripts/main_red_nodeids.py
@@ -148,7 +150,7 @@ jobs:
             > "$work/timeline.ndjson" 2>/dev/null; then
             timeline_args=(--timeline "$work/timeline.ndjson")
           else
-            echo "::notice::Could not read the timeline of #$existing; the fix line says unknown."
+            notice "Could not read the timeline of #$existing; the fix line says unknown."
           fi
 
           # The failed jobs of this pull request run, newest cap 20 logs, as files.
@@ -163,7 +165,7 @@ jobs:
           while read -r job_id; do
             case "$job_id" in ''|*[!0-9]*) continue ;; esac
             if [ "$fetched" -ge 20 ]; then
-              echo "::notice::More than 20 failed jobs; reading the first 20."
+              notice "More than 20 failed jobs; reading the first 20."
               break
             fi
             fetched=$((fetched + 1))
@@ -175,20 +177,20 @@ jobs:
             rm -f "$work/logs/$job_id.json"
             # A log read after a rate-limited read fails the same way; stop reading.
             if grep -qi 'rate limit' "$work/read-error.txt"; then
-              echo "::warning::The API rate limit of this token is used up; stopped reading failed jobs at job $fetched."
+              warn "The API rate limit of this token is used up; stopped reading failed jobs at job $fetched."
               break
             fi
-            echo "::notice::Could not read the annotations of job $job_id ($(why)); trying its log."
+            notice "Could not read the annotations of job $job_id ($(why)); trying its log."
             if gh api "repos/$REPO/actions/jobs/$job_id/logs" \
               > "$work/logs/$job_id.log" 2> "$work/read-error.txt"; then
               readable=$((readable + 1))
             else
               rm -f "$work/logs/$job_id.log"
-              echo "::notice::Could not read the log of job $job_id ($(why)); skipping it."
+              notice "Could not read the log of job $job_id ($(why)); skipping it."
             fi
           done < "$work/failed-jobs.txt"
           if [ "$fetched" -gt 0 ] && [ "$readable" -eq 0 ]; then
-            echo "::warning::Could not read the annotations or the log of any of the $fetched failed job(s) of $RUN_URL; writing nothing."
+            warn "Could not read the annotations or the log of any of the $fetched failed job(s) of $RUN_URL; writing nothing."
             exit 0
           fi
           python3 "$nodeids" extract "$work/logs" > "$work/pr-failures.json"

@@ -61,9 +61,10 @@ jobs:
         env:
           TAG: ${{ matrix.tag }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           PURE=(dist/*-py3-none-any.whl)
-          [ "${#PURE[@]}" -eq 1 ] && [ -f "${PURE[0]}" ] || { echo "::error::expected one pure wheel in dist/"; exit 1; }
+          [ "${#PURE[@]}" -eq 1 ] && [ -f "${PURE[0]}" ] || { err "expected one pure wheel in dist/"; exit 1; }
           python -m venv "$RUNNER_TEMP/kc"
           "$RUNNER_TEMP/kc/bin/pip" install --quiet "${PURE[0]}"
           "$RUNNER_TEMP/kc/bin/python" scripts/kas_platform_wheel.py build "${PURE[0]}" --tag "$TAG" --out platform-dist
@@ -75,6 +76,7 @@ jobs:
 
       - name: Gate - a clean install runs the engine inside the wheel
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           "$RUNNER_TEMP/kc/bin/pip" install --quiet --no-deps --force-reinstall platform-dist/*.whl
           HOME_DIR="$(mktemp -d)"
@@ -85,9 +87,9 @@ jobs:
           found = kas_bundle.installed_bundle()
           assert found is not None and found.packaged, f"no engine inside the wheel: {found}"
           print(f"engine built into the wheel: {found.version} at {found.root}")
-          ' || { echo "::error::the installed platform wheel does not report its engine"; exit 1; }
+          ' || { err "the installed platform wheel does not report its engine"; exit 1; }
           if [ -e "$HOME_DIR/engines/kas" ] && [ -n "$(ls -A "$HOME_DIR/engines/kas")" ]; then
-            echo "::error::the platform wheel downloaded an engine into the data home"; exit 1
+            err "the platform wheel downloaded an engine into the data home"; exit 1
           fi
 
       - name: Upload platform wheel artifact

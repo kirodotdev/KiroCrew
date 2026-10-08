@@ -31,6 +31,7 @@ from ai_review_workflows_helpers import (
     _stub_path,
     _workflow,
 )
+from workflow_annotation_helpers import annotation_helpers
 
 from kiro_crew.testing.wait import default_timeout
 
@@ -47,6 +48,15 @@ RATE_LIMITED = "gh: API rate limit exceeded for installation ID 1. (HTTP 403)"
 def _helpers(lane: str) -> str:
     script = _step_script(_workflow(lane), STEP)
     return "\n".join(_shell_function(script, name) for name in FUNCTIONS)
+
+
+def _runnable_helpers(lane: str) -> str:
+    """The shared functions plus the annotation helpers their arms call.
+
+    The helper definitions are the step's, not the functions', so they sit
+    outside the byte-identity the lanes are held to.
+    """
+    return annotation_helpers(_step_script(_workflow(lane), STEP)) + _helpers(lane)
 
 
 def _rate_limit_200(
@@ -141,7 +151,7 @@ def _run(
     if max_wait:
         env["GH_READ_MAX_WAIT"] = max_wait
     script = _script_file(
-        tmp_path, "set -uo pipefail\n" + stubs + _helpers(lane) + driver, "gh_read.sh"
+        tmp_path, "set -uo pipefail\n" + stubs + _runnable_helpers(lane) + driver, "gh_read.sh"
     )
     result = subprocess.run(
         [bash, script],

@@ -74,6 +74,8 @@ jobs:
         # part: exit 1 continues with a warning (main-red-watch.yml reports reds
         # on main); any other exit means the session did not complete.
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          warn() { printf '::%s::%s\n' warning "$*"; }
           echo "::remove-matcher owner=python::"
           mem_mib=$(awk '/^MemTotal:/{print int($2/1024)}' /proc/meminfo)
           by_mem=$(( (mem_mib - 2048) / 2048 ))
@@ -89,13 +91,13 @@ jobs:
           echo "shard $GROUP: pytest exit $rc after $(( $(date +%s) - start ))s with $WORKERS workers" | tee -a "$GITHUB_STEP_SUMMARY"
           case "$rc" in
             0) ;;
-            1) echo "::warning::shard $GROUP had failing tests; what they ran is still in the map" ;;
-            *) echo "::error::pytest exited $rc before the session completed"; exit 1 ;;
+            1) warn "shard $GROUP had failing tests; what they ran is still in the map" ;;
+            *) err "pytest exited $rc before the session completed"; exit 1 ;;
           esac
           # A worker that died never wrote its part, so the shard's map would
           # silently miss tests: the plugin marks it, and the shard fails.
           if ls "$RUNNER_TEMP/test-map/$GROUP"/crashed-* > /dev/null 2>&1; then
-            echo "::error::shard $GROUP lost an xdist worker; its map would be incomplete"
+            err "shard $GROUP lost an xdist worker; its map would be incomplete"
             exit 1
           fi
           ls "$RUNNER_TEMP/test-map/$GROUP"/part-*.json > /dev/null
@@ -134,8 +136,9 @@ jobs:
       # Stdlib only: the builder needs no install.
       - name: Build the map
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           count=$(find parts -mindepth 1 -maxdepth 1 -type d -name 'test-map-shard-*' | wc -l)
-          [ "$count" -eq 8 ] || { echo "::error::expected 8 shard part sets, found $count"; exit 1; }
+          [ "$count" -eq 8 ] || { err "expected 8 shard part sets, found $count"; exit 1; }
           python scripts/ci_test_map.py build --parts parts --out test-map.json --commit "$GITHUB_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
           gzip -9 -k test-map.json
           echo "map gzip: $(stat -c %s test-map.json.gz) bytes" | tee -a "$GITHUB_STEP_SUMMARY"

@@ -43,6 +43,7 @@ from pathlib import Path
 import pytest
 import yaml
 from git_maintenance_helpers import git_maintenance_off_entries
+from workflow_annotation_helpers import annotation_helpers
 
 WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "add-contributor.yml"
 
@@ -328,7 +329,11 @@ def test_sweep_retries_and_truncates_a_partial_attempt(tmp_path):
         f"n=$(cat {counter} 2>/dev/null || echo 0); n=$((n+1)); echo $n >{counter}; "
         'echo "partial-$n"; [ "$n" -ge 2 ]'
     )
-    script = fn.group(1) + f"\nsleep() {{ :; }}\nsweep {out} bash -c '{flaky}'\n"
+    script = (
+        annotation_helpers(SCRIPT)
+        + fn.group(1)
+        + f"\nsleep() {{ :; }}\nsweep {out} bash -c '{flaky}'\n"
+    )
     subprocess.run(["bash", "-c", "set -euo pipefail\n" + script], check=True, capture_output=True)
     assert out.read_text(encoding="utf-8") == "partial-2\n"
 
