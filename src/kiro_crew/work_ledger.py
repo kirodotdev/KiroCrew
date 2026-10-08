@@ -195,6 +195,17 @@ MAX_ITEMS_PER_CONDUCTOR = 32
 #: run its course: once every item is closed, ``kirocrew ledger-sweep --purge``
 #: removes the finished ledger whole.
 MAX_STORED_ITEMS_PER_CONDUCTOR = WORK_STORED_ITEM_LIMIT
+#: How many items one GOAL may create, every round and re-plan together, when the
+#: user set no budget of their own. A spend bound, where the two above bound the
+#: store: reaching it means the conductor asks the user, then raises the cap with
+#: ``work_ledger_record action=goal item_cap=N``. Stored per board as
+#: :attr:`ConductorRecord.item_cap` and enforced by :func:`_create_item` on a board
+#: that has recorded a goal -- a queue board that never writes one (the pipeline
+#: and security conductors) keeps only the open and stored bounds.
+DEFAULT_GOAL_ITEM_CAP = 20
+#: The highest ``item_cap`` a goal write accepts: a cap past the stored bound could
+#: never be reached, so it would only hide that bound behind a different refusal.
+MAX_GOAL_ITEM_CAP = MAX_STORED_ITEMS_PER_CONDUCTOR
 MAX_EVENTS_PER_ITEM = 200
 MAX_DEPTH = 2
 
@@ -232,6 +243,7 @@ CODE_ALREADY_BOUND = "already_bound"
 CODE_ITEM_CLOSED = "item_closed"
 CODE_ITEM_CAP_EXCEEDED = "item_cap_exceeded"
 CODE_ITEM_STORE_FULL = "item_store_full"
+CODE_GOAL_ITEM_CAP_REACHED = "goal_item_cap_reached"
 CODE_CREW_LOG_INCOMPLETE = "crew_log_incomplete"
 CODE_CACHE_DIRTY = "cache_dirty"
 CODE_DEPTH_EXCEEDED = "depth_exceeded"
@@ -300,6 +312,23 @@ class ConductorRecord:
     #: sets it to the count the log holds. Zero on records from before it; the
     #: first create on such a board seeds it from the records on the board.
     created_total: int = 0
+    #: How many items the current goal may create -- :data:`DEFAULT_GOAL_ITEM_CAP`
+    #: unless a ``goal`` write set it. Measured against :attr:`goal_items_used`.
+    item_cap: int = DEFAULT_GOAL_ITEM_CAP
+    #: :attr:`created_total` when the current goal started, so the goal's own
+    #: creates are the difference. Only a goal write with ``new_goal=True`` moves
+    #: it: a reworded goal text, a round bump or a cap raise keeps the count.
+    #: :data:`LEGACY_GOAL_BASE` on a header from before this field: the
+    #: current goal then counts from the upgrade, and the next header write
+    #: settles it to the board's create total (:func:`_settle_goal_base`).
+    goal_items_base: int = 0
+
+    @property
+    def goal_items_used(self) -> int:
+        """How many items the current goal has created, re-plans included."""
+        if self.goal_items_base == LEGACY_GOAL_BASE:
+            return 0
+        return max(0, self.created_total - self.goal_items_base)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -314,6 +343,8 @@ class ConductorRecord:
             "goal_version": self.goal_version,
             "recorded_at": self.recorded_at,
             "created_total": self.created_total,
+            "item_cap": self.item_cap,
+            "goal_items_base": self.goal_items_base,
         }
 
     @classmethod
@@ -338,7 +369,37 @@ class ConductorRecord:
             goal_version=_as_int(raw.get("goal_version"), 0),
             recorded_at=_as_str(raw.get("recorded_at")),
             created_total=max(0, _as_int(raw.get("created_total"), 0)),
+            item_cap=_stored_item_cap(raw.get("item_cap")),
+            goal_items_base=(
+                max(0, _as_int(raw.get("goal_items_base"), 0))
+                if "goal_items_base" in raw
+                else LEGACY_GOAL_BASE
+            ),
         )
+
+
+#: The ``goal_items_base`` a header from before the field reads with. Its goal was
+#: set before the store counted per goal, so its earlier creates are not charged
+#: to it: it counts from the upgrade, never from the board's first create.
+LEGACY_GOAL_BASE = -1
+
+
+def _settle_goal_base(record: ConductorRecord) -> None:
+    """Turn a legacy count start into the board's create total, in place.
+
+    Called under the conductor lock after the create counter's one-time backfill,
+    so the goal starts counting at the upgrade and the next write stores the key.
+    """
+    if record.goal_items_base == LEGACY_GOAL_BASE:
+        record.goal_items_base = record.created_total
+
+
+def _stored_item_cap(value: Any) -> int:
+    """A stored ``item_cap``, or the default when it is absent or out of range."""
+    number = _finite_int(value)
+    if number is None or not 1 <= number <= MAX_GOAL_ITEM_CAP:
+        return DEFAULT_GOAL_ITEM_CAP
+    return number
 
 
 @dataclass
@@ -1738,6 +1799,8 @@ def apply_conductor_action(
     goal: Any = None,
     round_number: Any = None,
     fails: Any = None,
+    item_cap: Any = None,
+    new_goal: Any = None,
 ) -> dict[str, Any]:
     """Write the fields the CONDUCTOR owns, and append the one event that explains it.
 
@@ -1754,7 +1817,8 @@ def apply_conductor_action(
     ``decide``  ``item_id``, ``decision``, optional ``round_number``.
     ``verdict`` ``item_id``, ``verdict``, optional ``fails``.
     ``close``   ``item_id``, ``state``, optional ``decision`` — stamps ``closed_at``.
-    ``goal``    ``goal``, optional ``round_number`` — the conductor record only.
+    ``goal``    ``goal``, optional ``round_number``, ``item_cap`` and ``new_goal``
+                — the conductor record only.
 
     Returns ``{"conductor", "item", "event"}``; ``item`` and ``event`` are ``None``
     for ``goal``. Raises :class:`WorkLedgerError` with a ``code`` from the ``CODE_*``
@@ -1773,7 +1837,7 @@ def apply_conductor_action(
 
     if action == "goal":
         return {
-            "conductor": _write_goal(slot_key, record, goal, round_number),
+            "conductor": _write_goal(slot_key, record, goal, round_number, item_cap, new_goal),
             "item": None,
             "event": None,
         }
@@ -1833,7 +1897,12 @@ def _header_under_lock(slot_key: str, verb: str) -> ConductorRecord:
 
 
 def _write_goal(
-    slot_key: str, record: ConductorRecord, goal: Any, round_number: Any
+    slot_key: str,
+    record: ConductorRecord,
+    goal: Any,
+    round_number: Any,
+    item_cap: Any = None,
+    new_goal: Any = None,
 ) -> ConductorRecord:
     """Partial update of the conductor header, merged UNDER the lock.
 
@@ -1843,9 +1912,33 @@ def _write_goal(
     other's field to the stale value it read before waiting. *record* is the
     caller's pre-lock read, which is how the caller knew a ledger exists; nothing
     written here is taken from it.
+
+    ``new_goal=True`` starts a new goal, so its item count starts again:
+    :attr:`ConductorRecord.goal_items_base` moves to the board's create total. It
+    is an explicit signal and needs the new goal text with it; a goal text that
+    merely differs keeps the count, so rewording cannot reset the spend bound.
     """
     checked_goal = None if goal is None else _require_text(goal, MAX_GOAL_CHARS, "goal")
     checked_round = None if round_number is None else _require_count(round_number, "round")
+    checked_cap = None if item_cap is None else _require_count(item_cap, "item_cap")
+    if checked_cap is not None and not 1 <= checked_cap <= MAX_GOAL_ITEM_CAP:
+        raise WorkLedgerError(
+            f"item_cap must be between 1 and {MAX_GOAL_ITEM_CAP}; got {checked_cap}",
+            code=CODE_INVALID_VALUE,
+            field="item_cap",
+        )
+    if new_goal is not None and not isinstance(new_goal, bool):
+        raise WorkLedgerError(
+            f"new_goal must be true or false; got {new_goal!r}",
+            code=CODE_INVALID_VALUE,
+            field="new_goal",
+        )
+    if new_goal and checked_goal is None:
+        raise WorkLedgerError(
+            "new_goal starts a new goal, so it needs the new goal text in `goal`",
+            code=CODE_INVALID_VALUE,
+            field="new_goal",
+        )
     with _existing_conductor_lock(slot_key):
         # The header is re-read under the lock and REQUIRED to be present and
         # readable, like ``_create_item``: a ``goal`` that waited behind a purge
@@ -1855,8 +1948,17 @@ def _write_goal(
         current = _header_under_lock(slot_key, "its goal cannot be updated")
         if checked_goal is not None:
             current.goal = checked_goal
+        if current.created_total == 0 and (new_goal or current.goal_items_base == LEGACY_GOAL_BASE):
+            # The same one-time backfill ``_create_item`` does, so a board from
+            # before the counter starts the goal's count after its records.
+            current.created_total = len(_stored_item_ids(slot_key))
+        _settle_goal_base(current)
+        if new_goal:
+            current.goal_items_base = current.created_total
         if checked_round is not None:
             current.round = checked_round
+        if checked_cap is not None:
+            current.item_cap = checked_cap
         current.goal_version += 1
         _write_record(conductor_dir(slot_key) / _CONDUCTOR_FILE, current.to_dict())
         return current
@@ -1939,6 +2041,8 @@ def _create_item(
             # below; a refusal here leaves it unwritten and the next create seeds
             # it again, to the same value.
             live.created_total = len(_stored_item_ids(slot_key))
+        # A header from before the per-goal count: its goal counts from here.
+        _settle_goal_base(live)
         # The stored total first: a board that has admitted every create it may
         # ever admit is refused whatever its open count, so closed history cannot
         # carry the board past the fold's ceiling.
@@ -1951,6 +2055,19 @@ def _create_item(
                 "ledger whole",
                 code=CODE_ITEM_STORE_FULL,
                 field="items",
+            )
+        # The goal's own spend bound: every item this goal created, closed ones
+        # and every round's re-plans included. A person decides past it. Only a
+        # board that recorded a goal has one: a queue board never writes ``goal``.
+        if live.goal_version > 0 and live.goal_items_used >= live.item_cap:
+            raise WorkLedgerError(
+                f"this goal has created {live.goal_items_used} items and its item cap "
+                f"is {live.item_cap}. Dispatch nothing new and keep patrolling what is "
+                "in flight; ask the user whether to spend more, and if they agree "
+                "raise the cap with work_ledger_record action=goal item_cap=<new cap> "
+                f"(at most {MAX_GOAL_ITEM_CAP})",
+                code=CODE_GOAL_ITEM_CAP_REACHED,
+                field="item_cap",
             )
         # Only OPEN items count toward the fan-out cap: a closed item is history, not
         # fan-out. It stays on the board and ``list_work_items`` still returns it; it
@@ -3319,6 +3436,7 @@ def _rebuild_locked(
         }
     )
     existing = read_conductor(slot_key)
+    trusted_base = False
     if existing is not None:
         # Header fields the record never saw -- a goal set before the board's
         # first entry, the true creation stamp -- are the cache's to keep.
@@ -3336,6 +3454,18 @@ def _rebuild_locked(
             record = dataclasses.replace(record, generation=existing.generation)
         if existing.recorded_at:
             record = dataclasses.replace(record, recorded_at=existing.recorded_at)
+        # The goal's spend cap and where its count starts ride no crew-log entry,
+        # so they are the cache's to keep -- but only while the cache holds no
+        # goal write the record lacks. A dirty cache, or one a goal write ahead
+        # of the record, may carry a refused write's cap and count start; those
+        # are dropped for the defaults below, as for a board with no cache header.
+        if not cache_dirty(slot_key) and existing.goal_version == record.goal_version:
+            record = dataclasses.replace(
+                record, item_cap=existing.item_cap, goal_items_base=existing.goal_items_base
+            )
+            # A trusted header from before the per-goal count keeps its legacy
+            # status, settled below against the rebuilt total.
+            trusted_base = True
     if not record.recorded_at and record.goal_version:
         # The fold holds a goal entry, which is what the stamp asserts; a rebuild
         # that left it empty would exempt the header from the next check.
@@ -3396,7 +3526,17 @@ def _rebuild_locked(
     # a non-zero ``omitted`` there counts entries that are not this board's creates
     # (stragglers of a purged board, parked lines), which would refuse creates a
     # board has room for.
-    record = dataclasses.replace(record, created_total=len(kept) + len(legacy))
+    # Defaults for a cap the cache could not vouch for: cap 20, counted from the
+    # board's first create -- the side that asks the user sooner, never later. A
+    # kept count start past the new total is clamped so the count cannot go negative.
+    total = len(kept) + len(legacy)
+    if not trusted_base:
+        base = 0
+    elif record.goal_items_base == LEGACY_GOAL_BASE:
+        base = total
+    else:
+        base = min(record.goal_items_base, total)
+    record = dataclasses.replace(record, created_total=total, goal_items_base=base)
     _write_record(conductor_dir(slot_key) / _CONDUCTOR_FILE, record.to_dict())
     # The identity breadcrumb beside the record, as the bootstrap writes it, so a
     # cache rebuilt into an empty directory carries the same two files a new one does.

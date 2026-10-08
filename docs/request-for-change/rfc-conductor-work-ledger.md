@@ -591,7 +591,7 @@ which is checked against the derived item list rather than trusted from the argu
 `ttl_secs` and `max_messages` default to the caps rather than to unbounded, so a
 conductor that grants a channel carelessly still grants a channel that ends.
 
-Errors: `identity_unresolved` (403), `no_ledger` (404), `unknown_item` (404), `already_bound` (409), `item_closed` (409), `item_cap_exceeded` (409), `item_store_full` (409), `depth_exceeded` (409), `channel_cap_exceeded` (409), `field_too_long` (400), `invalid_action` (400), `invalid_value` (400).
+Errors: `identity_unresolved` (403), `no_ledger` (404), `unknown_item` (404), `already_bound` (409), `item_closed` (409), `item_cap_exceeded` (409), `item_store_full` (409), `goal_item_cap_reached` (409), `depth_exceeded` (409), `channel_cap_exceeded` (409), `field_too_long` (400), `invalid_action` (400), `invalid_value` (400).
 
 ### Worker-to-worker communication
 

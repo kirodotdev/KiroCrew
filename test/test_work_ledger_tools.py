@@ -395,6 +395,7 @@ async def test_every_store_code_maps_to_the_status_the_rfc_tabulates():
         "item_closed": 409,
         "item_cap_exceeded": 409,
         "item_store_full": 409,
+        "goal_item_cap_reached": 409,
         "depth_exceeded": 409,
         "crew_log_incomplete": 409,
         "cache_dirty": 409,
@@ -452,6 +453,9 @@ async def test_item_closed_is_409_for_both_halves():
 @pytest.mark.asyncio
 async def test_item_cap_exceeded_is_409():
     await two_by_two()
+    # Past the goal's default spend cap of 20, so the open cap is what bites.
+    status, _ = await _record(CONDUCTOR_A, {"action": "goal", "item_cap": wl.MAX_GOAL_ITEM_CAP})
+    assert status == 200
     for n in range(wl.MAX_ITEMS_PER_CONDUCTOR - 1):
         status, _ = await _record(
             CONDUCTOR_A,
@@ -464,6 +468,47 @@ async def test_item_cap_exceeded_is_409():
     )
     assert status == 409
     assert body["code"] == wl.CODE_ITEM_CAP_EXCEEDED
+
+
+@pytest.mark.asyncio
+async def test_goal_item_cap_reached_is_409_and_item_cap_raises_it():
+    """The goal's spend cap answers 409 with its own code; a goal write raises it."""
+    await two_by_two()
+    status, _ = await _record(CONDUCTOR_A, {"action": "goal", "item_cap": 2})
+    assert status == 200
+    acceptance = {"kind": "human_approval"}
+    # two_by_two already created one item on this board.
+    status, _ = await _record(
+        CONDUCTOR_A, {"action": "create", "title": "b", "acceptance": acceptance}
+    )
+    assert status == 200
+    status, body = await _record(
+        CONDUCTOR_A, {"action": "create", "title": "c", "acceptance": acceptance}
+    )
+    assert status == 409
+    assert body["code"] == wl.CODE_GOAL_ITEM_CAP_REACHED
+    status, _ = await _record(CONDUCTOR_A, {"action": "goal", "item_cap": 3})
+    assert status == 200
+    status, read = await _read(CONDUCTOR_A)
+    assert status == 200
+    assert read["conductor"]["item_cap"] == 3
+    assert read["conductor"]["goal_items_used"] == 2
+    # A goal the user replaced, recorded with new_goal, starts the count again.
+    status, _ = await _record(CONDUCTOR_A, {"action": "goal", "goal": "next", "new_goal": True})
+    assert status == 200
+    status, read = await _read(CONDUCTOR_A)
+    assert read["conductor"]["goal_items_used"] == 0
+    status, _ = await _record(
+        CONDUCTOR_A, {"action": "create", "title": "c", "acceptance": acceptance}
+    )
+    assert status == 200
+
+
+@pytest.mark.asyncio
+async def test_an_item_cap_past_the_ceiling_is_refused_400():
+    await two_by_two()
+    status, _ = await _record(CONDUCTOR_A, {"action": "goal", "item_cap": 257})
+    assert status == 400
 
 
 @pytest.mark.asyncio

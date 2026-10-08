@@ -122,6 +122,8 @@ _RECORD_FIELDS: tuple[str, ...] = (
     "goal",
     "round",
     "fails",
+    "item_cap",
+    "new_goal",
 )
 
 #: Fields ``work_ledger_read`` forwards as a query string. Same defence as
@@ -576,6 +578,23 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     "fails": {
                         "type": "integer",
                         "description": "verdict: acceptance attempts that came back fail.",
+                    },
+                    "item_cap": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 256,
+                        "description": (
+                            "goal: how many items this goal may create in total, every "
+                            "round included; default 20. A create past it is refused "
+                            "goal_item_cap_reached: ask the user, then raise it here."
+                        ),
+                    },
+                    "new_goal": {
+                        "type": "boolean",
+                        "description": (
+                            "goal: true only when the user gave a NEW goal; starts its "
+                            "item count again. Needs `goal`. Rewording keeps the count."
+                        ),
                     },
                 },
                 "required": ["action"],

@@ -545,6 +545,71 @@ def test_a_rebuild_sets_the_create_counter_to_what_the_record_holds(monkeypatch)
     assert wl.read_conductor(CONDUCTOR).created_total == 2
 
 
+def _seed_cached_cap(goal_version: int, item_cap: int, base: int) -> None:
+    """Write a cached header carrying a spend cap, as goal writes would leave it."""
+    wl.ensure_conductor(CONDUCTOR, goal="ship it")
+    header_path = wl.conductor_dir(CONDUCTOR) / "conductor.json"
+    stored = json.loads(header_path.read_text(encoding="utf-8"))
+    stored.update(goal_version=goal_version, item_cap=item_cap, goal_items_base=base)
+    header_path.write_text(json.dumps(stored), encoding="utf-8")
+
+
+def test_a_clean_rebuild_keeps_the_cached_goal_item_cap(monkeypatch):
+    """The cap rides no log entry, so a cache in step with the record keeps it."""
+    fold = _rendered(CONDUCTOR, "it_0000abcd")
+    fold["conductor"]["goal_version"] = 1
+    monkeypatch.setattr(
+        projection,
+        "read_slot_projection",
+        lambda slot, name, **_kw: SimpleNamespace(value=fold if name == "work" else {}),
+    )
+    _seed_cached_cap(goal_version=1, item_cap=50, base=1)
+    wl.rebuild_from_projection(CONDUCTOR)
+    header = wl.read_conductor(CONDUCTOR)
+    assert (header.item_cap, header.goal_items_base) == (50, 1)
+
+
+def test_a_clean_rebuild_of_an_upgraded_header_counts_from_the_upgrade(monkeypatch):
+    """A trusted header with no stored count start keeps its legacy status."""
+    fold = _rendered(CONDUCTOR, "it_0000abcd")
+    fold["conductor"]["goal_version"] = 1
+    monkeypatch.setattr(
+        projection,
+        "read_slot_projection",
+        lambda slot, name, **_kw: SimpleNamespace(value=fold if name == "work" else {}),
+    )
+    _seed_cached_cap(goal_version=1, item_cap=20, base=0)
+    header_path = wl.conductor_dir(CONDUCTOR) / "conductor.json"
+    stored = json.loads(header_path.read_text(encoding="utf-8"))
+    stored.pop("goal_items_base")
+    header_path.write_text(json.dumps(stored), encoding="utf-8")
+    wl.rebuild_from_projection(CONDUCTOR)
+    header = wl.read_conductor(CONDUCTOR)
+    assert (header.created_total, header.goal_items_base, header.goal_items_used) == (1, 1, 0)
+
+
+def test_a_dirty_rebuild_drops_a_refused_goal_writes_cap_and_count_start(monkeypatch):
+    """A goal write the record never got can carry a raised cap and a reset count.
+
+    The rebuild puts the recorded goal back, so it must not keep that write's budget:
+    it falls back to the default cap, counted from the board's first create.
+    """
+    fold = _rendered(CONDUCTOR, "it_0000abcd")
+    fold["conductor"]["goal_version"] = 1
+    monkeypatch.setattr(
+        projection,
+        "read_slot_projection",
+        lambda slot, name, **_kw: SimpleNamespace(value=fold if name == "work" else {}),
+    )
+    _seed_cached_cap(goal_version=2, item_cap=200, base=1)
+    wl.mark_cache_dirty(CONDUCTOR, "an unrecorded write could not be undone")
+    wl.rebuild_from_projection(CONDUCTOR)
+    header = wl.read_conductor(CONDUCTOR)
+    assert header.goal == "ship it"
+    assert (header.item_cap, header.goal_items_base) == (wl.DEFAULT_GOAL_ITEM_CAP, 0)
+    assert header.goal_items_used == header.created_total == 1
+
+
 def test_a_bound_workers_real_unit_joins_the_fold_and_its_report_is_rebuilt():
     """The report lives in the WORKER's log, whose header names the worker's own
     slot; the fold reaches it through the conductor's ``bind`` entry, and another

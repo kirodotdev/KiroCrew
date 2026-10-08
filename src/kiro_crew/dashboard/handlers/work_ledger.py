@@ -89,6 +89,7 @@ _CODE_STATUS: dict[str, int] = {
     work_ledger.CODE_ITEM_CLOSED: 409,
     work_ledger.CODE_ITEM_CAP_EXCEEDED: 409,
     work_ledger.CODE_ITEM_STORE_FULL: 409,
+    work_ledger.CODE_GOAL_ITEM_CAP_REACHED: 409,
     work_ledger.CODE_DEPTH_EXCEEDED: 409,
     work_ledger.CODE_FIELD_TOO_LONG: 400,
     work_ledger.CODE_INVALID_ACTION: 400,
@@ -1257,7 +1258,10 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
             f"read, so it is no longer one to return it to: {why}.",
         )
     _audit(key, "work_ledger_read", "ok", resources=f"{len(rows)} item(s)")
-    payload: dict[str, Any] = {"conductor": record.to_dict(), "items": rows}
+    # ``goal_items_used`` is derived, never stored: the number the conductor's
+    # "items used: N of <item_cap>" line reports, read off the same header.
+    conductor = dict(record.to_dict(), goal_items_used=record.goal_items_used)
+    payload: dict[str, Any] = {"conductor": conductor, "items": rows}
     if compact:
         payload["compact"] = True
     else:
@@ -1986,6 +1990,8 @@ def _write(key: str, action: str, cleaned: dict[str, Any]) -> dict[str, Any]:
         goal=cleaned.get("goal"),
         round_number=cleaned.get("round"),
         fails=cleaned.get("fails"),
+        item_cap=cleaned.get("item_cap"),
+        new_goal=cleaned.get("new_goal"),
     )
 
 

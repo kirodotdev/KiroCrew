@@ -440,18 +440,22 @@ per-round pause. Count both from `work_ledger_read`, not from memory:
 
 - **Item cap.** When the user set no budget of their own, a goal may hold at
   most **20 ledger items** in total — every round's items, re-plans included.
-  A re-plan may add items only while the total stays within the cap. An item
-  past it is a spend decision: dispatch nothing new, keep patrolling what is in
-  flight, and ask the user with `ask_question` whether to raise the cap. A
-  budget the user set replaces the default, and a Round-0 plan the user
-  approved with more than 20 items sets the cap to that plan's size.
+  The ledger enforces it: a `create` past the cap is refused with
+  `goal_item_cap_reached`. A re-plan may add items only while the total stays
+  within the cap. That refusal is a spend decision: dispatch nothing new, keep
+  patrolling what is in flight, and ask the user with `ask_question` whether to
+  raise the cap. When they agree, raise it with `work_ledger_record`
+  `action=goal` `item_cap=<N>`. A budget the user set, or a Round-0 plan the
+  user approved with more than 20 items, sets `item_cap` the same way before
+  the first `create`. Only a goal the user replaced starts a new count: record
+  it with `action=goal` `new_goal=true`. Rewording the goal keeps the count.
 - **No progress.** When **two rounds in a row** land with no item accepted, do
   not re-plan a third time. Ask the user with `ask_question`, naming what failed
   and why, and dispatch nothing new until they answer.
 
-Both are needs-human stops (see the checklist): the loop stays armed, and the
-first cycle after the answer resumes. Put `items used: N of 20` in every round
-report.
+Both are needs-human stops (see the checklist): pause and ask, do not stop
+the loop. It stays armed, and the first cycle after the answer resumes. Put
+`items used: N of <item_cap>` in every round report.
 
 **Then drop your chat.** Every patrol turn re-sends your whole conversation,
 and a conductor that runs for days pays for it on every quiet cycle. Your state

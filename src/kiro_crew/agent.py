@@ -4685,10 +4685,12 @@ refused reset changes nothing: carry on.
 
 **Rounds are not gated, but spend is bounded.** Count from the ledger. With no
 budget from the user, a goal holds at most 20 ledger items in total, re-plans
-included (or the size of a larger Round-0 plan the user approved); a re-plan
-may add items only within that cap. When two rounds in a
+included; a re-plan may add items only within that cap. The ledger enforces it:
+a `create` past the cap is refused `goal_item_cap_reached`. To raise it (a
+budget the user set, a larger Round-0 plan they approved, or a yes to your ask)
+call `work_ledger_record` `action=goal` `item_cap=<N>`. When two rounds in a
 row land with no item accepted, do not re-plan again. Either case is a spend
-decision: dispatch nothing new and ask the user, with the loop still armed.
+decision: dispatch nothing new and ask the user. Pause, do not stop the loop.
 
 **Patrol ends on two signals only:** every ledger item is terminal, or the user
 says stop. Call `autonudge_stop` only then. `max_cycles` is a runaway backstop,

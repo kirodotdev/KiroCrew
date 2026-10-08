@@ -854,8 +854,14 @@ def test_work_brief_shows_the_item_and_not_the_conductors_goal():
 # ── caps refuse, and a refusal changes no bytes ───────────────────────────
 
 
+def _lift_goal_cap() -> None:
+    """Raise the goal's spend cap to its ceiling, so a test of another cap reaches it."""
+    wl.apply_conductor_action(CONDUCTOR, "goal", item_cap=wl.MAX_GOAL_ITEM_CAP)
+
+
 def test_the_item_cap_refuses_the_thirty_third_item():
     wl.ensure_conductor(CONDUCTOR, goal="g")
+    _lift_goal_cap()
     for index in range(wl.MAX_ITEMS_PER_CONDUCTOR):
         wl.apply_conductor_action(CONDUCTOR, "create", title=f"t{index}", acceptance={})
     before = sorted(p.name for p in wl.items_dir(CONDUCTOR).iterdir())
@@ -863,6 +869,209 @@ def test_the_item_cap_refuses_the_thirty_third_item():
         wl.apply_conductor_action(CONDUCTOR, "create", title="one too many", acceptance={})
     assert caught.value.code == wl.CODE_ITEM_CAP_EXCEEDED
     assert sorted(p.name for p in wl.items_dir(CONDUCTOR).iterdir()) == before
+
+
+# ── the goal's spend cap ──────────────────────────────────────────────────
+
+
+def _create_n(count: int, prefix: str = "t") -> None:
+    for index in range(count):
+        wl.apply_conductor_action(CONDUCTOR, "create", title=f"{prefix}{index}", acceptance={})
+
+
+def test_the_goal_item_cap_refuses_the_twenty_first_create_by_default():
+    wl.ensure_conductor(CONDUCTOR)
+    wl.apply_conductor_action(CONDUCTOR, "goal", goal="g")
+    assert wl.read_conductor(CONDUCTOR).item_cap == wl.DEFAULT_GOAL_ITEM_CAP == 20
+    _create_n(20)
+    before = sorted(p.name for p in wl.items_dir(CONDUCTOR).iterdir())
+    header_before = wl.read_conductor(CONDUCTOR).to_dict()
+    with pytest.raises(wl.WorkLedgerError) as caught:
+        wl.apply_conductor_action(CONDUCTOR, "create", title="twenty-first", acceptance={})
+    assert caught.value.code == wl.CODE_GOAL_ITEM_CAP_REACHED == "goal_item_cap_reached"
+    assert caught.value.field == "item_cap"
+    message = str(caught.value)
+    assert "ask the user" in message and "action=goal item_cap=" in message
+    # A refusal writes nothing.
+    assert sorted(p.name for p in wl.items_dir(CONDUCTOR).iterdir()) == before
+    assert wl.read_conductor(CONDUCTOR).to_dict() == header_before
+
+
+def test_closed_items_still_count_toward_the_goal_item_cap():
+    """The goal cap bounds spend, so a closed item is still one the goal paid for."""
+    wl.ensure_conductor(CONDUCTOR)
+    wl.apply_conductor_action(CONDUCTOR, "goal", goal="g", item_cap=2)
+    for item in [
+        wl.apply_conductor_action(CONDUCTOR, "create", title=f"t{n}", acceptance={})["item"]
+        for n in range(2)
+    ]:
+        wl.apply_conductor_action(CONDUCTOR, "close", item_id=item.item_id, state="accepted")
+    with pytest.raises(wl.WorkLedgerError) as caught:
+        wl.apply_conductor_action(CONDUCTOR, "create", title="third", acceptance={})
+    assert caught.value.code == wl.CODE_GOAL_ITEM_CAP_REACHED
+
+
+def test_a_raised_goal_item_cap_admits_the_next_create_and_keeps_the_count():
+    wl.ensure_conductor(CONDUCTOR)
+    wl.apply_conductor_action(CONDUCTOR, "goal", goal="g")
+    _create_n(20)
+    # Raising the cap is a goal write; it must not restart the goal's count.
+    wl.apply_conductor_action(CONDUCTOR, "goal", item_cap=22)
+    header = wl.read_conductor(CONDUCTOR)
+    assert header.item_cap == 22 and header.goal_items_used == 20
+    _create_n(2, "more")
+    with pytest.raises(wl.WorkLedgerError) as caught:
+        wl.apply_conductor_action(CONDUCTOR, "create", title="past the raise", acceptance={})
+    assert caught.value.code == wl.CODE_GOAL_ITEM_CAP_REACHED
+
+
+def test_a_round_only_or_same_text_goal_write_keeps_the_count():
+    wl.ensure_conductor(CONDUCTOR)
+    wl.apply_conductor_action(CONDUCTOR, "goal", goal="g", item_cap=1)
+    _create_n(1)
+    wl.apply_conductor_action(CONDUCTOR, "goal", round_number=2)
+    wl.apply_conductor_action(CONDUCTOR, "goal", goal="g", round_number=3)
+    with pytest.raises(wl.WorkLedgerError) as caught:
+        wl.apply_conductor_action(CONDUCTOR, "create", title="next round", acceptance={})
+    assert caught.value.code == wl.CODE_GOAL_ITEM_CAP_REACHED
+
+
+def test_a_new_goal_starts_a_new_item_count():
+    wl.ensure_conductor(CONDUCTOR)
+    wl.apply_conductor_action(CONDUCTOR, "goal", goal="first goal")
+    _create_n(20)
+    # Closed, so the open fan-out cap stays out of the way of the second goal.
+    for item in wl.list_work_items(CONDUCTOR):
+        wl.apply_conductor_action(CONDUCTOR, "close", item_id=item.item_id, state="accepted")
+    version = wl.read_conductor(CONDUCTOR).goal_version
+    wl.apply_conductor_action(CONDUCTOR, "goal", goal="second goal", new_goal=True)
+    header = wl.read_conductor(CONDUCTOR)
+    assert header.goal_version == version + 1
+    assert header.goal_items_used == 0 and header.created_total == 20
+    _create_n(20, "second")
+    with pytest.raises(wl.WorkLedgerError) as caught:
+        wl.apply_conductor_action(CONDUCTOR, "create", title="past it", acceptance={})
+    assert caught.value.code == wl.CODE_GOAL_ITEM_CAP_REACHED
+
+
+def test_a_new_goal_on_a_board_from_before_the_counter_starts_after_its_records():
+    """A header with no create counter still holds its records; a new goal skips them."""
+    wl.ensure_conductor(CONDUCTOR)
+    wl.apply_conductor_action(CONDUCTOR, "goal", goal="old goal")
+    _create_n(3)
+    header_path = wl.conductor_dir(CONDUCTOR) / "conductor.json"
+    stored = json.loads(header_path.read_text(encoding="utf-8"))
+    stored.pop("created_total")
+    stored.pop("goal_items_base")
+    header_path.write_text(json.dumps(stored), encoding="utf-8")
+    wl.apply_conductor_action(CONDUCTOR, "goal", goal="new goal", item_cap=1, new_goal=True)
+    header = wl.read_conductor(CONDUCTOR)
+    assert (header.created_total, header.goal_items_used) == (3, 0)
+    wl.apply_conductor_action(CONDUCTOR, "create", title="first of the new goal", acceptance={})
+
+
+def _strip_to_pre_goal_cap_header() -> None:
+    """Rewrite the header as one written before the per-goal cap existed."""
+    header_path = wl.conductor_dir(CONDUCTOR) / "conductor.json"
+    stored = json.loads(header_path.read_text(encoding="utf-8"))
+    stored.pop("item_cap")
+    stored.pop("goal_items_base")
+    header_path.write_text(json.dumps(stored), encoding="utf-8")
+
+
+def test_an_upgraded_header_counts_its_goal_from_the_upgrade():
+    """A header from before the per-goal cap does not charge earlier goals to this one.
+
+    One goal made 22 items, then a second goal was recorded the old way. With the
+    count start read as zero, the next create was refused as if this goal had made
+    22. Read as legacy, the goal starts counting at the upgrade.
+    """
+    wl.ensure_conductor(CONDUCTOR)
+    wl.apply_conductor_action(CONDUCTOR, "goal", goal="first goal", item_cap=wl.MAX_GOAL_ITEM_CAP)
+    _create_n(22)
+    for item in wl.list_work_items(CONDUCTOR):
+        wl.apply_conductor_action(CONDUCTOR, "close", item_id=item.item_id, state="accepted")
+    wl.apply_conductor_action(CONDUCTOR, "goal", goal="second goal")
+    _strip_to_pre_goal_cap_header()
+    header = wl.read_conductor(CONDUCTOR)
+    assert header.created_total == 22 and header.goal_items_used == 0
+
+    wl.apply_conductor_action(CONDUCTOR, "create", title="first after upgrade", acceptance={})
+
+    header = wl.read_conductor(CONDUCTOR)
+    assert (header.goal_items_base, header.goal_items_used) == (22, 1)
+    # The settled start is stored, and the default cap now counts from it.
+    assert "goal_items_base" in json.loads(
+        (wl.conductor_dir(CONDUCTOR) / "conductor.json").read_text(encoding="utf-8")
+    )
+    _create_n(19, "rest")
+    with pytest.raises(wl.WorkLedgerError) as caught:
+        wl.apply_conductor_action(CONDUCTOR, "create", title="21st", acceptance={})
+    assert caught.value.code == wl.CODE_GOAL_ITEM_CAP_REACHED
+
+
+def test_a_goal_write_settles_an_upgraded_headers_count_start():
+    wl.ensure_conductor(CONDUCTOR)
+    wl.apply_conductor_action(CONDUCTOR, "goal", goal="g")
+    _create_n(5)
+    _strip_to_pre_goal_cap_header()
+    wl.apply_conductor_action(CONDUCTOR, "goal", round_number=2)
+    header = wl.read_conductor(CONDUCTOR)
+    assert (header.goal_items_base, header.goal_items_used) == (5, 0)
+
+
+def test_a_reworded_goal_does_not_reset_the_item_count():
+    """Only an explicit ``new_goal`` restarts the count, so rewording cannot dodge it."""
+    wl.ensure_conductor(CONDUCTOR)
+    wl.apply_conductor_action(CONDUCTOR, "goal", goal="ship the feature", item_cap=1)
+    _create_n(1)
+    wl.apply_conductor_action(CONDUCTOR, "goal", goal="ship the feature, round two")
+    header = wl.read_conductor(CONDUCTOR)
+    assert header.goal == "ship the feature, round two" and header.goal_items_used == 1
+    with pytest.raises(wl.WorkLedgerError) as caught:
+        wl.apply_conductor_action(CONDUCTOR, "create", title="after rewording", acceptance={})
+    assert caught.value.code == wl.CODE_GOAL_ITEM_CAP_REACHED
+
+
+def test_new_goal_needs_the_goal_text_and_a_boolean():
+    wl.ensure_conductor(CONDUCTOR)
+    wl.apply_conductor_action(CONDUCTOR, "goal", goal="g")
+    before = wl.read_conductor(CONDUCTOR).to_dict()
+    for kwargs in ({"new_goal": True}, {"goal": "h", "new_goal": "yes"}):
+        with pytest.raises(wl.WorkLedgerError) as caught:
+            wl.apply_conductor_action(CONDUCTOR, "goal", **kwargs)
+        assert (caught.value.code, caught.value.field) == (wl.CODE_INVALID_VALUE, "new_goal")
+    assert wl.read_conductor(CONDUCTOR).to_dict() == before
+
+
+def test_a_board_that_never_records_a_goal_has_no_goal_item_cap():
+    """A queue board (pipeline, security) writes no ``goal``; only the open cap bounds it."""
+    wl.ensure_conductor(CONDUCTOR)
+    ids = []
+    for index in range(wl.DEFAULT_GOAL_ITEM_CAP + 1):
+        item = wl.apply_conductor_action(CONDUCTOR, "create", title=f"q{index}", acceptance={})
+        ids.append(item["item"].item_id)
+        wl.apply_conductor_action(CONDUCTOR, "close", item_id=ids[-1], state="accepted")
+    assert len(wl.list_work_items(CONDUCTOR)) == wl.DEFAULT_GOAL_ITEM_CAP + 1
+
+
+@pytest.mark.parametrize("bad", [0, -1, wl.MAX_GOAL_ITEM_CAP + 1, "twenty", 2.5])
+def test_an_out_of_range_item_cap_is_refused_and_writes_nothing(bad):
+    wl.ensure_conductor(CONDUCTOR)
+    wl.apply_conductor_action(CONDUCTOR, "goal", goal="g")
+    before = wl.read_conductor(CONDUCTOR).to_dict()
+    with pytest.raises(wl.WorkLedgerError) as caught:
+        wl.apply_conductor_action(CONDUCTOR, "goal", item_cap=bad)
+    assert caught.value.code == wl.CODE_INVALID_VALUE
+    assert caught.value.field == "item_cap"
+    assert wl.read_conductor(CONDUCTOR).to_dict() == before
+
+
+def test_a_stored_item_cap_out_of_range_reads_as_the_default():
+    for raw in (None, 0, wl.MAX_GOAL_ITEM_CAP + 1, "x"):
+        record = wl.ConductorRecord.from_dict({"item_cap": raw})
+        assert record.item_cap == wl.DEFAULT_GOAL_ITEM_CAP
+    assert wl.ConductorRecord.from_dict({"item_cap": 7}).item_cap == 7
 
 
 @pytest.mark.parametrize("terminal_state", sorted(wl.TERMINAL_ITEM_STATES))
@@ -874,6 +1083,7 @@ def test_closed_items_do_not_count_toward_the_item_cap(terminal_state: str):
     with nothing live behind the refusal.
     """
     wl.ensure_conductor(CONDUCTOR, goal="g")
+    _lift_goal_cap()
     ids = [
         wl.apply_conductor_action(CONDUCTOR, "create", title=f"t{index}", acceptance={})[
             "item"
@@ -898,6 +1108,7 @@ def test_closed_items_do_not_count_toward_the_item_cap(terminal_state: str):
 def test_closed_items_stay_on_disk_listed_and_readable_past_the_cap():
     """Freeing a seat changes nothing about the closed item's own record."""
     wl.ensure_conductor(CONDUCTOR, goal="g")
+    _lift_goal_cap()
     ids = [
         wl.apply_conductor_action(CONDUCTOR, "create", title=f"t{index}", acceptance={})[
             "item"
@@ -1233,7 +1444,7 @@ def test_acceptance_must_be_json_serialisable():
 def test_an_oversized_acceptance_is_refused(monkeypatch):
     wl.ensure_conductor(CONDUCTOR)
     # Above the header's own size (the header must still read back), below the blob's.
-    monkeypatch.setattr(wl, "MAX_RECORD_BYTES", 300)
+    monkeypatch.setattr(wl, "MAX_RECORD_BYTES", 360)
     with pytest.raises(wl.WorkLedgerError) as caught:
         wl.apply_conductor_action(CONDUCTOR, "create", title="t", acceptance={"blob": "x" * 400})
     assert caught.value.code == wl.CODE_FIELD_TOO_LONG
@@ -1990,6 +2201,7 @@ def test_two_concurrent_writers_leave_a_parseable_item_and_a_clean_event_log():
 
 def test_the_item_cap_holds_under_concurrent_creates():
     wl.ensure_conductor(CONDUCTOR, goal="g")
+    _lift_goal_cap()
     refused: list[str] = []
 
     def create() -> None:
