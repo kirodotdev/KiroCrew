@@ -27,7 +27,7 @@ from aiohttp.test_utils import TestClient, TestServer
 # Bare import, like every sibling test module: `test/` is not a package, and
 # `test` is a CPython STDLIB package name — `from test.chat_test_helpers import`
 # resolves to the stdlib `test` and fails with ModuleNotFoundError on CI.
-from chat_test_helpers import _make_ready_kiro_prerequisite
+from chat_test_helpers import _make_ready_kiro_prerequisite, stamp_the_person
 
 from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.state import (
@@ -951,3 +951,233 @@ class TestOwnerFolderCreatePersistsTheFiling:
             "the folder filing never reached the metadata line -- a restart before "
             "the first message rehydrates the tab unfiled"
         )
+
+
+class TestFilingAtCreationGoesThroughTheOneDecision:
+    """``POST /api/chat/slots`` with a ``folder_id`` is a FILING."""
+
+    BOUND = "f-bound"
+    STEERED = "f-steered"
+
+    def _state(self, tmp_path):
+        state = _make_state(tmp_path)
+        (tmp_path / "bound").mkdir()
+        state._folders.append(
+            {
+                "id": self.BOUND,
+                "name": "Bound",
+                "order": 1,
+                "parent_id": "",
+                "project_dir": str(tmp_path / "bound"),
+            }
+        )
+        state._folders.append(
+            {
+                "id": self.STEERED,
+                "name": "Steered",
+                "order": 2,
+                "parent_id": "",
+                "steering_dirs": [str(tmp_path)],
+            }
+        )
+        return state
+
+    @staticmethod
+    def _app_with(handler, *, person: bool = False) -> web.Application:
+        app = web.Application()
+
+        @web.middleware
+        async def _stamp(request: web.Request, handler):
+            if person:
+                stamp_the_person(request)
+            return await handler(request)
+
+        app.middlewares.append(_stamp)
+        app.router.add_post("/api/chat/slots", handler)
+        return app
+
+    @pytest.mark.asyncio
+    async def test_an_app_cannot_create_a_session_under_a_bound_or_steered_folder(self, tmp_path):
+        state = self._state(tmp_path)
+        app = self._app_with(_as_app_handler("design-critique"))
+        app["state"] = state
+        async with TestClient(TestServer(app)) as client:
+            bound = await client.post(
+                "/api/chat/slots", json={"name": "s1", "folder_id": self.BOUND}
+            )
+            assert bound.status == 403, await bound.text()
+            assert (await bound.json())["code"] == "folder_project_dir_forbidden"
+            steered = await client.post(
+                "/api/chat/slots", json={"name": "s2", "folder_id": self.STEERED}
+            )
+            assert steered.status == 403, await steered.text()
+            assert (await steered.json())["code"] == "steering_dirs_forbidden"
+            plain = await client.post(
+                "/api/chat/slots", json={"name": "s3", "folder_id": FOLDER_ID}
+            )
+            assert plain.status == 200, await plain.text()
+        assert "s1" not in state._slots and "s2" not in state._slots
+        assert state._slots["s3"].folder_id == FOLDER_ID
+
+    @pytest.mark.asyncio
+    async def test_a_foreign_slots_placement_is_not_read_before_the_ownership_gate(self, tmp_path):
+        """The ownership gate runs BEFORE the filing decision reads the named slot."""
+        state = self._state(tmp_path)
+        bare = state.get_or_create_slot("theirs-bare")
+        housed = state.get_or_create_slot("theirs-housed", app="owner-app")
+        housed.folder_id = self.BOUND
+        app = self._app_with(_as_app_handler("design-critique"))
+        app["state"] = state
+        async with TestClient(TestServer(app)) as client:
+            answers = []
+            for name in ("theirs-bare", "theirs-housed"):
+                resp = await client.post(
+                    "/api/chat/slots", json={"name": name, "folder_id": self.BOUND}
+                )
+                answers.append((resp.status, await resp.json()))
+        assert answers[0] == (404, {"error": "not found", "code": "slot_not_found"})
+        assert answers[1] == answers[0]
+        assert bare.folder_id == "" and housed.folder_id == self.BOUND
+
+    @pytest.mark.asyncio
+    async def test_the_internal_transport_is_held_to_it_too(self, tmp_path):
+        from kiro_crew.dashboard.chat import api_chat_slot_create
+
+        state = self._state(tmp_path)
+        app = self._app_with(api_chat_slot_create)
+        app["state"] = state
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/slots", json={"name": "s1", "folder_id": self.BOUND}
+            )
+            assert resp.status == 403, await resp.text()
+        assert "s1" not in state._slots
+
+    @pytest.mark.asyncio
+    async def test_the_person_creates_the_chat_and_it_inherits_the_binding(self, tmp_path):
+        from kiro_crew.dashboard.chat import api_chat_slot_create
+
+        state = self._state(tmp_path)
+        app = self._app_with(api_chat_slot_create, person=True)
+        app["state"] = state
+        with patch("kiro_crew.dashboard.chat_handlers.schedule_eager_spawn", lambda *a, **k: None):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(
+                    "/api/chat/slots", json={"name": "s1", "folder_id": self.BOUND}
+                )
+                assert resp.status == 200, await resp.text()
+                assert (await resp.json())["folder_id"] == self.BOUND
+        assert state._slots["s1"].folder_id == self.BOUND
+
+    @pytest.mark.asyncio
+    async def test_an_inheritance_change_between_the_decision_and_the_write_is_caught_at_the_write(
+        self, tmp_path, monkeypatch
+    ):
+        """The early decision runs before the mint and the other awaits of this route."""
+        from kiro_crew.dashboard import chat_handlers
+
+        state = self._state(tmp_path)
+        plain = next(f for f in state._folders if f["id"] == FOLDER_ID)
+        real_resolve = chat_handlers.resolve_folder_project_dir_off_loop
+
+        async def _resolve_then_bind(folders, folder_id):
+            out = await real_resolve(folders, folder_id)
+            plain["project_dir"] = str(tmp_path / "bound")  # a commit landing meanwhile
+            return out
+
+        monkeypatch.setattr(
+            chat_handlers, "resolve_folder_project_dir_off_loop", _resolve_then_bind
+        )
+        app = self._app_with(_as_app_handler("design-critique"))
+        app["state"] = state
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/slots", json={"name": "s9", "folder_id": FOLDER_ID})
+            assert resp.status == 403, await resp.text()
+            assert (await resp.json())["code"] == "folder_project_dir_forbidden"
+        assert "s9" not in state._slots
+
+    @pytest.mark.asyncio
+    async def test_a_refused_filing_never_counts_a_user_session(self, tmp_path, monkeypatch):
+        """The survey count a new user chat earns waits for the filing decision when a."""
+        from kiro_crew.dashboard import chat_handlers
+
+        counted = MagicMock()
+        monkeypatch.setattr(chat_handlers, "increment_user_session_count_off_loop", counted)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.state.increment_user_session_count_off_loop", counted
+        )
+        state = self._state(tmp_path)
+        app = self._app_with(_as_app_handler("design-critique"))
+        app["state"] = state
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/slots", json={"name": "refused", "folder_id": self.BOUND}
+            )
+            assert resp.status == 403, await resp.text()
+        counted.assert_not_called()
+        person = self._app_with(_as_app_handler(""), person=True)
+        person["state"] = state
+        # An admitted filing of a slot the gateway names (no caller key: the
+        # mint-time fact `minted_new = not name`) counts exactly once.
+        async with TestClient(TestServer(person)) as client:
+            resp = await client.post("/api/chat/slots", json={"folder_id": FOLDER_ID})
+            assert resp.status == 200, await resp.text()
+        assert counted.call_count == 1
+        # A caller-NAMED slot that is not currently open (an app's "Open session"
+        # follow-up posting its own key) is not counted without a folder and
+        # must not be with one (review-caught: `is_new_slot` is true for it).
+        async with TestClient(TestServer(person)) as client:
+            resp = await client.post(
+                "/api/chat/slots", json={"name": "named-later", "folder_id": FOLDER_ID}
+            )
+            assert resp.status == 200, await resp.text()
+        assert counted.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_refused_filing_writes_nothing_else_to_an_existing_slot(
+        self, tmp_path, monkeypatch
+    ):
+        """The filing decision runs before every other write this route makes."""
+        from kiro_crew.dashboard import chat_handlers
+
+        state = self._state(tmp_path)
+        plain = next(f for f in state._folders if f["id"] == FOLDER_ID)
+        mine = state.get_or_create_slot("mine", app="design-critique")
+        mine.title = "As it was"
+        mine._titled = False
+        mine._title_origin = "auto"
+        mine._title_epoch = 4
+        mine._artifact = "old-slug"
+        real_resolve = chat_handlers.resolve_folder_project_dir_off_loop
+
+        async def _resolve_then_bind(folders, folder_id):
+            out = await real_resolve(folders, folder_id)
+            plain["project_dir"] = str(tmp_path / "bound")  # a commit landing meanwhile
+            return out
+
+        monkeypatch.setattr(
+            chat_handlers, "resolve_folder_project_dir_off_loop", _resolve_then_bind
+        )
+        app = self._app_with(_as_app_handler("design-critique"))
+        app["state"] = state
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/slots",
+                json={
+                    "name": "mine",
+                    "folder_id": FOLDER_ID,
+                    "title": "Rewritten",
+                    "artifact": "new-slug",
+                },
+            )
+            assert resp.status == 403, await resp.text()
+            assert (await resp.json())["code"] == "folder_project_dir_forbidden"
+        assert state._slots["mine"] is mine
+        assert mine.folder_id == ""
+        assert (mine.title, mine._titled, mine._title_origin, mine._title_epoch) == (
+            "As it was",
+            False,
+            "auto",
+            4,
+        )
+        assert mine._artifact == "old-slug"

@@ -51,7 +51,10 @@ from kiro_crew.acp.transport_framing import _STDOUT_BUFFER_LIMIT
 from kiro_crew.agent_sdk.backends import launch_for
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 from kiro_crew.env import describe_search_path, mise_data_dir
-from kiro_crew.sandbox import RLIMIT_PROFILE_SESSION_HOST
+from kiro_crew.sandbox import (
+    RLIMIT_PROFILE_SESSION_HOST,
+    refuse_unless_bound_workspace_is_pinned_async,
+)
 
 # The client's logger name, because the helpers below were the client's and every
 # log line they emit has always been filed there. The launch tail itself logs under
@@ -789,6 +792,9 @@ class LaunchHost(Protocol):
     _sandbox_hidden_dirs: tuple[str, ...]
     _spawn_work_dir: str
     _bound_workspace_fd: int | None
+    # The descriptor the child enters, written by the tail per spawn: the bind's,
+    # else the verified hold's own on POSIX; None where nothing was verified.
+    _spawn_chdir_fd: int | None
 
     async def _discard_bound_workspace(self) -> None: ...
 
@@ -826,6 +832,13 @@ class LaunchTools:
     bind_voice_safe_agent_workspace_async: Callable[[Any], Awaitable[tuple[str, int | None]]]
     create_subprocess_limited: Callable[..., Awaitable[asyncio.subprocess.Process]]
     retrying_spawn_factory: Callable[..., Awaitable[asyncio.subprocess.Process]] | None = None
+    #: Refuses a bound descriptor that is not the verified directory
+    #: (``sandbox.refuse_unless_bound_workspace_is_pinned_async``): the bind opens
+    #: the name following links, so the descriptor the child enters must be the
+    #: one the spawn's identity check held.
+    refuse_unless_bound_workspace_is_pinned_async: Callable[[int, Any], Awaitable[None]] = (
+        refuse_unless_bound_workspace_is_pinned_async
+    )
 
 
 def _unscoped(argv: list[str]) -> tuple[list[str], str]:
@@ -871,6 +884,18 @@ class LaunchRequest:
     env_after_marker: Callable[[dict[str, str]], None] = field(default=_no_env_step)
     env_after_scratch: Callable[[dict[str, str]], None] = field(default=_no_env_step)
     scope_argv: Callable[[list[str]], tuple[list[str], str]] = field(default=_unscoped)
+    #: The hold the driver's identity check took on the workspace before any
+    #: preparation read (``sandbox.verify_agent_workspace_for_spawn_async``): the
+    #: ``O_DIRECTORY`` descriptor on POSIX, the handle chain on Windows, ``None``
+    #: where the session recorded no identity. The tail checks the bind against
+    #: it and, on POSIX, enters the child through it. The driver keeps ownership:
+    #: it releases the hold after its PID bookkeeping, never the tail.
+    verified_workspace_fd: Any = None
+    #: The verified directory's own spelling, from the same check: the cwd the
+    #: child enters, assigned by the tail after it discards the previous bind
+    #: (which resets the spelling to the unverified name) and before the bind
+    #: below, which replaces it only when it binds. ``None`` keeps the driver's.
+    spawn_cwd: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1049,10 +1074,48 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
     await host._to_thread_guarding_sandbox(tools.inject_xdist_auto_cap, env)
 
     await host._discard_bound_workspace()
+    # The verified directory's own spelling is the cwd the spawn enters -- assigned
+    # here, AFTER the discard above reset the spelling to the unverified name, and
+    # FIRST: the bind below replaces it only when it binds (returns a descriptor)
+    # or names a different path. Off macOS the bind is a no-op that echoes the
+    # spelling back, and echoing it over the verified real path would spawn into
+    # the unverified name (review-caught).
+    if request.spawn_cwd is not None:
+        host._spawn_work_dir = request.spawn_cwd
     if request.internal_sandbox:
-        host._spawn_work_dir, host._bound_workspace_fd = (
-            await tools.bind_voice_safe_agent_workspace_async(host._work_dir)
+        bound_path, host._bound_workspace_fd = await tools.bind_voice_safe_agent_workspace_async(
+            host._work_dir
         )
+        if host._bound_workspace_fd is not None or bound_path != str(host._work_dir):
+            host._spawn_work_dir = bound_path
+        if host._bound_workspace_fd is not None:
+            # The bind opened the name following links; the child enters THAT
+            # descriptor. It must be the directory the driver's check verified. A
+            # refusal discards what this tail holds (the bind, the sandbox
+            # launcher) exactly as a failed process creation below does.
+            try:
+                await tools.refuse_unless_bound_workspace_is_pinned_async(
+                    host._bound_workspace_fd, request.verified_workspace_fd
+                )
+            except BaseException:
+                await host._discard_bound_workspace()
+                host._discard_sandbox_cleanup()
+                raise
+    # The descriptor the child enters on POSIX: the internal-sandbox bind's
+    # (macOS), else the verify's own ``O_DIRECTORY`` hold. The shim ``fchdir``s
+    # it, so a link planted at the name after the check cannot redirect the
+    # child's working directory; the drivers' preparation reads still take the
+    # name (tracked residual). ``None`` where nothing was verified, and on
+    # Windows, where the held handle chain keeps the name from moving while
+    # ``CreateProcess`` reads it.
+    chdir_fd = host._bound_workspace_fd
+    if (
+        chdir_fd is None
+        and tools.platform_compat.IS_POSIX
+        and isinstance(request.verified_workspace_fd, int)
+    ):
+        chdir_fd = request.verified_workspace_fd
+    host._spawn_chdir_fd = chdir_fd
     # Process-group isolation for clean tree-kill. Both flags explicit (NOT via
     # **dict unpack -- that breaks mypy's Popen overload resolution on the build
     # fleet). POSIX: start_new_session=True calls setsid so a kill can killpg the
@@ -1077,11 +1140,7 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
             | tools.platform_compat._SUBPROCESS_NO_WINDOW
             | tools.platform_compat.CREATE_SUSPENDED
         ),
-        # None off macOS, where nothing binds. When set, the child enters the
-        # workspace through this verified descriptor instead of resolving
-        # ``cwd``'s pathname, which a same-UID symlink retarget could aim elsewhere
-        # in between; ``cwd`` stays the same directory by name.
-        chdir_fd=host._bound_workspace_fd,
+        chdir_fd=chdir_fd,
         profile=RLIMIT_PROFILE_SESSION_HOST,
     )
     if tools.retrying_spawn_factory is not None:

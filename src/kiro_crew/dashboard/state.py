@@ -2841,6 +2841,7 @@ class _ChatSlot:
         "memory_store",
         "_memory_assignment_from_history",
         "project",
+        "project_identity",
         "created_at",
         "messages",
         "total_messages",
@@ -3179,6 +3180,20 @@ class _ChatSlot:
         # that admission boundary; this marker is not persisted in the transcript.
         self._memory_assignment_from_history = False
         self.project: str = ""
+        # ``(spelling, st_dev, st_ino)`` of the directory this session was BOUND
+        # to, for THIS gateway process's lifetime: recorded in memory when the
+        # binding is made -- the fenced resolve's held directory for an agent's
+        # ``set_project`` / slot-project request, the pinned open for the
+        # person's own choice, a folder's inherited binding at creation, a
+        # fork's copy, the agent-switch route's folder project -- or, for a
+        # project that carries no record in this process (every slot after a
+        # gateway restart), re-pinned from the bound path at its first spawn
+        # (``spawn_project_identity_repinned``). NEVER persisted: ``st_dev`` is
+        # reassigned across mounts and the transcript store is agent-writable,
+        # so a stored record would refuse unchanged directories after a reboot
+        # and accept a forged one. The spawn verifies the working directory
+        # against it (``sandbox.verify_agent_workspace_for_spawn``).
+        self.project_identity: tuple[str, int, int] | None = None
         # Relay-archive binding, read off disk. ``executor`` is "local" for every
         # ordinary slot; "remote" marks a chat an older build ran on the peer
         # ``instance_id`` (its slot ``remote_slot``). Such a slot is read-only:
@@ -5880,6 +5895,228 @@ class _ChatSlot:
         )
 
 
+def spawn_project_identity(slot: "_ChatSlot") -> tuple[int, int] | None:
+    """The ``(st_dev, st_ino)`` recorded in THIS process for ``slot.project``, or ``None``.
+
+    The recorded identity applies only while its spelling is the slot's current
+    project: a writer that re-points ``project`` without recording an identity
+    (a member's default, a configured default) leaves a stale record behind, and
+    a stale record must never refuse the new directory. ``None`` -- no record in
+    this process -- is what :func:`spawn_project_identity_repinned` re-pins.
+    """
+    recorded = slot.project_identity
+    if recorded is None or not slot.project or recorded[0] != slot.project:
+        return None
+    return (recorded[1], recorded[2])
+
+
+async def spawn_project_identity_repinned(slot: "_ChatSlot") -> tuple[int, int] | None:
+    """The identity the spawn verifies ``slot.project`` against, re-pinned when this process has none.
+
+    The identity lives for the gateway PROCESS's lifetime -- the threat is a swap
+    of the bound directory between the binding's validation and a deferred spawn
+    within that lifetime -- and nothing identity-bearing is persisted: ``st_dev``
+    is reassigned at every mount on anonymous-device filesystems (a stored pair
+    would refuse every spawn of an UNCHANGED directory after a reboot), and the
+    transcript store is an agent-writable leaf (a stored pair could be forged). So
+    a project with no record in this process -- every slot after a restart, a
+    default a non-recording writer pointed the slot at -- is RE-PINNED here at its
+    first spawn by the same fenced pin the bind uses
+    (``sandbox.directory_identity_pinned``, off the loop), recorded on the slot and
+    compared at every later spawn; what stands at the name is what gets pinned (a
+    swap while the gateway was down is outside the threat). A directory the re-pin
+    cannot open -- a LINK at the name, a missing or unopenable leaf -- REFUSES the
+    spawn: ``WorkspacePinFailed`` with the governed reason and the remedy
+    (re-bind), never ``None``, since a ``None`` reaching the spawn skips the check.
+    ``None`` is returned ONLY for a slot with no binding: an empty ``project`` or
+    the workspace's default directory (configuration, and the warm pool's own
+    spawn directory), which records nothing and is not examined, so an ordinary
+    chat keeps the warm path. Two first spawns of one restored slot can re-pin
+    concurrently (the main chat and its side panel): the record the first commits
+    is the slot's identity and the second returns it instead of overwriting, so a
+    directory replaced between the two pins is refused by the second spawn's
+    verification rather than adopted.
+    """
+    recorded = spawn_project_identity(slot)
+    if recorded is not None:
+        return recorded
+    if not slot.project:
+        return None  # no binding at all: nothing to pin and nothing to examine
+    from kiro_crew.config.loader import default_project_dir
+    from kiro_crew.sandbox import WorkspacePinFailed, directory_identity_pinned
+
+    project = slot.project
+    # The workspace default reads the config file and stats the directory, so
+    # it stays off the loop like the pin below.
+    if project == await asyncio.to_thread(default_project_dir, slot.workspace):
+        return None  # the configured default is not a binding: not examined
+    try:
+        identity = await asyncio.to_thread(directory_identity_pinned, project)
+    except WorkspacePinFailed as exc:
+        reason = str(exc).rsplit("could not be pinned: ", 1)[-1]
+        raise WorkspacePinFailed(
+            f"the project directory {project!r} carries no identity record in this gateway "
+            f"process (a restart) and could not be re-pinned: {reason}; re-bind the project "
+            "directory"
+        ) from exc
+    if slot.project != project:
+        # Re-pointed while the pin ran: pin the spelling that stands now.
+        return await spawn_project_identity_repinned(slot)
+    established = spawn_project_identity(slot)
+    if established is not None:
+        # A concurrent first spawn of this slot recorded while the pin above ran:
+        # its record is the slot's identity (first writer wins), and a directory
+        # replaced in between is refused by this spawn's verification.
+        return established
+    record_project_identity(slot, identity)
+    repinned = spawn_project_identity(slot)
+    assert repinned is not None, "a bound slot carries an identity here or has raised"
+    return repinned
+
+
+def record_project_identity(slot: "_ChatSlot", identity: tuple[int, int] | None) -> None:
+    """Record *identity* for the slot's CURRENT project.
+
+    A BINDING always records an identity: the arms read it off the descriptor
+    that opened the directory (``sandbox.directory_identity_pinned``, the
+    fenced resolve's ``identity_out``), which answers a real ``(st_dev,
+    st_ino)`` or ``sandbox.IDENTITY_UNAVAILABLE`` (a volume that reports none:
+    SMB shares, FAT on Windows -- recorded as that state, opened but not
+    compared at spawn) and RAISES for a directory it could not pin, so the bind
+    is refused rather than stored without a record. ``None`` means "no record
+    in this process" -- a cleared project, a default a non-recording writer
+    pointed the slot at, or any project after a gateway restart -- which the
+    first spawn re-pins (:func:`spawn_project_identity_repinned`). The record
+    is in-memory only; nothing identity-bearing is persisted.
+    """
+    if identity is None or not slot.project:
+        slot.project_identity = None
+    else:
+        slot.project_identity = (slot.project, int(identity[0]), int(identity[1]))
+
+
+def inherit_project_identity(child: "_ChatSlot", parent: "_ChatSlot") -> bool:
+    """Give a child minted from *parent* the parent's RECORDED identity for their shared project.
+
+    The child-creation seam (``session_control.create_session``): a child made
+    inside this process from a bound parent is bound to the directory its parent
+    already validated, so it carries the parent's record with the path and never
+    re-pins. The re-pin at first spawn (:func:`spawn_project_identity_repinned`)
+    is for a slot with no record in this PROCESS -- a restart -- and a child made
+    while the parent's record is live is not that case: between the mint and the
+    child's first turn the parent can re-bind elsewhere and the directory at the
+    old name be replaced, and a record-less child would pin the replacement.
+    Derive-or-refuse, never a fresh pin from the path alone: a parent with no
+    record for the directory (itself in the restart state) leaves the child with
+    none, and the child's spawn takes the parent's own path -- re-pin, or the
+    governed refusal. Only a parent bound to the child's spelling has anything to
+    say about it (``spawn_project_identity`` answers ``None`` for a record whose
+    spelling is not the parent's current project). Returns whether a record was
+    copied.
+    """
+    if not child.project or child.project != parent.project:
+        return False
+    identity = spawn_project_identity(parent)
+    if identity is None:
+        return False
+    record_project_identity(child, identity)
+    return True
+
+
+def _spawn_is_the_slots_own(slot: "_ChatSlot", session_key: str) -> bool:
+    """Whether *session_key* is one of the slot's own spawns.
+
+    The three producers the resolver is the safety net under spawn as the slot
+    itself (``chat_runner``: ``effective_session_key(slot)`` -- ``dashboard:<slot>``,
+    or the linked channel key a channel-born slot's turns run on, NEVER the bare
+    slot key), its side panel (``handlers.side._side_session_key``:
+    ``side:<slot>`` or ``side:<slot>:<gen>``) and its threads
+    (``chat_threads.thread_session_key``: ``thread:<slot>:<mid>``). Any other
+    producer spawning into the slot's directory -- a cron, a task run, another
+    chat -- is a stranger to it. The slot's own session is matched through the
+    same rule the runner spawns with: a second spelling of it here is how the
+    main session was once read as a stranger and its hard-stop respawn went
+    unverified.
+    """
+    from kiro_crew.dashboard.chat_utils import effective_session_key  # cycle at load
+
+    slot_key = slot.key
+    return (
+        session_key == effective_session_key(slot)
+        or session_key == f"side:{slot_key}"
+        or session_key.startswith((f"side:{slot_key}:", f"thread:{slot_key}:"))
+    )
+
+
+async def bound_project_identity_for_spawn(
+    state: "DashboardState", session_key: str, cwd: str
+) -> tuple[int, int] | None:
+    """The identity a spawn into *cwd* verifies against, from the slots BOUND to it.
+
+    The seam's resolver (``SessionManager.set_cwd_identity_resolver``): consulted
+    for a ``cwd`` a producer handed to ``sessions.get_or_create`` with no
+    ``cwd_identity``. Every live slot whose ``project`` IS that spelling is bound
+    to the directory, and the spawn verifies the identity those bindings
+    recorded -- through :func:`spawn_project_identity_repinned`, so a slot with no
+    record in this process (a restart) is re-pinned by the bind's own fenced pin
+    and a directory that cannot be pinned RAISES the governed refusal
+    (``sandbox.WorkspacePinFailed``) instead of answering ``None``. ``None`` is
+    answered ONLY when no slot is bound to *cwd*: nothing to verify, the spawn is
+    not examined, as it always was. Bindings of one directory that disagree (the
+    directory was replaced between two of its bindings, so one is stale) refuse
+    too, with the re-bind remedy: entering a directory one of its bindings does
+    not vouch for is the swap this fence refuses. *session_key* is the producer's
+    key, logged with the refusal.
+
+    The workspace default (``default_project_dir``) is configuration, not a
+    binding: a chat that chose no project stands on it with no record, and the
+    warm pool spawns there. A record ONE chat put on the default fences that
+    chat's own spawns (main, side panel, threads: :func:`_spawn_is_the_slots_own`)
+    and nobody else's; every other producer resolves ``None`` and keeps the warm path.
+    """
+    from kiro_crew.config.loader import default_project_dir
+    from kiro_crew.sandbox import WorkspacePinFailed
+
+    identities: set[tuple[int, int]] = set()
+    defaults: dict[str, str] = {}  # workspace -> its configured default, read once
+    for slot in list(state._slots.values()):
+        if not slot.project or slot.project != cwd:
+            continue
+        if not _spawn_is_the_slots_own(slot, session_key):
+            # Another chat's slot on this spelling: when the spelling is its
+            # workspace's default, its record (if any) says nothing about THIS
+            # spawn -- see the docstring. The default reads the config file and
+            # stats the directory, so it stays off the loop like the pin.
+            if slot.workspace not in defaults:
+                defaults[slot.workspace] = await asyncio.to_thread(
+                    default_project_dir, slot.workspace
+                )
+            if cwd == defaults[slot.workspace]:
+                continue
+        identity = await spawn_project_identity_repinned(slot)
+        if slot.project != cwd or identity is None:
+            # Re-pointed away while the pin ran: this slot does not bind the
+            # directory the producer named any more, so it says nothing about it.
+            continue
+        identities.add(identity)
+    if not identities:
+        return None
+    if len(identities) > 1:
+        logger.warning(
+            "Spawn for %s into %r refused: %d bindings of the directory disagree about its "
+            "identity (replaced between their bindings)",
+            session_key,
+            cwd,
+            len(identities),
+        )
+        raise WorkspacePinFailed(
+            f"the project directory {cwd!r} is bound by more than one chat and their records "
+            "disagree about which directory stands there (it was replaced between the "
+            "bindings); re-bind the project directory in each chat"
+        )
+    return identities.pop()
+
+
 @dataclass(frozen=True)
 class _DurableTagSnapshot:
     """A positively read tag snapshot, or positive absence when ``present`` is false."""
@@ -5971,6 +6208,13 @@ class DashboardState:
         owner_id: str = "",
     ):
         self.sessions = sessions
+        # The bound-directory identity seam. Wired HERE, where the session manager
+        # first exists, for the same reason the decisions lane below is: both the
+        # gateway and the standalone dashboard construct this object, and a seam
+        # wired on only one boot path is a door left open on the other. A state
+        # built without a manager (tests) has no spawns to fence.
+        if sessions is not None:
+            self.wire_session_cwd_identity_resolver()
         # The decisions seam's LLM lane needs ONE callable that runs a prompt on a
         # tool-less background session, and ``decisions/`` deliberately imports
         # nothing above itself -- so the wiring happens here, where the session
@@ -6713,6 +6957,30 @@ class DashboardState:
             self.note_crew_log_class(slot)
 
         self.sessions.set_bind_listener(_on_bind)
+
+    def wire_session_cwd_identity_resolver(self) -> None:
+        """Install THE seam every spawn of a bound slot's directory passes through.
+
+        ``SessionManager.get_or_create`` is the one allocation door every
+        dashboard spawn uses -- the main chat, the side panel, a crewmate
+        thread, and any producer written later -- and it consults this resolver
+        for a ``cwd`` handed over with no ``cwd_identity``. The manager cannot
+        see the slots, so the answer is built here (:func:`bound_project_identity_for_spawn`):
+        the identity the slot(s) bound to that directory recorded, re-pinned in
+        this process when they carry none, the governed refusal
+        (``sandbox.WorkspacePinFailed``) for a bound directory that cannot be
+        pinned -- never an unexamined ``None``, which only a directory no slot
+        is bound to gets. The producers still pass the identity themselves, the
+        way ``chat_runner`` does; this is the safety net under them
+        (review-caught: the side panel and the thread turn passed ``cwd`` with no
+        identity, so a bound directory swapped for a link was entered from those
+        two sites while the main chat refused it).
+        """
+
+        async def _resolve(session_key: str, cwd: str) -> tuple[int, int] | None:
+            return await bound_project_identity_for_spawn(self, session_key, cwd)
+
+        self.sessions.set_cwd_identity_resolver(_resolve)
 
     def note_crew_log_class(self, slot: Any) -> None:
         """Record *slot*'s current class in its crew log, if it has moved.

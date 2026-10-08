@@ -371,7 +371,7 @@ none" is the single on-disk representation and a PATCH with `[]` clears it.
   fence, platform and inclusion rules are specified in
   [providers](providers.md). Failures return
   `400` with code `steering_dirs_invalid`.
-- **Principal gate** (`_refuse_principal_steering_dirs`) runs at both write
+- **Agent gate** (`_refuse_agent_steering_dirs`) runs at both write
   sites BEFORE validation touches any path: only the person may declare a
   non-empty list. A `POST`/`PATCH` carrying one from an app or crew-member
   principal is refused `403` with code `steering_dirs_forbidden` and SEL-logged

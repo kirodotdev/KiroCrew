@@ -485,6 +485,9 @@ async def test_side_turn_runs_in_the_slot_project_dir(tmp_path, monkeypatch):
     _capture_broadcasts(state)
     parent = state.get_or_create_slot("parent")
     parent.agent = "default"
+    # A bound project directory EXISTS: the spawn re-pins it in this process
+    # and refuses one that cannot be pinned (a missing leaf included).
+    (tmp_path / "proj").mkdir()
     parent.project = str(tmp_path / "proj")
     parent._side = SideState(open=True, created_at="2026-01-01T00:00:00Z")
     parent._side.append_user("q")
@@ -1090,6 +1093,8 @@ async def test_side_turn_rebinds_a_retained_session_whose_binding_changed(
     state = _make_state(tmp_path)
     _capture_broadcasts(state)
     parent = state.get_or_create_slot("parent")
+    (tmp_path / "proj-a").mkdir()
+    (tmp_path / "proj-b").mkdir()  # bound directories exist: the spawn re-pins them
     parent.project = str(tmp_path / "proj-b")
     parent._side = SideState(open=True, created_at="2026-01-01T00:00:00Z")
     parent._side.append_user(_SIDE_QUESTION)
@@ -1194,6 +1199,8 @@ async def test_a_project_change_during_derivation_does_not_split_check_and_spawn
     _capture_broadcasts(state)
     parent = state.get_or_create_slot("parent")
     proj_a, proj_b = str(tmp_path / "proj-a"), str(tmp_path / "proj-b")
+    (tmp_path / "proj-a").mkdir()
+    (tmp_path / "proj-b").mkdir()  # bound directories exist: the spawn re-pins them
     parent.project = proj_a
     parent._side = SideState(open=True, created_at="2026-01-01T00:00:00Z")
     parent._side.append_user(_SIDE_QUESTION)
@@ -1973,3 +1980,151 @@ async def test_side_stop_on_missing_or_closed_side(tmp_path, monkeypatch):
         assert resp.status == 409
         body = await resp.json()
         assert body["code"] == "side_not_open"
+
+
+# ── The bound project directory is verified at the side panel's spawn ──
+
+
+def _verifying_get_or_create(captured: dict, provider):
+    """A fake allocation that does with the identity what the real provider's spawn does."""
+    from kiro_crew import sandbox
+    from kiro_crew.acp.client import AcpError
+
+    async def _fake(key, **kwargs):
+        captured.update(kwargs)
+        try:
+            _real, fd = sandbox.verify_agent_workspace_for_spawn(
+                kwargs["cwd"], kwargs.get("cwd_identity")
+            )
+        except sandbox.AgentWorkspacePinRefused as exc:
+            raise AcpError(str(exc)) from exc
+        sandbox.release_agent_workspace_fd(fd)
+        return provider, True, False
+
+    return _fake
+
+
+def _bound_parent(state, tmp_path):
+    """A slot bound to a real directory with the identity a binding records."""
+    from kiro_crew import sandbox
+    from kiro_crew.dashboard.state import record_project_identity
+
+    parent = state.get_or_create_slot("parent")
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    parent.project = str(proj)
+    record_project_identity(parent, sandbox.directory_identity_pinned(proj))
+    parent._side = SideState(open=True, created_at="2026-01-01T00:00:00Z")
+    parent._side.append_user("q")
+    parent._side.last_run_id = "run-1"
+    parent._side.is_complete = False
+    return parent, proj
+
+
+def _swap(proj) -> None:
+    """A DIFFERENT directory now sits at the bound name (the ``rm -rf && clone``."""
+    other = proj.parent / ".proj.other"
+    other.mkdir()
+    proj.rmdir()
+    other.rename(proj)
+
+
+@pytest.mark.asyncio
+async def test_side_panel_spawn_refuses_a_bound_directory_swapped_since_the_binding(
+    tmp_path, monkeypatch
+):
+    """The side turn spawns in the slot's project and passes the identity the binding recorded."""
+    from kiro_crew.dashboard.state import spawn_project_identity
+
+    state = _make_state(tmp_path)
+    events = _capture_broadcasts(state)
+    parent, proj = _bound_parent(state, tmp_path)
+    recorded = spawn_project_identity(parent)
+    assert recorded is not None
+    _swap(proj)
+
+    captured: dict[str, Any] = {}
+    state.sessions.get_or_create = _verifying_get_or_create(captured, MagicMock())
+    state.sessions.release = MagicMock()
+    stream = AsyncMock(return_value="answered anyway")
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side.stream_and_collect", stream)
+
+    await _run_side_turn(state, parent, "run-1", "q", is_first_turn=True)
+
+    assert captured["cwd"] == str(proj)
+    assert captured["cwd_identity"] == recorded, "the side turn spawned without the identity"
+    stream.assert_not_awaited()
+    final = [d for t, d in events if t == "chat.side_result" and d.get("final")]
+    assert final and final[-1].get("is_error") is True
+    assert "not the directory the session was bound to" in final[-1]["content"]
+    assert "re-bind the project directory" in final[-1]["content"]
+    assert parent._side.is_complete is True
+
+
+@pytest.mark.asyncio
+async def test_side_panel_spawn_passes_the_slots_identity_for_an_unchanged_directory(
+    tmp_path, monkeypatch
+):
+    """The same identity, an unchanged directory."""
+    from kiro_crew.dashboard.state import spawn_project_identity
+
+    state = _make_state(tmp_path)
+    events = _capture_broadcasts(state)
+    parent, proj = _bound_parent(state, tmp_path)
+
+    captured: dict[str, Any] = {}
+    state.sessions.get_or_create = _verifying_get_or_create(captured, MagicMock())
+    state.sessions.release = MagicMock()
+    stream = AsyncMock(return_value="ok")
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side.stream_and_collect", stream)
+
+    await _run_side_turn(state, parent, "run-1", "q", is_first_turn=True)
+
+    assert captured["cwd"] == str(proj)
+    assert captured["cwd_identity"] == spawn_project_identity(parent)
+    stream.assert_awaited_once()
+    final = [d for t, d in events if t == "chat.side_result" and d.get("final")]
+    assert final and not final[-1].get("is_error")
+
+
+@pytest.mark.asyncio
+async def test_side_panel_refuses_a_bound_directory_it_cannot_re_pin(tmp_path, monkeypatch):
+    """A bound slot with no record in this process (a restart) whose directory is not one the."""
+    state = _make_state(tmp_path)
+    events = _capture_broadcasts(state)
+    parent, proj = _bound_parent(state, tmp_path)
+    parent.project_identity = None  # what a restart leaves
+    proj.rmdir()
+    proj.write_text("planted")
+
+    acquired = AsyncMock(return_value=(MagicMock(), True, False))
+    state.sessions.get_or_create = acquired
+    state.sessions.release = MagicMock()
+    stream = AsyncMock(return_value="answered anyway")
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side.stream_and_collect", stream)
+
+    await _run_side_turn(state, parent, "run-1", "q", is_first_turn=True)
+
+    acquired.assert_not_awaited()
+    stream.assert_not_awaited()
+    final = [d for t, d in events if t == "chat.side_result" and d.get("final")]
+    assert final and final[-1].get("is_error") is True
+    assert "could not be re-pinned" in final[-1]["content"]
+    assert "re-bind the project directory" in final[-1]["content"]
+
+    # Unbound: no identity, no check, the turn runs.
+    parent.project = ""
+    parent.project_identity = None
+    parent._side.last_run_id = "run-2"
+    parent._side.is_complete = False
+    captured: dict[str, Any] = {}
+
+    async def _record(key, **kwargs):
+        captured.update(kwargs)
+        return MagicMock(), True, False
+
+    state.sessions.get_or_create = _record
+    stream.return_value = "ok"
+    await _run_side_turn(state, parent, "run-2", "q", is_first_turn=True)
+    assert captured["cwd"] is None and captured["cwd_identity"] is None
+    stream.assert_awaited_once()

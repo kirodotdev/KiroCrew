@@ -3161,6 +3161,12 @@ class SessionLifecycleService:
         A start that succeeds here also delivers what a forced channel stop parked:
         ``get_or_create`` adopts it at registration or claim, and the ``release``
         wakes the adopted entries' channel drains.
+
+        Names no directory: the allocation body restores the session map's
+        working directory for the resume and resolves the bound-directory
+        identity on it there, so a hard-stopped bound slot is respawned into a
+        verified directory or not at all (a refusal is logged, and the slot's
+        next turn meets the same governed refusal at its own spawn).
         """
         try:
             await self._owner.get_or_create(key)

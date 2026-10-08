@@ -368,6 +368,8 @@ class _AllocationOwner(Protocol):
 
     def _record_pool_decision(self, decision: str, key: str) -> None: ...
 
+    async def _resolve_cwd_identity(self, key: str, cwd: str) -> tuple[int, int] | None: ...
+
     def _schedule_replenish(self) -> None: ...
 
     def _dispatch_hard_kill(self, provider: LLMProvider) -> None: ...
@@ -446,6 +448,38 @@ def parent_work_scratch_dir(owner: _AllocationOwner, parent_session_key: str) ->
         return None
     path = provider.work_scratch_dir
     return path if isinstance(path, Path) else None
+
+
+@contextlib.asynccontextmanager
+async def verified_hold(cwd: str | None, identity: tuple[int, int] | None) -> AsyncIterator[None]:
+    """THE choke point for every by-name touch of a bound directory outside the spawn itself.
+
+    Between the identity resolve and the spawn's own hold, the allocation touches
+    a bound directory's NAME -- the runtime preparation resolves it, the provider's
+    construction reads and writes the effort overlay under it, the saved-capability
+    recheck resolves it again -- in the allocation body, the task run's bootstrap
+    door and the task session's own preparation. Each runs inside this block and
+    nowhere else (a source pin derives the call sites from the package): the
+    directory is verified against its binding's identity and held through the
+    no-follow pin by the spawn sites' cancellation-safe off-loop wrapper
+    (``sandbox.verify_agent_workspace_for_spawn_async``), so a directory swapped
+    for a link since its binding is refused with the re-bind remedy before the step
+    follows the name, whoever supplied the identity; the release runs off the loop
+    on every exit. ``identity is None`` (no slot bound to the directory) holds
+    nothing. The spawn then takes its own hold (``acp/runtime.py``, ``acp/client.py``).
+    """
+    hold = None
+    if cwd and identity is not None:
+        from kiro_crew.sandbox import verify_agent_workspace_for_spawn_async
+
+        _real, hold = await verify_agent_workspace_for_spawn_async(cwd, identity)
+    try:
+        yield
+    finally:
+        if hold is not None:
+            from kiro_crew.sandbox import release_agent_workspace_fd
+
+            asyncio.get_running_loop().run_in_executor(None, release_agent_workspace_fd, hold)
 
 
 class SessionAllocationService:
@@ -1052,7 +1086,27 @@ class SessionAllocationService:
                         "a stalled task-run runtime could not be confirmed dead; "
                         "not starting a replacement beside it"
                     )
-            provider = owner._provider_factory(parent_session_key, agent=agent, cwd=cwd)
+            # The one factory call that does not pass through ``get_or_create``
+            # and spawns into a caller-named directory: a run whose work
+            # directory a dashboard slot is BOUND to spawns its shared runtime
+            # verified against that binding's identity, through the same
+            # resolver the allocation body consults (the bound slot's record,
+            # its restart re-pin, or the governed refusal). A directory no slot
+            # is bound to spawns as it always did (nothing added).
+            bootstrap_kwargs: dict[str, Any] = {}
+            if cwd:
+                cwd_identity = await owner._resolve_cwd_identity(parent_session_key, cwd)
+                if cwd_identity is not None:
+                    bootstrap_kwargs["cwd_identity"] = cwd_identity
+            # The construction reads and writes the effort overlay under the
+            # directory by name: under the verified hold, taken and released off
+            # the loop, the allocation body's shape (review-caught: this door
+            # constructed bare, so a bound directory swapped for a link to a share
+            # was followed by ``Path.exists`` before the spawn could refuse it).
+            async with verified_hold(cwd, bootstrap_kwargs.get("cwd_identity")):
+                provider = owner._provider_factory(
+                    parent_session_key, agent=agent, cwd=cwd, **bootstrap_kwargs
+                )
             provider.start_priority = start_priority
             pre_spawn = await pre_spawn_identity(getattr(owner, "spawn_identity_reader", None))
             await provider.start()
@@ -1270,7 +1324,14 @@ class SessionAllocationService:
 
         from kiro_crew.session_capabilities import prepare_runtime
 
-        prepared = await asyncio.to_thread(prepare_runtime, agent, None, cwd)
+        # The task's directory may be one a slot is bound to: resolve its identity
+        # and prepare inside the verified hold, as the doors below do for the
+        # spawn itself (the pin derives this site from the package).
+        task_cwd_identity = (
+            await owner._resolve_cwd_identity(parent_session_key, cwd) if cwd else None
+        )
+        async with verified_hold(cwd, task_cwd_identity):
+            prepared = await asyncio.to_thread(prepare_runtime, agent, None, cwd)
         if prepared.revision:
             return await owner.get_or_create(
                 key,
@@ -2327,17 +2388,64 @@ class SessionAllocationService:
         effective_cwd = cwd
         if not effective_cwd and resume_sid:
             stored_cwd = owner._session_map.get_cwd(key)
-            if stored_cwd and await asyncio.to_thread(Path(stored_cwd).is_dir):
-                effective_cwd = stored_cwd
+            if stored_cwd:
+                # The restore seam. The stored spelling is a BOUND directory's
+                # name whenever a slot is bound to it, and a bound directory is
+                # examined by identity BEFORE anything probes the name: the
+                # resolver below looks the slots up by spelling and re-pins
+                # through the no-follow open, so a link planted at the stored
+                # name since the binding is refused here, with the governed
+                # remedy, instead of being followed by ``is_dir`` (on Windows
+                # a link to a share is an SMB handshake; review-caught: this arm
+                # probed the name first and the identity check ran after). A
+                # pinned directory exists and the spawn re-verifies it, so its
+                # name is not probed again; a directory no slot is bound to
+                # resolves ``None`` and keeps main's existence check as it was.
+                restored_identity = None
+                if extra_factory_kwargs.get("cwd_identity") is None:
+                    restored_identity = await owner._resolve_cwd_identity(key, stored_cwd)
+                if restored_identity is not None:
+                    extra_factory_kwargs["cwd_identity"] = restored_identity
+                    effective_cwd = stored_cwd
+                elif await asyncio.to_thread(Path(stored_cwd).is_dir):
+                    effective_cwd = stored_cwd
         claim_crew = extra_factory_kwargs.get("crew_agent")
         session_agent = agent
-        preparation = await asyncio.to_thread(prepare_runtime, agent, claim_crew, effective_cwd)
+        # THE seam for the bound-directory identity
+        # (``SessionManager.set_cwd_identity_resolver``): a spawn handed over
+        # with no ``cwd_identity`` is resolved against the slots bound to its
+        # directory -- the producer's ``cwd``, or the one the restore above
+        # adopted -- BEFORE the runtime preparation sees the name (it resolves a
+        # member's directory by name) and before the warm-pool decision and the
+        # factory read it. A bound directory gets the identity its binding
+        # recorded (or its restart re-pin) or the governed refusal, never an
+        # unexamined ``None``; a directory no slot is bound to stays ``None`` =
+        # not examined. The preparation may hand back a member's project in
+        # place of the directory: that spelling is resolved the same way below
+        # when nothing was resolved for it yet.
+        if effective_cwd and extra_factory_kwargs.get("cwd_identity") is None:
+            extra_factory_kwargs["cwd_identity"] = await owner._resolve_cwd_identity(
+                key, effective_cwd
+            )
+        # The preparation resolves the directory by name: inside the verified
+        # hold, never bare, whoever supplied the identity.
+        async with verified_hold(effective_cwd, extra_factory_kwargs.get("cwd_identity")):
+            preparation = await asyncio.to_thread(prepare_runtime, agent, claim_crew, effective_cwd)
         if preparation.revision:
             # The factory may retain the pre-reconciliation config snapshot.
             # Pass the prepared template explicitly, keeping the member namespace.
             agent = preparation.template
-            effective_cwd = preparation.project or effective_cwd
             extra_factory_kwargs["crew_agent"] = preparation.member
+            if preparation.project and preparation.project != effective_cwd:
+                # The member's project replaces the directory. An identity resolved
+                # for the old spelling says nothing about the new one, so the new
+                # spelling is resolved afresh: a bound member project gets its
+                # binding's identity, an unbound one ``None`` (not examined).
+                member_project: str = preparation.project
+                effective_cwd = member_project
+                extra_factory_kwargs["cwd_identity"] = await owner._resolve_cwd_identity(
+                    key, member_project
+                )
 
         # Reconciliation can publish a new template model. Resolve only after
         # that boundary, while retaining an explicit caller model unchanged.
@@ -2388,6 +2496,18 @@ class SessionAllocationService:
             pool_decision = "bypass_member_context"
         elif cwd_blocks_pool:
             pool_decision = "bypass_cwd"
+        elif extra_factory_kwargs.get("cwd_identity") is not None:
+            # The directory is one a dashboard slot is BOUND to (the identity
+            # was recorded at the binding, or re-pinned at the seam above), so
+            # this spawn must verify that identity -- and a pooled child never
+            # can: it was pre-spawned into the pool directory with no binding to
+            # verify against, and a refill after a swap re-enters the swapped
+            # directory unexamined. Cold-starting is what puts the spawn through
+            # ``verify_agent_workspace_for_spawn`` with its expected identity
+            # (review-caught: a slot bound to the pool's own directory claimed a
+            # pooled child and the swap went undetected). A slot with no binding
+            # carries no identity and keeps the warm path.
+            pool_decision = "bypass_cwd_identity"
         elif extra_env:
             pool_decision = "bypass_env"
         elif extra_factory_kwargs.get("shared_scratch") is not None:
@@ -2569,15 +2689,20 @@ class SessionAllocationService:
                 owner._dispatch_hard_kill(provider)
                 raise
         else:
-            provider = factory(
-                key,
-                agent=agent,
-                channel_id=channel_id,
-                model_override=model,
-                cwd=effective_cwd,
-                extra_env=extra_env,
-                **extra_factory_kwargs,
-            )
+            # Construction reads and writes the effort overlay under the directory:
+            # by name, so under the verified hold. The factory is synchronous and runs
+            # its file I/O on the loop as it always did; the hold's opens and its
+            # release are syscalls, so they run off the loop around it.
+            async with verified_hold(effective_cwd, extra_factory_kwargs.get("cwd_identity")):
+                provider = factory(
+                    key,
+                    agent=agent,
+                    channel_id=channel_id,
+                    model_override=model,
+                    cwd=effective_cwd,
+                    extra_env=extra_env,
+                    **extra_factory_kwargs,
+                )
             cast(Any, provider).memory_mode = memory_mode
             if self._deps.is_acp_provider(provider):
                 cast(Any, provider).member_context = member_context
@@ -2627,7 +2752,10 @@ class SessionAllocationService:
                             raise CapabilityStartupError("capability_harness_unsupported")
                         if provider.process_instance:
                             raise CapabilityStartupError("capability_runtime_not_fresh")
-                        await asyncio.to_thread(verify_saved, preparation, provider.cwd)
+                        async with verified_hold(
+                            provider.cwd, extra_factory_kwargs.get("cwd_identity")
+                        ):
+                            await asyncio.to_thread(verify_saved, preparation, provider.cwd)
                     # The key may have been fenced while this call waited for the
                     # semaphore or the reads above: refuse before a process is
                     # spawned that the registration door would only refuse later.
@@ -2696,7 +2824,8 @@ class SessionAllocationService:
                 from kiro_crew.session_capabilities import loaded_stamp, verify_saved
 
                 observed = loaded_stamp(provider, preparation)
-                await asyncio.to_thread(verify_saved, preparation, provider.cwd)
+                async with verified_hold(provider.cwd, extra_factory_kwargs.get("cwd_identity")):
+                    await asyncio.to_thread(verify_saved, preparation, provider.cwd)
                 stamp = loaded_stamp(provider, preparation)
                 if stamp != observed:
                     raise RuntimeError("capability_process_changed_during_verification")

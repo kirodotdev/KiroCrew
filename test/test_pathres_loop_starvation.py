@@ -216,6 +216,21 @@ _EXPECTED_GATE_CALL_SITES: dict[str, int] = {
     # anchors.  Both handler call sites run this helper via ``asyncio.to_thread``,
     # so those inline anchor resolutions never block the event loop.
     "kiro_crew/dashboard/handlers/taskrunner.py": 1,
+    # ``chat_folders.project_dir_sensitive_refusal``: the sensitive verdict the
+    # fenced project-directory admission takes before and after its pinned
+    # resolve (``screen_and_resolve_project_dir``, for the ``set_project``
+    # directive and the slot project endpoint's non-person arm; the endpoint's
+    # person arm hands it the ``realpath`` result of the same worker call). Both
+    # halves hold. The argument is matched lexically, never resolved: the real
+    # path ``pinned_fs.real_dir_path_pinned`` read back from the directory it
+    # HELD, or the anchored spelling as the agent gave it (a link in it is the
+    # pin's refusal, never followed). And every caller runs it on
+    # a worker thread (``asyncio.to_thread`` at the endpoint, the directive's own
+    # worker validation), never the event loop. Resolving the candidate again is
+    # exactly what those sites must not do: after the pin, a by-name walk would
+    # follow a component swapped for a link -- on Windows, a junction aimed at a
+    # share. A resolver stall is caught there and refused with the stall wording.
+    "kiro_crew/dashboard/chat_folders.py": 1,
     # ``security.is_sensitive_canonical_path``: the shared entry point for a
     # reader that canonicalised its path itself. It picks the gate by thread --
     # this pre-resolved gate off the event loop, the bounded gate on it -- so

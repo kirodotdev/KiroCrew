@@ -1853,6 +1853,441 @@ class TestPinDirectory:
         assert (tmp_path / "swapped").is_dir()
 
 
+class TestAReparsePointThatRedirectsNothingIsTheDirectoryItIs:
+    """The ``allow_filter_reparse`` arm of ``pin_directory``."""
+
+    @pytest.mark.parametrize(
+        ("tag", "redirects"),
+        [
+            (pc._IO_REPARSE_TAG_MOUNT_POINT, True),  # a junction
+            (0xA000000C, True),  # IO_REPARSE_TAG_SYMLINK
+            (0xA000001D, True),  # IO_REPARSE_TAG_LX_SYMLINK (WSL)
+            (pc._WIN_REPARSE_TAG_CLOUD, False),  # a Files On-Demand placeholder
+            (0x9000101A, False),  # IO_REPARSE_TAG_CLOUD_1
+            (0x9000F01A, False),  # IO_REPARSE_TAG_CLOUD_F
+            (0x80000013, False),  # IO_REPARSE_TAG_DEDUP
+            (0x8000001B, False),  # IO_REPARSE_TAG_APPEXECLINK
+        ],
+    )
+    def test_the_classifier_reads_the_surrogate_bit_and_nothing_else(self, tag, redirects):
+        assert pc._reparse_tag_redirects(tag) is redirects
+
+    def test_an_unreadable_tag_is_a_surrogate(self, monkeypatch):
+        """Fail closed: no tag, no admission."""
+        monkeypatch.setattr(pc, "_win_reparse_tag", lambda fd: None)
+        assert pc._win_reparse_tag_is_name_surrogate(7) is True
+        monkeypatch.setattr(pc, "_win_reparse_tag", lambda fd: pc._WIN_REPARSE_TAG_CLOUD)
+        assert pc._win_reparse_tag_is_name_surrogate(7) is False
+        monkeypatch.setattr(pc, "_win_reparse_tag", lambda fd: pc._IO_REPARSE_TAG_MOUNT_POINT)
+        assert pc._win_reparse_tag_is_name_surrogate(7) is True
+
+    @staticmethod
+    def _junction(tmp_path):
+        import _winapi
+
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "inside").mkdir()
+        link = tmp_path / "junction"
+        _winapi.CreateJunction(str(target), str(link))
+        return target, link
+
+    def test_a_real_junction_is_refused_through_the_pinned_resolve(self, tmp_path, monkeypatch):
+        """The tag read: ``IO_REPARSE_TAG_MOUNT_POINT`` carries the surrogate bit."""
+        from kiro_crew import pinned_fs
+
+        if pc.IS_WINDOWS:
+            target, link = self._junction(tmp_path)
+        else:
+            target = tmp_path / "target"
+            (target / "inside").mkdir(parents=True)
+            link = tmp_path / "junction"
+            (link / "inside").mkdir(parents=True)  # the junction object, as a real dir
+            monkeypatch.setattr(pc, "IS_POSIX", False)
+            monkeypatch.setattr(
+                pc,
+                "_win_open_without_following",
+                lambda path, **kw: os.open(str(path), os.O_RDONLY),
+            )
+            reparse = pc._WIN_FILE_ATTRIBUTE_DIRECTORY | pc._WIN_FILE_ATTRIBUTE_REPARSE_POINT
+            plain = pc._WIN_FILE_ATTRIBUTE_DIRECTORY
+            link_id = os.stat(link).st_ino
+            monkeypatch.setattr(
+                pc,
+                "_win_file_attributes",
+                lambda fd: reparse if os.fstat(fd).st_ino == link_id else plain,
+            )
+            monkeypatch.setattr(pc, "_win_reparse_tag", lambda fd: 0xA0000003)  # MOUNT_POINT
+            monkeypatch.setattr(pinned_fs, "supports_pinned_walk", lambda: False)
+            monkeypatch.setattr(pinned_fs, "_windows_handle_pin_available", lambda: True)
+        with pytest.raises(pinned_fs.PinnedPathRefusal):
+            pinned_fs.real_dir_path_pinned(str(link), what="project directory")
+        with pytest.raises(pinned_fs.PinnedPathRefusal):
+            pinned_fs.real_dir_path_pinned(str(link / "inside"), what="project directory")
+        assert os.path.normcase(
+            pinned_fs.real_dir_path_pinned(str(target), what="project directory")
+        ) == os.path.normcase(os.path.realpath(str(target)))
+
+    def test_a_filter_reparse_directory_is_accepted_as_itself(self, tmp_path, monkeypatch):
+        """The placeholder path, end to end."""
+        from kiro_crew import pinned_fs
+
+        seen: list[int] = []
+
+        def _cloud_tag(fd: int) -> int:
+            seen.append(fd)
+            return pc._WIN_REPARSE_TAG_CLOUD
+
+        monkeypatch.setattr(pc, "_win_reparse_tag", _cloud_tag)
+        if pc.IS_WINDOWS:
+            target, link = self._junction(tmp_path)
+        else:
+            target = tmp_path / "target"
+            target.mkdir()
+            link = tmp_path / "link"
+            link.mkdir()  # stands in for the junction object the Windows arm holds
+            monkeypatch.setattr(pc, "IS_POSIX", False)
+            monkeypatch.setattr(
+                pc,
+                "_win_open_without_following",
+                lambda path, **kw: os.open(str(path), os.O_RDONLY),
+            )
+            reparse = pc._WIN_FILE_ATTRIBUTE_DIRECTORY | pc._WIN_FILE_ATTRIBUTE_REPARSE_POINT
+            plain = pc._WIN_FILE_ATTRIBUTE_DIRECTORY
+            link_id = os.stat(link).st_ino
+
+            def _attributes(fd: int) -> int:
+                return reparse if os.fstat(fd).st_ino == link_id else plain
+
+            monkeypatch.setattr(pc, "_win_file_attributes", _attributes)
+            monkeypatch.setattr(pinned_fs, "supports_pinned_walk", lambda: False)
+            monkeypatch.setattr(pinned_fs, "_windows_handle_pin_available", lambda: True)
+        fd = pc.pin_directory(link, allow_filter_reparse=True)
+        os.close(fd)
+        assert seen, "the tag was read off the open handle"
+        with pytest.raises(NotADirectoryError):
+            pc.pin_directory(link)
+        own = os.path.join(os.path.realpath(str(tmp_path)), link.name)
+        resolved = pinned_fs.real_dir_path_pinned(str(link), what="project directory")
+        assert os.path.normcase(resolved) == os.path.normcase(own)
+        assert os.path.normcase(resolved) != os.path.normcase(os.path.realpath(str(target)))
+
+
+class TestAVolumeMountPointIsTheOneSurrogateTheWalkFollows:
+    """The junction's tag with a DEVICE as its data: a Dev Drive or a second disk
+    mounted at a folder. Its data cannot name a share or another directory, so
+    following it once keeps the fence where the threat is; every other surrogate
+    stays refused. Driven through the Windows arm's seams on any host."""
+
+    VOLUME = "\\\\?\\Volume{3b1a2c4d-0000-4000-8000-00000000abcd}\\"
+
+    @staticmethod
+    def _windows_arm(monkeypatch, tmp_path, *, tag: int, target, final):
+        """A 'mount point' whose following open lands on 'volume_root': only the reparse data, the following open and the GUID read are faked (Windows: a real junction, real opener/attributes/tag)."""
+        from kiro_crew import pinned_fs
+
+        volume_root = tmp_path / "volume_root"
+        volume_root.mkdir()
+        (volume_root / "proj").mkdir()
+        followed: list[str] = []
+        if pc.IS_WINDOWS:
+            import _winapi
+
+            elsewhere = tmp_path / "elsewhere"
+            elsewhere.mkdir()
+            mount = tmp_path / "dev"
+            _winapi.CreateJunction(str(elsewhere), str(mount))
+            open_plain = pc._win_open_without_following
+            mount_id = os.lstat(mount).st_ino
+            if tag != pc._IO_REPARSE_TAG_MOUNT_POINT:
+                real_tag = pc._win_reparse_tag
+                monkeypatch.setattr(
+                    pc,
+                    "_win_reparse_tag",
+                    lambda fd: tag if os.fstat(fd).st_ino == mount_id else real_tag(fd),
+                )
+        else:
+            mount = tmp_path / "dev"
+            mount.mkdir()
+            monkeypatch.setattr(pc, "IS_POSIX", False)
+
+            def open_plain(path, **kw):
+                return os.open(str(path), os.O_RDONLY)
+
+            monkeypatch.setattr(pc, "_win_open_without_following", open_plain)
+            reparse = pc._WIN_FILE_ATTRIBUTE_DIRECTORY | pc._WIN_FILE_ATTRIBUTE_REPARSE_POINT
+            plain = pc._WIN_FILE_ATTRIBUTE_DIRECTORY
+            mount_id = os.stat(mount).st_ino
+            monkeypatch.setattr(
+                pc,
+                "_win_file_attributes",
+                lambda fd: reparse if os.fstat(fd).st_ino == mount_id else plain,
+            )
+            monkeypatch.setattr(
+                pc, "_win_reparse_tag", lambda fd: tag if os.fstat(fd).st_ino == mount_id else 0
+            )
+        monkeypatch.setattr(pc, "_win_reparse_target", lambda path: target, raising=False)
+
+        def _follow(path, **kw):
+            followed.append(str(path))
+            return open_plain(volume_root)
+
+        monkeypatch.setattr(pc, "_win_open_following_once", _follow, raising=False)
+        monkeypatch.setattr(pc, "_win_volume_guid_path", lambda fd: final, raising=False)
+        monkeypatch.setattr(pinned_fs, "supports_pinned_walk", lambda: False)
+        monkeypatch.setattr(pinned_fs, "_windows_handle_pin_available", lambda: True)
+        return mount, volume_root, followed
+
+    def test_a_volume_guid_mount_point_is_followed_once_and_the_volume_root_is_held(
+        self, tmp_path, monkeypatch
+    ):
+        mount, volume_root, followed = self._windows_arm(
+            monkeypatch, tmp_path, tag=0xA0000003, target=self.VOLUME, final=self.VOLUME
+        )
+        fd = pc.pin_directory(mount, allow_filter_reparse=True)
+        try:
+            assert followed == [str(mount)], "the point was followed exactly once, by name"
+            info = os.stat(volume_root)
+            assert pc.handle_identity(fd) == (info.st_dev, info.st_ino), "the volume root is held"
+        finally:
+            os.close(fd)
+        # Without the opt-in the gateway's own directories keep the strict rule.
+        with pytest.raises(NotADirectoryError):
+            pc.pin_directory(mount)
+
+    def test_the_spawn_chain_denies_write_sharing_on_the_leaf_only(self, tmp_path, monkeypatch):
+        """A held EMPTY leaf must not be convertible into a junction in place.
+
+        ``FSCTL_SET_REPARSE_POINT`` needs a write handle on the directory and only an
+        empty directory takes it, so the one component a writer could redirect is the
+        bound leaf (every ancestor contains the next component). The walk denies write
+        sharing on the leaf, the volume-follow handle included when the leaf is a
+        mount point, and leaves the ancestors on the delete-share-deny posture they
+        had, so a stray write handle on the drive root or a profile directory does not
+        fail the spawn. The gateway's own strict pins (no opt-in) keep the default.
+        """
+        from kiro_crew import pinned_fs
+
+        mount, volume_root, followed = self._windows_arm(
+            monkeypatch, tmp_path, tag=0xA0000003, target=self.VOLUME, final=self.VOLUME
+        )
+        opened: list[tuple[str, bool]] = []
+        plain = pc._win_open_without_following
+        follow = pc._win_open_following_once
+
+        def _no_follow(path, deny_write=False):
+            opened.append((os.path.basename(str(path)), deny_write))
+            return plain(path)
+
+        def _follow(path, deny_write=False):
+            opened.append(("<volume>", deny_write))
+            return follow(path)
+
+        monkeypatch.setattr(pc, "_win_open_without_following", _no_follow)
+        monkeypatch.setattr(pc, "_win_open_following_once", _follow, raising=False)
+        leaf = mount / "project"
+        leaf.mkdir(exist_ok=True)
+        # The leaf under the mount point: the leaf denies write sharing, every
+        # ancestor (the mount point and the volume-follow handle for it included)
+        # still shares write.
+        pinned_fs.real_dir_path_pinned(str(leaf), what="project directory")
+        assert opened, "the walk opened the chain"
+        assert [d for n, d in opened if n == "project"] == [True], opened
+        assert all(not d for n, d in opened if n != "project"), [
+            n for n, d in opened if d and n != "project"
+        ]
+        # The mount point AS the leaf: its volume-follow handle denies write too.
+        opened.clear()
+        pinned_fs.real_dir_path_pinned(str(mount), what="project directory")
+        assert ("<volume>", True) in opened, opened
+        assert [d for n, d in opened if n == "dev"] == [True], opened
+        # The default (no opt-in) is unchanged for the gateway's own pins.
+        opened.clear()
+        fd = pc.pin_directory(tmp_path)
+        os.close(fd)
+        assert opened == [(os.path.basename(str(tmp_path)), False)]
+
+    def test_the_identity_pinned_through_a_mount_point_is_the_volumes(self, tmp_path, monkeypatch):
+        from kiro_crew import pinned_fs
+
+        mount, volume_root, _followed = self._windows_arm(
+            monkeypatch, tmp_path, tag=0xA0000003, target=self.VOLUME, final=self.VOLUME
+        )
+        identity: list[tuple[int, int]] = []
+        pinned_fs.real_dir_path_pinned(str(mount), what="project directory", identity_out=identity)
+        info = os.stat(volume_root)
+        assert identity == [(info.st_dev, info.st_ino)]
+
+    @pytest.mark.parametrize(
+        "tag, target, final, why",
+        [
+            (
+                0xA0000003,
+                "\\\\?\\C:\\elsewhere\\",
+                None,
+                "a junction: the same tag, a PATH as data",
+            ),
+            (0xA0000003, "\\\\?\\UNC\\host\\share\\", None, "a junction aimed at a share"),
+            (0xA000000C, VOLUME, VOLUME, "a symlink, whatever its data says"),
+            (0xA0000003, None, None, "a mount point whose data cannot be read"),
+            (
+                0xA0000003,
+                VOLUME,
+                "\\\\?\\Volume{ffffffff-0000-4000-8000-00000000ffff}\\",
+                "the followed open landed on a different volume",
+            ),
+            (
+                0xA0000003,
+                VOLUME,
+                "\\\\?\\Volume{3b1a2c4d-0000-4000-8000-00000000abcd}\\deeper\\",
+                "not the root",
+            ),
+            (0xA0000003, VOLUME, None, "the followed object's volume path cannot be read"),
+        ],
+    )
+    def test_every_other_surrogate_stays_refused(
+        self, tmp_path, monkeypatch, tag, target, final, why
+    ):
+        from kiro_crew import pinned_fs
+
+        mount, _volume_root, _followed = self._windows_arm(
+            monkeypatch, tmp_path, tag=tag, target=target, final=final
+        )
+        with pytest.raises(NotADirectoryError):
+            pc.pin_directory(mount, allow_filter_reparse=True)
+        with pytest.raises(pinned_fs.PinnedPathRefusal):
+            pinned_fs.real_dir_path_pinned(str(mount), what="project directory")
+
+    def test_the_volume_guid_grammar(self):
+        assert pc._win_volume_guid_of(self.VOLUME) == "{3b1a2c4d-0000-4000-8000-00000000abcd}"
+        assert pc._win_volume_guid_of("\\??\\Volume{3B1A2C4D-0000-4000-8000-00000000ABCD}") == (
+            "{3b1a2c4d-0000-4000-8000-00000000abcd}"
+        )
+        for other in (
+            "\\\\?\\C:\\dev\\",
+            "\\\\?\\UNC\\host\\share\\",
+            "Volume{x}",
+            "",
+            "\\\\?\\Volume{abc}\\x",
+        ):
+            assert pc._win_volume_guid_of(other) is None, other
+
+
+class TestRealDirPathPinnedCanReportTheHeldIdentity:
+    """``real_dir_path_pinned(identity_out=...)``: the ``(st_dev."""
+
+    def test_the_held_identity_is_appended_and_the_chain_is_closed_on_return(self, tmp_path):
+        from kiro_crew import pinned_fs
+
+        target = tmp_path / "held"
+        target.mkdir()
+        before = _open_descriptor_count()
+        identities: list[tuple[int, int]] = []
+        real = pinned_fs.real_dir_path_pinned(
+            str(target), what="test directory", identity_out=identities
+        )
+        assert os.path.normcase(real) == os.path.normcase(os.path.realpath(str(target)))
+        named = os.stat(target)
+        assert identities == [(named.st_dev, named.st_ino)]
+        assert _open_descriptor_count() == before
+        # The directory can be replaced right after the return: nothing is held.
+        target.rmdir()
+        target.mkdir()
+
+    def test_nothing_is_appended_when_the_resolve_refuses(self, tmp_path):
+        from kiro_crew import pinned_fs
+
+        identities: list[tuple[int, int]] = []
+        with pytest.raises(FileNotFoundError):
+            pinned_fs.real_dir_path_pinned(
+                str(tmp_path / "gone"), what="test directory", identity_out=identities
+            )
+        assert identities == []
+        if not pc.IS_WINDOWS:
+            link = tmp_path / "link"
+            os.symlink(tmp_path, link, target_is_directory=True)
+            with pytest.raises(pinned_fs.PinnedPathRefusal):
+                pinned_fs.real_dir_path_pinned(
+                    str(link), what="test directory", identity_out=identities
+                )
+            assert identities == []
+
+    def test_an_unknown_identity_is_not_appended(self, tmp_path, monkeypatch):
+        from kiro_crew import pinned_fs
+
+        target = tmp_path / "share"
+        target.mkdir()
+        monkeypatch.setattr(pinned_fs, "handle_identity", lambda fd: None)
+        identities: list[tuple[int, int]] = []
+        pinned_fs.real_dir_path_pinned(str(target), what="test directory", identity_out=identities)
+        assert identities == []
+
+    def test_held_out_hands_the_chain_over_open_and_nothing_on_a_refusal(self, tmp_path):
+        """``real_dir_path_pinned(held_out=...)``."""
+        from pathlib import PurePath
+
+        from kiro_crew import pinned_fs
+
+        target = tmp_path / "held"
+        target.mkdir()
+        before = _open_descriptor_count()
+        held: list[int] = []
+        identities: list[tuple[int, int]] = []
+        real = pinned_fs.real_dir_path_pinned(
+            str(target), what="test directory", identity_out=identities, held_out=held
+        )
+        assert os.path.normcase(real) == os.path.normcase(os.path.realpath(str(target)))
+        # One descriptor per component the walk holds: the POSIX pinned walk holds
+        # the leaf opened under its pinned parent (one); the Windows handle arm
+        # holds every component of the spelling, root-first.
+        expected = 1 if pinned_fs.supports_pinned_walk() else len(PurePath(str(target)).parents) + 1
+        assert len(held) == expected
+        for fd in held:
+            os.fstat(fd)  # every handed-over descriptor is open
+        named = os.stat(target)
+        assert pc.handle_identity(held[-1]) == (named.st_dev, named.st_ino)  # the leaf, last
+        assert identities == [(named.st_dev, named.st_ino)]
+        pinned_fs.close_all(reversed(held))
+        for fd in held:
+            with pytest.raises(OSError):
+                os.fstat(fd)  # released by the caller, every one
+        assert _open_descriptor_count() == before
+        gone: list[int] = []
+        with pytest.raises(FileNotFoundError):
+            pinned_fs.real_dir_path_pinned(
+                str(tmp_path / "gone"), what="test directory", held_out=gone
+            )
+        assert gone == []
+        assert _open_descriptor_count() == before
+
+    def test_handle_identity_matches_os_stat_and_answers_none_for_a_zero_inode(
+        self, tmp_path, monkeypatch
+    ):
+        target = tmp_path / "d"
+        target.mkdir()
+        fd = pc.pin_directory(str(target), allow_filter_reparse=True)
+        try:
+            named = os.stat(target)
+            assert pc.handle_identity(fd) == (named.st_dev, named.st_ino)
+        finally:
+            os.close(fd)
+        if not pc.IS_WINDOWS:
+            fake = os.stat_result((0o040755, 0, 7, 1, 0, 0, 0, 0, 0, 0))
+            monkeypatch.setattr(os, "fstat", lambda fd: fake)
+            assert pc.handle_identity(3) is None
+
+
+def _open_descriptor_count() -> int:
+    """Open descriptors of this process (``/proc`` on Linux; a probe elsewhere)."""
+    proc = "/proc/self/fd"
+    if os.path.isdir(proc):
+        return len(os.listdir(proc))
+    # Elsewhere: the lowest free descriptor number stands in for the count.
+    fd = os.open(os.devnull, os.O_RDONLY)
+    os.close(fd)
+    return fd
+
+
 # ---------------------------------------------------------------------------
 # POSIX-branch coverage for the new platform_compat helpers. The
 # tests below deliberately exercise the ``if IS_POSIX:`` / Linux ``/proc`` paths

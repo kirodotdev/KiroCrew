@@ -824,3 +824,34 @@ class TestTheSchema:
         for field in ("agent", "model", "mode", "direction"):
             with pytest.raises(ValidationError):
                 validate_tool_args({field: "x"}, SESSION_FORK_SCHEMA)
+
+
+def test_a_fork_is_not_filed_where_it_would_inherit_what_its_source_has_not(tmp_path):
+    """The fork is an agent's filing of a child."""
+    state = _make_state(tmp_path)
+    bound = tmp_path / "bound"
+    bound.mkdir()
+    state._folders.append(
+        {"id": "fold00000020", "name": "Bound", "parent_id": "", "project_dir": str(bound)}
+    )
+    state._folders.append({"id": "fold00000021", "name": "Under", "parent_id": "fold00000020"})
+    state._folders.append(
+        {"id": "fold00000022", "name": "Steered", "parent_id": "", "steering_dirs": [str(tmp_path)]}
+    )
+    caller = _seed(state, "chat-1")
+    before = set(state._slots)
+    with pytest.raises(sc.SessionControlError) as exc:
+        _fork(state, caller, folder_id="fold00000021")
+    assert exc.value.code == "folder_project_dir_forbidden"
+    assert exc.value.status == 403
+    with pytest.raises(sc.SessionControlError) as exc:
+        _fork(state, caller, folder_id="fold00000022")
+    assert exc.value.code == "steering_dirs_forbidden"
+    assert set(state._slots) == before
+
+    inside = _seed(state, "chat-2")
+    inside.folder_id = "fold00000020"
+    result = _fork(state, inside, folder_id="fold00000021")
+    assert state.get_slot(result["target"]).folder_id == "fold00000021"
+    left = _fork(state, inside)
+    assert state.get_slot(left["target"]).folder_id == "fold00000020"

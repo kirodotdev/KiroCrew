@@ -37,7 +37,7 @@ from kiro_crew.dashboard.side_state import (
     SideState,
 )
 from kiro_crew.dashboard.slot_ownership import deny_app_slot_access, slot_not_found
-from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.dashboard.state import DashboardState, spawn_project_identity_repinned
 from kiro_crew.dashboard.ws import broadcast_side_queue, broadcast_side_result
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.hooks import HookManager
@@ -46,6 +46,7 @@ from kiro_crew.llm_helpers import (
     ToolApprovalPolicy,
     stream_and_collect,
 )
+from kiro_crew.sandbox import is_workspace_pin_refusal
 from kiro_crew.security import StreamRedactor, redact
 from kiro_crew.sel import sel
 from kiro_crew.start_priority import StartPriority
@@ -406,6 +407,18 @@ async def _run_side_turn(
         # after this block). Captured inside the try so the raise lives OUTSIDE
         # it and is not swallowed by the resolve except.
         _app_agent_unresolved = False
+        # The identity the spawn verifies the slot's project against, the way
+        # ``chat_runner._run_chat`` derives it for the main chat: the slot's
+        # record for its bound directory, re-pinned in this process when it
+        # carries none (a restart). A bound directory that cannot be pinned
+        # REFUSES the turn (``WorkspacePinFailed``, surfaced below with its
+        # remedy) -- never an unexamined ``None``, which only an unbound slot
+        # carries. Derived FIRST, and the project read right after it with no
+        # await between: the identity is the one recorded for the spelling
+        # ``project`` names. (Review-caught: this site passed ``cwd`` with no
+        # identity, so a bound directory swapped for a link was entered from the
+        # side panel while the main chat refused it.)
+        cwd_identity = await spawn_project_identity_repinned(slot)
         # ONE reading of the slot's project and agent for the whole turn. The
         # derivation below is checked against a project (the shadow scan of its
         # ``.kiro/agents``), the session is spawned in a project (kiro-cli
@@ -587,6 +600,10 @@ async def _run_side_turn(
             # reason. The derived spec itself lives in the user-level registry,
             # which kiro-cli searches after the project scope.
             cwd=project,
+            # The slot's recorded identity of that directory: the spawn refuses a
+            # directory swapped at the name since the binding. Passed explicitly,
+            # as the main chat does; the manager's seam would derive it anyway.
+            cwd_identity=cwd_identity,
             start_priority=start_priority,
         )
         acquired_key = side_key
@@ -789,21 +806,45 @@ async def _run_side_turn(
             is_error=True,
             final=True,
         )
-    except Exception:
-        logger.exception(
-            "Side turn failed: slot=%s run_id=%s",
-            slot.key,
-            run_id,
-        )
-        broadcast_side_result(
-            state,
-            slot_key=slot.key,
-            run_id=run_id,
-            role="assistant",
-            content="(side conversation failed — see server logs)",
-            is_error=True,
-            final=True,
-        )
+    except Exception as exc:
+        if is_workspace_pin_refusal(exc):
+            # The governed refusal of the slot's bound directory -- it cannot be
+            # pinned, or a different directory (a link) now sits at the bound
+            # name -- raised before the session was acquired or by the spawn
+            # itself. Terminal for this turn and shown with its own text, which
+            # names the remedy (re-bind the project directory), as the main
+            # chat's terminal error does; the generic line below would hide it.
+            logger.warning(
+                "Side turn refused: bound project directory not verified for slot=%s "
+                "run_id=%s: %s",
+                slot.key,
+                run_id,
+                exc,
+            )
+            broadcast_side_result(
+                state,
+                slot_key=slot.key,
+                run_id=run_id,
+                role="assistant",
+                content=str(exc),
+                is_error=True,
+                final=True,
+            )
+        else:
+            logger.exception(
+                "Side turn failed: slot=%s run_id=%s",
+                slot.key,
+                run_id,
+            )
+            broadcast_side_result(
+                state,
+                slot_key=slot.key,
+                run_id=run_id,
+                role="assistant",
+                content="(side conversation failed — see server logs)",
+                is_error=True,
+                final=True,
+            )
     finally:
         # Identity-check run_id so a stale task from a closed-and-reopened
         # side never flips is_complete on the new state's in-flight turn.

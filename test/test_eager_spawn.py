@@ -526,12 +526,14 @@ class TestEagerSpawn:
         snapshot the eager task would then register a session with the OLD cwd
         and the first real turn would run tools in the wrong workspace."""
         slot = _ChatSlot("t1")
+        (tmp_path / "a").mkdir(exist_ok=True)  # a bound project exists on disk
         slot.project = str(tmp_path / "a")
         state = _mock_state(slot)
         state.sessions.remove = AsyncMock()
 
         # The workspace switch lands while get_or_create is in flight.
         async def _create_then_switch(*a, **kw):
+            (tmp_path / "b").mkdir(exist_ok=True)  # a bound project exists on disk
             slot.project = str(tmp_path / "b")
             return (MagicMock(), True, False)
 
@@ -555,6 +557,25 @@ class TestEagerSpawn:
         state.sessions.remove.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_a_bound_project_that_cannot_be_pinned_is_left_to_the_first_turn(
+        self, tmp_path, caplog
+    ):
+        """The eager spawn re-pins the bound project like every spawn."""
+        slot = _ChatSlot("t1")
+        slot.project = str(tmp_path / "gone")  # bound, and not on disk
+        state = _mock_state(slot)
+        state.sessions.get_or_create = AsyncMock()
+        state.sessions.remove = AsyncMock()
+        with (
+            patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)),
+            caplog.at_level("INFO", logger="kiro_crew.dashboard.chat_runner"),
+        ):
+            await _eager_spawn(state, slot)
+        state.sessions.get_or_create.assert_not_awaited()
+        state.sessions.remove.assert_not_awaited()
+        assert any("left to first turn" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.asyncio
     async def test_lost_race_never_removes_the_winning_session(self, tmp_path):
         """GPT BLOCKING — stale eager cleanup destroying the real turn's session.
 
@@ -567,6 +588,7 @@ class TestEagerSpawn:
         so no stale-bindings hazard exists on its session.
         """
         slot = _ChatSlot("t1")
+        (tmp_path / "a").mkdir(exist_ok=True)  # a bound project exists on disk
         slot.project = str(tmp_path / "a")
         state = _mock_state(slot)
         state.sessions.remove = AsyncMock()
@@ -574,6 +596,7 @@ class TestEagerSpawn:
         # A real turn wins registration while our handshake runs (is_new=False),
         # AND a workspace switch lands — the pre-fix code removed the session.
         async def _lose_race_and_switch(*a, **kw):
+            (tmp_path / "b").mkdir(exist_ok=True)  # a bound project exists on disk
             slot.project = str(tmp_path / "b")
             return (MagicMock(), False, False)
 

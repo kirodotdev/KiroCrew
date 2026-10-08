@@ -76,7 +76,7 @@ from kiro_crew.constants import (
     KIROCREW_SPAWNED_VALUE,
 )
 from kiro_crew.identity_stores import AUTH_SQLITE_DB, AUTH_SQLITE_SIDECAR_SUFFIXES
-from kiro_crew.pinned_fs import fd_real_path
+from kiro_crew.pinned_fs import fd_real_path, real_dir_path_pinned
 from kiro_crew.platform import current_context
 from kiro_crew.terminal_safe import safe_terminal_line
 
@@ -5515,7 +5515,9 @@ def _lexical_runtime_overlap(
     return None
 
 
-def voice_runtime_workspace_conflict(workspace: str | os.PathLike[str]) -> str | None:
+def voice_runtime_workspace_conflict(
+    workspace: str | os.PathLike[str], *, pre_resolved: bool = False
+) -> str | None:
     """Pre-flight: describe why *workspace* would be rejected, or ``None``.
 
     A non-raising lexical version of
@@ -5533,17 +5535,24 @@ def voice_runtime_workspace_conflict(workspace: str | os.PathLike[str]) -> str |
     containment scan is shared with the spawn-time guard
     (:func:`_lexical_runtime_overlap`), so the pre-flight warning and the
     spawn-time refusal read identically and cannot drift apart.
+
+    *pre_resolved* says the caller already holds the REAL path -- the one the
+    pinned resolve returned (``pinned_fs.real_dir_path_pinned``) -- so the
+    spelling is compared as it stands and no by-name ``realpath`` re-walks the
+    admitted path: after the pinned verdict that walk is the check-to-use
+    window the pin closed, following whatever a component was swapped for in
+    between (review-caught on the macOS shard, the one host this pre-flight
+    runs on). The default keeps both forms for a spelling nothing has resolved.
     """
     if sys.platform != "darwin":
         return None
-    workspace_paths = tuple(
-        dict.fromkeys(
-            (
-                os.path.abspath(os.fspath(workspace)),
-                os.path.realpath(os.fspath(workspace)),
-            )
+    spelling = os.fspath(workspace)
+    if pre_resolved:
+        workspace_paths: tuple[str, ...] = (os.path.abspath(spelling),)
+    else:
+        workspace_paths = tuple(
+            dict.fromkeys((os.path.abspath(spelling), os.path.realpath(spelling)))
         )
-    )
     try:
         runtime_paths = tuple(
             dict.fromkeys(os.path.abspath(path) for path in _voice_runtime_sandbox_paths())
@@ -5808,6 +5817,408 @@ async def bind_voice_safe_agent_workspace_async(
         except asyncio.CancelledError as exc:
             cancellation = exc
     raise cancellation
+
+
+class AgentWorkspacePinRefused(RuntimeError):
+    """The agent's working directory is not the directory its session was bound to.
+
+    Raised INSTEAD of spawning, and only for a working directory whose identity
+    the session recorded when it was bound (``slot.project_identity``): the leaf
+    at the stored spelling -- on Windows, any component of it -- is now a link
+    or not a directory, the leaf is missing or unopenable, or a DIFFERENT
+    directory (``(st_dev, st_ino)``) now sits at the name. A binding recorded
+    with an UNAVAILABLE identity (:data:`IDENTITY_UNAVAILABLE`, a volume that
+    reports no inode) is opened but not compared. A working directory with no
+    binding recorded is never refused here. The spawn sites translate it into
+    their own user-visible error (a governed refusal that names the remedy:
+    re-bind the directory), never let it escape raw.
+    """
+
+
+class WorkspacePinFailed(RuntimeError):
+    """A project directory could not be pinned when a BINDING was being made.
+
+    Raised by :func:`directory_identity_pinned` instead of answering ``None``:
+    the leaf is missing, a link or not a directory, or cannot be opened by this
+    process. The arm making the binding refuses it with this message -- a
+    failed bind, surfaced to the person -- never stores a binding without an
+    identity (review-caught: a same-UID writer flipping the leaf between a
+    directory and a junction at bind time would otherwise leave a binding the
+    spawn never examines). The message names the directory and the reason.
+    """
+
+
+WorkspaceIdentity = tuple[int, int]
+
+#: What the identity read leaves OPEN for its caller to hold and release: on
+#: POSIX the one ``O_DIRECTORY`` descriptor of the leaf; on Windows the pinned
+#: handle chain (CRT descriptors, ROOT-FIRST), every component held without
+#: ``FILE_SHARE_DELETE`` so the spelling cannot be re-pointed while it lives.
+#: Released with :func:`release_agent_workspace_fd`, whichever it is.
+WorkspaceHold = int | list[int]
+
+
+def is_workspace_pin_refusal(exc: BaseException) -> bool:
+    """Whether *exc* is the governed refusal of a bound working directory.
+
+    Raw -- :class:`WorkspacePinFailed` from a bind or a re-pin,
+    :class:`AgentWorkspacePinRefused` from the spawn check -- or as a spawn site
+    wrapped it in its own error with the refusal as the cause (``AcpError`` /
+    ``AcpRuntimeError`` ``from`` the check). A surface that cannot show the
+    main chat's terminal error (the side panel, a crewmate thread) uses this to
+    show the refusal's own text, which names the remedy, instead of its generic
+    "see server logs" line.
+    """
+    refusals = (WorkspacePinFailed, AgentWorkspacePinRefused)
+    return isinstance(exc, refusals) or isinstance(exc.__cause__, refusals)
+
+
+#: The identity a binding records for a directory on a volume that reports no
+#: inode (SMB shares, FAT on Windows): a recorded STATE -- "this binding was
+#: made, and its directory cannot be compared by identity" -- distinct from no
+#: record at all. The spawn opens such a directory (a link is still refused) and
+#: logs that the identity is unavailable instead of comparing it.
+IDENTITY_UNAVAILABLE: WorkspaceIdentity = (0, 0)
+
+
+def directory_identity(fd: int) -> WorkspaceIdentity | None:
+    """``(st_dev, st_ino)`` of the directory a caller HOLDS open on *fd*, or ``None``.
+
+    Read off the descriptor on every host (:func:`kiro_crew.platform_compat
+    .handle_identity`: POSIX ``fstat``, Windows ``GetFileInformationByHandle``),
+    never by name -- a by-name read judges whatever sits at the name now rather
+    than the object already opened, and on Windows trips a sharing violation
+    against the holding handle. ``None`` is an UNKNOWN identity (a volume that
+    reports no inode: SMB shares and FAT on Windows), the contract
+    :func:`kiro_crew.project_scan.root_identity` pins for the same comparison --
+    never recorded as an identity, never a match, never a refusal.
+    """
+    return platform_compat.handle_identity(fd)
+
+
+def open_pinned_directory(
+    path: str | os.PathLike[str],
+) -> tuple[WorkspaceHold | None, WorkspaceIdentity | None]:
+    """THE identity read, one per platform, shared by every path that needs a directory's identity.
+
+    Bind (the person's arm, a folder's inherited binding, the agent-switch route;
+    a fork copies a record one of them made), the restart re-pin
+    (``state.spawn_project_identity_repinned``) and the spawn verification
+    (:func:`verify_agent_workspace_for_spawn`) read the identity HERE and nowhere
+    else -- no path opens by name with ``pin_directory``, ``os.stat`` or
+    ``realpath`` for an identity, so no two paths can judge one chain differently.
+
+    * Windows: the ROOT-FIRST no-reparse component walk
+      (:func:`kiro_crew.pinned_fs.real_dir_path_pinned`, behind the
+      ``platform_compat`` seams ``_win_open_without_following`` /
+      ``_win_file_attributes`` / ``_win_reparse_tag``): every component opened as
+      itself with its reparse tag judged before the next is opened, so a junction
+      or symlink at ANY component is refused without being resolved -- never the
+      outbound SMB authentication that resolving a junction to a share is; a
+      cloud-files placeholder passes as the directory it is. The identity is read
+      off the final handle and the whole chain is handed back OPEN as the hold
+      (``held_out``, root-first): each component held without ``FILE_SHARE_DELETE``,
+      so neither the directory nor anything above it can be renamed or deleted
+      while the caller holds it.
+    * POSIX: the LEAF opened ``O_RDONLY | O_DIRECTORY | O_NOFOLLOW`` -- a link or
+      a file at the name is refused by the kernel (``ELOOP`` / ``ENOTDIR``), an
+      ancestor link the spelling has always crossed is benign -- and the identity
+      read off THAT descriptor (``fstat``); the OPEN descriptor is the hold, which
+      pins the directory, not its name.
+
+    The hold is the caller's to release (:func:`release_agent_workspace_fd`): a
+    binding releases it once the identity is recorded; the spawn keeps it until
+    the child exists and enters it by descriptor.
+
+    The identity is :func:`directory_identity` of what was opened
+    (``platform_compat.handle_identity``, composed as ``os.stat`` composes the
+    pair) or ``None`` when the volume reports no inode. Raises what the open
+    raised -- ``FileNotFoundError``, ``PermissionError``, ``NotADirectoryError`` /
+    ``OSError`` for a link or a non-directory at the leaf (POSIX) or at any
+    component (Windows); the callers translate those into their own governed
+    refusals. Nothing is left open when this raises.
+    """
+    spelling = os.fspath(path)
+    if platform_compat.IS_WINDOWS:
+        identity_out: list[WorkspaceIdentity] = []
+        held_out: list[int] = []
+        real_dir_path_pinned(
+            spelling,
+            what="project directory",
+            refusal=NotADirectoryError,
+            identity_out=identity_out,
+            held_out=held_out,
+        )
+        return held_out, (identity_out[0] if identity_out else None)
+    fd = os.open(
+        spelling, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        return fd, directory_identity(fd)
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+
+
+def directory_identity_pinned(path: str | os.PathLike[str]) -> WorkspaceIdentity:
+    """Identity of the directory at *path*, read by the ONE identity function (:func:`open_pinned_directory`).
+
+    What a BINDING made by name records -- the person's own choice at the slot
+    project endpoint, a folder's inherited binding at slot creation, the
+    agent-switch route's folder project -- and what the restart re-pin records for
+    a project with no record in this process: the identity read off the
+    descriptor that opened the directory with no link followed anywhere the
+    platform can refuse one (the leaf on POSIX; every component on Windows,
+    root-first), so the directory recorded is the one the open proved -- never a
+    by-name ``stat`` after validation, which would follow a swap planted in
+    between. Blocking syscalls: run it off the event loop (``asyncio.to_thread``).
+
+    Never ``None``: a binding is recorded with an identity or it is refused. A
+    leaf -- on Windows, any component -- that is missing, a link or not a
+    directory, or that this process cannot open raises :class:`WorkspacePinFailed`
+    (the arm surfaces it as a failed bind; the re-pin as a refused spawn), and a
+    directory on a volume that reports no identity records
+    :data:`IDENTITY_UNAVAILABLE`, the state the spawn logs instead of comparing.
+    """
+    spelling = os.fspath(path)
+    try:
+        hold, identity = open_pinned_directory(spelling)
+    except FileNotFoundError as exc:
+        raise WorkspacePinFailed(
+            f"the project directory {spelling!r} could not be pinned: it is missing"
+        ) from exc
+    except PermissionError as exc:
+        raise WorkspacePinFailed(
+            f"the project directory {spelling!r} could not be pinned: it cannot be opened "
+            "by this process"
+        ) from exc
+    except (OSError, ValueError) as exc:
+        raise WorkspacePinFailed(
+            f"the project directory {spelling!r} could not be pinned: the name, or a component "
+            "above it, is a link or not a directory"
+        ) from exc
+    # A binding needs only the identity: the hold (the POSIX descriptor, the
+    # Windows chain) is released here, once the identity is read off it.
+    release_agent_workspace_fd(hold)
+    return identity if identity is not None else IDENTITY_UNAVAILABLE
+
+
+def verify_agent_workspace_for_spawn(
+    workspace: str | os.PathLike[str], expected: WorkspaceIdentity | None
+) -> tuple[str, WorkspaceHold | None]:
+    """Re-verify, at SPAWN, that the working directory is the one the session was bound to.
+
+      *expected* is the identity the SESSION recorded at its binding
+      (``slot.project_identity``, read off the descriptor that validated the
+      directory). The binding's pin is released when the value is stored and the
+      spawn is deferred, so a same-UID process could replace the directory at that
+      name in between -- on Windows a junction to a share, which ``CreateProcess``
+      would follow into an outbound SMB connection. Verified by IDENTITY, not by
+      refusing links: a benign ancestor link the spelling has always crossed is not
+      refused, and a directory bound with no identity is not examined.
+
+      * ``expected is None``: returns ``(spelling, None)`` and the spawn proceeds as
+        it always has -- only a directory no dashboard slot is bound to arrives so
+        (``SessionManager.get_or_create`` resolves a ``cwd`` handed over with no
+        identity against the slots bound to it before the provider is built).
+      * Otherwise the directory is read with no link followed, through
+        :func:`open_pinned_directory` (the ONE identity read the bind and the restart
+        re-pin share), and compared with *expected*: a leaf (on Windows, any
+        component) that is now a link or a non-directory, a missing or unopenable
+        leaf, or a DIFFERENT directory at the name REFUSES the spawn with the remedy
+        (re-bind, which re-records what stands there). A binding recorded
+        :data:`IDENTITY_UNAVAILABLE` (no inode on that volume) and a leaf whose
+        identity reads back unknown are logged as "identity unavailable on this
+        volume" and the spawn proceeds: unknown is not different (``project_scan``'s
+        rule). Returns the kernel's own spelling of the directory (POSIX, off the held
+        descriptor; the spelling on Windows) as the ``cwd`` to spawn with, and the
+        HOLD the read left open -- POSIX the ``O_DIRECTORY`` descriptor, Windows the
+        pinned chain (root-first, each component held without ``FILE_SHARE_DELETE``)
+        -- which the caller keeps until the child EXISTS: released on a worker thread
+        after the spawn returned and its PID bookkeeping ran
+        (:func:`release_agent_workspace_fd`), and on every failure path. What the
+        hold pins differs by platform: on POSIX it is what the child ENTERS (the
+        spawn site hands it to :func:`create_subprocess_limited` as ``chdir_fd`` and
+        the shim ``fchdir``s it), so a rename or a planted link after this check
+        cannot redirect the child's working directory -- the spawn's preparation
+        reads that still take the NAME are the tracked residual
+    ``test_project_directory_seams.py`` lists; on Windows
+        the held chain keeps the name itself from being renamed, deleted or
+        re-pointed until ``CreateProcess`` has returned. The protocol-boundary window
+        ``AcpRuntime._session_work_dir`` records remains on every platform.
+
+      Raises :class:`AgentWorkspacePinRefused`, fail closed, with the reason and
+      the remedy; nothing is left open when it raises.
+    """
+    path = os.fspath(workspace)
+    if expected is None:
+        return path, None
+    remedy = " -- re-bind the project directory to record what stands there now"
+    hold: WorkspaceHold | None = None
+    try:
+        # THE identity read -- the same function the bind and the restart re-pin
+        # use (``open_pinned_directory``): Windows root-first no-reparse walk,
+        # POSIX ``O_NOFOLLOW | O_DIRECTORY`` leaf open + ``fstat``.
+        hold, found = open_pinned_directory(path)
+    except FileNotFoundError as exc:
+        raise AgentWorkspacePinRefused(
+            f"refusing to spawn into the bound working directory {path!r}: it is missing{remedy}"
+        ) from exc
+    except PermissionError as exc:
+        raise AgentWorkspacePinRefused(
+            f"refusing to spawn into the bound working directory {path!r}: it cannot be "
+            f"opened by this process{remedy}"
+        ) from exc
+    except (NotADirectoryError, OSError, ValueError) as exc:
+        # ELOOP/ENOTDIR by kernel for a link or a file at the leaf on POSIX; the
+        # Windows walk's own refusal of a redirecting reparse point at ANY
+        # component. Either way the name does not denote the directory the
+        # session was bound to, and nothing followed it.
+        raise AgentWorkspacePinRefused(
+            f"refusing to spawn into the bound working directory {path!r}: the name, or a "
+            f"component above it, is now a link or not a directory, so it is not the directory "
+            f"the session was bound to{remedy}"
+        ) from exc
+    try:
+        if tuple(expected) == IDENTITY_UNAVAILABLE or found is None:
+            # The binding was recorded on a volume that reports no inode, or the
+            # leaf reads back none now: there is nothing to compare, and unknown
+            # is not different. The leaf was still opened with no link followed.
+            logger.warning(
+                "Agent working directory %r: identity unavailable on this volume; the bound "
+                "identity cannot be compared, spawning as bound",
+                path,
+            )
+        elif tuple(found) != tuple(expected):
+            raise AgentWorkspacePinRefused(
+                f"refusing to spawn into the bound working directory {path!r}: it is not the "
+                f"directory the session was bound to (a different directory now sits at that "
+                f"name){remedy}"
+            )
+        # The kernel's own spelling off the held POSIX descriptor; on Windows the
+        # spelling as bound -- the held chain is what keeps it naming this directory.
+        real = (fd_real_path(hold) if isinstance(hold, int) else None) or path
+    except BaseException:
+        release_agent_workspace_fd(hold)
+        raise
+    return real, hold
+
+
+async def verify_agent_workspace_for_spawn_async(
+    workspace: str | os.PathLike[str], expected: WorkspaceIdentity | None
+) -> tuple[str, WorkspaceHold | None]:
+    """Cancellation-safe off-loop wrapper for :func:`verify_agent_workspace_for_spawn`.
+
+    The same settle-then-close shape as :func:`bind_voice_safe_agent_workspace_async`,
+    for the same reason: ``asyncio.to_thread`` cannot stop a running worker, and
+    a cancellation landing after the worker opened the hold (the descriptor, the
+    Windows chain) but before ownership is transferred would leak it for the
+    gateway's lifetime. The release on that path goes to a worker thread too
+    (:func:`release_agent_workspace_fd` is never called on the loop by this
+    module's async paths).
+    """
+    verifying = asyncio.create_task(
+        asyncio.to_thread(verify_agent_workspace_for_spawn, workspace, expected)
+    )
+    cancellation: asyncio.CancelledError | None = None
+    while not verifying.done():
+        try:
+            await asyncio.shield(verifying)
+        except asyncio.CancelledError as exc:
+            cancellation = exc
+
+    if cancellation is None:
+        return verifying.result()
+
+    try:
+        _real, hold = verifying.result()
+    except BaseException:
+        # The caller's cancellation remains authoritative, but retrieving the
+        # worker exception prevents a false "Task exception was never retrieved".
+        raise cancellation
+    asyncio.get_running_loop().run_in_executor(None, release_agent_workspace_fd, hold)
+    raise cancellation
+
+
+def release_agent_workspace_fd(fd: WorkspaceHold | None) -> None:
+    """Release the hold :func:`verify_agent_workspace_for_spawn` handed over, if any.
+
+    The POSIX descriptor, or the Windows handle chain -- closed LEAF-FIRST, the
+    order the walk's own unwind uses (each component's lock is what the opens
+    below it relied on). Every caller on the event loop hands this to a worker
+    thread (``loop.run_in_executor(None, release_agent_workspace_fd, hold)``,
+    fire and forget): the spawn sites schedule it AFTER the child's PID
+    bookkeeping -- so the hold spans the process creation and no ``await`` sits
+    between a live child and the record of it (review-caught: a cancellation
+    raised from such an ``await`` left the child running and unrecorded) -- and
+    the cancellation and failure paths schedule it the same way, so no close
+    runs on the loop. Called directly only from a worker thread (the check's own
+    unwind, a binding that needed only the identity). Swallows an
+    already-closed descriptor.
+    """
+    if fd is None:
+        return
+    for one in (fd,) if isinstance(fd, int) else reversed(fd):
+        try:
+            os.close(one)
+        except OSError:
+            pass
+
+
+def _directory_identity_from_fd(fd: int) -> WorkspaceIdentity | None:
+    """The identity read for the bound-descriptor comparison -- :func:`directory_identity`.
+
+    A seam of its own so the comparison runs on every host in the tests: the
+    descriptors it compares are ``O_DIRECTORY`` opens on POSIX, which a Windows
+    host cannot produce, so there the test hands this seam fake descriptors with
+    fake identities and the comparison logic is exercised unchanged.
+    """
+    return directory_identity(fd)
+
+
+def refuse_unless_bound_workspace_is_pinned(
+    descriptor: int, verified_fd: WorkspaceHold | None
+) -> None:
+    """Refuse a bound workspace descriptor that is not the verified directory.
+
+    ``bind_voice_safe_agent_workspace`` opens the workspace BY NAME (a follow
+    open) and the child enters that descriptor with ``fchdir``; *verified_fd*
+    holds the same spelling's leaf opened without following a link and matched
+    to the session's recorded identity. If the two do not name one ``(st_dev,
+    st_ino)``, the by-name open resolved through something the no-follow open
+    did not -- a link planted at the leaf between the two opens -- and the spawn
+    is refused rather than entered. Nothing to compare when nothing was verified
+    (no recorded identity) or when either identity reads back unknown. The
+    verified hold's LEAF is what is compared: the POSIX descriptor itself, or
+    the final handle of the Windows chain (the bind exists on macOS only, so in
+    practice the descriptor is what reaches here).
+    """
+    if verified_fd is None:
+        return
+    leaf = verified_fd if isinstance(verified_fd, int) else verified_fd[-1]
+    bound = _directory_identity_from_fd(descriptor)
+    verified = _directory_identity_from_fd(leaf)
+    if bound is None or verified is None:
+        logger.warning(
+            "Bound workspace descriptor: identity unavailable on this volume; the verified "
+            "directory cannot be compared, spawning as bound"
+        )
+        return
+    if bound != verified:
+        raise AgentWorkspacePinRefused(
+            "refusing to spawn: the bound workspace descriptor is not the directory the "
+            "identity check verified -- the name resolved through a link planted between the two opens"
+        )
+
+
+async def refuse_unless_bound_workspace_is_pinned_async(
+    descriptor: int, verified_fd: WorkspaceHold | None
+) -> None:
+    """Off-loop :func:`refuse_unless_bound_workspace_is_pinned` (two identity reads)."""
+    await asyncio.to_thread(refuse_unless_bound_workspace_is_pinned, descriptor, verified_fd)
 
 
 def _bound_agent_workspace_matches(descriptor: int, workspace: str | os.PathLike[str]) -> bool:

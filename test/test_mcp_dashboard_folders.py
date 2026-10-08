@@ -558,6 +558,51 @@ class TestFolderNameRedaction:
         assert self.LEAKY not in out
 
 
+class TestNoFolderToolCarriesProjectDir:
+    """A folder's project directory is the person's to bind, from the sidebar's Folder settings."""
+
+    def test_project_dir_is_refused_by_the_create_schema_before_any_request(self) -> None:
+        # No route is answered: the schema refuses before the frame sends anything,
+        # and an in-memory dashboard with no routes would raise on the first request.
+        out, dash = _call("chat_folder_create", {"name": "Proj", "project_dir": "/t"}, routes={})
+        assert out.startswith("Error:") and "project_dir" in out, out
+        assert dash.requests == []
+
+    def test_the_update_verb_is_metadata_only_and_the_create_tool_points_at_the_sidebar(
+        self,
+    ) -> None:
+        by_name = {t["name"]: t for t in _list_tools()}
+        update = by_name["chat_folder_update"]
+        assert set(update["inputSchema"]["properties"]) == {"folder", "name", "icon", "color"}
+        assert "cannot set project_dir, default_agent or steering_dirs" in update["description"]
+        create = by_name["chat_folder_create"]
+        assert "project_dir" not in create["inputSchema"]["properties"]
+        assert "bound by the person from the sidebar's Folder settings" in create["description"]
+
+    def test_the_move_tool_states_the_two_inheritance_rules(self) -> None:
+        """The shipped semantics, not the deleted owner-scoped model."""
+        move = next(t for t in _list_tools() if t["name"] == "chat_folder_move")["description"]
+        assert "ONE rule holds every non-person mover" in move
+        assert "inherit a DIFFERENT project directory" in move
+        assert "DIFFERENT steering directories" in move
+        assert "carrying its OWN binding moves freely" in move
+        assert "whoever owns the folder" in move
+        assert "not held to that rule" not in move
+        assert "stops only the member's own chats" not in move
+        assert "resolves no binding wherever" not in move
+
+    def test_the_filing_tools_state_the_same_rule(self) -> None:
+        """The third site of the move rule."""
+        by_name = {t["name"]: t["description"] for t in _list_tools()}
+        move_session = by_name["chat_folder_move_session"]
+        assert "No agent may file a session where" in move_session
+        assert "inherit a different project directory or different steering" in move_session
+        assert "same binding and steering, or ask the person" in move_session
+        file_self = by_name["chat_folder_file_self"]
+        assert "Held to the same rule as chat_folder_move_session" in file_self
+        assert "different project directory or steering than it inherits today" in file_self
+
+
 class TestFolderMove:
     def test_reparents_by_path(self) -> None:
         out, dash = _call(
