@@ -56,6 +56,14 @@ _TARGET_PATH_MAX_NODES = 10_000
 _PATCH_TEXT_MAX_CHARS = 256_000
 _PATCH_HEADERS = ("*** Add File: ", "*** Update File: ", "*** Delete File: ")
 _PATCH_MOVE_HEADER = "*** Move to: "
+#: The characters JS ``String.prototype.trim()`` strips: ECMAScript WhiteSpace
+#: plus LineTerminator. The applier trims each header path with it. It holds
+#: U+FEFF, which ``str.strip`` keeps, and lacks ``\x1c``-``\x1f`` and ``\x85``,
+#: which ``str.strip`` drops.
+_JS_TRIM_CHARS = (
+    "\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006"
+    "\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+)
 
 
 class TargetPaths(list):
@@ -188,7 +196,9 @@ def _patch_targets(text: str, candidates: TargetPaths) -> None:
     any other splitter, so it is unverifiable. Each header path is judged as the
     literal string the applier resolves: a path that is not absolute as written,
     or that variable expansion would change, names a file the gate cannot pin,
-    so it is unanchored.
+    so it is unanchored. A header path that Python's ``str.strip`` or JS
+    ``trim()`` would change (a trailing U+FEFF, which only JS strips) is
+    unverifiable.
     """
     if len(text) > _PATCH_TEXT_MAX_CHARS:
         candidates.truncated = True
@@ -230,7 +240,8 @@ def _patch_targets(text: str, candidates: TargetPaths) -> None:
                 candidates.truncated = True
                 return
             continue
-        if not path or path != path.strip() or "\x00" in path:
+        # A path either trim would change names a file the gate cannot pin.
+        if not path or path != path.strip() or path != path.strip(_JS_TRIM_CHARS) or "\x00" in path:
             candidates.truncated = True
             return
         if not _is_literal_absolute(path):

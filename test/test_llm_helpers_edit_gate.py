@@ -388,6 +388,42 @@ class TestPatchHeadersAreReadAsTheApplierReadsThem:
         assert approved is False
         assert "protected path" in _error(rows)
 
+    @staticmethod
+    def _bom_patches() -> list[str]:
+        # JS ``.trim()`` drops a trailing U+FEFF, so the applier writes the
+        # real config.json. Python's ``str.strip`` keeps it.
+        target = os.path.expanduser("~/.kiro/crew/config.json") + "\ufeff"
+        return [
+            f"*** Begin Patch\n*** Add File: {target}\n+x\n*** End Patch",
+            f"*** Begin Patch\n*** Delete File: {target}\n*** End Patch",
+            "*** Begin Patch\n*** Update File: /tmp/ok.md\n"
+            f"*** Move to: {target}\n@@\n-old\n+new\n*** End Patch",
+        ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("which", ["add", "delete", "move"])
+    async def test_a_trailing_bom_header_is_denied_by_the_permission_gate(self, which: str) -> None:
+        patch = dict(zip(["add", "delete", "move"], self._bom_patches()))[which]
+        approved, provider, _rows = await _resolve(
+            _edit_event("/tmp/ok.md", params={"patchText": patch})
+        )
+        assert approved is False, f"a {which} header ending in U+FEFF was approved"
+        assert provider.rejected == ["r1"]
+
+    @pytest.mark.parametrize("which", ["add", "delete", "move"])
+    def test_a_trailing_bom_header_is_denied_by_the_hook(self, which: str) -> None:
+        from kiro_crew.hooks import TOOL_DENY, HookManager, HooksConfig
+
+        patch = dict(zip(["add", "delete", "move"], self._bom_patches()))[which]
+        decision = HookManager(HooksConfig.from_dict({})).on_tool_call(
+            "Editing the notes",
+            session_key="cli_chat",
+            tool_kind="edit",
+            raw_params={"patchText": patch},
+            diff_path="",
+        )
+        assert decision.action == TOOL_DENY, f"a {which} header ending in U+FEFF passed the hook"
+
 
 class TestTheClientCarriesTheDiffPathOntoThePermissionEvent:
     """``_dispatch`` caches the diff block's path by scoped toolCallId and
