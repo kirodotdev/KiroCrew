@@ -432,6 +432,16 @@ class SaveFolds:
     channel_folder_filed: bool = False
     tab_id: object = None
     rotation_generation: int | None = None
+    # Staged ``mutes_opened`` value. ``None`` (the default) means "read the live
+    # ``slot.mutes_opened``", which every caller but the mute endpoint relies on.
+    # The mute endpoint persists its NEW value through this fold while leaving the
+    # live flag at its committed value across the save, then flips the live flag
+    # only after the write commits under the transcript lock -- so a concurrent
+    # slots broadcast during the save window never observes the provisional value.
+    # Honored by BOTH the full ``build_full_line`` path and the empty-window
+    # ``merge_empty_window`` path (a message-less newborn), so a staged value
+    # reaches disk whichever branch the save takes.
+    mutes_opened: bool | None = None
 
 
 @dataclass
@@ -1192,8 +1202,15 @@ FIELDS: tuple[Field, ...] = (
         "mutes_opened",
         _ALL,
         attr="mutes_opened",
-        line=_flag(lambda s: s.mutes_opened),
-        merge=_always(lambda s: bool(s.mutes_opened)),
+        # Prefer the staged fold value when the save supplies one (the mute
+        # endpoint persisting its NEW value while the live flag still holds the
+        # committed value); otherwise read the live slot, as every other save
+        # does. Same choice in both forms so the full line and the empty-window
+        # merge agree on what reaches disk.
+        line=lambda s, f: (
+            True if (s.mutes_opened if f.mutes_opened is None else f.mutes_opened) else OMIT
+        ),
+        merge=lambda s, f: bool(s.mutes_opened if f.mutes_opened is None else f.mutes_opened),
         read=_read_mutes_opened,
     ),
     Field(

@@ -69,12 +69,19 @@ export function useTurnCompletion({ dispatch, queryClient, reconnectingRef }: Tu
         // live question card both mean the conversation paused for the
         // user rather than finished; the toast wording reads this too.
         completionNeedsInput = data.needs_input === true || questionPending
+        // Criterion 2: a completion that pauses for the USER (needs_input or a
+        // live question card) still raises the turn-done chime and toast even
+        // on a muted session -- the mute silences a routine "turn finished",
+        // not a session that is actually waiting on the user. (Tool-approval
+        // prompts stay exempt too, via approvals.ts.) The unread badge is a
+        // separate axis and stays suppressed for a muted session (criterion 7).
+        const muteSuppresses = muted && !completionNeedsInput
         completionNeedsAttention = shouldChimeOnTurnDone({
           slot: data.slot,
           reconnecting: reconnectingRef.current,
           continuing,
           needsInput: completionNeedsInput,
-        }) && !muted
+        }) && !muteSuppresses
         // A live question card already requested audio. Keep its named
         // desktop toast eligible, but do not request a second chime.
         if (completionNeedsAttention && !questionPending) dispatchMcNotification(TURN_DONE_KIND)

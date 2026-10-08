@@ -2978,10 +2978,42 @@ async def api_chat_slot_mutes_opened(request: web.Request) -> web.Response:
             "app does not own this slot's transcript",
         )
         return slot_not_found()
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    # User-only provenance. The feature contract (and docs/feature-map) say this
+    # flag is set by the dashboard USER alone -- no agent or MCP route reaches
+    # it, because session_create's own contract forbids an agent opening
+    # already-silenced sessions. The ownership fences above stop a FOREIGN
+    # caller, but an app or internal-agent caller writing to a slot it owns would
+    # still pass them, so a shipped built-in app holding the /api/chat/slots/*
+    # grant could set the flag with no user action. Require positive evidence of
+    # a dashboard human here -- the same (is_dashboard_user AND not internal_auth)
+    # pair the autonudge user-input notifier uses -- so an app caller
+    # (is_dashboard_user is False) and a loopback MCP/cron caller
+    # (internal_auth is True) are both refused before any mutation.
+    if not (request.get("is_dashboard_user") is True and request.get("internal_auth") is not True):
+        source, caller = _audit_origin(request)
+        sel().log_api_access(
+            caller=caller,
+            operation="chat.slot_mutes_opened",
+            outcome="denied",
+            source=source,
+            resources=name,
+            error="mute toggle is a dashboard-user action; app and agent callers are refused",
+        )
+        return web.json_response(
+            {
+                "error": "this setting can only be changed by a dashboard user",
+                "code": "mutes_opened_user_only",
+            },
+            status=403,
+        )
+    # Shared parse-and-shape guard: a body that is valid JSON but not an object
+    # (a list, string or number) answers 400 body_not_object instead of letting
+    # the .get() below turn a client mistake into a 500. The body is a fixed set
+    # of control fields, so the shared default byte cap applies.
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     expected_created = str(body.get("expected_created") or "")
     async with _slot_meta_txn_lock(state):
         if (
@@ -3010,15 +3042,50 @@ async def api_chat_slot_mutes_opened(request: web.Request) -> web.Response:
                 {"error": "mutes_opened must be a boolean", "code": "mutes_opened_not_bool"},
                 status=400,
             )
-        slot.mutes_opened = new_value
         changed = prior != new_value
         if changed:
-            # best_effort=False so a lock timeout / disk-full PROPAGATES instead
-            # of being swallowed and acknowledged as a successful change (a
-            # swallowed failure would publish a patch for a setting that never
-            # reached disk and vanishes on the next restart). Persist BEFORE the
-            # patch is pushed; on any failure, restore the prior flag and return
-            # an error without publishing.
+            # Persist-before-you-publish, done under the lock. The live
+            # ``slot.mutes_opened`` is LEFT at ``prior`` across the whole save:
+            # the NEW value is persisted as a STAGED override that both save
+            # paths honor (the full ``build_full_line`` AND the empty-window
+            # ``merge_empty_window`` branch a message-less newborn takes -- the
+            # latter was the round-1 F1 gap, where the staged value was ignored
+            # and the stale live flag reached disk).
+            #
+            # Because the live flag does not change until the write commits, a
+            # concurrent ``/api/chat/slots`` GET or a worker-completion
+            # ``push_slots_update`` DURING the save window reads the committed
+            # ``prior`` value -- never the provisional one -- so a failed save
+            # leaves nothing to correct and publishes nothing.
+            #
+            # The live flag is flipped by ``after_commit_under_lock``, which the
+            # save invokes right after its ``atomic_write`` (or the merge's
+            # commit) while STILL HOLDING the transcript ``_locked``. A
+            # concurrent dirty-slot flush needs that same lock to serialize the
+            # slot, so it cannot interleave between the commit and the flip and
+            # resurrect ``prior`` (the round-1 F2 race). On a non-raising refuse
+            # or a raising failure the write never commits, so the callback never
+            # runs and the live flag stays ``prior``.
+            #
+            # best_effort=False so a lock timeout / disk-full PROPAGATES rather
+            # than being swallowed and acknowledged as a durable change.
+            #
+            # COMMIT WITNESS: ``save_slot_off_loop`` can return True WITHOUT the
+            # write committing -- the empty-window merge of a line-less tab (a
+            # new incognito session with no metadata line yet) is a by-design
+            # SKIP: its guard runs, sees an empty record, and refuses to
+            # materialize a line, so ``after_commit_under_lock`` never fires yet
+            # the save still reports True. ``committed`` is set INSIDE the hook,
+            # so it is True only if the write genuinely committed. A True save
+            # with ``committed`` still False means the value never reached disk,
+            # which we must not acknowledge as a durable change.
+            committed = False
+
+            def _commit_live_flag() -> None:
+                nonlocal committed
+                committed = True
+                slot.mutes_opened = new_value
+
             try:
                 saved = await save_slot_off_loop(
                     state,
@@ -3026,10 +3093,15 @@ async def api_chat_slot_mutes_opened(request: web.Request) -> web.Response:
                     force=True,
                     best_effort=False,
                     expected_history_key=authorized_history_key,
+                    mutes_opened_override=new_value,
+                    after_commit_under_lock=_commit_live_flag,
                 )
             except Exception:
-                if slot.mutes_opened == new_value:
-                    slot.mutes_opened = prior
+                # The write did not commit, the live flag was never touched, and
+                # nothing provisional was ever published -- so there is no
+                # corrective frame to send. Mark the slot dirty only so an
+                # unrelated flush re-converges the (unchanged) durable record,
+                # and answer 503 so the client retries.
                 slot._dirty = True
                 source, caller = _audit_origin(request)
                 sel().log_api_access(
@@ -3042,7 +3114,7 @@ async def api_chat_slot_mutes_opened(request: web.Request) -> web.Response:
                 )
                 logger.warning(
                     "chat.slot_mutes_opened: durable save of slot=%s failed; "
-                    "not publishing the unpersisted change",
+                    "live flag untouched, nothing published",
                     slot.key,
                     exc_info=True,
                 )
@@ -3054,11 +3126,10 @@ async def api_chat_slot_mutes_opened(request: web.Request) -> web.Response:
                     status=503,
                 )
             if not saved:
-                # A non-raising refuse (the slot was deleted or rebound under
-                # the write): roll back and report it as gone.
-                if slot.mutes_opened == new_value:
-                    slot.mutes_opened = prior
-                slot._dirty = True
+                # A non-raising refuse (the slot was deleted or rebound under the
+                # write). The write never committed, the live flag was never
+                # touched, and nothing provisional was published -- no corrective
+                # frame is owed.
                 source, caller = _audit_origin(request)
                 sel().log_api_access(
                     caller=caller,
@@ -3070,6 +3141,37 @@ async def api_chat_slot_mutes_opened(request: web.Request) -> web.Response:
                 )
                 return web.json_response(
                     {"error": "session was deleted or rebound", "code": "session_gone"}, status=409
+                )
+            if not committed:
+                # The save reported success WITHOUT the write committing: the
+                # empty-window merge of a line-less tab (a new incognito session
+                # with no metadata line yet) refused to materialize a line, so
+                # ``after_commit_under_lock`` never ran. The value never reached
+                # disk, the live flag was never flipped, and nothing provisional
+                # was published -- so there is nothing to correct. Answer 409 so
+                # the client knows the setting cannot be saved yet (it takes once
+                # the session has written its first line) rather than reporting a
+                # change that never persisted.
+                source, caller = _audit_origin(request)
+                sel().log_api_access(
+                    caller=caller,
+                    operation="chat.slot_mutes_opened",
+                    outcome="denied",
+                    source=source,
+                    resources=name,
+                    error="session has no durable record yet",
+                )
+                logger.info(
+                    "chat.slot_mutes_opened: slot=%s has no metadata line yet; "
+                    "mute not persisted, live flag untouched, nothing published",
+                    slot.key,
+                )
+                return web.json_response(
+                    {
+                        "error": "this session cannot be saved yet; try again after it has started",
+                        "code": "session_gone",
+                    },
+                    status=409,
                 )
     state.push_slot_patch(slot.key, ("mutes_opened",))
     source, caller = _audit_origin(request)

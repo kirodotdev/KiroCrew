@@ -377,6 +377,15 @@ def _make_app(state: DashboardState) -> web.Application:
             request["app"] = ""  # dashboard user, not an app
         if "user" not in request:
             request["user"] = "local-app"  # recognized as owner
+        # Mirror token_auth_middleware's provenance markers (token_auth.py sets
+        # is_dashboard_user = not app). A route that gates on dashboard-user
+        # provenance (e.g. the user-only mute toggle) needs these present, and
+        # an app-isolation test that injected its own app identity gets the
+        # matching is_dashboard_user=False here.
+        if "is_dashboard_user" not in request:
+            request["is_dashboard_user"] = request["app"] == ""
+        if "internal_auth" not in request:
+            request["internal_auth"] = False
         return await handler(request)
 
     # The per-slot app-ownership checkpoint runs inner to auth, as in the real

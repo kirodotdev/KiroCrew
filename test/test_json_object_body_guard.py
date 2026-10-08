@@ -298,6 +298,9 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
         "_MAX_REORDER_BODY_BYTES",
         _BOUNDED_EXPLICIT,
     ),
+    # The mute-opened toggle carries a boolean and an optional expected_created
+    # stamp -- a fixed set of control fields, so the shared default cap is right.
+    "chat_folders.py::api_chat_slot_mutes_opened": ("<default>", _BOUNDED_CONTROL_FIELDS),
     # ---- tranche 3 ----
     # chat_handlers.py and its chat_api owners: control-field slot mutations take
     # the cap; the sites that carry a chat message, queued-edit text, follow-up

@@ -335,6 +335,8 @@ def merge_empty_window(
     closed_at: float | None,
     pending_mode_target: _ChatSlot,
     refusal_under_lock: Callable[[dict], str | None] | None = None,
+    mutes_opened_override: bool | None = None,
+    after_commit_under_lock: Callable[[], None] | None = None,
 ) -> str | None:
     """Commit a forced or closing save of a message-less slot as a metadata merge.
 
@@ -429,6 +431,12 @@ def merge_empty_window(
                 meta.get("deferred_notes"),
                 serialize_deferred_notes(slot._deferred_notes[:]),
             ),
+            # Staged mute value: persist the endpoint's NEW value here while the
+            # live ``slot.mutes_opened`` still holds the committed value, so a
+            # newborn's empty-window save reaches disk with the new value even
+            # though the live flag has not flipped yet (the round-1 F1 gap, where
+            # this branch ignored the staged value and wrote the stale live flag).
+            mutes_opened=mutes_opened_override,
         )
         merged_fields.update(cp._metadata_codec.encode(slot, merge=True, folds=folds))
         return True
@@ -447,6 +455,14 @@ def merge_empty_window(
         merged_queue = merged_fields.get("queued_prompts")
         if isinstance(merged_queue, list):
             slot._queue_persisted_sig = queue_persist_signature(merged_queue)
+        # Flip the live mute flag HERE, under the transcript lock this write
+        # holds, after the merge committed -- a concurrent flush cannot
+        # interleave because it needs the same lock, so it never serializes the
+        # still-prior flag over this committed value. Guarded by the same
+        # rebind check above: a slot rebound while the merge was in flight must
+        # not have its live flag flipped for a value written to the OLD transcript.
+        if after_commit_under_lock is not None:
+            after_commit_under_lock()
 
     applied = conv_log.update_metadata_if(
         history_key,
@@ -519,6 +535,7 @@ def build_full_line(
     queue_candidates: int,
     rewrite: bool,
     rows_only: bool,
+    mutes_opened_override: bool | None = None,
 ) -> tuple[dict, str, list[dict], set[str], str | None]:
     """The line a full save writes: ``(line, mode, queue, retired note ids, tab_id)``.
 
@@ -689,6 +706,10 @@ def build_full_line(
             channel_folder_filed=channel_folder_filed,
             tab_id=tab_id,
             rotation_generation=rotation,
+            # Staged mute value (see merge_empty_window): the full save honors
+            # the same override, so the committed value reaches disk whether a
+            # session has a window or not.
+            mutes_opened=mutes_opened_override,
         ),
     )
     # The drop records this write retires are CONSUMED only after the
