@@ -1413,9 +1413,9 @@ class SessionLifecycleService:
             # the provider shutdown) is where a teardown hangs. The scope keeps the
             # popped session readable through ``tearing_down`` for exactly the life
             # of this call -- the facade releases it when this method ends, however
-            # it ends -- and tells the caller which session THIS reset popped (its
-            # ``popped``, and its ``on_pop`` hook, run here so a caller's read of the
-            # session is atomic with the pop). One entry per teardown in flight
+            # it ends -- and tells the caller which session THIS reset popped: its
+            # ``on_pop(session)`` hook, run here so a caller's read of the
+            # session is atomic with the pop. One entry per teardown in flight
             # under the key, in pop order; no scope, no record.
             if scope is not None and current is not None:
                 scope.note_pop(key, current)

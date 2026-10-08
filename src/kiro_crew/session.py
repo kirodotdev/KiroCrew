@@ -2646,7 +2646,8 @@ class SessionManager:
         must know exactly which session THIS reset popped -- and read it
         atomically with the pop -- opens the scope itself with
         :meth:`teardown_scope` and passes it as ``scope``; it is entered and
-        released here all the same, and its ``popped`` survives the release.
+        released here all the same, and what its ``on_pop(session)`` hook read
+        off that session in the pop's lock hold survives the release.
         """
         lifecycle = self._lifecycle_boundary()
         with scope if scope is not None else lifecycle.teardown_scope() as opened:
