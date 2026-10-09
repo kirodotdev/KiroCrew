@@ -825,6 +825,37 @@ class TestFileReader:
         assert ".psm1" in CODE_EXTS
         assert ".psd1" not in CODE_EXTS
 
+    def test_php_extensions_ingested_as_plain_text(self, tmp_path):
+        # PHP sources (.php) and PHP+HTML templates (.phtml) are plain UTF-8
+        # text, so they take the same path as .ps1/.psm1: present in SUPPORTED
+        # (the folder-scan gate; include_extensions can only narrow it, so a
+        # folder source over a codebase whose extension is absent there indexes
+        # only its README and config, with no warning) and read through the
+        # generic _read_text path.
+        reader = FileReader()
+        samples = {
+            ".php": '<?php\nfunction greet() { echo "hello from php"; }\n',
+            ".phtml": "<ul><?php foreach ($items as $i): ?><li><?= $i ?></li><?php endforeach; ?></ul>\n",
+        }
+        for ext, content in samples.items():
+            assert ext in reader.SUPPORTED, f"{ext} missing from SUPPORTED"
+            assert ext not in reader._DISPATCH, f"{ext} must use the generic text path"
+            f = tmp_path / f"sample{ext}"
+            f.write_text(content, encoding="utf-8")
+            text, meta = reader.read(str(f))
+            assert content in text
+            assert meta["format"] == ext.lstrip(".")
+            assert meta["extension"] == ext
+        # .php sources chunk at function/class/method lines like their .sh/.rb
+        # peers (the code chunker's language-generic boundary regex already
+        # matches `function `, `class `, `public `, `private `). A .phtml
+        # template is markup with embedded PHP and carries no such lines, so
+        # it stays on the generic chunker, as the .psd1 manifest does.
+        from kiro_crew.knowledge.ingestion import CODE_EXTS
+
+        assert ".php" in CODE_EXTS
+        assert ".phtml" not in CODE_EXTS
+
     def test_kotlin_and_peer_code_extensions_ingested_as_plain_text(self, tmp_path):
         # Kotlin (.kt/.kts) and the C#/Swift/Scala trio are plain UTF-8 text, so
         # the generic _read_text path handles them with no reader and no new

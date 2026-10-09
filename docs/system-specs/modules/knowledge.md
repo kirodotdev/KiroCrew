@@ -163,7 +163,7 @@ The remaining gap is therefore an **A/B task-lift harness** (Tier 2), plus a flo
 '', '.md', '.txt', '.org', '.py', '.java', '.ts', '.js', '.rs', '.go',
 '.html', '.htm', '.docx', '.pdf',
 '.adoc', '.asciidoc',
-'.csv', '.log', '.json', '.jsonl', '.ndjson', '.yaml', '.yml', '.sh', '.rb', '.ps1', '.psm1', '.psd1', '.c', '.cpp', '.h',
+'.csv', '.log', '.json', '.jsonl', '.ndjson', '.yaml', '.yml', '.sh', '.rb', '.ps1', '.psm1', '.psd1', '.php', '.phtml', '.c', '.cpp', '.h',
 '.cs', '.kt', '.kts', '.swift', '.scala'
 ```
 

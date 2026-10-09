@@ -101,7 +101,7 @@ class FileReader:
         # AsciiDoc reads as text; .asc stays out because it also names PGP armor.
         '.adoc', '.asciidoc',
         '.csv', '.log', '.json', '.jsonl', '.ndjson', '.yaml', '.yml',
-        '.sh', '.rb', '.ps1', '.psm1', '.psd1', '.c', '.cpp', '.h',
+        '.sh', '.rb', '.ps1', '.psm1', '.psd1', '.php', '.phtml', '.c', '.cpp', '.h',
         '.cs', '.kt', '.kts', '.swift', '.scala',
     }
 

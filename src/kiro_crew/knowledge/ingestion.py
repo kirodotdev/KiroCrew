@@ -72,7 +72,7 @@ logger = logging.getLogger(__name__)
 #: listed here but absent there never reaches this dispatch at all.
 CODE_EXTS = {
     '.py', '.java', '.ts', '.js', '.rs', '.go', '.rb', '.c', '.cpp', '.h',
-    '.sh', '.ps1', '.psm1', '.cs', '.kt', '.kts', '.swift', '.scala',
+    '.sh', '.ps1', '.psm1', '.php', '.cs', '.kt', '.kts', '.swift', '.scala',
 }
 
 MARKDOWN_EXTS = {'.md', '.docx'}
