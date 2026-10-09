@@ -1897,6 +1897,97 @@ def test_the_stop_button_still_escalates_on_a_second_press(tmp_path, monkeypatch
     assert list(slot._queue) == []
 
 
+def _owed_completion(slot, text: str = "[Subagent completion event] a1 finished") -> str:
+    """Queue a sub-agent completion that is owed to the parent's next turn."""
+    from kiro_crew.subagent import SubagentDelivery
+
+    slot._queue.append({"id": "q-owed", "content": text})
+    slot.note_pending_subagent_delivery(
+        text, [SubagentDelivery(agent_id="a1", elapsed=1.0, credits=0.0)]
+    )
+    return text
+
+
+class _SettlingManager:
+    """The slice of ``SubagentManager`` a hard stop settles discarded deliveries through.
+
+    ``during`` runs inside the settle's suspension: the window in which the real
+    manager waits on the child's teardown gate and writes its tombstones on a thread.
+    """
+
+    def __init__(self, during=None) -> None:
+        self.settled: list = []
+        self._during = during
+
+    async def settle_queued_delivery(self, deliveries) -> None:
+        self.settled.extend(deliveries)
+        await asyncio.sleep(0)
+        if self._during is not None:
+            self._during()
+
+
+def test_a_send_that_lands_while_a_hard_stop_settles_stays_queued(tmp_path, monkeypatch):
+    """The hard kill discards what was queued when it was pressed and settles the
+    sub-agent deliveries those entries owed. That settle can suspend, and a send
+    that lands meanwhile takes the busy branch and is acknowledged as queued, so the
+    kill must leave it queued, as it does a send that lands a moment later.
+
+    Mutation guard: clearing ``slot._queue`` after the settle's await wipes the send.
+    """
+    from kiro_crew.dashboard.chat_handlers import stop_slot_turn
+
+    state = _make_state(tmp_path)
+    slot = _busy(_slot(state, "chat-1"))
+    _owed_completion(slot)
+    state.sessions.stop_turn = AsyncMock(return_value="cancelled")
+    monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.sel", lambda: MagicMock())
+    sent: list[str] = []
+
+    def _send() -> None:
+        sent.append(
+            cd.queue_for_next_turn(state, slot, "and now do this", directive_user_origin=True)
+        )
+
+    state.subagents = _SettlingManager(during=_send)
+
+    asyncio.run(stop_slot_turn(state, slot))
+    assert slot._stop_state == "soft_pending"
+    asyncio.run(stop_slot_turn(state, slot))
+
+    assert slot._stop_state == "killing"
+    assert sent, "precondition: the send landed during the settle"
+    queued = [(entry["id"], entry["content"]) for entry in slot._queue]
+    assert queued == [
+        (sent[0], "and now do this")
+    ], f"the send acknowledged during the hard stop was discarded: queue = {queued}"
+
+
+def test_a_hard_stop_still_discards_and_settles_what_was_queued_before_it(tmp_path, monkeypatch):
+    """Control: the first press keeps the queue, and the hard kill clears what was
+    queued before it and settles the sub-agent delivery the cleared entry owed."""
+    from kiro_crew.dashboard.chat_handlers import stop_slot_turn
+
+    state = _make_state(tmp_path)
+    slot = _busy(_slot(state, "chat-1"))
+    owed_text = _owed_completion(slot)
+    slot._queue.append({"id": "q2", "content": "the next thing"})
+    state.sessions.stop_turn = AsyncMock(return_value="cancelled")
+    monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.sel", lambda: MagicMock())
+    manager = _SettlingManager()
+    state.subagents = manager
+
+    asyncio.run(stop_slot_turn(state, slot))
+    assert slot._stop_state == "soft_pending"
+    assert [entry["id"] for entry in slot._queue] == ["q-owed", "q2"]
+    assert manager.settled == []
+
+    asyncio.run(stop_slot_turn(state, slot))
+    assert slot._stop_state == "killing"
+    assert list(slot._queue) == []
+    assert [delivery.agent_id for delivery in manager.settled] == ["a1"]
+    assert slot.take_pending_subagent_deliveries([owed_text]) == []
+
+
 def test_the_no_op_reply_says_which_of_its_two_facts_it_hit(tmp_path, monkeypatch):
     """`info` alone merges "was never running" with "its cancel is in flight".
 

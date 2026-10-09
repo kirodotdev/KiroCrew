@@ -3714,12 +3714,19 @@ async def stop_slot_turn(
         # this hard kill a clean stop. Scoped to this card so it cannot defer
         # a later card's ack.
         slot._stop_escalated_card_id = slot._stop_event_id
+        # Take the queue and empty it in one step, then settle what was taken. The
+        # settle can suspend (it waits on a sub-agent's teardown and writes its
+        # tombstones on a worker thread), and a send that lands meanwhile is
+        # acknowledged as queued; a clear after the await would discard it with
+        # nothing settled and nothing said. The kill discards what was queued
+        # when it was pressed, and a later send stays queued for the next turn.
+        discarded = list(slot._queue)
+        slot._queue.clear()
         await _settle_discarded_stage_deliveries(
             state,
             slot,
-            [str(entry.get("content", "")) for entry in slot._queue],
+            [str(entry.get("content", "")) for entry in discarded],
         )
-        slot._queue.clear()
         # Hard kill = "discard everything": drop unconsumed steers too, so the
         # end-of-turn requeue (chat_runner finally) has nothing to resurrect.
         # Mirrors the queue clear above; a soft stop preserves both.
