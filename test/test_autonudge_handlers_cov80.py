@@ -1631,6 +1631,31 @@ async def test_update_forwards_raw_fields_to_the_authorizer(
     # The dashboard route is the user's own press: a revival through it is a
     # resume, so the authorizer is told to run the loop on a fresh budget.
     assert kwargs["fresh_run"] is True
+    # The app state rides along for the patrol-content rule: a crew/member
+    # slot's default patrol keeps the text and watch its fire-time guard admits,
+    # and only the slot's mode, read from this state, says whether that applies.
+    assert kwargs["state"] is request.app["state"]
+
+
+@pytest.mark.asyncio
+async def test_update_passes_no_state_when_the_request_has_no_app(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Read tolerantly rather than asserted: the chokepoint treats a missing
+    state as "no mode to refuse on" and applies every other rule as before."""
+    _svc(monkeypatch, _FakeSvc())
+    authorize = AsyncMock(return_value=(_loop("lp-1"), None, 200))
+    monkeypatch.setattr(h, "authorize_and_update_nudge", authorize)
+    monkeypatch.setattr(h, "_require_monitor_owner", AsyncMock(return_value=None))
+    request = SimpleNamespace(
+        match_info={"loop_id": "lp-1"},
+        json=AsyncMock(return_value={"idle_secs": 900}),
+        remote="",
+    )
+    payload = _body(await h.api_autonudge_update(request))  # type: ignore[arg-type]
+    assert payload["ok"] is True
+    assert authorize.await_args is not None
+    assert authorize.await_args.kwargs["state"] is None
 
 
 @pytest.mark.asyncio

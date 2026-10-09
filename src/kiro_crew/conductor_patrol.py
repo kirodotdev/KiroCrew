@@ -17,13 +17,21 @@ ledger nobody read. Two pieces close the gap:
   item ``unpatrolled`` while the conductor holds no active ``work-ledger`` watch,
   so the next turn sees it.
 
-Provenance: the arm is EXTERNAL -- no ``initiator_slot_key``. The bind route
-knows which session called it, not which turn: a cron injection, an app-driven
-turn or a sub-agent sharing the slot sends the same ``X-Session-Key`` as the
-session's own turn, and only the session-directive consumer can tell them apart.
-So a crew/member conductor's slot refuses this arm as it refuses any outside
-arm; the refusal is logged and the ``unpatrolled`` flag carries the signal.
-The armed message is fixed text authored here, not agent input.
+Provenance: the arm is the GATEWAY'S, not the session's -- no
+``initiator_slot_key``. The bind route knows which session called it, not which
+turn: a cron injection, an app-driven turn or a sub-agent sharing the slot sends
+the same ``X-Session-Key`` as the session's own turn, and only the
+session-directive consumer can tell them apart, so this module never claims a
+self-arm. A crew/member conductor's slot admits it anyway, as the one arm that
+carries nothing of an outsider's: the authorizer pins the text to
+:data:`PATROL_MESSAGE` and the watch to the slot's own ledger
+(``autonudge_authz.is_gateway_patrol``) and writes the gateway-patrol trust
+entry the fire-time guard requires. That guard pins the STORED row the same way
+(:func:`is_patrol_loop`) before it reads the entry, because the loop store is
+agent-writable and the entry names only an id and a slot: a rewritten
+``message`` under the patrol's own id is refused like any other outside text.
+The flag that names this arm, ``default_patrol=``, is passed by this module
+alone (a test scans the tree).
 """
 
 from __future__ import annotations
@@ -41,6 +49,19 @@ PATROL_MAX_RUNTIME_SECS = 86400
 
 PATROL_WATCH = "work-ledger"
 
+#: The text the authorizer admits on a crew/member slot, byte for byte
+#: (``autonudge_authz.is_gateway_patrol``), and the text the fire-time guard
+#: reads a STORED crew/member row against (:func:`is_patrol_loop`). An edit here
+#: is therefore an edit to what such a slot accepts AND to what every patrol
+#: already in a store must say: a row armed under the old text is refused at
+#: every fire until its conductor arms its own loop (which replaces it) or
+#: stops it, after which the next bind arms a fresh default; its budget does
+#: not end it while the ledger holds open items. A digest test pins the text so
+#: the edit is made knowingly; the member-conductor test pins that the arm
+#: still lands. On a
+#: crew/member slot the sentence "tune this loop with monitor_update" covers the
+#: bounds, not this text, the watch or a banner: the update chokepoint refuses
+#: those three with the arm that replaces the patrol instead.
 PATROL_MESSAGE = (
     "Conductor patrol (armed by the gateway when you bound a worker and had no "
     "loop). Run work_ledger_read with compact=true. For each item with status "
@@ -53,9 +74,10 @@ PATROL_MESSAGE = (
 )
 
 #: Rides the bind reply whenever no ``work-ledger`` watch is active after the
-#: bind -- a refused arm (a crew/member slot), a disabled service, or a slot whose
-#: one loop is stopped or watches something else -- so the conductor is told in
-#: the same turn that nobody is patrolling and what to call.
+#: bind -- a refused arm (an incognito or temporary slot, an audit that could not
+#: be written), a disabled service, or a slot whose one loop is stopped or
+#: watches something else -- so the conductor is told in the same turn that
+#: nobody is patrolling and what to call.
 ARM_YOURSELF_NOTE = (
     "No patrol runs on your session. Arm one yourself with monitor_start "
     'watch="work-ledger" before you end this turn, or your workers\' reports go unread.'
@@ -66,6 +88,51 @@ ARMED = "armed"
 EXISTING = "existing"
 REFUSED = "refused"
 UNSUPPORTED = "unsupported"
+
+
+def is_patrol_loop(loop: Any) -> bool:
+    """Whether a STORED loop record carries the default patrol, content and all.
+
+    The twin of ``autonudge_authz.is_gateway_patrol`` for the record the store
+    hands back at fire time. The arm-time check pins the REQUEST: flag, exact
+    :data:`PATROL_MESSAGE`, ``work-ledger`` watch. This pins the ROW the same
+    way, because the store (``autonudge.json``) is agent-writable and the trust
+    entry the authorizer wrote names only the loop's id and slot. A row whose
+    ``message`` was rewritten under an intact id, slot and flag would otherwise
+    ride the patrol's admission into a crew/member thread -- which is the one
+    thing that admission exists to rule out. So: the flag is the boolean True,
+    the text is the fixed one byte for byte, and the monitor is this slot's own
+    ``work-ledger`` watch (``kind`` is the watch name, ``target`` the slot key,
+    the shape ``probes.targets.work_ledger_target`` builds). The row must also
+    keep the SHAPE the patrol is armed in, because the other fields that put
+    text in front of the model live in the same store: ``gate`` is True (the
+    patrol is a gated loop; ungated, a persisted claim is dispatched as a
+    structured envelope), the monitor's ``wake_instructions`` is empty (that
+    envelope's action line), and ``banner`` is empty (a banner is what an
+    interrupted wake restores as the instruction). ``ensure_patrol`` sets none
+    of the three, so a row carrying any of them was written by something else.
+    Anything else is not the patrol, whatever the flag says. Total: reads
+    attributes only, never raises on a malformed row.
+    """
+    if getattr(loop, "default_patrol", False) is not True:
+        return False
+    if getattr(loop, "gate", False) is not True:
+        return False
+    if str(getattr(loop, "message", "") or "").strip() != PATROL_MESSAGE:
+        return False
+    if str(getattr(loop, "banner", "") or "").strip():
+        return False
+    monitor = getattr(loop, "monitor", None)
+    if monitor is None:
+        return False
+    if str(getattr(monitor, "wake_instructions", "") or "").strip():
+        return False
+    slot_key = str(getattr(loop, "slot_key", "") or "").strip()
+    return bool(
+        slot_key
+        and str(getattr(monitor, "kind", "") or "") == PATROL_WATCH
+        and str(getattr(monitor, "target", "") or "") == slot_key
+    )
 
 
 def nudge_slot_for(state: Any, conductor_key: str) -> str | None:

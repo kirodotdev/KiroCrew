@@ -1184,6 +1184,9 @@ async def _monitor_update(
         expect_fingerprint=(baseline_token if patch.get("message") is not None else None),
         source="mcp-directive",
         caller="session-directive",
+        # For the patrol-content rule: a crew/member slot's default patrol keeps the
+        # text and watch its fire-time guard admits, whoever's turn asks.
+        state=state,
     )
     if error is not None:
         # The authorizer already audited its own refusal; agree with it.

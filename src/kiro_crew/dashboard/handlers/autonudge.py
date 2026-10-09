@@ -1085,6 +1085,13 @@ async def api_autonudge_update(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    # The popover reaches a crew/member slot's default patrol too, and that row
+    # keeps the text and watch its fire-time guard admits: the chokepoint refuses
+    # such an edit naming the fields that stay tunable, when it is handed the
+    # state that holds the slot's mode. Read off the app rather than asserted: a
+    # request with no app state leaves the chokepoint no mode to refuse on.
+    app = getattr(request, "app", None)
+    state = app.get("state") if app is not None else None
     loop, error, status = await authorize_and_update_nudge(
         svc=svc,
         loop_id=loop_id,
@@ -1104,6 +1111,7 @@ async def api_autonudge_update(request: web.Request) -> web.Response:
         banner=body.get("banner"),
         source="dashboard",
         caller=request.remote or "",
+        state=state,
     )
     if error is not None:
         return web.json_response({"error": error}, status=status)
