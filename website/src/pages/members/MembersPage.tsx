@@ -4471,7 +4471,14 @@ export default function MembersPage() {
                     onAct={activeSlot ? (text: string) => mergePaneDraft(activeSlot, text, []) : undefined}
                   />
                 ) : (
-                  <CrewDashboardFrame slug={activeSlug} member={activeMemberName} displayName={crewDisplayName(activeView ?? active)} />
+                  <CrewDashboardFrame
+                    slug={activeSlug}
+                    member={activeMemberName}
+                    displayName={crewDisplayName(activeView ?? active)}
+                    avatar={(activeView ?? active).avatar}
+                    // A suggested prompt lands in this crewmate's chat box; the person sends it.
+                    onAct={activeSlot ? (text: string) => mergePaneDraft(activeSlot, text, []) : undefined}
+                  />
                 )
               )}
             </div>

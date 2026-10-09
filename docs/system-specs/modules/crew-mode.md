@@ -1408,13 +1408,25 @@ read-error and mint-failure notices carry a retry and NO agent hand-off: the
 hand-off is a raw soft navigate to `/chat` that unmounts this page without asking
 its leave guard, and `ErrorNotice` has no gate to hand it, so with a Schedules
 draft or an editor pane open it was an unguarded exit. With nothing
-published it says so and points at the chat: a crewmate publishes through
-`panel_publish` (on by default via `agent.crew_panel`) when asked or on its own
-cycle, and nothing in the crew editor makes it publish, so the state has no
-set-up control. That sentence names the crewmate by its display name
-(`displayName`, the page's `crewDisplayName`), falling back to the exact
-`member`; the read itself stays keyed on the raw `member`, so a crewmate shown as
-"Atlas" is not told "atlas has not published". Files is the standard SidePanel browser scoped
+published the tab renders `CrewDashboardEmpty`: the crewmate speaking for
+itself, in the first person, from a speech bubble over its own face (the real
+`CrewAvatar` on the exact `member` as seed and the record's `avatar` verbatim, so
+it wears what its roster row wears), and under that three fixed suggested
+prompts. A crewmate publishes through `panel_publish` (on by default via
+`agent.crew_panel`) when asked or on its own cycle, and nothing in the crew
+editor makes it publish, so the state has no set-up control; the prompts ARE
+the ask, pre-written. Each one only lands in the member's chat box through the
+page's `onAct` (`mergePaneDraft` on the member slot, the same seam the Dynamic
+Dashboard's needs-you options use) and the person sends it -- nothing on this
+surface publishes. Without `onAct` (no confirmed slot, a test, a surface with no
+chat) the prompts are withheld rather than rendered dead. The three are fixed
+copy chosen to hold for any role and to land on what the default template
+draws: get a dashboard at all (what you hold, where it stands, what is next),
+make it keep itself current after every run (what was done, key numbers,
+decisions owed), and let the crewmate pick the three numbers worth watching.
+Deriving them from the crewmate's schedules and sessions is a follow-up that
+keeps this set as its fallback. The read itself stays keyed on the raw
+`member`. Files is the standard SidePanel browser scoped
 to the workspace rule above. Dashboard and Files are the only STANDING tabs.
 Side Chat remains available dynamically through selection Ask and the plus
 menu; it is not a standing entry — and the plus menu keeps every other dynamic
