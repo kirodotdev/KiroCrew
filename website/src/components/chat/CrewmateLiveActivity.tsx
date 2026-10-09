@@ -18,8 +18,11 @@
 import { useTranslation } from 'react-i18next'
 import { motion, useReducedMotion } from 'framer-motion'
 import { PILL_ACTIVITY_KEY, type PillActivity, type PillActivityKind } from '../../pages/members/pillActivity'
+import { useHeldActivity } from './useHeldActivity'
 
-export default function CrewmateLiveActivity({ activity }: { activity: PillActivity }) {
+export default function CrewmateLiveActivity({ activity: live }: { activity: PillActivity }) {
+  // Each step holds a moment so fast tool calls stay readable (useHeldActivity).
+  const activity = useHeldActivity(live)
   const { t } = useTranslation()
   const reduce = useReducedMotion()
   // The full label where the pill clamps at 40 chars: this column has the
