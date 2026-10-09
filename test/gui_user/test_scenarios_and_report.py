@@ -331,6 +331,22 @@ class TestShippedScenarios:
                 assert 'may read "nova-sky"' in step, (name, step)
             assert not any('named "Nova Sky"' in s for s in sc.steps), name
 
+    def test_crewmates_scenarios_name_the_current_preview_and_rail_label(self) -> None:
+        """Every scenario that turns on the Crewmates preview leads with today's card title and rail label."""
+        checked = 0
+        for path in sorted(SCENARIOS_DIR.glob("*.yaml")):
+            sc = scenarios.load_scenario(path)
+            preview_steps = [
+                s for s in sc.steps if "turn on the preview" in s.lower() and "Crew" in s
+            ]
+            for step in preview_steps:
+                checked += 1
+                assert 'starts with "Crewmates"' in step, (path.name, step)
+            rail_steps = [s for s in sc.steps if "item appears in the left rail" in s]
+            for step in rail_steps:
+                assert '"Crewmates" item appears in the left rail' in step, (path.name, step)
+        assert checked >= 5
+
 
 def _write(tmp_path: Path, name: str, doc: dict) -> Path:
     p = tmp_path / f"{name}.yaml"

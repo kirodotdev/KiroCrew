@@ -1,13 +1,12 @@
 # Nightly: the PoC scenario from the research report -- find a crew member and
-# send them a DM. The Crew Members page sits behind a feature-preview switch
+# send them a DM. The Crewmates page sits behind a feature-preview switch
 # (per-device localStorage), so the tester turns it on through the GUI first,
 # exactly as a user would.
 #
-# The Feature Previews card for this page is titled "Crew Members"; older
-# builds titled it "Crew Members and Crew Mode". The steps describe the card by
-# what both titles share (a title that STARTS with "Crew Members") and the page
-# by its rail label, "Crew Members", so the scenario reads the same on either
-# build. Nightly-only because it is the longest scenario.
+# The Feature Previews card for this page is titled "Crewmates"; older
+# builds titled it "Crew Members" or "Crew Members and Crew Mode". The steps
+# name the card by its current title (older titles listed as valid readings)
+# and the page by its rail label, "Crewmates". Nightly-only because it is the longest scenario.
 name: members-dm-hello
 tier: nightly
 feature: members

@@ -8,8 +8,9 @@
 # same dialog: the "New crewmate" button in the empty-page hero, and the plus
 # menu's "New crewmate" row at the top of the crewmate list when the roster is
 # not empty. The
-# Feature Previews card is titled "Crew Members" (older builds: "Crew Members
-# and Crew Mode"), so the steps describe it by what both titles share.
+# Feature Previews card is titled "Crewmates" (older builds: "Crew Members"
+# or "Crew Members and Crew Mode"); the steps name the current title and
+# list the older ones as valid readings.
 name: crewmate-create-first
 tier: nightly
 feature: members
@@ -25,8 +26,8 @@ preconditions:
   start_url: /settings
 steps:
   - You are on the Settings page. Open the Developer section and find the Feature Previews list.
-  - Turn on the preview whose title starts with "Crew Members" (it may read "Crew Members" or "Crew Members and Crew Mode"; either is the right one). Ignore the Webhooks preview.
-  - Open the Crewmates page. After the preview is on, an item appears in the left rail directly under Sessions (labelled "Crew Members", or "Crewmates" on newer builds); click it.
+  - Turn on the preview whose title starts with "Crewmates" (older builds may read "Crew Members" or "Crew Members and Crew Mode"; any of those is the right one). Ignore the Webhooks preview.
+  - Open the Crewmates page. After the preview is on, a "Crewmates" item appears in the left rail, directly under Sessions; click it.
   - If the page shows the heading "No crewmates yet", click the "New crewmate" button below it. Otherwise the page already lists crewmates; click the small plus button at the top of that list (its tooltip reads "Add…") and, in the small menu that opens (its one row reads "New crewmate"), click "New crewmate". Either way a dialog titled "New crewmate" opens.
   - In the dialog, type exactly "Radar" in the "Name" field.
   - In the field labelled "What it looks after" (marked optional), type exactly "Keep release notes up to date". Leave "Built from" and the Advanced section as they are.
