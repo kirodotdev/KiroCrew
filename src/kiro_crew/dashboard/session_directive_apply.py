@@ -1501,20 +1501,33 @@ async def _autonudge_stop(
 # ── slot-targeted effects (the dashboard-only pair + set_project) ────────────
 
 
-async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
-    from kiro_crew.dashboard.chat_utils import effective_session_key
+class ProjectPathRefusal(Exception):
+    """A project path the shared check refused.
+
+    ``denied`` separates a permission decision (a sensitive or unverifiable
+    path) from an input mistake (not a directory, a data-home overlap): the
+    directive audits the first as denied, and ``session_set_project`` answers
+    it with 403 rather than 400. ``message`` is the caller-facing text.
+    """
+
+    def __init__(self, message: str, *, code: str, denied: bool) -> None:
+        super().__init__(message)
+        self.message = message
+        self.code = code
+        self.denied = denied
+
+
+async def resolve_project_path(project: str) -> str:
+    """Resolve *project* to the realpath a slot may take as its project, or refuse.
+
+    The one check every agent-driven project write goes through: the in-turn
+    ``set_project`` directive (``_set_project`` below) and
+    ``session_set_project`` (``session_control.set_project_target``), so the two
+    cannot drift. Raises :class:`ProjectPathRefusal`.
+    """
     from kiro_crew.sandbox import voice_runtime_workspace_conflict
     from kiro_crew.security import is_unverifiable_path_refusal, sensitive_path_refusal
 
-    clear = bool(args.get("clear"))
-    project = str(args.get("project") or "").strip()
-    old_project = getattr(slot, "project", "") or ""
-    if clear or not project:
-        slot.project = ""
-        if old_project:
-            slot._pending_reset_history_key = effective_session_key(slot)
-        _push(state)
-        return "Project cleared. The next message cold-starts with no project scope."
     expanded = os.path.expanduser(project)
 
     def _validate() -> tuple[str, str | None, bool]:
@@ -1537,12 +1550,15 @@ async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
 
     rp, refusal, is_dir = await asyncio.to_thread(_validate)
     if refusal:
-        # Permission decision — raise so the wrapper audits it as denied.
         if is_unverifiable_path_refusal(refusal):
-            raise _DirectiveDenied(f"Error: {refusal}")
-        raise _DirectiveDenied("Error: access denied (sensitive path).")
+            raise ProjectPathRefusal(f"Error: {refusal}", code="sensitive_path", denied=True)
+        raise ProjectPathRefusal(
+            "Error: access denied (sensitive path).", code="sensitive_path", denied=True
+        )
     if not is_dir:
-        return f"Error: not a directory: {rp}"
+        raise ProjectPathRefusal(
+            f"Error: not a directory: {rp}", code="not_a_directory", denied=False
+        )
     # Pre-flight, mirrored from the HTTP project endpoint: this directive
     # is the OTHER user/agent-driven moment of choice that sets slot.project
     # (set_project MCP routes here in-process, never through the endpoint), so
@@ -1551,18 +1567,57 @@ async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
     # loop because it stats the runtime paths.
     overlap = await asyncio.to_thread(voice_runtime_workspace_conflict, rp)
     if overlap is not None:
-        return f"Error: {overlap}"
-    slot.project = rp
-    if rp != old_project:
-        slot._pending_reset_history_key = effective_session_key(slot)
-        try:
-            from kiro_crew.dashboard.chat_handlers import _save_recent_project
+        raise ProjectPathRefusal(
+            f"Error: {overlap}", code="workspace_overlaps_data_home", denied=False
+        )
+    return rp
 
-            # Offload the recent-projects file IO (mkdir + read + atomic write)
-            # off the event loop — the HTTP endpoint this replaced did the same.
-            await asyncio.to_thread(_save_recent_project, rp)
-        except Exception:
-            logger.debug("save recent project failed", exc_info=True)
+
+def commit_project(slot: Any, project: str) -> bool:
+    """Write *project* ("" clears) to *slot* and arm the deferred reset on a change.
+
+    SYNCHRONOUS, so a caller that re-ran its permission gate right before this
+    call has nothing between that gate and the write. Returns whether the
+    project changed; an unchanged project arms no reset.
+    """
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+
+    old_project = getattr(slot, "project", "") or ""
+    slot.project = project
+    if project == old_project:
+        return False
+    slot._pending_reset_history_key = effective_session_key(slot)
+    return True
+
+
+async def save_recent_project(project: str) -> None:
+    """Record *project* in the recent-projects list, best effort, off the loop."""
+    try:
+        from kiro_crew.dashboard.chat_handlers import _save_recent_project
+
+        # Offload the recent-projects file IO (mkdir + read + atomic write)
+        # off the event loop — the HTTP endpoint this replaced did the same.
+        await asyncio.to_thread(_save_recent_project, project)
+    except Exception:
+        logger.debug("save recent project failed", exc_info=True)
+
+
+async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
+    clear = bool(args.get("clear"))
+    project = str(args.get("project") or "").strip()
+    if clear or not project:
+        commit_project(slot, "")
+        _push(state)
+        return "Project cleared. The next message cold-starts with no project scope."
+    try:
+        rp = await resolve_project_path(project)
+    except ProjectPathRefusal as exc:
+        if exc.denied:
+            # Permission decision — raise so the wrapper audits it as denied.
+            raise _DirectiveDenied(exc.message) from None
+        return exc.message
+    if commit_project(slot, rp):
+        await save_recent_project(rp)
     _push(state)
     return (
         f"Project set to {rp}. The session cold-starts with the new CWD and "

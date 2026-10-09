@@ -929,6 +929,40 @@ def _session_tools() -> tuple[Tool, ...]:
             routes=("POST /api/session-control/reload",),
         ),
         Tool(
+            name="session_set_project",
+            description=(
+                "Set the project directory of a session you created, e.g. to point a "
+                "worker at a new git worktree. The target's session RESETS at its "
+                "next turn boundary: its next message cold-starts a new process with "
+                "the new CWD and project-level .kiro/steering, and any turn in progress "
+                "then would be cut off, so an idle target is required. The transcript "
+                "and conversation history are kept. Only a session this session created is "
+                "reachable; a person's own session, a pinned session and a closed one "
+                "are refused. A target with a turn in flight, sub-agents attached or "
+                "queued messages is refused and nothing changes: stop or wait for it "
+                "first, then retry. The path goes through the same checks set_project "
+                "applies (absolute, an existing directory, not a sensitive path such "
+                "as ~/.aws or ~/.ssh)."
+            ),
+            schema={
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Session key from list_sessions, or its exact title.",
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Absolute path to the new project directory.",
+                    },
+                },
+                "required": ["target", "path"],
+            },
+            run=_run_session_set_project,
+            identity="strict",
+            routes=("POST /api/session-control/set-project",),
+        ),
+        Tool(
             name="session_close",
             description=(
                 "Close another session — the same thing as pressing the ✕ on that tab. "
@@ -2782,6 +2816,30 @@ def _run_session_reload(args: dict[str, Any], ctx: ToolContext) -> str:
     return redact(
         f"\U0001f504 `{target}` is relaunching its agent process with the conversation "
         "kept. Its transcript shows the reload notice."
+    )
+
+
+def _run_session_set_project(args: dict[str, Any], ctx: ToolContext) -> str:
+    try:
+        resp = ctx.client.post(
+            "/api/session-control/set-project",
+            {"target": args["target"], "path": args["path"]},
+            session_key=ctx.caller_key,
+        )
+    except DashboardError as refused:
+        return f"Error: could not change that session's project: {refused.error}"
+    target = resp.get("target", args["target"])
+    project = resp.get("project") or ""
+    where = f"set to `{project}`"
+    if not resp.get("changed", True):
+        return redact(
+            f"\u2139\ufe0f `{target}` project is already {where} — nothing changed "
+            "and its session is not reset."
+        )
+    return redact(
+        f"\U0001f4c1 `{target}` project {where}. Its session resets at its next "
+        "turn boundary: the next message cold-starts with the new CWD and project "
+        "steering. The transcript and conversation history are kept."
     )
 
 

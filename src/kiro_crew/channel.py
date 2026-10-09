@@ -162,6 +162,9 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     # Reload relaunches another session's agent process; same containment
     # reason as stop.
     "session_reload",
+    # Changing a session's project resets its conversation and moves the CWD
+    # its next turn runs in; a stronger write than the model switch above.
+    "session_set_project",
     "session_send",
     "session_read_message",
     # A digest of the same transcript `session_read_message` returns, so it is

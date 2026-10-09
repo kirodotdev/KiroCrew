@@ -4673,6 +4673,10 @@ handle immediately.
 #: * ``chat_tag_column_move`` — WITHHELD, on the invariant: it MUTATES the order
 #:   of columns the person arranged, which is existing state that is not the
 #:   caller's own, and no conductor step needs it.
+#: * ``session_set_project`` — WITHHELD. Moves another session's CWD and restarts
+#:   its session at the next turn boundary. The server bounds it to idle sessions
+#:   the caller created, but it still changes which files that session works on,
+#:   and no unattended conductor step needs it.
 #: * ``session_send`` — WITHHELD. Runs text as another session's user-role turn
 #:   under that target's own grants. The server-side gates bound WHICH target is
 #:   reachable; nothing bounds WHAT is sent.

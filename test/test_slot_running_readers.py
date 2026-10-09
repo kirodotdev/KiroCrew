@@ -21,6 +21,9 @@ _BUSY_HELPERS: dict[str, frozenset[str]] = {
     # RESERVATION, because ``slot.running`` is set at dispatch and so sees a
     # cold-starting first turn that no provider has registered yet.
     "_switch_target_busy": frozenset({"running"}),
+    # session_set_project's idle check: wraps _switch_target_busy, so the
+    # RESERVATION for the same reason.
+    "_set_project_busy": frozenset({"running"}),
 }
 
 
@@ -166,6 +169,10 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # Idle-only teardown: the same pre-lock and in-lock probe via
                 # _switch_target_busy, so a reserved slot between stages is busy.
                 ("session_control.py", "reload_target"),
+                # session_set_project's idle check, same helper and contract.
+                ("session_control.py", "_set_project_busy"),
+                # The handler whose sole live-turn refusal that helper is.
+                ("session_control.py", "set_project_target"),
                 ("state.py", "_ChatSlot.enqueue_or_run_prompt"),
                 ("ws.py", "_handle_slot_focused"),
             }

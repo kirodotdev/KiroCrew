@@ -5932,6 +5932,281 @@ async def reload_target(
     return out
 
 
+def _set_project_refusal(slot: "_ChatSlot", caller_key: str) -> SessionControlError | None:
+    """The refusal ``set_project_target`` adds on top of :func:`authorize_target`.
+
+    A project change resets the target's conversation at its next turn
+    boundary, so this verb reaches less than the others: only a session the
+    caller created, whatever the ownership-fence verdict or the global switch
+    say, and never a pinned one. Synchronous, so the verb can run it again right
+    before the write with nothing in between.
+    """
+    if _created_by_other(slot, caller_key):
+        return SessionControlError(
+            "only a session this session created can have its project changed",
+            code="not_creator",
+            status=403,
+        )
+    if getattr(slot, "pinned", False):
+        return SessionControlError(
+            "pinned sessions cannot have their project changed from another session",
+            code="pinned_target",
+            status=403,
+        )
+    if is_relay_archive(slot):
+        return SessionControlError(RELAY_ARCHIVE_ERROR, code=RELAY_ARCHIVE_CODE, status=409)
+    return None
+
+
+def _set_project_busy(state: "DashboardState", slot: "_ChatSlot") -> bool:
+    """Whether *slot* has work a project reset would cut into, read synchronously.
+
+    A turn in flight on its session (the switch handlers' own probe), messages
+    waiting in its queue, or a switch handler holding the slot lock across its
+    own reset. The attached sub-agent probe is async and runs separately.
+    """
+    # Deferred for the same import cycle `stop_target` documents.
+    from kiro_crew.dashboard.chat_handlers import _switch_target_busy
+
+    session_key = effective_session_key(slot)
+    if _switch_target_busy(state, slot, session_key, state.sessions.get_provider(session_key)):
+        return True
+    if getattr(slot, "_queue", None):
+        return True
+    return slot._lock.locked()
+
+
+def _set_project_busy_error() -> SessionControlError:
+    """The refusal ``set_project_target`` gives a target with work in flight."""
+    return SessionControlError(
+        "session busy, project not changed: it has a turn, sub-agents or queued "
+        "messages in flight. Stop it with session_stop or wait for it to go idle, "
+        "then retry.",
+        code="target_busy",
+        status=409,
+    )
+
+
+async def set_project_target(
+    state: "DashboardState",
+    *,
+    caller_session_key: str,
+    target: str,
+    path: str,
+    caller_fenced: bool | None = None,
+) -> dict[str, Any]:
+    """Set *target*'s project directory to *path*, for ``session_set_project``.
+
+    The write is the one the in-turn ``set_project`` directive makes on its own
+    slot: :func:`session_directive_apply.resolve_project_path` runs the same
+    sensitive-path, directory and data-home checks, and
+    :func:`session_directive_apply.commit_project` sets ``slot.project`` and arms
+    the deferred reset, so the target cold-starts with the new CWD at its next
+    turn boundary. An unchanged project arms nothing.
+
+    On top of :func:`authorize_target`, :func:`_set_project_refusal` confines the
+    verb to unpinned sessions the caller created, and the target must be idle: no
+    turn, no attached sub-agents, no queued messages. The path is resolved only
+    after both gates, so a caller that may not reach the target learns nothing
+    about the filesystem. The gate, the refusals and the idle probe run again
+    synchronously right before the write, because resolving the path awaits.
+
+    ``caller_fenced`` has the meaning :func:`stop_target` documents.
+    """
+    from kiro_crew.dashboard.chat_utils import subagents_attached_async
+    from kiro_crew.dashboard.session_directive_apply import (
+        ProjectPathRefusal,
+        _push,
+        commit_project,
+        resolve_project_path,
+        save_recent_project,
+    )
+
+    def _audit_interrupted_commit(exc: BaseException) -> None:
+        # Once `commit_project` has moved `slot.project` and armed the reset,
+        # every exit must leave a terminal SEL record. A CancelledError (gateway
+        # shutdown, client disconnect) raised by a post-commit await skips both
+        # `except Exception` and `_audit_denials`, so record the decision here
+        # before re-raising. The change stands in memory; dirty hands any save
+        # the cancel interrupted to the periodic flush.
+        slot._dirty = True
+        _audit(
+            caller_session_key=caller_session_key,
+            operation="set_project",
+            slot_key=slot_key,
+            outcome="allowed",
+            detail={"project": project, "changed": True, "interrupted": type(exc).__name__},
+        )
+
+    path = path.strip()
+    # Argument shape before any gate, so a bad call does not read as an access
+    # decision. The MCP schema already enforces this; the route is reachable
+    # without it.
+    if not path:
+        raise SessionControlError("path is required", code="bad_request", status=400)
+
+    # Same prewarm ordering and fence-verdict handling as `set_model_target`.
+    try:
+        await asyncio.to_thread(sel)
+    except Exception:  # noqa: BLE001 - a prewarm failure must not fail the change
+        logger.warning("session-control SEL prewarm failed", exc_info=True)
+    await prewarm_enabled_check()
+    caller_key = caller_slot_key(state, caller_session_key)
+    if caller_fenced is None:
+        caller_fenced = bool(caller_key) and _caller_is_ownership_fenced(state, caller_key)
+
+    slot = authorize_target(
+        state,
+        caller_session_key=caller_session_key,
+        target=target,
+        operation="set_project",
+        precomputed_ownership_fenced=caller_fenced,
+    )
+    slot_key = slot.key
+
+    with _audit_denials(
+        caller_session_key=caller_session_key, operation="set_project", slot_key=slot_key
+    ):
+        if (refusal := _set_project_refusal(slot, caller_key)) is not None:
+            raise refusal
+        if _set_project_busy(state, slot):
+            raise _set_project_busy_error()
+        try:
+            project = await resolve_project_path(path)
+        except ProjectPathRefusal as exc:
+            raise SessionControlError(
+                exc.message.removeprefix("Error: "),
+                code=exc.code,
+                status=403 if exc.denied else 400,
+            ) from None
+        if await subagents_attached_async(state, slot, effective_session_key(slot), "set_project"):
+            raise _set_project_busy_error()
+        # The attached-child verdict can change while this call waits for the
+        # metadata lock, so probe again under the lock before the synchronous
+        # authorization, refusal, busy-state, and commit sequence.
+        async with _slot_meta_txn_lock(state):
+            if await subagents_attached_async(
+                state, slot, effective_session_key(slot), "set_project"
+            ):
+                raise _set_project_busy_error()
+            # The awaits above can let a turn start, a message queue, or the
+            # target be replaced, linked, mirrored or pinned. Everything from
+            # here to the commit is synchronous.
+            live = authorize_target(
+                state,
+                caller_session_key=caller_session_key,
+                target=slot_key,
+                operation="set_project",
+                skip_enabled_check=True,
+                precomputed_ownership_fenced=caller_fenced,
+            )
+            if live is not slot:
+                raise SessionControlError(
+                    "the target session was replaced; project not changed",
+                    code="target_replaced",
+                    status=409,
+                )
+            if (refusal := _set_project_refusal(slot, caller_key)) is not None:
+                raise refusal
+            if _set_project_busy(state, slot):
+                raise _set_project_busy_error()
+            prior_project = getattr(slot, "project", "") or ""
+            prior_reset = slot._pending_reset_history_key
+            history_key = slot_history_key(slot)
+            # Identity token, as in `api_chat_slot_project`: that route writes
+            # `slot.project` under `slot._lock`, which this verb does not hold,
+            # and may write the SAME path while the save awaits. A same-text
+            # write arms no reset, so only identity tells it from this commit.
+            from kiro_crew.dashboard.chat_handlers import _CommitToken
+
+            committed_project = _CommitToken(project)
+            changed = commit_project(slot, committed_project)
+            committed_reset = slot._pending_reset_history_key
+            # Persisted before the change is acknowledged: an idle target may
+            # not save again before a restart, which would reload the old
+            # project. ``best_effort=False`` so a lock or I/O failure raises
+            # instead of being left to the periodic flush after the caller was
+            # told it landed. A refused save (the session was deleted or
+            # rebound mid-persist) or a failed one rolls back only while BOTH
+            # the project and reset still hold this call's values. A turn can
+            # consume the reset while the save awaits; its new CWD must then
+            # remain aligned with the in-memory project until the dirty flush
+            # retries persistence.
+            if changed:
+                try:
+                    saved = await save_slot_off_loop(
+                        state,
+                        slot,
+                        force=True,
+                        best_effort=False,
+                        expected_history_key=history_key,
+                        expected_slot_name=slot_key,
+                    )
+                except Exception:
+                    logger.warning(
+                        "session_set_project save failed for %s", slot_key, exc_info=True
+                    )
+                    saved = None
+                except BaseException as exc:
+                    # A shutdown cancel lands here, past `except Exception` and
+                    # past `_audit_denials`, with the project already committed.
+                    _audit_interrupted_commit(exc)
+                    raise
+                if not saved:
+                    reset_unchanged = slot._pending_reset_history_key == committed_reset
+                    ours = slot.project is committed_project
+                    if ours and reset_unchanged:
+                        slot.project = prior_project
+                        slot._pending_reset_history_key = prior_reset
+                    # The periodic flush may have written the provisional value
+                    # while the save awaited; dirty makes it reconverge. It also
+                    # persists the new project when a turn consumed this reset.
+                    slot._dirty = True
+                    code = "persist_failed" if saved is None else "session_gone"
+                    status = 503 if saved is None else 409
+                    if ours and not reset_unchanged:
+                        raise SessionControlError(
+                            "the target already started on the new project; the save "
+                            "failed and will be retried",
+                            code=code,
+                            status=status,
+                        )
+                    if slot.project == project:
+                        raise SessionControlError(
+                            "the target is already on the new project, set by another "
+                            "writer; the save failed and will be retried",
+                            code=code,
+                            status=status,
+                        )
+                    if saved is None:
+                        raise SessionControlError(
+                            "the project change could not be saved; project not changed",
+                            code=code,
+                            status=status,
+                        )
+                    raise SessionControlError(
+                        "the target session was deleted or rebound; project not changed",
+                        code=code,
+                        status=status,
+                    )
+
+    _push(state)
+    if changed and project:
+        try:
+            await save_recent_project(project)
+        except BaseException as exc:
+            _audit_interrupted_commit(exc)
+            raise
+    _audit(
+        caller_session_key=caller_session_key,
+        operation="set_project",
+        slot_key=slot_key,
+        outcome="allowed",
+        detail={"project": project, "changed": changed},
+    )
+    return {"ok": True, "target": slot_key, "project": project, "changed": changed}
+
+
 async def close_target(
     state: "DashboardState",
     *,
