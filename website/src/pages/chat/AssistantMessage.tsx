@@ -8,6 +8,7 @@ import { copyToClipboard } from '../../utils/clipboard'
 import { stripKeepVisibleMarker } from '../../app-sdk/protocol/keepVisibleMarker'
 import { copySessionLink } from '../../utils/shareUrl'
 import { ICON_ACTION_ROW_CLS } from '../../utils/touchActions'
+import { isTouchDevice } from '../../utils/isTouchDevice'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import MessageErrorBoundary from '../../components/MessageErrorBoundary'
 import SelectionToolbar, { useSelectionActions } from '../../components/SelectionToolbar'
@@ -580,13 +581,14 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
           rather than of this gate. When the browser does drop such a range, the
           reader loses the highlight and NOT the text or the toolbar: on desktop
           `selectionchange` is gated to touch (see `SelectionToolbar`), so nothing
-          re-checks the selection and the snapshot stays clickable. On touch that
-          path is live, so a collapse there would dismiss the toolbar after its
-          debounce -- untested here, and worth knowing before relying on it.
+          re-checks the selection and the snapshot stays clickable.
           The three sibling gates below (file chips, turn stats, footer) stay
           `!isStreaming` -- those are end-of-turn summaries, with no partial form
-          to show. */}
-      {selectionActions.length > 0 && <SelectionToolbar containerRef={contentRef} actions={selectionActions} />}
+          to show.
+          Not mounted on a touch device at all: there the platform draws its own
+          selection handles and Copy / Look Up callout, and a second floating
+          toolbar sat on top of them and took the taps meant for the handles. */}
+      {selectionActions.length > 0 && !isTouchDevice() && <SelectionToolbar containerRef={contentRef} actions={selectionActions} />}
     </div>
     </MessageContextMenu>
     {/* Directly under the bubble, above the file chips: the strip says how THIS

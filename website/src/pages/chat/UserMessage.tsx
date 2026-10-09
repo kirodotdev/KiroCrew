@@ -490,8 +490,8 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
       {renderContent(renderedBody, meta, messageTs || ((meta as { clientTs?: string })?.clientTs))}
     </div>
   )
-  // The right-click / long-press menu wraps the bubble only when Quote is
-  // offered (the menu's reason to exist); otherwise `MessageContextMenu`
+  // The right-click menu wraps the bubble only when Quote is offered (the
+  // menu's reason to exist) on a pointer device; otherwise `MessageContextMenu`
   // renders the bubble bare.
   const bubbleWithMenu = <MessageContextMenu items={menuItems} onOpenChange={readStandIn}>{bubble}</MessageContextMenu>
 
