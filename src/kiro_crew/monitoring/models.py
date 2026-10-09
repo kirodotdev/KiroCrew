@@ -1046,6 +1046,10 @@ class MonitorState:
     #: the key under ``extra_fields`` and writes it back untouched, reads nothing
     #: owed, and keeps the monitor running at the same state version.
     terminal_delivered: str = ""
+    #: Consecutive indeterminate settlement-only re-probes for a delivered
+    #: terminal marker. A definite answer resets it; the gate uses the persisted
+    #: count to bound how long delivery suppresses ordinary subject observation.
+    terminal_reprobe_unknowns: int = 0
     next_probe_at: float = 0.0
     outcome: MonitorOutcome | None = None
     stopped_reason: str = ""
@@ -1098,6 +1102,7 @@ class MonitorState:
             "quiet_streak",
             "floor_ticks",
             "stall_streak",
+            "terminal_reprobe_unknowns",
         ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:

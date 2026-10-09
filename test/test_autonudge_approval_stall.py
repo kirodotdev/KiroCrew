@@ -884,9 +884,10 @@ async def test_a_held_delivered_terminal_settles_once_after_release_without_a_tu
 
     A loop held while its owed terminal turn is already DELIVERED neither fires nor
     re-probes on the hold tick. The release moves only the hold fields and the
-    budget clock (``created_ts``): the delivered marker is a separate monitor field
-    it never writes. The first tick after the release then settles the terminal
-    through the delivered path, with one re-probe and no second model turn.
+    budget clock (``created_ts``): the delivered marker and its re-probe counter are
+    separate monitor fields it never writes. The first tick after the release then
+    settles the terminal through the delivered path, with one re-probe and no
+    second model turn.
     """
     on_fire = AsyncMock(return_value=True)
     svc = AutoNudgeService(base_dir=store_dir, on_fire=on_fire)
@@ -899,6 +900,7 @@ async def test_a_held_delivered_terminal_settles_once_after_release_without_a_tu
         created_ts=1_000.0,
     )
     monitor.terminal_delivered = "success"
+    monitor.terminal_reprobe_unknowns = 1
     loop = NudgeLoop(
         id="held-delivered",
         slot_key="chat-1-123",
@@ -924,9 +926,11 @@ async def test_a_held_delivered_terminal_settles_once_after_release_without_a_tu
         assert loop.approval_stalled is False
         assert loop.created_ts > 1_000.0, "the held time was handed back to the budget"
         assert monitor.terminal_delivered == "success", "the release leaves the marker"
+        assert monitor.terminal_reprobe_unknowns == 1, "and its re-probe counter"
         stored = (await _stored(store_dir))["chat-1-123"]
         assert stored.monitor is not None
         assert stored.monitor.terminal_delivered == "success"
+        assert stored.monitor.terminal_reprobe_unknowns == 1
 
         await asyncio.wait_for(svc._timer(loop, delay=0.0), timeout=_LOST_RUN_SECS)
     finally:
@@ -937,3 +941,4 @@ async def test_a_held_delivered_terminal_settles_once_after_release_without_a_tu
     assert loop.active is False
     assert monitor.outcome is MonitorOutcome.SUCCESS
     assert monitor.terminal_delivered == ""
+    assert monitor.terminal_reprobe_unknowns == 0

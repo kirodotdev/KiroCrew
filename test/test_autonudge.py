@@ -3496,7 +3496,9 @@ async def test_a_settlement_revalidates_before_it_deactivates(
 
 
 @pytest.mark.asyncio
-async def test_an_unobservable_subject_does_not_get_settled(tmp_path, monkeypatch):
+async def test_unobservable_subject_persists_the_delivered_marker_without_settling(
+    tmp_path, monkeypatch
+):
     """Absence of evidence must not retire a watch.
 
     A failed fetch, a probe defect or a binding that does not resolve cannot CONFIRM
@@ -3528,6 +3530,14 @@ async def test_an_unobservable_subject_does_not_get_settled(tmp_path, monkeypatc
     try:
         await service._run_fire_cycle(loop)
         assert loop.active is True, "an unobserved subject is not a finished one"
+        assert loop.monitor is not None
+        assert loop.monitor.terminal_pending == ""
+        assert loop.monitor.terminal_delivered == "success"
+        assert loop.monitor.terminal_reprobe_unknowns == 1
+        persisted = json.loads(service._path.read_text(encoding="utf-8"))["loops"][0]["monitor"]
+        assert persisted["terminal_pending"] == ""
+        assert persisted["terminal_delivered"] == "success"
+        assert persisted["terminal_reprobe_unknowns"] == 1
     finally:
         service.stop()
 
@@ -5245,6 +5255,102 @@ async def test_failed_delivery_marker_write_stays_delivered_for_the_cycle_persis
 
 
 @pytest.mark.asyncio
+async def test_indeterminate_delivered_terminal_reprobes_are_bounded_and_persisted(
+    tmp_path, monkeypatch
+):
+    """Each quiet tick re-probes, then the third unknown restores base behavior.
+
+    Mapping ``unknown`` directly to clear fails on the first tick. Returning quiet
+    without re-probing fails the call count, and an in-memory-only counter fails the
+    durable row check.
+    """
+    on_fire = AsyncMock(return_value=True)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    monitor = _structured_monitor(kind="gh-pr", target="acme/widgets#42")
+    monitor.terminal_delivered = "success"
+    loop = NudgeLoop(
+        id="monitor-terminal-unknown-bound",
+        slot_key="slack:C0123456:1700000000.1",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        cycle_count=1,
+        monitor=monitor,
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+    reprobe = AsyncMock(side_effect=["unknown", "unknown", "unknown"])
+    monkeypatch.setattr(service, "_terminal_still_holds", reprobe)
+
+    try:
+        for expected in (1, 2):
+            await asyncio.wait_for(service._timer(loop, delay=0.0), timeout=_LOST_RUN_SECS)
+            service._cancel_timer(loop.id)
+            assert monitor.terminal_delivered == "success"
+            assert monitor.terminal_reprobe_unknowns == expected
+            stored = _stored_row(tmp_path)["monitor"]
+            assert stored["terminal_delivered"] == "success"
+            assert stored["terminal_reprobe_unknowns"] == expected
+
+        await asyncio.wait_for(service._timer(loop, delay=0.0), timeout=_LOST_RUN_SECS)
+        service._cancel_timer(loop.id)
+    finally:
+        service.stop()
+
+    assert reprobe.await_count == 3, "every quiet retry tick must re-probe"
+    on_fire.assert_not_awaited()
+    assert monitor.terminal_delivered == ""
+    assert monitor.terminal_reprobe_unknowns == 0
+    stored = _stored_row(tmp_path)["monitor"]
+    assert stored["terminal_delivered"] == ""
+    assert stored["terminal_reprobe_unknowns"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prior_unknowns", [0, 2])
+async def test_MUTATION_a_failed_indeterminate_reprobe_write_leaves_the_live_state_as_stored(
+    tmp_path, monkeypatch, prior_unknowns
+):
+    """The re-probe count and the marker reach memory only once the store took them.
+
+    ``prior_unknowns=2`` is the bounded fallback: a third unknown whose write fails
+    must not clear the delivered marker in memory either. Readers and later ticks
+    then see what a restart would load, at the cost of one more re-probe.
+    """
+    on_fire = AsyncMock(return_value=True)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    monitor = _structured_monitor(kind="gh-pr", target="acme/widgets#42")
+    monitor.terminal_delivered = "success"
+    monitor.terminal_reprobe_unknowns = prior_unknowns
+    loop = NudgeLoop(
+        id="monitor-terminal-unknown-write-fails",
+        slot_key="slack:C0123456:1700000000.1",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        cycle_count=1,
+        monitor=monitor,
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+    reprobe = AsyncMock(return_value="unknown")
+    monkeypatch.setattr(service, "_terminal_still_holds", reprobe)
+
+    async def _failing_writer(payload=None, **_kwargs):
+        raise OSError("store unavailable")
+
+    monkeypatch.setattr(service, "_write_monitor_snapshot_locked", _failing_writer)
+    try:
+        await asyncio.wait_for(service._timer(loop, delay=0.0), timeout=_LOST_RUN_SECS)
+        service._cancel_timer(loop.id)
+    finally:
+        service.stop()
+
+    reprobe.assert_awaited_once()
+    on_fire.assert_not_awaited()
+    assert monitor.terminal_delivered == "success", "the marker cleared in memory only"
+    assert monitor.terminal_reprobe_unknowns == prior_unknowns, "the count moved in memory only"
+
+
+@pytest.mark.asyncio
 async def test_MUTATION_a_failed_gone_reprobe_write_keeps_delivered_state_until_retry(
     tmp_path, monkeypatch
 ):
@@ -5253,6 +5359,7 @@ async def test_MUTATION_a_failed_gone_reprobe_write_keeps_delivered_state_until_
     service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
     monitor = _structured_monitor(kind="gh-pr", target="acme/widgets#42")
     monitor.terminal_delivered = "success"
+    monitor.terminal_reprobe_unknowns = 2
     loop = NudgeLoop(
         id="monitor-terminal-gone-write-fails",
         slot_key="slack:C0123456:1700000000.1",
@@ -5280,6 +5387,7 @@ async def test_MUTATION_a_failed_gone_reprobe_write_keeps_delivered_state_until_
         await asyncio.wait_for(service._timer(loop, delay=0.0), timeout=_LOST_RUN_SECS)
         service._cancel_timer(loop.id)
         assert monitor.terminal_delivered == "success", "the marker cleared in memory only"
+        assert monitor.terminal_reprobe_unknowns == 2, "the count reset in memory only"
 
         await asyncio.wait_for(service._timer(loop, delay=0.0), timeout=_LOST_RUN_SECS)
         service._cancel_timer(loop.id)
@@ -5290,8 +5398,10 @@ async def test_MUTATION_a_failed_gone_reprobe_write_keeps_delivered_state_until_
     assert reprobe.await_count == 2
     on_fire.assert_not_awaited()
     assert monitor.terminal_delivered == ""
+    assert monitor.terminal_reprobe_unknowns == 0
     stored = _stored_row(tmp_path)["monitor"]
     assert stored["terminal_delivered"] == ""
+    assert stored["terminal_reprobe_unknowns"] == 0
 
 
 @pytest.mark.asyncio
@@ -5300,15 +5410,18 @@ async def test_MUTATION_a_failed_holds_settlement_write_keeps_memory_store_and_r
 ):
     """A definite-holds settlement reaches memory only after its staged write lands.
 
-    A failed write leaves the live delivered marker and the active loop exactly as
-    the store holds them and a restart loads them, and announces nothing.
-    Deactivating the loop before the write fails here, because memory then says what
-    no store or restart says. The next successful tick settles and announces once.
+    The counter reset travels with the settlement: a failed write leaves the live
+    delivered marker, the two persisted unknowns and the active loop exactly as the
+    store holds them and a restart loads them, and announces nothing. Resetting the
+    count or deactivating the loop before the write fails here, because memory then
+    says what no store or restart says. The next successful tick settles and announces
+    once.
     """
     on_fire = AsyncMock(return_value=True)
     service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
     monitor = _structured_monitor(kind="gh-pr", target="acme/widgets#42")
     monitor.terminal_delivered = "success"
+    monitor.terminal_reprobe_unknowns = 2
     loop = NudgeLoop(
         id="monitor-terminal-holds-write-fails",
         slot_key="slack:C0123456:1700000000.1",
@@ -5343,9 +5456,11 @@ async def test_MUTATION_a_failed_holds_settlement_write_keeps_memory_store_and_r
         assert loop.active is True, "the loop deactivated in memory only"
         assert monitor.outcome is None
         assert monitor.terminal_delivered == "success", "the marker cleared in memory only"
+        assert monitor.terminal_reprobe_unknowns == 2, "the count reset in memory only"
         stored = _stored_row(tmp_path)
         assert stored["active"] is True
         assert stored["monitor"]["terminal_delivered"] == "success"
+        assert stored["monitor"]["terminal_reprobe_unknowns"] == 2
 
         restarted = AutoNudgeService(base_dir=tmp_path, on_fire=AsyncMock(return_value=True))
         await restarted.start()
@@ -5356,6 +5471,7 @@ async def test_MUTATION_a_failed_holds_settlement_write_keeps_memory_store_and_r
             assert restored.active is True
             assert restored.monitor.outcome is None
             assert restored.monitor.terminal_delivered == "success"
+            assert restored.monitor.terminal_reprobe_unknowns == 2
         finally:
             await asyncio.wait_for(restarted.shutdown(), timeout=_LOST_RUN_SECS)
 
@@ -5371,9 +5487,50 @@ async def test_MUTATION_a_failed_holds_settlement_write_keeps_memory_store_and_r
     assert loop.active is False
     assert monitor.outcome is MonitorOutcome.SUCCESS
     assert monitor.terminal_delivered == ""
+    assert monitor.terminal_reprobe_unknowns == 0
     stored = _stored_row(tmp_path)
     assert stored["active"] is False
     assert stored["monitor"]["terminal_delivered"] == ""
+    assert stored["monitor"]["terminal_reprobe_unknowns"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_definite_reprobe_resets_the_unknown_count_and_settles_once(tmp_path, monkeypatch):
+    """A definite answer breaks the unknown streak and settles without delivery."""
+    on_fire = AsyncMock(return_value=True)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    monitor = _structured_monitor(kind="gh-pr", target="acme/widgets#42")
+    monitor.terminal_delivered = "success"
+    loop = NudgeLoop(
+        id="monitor-terminal-unknown-reset",
+        slot_key="slack:C0123456:1700000000.1",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        cycle_count=1,
+        monitor=monitor,
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+    reprobe = AsyncMock(side_effect=["unknown", "holds"])
+    monkeypatch.setattr(service, "_terminal_still_holds", reprobe)
+
+    try:
+        await asyncio.wait_for(service._timer(loop, delay=0.0), timeout=_LOST_RUN_SECS)
+        service._cancel_timer(loop.id)
+        assert monitor.terminal_reprobe_unknowns == 1
+        await asyncio.wait_for(service._timer(loop, delay=0.0), timeout=_LOST_RUN_SECS)
+    finally:
+        service.stop()
+
+    assert reprobe.await_count == 2
+    on_fire.assert_not_awaited()
+    assert monitor.terminal_reprobe_unknowns == 0
+    assert monitor.terminal_delivered == ""
+    assert monitor.outcome is MonitorOutcome.SUCCESS
+    assert loop.active is False
+    stored = _stored_row(tmp_path)["monitor"]
+    assert stored["terminal_reprobe_unknowns"] == 0
+    assert stored["terminal_delivered"] == ""
 
 
 @pytest.mark.asyncio
