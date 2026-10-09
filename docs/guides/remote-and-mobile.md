@@ -544,6 +544,59 @@ service installer such as `cloudflared service install`).
 > forward or a socat relay adds no such header, so it looks local and is not
 > refused.
 
+### Behind a reverse proxy
+
+Your own nginx, Caddy or similar works the same way as a tunnel: it terminates
+TLS on a public name and forwards to the loopback port.
+
+1. Serve the whole dashboard (page, API and WebSocket) from one host name, at
+   the root path. The dashboard's Content-Security-Policy admits `'self'` for
+   `connect-src`, so the browser accepts `wss://<that name>` sockets. It admits
+   no other public host, and no setting adds one. A split setup, with the
+   socket on a second host, is refused by the browser.
+2. Set `dashboard.url` to that public URL, as shown above, and restart. This
+   adds the origin to the allowed-origin set, so the CSRF check, the
+   WebSocket handshake and the DNS-rebinding `Host` barrier accept it.
+3. Pass these headers to the gateway:
+   - `Host`: the public name (or `localhost:<port>`). Any other value is
+     refused by the `Host` barrier.
+   - `X-Forwarded-Proto: https`. Without it the auth cookie is set without
+     `Secure`, and mobile browsers drop it from the `wss://` upgrade.
+   - `Upgrade` and `Connection`, so WebSocket upgrades pass through.
+
+nginx:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name kirocrew.example.com;
+    # ssl_certificate / ssl_certificate_key ...
+
+    location / {
+        proxy_pass http://127.0.0.1:5476;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 1h;
+        proxy_buffering off;
+    }
+}
+```
+
+Caddy forwards `Host`, `X-Forwarded-Proto` and WebSocket upgrades by default:
+
+```
+kirocrew.example.com {
+    reverse_proxy 127.0.0.1:5476
+}
+```
+
+The public-internet notes above apply here too: put an auth layer in front of
+the proxy, and change settings over SSH, since proxied requests stay
+read-only.
+
 ### Getting a link on your phone
 
 1. In your Kiro Crew DM, send `/kirocrew dashboard` (or `/kirocrew dashboard 6h`).
