@@ -44,6 +44,7 @@ logged.
 from __future__ import annotations
 
 import asyncio
+import codecs
 import contextlib
 import enum
 import hashlib
@@ -259,6 +260,10 @@ _PEER_CAPABILITY_PATHS: frozenset[str] = frozenset(
 _READY_POLL_INTERVAL_SECS = 0.25
 # Bound on retained stderr so a chatty/looping ssh can't grow memory unbounded.
 _MAX_STDERR_CHARS = 2000
+#: How long an exit path waits for the stderr drain to reach EOF. A grandchild
+#: that inherited the pipe can hold it open after the child exits, so the wait
+#: is bounded; what the drain captured is kept either way.
+_STDERR_DRAIN_GRACE_SECS = 2.0
 
 # Bound on retained SSM stdout, at parity with the stderr cap. The SSM child's
 # stdout is drained concurrently for the whole session (see _drain_stdout), so
@@ -852,6 +857,10 @@ class _SshTunnel:
         # child that fills the OS buffer while still running.
         self._stdout_buf = ""
         self._stdout_task: asyncio.Task | None = None  # type: ignore[type-arg]
+        # Both transports: stderr is drained concurrently from spawn by
+        # _stderr_task too. ssh writes a line there for every forwarded connection
+        # the far end refuses, so a long-lived tunnel fills the OS buffer.
+        self._stderr_task: asyncio.Task | None = None  # type: ignore[type-arg]
         self._child_path = ""  # the PATH the last spawned child was given
         self.status = TunnelStatus(
             instance_id=instance_id,
@@ -959,10 +968,16 @@ class _SshTunnel:
         # via _failed_on_child_exit, which classifies on this buffer.
         if self._proc.stdout is not None:
             self._stdout_task = asyncio.create_task(self._drain_stdout())
+        if self._proc.stderr is not None:
+            self._stderr_task = asyncio.create_task(self._drain_stderr())
 
         ready = await self._wait_until_ready()
         if not ready:
             await self._terminate()
+            # The child is gone, and a timed-out start composes no exit error, so
+            # both drains are retired at once with what they captured.
+            await self._finish_stdout_drain(timeout=0)
+            await self._retire_stderr_drain(timeout=0)
             if self.status.state != TunnelState.ERROR:
                 self.status.state = TunnelState.ERROR
                 self.status.error = self.status.error or "tunnel did not become ready"
@@ -1373,17 +1388,75 @@ class _SshTunnel:
         """
         task = self._stdout_task
         self._stdout_task = None
+        await self._retire_drain(task, timeout)
+
+    @staticmethod
+    async def _retire_drain(task: asyncio.Task | None, timeout: float) -> None:  # type: ignore[type-arg]
+        """Give a pipe drain up to *timeout* seconds to reach EOF, then cancel it.
+
+        Shared by the stdout and stderr drains. A surviving grandchild can hold
+        the write end open, so the wait is bounded; ``timeout=0`` cancels at once.
+        What the drain captured is kept either way. The shield protects the drain
+        task from the bounded wait, not the caller from cancellation: a monitor
+        that ``stop()`` cancels while it waits here leaves through the
+        cancellation, so a deliberate stop is never reported as an unexpected
+        exit. The drain is retired on that path too.
+        """
         if task is None or task.done():
             return
-        with contextlib.suppress(asyncio.TimeoutError, asyncio.CancelledError, Exception):
+        try:
             await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
-        if not task.done():
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await task
+        except (asyncio.TimeoutError, Exception):
+            pass
+        finally:
+            if not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
+
+    async def _drain_stderr(self) -> None:
+        """Continuously drain the child's stderr into a bounded buffer.
+
+        Runs for the child's whole life, on both transports, for the reason the
+        stdout drain does: a pipe read only after the child exits blocks the
+        child once the OS buffer fills, and ssh writes a stderr line for every
+        forwarded connection the far end refuses. A blocked ssh forwards nothing
+        while the tunnel still reads CONNECTED.
+
+        The buffer keeps the last ``_MAX_STDERR_CHARS`` of the whole stream,
+        which is what the exit classifiers read. The decoder is incremental, so
+        a multi-byte sequence split across two reads decodes as it does whole.
+        """
+        proc = self._proc
+        if proc is None or proc.stderr is None:
+            return
+        stream = proc.stderr
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        with contextlib.suppress(Exception):
+            while True:
+                data = await stream.read(_STDOUT_READ_CHUNK)
+                text = decoder.decode(data, final=not data)
+                if text:
+                    self._stderr_buf = (self._stderr_buf + text)[-_MAX_STDERR_CHARS:]
+                if not data:
+                    return
+
+    async def _retire_stderr_drain(self, *, timeout: float) -> None:
+        """Retire the stderr drain, keeping what it captured."""
+        task = self._stderr_task
+        self._stderr_task = None
+        await self._retire_drain(task, timeout)
 
     async def _capture_stderr(self) -> None:
-        """Drain whatever the ssh child wrote to stderr (bounded)."""
+        """Land whatever the child wrote to stderr in ``_stderr_buf`` (bounded).
+
+        A child :meth:`start` spawned is drained from spawn, so this lets that
+        drain reach EOF, which lands the last lines the child wrote, then
+        retires it. A child that runs without the drain is read to EOF here.
+        """
+        if self._stderr_task is not None:
+            await self._retire_stderr_drain(timeout=_STDERR_DRAIN_GRACE_SECS)
+            return
         proc = self._proc
         if proc is None or proc.stderr is None:
             return
@@ -1435,6 +1508,10 @@ class _SshTunnel:
             # close cause to name, so paying the drain's timeout buys nothing.
             await self._finish_stdout_drain(timeout=0)
             await self._terminate()
+            # The stderr drain runs through the terminate, so the child cannot
+            # block on a full pipe while it is being stopped; a stop composes no
+            # exit error, so it is then retired at once.
+            await self._retire_stderr_drain(timeout=0)
         except Exception:
             self.status.state = previous
             raise
