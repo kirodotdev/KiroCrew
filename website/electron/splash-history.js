@@ -45,7 +45,11 @@
 
 // Main-process-loaded shell pages whose only purpose is to be replaced by the
 // dashboard. Anything loaded via `wc.loadFile(...)` arrives as a file:// URL.
-const TRANSIENT_SHELL_PAGES = new Set(["loading.html", "token-prompt.html"]);
+const TRANSIENT_SHELL_PAGES = new Set([
+  "loading.html",
+  "edition-loading.html",
+  "token-prompt.html",
+]);
 
 /**
  * The basename of a shell page this process loaded from disk, or "" for any

@@ -1,4 +1,48 @@
-const { contextBridge, ipcRenderer, webUtils } = require("electron");
+const {
+  contextBridge: electronContextBridge,
+  ipcRenderer,
+  webUtils,
+} = require("electron");
+
+// The boot splash and token prompt are local file:// documents. An edition may
+// supply the splash at build time, so those pages must never inherit the full
+// dashboard bridge merely because they share its WebContents. All local pages
+// receive the three boot signals and the caption actions that the injected
+// frameless-Linux title-bar buttons (and the stock splash's stalled-boot close
+// control) call. The main process still decides which of those it honours.
+const isLocalShellPage =
+  typeof location !== "undefined" && location.protocol === "file:";
+const LOCAL_SHELL_ELECTRON_API = new Set([
+  "onStatus",
+  "onBootReady",
+  "bootComplete",
+]);
+const LOCAL_SHELL_WINDOW_ACTIONS = new Set(["minimize", "maximize-toggle", "close"]);
+const contextBridge = {
+  exposeInMainWorld(name, api) {
+    if (!isLocalShellPage) {
+      electronContextBridge.exposeInMainWorld(name, api);
+      return;
+    }
+    if (name === "kirocrew") {
+      electronContextBridge.exposeInMainWorld(name, {
+        platform: api.platform,
+        linuxFrameless: api.linuxFrameless,
+        windowControl: (action) => {
+          if (LOCAL_SHELL_WINDOW_ACTIONS.has(action)) api.windowControl(action);
+        },
+      });
+      return;
+    }
+    if (name !== "electronAPI") return;
+    electronContextBridge.exposeInMainWorld(
+      name,
+      Object.fromEntries(
+        Object.entries(api).filter(([key]) => LOCAL_SHELL_ELECTRON_API.has(key)),
+      ),
+    );
+  },
+};
 
 // Live `watchCursorAway` subscriptions in this renderer; see that method.
 let cursorAwaySubscribers = 0;

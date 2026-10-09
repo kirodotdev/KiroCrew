@@ -21,6 +21,7 @@ const {
   BROWSER_PARTITION,
   HEADER_CSS_PX,
   createWindowLifecycle,
+  isAllowedTransientShellNavigation,
 } = require("../window-lifecycle");
 const { registerCaptureSurface } = require("../capture-trust");
 const { setRemoteHostConfig } = require("../host-config");
@@ -195,6 +196,80 @@ describe("window lifecycle module boundary", () => {
       );
     }
     assert.doesNotThrow(() => createWindowLifecycle(validOptions()));
+  });
+});
+
+describe("transient shell navigation", () => {
+  const backend = "http://localhost:5476";
+
+  it("blocks every navigation initiated by stock and edition loading pages", () => {
+    for (const page of ["loading.html", "edition-loading.html"]) {
+      assert.equal(
+        isAllowedTransientShellNavigation(`file:///app/${page}`, backend, backend),
+        false,
+      );
+      assert.equal(
+        isAllowedTransientShellNavigation(
+          `file:///app/${page}`,
+          "https://attacker.example/payload",
+          backend,
+        ),
+        false,
+      );
+    }
+  });
+
+  it("allows the token prompt to hand off only to its configured gateway", () => {
+    const prompt = "file:///app/token-prompt.html?port=5476";
+    assert.equal(
+      isAllowedTransientShellNavigation(prompt, `${backend}/?token=value`, backend),
+      true,
+    );
+    assert.equal(
+      isAllowedTransientShellNavigation(prompt, "http://localhost:6124/?token=value", backend),
+      false,
+    );
+    assert.equal(
+      isAllowedTransientShellNavigation(prompt, "https://attacker.example/", backend),
+      false,
+    );
+  });
+
+  it("keeps a local shell page confined after it renames itself", () => {
+    // history.replaceState can rewrite a file: page's path but not its
+    // protocol, so a renamed splash must not escape the guard.
+    for (const renamed of ["file:///app/other.html", "file:///app/", "file:///app/x?loading.html"]) {
+      assert.equal(
+        isAllowedTransientShellNavigation(renamed, "https://attacker.example/", backend),
+        false,
+      );
+    }
+    assert.equal(
+      isAllowedTransientShellNavigation(
+        "file:///app/token-prompt.html",
+        "https://attacker.example/",
+        backend,
+      ),
+      false,
+    );
+  });
+
+  it("does not change dashboard navigation policy", () => {
+    assert.equal(
+      isAllowedTransientShellNavigation(`${backend}/chat`, "https://example.com/", backend),
+      true,
+    );
+  });
+
+  it("applies the same origin guard to direct navigation and redirects", () => {
+    assert.match(
+      SOURCE,
+      /webContents\.on\("will-navigate", guardTransientShellNavigation\)/,
+    );
+    assert.match(
+      SOURCE,
+      /webContents\.on\("will-redirect", guardTransientShellNavigation\)/,
+    );
   });
 });
 
@@ -1122,6 +1197,8 @@ describe("dashboard window wiring order", () => {
       "win.on:focus",
       "win.on:focus",
       "view.setWindowOpenHandler",
+      "view.on:will-navigate",
+      "view.on:will-redirect",
       "view.session.onBeforeSendHeaders",
     ]);
     assert.deepEqual(onLoad, [

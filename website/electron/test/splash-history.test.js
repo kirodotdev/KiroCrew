@@ -25,6 +25,7 @@ const {
 const LOADING = "file:///app/resources/loading.html";
 const LOADING_WITH_ACCENT = "file:///app/resources/loading.html?accent=%23a259ff";
 const TOKEN_PROMPT = "file:///app/resources/token-prompt.html?port=5476&kind=own";
+const EDITION_LOADING = "file:///app/resources/edition-loading.html?accent=%23a259ff";
 const DASHBOARD = "http://localhost:5476/?token=abc123";
 const DASH_ROUTE_A = "http://localhost:5476/settings";
 const DASH_ROUTE_B = "http://localhost:5476/sessions/42";
@@ -88,6 +89,8 @@ describe("isTransientShellPage", () => {
     assert.equal(isTransientShellPage(LOADING), true);
     assert.equal(isTransientShellPage(LOADING_WITH_ACCENT), true);
     assert.equal(isTransientShellPage(TOKEN_PROMPT), true);
+    assert.equal(isTransientShellPage(EDITION_LOADING), true);
+    assert.equal(isTransientShellPage("file:///C:/app/edition-loading.html"), true);
   });
 
   it("never matches the dashboard, even when a dashboard URL mentions loading.html", () => {
@@ -96,6 +99,7 @@ describe("isTransientShellPage", () => {
     // dashboard's business, not a shell page.
     assert.equal(isTransientShellPage("http://localhost:5476/loading.html"), false);
     assert.equal(isTransientShellPage("http://localhost:5476/?page=loading.html"), false);
+    assert.equal(isTransientShellPage("http://localhost:5476/edition-loading.html"), false);
   });
 
   it("tolerates junk without throwing", () => {
@@ -184,6 +188,28 @@ describe("transientEntryIndexes", () => {
 });
 
 describe("armSplashHistoryClear (simulated handoffs)", () => {
+  it("edition boot and recovery remove the splash while preserving dashboard history", () => {
+    const fake = makeFakeWebContents();
+    armSplashHistoryClear(fake.wc);
+    fake.navigate(EDITION_LOADING);
+    assert.deepEqual(fake.urls(), [EDITION_LOADING]);
+    fake.navigate(TOKEN_PROMPT);
+    assert.equal(fake.removedIndexes.length, 0);
+    fake.navigate(DASHBOARD);
+    assert.deepEqual(fake.urls(), [DASHBOARD]);
+    fake.navigateInPage(DASH_ROUTE_A);
+    fake.navigateInPage(DASH_ROUTE_B);
+    for (let recovery = 0; recovery < 2; recovery += 1) {
+      const before = fake.urls();
+      const removedBefore = fake.removedIndexes.length;
+      fake.navigate(EDITION_LOADING);
+      assert.deepEqual(fake.urls(), [...before, EDITION_LOADING]);
+      assert.equal(fake.removedIndexes.length, removedBefore);
+      fake.navigate(DASHBOARD);
+      assert.deepEqual(fake.urls(), [...before, DASHBOARD]);
+    }
+  });
+
   it("boot: splash → dashboard removes the splash entry, leaving it unreachable", () => {
     const fake = makeFakeWebContents();
     armSplashHistoryClear(fake.wc);

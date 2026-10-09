@@ -82,6 +82,37 @@ const WINDOWS_TITLEBAR_MENU_IDS = new Set([
   "help-menu",
 ]);
 
+// Every file: document in a dashboard window is a local shell page (the stock
+// or edition splash, or the token prompt). The protocol is checked rather than
+// the page name: a page can rewrite its own path with history.replaceState, but
+// not its protocol, so a renamed shell page still fails closed.
+function isLocalShellUrl(url) {
+  return typeof url === "string" && url.startsWith("file:");
+}
+
+function isAllowedTransientShellNavigation(currentUrl, targetUrl, backendUrl) {
+  if (!isLocalShellUrl(currentUrl)) return true;
+
+  let current;
+  let target;
+  let backend;
+  try {
+    current = new URL(currentUrl);
+    target = new URL(targetUrl);
+    backend = new URL(backendUrl);
+  } catch {
+    return false;
+  }
+
+  // Only the stock token prompt has a renderer-driven handoff. Loading pages,
+  // including downstream edition pages, cannot navigate at all. The prompt may
+  // hand off only to the exact gateway origin selected by the main process, so
+  // a page that renames itself token-prompt.html can still reach only the
+  // window's own gateway.
+  const page = current.pathname.slice(current.pathname.lastIndexOf("/") + 1);
+  return page === "token-prompt.html" && target.origin === backend.origin;
+}
+
 /**
  * Own every dashboard window and the security policy of the sessions they use.
  *
@@ -530,13 +561,30 @@ function createWindowLifecycle(options) {
 
     // Same-origin windows remain in-app. Cross-origin web URLs and the audited
     // custom-scheme allowlist go to the OS; every other target fails closed.
-    view.webContents.setWindowOpenHandler(
-      createWindowOpenHandler({
-        openExternal: (url) => shell.openExternal(url),
-        getAppOrigin: () => windowBackendUrl,
-        log: glog,
-      }),
-    );
+    const dashboardWindowOpenHandler = createWindowOpenHandler({
+      openExternal: (url) => shell.openExternal(url),
+      getAppOrigin: () => windowBackendUrl,
+      log: glog,
+    });
+    view.webContents.setWindowOpenHandler((details) => {
+      if (isLocalShellUrl(view.webContents.getURL())) {
+        return { action: "deny" };
+      }
+      return dashboardWindowOpenHandler(details);
+    });
+    const guardTransientShellNavigation = (event, targetUrl) => {
+      if (
+        !isAllowedTransientShellNavigation(
+          view.webContents.getURL(),
+          targetUrl,
+          windowBackendUrl,
+        )
+      ) {
+        event.preventDefault();
+      }
+    };
+    view.webContents.on("will-navigate", guardTransientShellNavigation);
+    view.webContents.on("will-redirect", guardTransientShellNavigation);
 
     // Do not leak the dashboard URL/token as a Referer to resources it embeds.
     // This listener remains attached at the same per-window setup point; moving
@@ -1682,4 +1730,5 @@ module.exports = {
   HEADER_CSS_PX,
   WINDOWS_TITLEBAR_MENU_IDS,
   createWindowLifecycle,
+  isAllowedTransientShellNavigation,
 };
