@@ -703,11 +703,14 @@ if _typing.TYPE_CHECKING:
         re,
     )
     from kiro_crew.apps.registry_pipeline.indexes import (  # noqa: F401
+        _SIGN_IN_REFUSED,
         _apply_configured_branch,
         _fetch_and_cache_external_registry,
         _fetch_external_registry_index,
+        _fetch_external_registry_index_unrecorded,
         _load_external_registries,
         _owner_tier_confirmed,
+        _registry_sign_in_refused,
     )
     from kiro_crew.apps.registry_pipeline.install import (  # noqa: F401
         _DESKTOP_BUILD_REFUSAL,

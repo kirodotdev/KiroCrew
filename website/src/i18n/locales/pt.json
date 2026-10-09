@@ -8153,6 +8153,8 @@
       "branch": "Branch",
       "cancel": "Cancelar",
       "could_not_refresh_still_showing_last_synced": "Não foi possível atualizar: {{names}} — ainda exibindo os aplicativos da última sincronização para estes.",
+      "refresh_sign_in_refused": "O login em {{host}} foi recusado para {{names}}. Renove as credenciais git que esta máquina usa para {{host}} e atualize novamente — reiniciar o gateway não resolve.",
+      "refresh_sign_in_refused_no_host": "O login foi recusado para {{names}}. Renove as credenciais git que esta máquina usa para esse registro e atualize novamente — reiniciar o gateway não resolve.",
       "dismiss_trust_notice": "Descartar aviso de confiança",
       "display_name": "Nome de exibição",
       "e_g_identity_services": "ex.: Identity Services",

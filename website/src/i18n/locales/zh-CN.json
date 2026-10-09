@@ -7909,6 +7909,8 @@
       "branch": "分支",
       "cancel": "取消",
       "could_not_refresh_still_showing_last_synced": "无法刷新：{{names}} — 这些注册表仍显示上次同步的应用。",
+      "refresh_sign_in_refused": "{{names}} 登录 {{host}} 被拒绝：请更新这台机器访问 {{host}} 所用的 git 凭据后再刷新——重启网关无法解决此问题。",
+      "refresh_sign_in_refused_no_host": "{{names}} 的登录被拒绝：请更新这台机器访问该注册表所用的 git 凭据后再刷新——重启网关无法解决此问题。",
       "dismiss_trust_notice": "忽略信任提示",
       "display_name": "显示名称",
       "e_g_identity_services": "例如 Identity Services",

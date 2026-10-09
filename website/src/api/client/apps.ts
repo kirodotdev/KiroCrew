@@ -116,7 +116,7 @@ export function createAppsEndpoints({ get, post, put, del, j, jfetch: fetch, ses
     // /api/apps/: that namespace grants an app named `registry` implicit
     // path ownership (token_auth._app_owns_path).
     refreshAppStore: () => post('/api/app-store/refresh').then(j) as Promise<{ ok: boolean }>,
-    refreshRegistries: (repo?: string) => post('/api/apps/registries/refresh', repo ? { repo } : {}).then(j) as Promise<{ ok: boolean; refreshed: string[]; failed: string[]; results: { name: string; ok: boolean }[]; apps: number; lastSyncedAt: string }>,
+    refreshRegistries: (repo?: string) => post('/api/apps/registries/refresh', repo ? { repo } : {}).then(j) as Promise<{ ok: boolean; refreshed: string[]; failed: string[]; results: { name: string; ok: boolean; reason?: 'auth'; host?: string }[]; apps: number; lastSyncedAt: string }>,
     installFromRegistry: (name: string) => post('/api/apps/registry/install', { name }).then(j),
     /**
      * Stream install logs via SSE.  Calls `onLog` for each line and resolves

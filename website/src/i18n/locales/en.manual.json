@@ -3016,6 +3016,8 @@
     "registryManager": {
       "adding": "Adding…",
       "could_not_refresh_still_showing_last_synced": "Could not refresh: {{names}} — still showing the last-synced apps for these.",
+      "refresh_sign_in_refused": "Sign-in to {{host}} was refused for {{names}}. Renew the git credentials this machine uses for {{host}}, then refresh again — restarting the gateway won't fix this.",
+      "refresh_sign_in_refused_no_host": "Sign-in was refused for {{names}}. Renew the git credentials this machine uses for that registry, then refresh again — restarting the gateway won't fix this.",
       "failed_to_refresh_registries": "Failed to refresh registries",
       "failed_to_update_registries": "Failed to update registries",
       "open_repository": "Open {{repo}} repository",

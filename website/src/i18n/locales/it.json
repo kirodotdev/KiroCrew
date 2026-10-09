@@ -8153,6 +8153,8 @@
       "branch": "Branch",
       "cancel": "Annulla",
       "could_not_refresh_still_showing_last_synced": "Aggiornamento non riuscito: {{names}} — per questi vengono ancora mostrate le app dell’ultima sincronizzazione.",
+      "refresh_sign_in_refused": "Accesso a {{host}} rifiutato per {{names}}. Rinnova le credenziali git che questo computer usa per {{host}} e aggiorna di nuovo: riavviare il gateway non risolve il problema.",
+      "refresh_sign_in_refused_no_host": "Accesso rifiutato per {{names}}. Rinnova le credenziali git che questo computer usa per quel registro e aggiorna di nuovo: riavviare il gateway non risolve il problema.",
       "dismiss_trust_notice": "Ignora l'avviso di attendibilità",
       "display_name": "Nome visualizzato",
       "e_g_identity_services": "ad es. Identity Services",
