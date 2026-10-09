@@ -99,7 +99,11 @@ from kiro_crew.agent_sdk.context import (
     ContextPromptProvider,
     ContextStreamEvent,
 )
-from kiro_crew.agent_sdk.drivers.acp import context_provider_of, finish_suspended_spawn
+from kiro_crew.agent_sdk.drivers.acp import (
+    context_provider_of,
+    finish_suspended_spawn,
+    kas_engine_unsupported_reason,
+)
 from kiro_crew.agent_sdk.host_auth import (
     UNKNOWN_AGENT_AUTH,
     AgentAuthDeclaration,
@@ -156,6 +160,7 @@ __all__ = [
     "clear_probe_cache",
     "finish_suspended_spawn",
     "forget_for_recheck",
+    "kas_engine_unsupported_reason",
     "probe_backend",
     "probe_backends",
     "run_kiro_native_commands",
