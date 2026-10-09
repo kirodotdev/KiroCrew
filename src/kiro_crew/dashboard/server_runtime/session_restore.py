@@ -13,6 +13,7 @@ if TYPE_CHECKING:
         channel_slots,
         chat,
         logger,
+        slot_retention,
     )
 
 
@@ -57,6 +58,15 @@ async def _restore_dashboard_sessions(state: DashboardState, cfg: KiroCrewConfig
 
     if state._dynamic_cards is not None:
         state._dynamic_cards.seed_open_sessions()
+
+    # Archive idle tabs on a timer once the live count nears the slot cap, so a
+    # dashboard nobody cleans up never reaches the point where new chats fail.
+    if cfg.dashboard.idle_slot_sweep_days > 0:
+        _sweep = asyncio.create_task(
+            slot_retention.idle_slot_sweep_loop(state, cfg.dashboard.idle_slot_sweep_days)
+        )
+        state._background_tasks.add(_sweep)
+        _sweep.add_done_callback(state._background_tasks.discard)
 
     # Surface conversations started on Slack/Discord/Teams (etc.) in the chat
     # list. These persist under channel-namespaced keys (``slack:<ts>``), which

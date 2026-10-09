@@ -3447,6 +3447,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
             "qr_session_persist_across_restart", _safe_bool
         ),
         restore_window_minutes=section.get("restore_window_minutes"),
+        idle_slot_sweep_days=section.read("idle_slot_sweep_days", _safe_int, 0, 3650),
         surface_channel_sessions=section.get("surface_channel_sessions"),
         bot_name=section.get("bot_name"),
         avatar=section.get("avatar"),

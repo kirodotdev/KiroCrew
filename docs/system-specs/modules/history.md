@@ -699,7 +699,10 @@ reads they share); the reasoning-effort allowlist; the persisted-entry memo
 `_build_message_entry` with its bounds; the private member-store assignment; and
 the request-side retired-mode coercion (`_coerce_requested_mode`). The rules those
 consult live in `dashboard/slot_persistence/`, and each file names the work that
-belongs in it:
+belongs in it. Both open-tab restore drivers build tabs newest first and stop
+building ordinary ones at `slot_retention.RESTORE_SLOT_BUDGET`; pinned and
+loop-driven tabs are always built (see the `slot_retention.py` entry in
+learn-cron-dashboard):
 
 - `write_guards.py` -- the paired window/queue snapshot, the routing snapshot, the
   note-row filter, the line a full save folds, the delete witness with the

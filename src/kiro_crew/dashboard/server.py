@@ -64,6 +64,7 @@ from kiro_crew.dashboard import (  # noqa: F401
 )
 from kiro_crew.dashboard import server_runtime as _server_runtime
 from kiro_crew.dashboard import (  # noqa: F401
+    slot_retention,
     tailnet,
     tailnet_serve,
 )

@@ -2547,7 +2547,8 @@ flip could resume a stale session persisted under the other namespace),
 `mcp.extra_path_dirs`, `mcp.honour_auto_approve`, `instances.enabled`,
 `instances.tunnel_base_port`, `slack.command`, `whatsapp.db_path`, `dashboard.url`,
 `dashboard.tailscale.*` except `keep_awake`, `dashboard.restore_sessions`,
-`dashboard.restore_window_minutes`, `dashboard.surface_channel_sessions`,
+`dashboard.restore_window_minutes`, `dashboard.idle_slot_sweep_days`,
+`dashboard.surface_channel_sessions`,
 `dashboard.loop_stall_exit_after_secs` (read once at boot to build the loop-stall
 watchdog), `dashboard.cautious_boot`, `dashboard.auto_open_browser` and `tunnel.*`.
 When the two disagree, the schema wins.

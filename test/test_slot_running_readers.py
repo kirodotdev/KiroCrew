@@ -169,6 +169,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # Idle-only teardown: the same pre-lock and in-lock probe via
                 # _switch_target_busy, so a reserved slot between stages is busy.
                 ("session_control.py", "reload_target"),
+                # The idle sweep never picks or pops a slot holding a reservation.
+                ("slot_retention.py", "_still_idle_check"),
+                ("slot_retention.py", "select_idle_slot_keys"),
                 ("state.py", "_ChatSlot.enqueue_or_run_prompt"),
                 ("ws.py", "_handle_slot_focused"),
             }

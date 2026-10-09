@@ -245,6 +245,10 @@ from kiro_crew.dashboard.slot_projection import (  # noqa: F401
     stop_declined_armed,
 )
 from kiro_crew.dashboard.slot_queue_repository import warn_if_not_durable
+from kiro_crew.dashboard.slot_retention import (  # noqa: F401
+    loop_slot_keys,
+    select_idle_slot_keys,
+)
 from kiro_crew.dashboard.state import (  # noqa: F401
     _MAX_DISMISSED_SOURCE_LINKS,
     DashboardState,
