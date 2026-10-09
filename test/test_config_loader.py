@@ -534,6 +534,112 @@ def test_slack_home_tab_sessions_per_kind_parsed_and_round_trips():
     assert reloaded.slack.home_tab_sessions_per_kind == 42
 
 
+class TestSlackAllowedUsersLoad:
+    """slack.allowed_users load-time validation and coercion.
+
+    load() coerces a near-miss `user_id` key to the canonical `slack_id` shape
+    instead of discarding the entry. Dropping it makes `config get
+    slack.allowed_users` read back `[]` while the write succeeded, which looks
+    like a failed save; coercion keeps the value and warns. The `slack_id` value
+    must be a non-empty string: `slack/gateway.py` builds a set of these ids, so
+    a non-string id would crash gateway startup.
+    """
+
+    def test_canonical_slack_id_entry_passes_through(self) -> None:
+        loaded = _load_from_dict(
+            {"slack": {"allowed_users": [{"slack_id": "U0C7AP0SY12", "name": "Clint"}]}}
+        )
+        assert loaded.slack.allowed_users == [{"slack_id": "U0C7AP0SY12", "name": "Clint"}]
+
+    def test_user_id_key_is_coerced_to_slack_id_not_dropped(self) -> None:
+        # A `user_id` key with no `slack_id`: the value is kept under `slack_id`,
+        # not discarded, so config get reads it back.
+        loaded = _load_from_dict({"slack": {"allowed_users": [{"user_id": "U0C7AP0SY12"}]}})
+        assert loaded.slack.allowed_users == [{"slack_id": "U0C7AP0SY12"}]
+
+    def test_user_id_coercion_keeps_other_keys_and_orders_slack_id_first(self) -> None:
+        loaded = _load_from_dict(
+            {"slack": {"allowed_users": [{"user_id": "U0C7AP0SY12", "name": "Clint"}]}}
+        )
+        assert loaded.slack.allowed_users == [{"slack_id": "U0C7AP0SY12", "name": "Clint"}]
+        assert list(loaded.slack.allowed_users[0].keys())[0] == "slack_id"
+
+    def test_slack_id_wins_when_both_keys_present(self) -> None:
+        loaded = _load_from_dict(
+            {"slack": {"allowed_users": [{"slack_id": "UCANON", "user_id": "UIGNORED"}]}}
+        )
+        # slack_id is canonical, so the entry passes through unchanged (no rename).
+        assert loaded.slack.allowed_users == [{"slack_id": "UCANON", "user_id": "UIGNORED"}]
+
+    def test_empty_slack_id_falls_through_to_user_id(self) -> None:
+        # An empty `slack_id` is not usable, so the `user_id` value is adopted and
+        # the empty key never clobbers it.
+        loaded = _load_from_dict(
+            {"slack": {"allowed_users": [{"slack_id": "", "user_id": "U0C7AP0SY12"}]}}
+        )
+        assert loaded.slack.allowed_users == [{"slack_id": "U0C7AP0SY12"}]
+
+    def test_non_string_slack_id_is_dropped(self) -> None:
+        # A list/dict id would raise TypeError when slack/gateway.py builds a set
+        # of ids. Such an entry is dropped, not kept with an unhashable value.
+        loaded = _load_from_dict(
+            {
+                "slack": {
+                    "allowed_users": [
+                        {"slack_id": ["U0C7AP0SY12"]},
+                        {"slack_id": {"id": "U0C7AP0SY12"}},
+                        {"slack_id": "U0C7AP0SY12"},
+                    ]
+                }
+            }
+        )
+        assert loaded.slack.allowed_users == [{"slack_id": "U0C7AP0SY12"}]
+        # The surviving ids are hashable, so a set build cannot crash.
+        assert {u["slack_id"] for u in loaded.slack.allowed_users} == {"U0C7AP0SY12"}
+
+    def test_non_string_user_id_is_not_coerced(self) -> None:
+        loaded = _load_from_dict(
+            {"slack": {"allowed_users": [{"user_id": ["U0C7AP0SY12"]}, {"user_id": 42}]}}
+        )
+        assert loaded.slack.allowed_users == []
+
+    def test_junk_entries_are_ignored(self) -> None:
+        loaded = _load_from_dict(
+            {
+                "slack": {
+                    "allowed_users": [
+                        {"slack_id": "U0C7AP0SY12"},
+                        {"name": "no id at all"},
+                        "U0C7AP0SY12",  # a bare string is not a coerced shape
+                        42,
+                        None,
+                    ]
+                }
+            }
+        )
+        assert loaded.slack.allowed_users == [{"slack_id": "U0C7AP0SY12"}]
+
+    def test_coerced_entry_survives_to_dict_round_trip(self) -> None:
+        loaded = _load_from_dict({"slack": {"allowed_users": [{"user_id": "U0C7AP0SY12"}]}})
+        reloaded = _load_from_dict(loaded.to_dict())
+        assert reloaded.slack.allowed_users == [{"slack_id": "U0C7AP0SY12"}]
+
+    def test_coercion_says_so_in_the_log(self) -> None:
+        cfg, logs = _load_from_dict_with_logs(
+            {"slack": {"allowed_users": [{"user_id": "U0C7AP0SY12"}]}}
+        )
+        assert cfg.slack.allowed_users == [{"slack_id": "U0C7AP0SY12"}]
+        said = [m for m in logs if "slack.allowed_users" in m and "auto-coerced" in m]
+        assert said, logs
+
+    def test_valid_entry_draws_no_coercion_line(self) -> None:
+        cfg, logs = _load_from_dict_with_logs(
+            {"slack": {"allowed_users": [{"slack_id": "U0C7AP0SY12"}]}}
+        )
+        assert cfg.slack.allowed_users == [{"slack_id": "U0C7AP0SY12"}]
+        assert not [m for m in logs if "slack.allowed_users" in m and "auto-coerced" in m]
+
+
 class TestSessionControlLoad:
     """agent.session_control load-time coercion.
 
