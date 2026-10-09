@@ -4869,7 +4869,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Allowed Users",
-      "help": "List of Slack users allowed to interact. Each entry: {slack_id, name}.",
+      "help": "Ignored for access: Slack is owner-only, so only the owner can interact. A name here is only a display-name fallback. Each entry: {slack_id, name}.",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": []
@@ -4925,7 +4925,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Open Channels",
-      "help": "Channel IDs where all users are authorized without allowlist.",
+      "help": "Ignored for access: open channels are disabled (Slack is owner-only).",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": []

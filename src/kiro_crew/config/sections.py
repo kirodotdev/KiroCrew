@@ -2173,7 +2173,8 @@ class SlackConfig:
         default_factory=list,
         metadata=_meta(
             "Allowed Users",
-            "List of Slack users allowed to interact. Each entry: {slack_id, name}.",
+            "Ignored for access: Slack is owner-only, so only the owner can interact. "
+            "A name here is only a display-name fallback. Each entry: {slack_id, name}.",
         ),
     )
     tracking_channels: list[dict] = field(
@@ -2187,7 +2188,7 @@ class SlackConfig:
         default_factory=list,
         metadata=_meta(
             "Open Channels",
-            "Channel IDs where all users are authorized without allowlist.",
+            "Ignored for access: open channels are disabled (Slack is owner-only).",
         ),
     )
     command: str = field(

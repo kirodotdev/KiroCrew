@@ -307,7 +307,7 @@ Set a registered value with, for example,
 
 | Key | Description | Default |
 |-----|-------------|---------|
-| `slack.allowed_users` | User records (`{slack_id, name}`) recorded for Slack access | `[]` |
+| `slack.allowed_users` | Ignored for access (Slack is owner-only); a name is only a display-name fallback | `[]` |
 | `slack.tracking_channels` | Channels to monitor for new members | `[]` |
 | `slack.open_channels` | Channel records retained in config | `[]` |
 | `slack.command` | Slash-command name | `"kirocrew"` |
