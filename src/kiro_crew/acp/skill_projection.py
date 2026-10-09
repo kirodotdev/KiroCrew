@@ -3144,7 +3144,33 @@ def prepare_native_skill_projection(
             # withholding the view for it would refuse a supported customization
             # and abort the spawn over a restriction that reaches the session.
             if per_session_element:
-                withheld = session_mcp.native_mount_withholding("kirocrew-core", original_core, [])
+                # kirocrew-core is a control-plane server: its ``disabledTools``
+                # ride the per-call gate the mount feeds, so they do not
+                # withhold the element and must not refuse the view either --
+                # ``carry_disabled_tools`` makes this reader agree with the
+                # mount. ``skill_search`` itself being disabled was already
+                # refused above; what remains for carry are the OTHER tools the
+                # toggle named, which leave skill search standing. A mute, a
+                # non-stdio transport and an uncarriable key still withhold.
+                #
+                # The carry is faithful only where the backend prompts for the
+                # tool. A tool the spec's ``allowedTools`` auto-approves
+                # (a whole-server ``@kirocrew-core`` entry covers every one) is
+                # approved by kiro-cli with no permission request, so a carried
+                # deny on it does not take effect -- the mount withholds the
+                # element in that case, and this reader must reach the
+                # same verdict or it would promise a view the mount then refuses.
+                # So carry here only when no disabled tool authored on the spec
+                # entry is auto-approved.
+                spec_pairs = session_mcp.native_carried_disabled_tools(
+                    "kirocrew-core", original_core, []
+                )
+                carry = not session_mcp.allowedtools_auto_approved_pairs(
+                    view.get("allowedTools"), spec_pairs
+                )
+                withheld = session_mcp.native_mount_withholding(
+                    "kirocrew-core", original_core, [], carry_disabled_tools=carry
+                )
                 if withheld is not None:
                     errors[agent.name] = withheld.explain("skill search")
                     continue

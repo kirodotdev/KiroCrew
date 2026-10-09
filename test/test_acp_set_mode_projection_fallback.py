@@ -134,9 +134,21 @@ async def _with_reader(rt: AcpRuntime, coro):
             pass
 
 
-async def _activate(rt: AcpRuntime, projection: NativeSkillProjection | None) -> None:
-    """Run the real bracket with the re-preparation returning *projection*."""
+async def _activate(
+    rt: AcpRuntime,
+    projection: NativeSkillProjection | None,
+    handle: object | None = None,
+) -> None:
+    """Run the real bracket with the re-preparation returning *projection*.
+
+    *handle* defaults to one with no recorded ``spec_fingerprint`` (the mid-life
+    activation guard is then a no-op), so the pre-existing cases are unchanged.
+    """
     rt.terminate_session = AsyncMock()  # type: ignore[method-assign]
+    if handle is None:
+        handle = MagicMock()
+        handle.spec_denied_tools = frozenset()
+        handle.spec_fingerprint = None
     with (
         patch(
             "kiro_crew.acp.skill_projection.prepare_native_skill_projection",
@@ -145,7 +157,12 @@ async def _activate(rt: AcpRuntime, projection: NativeSkillProjection | None) ->
         patch("kiro_crew.agent.require_unchanged_derived_spec", return_value=None),
     ):
         await rt._activate_mode_bracketed(
-            "s1", "ops", budget=5.0, payload_snapshot=None, wire_registered=True
+            "s1",
+            "ops",
+            budget=5.0,
+            payload_snapshot=None,
+            wire_registered=True,
+            handle=handle,
         )
 
 
@@ -415,3 +432,153 @@ def test_recognised_aliases_stay_bounded_keep_the_spawn_ones_first_and_warn(monk
     assert current._recognised[SIBLING_SPAWN_ALIAS] == "dev"
     warned = [r for r in caplog.records if "not recognised past" in r.getMessage()]
     assert len(warned) == 1
+
+
+# --- Mid-life edit window: whole-spec fingerprint guard ---
+#
+# The mount fingerprints the resolved agent spec at ``session/new``
+# (``handle.spec_fingerprint``). The activation bracket re-reads the spec the
+# same way and refuses the first turn if the fingerprint changed, or if the spec
+# cannot be read. Any edit between ``session/new`` and activation refuses by
+# construction -- there is no per-field predicate to leave a case uncovered.
+
+
+@pytest.mark.asyncio
+async def test_the_spec_changed_in_the_gap_refuses_the_session(no_retry_wait):
+    """The spec resolved at activation fingerprints differently from the one
+    recorded at session/new (any edit in the gap), so the start is refused."""
+    rt, kiro = _runtime({FRESH_ALIAS})
+    handle = MagicMock()
+    handle._bound_cwd = ""
+    handle.spec_fingerprint = "sha-at-session-new"
+
+    with patch(
+        "kiro_crew.acp.runtime._resolved_spec_fingerprint",
+        return_value="sha-after-an-edit",  # the activated spec hashes differently
+    ):
+        with pytest.raises(AcpRuntimeError) as excinfo:
+            await _with_reader(
+                rt, _activate(rt, NativeSkillProjection({"ops": FRESH_ALIAS}), handle=handle)
+            )
+
+    assert "settings changed" in str(excinfo.value)
+    assert "Reopen the chat" in str(excinfo.value)
+    rt.terminate_session.assert_awaited_once_with("s1")
+
+
+@pytest.mark.asyncio
+async def test_the_spec_unchanged_in_the_gap_starts(no_retry_wait):
+    """The activated spec fingerprints identically to the session/new read, so
+    nothing changed in the gap and the start proceeds."""
+    rt, kiro = _runtime({FRESH_ALIAS})
+    handle = MagicMock()
+    handle._bound_cwd = ""
+    handle.spec_fingerprint = "sha-stable"
+
+    with patch(
+        "kiro_crew.acp.runtime._resolved_spec_fingerprint",
+        return_value="sha-stable",
+    ):
+        await _with_reader(
+            rt, _activate(rt, NativeSkillProjection({"ops": FRESH_ALIAS}), handle=handle)
+        )
+
+    rt.terminate_session.assert_not_awaited()
+    assert kiro.set_modes == [FRESH_ALIAS]
+
+
+@pytest.mark.asyncio
+async def test_the_spec_cannot_be_read_at_activation_fails_closed(no_retry_wait):
+    """The spec cannot be re-read at activation (the resolver returns None), so the
+    fingerprint cannot be confirmed and the start fails closed."""
+    rt, kiro = _runtime({FRESH_ALIAS})
+    handle = MagicMock()
+    handle._bound_cwd = ""
+    handle.spec_fingerprint = "sha-at-session-new"
+
+    with patch(
+        "kiro_crew.acp.runtime._resolved_spec_fingerprint",
+        return_value=None,  # unreadable -> no fingerprint -> differs -> refuse
+    ):
+        with pytest.raises(AcpRuntimeError) as excinfo:
+            await _with_reader(
+                rt, _activate(rt, NativeSkillProjection({"ops": FRESH_ALIAS}), handle=handle)
+            )
+
+    assert "settings changed" in str(excinfo.value)
+    rt.terminate_session.assert_awaited_once_with("s1")
+
+
+@pytest.mark.asyncio
+async def test_f6_withheld_core_plus_added_restriction_is_refused(no_retry_wait):
+    """F6: at session/new the core element mounts with nothing disabled (so the gate
+    carries no deny), then an operator disables a tool in the gap. Under the old
+    deny-set comparison both sides read empty and the start slipped through. The
+    whole-spec fingerprint catches it: adding the restriction changes the spec, so
+    the fingerprint differs and the start is refused."""
+    rt, kiro = _runtime({FRESH_ALIAS})
+    handle = MagicMock()
+    handle._bound_cwd = ""
+    handle.spec_denied_tools = frozenset()  # nothing carried at session/new
+    handle.spec_fingerprint = "sha-core-mounted-no-deny"
+
+    with patch(
+        "kiro_crew.acp.runtime._resolved_spec_fingerprint",
+        return_value="sha-core-mounted-with-added-deny",  # the gap edit
+    ):
+        with pytest.raises(AcpRuntimeError) as excinfo:
+            await _with_reader(
+                rt, _activate(rt, NativeSkillProjection({"ops": FRESH_ALIAS}), handle=handle)
+            )
+
+    assert "settings changed" in str(excinfo.value)
+    rt.terminate_session.assert_awaited_once_with("s1")
+
+
+@pytest.mark.asyncio
+async def test_no_fingerprint_recorded_is_a_no_op(no_retry_wait):
+    """A session with no recorded fingerprint (a backend that records none) runs the
+    guard as a no-op and starts normally."""
+    rt, kiro = _runtime({FRESH_ALIAS})
+    handle = MagicMock()
+    handle._bound_cwd = ""
+    handle.spec_fingerprint = None
+
+    # The resolver must not even be consulted when there is nothing to compare.
+    with patch(
+        "kiro_crew.acp.runtime._resolved_spec_fingerprint",
+        side_effect=AssertionError("resolver should not be called with no fingerprint"),
+    ):
+        await _with_reader(
+            rt, _activate(rt, NativeSkillProjection({"ops": FRESH_ALIAS}), handle=handle)
+        )
+
+    rt.terminate_session.assert_not_awaited()
+    assert kiro.set_modes == [FRESH_ALIAS]
+
+
+def test_resolved_spec_fingerprint_ignores_volatile_env_but_not_real_change():
+    """The activation fingerprint normalizes per-launch MCP env nonce VALUES through
+    the same volatile-env step the worker-spec fingerprint uses, so a launcher
+    re-stamping a nonce on every concurrent session does not read as a spec change
+    (which would refuse the session). A real change still moves the hash."""
+    from kiro_crew.acp import runtime as _runtime_mod
+    from kiro_crew.agent_spec_format import volatile_env_keys
+
+    keys = sorted(volatile_env_keys())
+    assert keys, "expected at least one volatile env key"
+    k = keys[0]
+    base = {"mcpServers": {"kirocrew-core": {"env": {k: "n1", "REAL": "x"}}}}
+    volatile_only = {"mcpServers": {"kirocrew-core": {"env": {k: "n2", "REAL": "x"}}}}
+    real_change = {"mcpServers": {"kirocrew-core": {"env": {k: "n1", "REAL": "y"}}}}
+
+    with patch(
+        "kiro_crew.acp.session_mcp._agent_spec_for",
+        side_effect=[base, volatile_only, real_change],
+    ):
+        fp_base = _runtime_mod._resolved_spec_fingerprint("ops", None)
+        fp_volatile = _runtime_mod._resolved_spec_fingerprint("ops", None)
+        fp_real = _runtime_mod._resolved_spec_fingerprint("ops", None)
+
+    assert fp_base == fp_volatile, "a volatile-env-only change must not move the fingerprint"
+    assert fp_base != fp_real, "a real spec change must move the fingerprint"

@@ -1327,6 +1327,13 @@ class AcpSessionHandle:
         # ``_deny_spec_disabled_tool`` a single falsy read on those sessions.
         # Mirrors ``AcpClient._spec_denied_tools``.
         self.spec_denied_tools: frozenset[tuple[str, str]] = frozenset()
+        # sha256 of the agent spec resolved at ``session/new`` (project-nearest,
+        # the mount's own resolver). The activation bracket re-reads the spec the
+        # same way and refuses the first turn if this fingerprint changed, so any
+        # ``disabledTools``/``allowedTools`` edit landing in the gap between the
+        # mount read and activation cannot start a session under a stale spec.
+        # ``None`` when the backend records no fingerprint (nothing to compare).
+        self.spec_fingerprint: str | None = None
         # The capabilities the agent batch this session registered auto-approves
         # (see ``kas_agents.projected_auto_approved``); None when no batch was sent.
         self.kas_auto_approved: frozenset[str] | None = None

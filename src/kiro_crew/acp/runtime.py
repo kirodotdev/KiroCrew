@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import hashlib
 import importlib
 import json
 import logging
@@ -895,6 +896,74 @@ def _disable_check_scope(backend: str, work_dir: Any) -> Any:
     as "not disabled", and the server it withdraws would mount.
     """
     return overlay_project_scope(backend, work_dir).get("work_dir")
+
+
+def _resolved_spec_fingerprint(agent: str | None, scope: Any) -> str | None:
+    """sha256 of the agent spec the mount resolves, or ``None`` when unreadable.
+
+    Reads through the mount's own resolver (``_agent_spec_for``, project-nearest
+    within the session's checkout, the same resolution ``kiro_control_plane_servers``
+    used), so the fingerprint recorded at ``session/new`` and the one re-read at
+    activation describe the SAME spec the carry decision was based on.
+
+    Normalized through the SAME volatile-env list the worker-spec fingerprint and
+    the skill views use (:func:`kiro_crew.agent_spec_format.volatile_env_keys`)
+    before hashing: a launcher may re-stamp a per-launch MCP env nonce (not a grant)
+    into the spec on every session, and hashing it raw would read every concurrent
+    launch as a changed spec and refuse the session. Keys and real values still
+    count -- only the volatile nonce VALUES are replaced by a fixed marker -- so any
+    genuine ``disabledTools``/``allowedTools`` or other change still moves the hash.
+    The replacement is applied here with ``volatile_env_keys`` directly (the same
+    primitive the skill-view digests use) rather than importing the materialization
+    owner's helper, keeping the acp layer off that module. Serialized with sorted
+    keys so key order is not a change; a hash of ``None`` is ``None`` (an unreadable
+    spec is not a fingerprint, which the caller treats as a refusal, not a match).
+    """
+    from kiro_crew.acp.session_mcp import _agent_spec_for
+    from kiro_crew.agent_spec_format import volatile_env_keys
+
+    try:
+        spec = _agent_spec_for(agent, scope) if agent else None
+    except Exception:
+        return None
+    if not isinstance(spec, dict):
+        return None
+    normalized = _spec_without_volatile_env(spec, volatile_env_keys())
+    try:
+        payload = json.dumps(normalized, sort_keys=True, default=str).encode("utf-8")
+    except Exception:
+        return None
+    return hashlib.sha256(payload).hexdigest()
+
+
+_VOLATILE_ENV_SENTINEL = "<volatile>"
+
+
+def _spec_without_volatile_env(spec: dict[str, Any], volatile: frozenset[str]) -> dict[str, Any]:
+    """*spec* with per-launch MCP env nonce VALUES replaced by a fixed marker.
+
+    The acp-layer twin of ``agent_materialization.worker_agent._without_volatile_mcp_env``,
+    applying the SAME :func:`volatile_env_keys` list the skill views already honour,
+    so a launcher re-stamping a nonce on every session does not move the fingerprint.
+    Only the value is normalized; the key stays, and every non-volatile value counts.
+    """
+    servers = spec.get("mcpServers")
+    if not isinstance(servers, dict):
+        return spec
+    stripped: dict[str, Any] = {}
+    for name, entry in servers.items():
+        env = entry.get("env") if isinstance(entry, dict) else None
+        if not isinstance(env, dict) or not any(str(key) in volatile for key in env):
+            stripped[name] = entry
+            continue
+        stripped[name] = {
+            **entry,
+            "env": {
+                key: (_VOLATILE_ENV_SENTINEL if str(key) in volatile else value)
+                for key, value in env.items()
+            },
+        }
+    return {**spec, "mcpServers": stripped}
 
 
 def _pooled_session_servers_and_ref_spec(
@@ -5959,6 +6028,7 @@ class AcpRuntime:
         budget: float,
         payload_snapshot: Any,
         wire_registered: bool,
+        handle: Any = None,
     ) -> None:
         """Send ``session/set_mode`` for *mode_agent* inside the derived-spec bracket.
 
@@ -6198,6 +6268,29 @@ class AcpRuntime:
         except Exception:
             await self.terminate_session(session_id)
             raise
+        # Fail-closed guard for the mid-life edit window. The mount read and
+        # fingerprinted the agent spec at ``session/new`` (``handle.spec_fingerprint``).
+        # An operator edit to that spec -- a ``disabledTools`` or ``allowedTools``
+        # change, or anything else -- can land in the gap before the spec kiro-cli
+        # ACTIVATES here, and a session started on the earlier read would run under
+        # settings the user has since changed (a tool they switched off staying
+        # callable, the original fail-OPEN shape). So re-read the spec the SAME way
+        # the fingerprint was taken (the mount's own resolver, project-nearest) and
+        # refuse the first turn if the fingerprint changed, or if the spec cannot be
+        # read. A whole-spec fingerprint closes the window by construction: ANY
+        # change refuses, with no per-field predicate to leave a case uncovered. A
+        # clean refusal keeps the spec authoritative; the next start reads it fresh.
+        if handle is not None and getattr(handle, "spec_fingerprint", None) is not None:
+            scope = _disable_check_scope(self.acp_backend, getattr(handle, "_bound_cwd", None))
+            now_fp = await asyncio.to_thread(_resolved_spec_fingerprint, mode_agent, scope)
+            if now_fp != handle.spec_fingerprint:
+                await self.terminate_session(session_id)
+                raise AcpRuntimeError(
+                    f"Agent {mode_agent!r}: its settings changed between this "
+                    "session's start and its activation, so the session was not "
+                    "started rather than run under the earlier settings. Reopen "
+                    "the chat to start again with the current settings."
+                )
         try:
             await asyncio.to_thread(require_unchanged_derived_spec, mode_snapshot)
         except DerivedSpecStale as exc:
@@ -6708,7 +6801,12 @@ class AcpRuntime:
 
     async def _unpooled_control_planes(
         self, entries: list[dict[str, Any]], agent: str | None, work_dir: str | Path
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], frozenset[tuple[str, str]]]:
+        # Returns the composed array AND the ``(server, tool)`` deny pairs the mount
+        # chose to CARRY rather than withhold: a ``disabledTools`` toggle on a
+        # control-plane server mounts the element and rides the session's per-call
+        # gate, so the caller must feed ``carried`` to ``handle.spec_denied_tools`` or
+        # the toggled tool would run. The element expresses no restriction on its own.
         # A shared Kiro process has no session-valued environment. Its native
         # managed servers need per-element identity even with the broker off.
         if self.acp_backend == ACP_BACKEND_KIRO:
@@ -6728,6 +6826,23 @@ class AcpRuntime:
                 **projection_kwargs,
             )
             name = agent or self._agent
+            if (
+                projection is not None
+                and name in projection.search_agents
+                and ("kirocrew-core", "skill_search") in mount.carried
+            ):
+                # A settings file switched off ``skill_search`` itself. The mount
+                # carries that deny on the gate and still mounts the element, but a
+                # search agent would then start with its skill resources already
+                # dropped from the view and every ``skill_search`` call refused --
+                # worse than a clean refusal. The one tool a search agent cannot run
+                # without is not carryable for it, so refuse here, naming the way
+                # back rather than letting the session start half-crippled.
+                raise AcpRuntimeError(
+                    f"Agent {name!r}: kirocrew-core/skill_search is disabled in the MCP "
+                    "settings, so this skill-search agent cannot start. Re-enable "
+                    "skill_search in the dashboard's MCP tab to restore it."
+                )
             if (
                 projection is not None
                 and name in projection.search_agents
@@ -6759,8 +6874,8 @@ class AcpRuntime:
                         "Cannot bind skill_search to this session without losing native MCP "
                         "restrictions. Check the agent's kirocrew-core server configuration."
                     )
-            return [*entries, *mount.elements]
-        return entries
+            return [*entries, *mount.elements], mount.carried
+        return entries, frozenset()
 
     @staticmethod
     async def _source_agent(agent: str | None) -> str | None:
@@ -6865,6 +6980,11 @@ class AcpRuntime:
         denied_tools: frozenset[tuple[str, str]] = frozenset()
         mirrored_snapshot: Any = None
         ref_spec: Any = None
+        # Fingerprint of the agent spec the mount reads HERE, before session/new is
+        # sent, so the activation bracket compares against the spec the mount
+        # actually saw -- not a second read taken after the response, which a
+        # concurrent edit landing while session/new is in flight could slip past.
+        spec_fingerprint: str | None = None
         if mcp_servers is None:
             # A mirrored host takes its whole array from the mirror; every other host
             # takes the pooled stubs it always took. Which one is a synchronous
@@ -6894,10 +7014,19 @@ class AcpRuntime:
                     self.acp_backend,
                     session_work_dir,
                 )
-                mcp_servers = await self._unpooled_control_planes(
+                mcp_servers, control_plane_carried = await self._unpooled_control_planes(
                     pooled, agent or self._agent, session_work_dir
                 )
+                # A carried kirocrew-core disabledTools toggle rides the session's
+                # per-call gate (the element cannot express it), so the session runs
+                # minus the toggled tool instead of being refused.
+                denied_tools = denied_tools | control_plane_carried
                 mcp_servers, stub_token = await self._own_stub_session(mcp_servers, session_key)
+                spec_fingerprint = await asyncio.to_thread(
+                    _resolved_spec_fingerprint,
+                    agent or self._agent,
+                    _disable_check_scope(self.acp_backend, session_work_dir),
+                )
         else:
             # An explicit array is the caller's own composition (a mirror's
             # projection, a test double); it is not this method's to re-key, and it
@@ -7142,6 +7271,7 @@ class AcpRuntime:
             payload_snapshot=payload_snapshot,
             session_key=session_key,
             member_dispatch_mounted=member_mounted,
+            spec_fingerprint=spec_fingerprint,
         )
 
     def _collect_late_start(
@@ -7347,6 +7477,7 @@ class AcpRuntime:
         memory_mode: str = "persistent",
         session_key: str = "",
         member_dispatch_mounted: bool = False,
+        spec_fingerprint: str | None = None,
     ) -> AcpSessionHandle:
         """Everything after a successful ``session/new``: queue, handle, mode, drain.
 
@@ -7386,6 +7517,12 @@ class AcpRuntime:
         # session's permission requests. Empty for a host with no mirror and for a
         # caller-supplied array, and the handle's check is a no-op on empty.
         handle.spec_denied_tools = denied_tools
+        # Whole-spec fingerprint of the agent spec as the mount resolved it here,
+        # for the activation bracket to re-check: any edit to the spec (a
+        # disabledTools/allowedTools change, anything) landing before the first
+        # turn changes this and refuses the start, so a session never runs under a
+        # spec that was edited in the session/new -> activation gap.
+        handle.spec_fingerprint = spec_fingerprint
         # What the registered agent batch grants, recorded by the harness that
         # registered one; a host that took its agent at spawn time records nothing.
         self._harness.record_session_projection(handle, kas_agents, active_agent)
@@ -7481,6 +7618,7 @@ class AcpRuntime:
                 budget=budget,
                 payload_snapshot=payload_snapshot,
                 wire_registered=kas_agents is not None,
+                handle=handle,
             )
             handle.active_agent = mode_agent
             # Whether set_mode actually SWITCHED modes: the servers that
@@ -7757,6 +7895,9 @@ class AcpRuntime:
         denied_tools: frozenset[tuple[str, str]] = frozenset()
         mirrored_snapshot: Any = None
         ref_spec: Any = None
+        # Mirrors create_session: the spec fingerprint the mount reads here, before
+        # session/load is sent, for the activation bracket to compare against.
+        spec_fingerprint: str | None = None
         # A mirrored host re-declares the array its projection built, not the raw
         # pooled one: session/load re-initializes the session's servers, so an
         # unprojected array here does not merely fail to withhold a stub -- it MOUNTS
@@ -7789,10 +7930,19 @@ class AcpRuntime:
                 self.acp_backend,
                 session_work_dir,
             )
-            mcp_servers = await self._unpooled_control_planes(
+            mcp_servers, control_plane_carried = await self._unpooled_control_planes(
                 pooled, active_agent, session_work_dir
             )
+            # A carried kirocrew-core disabledTools toggle rides the session's
+            # per-call gate on resume as it did on session/new, so the resumed
+            # session runs minus the toggled tool rather than being refused.
+            denied_tools = denied_tools | control_plane_carried
             mcp_servers, stub_token = await self._own_stub_session(mcp_servers, session_key)
+            spec_fingerprint = await asyncio.to_thread(
+                _resolved_spec_fingerprint,
+                active_agent,
+                _disable_check_scope(self.acp_backend, session_work_dir),
+            )
         member_withheld = False
         # Whether the member session-control entry is IN the array, the one fact
         # the context builder needs to teach the session_* tools truthfully.
@@ -7978,6 +8128,9 @@ class AcpRuntime:
         # Mirrors create_session: the resumed session re-declares the array, so it
         # re-derives the deny set that array came with and re-checks the generation.
         handle.spec_denied_tools = denied_tools
+        # Mirrors create_session: fingerprint the resolved spec so the activation
+        # bracket refuses the first turn if it changed in the gap.
+        handle.spec_fingerprint = spec_fingerprint
         # Mirrors create_session: the re-registered batch is what this session now
         # runs.
         self._harness.record_session_projection(handle, kas_agents, active_agent)
@@ -8044,6 +8197,7 @@ class AcpRuntime:
                 budget=budget,
                 payload_snapshot=payload_snapshot,
                 wire_registered=kas_agents is not None,
+                handle=handle,
             )
             handle.active_agent = mode_agent
             # See create_session: after a real mode switch, registration frames

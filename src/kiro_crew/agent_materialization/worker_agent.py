@@ -15,6 +15,7 @@ import copy
 import hashlib
 import json
 import os
+from collections.abc import Collection
 from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -141,29 +142,31 @@ def _excluded_verb(ref: str) -> str:
     return verb
 
 
-def _grant_reaches_excluded(entry: str) -> list[str]:
-    """The excluded refs an ``allowedTools`` ENTRY would auto-approve. Answers for ALL.
+def grant_reaches_any(entry: str, refs: Collection[str]) -> list[str]:
+    """The refs in *refs* an ``allowedTools`` ENTRY would auto-approve. Answers for ALL.
 
-    The entry point, and it classifies every entry rather than only the ``@``-prefixed
-    ones. :func:`_canonical_grant_pattern` answers ``None`` for an entry that is not an
-    MCP server ref, and treating that as "reaches nothing" was a fail-OPEN hole: a bare
-    ``"*"`` is kiro-cli's spelling for "every tool", so it auto-approves
-    ``@kirocrew-cron/cron_add`` while skipping the predicate entirely. A non-``@`` entry
-    is a glob over the WHOLE namespace, which reaches further than any server-scoped
-    ref, so it is matched against each excluded ref in BOTH spellings the namespace
-    offers -- the full ``@server/verb`` ref and the bare verb -- and either hit counts.
+    THE one matcher for "would this ``allowedTools`` entry auto-approve this
+    ``@server/verb`` ref?", shared by every caller that asks it so a hardened
+    spelling fixed here is fixed everywhere. It classifies every entry, not only the
+    ``@``-prefixed ones. :func:`_canonical_grant_pattern` answers ``None`` for an
+    entry that is not an MCP server ref, and treating that as "reaches nothing" was
+    the hole this closes: a bare ``"*"`` is kiro-cli's spelling for "every tool", so it
+    auto-approves ``@kirocrew-cron/cron_add`` while skipping the predicate entirely. A
+    non-``@`` entry is a glob over the WHOLE namespace, which reaches further than any
+    server-scoped ref, so it is matched against each ref in BOTH spellings the
+    namespace offers -- the full ``@server/verb`` ref and the bare verb -- and either
+    hit counts.
 
-    Written with a single ``return`` at the end and no early exit, on the same discipline
-    :func:`_require_fresh_worker_spec` carries: every earlier version of this
-    subtraction grew a shortcut for a shape it did not want to think about, and each of
-    those shortcuts was a grant reaching an excluded verb unexamined. Falling off the end
-    is the only exit, so every entry leaves here classified.
+    Written with a single ``return`` at the end and no early exit: every earlier
+    version of this subtraction grew a shortcut for a shape it did not want to think
+    about, and each of those shortcuts was a grant reaching a ref unexamined. Falling
+    off the end is the only exit, so every entry leaves here classified.
     """
     pattern = _canonical_grant_pattern(entry)
     reached: list[str] = []
-    for ref in sorted(agent_mod._WORKER_EXCLUDED_GRANTS):
+    for ref in sorted(refs):
         if pattern is None:
-            # Namespace-wide glob: the ENTRY is the pattern, and the excluded tool is
+            # Namespace-wide glob: the ENTRY is the pattern, and the ref is
             # reachable under either spelling the namespace offers.
             verb = _excluded_verb(ref)
             hit = _glob_hits(ref, entry) or (verb != "" and _glob_hits(verb, entry))
@@ -172,6 +175,17 @@ def _grant_reaches_excluded(entry: str) -> list[str]:
         if hit:
             reached.append(ref)
     return reached
+
+
+def _grant_reaches_excluded(entry: str) -> list[str]:
+    """The excluded refs an ``allowedTools`` ENTRY would auto-approve.
+
+    The worker-exclusion caller of :func:`grant_reaches_any`: it pins the ref set to
+    :data:`agent._WORKER_EXCLUDED_GRANTS`. The shared matcher does the classification
+    so the mount and the projection reason about a ``disabledTools`` toggle with the
+    exact same spelling-closed, case-folded rule this exclusion pass uses.
+    """
+    return grant_reaches_any(entry, agent_mod._WORKER_EXCLUDED_GRANTS)
 
 
 def _apply_worker_exclusions(granted: list[str], *, template_grants: list[str]) -> list[str]:

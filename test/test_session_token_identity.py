@@ -447,7 +447,7 @@ async def test_projected_skill_search_receives_the_shared_sessions_identity(cfg,
     runtime._native_skill_projection = NativeSkillProjection(
         {"custom": "alias"}, {"custom": spec}, search_agents={"custom"}
     )
-    servers = await runtime._unpooled_control_planes([], "custom", runtime._work_dir)
+    servers, _carried = await runtime._unpooled_control_planes([], "custom", runtime._work_dir)
     servers, token = await runtime._own_stub_session(servers, LIVE_KEY)
     env = {item["name"]: item["value"] for item in servers[0]["env"]}
     assert env[STUB_SESSION_TOKEN_ENV] == token
@@ -485,14 +485,23 @@ def test_kiro_identity_projection_preserves_native_restrictions(tmp_path, monkey
     monkeypatch.setattr(session_mcp, "_global_settings", lambda **kwargs: settings)
     monkeypatch.setattr(session_mcp, "_registry_mode", lambda: restriction == "registry")
     monkeypatch.setattr(session_mcp, "managed_mcp_spec_entry", lambda name, **_kw: managed)
-    assert (
-        session_mcp.kiro_control_plane_servers(
-            "kirocrew",
-            work_dir=tmp_path,
-            existing_names={"kirocrew-core"} if restriction == "stub" else (),
-        ).elements
-        == []
+    mount = session_mcp.kiro_control_plane_servers(
+        "kirocrew",
+        work_dir=tmp_path,
+        existing_names={"kirocrew-core"} if restriction == "stub" else (),
     )
+    if restriction in {"tool", "global", "project"}:
+        # A kirocrew-core disabledTools toggle is CARRIED, not withheld: the spec
+        # grants the server but does not auto-approve workflow_run (no allowedTools
+        # entry reaches it), so the element mounts and the deny rides the session's
+        # per-call gate. This is the behaviour the fix introduces -- the session
+        # runs minus the toggled tool rather than being refused.
+        assert any(e["name"] == "kirocrew-core" for e in mount.elements)
+        assert ("kirocrew-core", "workflow_run") in mount.carried
+    else:
+        # A mute, an unreferenced server, a stub pre-empt and a registry marker have
+        # no per-call form a gate could carry, so the element is still withheld.
+        assert mount.elements == []
 
 
 def test_kiro_identity_projection_reads_global_restrictions_after_workspace_retry(
@@ -540,8 +549,14 @@ def test_kiro_identity_projection_reads_global_restrictions_after_workspace_retr
     mount = session_mcp.kiro_control_plane_servers("kirocrew", work_dir=tmp_path)
 
     assert workspace_retry_paused
-    assert mount.elements == []
-    assert "kirocrew-core" in mount.withheld
+    # The late disabledTools toggle is CARRIED on the gate (kirocrew-core is a
+    # control-plane server and the spec does not auto-approve workflow_run), so the
+    # element mounts and the deny pair comes back. The re-read mechanism this test
+    # pins is unchanged -- the restriction saved during the retry still reaches the
+    # verdict; the fix only changes it from a withhold to a carry.
+    assert any(e["name"] == "kirocrew-core" for e in mount.elements)
+    assert ("kirocrew-core", "workflow_run") in mount.carried
+    assert "kirocrew-core" not in mount.withheld
 
 
 def test_kiro_identity_projection_rereads_the_workspace_after_a_global_retry_pause(
@@ -596,8 +611,12 @@ def test_kiro_identity_projection_rereads_the_workspace_after_a_global_retry_pau
     mount = session_mcp.kiro_control_plane_servers("kirocrew", work_dir=tmp_path)
 
     assert global_retry_paused
-    assert mount.elements == []
-    assert "kirocrew-core" in mount.withheld
+    # Same as the workspace-retry case: the late toggle is carried on the gate,
+    # not withheld, so the element mounts and the pair comes back. The re-read is
+    # what this test pins and it is unchanged.
+    assert any(e["name"] == "kirocrew-core" for e in mount.elements)
+    assert ("kirocrew-core", "workflow_run") in mount.carried
+    assert "kirocrew-core" not in mount.withheld
 
 
 def _bracket_fixture(tmp_path, monkeypatch, on_read, after_read=lambda n, path: None):
