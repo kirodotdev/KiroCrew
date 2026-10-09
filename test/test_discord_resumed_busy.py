@@ -1133,6 +1133,43 @@ async def test_a_merged_row_keeps_an_address_only_its_every_entry_shares(
 
 
 @pytest.mark.asyncio
+async def test_a_dm_entry_queued_beside_a_dashboard_entry_is_told_of_its_own_drop(
+    tmp_path, monkeypatch
+) -> None:
+    """With merging on, a DM entry queued next to a dashboard entry is still told
+    when the drain drops it: the drop is decided per entry, before any merge, and
+    the notice quotes only the DM's own words."""
+    from kiro_crew.dashboard.chat_delivery import queue_for_next_turn
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    dispatcher, client, sessions, state, slot, _ = await _bound_to_busy_dashboard(
+        tmp_path, steer_client=None
+    )
+    transport = _discord_transport()
+    state.register_channel_transport(transport)
+    await dispatcher.handle_message(_message("the DM's own words"))
+    queue_for_next_turn(state, slot, "the dashboard's words")
+    assert len(slot._queue) == 2
+
+    cfg = MagicMock()
+    cfg.load.return_value.dashboard.merge_queued_messages = True
+    monkeypatch.setattr(cr, "KiroCrewConfig", cfg)
+    state.sessions.set_mirror_link("dashboard:chat-1", "C0FFEE", "1758.0004")
+    with (
+        patch.object(cr, "spawn_guarded_turn", return_value=MagicMock()),
+        patch.object(cr, "_run_chat", return_value=MagicMock()),
+    ):
+        await cr._start_next_queued_turn(state, slot)
+    await _settle_background(state)
+
+    transport.send_message.assert_awaited_once()
+    conversation, notice = transport.send_message.await_args.args
+    assert conversation == "c1"
+    assert "dropped before it ran" in notice and "the DM's own words" in notice
+    assert "the dashboard's words" not in notice
+
+
+@pytest.mark.asyncio
 async def test_a_revoked_recipient_gets_no_drop_notice(tmp_path) -> None:
     """The ladder's recipient re-check stands between the stamp and the send."""
     dispatcher, client, sessions, state, slot, _ = await _bound_to_busy_dashboard(
