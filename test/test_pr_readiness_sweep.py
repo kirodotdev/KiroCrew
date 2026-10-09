@@ -27,6 +27,7 @@ import re
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -228,6 +229,10 @@ def _pr_page(args):
             "number": pr.get("number"),
             "updatedAt": pr.get("updatedAt"),
             "headRefOid": pr.get("headRefOid"),
+            # Review submissions and dismissals, as `[{"submittedAt": ...}]`.
+            "timelineItems": {
+                "nodes": _read("reviews_timeline.json", []),
+            },
             "commits": {"nodes": [{"commit": _commit(pr)}]},
         }
         for pr in window
@@ -341,6 +346,7 @@ class Runner:
         other_comments: list[dict] | None = None,
         description: str = "11 readiness check(s) still pending; waiting on CI (not started)",
         status_read_fails: bool = False,
+        review_at: str | None = None,
     ) -> list[str]:
         """Run the sweep over ONE pull request; return the dispatches recorded.
 
@@ -360,6 +366,8 @@ class Runner:
         so a test opts INTO the read-failure shape rather than out of
         it. `status_read_fails=True` makes that read fail, to pin which way mode 1
         degrades when it cannot classify a pending.
+
+        `review_at` is the newest human review submission or dismissal.
         """
         comment_times = [
             at
@@ -371,6 +379,10 @@ class Runner:
         ]
         if pr_updated_at is None:
             pr_updated_at = max(["2020-01-01T00:00:00Z", *comment_times])
+        reviews = [] if review_at is None else [{"submittedAt": review_at}]
+        (self.fixtures / "reviews_timeline.json").write_text(json.dumps(reviews))
+        if review_at is not None:
+            pr_updated_at = max(pr_updated_at, review_at)
         (self.fixtures / "prs.json").write_text(
             json.dumps([{"number": pr, "headRefOid": sha, "updatedAt": pr_updated_at}])
         )
@@ -1669,3 +1681,77 @@ def test_comments_are_not_read_when_the_pr_is_untouched_since_the_verdict(
         == []
     )
     assert not runner.comments_read.exists()
+
+
+# ── Review evidence (issue #17049) ───────────────────────────────────────────
+#
+# Readiness reds a head a reviewer asked changes on, and neither a review nor a
+# dismissal emits an event the aggregator hears or a check-run the modes above
+# see. The scan's newest review time is what re-fires it, in every arm.
+
+
+@pytest.mark.parametrize("state", ["success", "failure"])
+def test_a_review_after_a_terminal_verdict_is_refired(runner: Runner, state: str) -> None:
+    # Green: a changes-requested review would otherwise leave a rejected head
+    # green. Red: an approval or dismissal would otherwise leave it red.
+    dispatched = runner.sweep(
+        state=state,
+        status_at="2026-08-30T19:01:24Z",
+        check_completed_at="2026-08-30T18:55:00Z",
+        review_at="2026-08-30T19:20:00Z",
+    )
+    assert len(dispatched) == 1
+    assert "a review was submitted or dismissed" in runner.last_stdout
+
+
+def test_a_pending_with_a_later_review_and_no_later_check_is_refired(runner: Runner) -> None:
+    dispatched = runner.sweep(
+        state="pending",
+        status_at="2026-08-30T19:01:24Z",
+        check_completed_at="2026-08-30T18:00:00Z",
+        review_at="2026-08-30T19:20:00Z",
+    )
+    assert len(dispatched) == 1
+    assert "with a review submitted or dismissed later" in runner.last_stdout
+
+
+@pytest.mark.parametrize("state", ["success", "failure"])
+def test_a_review_inside_the_publish_lag_is_evidence(runner: Runner, state: str) -> None:
+    # Landed 60s before the stamp: inside the evaluate-to-publish gap, so the
+    # verdict may never have read it.
+    dispatched = runner.sweep(
+        state=state,
+        status_at="2026-08-30T19:01:24Z",
+        check_completed_at="2026-08-30T18:55:00Z",
+        review_at="2026-08-30T19:00:24Z",
+    )
+    assert len(dispatched) == 1
+
+
+@pytest.mark.parametrize("state", ["success", "failure", "pending"])
+def test_a_review_at_the_publish_lag_floor_is_not_evidence(runner: Runner, state: str) -> None:
+    # Exactly 180s before the stamp, which is where a republish lands it: this
+    # is what makes the review nudge self-terminating.
+    assert (
+        runner.sweep(
+            state=state,
+            status_at="2026-08-30T19:01:24Z",
+            check_completed_at="2026-08-30T18:00:00Z",
+            review_at="2026-08-30T18:58:24Z",
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize("state", ["success", "failure"])
+def test_a_terminal_verdict_younger_than_the_lag_is_not_examined_for_reviews(
+    runner: Runner, state: str
+) -> None:
+    # Examined from the next tick on instead, so the recompute a fresh review
+    # earns cannot be re-earned by the same review on the tick after it.
+    now = datetime.now(timezone.utc)
+
+    def stamp(seconds_ago: int) -> str:
+        return (now - timedelta(seconds=seconds_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    assert runner.sweep(state=state, status_at=stamp(60), review_at=stamp(30)) == []

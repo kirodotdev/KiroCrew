@@ -1628,6 +1628,54 @@ jobs:
               ;;
           esac
 
+          # Human review (issue #17049). A reviewer whose NEWEST review asks
+          # for changes on THIS head blocks: nothing has been pushed since they
+          # asked, so the revision they rejected is the one being judged. Only
+          # APPROVED, CHANGES_REQUESTED and DISMISSED reviews count, the same
+          # three GitHub folds into its own review decision; a COMMENTED review
+          # changes nothing. A dismissed review reads back as DISMISSED, so a
+          # maintainer dismissal clears the block too.
+          #
+          # Deliberately weaker than GitHub's own review decision, which stays
+          # at CHANGES_REQUESTED across new commits until the reviewer re-reviews:
+          # here a new commit is the author's answer, and the reviewer is free
+          # to ask again on it.
+          #
+          # A review emits no event this workflow hears, so the verdict is
+          # refreshed by pr-readiness-sweep.yml, whose scan reads the newest
+          # review or dismissal time on every open pull request.
+          #
+          # The fold runs in a command substitution, not a process substitution,
+          # so a body jq cannot parse is a read failure (pending) rather than an
+          # empty blocker list that would read as green.
+          review_blockers=""
+          reviews_read=false
+          if reviews="$(gh_retry gh api --method GET --paginate --slurp \
+            "repos/$REPO/pulls/$PR/reviews?per_page=100")"; then
+            if review_blockers="$(jq -r --arg sha "$SHA" '
+              if type != "array" then error("not a list of pages") else . end
+              | [.[] | if type == "array" then .[] else error("a page is not a list") end
+                | select((.user.login // "") != "")
+                | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED")]
+              | reduce .[] as $r ({}; .[$r.user.login] = $r)
+              | .[] | select(.state == "CHANGES_REQUESTED" and .commit_id == $sha)
+              | .user.login' <<<"$reviews")"; then
+              reviews_read=true
+            fi
+          else
+            rc=$?
+            if [ "$rc" -eq 22 ]; then exit 1; fi
+          fi
+          if [ "$reviews_read" = "true" ]; then
+            while IFS= read -r reviewer; do
+              [ -n "$reviewer" ] || continue
+              failed+=("changes requested by @$reviewer on this head: push a commit, or have them re-review, or dismiss the review")
+            done <<<"$review_blockers"
+          else
+            pending+=("human reviews could not be read")
+            read_failure=true
+          fi
+
           blockers=()
           waiting=()
           if [ "${#failed[@]}" -gt 0 ]; then

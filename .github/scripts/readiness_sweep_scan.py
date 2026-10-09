@@ -44,7 +44,8 @@ Output is one JSON object per line on stdout, one per open pull request:
      "readiness": {"state": "pending", "updated_at": "<ISO8601>"} | null,
      "newest_completed_check_at": "<ISO8601>" | null,
      "newest_failed_check_at": "<ISO8601>" | null,
-     "checks_complete": true}
+     "newest_review_at": "<ISO8601>" | null,
+     "checks_complete": true, "reviews_complete": true}
 
 A 200 body can carry `errors` next to usable `data`: GitHub nulls the one field
 it could not resolve (one pull request's rollup timing out, say) and reports it
@@ -54,8 +55,10 @@ told apart by that path: one whose readiness status could not be read is LEFT
 OUT of the output, because an emitted record with a null `readiness` would read
 as "no verdict published" and re-fire that pull request on transient trouble;
 one whose rollup could not be read is emitted with `checks_complete: false`, so
-the evidence is marked partial rather than read as "no checks". Only a body
-whose `data` lacks the connection being walked is a failed attempt.
+the evidence is marked partial rather than read as "no checks", and one whose
+review timeline could not be read is emitted with `reviews_complete: false` on
+the same terms. Only a body whose `data` lacks the connection being walked is a
+failed attempt.
 
 Degradation is deliberate: when even a page of one pull request fails, the walk
 ends with a `::warning::` (saying how many pull requests were emitted before
@@ -114,6 +117,13 @@ BACKOFF_SECONDS = (2.0, 4.0)
 # newest-first `/statuses` first entry gave. The rollup is a different thing: it
 # mixes check-runs in, and the readiness verdict must never be read from it.
 #
+# `timelineItems` carries the newest human-review activity: readiness blocks on
+# a changes-requested review of the head, and a review submission or dismissal
+# emits no event pr-readiness.yml hears, so the sweep is what re-evaluates it.
+# The last 10 items, not 1, because a review sits in the timeline where it was
+# STARTED: one drafted before a dismissal and submitted after it is behind that
+# dismissal, so the newest timestamp is taken across the window.
+#
 # `$first` is the page size, 25 until a page fails (see the module docstring).
 #
 # UPDATED_AT DESC is the order `gh pr list` used, kept so the log reads the same
@@ -129,6 +139,14 @@ query($owner: String!, $name: String!, $first: Int!, $cursor: String) {
         number
         updatedAt
         headRefOid
+        timelineItems(last: 10,
+                      itemTypes: [PULL_REQUEST_REVIEW, REVIEW_DISMISSED_EVENT]) {
+          nodes {
+            __typename
+            ... on PullRequestReview { submittedAt }
+            ... on ReviewDismissedEvent { createdAt }
+          }
+        }
         commits(last: 1) {
           nodes {
             commit {
@@ -273,11 +291,11 @@ def _errors_by_pr_node(errors: Any) -> tuple[dict[int, set[str]], bool]:
     """Attribute each field error to the page node it nulled.
 
     Returns `(touched, page_wide)`: `touched[i]` holds `"checks"` when an error
-    path under node `i` runs through `statusCheckRollup`, and `"status"` for any
-    other field of that node (the status list, or the commit above it, which
-    nulls the status too). An error with no path under the page's nodes cannot
-    be placed and sets `page_wide`, which the caller treats as touching every
-    node both ways.
+    path under node `i` runs through `statusCheckRollup`, `"reviews"` when it
+    runs through `timelineItems`, and `"status"` for any other field of that
+    node (the status list, or the commit above it, which nulls the status too).
+    An error with no path under the page's nodes cannot be placed and sets
+    `page_wide`, which the caller treats as touching every node every way.
     """
     touched: dict[int, set[str]] = {}
     page_wide = False
@@ -290,7 +308,13 @@ def _errors_by_pr_node(errors: Any) -> tuple[dict[int, set[str]], bool]:
             page_wide = True
             continue
         rest = path[len(PR_NODES_PATH) + 1 :]
-        touched.setdefault(index, set()).add("checks" if "statusCheckRollup" in rest else "status")
+        if "statusCheckRollup" in rest:
+            kind = "checks"
+        elif "timelineItems" in rest:
+            kind = "reviews"
+        else:
+            kind = "status"
+        touched.setdefault(index, set()).add(kind)
     return touched, page_wide
 
 
@@ -345,6 +369,23 @@ def _newest(values: list[str]) -> str | None:
     return max(values) if values else None
 
 
+def _newest_review(pr: dict[str, Any]) -> str | None:
+    """Newest review submission or dismissal across the timeline window.
+
+    A review that is still a draft has no `submittedAt` and is not evidence:
+    nobody but its author can see it, and readiness does not read it.
+    """
+    nodes = ((pr.get("timelineItems") or {}).get("nodes")) or []
+    stamps: list[str] = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        at = node.get("submittedAt") or node.get("createdAt")
+        if at:
+            stamps.append(str(at))
+    return _newest(stamps)
+
+
 def _scan_pr(
     pr: dict[str, Any],
     *,
@@ -353,8 +394,9 @@ def _scan_pr(
     status_context: str,
     counters: Counters,
     checks_complete: bool = True,
+    reviews_complete: bool = True,
 ) -> dict[str, Any] | None:
-    """One output record. `checks_complete=False` when the page already nulled the rollup."""
+    """One output record. `*_complete=False` when the page already nulled that field."""
     number = pr.get("number")
     sha = pr.get("headRefOid")
     if not isinstance(number, int) or not sha:
@@ -428,7 +470,9 @@ def _scan_pr(
         "readiness": _readiness(commit, status_context),
         "newest_completed_check_at": _newest(completed),
         "newest_failed_check_at": _newest(failed),
+        "newest_review_at": _newest_review(pr),
         "checks_complete": checks_complete,
+        "reviews_complete": reviews_complete,
     }
 
 
@@ -498,7 +542,7 @@ def main(argv: list[str] | None = None) -> int:
         left_out: list[Any] = []
         for index, pr in enumerate(nodes):
             pr = pr or {}
-            hit = {"status", "checks"} if page_wide else touched.get(index, set())
+            hit = {"status", "checks", "reviews"} if page_wide else touched.get(index, set())
             if "status" in hit:
                 # The readiness status could not be read. A record with a null
                 # `readiness` would read as "no verdict published" and re-fire
@@ -513,6 +557,7 @@ def main(argv: list[str] | None = None) -> int:
                 status_context=args.status_context,
                 counters=counters,
                 checks_complete="checks" not in hit,
+                reviews_complete="reviews" not in hit,
             )
             if record is None:
                 continue

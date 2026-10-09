@@ -489,6 +489,51 @@ def test_every_page_is_walked_and_the_first_page_sends_no_cursor(monkeypatch, ca
     assert "3 pull requests, 3 GraphQL pages" in err
 
 
+def test_the_newest_review_is_taken_across_the_timeline_window(monkeypatch, capsys, fast) -> None:
+    # A review sits in the timeline where it was STARTED, so the newest stamp can
+    # be an earlier node; a draft review has no submission time and is ignored.
+    assert "timelineItems(last: 10," in scan.PR_PAGE_QUERY
+    assert "itemTypes: [PULL_REQUEST_REVIEW, REVIEW_DISMISSED_EVENT]" in scan.PR_PAGE_QUERY
+    pr = _pr(40, statuses=[])
+    pr["timelineItems"] = {
+        "nodes": [
+            {"__typename": "PullRequestReview", "submittedAt": "2026-09-15T06:00:00Z"},
+            {"__typename": "ReviewDismissedEvent", "createdAt": "2026-09-15T05:30:00Z"},
+            {"__typename": "PullRequestReview", "submittedAt": None},
+        ]
+    }
+    unreviewed = _pr(41, statuses=[])
+    records, _, rc = _run(monkeypatch, FakeGh([_page([pr, unreviewed])]), capsys)
+    assert rc == 0
+    by_number = {r["number"]: r for r in records}
+    assert by_number[40]["newest_review_at"] == "2026-09-15T06:00:00Z"
+    assert by_number[40]["reviews_complete"] is True
+    assert by_number[41]["newest_review_at"] is None
+
+
+def test_a_nulled_review_timeline_is_partial_evidence_not_a_dropped_pr(
+    monkeypatch, capsys, fast
+) -> None:
+    # A timeline error must not cost the pull request its check evidence: it is
+    # emitted, with the review evidence marked partial.
+    pr = _pr(50, statuses=[], checks=[_check("SUCCESS", "2026-09-15T05:00:00Z")])
+    pr["timelineItems"] = None
+    page = _page([pr])
+    page["errors"] = [
+        {
+            "message": "timedout",
+            "path": ["repository", "pullRequests", "nodes", 0, "timelineItems"],
+        }
+    ]
+    records, _, rc = _run(monkeypatch, FakeGh([page]), capsys)
+    assert rc == 0
+    assert [r["number"] for r in records] == [50]
+    assert records[0]["reviews_complete"] is False
+    assert records[0]["checks_complete"] is True
+    assert records[0]["newest_review_at"] is None
+    assert records[0]["newest_completed_check_at"] == "2026-09-15T05:00:00Z"
+
+
 def test_the_workflow_runs_this_script_from_a_sparse_checkout() -> None:
     doc = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     steps = doc["jobs"]["sweep"]["steps"]

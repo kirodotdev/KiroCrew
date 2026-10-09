@@ -104,6 +104,20 @@ case "$url" in
     ' "$FIXTURES/ci_runs.json" "$FIXTURES/green_runs.json"
     exit 0 ;;
   *"/actions/runs?event=dynamic"*)         cat "$FIXTURES/codeql_runs.json"; exit 0 ;;
+  *"/pulls/"*"/reviews"*)
+    # Human reviews, as `--paginate --slurp` returns them: one array per page.
+    # No fixture = a PR nobody has reviewed. A __FAIL__ fixture makes the read
+    # fail like a server error.
+    if [ -f "$FIXTURES/reviews.json" ]; then
+      if [ "$(cat "$FIXTURES/reviews.json")" = "__FAIL__" ]; then
+        echo 'gh: Server Error (HTTP 500)' >&2
+        exit 1
+      fi
+      cat "$FIXTURES/reviews.json"
+    else
+      echo '[]'
+    fi
+    exit 0 ;;
 esac
 echo "gh stub: unhandled: $*" >&2
 exit 90
@@ -1622,6 +1636,108 @@ class TestDispositionViolationsBlockTheVerdict:
         assert proc.returncode == 0, proc.stderr
         assert outputs["status_state"] == "failure"
         assert outputs["description"] == "1 blocking readiness item(s)"
+
+
+def _review(login: str, state: str, commit_id: str) -> dict:
+    return {"user": {"login": login}, "state": state, "commit_id": commit_id}
+
+
+_OLD_HEAD = "0" * 40
+
+
+class TestAChangesRequestedReviewOnThisHeadBlocks:
+    """A reviewer asked for changes and nothing was pushed since: the head they
+    rejected is the head being judged, so readiness must not read green."""
+
+    def _reviews(self, runner: Runner, *pages: list[dict]) -> None:
+        (runner.fixtures / "reviews.json").write_text(json.dumps(list(pages)))
+
+    def test_changes_requested_on_the_head_turns_the_verdict_red(self, runner: Runner):
+        sha = runner.env["SHA"]
+        self._reviews(runner, [_review("alice", "CHANGES_REQUESTED", sha)])
+        proc, outputs = runner.evaluate()
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "failure"
+        assert outputs["label"] == "readiness: action required"
+        assert outputs["description"] == "1 blocking readiness item(s)"
+        assert "changes requested by @alice on this head" in _lane_log(proc)
+
+    def test_a_commit_pushed_after_the_review_clears_it(self, runner: Runner):
+        self._reviews(runner, [_review("alice", "CHANGES_REQUESTED", _OLD_HEAD)])
+        proc, outputs = runner.evaluate()
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "success"
+        assert outputs["label"] == "readiness: passed"
+
+    def test_a_later_approval_by_the_same_reviewer_clears_it(self, runner: Runner):
+        # The two reviews sit on different pages, so this also proves the
+        # newest-per-reviewer fold reads across every page in order.
+        sha = runner.env["SHA"]
+        self._reviews(
+            runner,
+            [_review("alice", "CHANGES_REQUESTED", sha)],
+            [_review("alice", "APPROVED", sha)],
+        )
+        proc, outputs = runner.evaluate()
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "success"
+
+    def test_a_dismissed_review_does_not_block(self, runner: Runner):
+        sha = runner.env["SHA"]
+        self._reviews(runner, [_review("alice", "DISMISSED", sha)])
+        proc, outputs = runner.evaluate()
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "success"
+
+    def test_a_later_comment_does_not_withdraw_the_request(self, runner: Runner):
+        # GitHub keeps the request standing across a COMMENTED review, so a
+        # reply in review form must not read as the reviewer standing down.
+        sha = runner.env["SHA"]
+        self._reviews(
+            runner,
+            [
+                _review("alice", "CHANGES_REQUESTED", sha),
+                _review("alice", "COMMENTED", sha),
+            ],
+        )
+        proc, outputs = runner.evaluate()
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "failure"
+
+    def test_another_reviewers_approval_does_not_clear_it(self, runner: Runner):
+        sha = runner.env["SHA"]
+        self._reviews(
+            runner,
+            [
+                _review("alice", "CHANGES_REQUESTED", sha),
+                _review("bob", "APPROVED", sha),
+            ],
+        )
+        proc, outputs = runner.evaluate()
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "failure"
+        assert "@alice" in _lane_log(proc)
+        assert "@bob" not in _lane_log(proc)
+
+    def test_an_unreadable_review_list_waits_instead_of_going_red(self, runner: Runner):
+        (runner.fixtures / "reviews.json").write_text("__FAIL__")
+        proc, outputs = runner.evaluate()
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "pending"
+        assert outputs["description"].startswith("[read-failed] ")
+        assert "human reviews could not be read" in _lane_log(proc)
+
+    @pytest.mark.parametrize("body", ['{"message": "Not Found"}', "[{}]", "not json"])
+    def test_a_body_that_is_not_a_review_list_waits_instead_of_passing(
+        self, runner: Runner, body: str
+    ):
+        # A fold that skipped what it could not read would find no blocker and
+        # publish green over a head nobody's reviews were read for.
+        (runner.fixtures / "reviews.json").write_text(body)
+        proc, outputs = runner.evaluate()
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "pending"
+        assert "human reviews could not be read" in _lane_log(proc)
 
 
 class TestTheTickReportsItsRemainingBudget:

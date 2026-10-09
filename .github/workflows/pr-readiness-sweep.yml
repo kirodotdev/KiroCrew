@@ -355,6 +355,22 @@ jobs:
             newest_check="$(jq -r '.newest_completed_check_at // empty' <<<"$row")"
             newest_fail="$(jq -r '.newest_failed_check_at // empty' <<<"$row")"
 
+            # Newest human review submission or dismissal on the pull request.
+            # Readiness blocks on a changes-requested review of the head (issue
+            # #17049), and neither a review nor a dismissal emits an event
+            # pr-readiness.yml hears or a check-run the modes above can see, so
+            # this is the only path that re-evaluates one. Every arm counts it
+            # against the same floor as check evidence in the pending arm --
+            # the publication stamp minus publish_lag_seconds -- because a
+            # review landing inside the evaluate-to-publish gap pre-dates the
+            # stamp but was never read. A missing timeline (the scan could not
+            # read it) is no evidence, never invented staleness.
+            newest_review="$(jq -r '.newest_review_at // empty' <<<"$row")"
+            review_epoch=0
+            if [ -n "$newest_review" ]; then
+              review_epoch="$(date -u -d "$newest_review" +%s 2>/dev/null || echo 0)"
+            fi
+
             # A rollup page the scan could not read leaves this evidence PARTIAL.
             # Evaluate anyway: missing evidence can only fail to prove a verdict
             # stale, never invent staleness, so the worst case is a rescue delayed
@@ -474,7 +490,8 @@ jobs:
                 # left to catch it. The bound doubles as this arm's minimum age
                 # (see pending_min_age_seconds), which is what carries a
                 # rescue's own republish past the same check on the next tick.
-                if [ "$newest_epoch" -le $(( updated_epoch - publish_lag_seconds )) ]; then
+                if [ "$newest_epoch" -le $(( updated_epoch - publish_lag_seconds )) ] \
+                  && [ "$review_epoch" -le $(( updated_epoch - publish_lag_seconds )) ]; then
                   # No evidence. The one pending that still deserves a nudge
                   # here is the read-failure class, and it is aged against
                   # STALE_MINUTES, not the lag -- see the note above.
@@ -485,6 +502,8 @@ jobs:
                     continue
                   fi
                   reason="pending for ${age}s (> ${stale_seconds}s) after a read failure, which a recompute resolves"
+                elif [ "$newest_epoch" -le $(( updated_epoch - publish_lag_seconds )) ]; then
+                  reason="pending for ${age}s with a review submitted or dismissed later at $newest_review"
                 else
                   reason="pending for ${age}s with a check completed later at $newest_check"
                 fi
@@ -528,6 +547,13 @@ jobs:
                 # the same second as the publish does not look like new evidence.
                 if [ "$newest_epoch" -gt $(( updated_epoch + 5 )) ]; then
                   reason="failure published at $updated_at but a check completed later at $newest_check"
+                elif [ "$age" -ge "$publish_lag_seconds" ] \
+                  && [ "$review_epoch" -gt $(( updated_epoch - publish_lag_seconds )) ]; then
+                  # Review evidence: an approval, a re-review or a dismissal can
+                  # clear a changes-requested red. Examined only once the verdict
+                  # is lag old, so the recompute's own republish lands past the
+                  # same review and the nudge fires once per review, not per tick.
+                  reason="failure published at $updated_at but a review was submitted or dismissed at $newest_review"
                 else
                   # Mode 5: COMMENT evidence. Since #6658 readiness also fails on
                   # a disposition-rule violation, so the verdict now depends on
@@ -627,6 +653,13 @@ jobs:
                 fi
                 if [ "$newest_fail_epoch" -gt $(( updated_epoch + 5 )) ]; then
                   reason="$state published at $updated_at but a check FAILED later at $newest_fail"
+                elif [ "$age" -ge "$publish_lag_seconds" ] \
+                  && [ "$review_epoch" -gt $(( updated_epoch - publish_lag_seconds )) ]; then
+                  # The PERMITTING direction: a changes-requested review after a
+                  # green verdict leaves the required status green over a head a
+                  # reviewer rejected. Same lag-old gate as the failure arm, so
+                  # each review is counted once.
+                  reason="$state published at $updated_at but a review was submitted or dismissed at $newest_review"
                 else
                   # Mode 5 in the PERMITTING direction, and this is the half that
                   # actually matters. A writer can post a rule-violating

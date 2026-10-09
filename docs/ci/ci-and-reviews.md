@@ -2980,6 +2980,18 @@ status plus one `readiness:` label**.
   managed workflow.
 - **Labels:** `readiness: checking` (pending), `readiness: action required` (a
   blocker), `readiness: passed`. Exactly one is ever present.
+- **A changes-requested review of the head blocks.** When a reviewer's newest
+  review (APPROVED, CHANGES_REQUESTED or DISMISSED; a COMMENTED review changes
+  nothing) asks for changes and names the current head commit, readiness is
+  `action required` and names the reviewer (#17049). A new commit, the
+  reviewer approving or re-reviewing, or a dismissal clears it. That is weaker
+  than GitHub's own `reviewDecision`, which holds across new commits until the
+  reviewer re-reviews: here the push is the author's answer. A review list it
+  cannot read is `pending`, never red. Readiness hears no review event, so
+  `pr-readiness-sweep.yml` reads each open PR's newest review or dismissal time
+  in its GraphQL scan and re-fires the recompute when one is newer than the
+  verdict, in every arm and against the same publish-lag floor the pending arm
+  uses for checks -- within about two sweep ticks.
 - **It also enforces the disposition rule.** Besides scoring lanes, readiness runs
   `pr_status.py --disposition-gate` (checked out from the default branch, never
   from the PR head — this workflow is `pull_request_target` and holds write
@@ -3651,10 +3663,13 @@ produce `checking`; blocking workflow/check failures produce
 Design Review, UX Review, and First Principles Review must complete. `PASS` and
 `CONCERNS` remain advisory, while a genuine `BLOCK` fails the lane and blocks
 readiness; same-repository model execution failures also remain blocking until a
-successful re-run or authorized override. Mergeability, behind-base state,
-and human review decisions are not part of this event-driven aggregate because
-they can change without an aggregate refresh event; branch protection and the
-`kirocrew-prepare-pr` skill's live `pr_status.py` read own them.
+successful re-run or authorized override. Mergeability and behind-base state
+are not part of this event-driven aggregate because they can change without an
+aggregate refresh event; branch protection and the `kirocrew-prepare-pr`
+skill's live `pr_status.py` read own them. Human reviews change without such an
+event too, but the sweep's scan carries their newest timestamp, so a
+changes-requested review of the head is part of the aggregate (see "A
+changes-requested review of the head blocks" above).
 
 Every event resolves the PR's current head through the GitHub API. An event
 carrying an older expected SHA is ignored, so a late

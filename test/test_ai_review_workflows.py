@@ -1430,7 +1430,10 @@ class TestPrReadiness:
         assert "pull_request_target:reopened|pull_request_target:edited)" in workflow
         assert 'pending+=("validation runs are starting")' in workflow
 
-    def test_readiness_leaves_untriggered_merge_and_review_state_to_live_gates(self) -> None:
+    def test_readiness_leaves_untriggered_merge_state_to_live_gates(self) -> None:
+        # Merge state changes with no event readiness hears and nothing re-runs
+        # it on one, so it stays out. GitHub's `reviewDecision` stays out too:
+        # readiness reads the reviews themselves (see the test below).
         workflow = _workflow("pr-readiness.yml")
 
         assert (
@@ -1442,6 +1445,19 @@ class TestPrReadiness:
         assert "reviewDecision" not in workflow
         assert "MERGEABLE:" not in workflow
         assert "MERGE_STATE:" not in workflow
+
+    def test_readiness_reads_reviews_only_with_a_sweep_refresh_behind_it(self) -> None:
+        # A review fires no event readiness hears, so reading reviews is only
+        # sound while the sweep carries review evidence that re-fires it.
+        workflow = _workflow("pr-readiness.yml")
+        sweep = _workflow("pr-readiness-sweep.yml")
+        scanner = (ROOT / ".github" / "scripts" / "readiness_sweep_scan.py").read_text(
+            encoding="utf-8"
+        )
+
+        assert 'repos/$REPO/pulls/$PR/reviews?per_page=100' in workflow
+        assert "itemTypes: [PULL_REQUEST_REVIEW, REVIEW_DISMISSED_EVENT]" in scanner
+        assert ".newest_review_at // empty" in sweep
 
     def test_readiness_never_keys_a_fork_pr_off_the_empty_pull_requests_array(self) -> None:
         # `workflow_run.pull_requests` is empty whenever the head repository is
