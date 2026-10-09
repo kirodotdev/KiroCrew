@@ -227,6 +227,21 @@ other session's lease. It is best effort by design: a release that did not happe
 costs an honest refusal, while an exception raised out of it would cost a wedged
 process its only remaining kill.
 
+The funnel also ends a registration that is not a lease. A provider reaching
+`_sync_kill_provider` is being abandoned — its client's `shutdown` will never run —
+so, before any process state is read, the funnel calls the client's own
+synchronous hand-back for its `settings.local.json` seed
+(`AcpClient.release_settings_seed_claim`, resolved by name so this leaf stays
+ignorant of the ACP layer). Without it the client's live claim on that seed
+outlived the client for the life of the gateway and every later session on the
+same work dir read the path as a live sibling's. The hand-back is the client
+object's, not the process's: a seed is written before a pid is published and a
+claim is stranded whatever the gate decides, so it runs ahead of the pid check and
+of the gate, and like the lease release it is best effort and never lets an
+exception out. Which registrations it withdraws, and why the durable half, is the
+seed's own spec ([claude-code-provider.md](claude-code-provider.md) §
+*Session-scoped Claude settings*).
+
 ### Kill owed, and the hand-back
 
 A refusal on tenancy grounds would otherwise lose the teardown: the owner has

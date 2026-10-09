@@ -2303,6 +2303,32 @@ def _reap_provider_root(pid: int, recorded_start: str | None, *, gated: bool) ->
         pass
 
 
+def _release_client_seed_registrations(client: object) -> None:
+    """Run the client's synchronous settings-seed hand-back, if it has one.
+
+    ``AcpClient.release_settings_seed_claim`` withdraws the owner claim or reader
+    lease the client holds on its ``settings.local.json`` seed; a torn-down client
+    whose ``shutdown`` never runs otherwise keeps that registration for the life of
+    the gateway, and every later session on the same work dir reads the path as a
+    live sibling's. Resolved by name rather than by type, as every client
+    read in this leaf is: ``session_pid`` imports nothing from the ACP layer. A
+    client without the method -- a test stand-in, a provider shape that never
+    seeds -- costs nothing, and one that holds no registration performs no I/O.
+    Never lets an exception out: the teardown that follows is the process's only
+    remaining end, and a hand-back that did not land is the recorded-orphan shape
+    a later session already repairs.
+    """
+    hand_back = getattr(client, "release_settings_seed_claim", None)
+    if not callable(hand_back):
+        return
+    try:
+        hand_back()
+    except Exception:
+        logger.debug(
+            "_sync_kill_provider: the client's settings-seed hand-back failed", exc_info=True
+        )
+
+
 def _sync_kill_provider(provider: object) -> None:
     """Synchronously kill a provider's whole process tree.
 
@@ -2333,6 +2359,18 @@ def _sync_kill_provider(provider: object) -> None:
     """
     # ACP provider: long-lived process via client._pid
     client = getattr(provider, "_client", None)
+    # The provider is being abandoned: nothing will call its client's shutdown, so
+    # the registrations that client took on its settings seed are handed back
+    # here, first. They belong to the client OBJECT, not to the process -- a seed
+    # is written before the spawn publishes a pid, and a claim is stranded whether
+    # or not the gate below allows anything -- so the hand-back waits on neither.
+    # First rather than last for a second reason: this teardown is dispatched
+    # without being awaited, and the replacement spawn on the same work dir runs
+    # beside it and reads the live slot when it seeds. A hand-back that waited out
+    # the grace below would land after that read, and the replacement would decline
+    # its own seed as a live sibling's. Duck-typed like every other client read in
+    # this leaf.
+    _release_client_seed_registrations(client)
     pid = getattr(client, "_pid", None) if client else None
     # Whether the pid is a RECORDED number (staleness-prone, so identity-gated
     # below) or one read from a live handle this process owns.

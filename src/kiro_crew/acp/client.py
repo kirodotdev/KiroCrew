@@ -6740,6 +6740,72 @@ class AcpClient:
         except Exception:  # pragma: no cover - defensive; teardown must not raise
             logger.debug("could not settle Crew's settings seed at %s", path, exc_info=True)
 
+    def release_settings_seed_claim(self) -> None:
+        """Hand back this client's live ``settings.local.json`` registrations, synchronously.
+
+        The seed hand-back for a client torn down WITHOUT :meth:`shutdown`. The
+        session layer's teardown for a provider it is abandoning
+        (``_dispatch_hard_kill`` -> ``session_pid._sync_kill_provider``) ends the
+        process and drops the client object; neither
+        :meth:`_discard_claude_settings_seed` nor :meth:`_reset_state` runs on that
+        path, so without this hand-back the registrations this client took in
+        :mod:`~kiro_crew.acp.seed_provenance` outlive it for the rest of the
+        gateway process. A stale live slot keeps ``claim`` and ``held_by_another``
+        refusing every later client on this ``work_dir``, and a client whose
+        payload the stale seed cannot be shared with runs with its whole
+        ``mcpServers`` array withheld.
+
+        Both halves of each registration are withdrawn, because the persisted
+        holder carries this PROCESS's live identity and ``claim`` re-reads it under
+        the cross-process lock: dropping only the in-memory slot (``release_local``)
+        leaves the next client's adoption refused by a holder whose client is gone.
+        An owner claim is handed back with :func:`seed_provenance.release`,
+        never ``forget``: the file and its durable record stay, which is the
+        recorded-orphan shape an abrupt end already leaves and the one the next
+        session adopts, re-seeds for itself and removes on its own teardown. A
+        reader lease is withdrawn with :func:`seed_provenance.unshare`, so the
+        owner's teardown stops holding the file for a reader that is gone.
+
+        Gated on the registrations this client's own token actually holds (see
+        :func:`seed_provenance.release_held`): a client that holds neither -- every
+        kiro-backend client, a claude client that never seeded -- performs no
+        sidecar I/O at all, so no backend check is needed or made. Synchronous and
+        blocking (each withdrawal rewrites the sidecar under the cross-process
+        lock); the caller runs it OFF the event loop, on the thread the teardown
+        itself runs on. Never raises: a refused durable withdrawal leaves the
+        persisted holder reclaimable once this process exits, the same contract
+        :meth:`_discard_claude_settings_seed` carries, and an exception out of here
+        would cost the teardown that follows it. ``getattr`` throughout, because
+        the teardown may reach a client built without ``__init__``.
+        """
+        owner = getattr(self, "_seed_owner", "")
+        if not owner or getattr(self, "_work_dir", None) is None:
+            return
+        try:
+            path = self._claude_local_settings_path()
+            if not seed_provenance.release_held(path, owner):
+                logger.warning(
+                    "could not durably hand back Crew's registration on %s while its "
+                    "provider was torn down; retaining the persisted holder until process "
+                    "exit, after which it is stale and reclaimable",
+                    path,
+                )
+            if getattr(self, "_claude_settings_claim_unrevoked", False):
+                # The owner holder still owed on a file a user replaced: the same
+                # retry the discard runs, on the same off-loop footing.
+                self._hand_back_unrevoked_claim(path, owner)
+        except Exception:  # pragma: no cover - defensive; teardown must not raise
+            logger.debug("could not hand back Crew's settings seed registration", exc_info=True)
+        # The in-memory registrations are gone whatever the durable outcome, as
+        # after ``_discard_claude_settings_seed`` and ``_reset_state``; the
+        # instance flags that mirror them follow, so nothing later reads this
+        # client as still governing or still owing a hand-back.
+        self._claude_settings_authored = False
+        self._claude_settings_written = None
+        self._claude_settings_claim_unrevoked = False
+        self._claude_settings_shared = False
+        self._permission_surface_share_validated = False
+
     def _reset_state(self) -> None:
         """Reset all session state (call after process is dead)."""
         cleanup = getattr(self._process, "_windows_cleanup_state", None)
