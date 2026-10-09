@@ -896,7 +896,14 @@
           "this_review_failed": "Esta revisión falló"
         },
         "findingCard": {
+          "cancel_dismiss": "Cancelar",
+          "confirm_dismiss": "Descartar hallazgo",
           "consequence": "Consecuencia",
+          "dismiss": "Descartar",
+          "dismiss_failed": "No se pudo guardar el descarte. Inténtalo de nuevo.",
+          "dismiss_reason_label": "¿Por qué descartas este hallazgo?",
+          "dismiss_reason_placeholder": "Por ejemplo: falso positivo, fuera de alcance",
+          "dismissed_reason": "Descartado: {{reason}}",
           "evidence": "Evidencia",
           "observation": "Observación",
           "post_finding": "Publicar este hallazgo en el pull request",
@@ -909,7 +916,8 @@
           "severity_must_fix": "Obligatorio",
           "severity_should_fix": "Recomendado",
           "suggestion": "Sugerencia",
-          "this_finding": "este hallazgo"
+          "this_finding": "este hallazgo",
+          "undo_dismiss": "Deshacer"
         },
         "learningRail": {
           "add_namespace": "Añadir namespace",

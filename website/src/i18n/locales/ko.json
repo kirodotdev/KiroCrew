@@ -872,7 +872,14 @@
           "this_review_failed": "이 리뷰가 실패했습니다"
         },
         "findingCard": {
+          "cancel_dismiss": "취소",
+          "confirm_dismiss": "발견 사항 무시",
           "consequence": "영향",
+          "dismiss": "무시",
+          "dismiss_failed": "무시를 저장하지 못했습니다. 다시 시도하세요.",
+          "dismiss_reason_label": "이 발견 사항을 무시하는 이유는 무엇인가요?",
+          "dismiss_reason_placeholder": "예: 오탐, 범위 밖",
+          "dismissed_reason": "무시됨: {{reason}}",
           "evidence": "근거",
           "observation": "관찰",
           "post_finding": "이 지적을 리뷰 댓글 초안으로 작성",
@@ -885,7 +892,8 @@
           "severity_must_fix": "필수",
           "severity_should_fix": "권장",
           "suggestion": "제안",
-          "this_finding": "이 지적"
+          "this_finding": "이 지적",
+          "undo_dismiss": "실행 취소"
         },
         "learningRail": {
           "add_namespace": "네임스페이스 추가",

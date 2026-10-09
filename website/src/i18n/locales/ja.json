@@ -872,7 +872,14 @@
           "this_review_failed": "このレビューは失敗しました"
         },
         "findingCard": {
+          "cancel_dismiss": "キャンセル",
+          "confirm_dismiss": "指摘を却下",
           "consequence": "影響",
+          "dismiss": "却下",
+          "dismiss_failed": "却下を保存できませんでした。もう一度お試しください。",
+          "dismiss_reason_label": "この指摘を却下する理由は？",
+          "dismiss_reason_placeholder": "例：誤検出、対象外",
+          "dismissed_reason": "却下済み：{{reason}}",
           "evidence": "根拠",
           "observation": "事象",
           "post_finding": "この指摘をプルリクエストに投稿する",
@@ -885,7 +892,8 @@
           "severity_must_fix": "要修正",
           "severity_should_fix": "修正推奨",
           "suggestion": "提案",
-          "this_finding": "この指摘"
+          "this_finding": "この指摘",
+          "undo_dismiss": "元に戻す"
         },
         "learningRail": {
           "add_namespace": "名前空間を追加",

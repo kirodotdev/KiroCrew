@@ -513,7 +513,14 @@
           "this_review_failed": "This review failed"
         },
         "findingCard": {
+          "cancel_dismiss": "Cancel",
+          "confirm_dismiss": "Dismiss finding",
           "consequence": "Consequence",
+          "dismiss": "Dismiss",
+          "dismiss_failed": "Could not save the dismissal. Try again.",
+          "dismiss_reason_label": "Why dismiss this finding?",
+          "dismiss_reason_placeholder": "For example: false positive, out of scope",
+          "dismissed_reason": "Dismissed: {{reason}}",
           "evidence": "Evidence",
           "observation": "Observation",
           "post_finding": "Draft this finding as a review comment",
@@ -526,7 +533,8 @@
           "severity_must_fix": "must-fix",
           "severity_should_fix": "should-fix",
           "suggestion": "Suggestion",
-          "this_finding": "this finding"
+          "this_finding": "this finding",
+          "undo_dismiss": "Undo"
         },
         "learningRail": {
           "add_namespace": "Add namespace",

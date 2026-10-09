@@ -884,7 +884,14 @@
           "this_review_failed": "Dieses Review ist fehlgeschlagen"
         },
         "findingCard": {
+          "cancel_dismiss": "Abbrechen",
+          "confirm_dismiss": "Befund verwerfen",
           "consequence": "Folge",
+          "dismiss": "Verwerfen",
+          "dismiss_failed": "Das Verwerfen konnte nicht gespeichert werden. Versuch es erneut.",
+          "dismiss_reason_label": "Warum wird dieser Befund verworfen?",
+          "dismiss_reason_placeholder": "Zum Beispiel: Fehlalarm, nicht im Umfang",
+          "dismissed_reason": "Verworfen: {{reason}}",
           "evidence": "Belege",
           "observation": "Beobachtung",
           "post_finding": "Diesen Befund am Pull-Request veröffentlichen",
@@ -897,7 +904,8 @@
           "severity_must_fix": "Pflicht",
           "severity_should_fix": "Empfohlen",
           "suggestion": "Vorschlag",
-          "this_finding": "diesen Befund"
+          "this_finding": "diesen Befund",
+          "undo_dismiss": "Rückgängig"
         },
         "learningRail": {
           "add_namespace": "Namespace hinzufügen",

@@ -872,7 +872,14 @@
           "this_review_failed": "这次评审失败了"
         },
         "findingCard": {
+          "cancel_dismiss": "取消",
+          "confirm_dismiss": "忽略这条发现",
           "consequence": "后果",
+          "dismiss": "忽略",
+          "dismiss_failed": "无法保存忽略操作，请重试。",
+          "dismiss_reason_label": "为什么忽略这条发现？",
+          "dismiss_reason_placeholder": "例如：误报、超出范围",
+          "dismissed_reason": "已忽略：{{reason}}",
           "evidence": "证据",
           "observation": "现象",
           "post_finding": "把这条发现发到 pull request 上",
@@ -885,7 +892,8 @@
           "severity_must_fix": "必须修",
           "severity_should_fix": "建议修",
           "suggestion": "建议",
-          "this_finding": "这条发现"
+          "this_finding": "这条发现",
+          "undo_dismiss": "撤销"
         },
         "learningRail": {
           "add_namespace": "添加 namespace",

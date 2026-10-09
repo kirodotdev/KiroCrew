@@ -908,7 +908,14 @@
           "this_review_failed": "Это ревью завершилось ошибкой"
         },
         "findingCard": {
+          "cancel_dismiss": "Отмена",
+          "confirm_dismiss": "Отклонить замечание",
           "consequence": "Последствие",
+          "dismiss": "Отклонить",
+          "dismiss_failed": "Не удалось сохранить отклонение. Попробуй ещё раз.",
+          "dismiss_reason_label": "Почему ты отклоняешь это замечание?",
+          "dismiss_reason_placeholder": "Например: ложное срабатывание, вне рамок",
+          "dismissed_reason": "Отклонено: {{reason}}",
           "evidence": "Подтверждение",
           "observation": "Наблюдение",
           "post_finding": "Опубликовать эту находку в pull request",
@@ -921,7 +928,8 @@
           "severity_must_fix": "Обязательно",
           "severity_should_fix": "Желательно",
           "suggestion": "Предложение",
-          "this_finding": "эту находку"
+          "this_finding": "эту находку",
+          "undo_dismiss": "Отменить"
         },
         "learningRail": {
           "add_namespace": "Добавить namespace",

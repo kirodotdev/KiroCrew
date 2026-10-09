@@ -896,7 +896,14 @@
           "this_review_failed": "Questa revisione è fallita"
         },
         "findingCard": {
+          "cancel_dismiss": "Annulla",
+          "confirm_dismiss": "Ignora rilievo",
           "consequence": "Conseguenza",
+          "dismiss": "Ignora",
+          "dismiss_failed": "Impossibile salvare. Riprova.",
+          "dismiss_reason_label": "Perché ignori questo rilievo?",
+          "dismiss_reason_placeholder": "Ad esempio: falso positivo, fuori ambito",
+          "dismissed_reason": "Ignorato: {{reason}}",
           "evidence": "Prova",
           "observation": "Osservazione",
           "post_finding": "Pubblica questo rilievo sulla pull request",
@@ -909,7 +916,8 @@
           "severity_must_fix": "Obbligatorio",
           "severity_should_fix": "Consigliato",
           "suggestion": "Suggerimento",
-          "this_finding": "questo rilievo"
+          "this_finding": "questo rilievo",
+          "undo_dismiss": "Ripristina"
         },
         "learningRail": {
           "add_namespace": "Aggiungi namespace",

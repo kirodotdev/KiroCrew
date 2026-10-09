@@ -896,7 +896,14 @@
           "this_review_failed": "Cette revue a échoué"
         },
         "findingCard": {
+          "cancel_dismiss": "Annuler",
+          "confirm_dismiss": "Écarter le constat",
           "consequence": "Conséquence",
+          "dismiss": "Écarter",
+          "dismiss_failed": "Impossible d’enregistrer le rejet. Réessaie.",
+          "dismiss_reason_label": "Pourquoi écarter ce constat ?",
+          "dismiss_reason_placeholder": "Par exemple : faux positif, hors périmètre",
+          "dismissed_reason": "Écarté : {{reason}}",
           "evidence": "Preuve",
           "observation": "Observation",
           "post_finding": "Publier ce constat sur la pull request",
@@ -909,7 +916,8 @@
           "severity_must_fix": "Obligatoire",
           "severity_should_fix": "Recommandé",
           "suggestion": "Suggestion",
-          "this_finding": "ce constat"
+          "this_finding": "ce constat",
+          "undo_dismiss": "Annuler le rejet"
         },
         "learningRail": {
           "add_namespace": "Ajouter un namespace",

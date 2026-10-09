@@ -884,7 +884,14 @@
           "this_review_failed": "यह समीक्षा विफल रही"
         },
         "findingCard": {
+          "cancel_dismiss": "रद्द करो",
+          "confirm_dismiss": "फ़ाइंडिंग खारिज करो",
           "consequence": "परिणाम",
+          "dismiss": "खारिज करो",
+          "dismiss_failed": "खारिज करना सहेजा नहीं जा सका। फिर से कोशिश करो।",
+          "dismiss_reason_label": "इस फ़ाइंडिंग को क्यों खारिज कर रहे हो?",
+          "dismiss_reason_placeholder": "उदाहरण: गलत चेतावनी, दायरे से बाहर",
+          "dismissed_reason": "खारिज किया गया: {{reason}}",
           "evidence": "प्रमाण",
           "observation": "अवलोकन",
           "post_finding": "यह निष्कर्ष pull request पर डालो",
@@ -897,7 +904,8 @@
           "severity_must_fix": "अनिवार्य",
           "severity_should_fix": "सुझाव",
           "suggestion": "सुझाव",
-          "this_finding": "यह निष्कर्ष"
+          "this_finding": "यह निष्कर्ष",
+          "undo_dismiss": "पूर्ववत करो"
         },
         "learningRail": {
           "add_namespace": "namespace जोड़ो",

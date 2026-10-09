@@ -884,7 +884,14 @@
           "this_review_failed": "এই রিভিউ ব্যর্থ হয়েছে"
         },
         "findingCard": {
+          "cancel_dismiss": "বাতিল",
+          "confirm_dismiss": "ফাইন্ডিং খারিজ করো",
           "consequence": "পরিণতি",
+          "dismiss": "খারিজ করো",
+          "dismiss_failed": "খারিজ সংরক্ষণ করা যায়নি। আবার চেষ্টা করো।",
+          "dismiss_reason_label": "এই ফাইন্ডিংটি কেন খারিজ করছো?",
+          "dismiss_reason_placeholder": "যেমন: ভুল সতর্কতা, পরিধির বাইরে",
+          "dismissed_reason": "খারিজ করা হয়েছে: {{reason}}",
           "evidence": "প্রমাণ",
           "observation": "পর্যবেক্ষণ",
           "post_finding": "এই পর্যবেক্ষণ pull request-এ দাও",
@@ -897,7 +904,8 @@
           "severity_must_fix": "আবশ্যক",
           "severity_should_fix": "প্রস্তাবিত",
           "suggestion": "প্রস্তাব",
-          "this_finding": "এই পর্যবেক্ষণ"
+          "this_finding": "এই পর্যবেক্ষণ",
+          "undo_dismiss": "ফিরিয়ে আনুন"
         },
         "learningRail": {
           "add_namespace": "namespace যোগ করো",

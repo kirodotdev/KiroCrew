@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import sys
 import threading
 import time
@@ -1092,6 +1093,10 @@ async def _post_comments_bg(run_id: str, run: dict,
                     continue
                 else:
                     sel = keys
+                sel = await asyncio.to_thread(
+                    _without_dismissed, run_id, run, cid, sel)
+                if sel is not None and not sel:
+                    continue
                 out = await asyncio.to_thread(
                     review_driver.post_recorded, cid, link,
                     dispatch=dispatch, run_id=run_id, keys=sel)
@@ -1298,6 +1303,118 @@ async def _handle_run_post(request: web.Request) -> web.Response:
     })
 
 
+_DISMISS_KEY_RE = re.compile(r"^finding:\d{1,6}$")
+_DISMISS_REASON_MAX = 500
+
+
+def _dismissed_keys(run: dict, change_id: str) -> set[str]:
+    """The finding keys the user dismissed on one change of this run."""
+    per_change = (run.get("dismissed") or {}).get(change_id)
+    return set(per_change) if isinstance(per_change, dict) else set()
+
+
+def _without_dismissed(run_id: str, run: dict, change_id: str,
+                       sel: list[str] | None) -> list[str] | None:
+    """A post selection with the dismissed findings taken out.
+
+    ``None`` means "every pending comment", so when this change has dismissals the
+    full key list is spelled out first and then filtered: a dismissed finding is
+    never sent, whether it was picked by hand or swept up by "post all".
+    """
+    dismissed = _dismissed_keys(run, change_id)
+    if not dismissed:
+        return sel
+    if sel is None:
+        rec = results.read_result(change_id, None, run_id)
+        if not rec:
+            return sel
+        sel = [str(e.get("key")) for e in pipeline.build_pending_comments(rec)]
+    return [k for k in sel if k not in dismissed]
+
+
+async def _handle_run_dismiss(request: web.Request) -> web.Response:
+    """POST .../runs/{run_id}/dismiss — mark one finding as not worth sending.
+
+    Body: ``{"change_id", "key", "reason"}`` (reason required); ``"dismissed":
+    false`` undoes it. The reason is stored on the run record beside
+    ``posted_keys``, so it lives and ages out with the review it is about. A dismissed finding is left out of every
+    later post. A finding already on the pull request cannot be dismissed: the
+    comment is public by then and dismissing it here would change nothing there.
+    """
+    owner_denied = await require_owner_dashboard_request(request, "code_review_sage.run_dismiss")
+    if owner_denied is not None:
+        return owner_denied
+    run_id = _run_id_param(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    change_id = str(body.get("change_id") or "")
+    key = str(body.get("key") or "")
+    undo = body.get("dismissed") is False
+    raw_reason = body.get("reason")
+    reason = raw_reason.strip() if isinstance(raw_reason, str) else ""
+    if not _DISMISS_KEY_RE.match(key):
+        return web.json_response(
+            {"code": "bad_key", "error": "only a finding can be dismissed"}, status=400)
+    if not undo and not reason:
+        return web.json_response(
+            {"code": "reason_required", "error": "say why this finding is dismissed"},
+            status=400)
+    if len(reason) > _DISMISS_REASON_MAX:
+        return web.json_response(
+            {"code": "reason_too_long",
+             "error": f"keep the reason under {_DISMISS_REASON_MAX} characters"}, status=400)
+    async with _LOCK:
+        run = _find_run(run_id)
+        if run is None:
+            return web.json_response({"code": "run_not_found", "error": f"no such run {run_id!r}"}, status=404)
+        if change_id not in (run.get("change_ids") or []):
+            return web.json_response(
+                {"code": "change_not_found", "error": "that change is not in this review"}, status=404)
+        # While a post is in flight its delivered keys are not on the run yet,
+        # so "already on the pull request" cannot be answered; refuse instead.
+        if run.get("posting"):
+            return web.json_response(
+                {"code": "already_posting", "error": "this review is being posted; try again when it finishes"},
+                status=409)
+        if key in set((run.get("posted_keys") or {}).get(change_id) or []):
+            return web.json_response(
+                {"code": "already_posted", "error": "that finding is already on the pull request"},
+                status=409)
+        dismissed = dict(run.get("dismissed") or {})
+        per_change = dict(dismissed.get(change_id) or {})
+        changes: dict[str, Any] = {}
+        if undo:
+            per_change.pop(key, None)
+            # "Post all" may have counted this run fully posted only because the
+            # finding was dismissed; an undone finding is pending, so the run is not.
+            changes["posted_at"] = None
+        else:
+            per_change[key] = {"reason": store.redact_text(reason)}
+        if per_change:
+            dismissed[change_id] = per_change
+        else:
+            dismissed.pop(change_id, None)
+        changes["dismissed"] = dismissed
+        # Persist a staged copy first and touch the live run only once the write
+        # lands: a concurrent /runs read holds the same run objects, and
+        # `_save_runs` swallows a failed write. Either way a dismissal could show
+        # as saved and then be lost on restart, making the finding postable again.
+        staged = [{**r, **changes} if r is run else r for r in _RUNS]
+        try:
+            await asyncio.to_thread(_write_runs, json.dumps(staged, indent=2))
+        except Exception:
+            logger.warning("failed to persist a dismissal", exc_info=True)
+            return web.json_response(
+                {"code": "save_failed", "error": "could not save the dismissal"}, status=500)
+        run.update(changes)
+    return web.json_response({"ok": True, "run_id": run_id, "change_id": change_id,
+                              "key": key, "dismissed": not undo})
+
+
 def _collect_delivered(run: dict, summary: dict) -> None:
     """Carry a run's per-change delivery evidence onto the run itself.
 
@@ -1350,6 +1467,7 @@ def _pending_comment_count(run_id: str, run: dict,
         if not rec:
             continue
         already = set(rec.get("posted_keys") or delivered.get(cid) or [])
+        already |= _dismissed_keys(run, cid)
         try:
             for entry in pipeline.build_pending_comments(rec):
                 key = str(entry.get("key"))
@@ -2535,6 +2653,8 @@ def register_routes(app: web.Application) -> None:
         "/api/apps/code-review-sage/runs/{run_id}/archive", _handle_run_archive)
     app.router.add_post(
         "/api/apps/code-review-sage/runs/{run_id}/post", _handle_run_post)
+    app.router.add_post(
+        "/api/apps/code-review-sage/runs/{run_id}/dismiss", _handle_run_dismiss)
     app.router.add_get("/api/apps/code-review-sage/settings", _handle_settings)
     app.router.add_put("/api/apps/code-review-sage/settings", _handle_settings)
     app.router.add_get("/api/apps/code-review-sage/namespaces", _handle_namespaces)

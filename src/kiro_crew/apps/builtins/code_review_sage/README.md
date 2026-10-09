@@ -8,6 +8,11 @@ app**, next to the pull request they came from — nothing is written to the pul
 request unless you turn on `review.auto_post`, which publishes them as a PENDING
 (draft) review for you to submit.
 
+A finding you will not send can be **dismissed with a reason** from its card. The
+reason is kept on the review's run record (`dismissed`, beside `posted_keys`);
+the card then shows it with an undo, and the finding is left out of every later
+post. A finding already on the pull request cannot be dismissed.
+
 ## Ask the reviewer
 
 A report states conclusions; "why did you decide that?" is answerable only by the

@@ -20,7 +20,7 @@ import { safeHttpUrl } from '../../../lib/safeUrl'
 import FindingCard from './FindingCard'
 import ShipSummaryCard, { SHIP_KEY } from './ShipSummaryCard'
 import BandChips from './BandChips'
-import type { Band, ReportRow, RunReport } from '../lib/types'
+import type { Band, DismissedFinding, ReportRow, RunReport } from '../lib/types'
 
 import { fmtDateTime } from '../../../i18n/format'
 import { i18nT } from '../../../i18n/t'
@@ -158,9 +158,13 @@ function DesignChain({ row }: { row: ReportRow }) {
  * band rationale) over a collapsible detail area (design chain + findings). */
 function ReportRowCard({
   row, postedKeys, isPosting, onPostFinding, selected, onToggleKey,
+  dismissed, onDismissFinding,
 }: {
   row: ReportRow
   postedKeys?: string[]
+  /** This row's dismissed findings, by comment key. */
+  dismissed?: Record<string, DismissedFinding>
+  onDismissFinding?: (changeId: string, key: string, reason: string | null) => Promise<void>
   /** Whether THIS comment is in flight. A single flag for the whole report made
    *  every unposted card claim it was posting when one finding was sent. */
   isPosting?: (key: string) => boolean
@@ -286,8 +290,12 @@ function ReportRowCard({
                   ? i18nT('apps.codeReviewSage.components.reportView.finding_dimension_in_file',
                           { dimension: f.dimension, file: f.file })
                   : f.dimension}
-                onPost={!sent && onPostFinding
+                onPost={!sent && !dismissed?.[key] && onPostFinding
                   ? () => onPostFinding(row.change_id, key)
+                  : undefined}
+                dismissed={dismissed?.[key] ?? null}
+                onDismiss={onDismissFinding
+                  ? (reason) => onDismissFinding(row.change_id, key, reason)
                   : undefined}
               />
             )
@@ -300,7 +308,7 @@ function ReportRowCard({
 
 export default function ReportView({
   report, onArchive, archiving = false, archiveError = null, actions = null,
-  postedKeys, isPosting, onPostFinding, onPostSelection,
+  postedKeys, isPosting, onPostFinding, onPostSelection, dismissed, onDismissFinding,
 }: {
   report: RunReport
   onArchive?: () => void
@@ -324,6 +332,11 @@ export default function ReportView({
   /** Run-level actions (posting to the pull request) shown beside Share — the
    *  report is where you decide whether the findings are worth sending. */
   actions?: ReactNode
+  /** Findings the user dismissed, keyed by change id then comment key. */
+  dismissed?: Record<string, Record<string, DismissedFinding>>
+  /** Dismiss one finding with a reason (`null` undoes it). Omitted when this
+   *  run cannot take a dismissal. */
+  onDismissFinding?: (changeId: string, key: string, reason: string | null) => Promise<void>
 }) {
   const [active, setActive] = useState<Band | 'all'>('all')
   // Ticked comments, per change. Posting several together puts ONE pending review
@@ -342,6 +355,25 @@ export default function ReportView({
       return next
     })
   }, [])
+
+  // A dismissed finding is never posted, so it leaves the selection too: a
+  // ticked-then-dismissed card would otherwise still count in "draft N".
+  const dismissFinding = useMemo(() => (onDismissFinding
+    ? async (changeId: string, key: string, reason: string | null) => {
+      await onDismissFinding(changeId, key, reason)
+      if (reason === null) return
+      setSelected((cur) => {
+        const keys = cur.get(changeId)
+        if (!keys?.has(key)) return cur
+        const next = new Map(cur)
+        const rest = new Set(keys)
+        rest.delete(key)
+        if (rest.size === 0) next.delete(changeId)
+        else next.set(changeId, rest)
+        return next
+      })
+    }
+    : undefined), [onDismissFinding])
 
   const selectedCount = useMemo(
     () => [...selected.values()].reduce((n, s) => n + s.size, 0),
@@ -458,6 +490,8 @@ export default function ReportView({
               onPostFinding={onPostFinding}
               selected={selected.get(row.change_id)}
               onToggleKey={onPostSelection ? toggleKey : undefined}
+              dismissed={dismissed?.[row.change_id]}
+              onDismissFinding={dismissFinding}
             />
           ))}
         </div>

@@ -27,16 +27,20 @@ import { i18nT } from '../../../i18n/t'
  * Comments already on the pull request are subtracted. Findings can be posted
  * one at a time, and counting the whole report regardless made the confirm for
  * an external write overstate itself — offering to "post 6 comments" when four
- * were already sent and only two remained. */
+ * were already sent and only two remained. Dismissed findings are subtracted
+ * too: the backend never posts them. */
 export function pendingCommentCount(
   report: RunReport | null,
   postedKeys?: Record<string, string[]>,
+  dismissed?: Run['dismissed'],
 ): number {
   if (!report?.rows?.length) return 0
   return report.rows.reduce((n, row) => {
     const possible = (row.red ?? 0) + (row.yellow ?? 0) + 1
-    const sent = postedKeys?.[row.change_id]?.length ?? 0
-    return n + Math.max(0, possible - sent)
+    const sentKeys = postedKeys?.[row.change_id] ?? []
+    const skipped = Object.keys(dismissed?.[row.change_id] ?? {})
+      .filter((k) => !sentKeys.includes(k)).length
+    return n + Math.max(0, possible - sentKeys.length - skipped)
   }, 0)
 }
 
@@ -58,7 +62,7 @@ export default function PostCommentsButton({
   publishBarBelow?: boolean
 }) {
   const [confirming, setConfirming] = useState(false)
-  const pending = pendingCommentCount(report, postedKeys)
+  const pending = pendingCommentCount(report, postedKeys, run.dismissed)
 
   // Drop the confirm prompt if the run changes under it, so a click cannot land
   // on a different pull request than the one you were looking at.

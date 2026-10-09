@@ -131,6 +131,16 @@ export const sageApi = {
       })),
     }),
 
+  /** Dismiss one finding with a reason, or undo that with `reason: null`. A
+   *  dismissed finding stays in the report but is never posted. */
+  dismissFinding: (
+    runId: string, changeId: string, key: string, reason: string | null,
+  ): Promise<{ ok: boolean; dismissed: boolean }> =>
+    sendJSON(`/runs/${encodeURIComponent(runId)}/dismiss`, 'POST',
+      reason === null
+        ? { change_id: changeId, key, dismissed: false }
+        : { change_id: changeId, key, reason }),
+
   /** Publish this run's report as a shareable artifact (retry / share path). */
   archiveRun: (runId: string): Promise<{ ok: boolean; report_slug: string }> =>
     sendJSON(`/runs/${encodeURIComponent(runId)}/archive`, 'POST'),

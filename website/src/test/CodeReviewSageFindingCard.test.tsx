@@ -254,3 +254,84 @@ describe('ShipSummaryCard control grouping', () => {
     expect(screen.getByText('Select for bulk draft')).toBeTruthy()
   })
 })
+
+describe('FindingCard dismissal', () => {
+  it('asks for a reason and sends it', async () => {
+    const onDismiss = vi.fn(() => Promise.resolve())
+    render(<FindingCard finding={finding()} onPost={() => {}} onDismiss={onDismiss} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    const confirm = screen.getByRole('button', { name: 'Dismiss finding' }) as HTMLButtonElement
+    // No reason, no dismissal: the reason is the whole point of the action.
+    expect(confirm.disabled).toBe(true)
+    fireEvent.change(screen.getByLabelText('Why dismiss this finding?'),
+      { target: { value: '  false positive ' } })
+    fireEvent.click(confirm)
+    expect(onDismiss).toHaveBeenCalledWith('false positive')
+  })
+
+  it('shows the reason and offers undo instead of posting once dismissed', () => {
+    const onDismiss = vi.fn(() => Promise.resolve())
+    render(
+      <FindingCard
+        finding={finding()}
+        selectable
+        dismissed={{ reason: 'out of scope' }}
+        onDismiss={onDismiss}
+      />,
+    )
+    expect(screen.getByText('Dismissed: out of scope')).toBeTruthy()
+    expect(screen.queryByRole('checkbox')).toBeNull()
+    expect(screen.queryByRole('button', { name: /Draft this finding/ })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+    expect(onDismiss).toHaveBeenCalledWith(null)
+  })
+
+  it('says so when an undo fails, and keeps the card dismissed', async () => {
+    const onDismiss = vi.fn(() => Promise.reject(new Error('offline')))
+    render(<FindingCard finding={finding()} dismissed={{ reason: 'x' }} onDismiss={onDismiss} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+    expect(await screen.findByText('Could not save the dismissal. Try again.')).toBeTruthy()
+    expect(screen.getByText('Dismissed: x')).toBeTruthy()
+  })
+
+  it('says so when a dismissal fails, and keeps the typed reason', async () => {
+    const onDismiss = vi.fn(() => Promise.reject(new Error('offline')))
+    render(<FindingCard finding={finding()} onPost={() => {}} onDismiss={onDismiss} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    const box = screen.getByLabelText('Why dismiss this finding?') as HTMLTextAreaElement
+    fireEvent.change(box, { target: { value: 'nope' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss finding' }))
+    expect(await screen.findByText('Could not save the dismissal. Try again.')).toBeTruthy()
+    expect((screen.getByLabelText('Why dismiss this finding?') as HTMLTextAreaElement).value)
+      .toBe('nope')
+  })
+
+  it('mutes the severity of a dismissed finding', () => {
+    render(<FindingCard finding={finding()} dismissed={{ reason: 'x' }} />)
+    const eyebrow = screen.getByText(/must-fix · Correctness/)
+    expect(eyebrow.className).toContain('text-muted')
+    expect(eyebrow.className).not.toContain('text-danger')
+  })
+
+  it('offers no dismissal for a finding already on the pull request', () => {
+    render(<FindingCard finding={finding()} posted onDismiss={() => Promise.resolve()} />)
+    expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull()
+  })
+})
+
+describe('pendingCommentCount with dismissals', () => {
+  it('does not count a dismissed finding as one still to send', async () => {
+    const { pendingCommentCount } = await import(
+      '../apps/code-review-sage/components/PostCommentsButton')
+    const report = {
+      rows: [{ change_id: 'c1', red: 1, yellow: 2 }],
+    } as unknown as RunReport
+    // 3 findings + the ship comment.
+    expect(pendingCommentCount(report)).toBe(4)
+    expect(pendingCommentCount(report, undefined,
+      { c1: { 'finding:1': { reason: 'r' } } })).toBe(3)
+    // Already posted, then counted once, not twice.
+    expect(pendingCommentCount(report, { c1: ['finding:1'] },
+      { c1: { 'finding:1': { reason: 'r' } } })).toBe(3)
+  })
+})
