@@ -1167,6 +1167,16 @@ reaches the transcript. It sits at z-20 — above the pane's own chrome (its doc
 and pinned prompt), below the floating Profile card (z-30), whose scrim covers
 it. No hairline under it (#9425).
 
+The identity pill is compact at rest: the crewmate's face (with its loop mark)
+and the chevron. Its name and activity line fold to a zero-width grid column
+and slide open on hover or keyboard focus (`grid-cols-[0fr]` to `[1fr]`, cut
+under reduced motion); folded they stay in the DOM, so they are still the
+button's accessible name. A screen with no hover (`@media (hover: none)`, touch)
+keeps them open, since a tap opens Profile and never sets `:focus-visible`. The loop mark (`CrewLoopIndicator`, "On
+watch") is a solid accent ring with one dot orbiting it; under reduced motion
+the ring stays and a still dot replaces the orbit. It never uses the green of
+the working presence dot.
+
 The centred identity pill opens `CrewProfilePanel`, not the editor. It ends in a
 small `ChevronRight` (decorative, `aria-hidden`): the one visible sign that this
 Glass chip is a door, since the switcher chip beside it is another Glass chip

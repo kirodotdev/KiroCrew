@@ -20,10 +20,13 @@ describe('CrewLoopIndicator', () => {
     render(<CrewLoopIndicator on />)
     const el = screen.getByTestId('crew-loop-indicator')
     const part = (name: string) => el.querySelector(`[data-part="${name}"]`)!
-    // The orbit spins and the ring shows, both hidden under reduced motion.
+    // The orbit spins and hides under reduced motion; the ring never moves,
+    // so it stays visible either way and is drawn solid enough to read.
     expect(part('orbit').className).toContain('animate-spin')
     expect(part('orbit').className).toContain('motion-reduce:hidden')
-    expect(part('ring').className).toContain('motion-reduce:hidden')
+    expect(part('ring').className).not.toContain('motion-reduce:hidden')
+    expect(part('ring').className).not.toContain('animate')
+    expect(part('ring').className).toContain('border-2')
     // The static dot is hidden by default and shown only under reduced motion,
     // and it never animates.
     expect(part('static-dot').className).toMatch(/(^| )hidden( |$)/)

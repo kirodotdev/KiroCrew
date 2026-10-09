@@ -108,4 +108,25 @@ describe('MembersPage — on-watch loop indicator', () => {
     expect(screen.getByTestId('member-pill-activity-sr').textContent).toContain(LABEL)
     expect(screen.getByTestId('member-pill-activity').textContent).toContain(LABEL)
   })
+
+  it('the header pill is compact at rest: words open only on hover or keyboard focus', async () => {
+    await renderPage('/members?member=alpha')
+    const pill = await screen.findByTestId('member-identity-pill')
+    const fold = within(pill).getByTestId('member-pill-text')
+    // Folded to a zero-width column at rest; opened on hover, keyboard focus
+    // or a screen with no hover; the width change animates, cut under reduced motion.
+    expect(fold.className).toContain('grid-cols-[0fr]')
+    expect(fold.className).toContain('group-hover:grid-cols-[1fr]')
+    expect(fold.className).toContain('group-focus-visible:grid-cols-[1fr]')
+    expect(fold.className).toContain('[@media(hover:none)]:grid-cols-[1fr]')
+    expect(fold.className).toContain('transition-[grid-template-columns]')
+    expect(fold.className).toContain('motion-reduce:transition-none')
+    expect((fold.firstElementChild as HTMLElement).className).toContain('overflow-hidden')
+    expect(pill.className).toMatch(/(^| )group( |$)/)
+    // Folded words stay in the DOM: the crewmate still names the button.
+    expect(pill).toHaveAccessibleName(expect.stringContaining('alpha'))
+    // The door cue stays at rest, outside the fold.
+    const chevron = within(pill).getByTestId('member-identity-pill-chevron')
+    expect(fold.contains(chevron)).toBe(false)
+  })
 })

@@ -4033,7 +4033,7 @@ export default function MembersPage() {
                 // press closes it (through the draft guard — see requestCloseProfile)
                 // instead of re-opening on the default tab, which remounted the card.
                 onClick={() => { if (profile) requestCloseProfile(); else openProfile() }}
-                className="glass-shadow flex items-center gap-2.5 pl-2.5 pr-3 py-1.5 min-w-0 max-w-full justify-self-center cursor-pointer text-left focus-ring pointer-events-auto"
+                className="glass-shadow group flex items-center gap-1 p-1.5 pr-2 min-w-0 max-w-full justify-self-center cursor-pointer text-left focus-ring pointer-events-auto"
                 title={t('pages.membersPage.profile_card')}
                 aria-expanded={!!profile}
                 data-testid="member-identity-pill"
@@ -4059,7 +4059,19 @@ export default function MembersPage() {
                   />
                   <CrewLoopIndicator on={isLoopOn(active)} testId="member-pill-loop-indicator" />
                 </span>
-                <div className="min-w-0 leading-tight">
+                {/* Compact at rest: the face (with its loop mark) and the
+                    chevron. The words fold to zero width and slide open on
+                    hover or keyboard focus (a 0fr -> 1fr column, so the width
+                    animates; cut under reduced motion). Folded, they stay in
+                    the DOM, so the name is still the button's accessible name.
+                    A screen with no hover (touch) keeps them open: a tap opens
+                    Profile and never sets `:focus-visible`. */}
+                <div
+                  className="grid grid-cols-[0fr] group-hover:grid-cols-[1fr] group-focus-visible:grid-cols-[1fr] [@media(hover:none)]:grid-cols-[1fr] transition-[grid-template-columns] duration-200 ease-out motion-reduce:transition-none min-w-0"
+                  data-testid="member-pill-text"
+                >
+                <div className="overflow-hidden min-w-0">
+                <div className="min-w-0 leading-tight pl-1.5">
                   {/* Title row = the crewmate's display name; the ID is not shown. */}
                   <div className="min-w-0 flex items-center gap-1.5" data-testid="member-title-row">
                     <div
@@ -4083,6 +4095,8 @@ export default function MembersPage() {
                     data-activity={pillActivity.kind}
                     aria-hidden="true"
                   >{pillActivity.label}{isLoopOn(active) ? ` · ${t('pages.membersPage.loop_on')}` : ''}</div>
+                </div>
+                </div>
                 </div>
                 {/* The one visible sign that this chip OPENS something. Without
                     it the pill and the switcher beside it are two controls
