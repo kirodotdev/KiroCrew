@@ -42,6 +42,11 @@ POLICY_CACHE_LEAF = "policy_cache"
 #: The gateway-only voice-runtime subtree, below the data home's ``run``.
 VOICE_RUNTIME_LEAF = os.path.join("run", "voice-runtime")
 
+#: Largest credential file an edition grant (``extra_secret_files``) may carry into the
+#: sandbox. Credential configs are a few KiB; the cap bounds the private tmpfs the
+#: launcher stages the snapshot on and stops a grant staging an arbitrary large file.
+SECRET_FILE_MAX_BYTES = 256 * 1024
+
 
 @dataclass(frozen=True)
 class RendererCapabilities:
@@ -95,6 +100,9 @@ class SandboxRequest:
     extra_private_dir_ids: tuple[tuple[str, int, int], ...] = ()
     extra_writable_dirs: tuple[str, ...] = ()
     extra_expose_files: tuple[str, ...] = ()
+    #: Absolute credential files the edition granted to this spawn, restored as
+    #: read-only snapshots. Only the namespace backend renders them.
+    extra_secret_files: tuple[str, ...] = ()
     fail_closed_file_masks: tuple[tuple[str, int, int], ...] = ()
     required_mask_targets: tuple[str, ...] = ()
     #: Name -> the identity a pre-spawn pass recorded for it: ``(dev, ino, is_link)``,
@@ -281,7 +289,9 @@ class ConfinementPlan:
     each uncancelled one (:attr:`sensitive_dirs`); Seatbelt renders each as deny rules.
     ``readonly`` are sealed read-only, ``writable`` the approved write carve-outs inside
     the sealed runtime parents, ``files`` the single masked files and ``expose`` the
-    ``(source, name)`` files re-exposed read-only inside a masked tree.
+    ``(source, name)`` files re-exposed read-only inside a masked tree. ``secrets`` are
+    the ``(path, mask root)`` credential files an edition granted, each restored as a
+    read-only snapshot under the innermost mask that hides it.
     """
 
     backend: str
@@ -306,6 +316,7 @@ class ConfinementPlan:
     identities: NamespaceIdentities
     cancellations: tuple[Cancellation, ...]
     refusals: tuple[Refusal, ...]
+    secrets: tuple[tuple[str, str], ...] = ()
 
     @property
     def sensitive_dirs(self) -> tuple[str, ...]:
@@ -489,6 +500,29 @@ def window_ancestors(target: str, windows: list[str]) -> list[str]:
             parent = os.path.dirname(parent)
         ancestors.append(root)
     return list(dict.fromkeys(ancestors))
+
+
+def granted_secrets(
+    paths: Iterable[str], kept: Iterable[str], windows: Iterable[str]
+) -> tuple[tuple[str, str], ...]:
+    """Pair each granted credential file with the innermost kept mask that hides it.
+
+    Only a file strictly inside a kept mask is restored: outside every mask the real
+    file is already visible, and a snapshot bound over it would only hide later host
+    edits from the agent. A file inside a private window is dropped, because the window
+    is the host's REAL tree and the launcher would create its placeholder there.
+    Lexical, like every other rule here; the launcher verifies the stand-in it writes
+    into.
+    """
+    roots = sorted({m.rstrip("/") for m in kept}, key=len, reverse=True)
+    open_windows = tuple(windows)
+    granted: list[tuple[str, str]] = []
+    for path in dict.fromkeys(paths):
+        root = next((r for r in roots if path.startswith(r + "/")), None)
+        if root is None or any(path_within(path, w) for w in open_windows):
+            continue
+        granted.append((path, root))
+    return tuple(granted)
 
 
 def path_within(path: str, parent: str) -> bool:
@@ -822,6 +856,14 @@ def _namespace_plan(
     # Deduplicated: the restore loop opens each destination for WRITE after the first
     # pass made it read-only, so a repeated entry kills the spawn.
     expose = list(dict.fromkeys(expose))
+    secrets = granted_secrets(
+        [fold(absolute(p, host.cwd)) for p in request.extra_secret_files], kept, windows
+    )
+    # A path in both lists would have its expose copy shadowed by the secret's bind, so
+    # the secret wins: the expose copy lands in a HOST-visible stand-in, the snapshot
+    # does not.
+    secret_paths = {path for path, _root in secrets}
+    expose = [pair for pair in expose if pair[0] not in secret_paths]
     # A target nested under a directory the launcher masks EARLIER is legitimately
     # absent by the time it is pinned, because its parent's empty mask covers it; only a
     # name that moved is a race. Subtracted by string, never by asking the filesystem.
@@ -872,6 +914,7 @@ def _namespace_plan(
         identities=identities,
         cancellations=cancellations,
         refusals=tuple(window_refusals + carveout_refusals),
+        secrets=secrets,
     )
 
 
@@ -1067,6 +1110,8 @@ def namespace_payload(plan: ConfinementPlan) -> dict[str, Any]:
         },
         "crew_home_aliases": [list(entry) for entry in ids.crew_home_aliases],
         "expose_files": [list(pair) for pair in plan.expose],
+        "secret_files": [list(pair) for pair in plan.secrets],
+        "secret_file_max_bytes": SECRET_FILE_MAX_BYTES,
         "env_prefixes": list(plan.env_scrub_prefixes),
         "ssh_dir": plan.ssh_dir,
         "ssh_known_hosts": plan.ssh_known_hosts,

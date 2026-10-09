@@ -179,6 +179,10 @@ class DefaultSandboxPolicy:
 
         return list(sandbox._CC_DIRS)
 
+    def credential_file_grants(self) -> List[str]:
+        # The public edition grants no credential file to the agent.
+        return []
+
 
 class DefaultCredentialPolicy:
     """Today's AKIA/ASIA + exfil redaction passes from ``security.py``."""

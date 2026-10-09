@@ -69,6 +69,8 @@ def payload(**overrides: Any) -> dict[str, Any]:
         "mask_occupants": {},
         "crew_home_aliases": [],
         "expose_files": [],
+        "secret_files": [],
+        "secret_file_max_bytes": 0,
         "env_prefixes": [],
         "ssh_dir": "/nonexistent-ssh-dir",
         "ssh_known_hosts": "/nonexistent-ssh-dir/known_hosts",

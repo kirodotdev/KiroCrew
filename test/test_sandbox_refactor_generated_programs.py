@@ -391,6 +391,8 @@ _LAUNCHER_PLAN_GOLDEN: dict[str, Any] = {
     "mask_occupants": {"<ROOT>/crew/apps": [21, 22, 0], "<ROOT>/op/.aws": [23, 24, 1, 1, 25, 26]},
     "crew_home_aliases": [["<ROOT>/op/.kiro/crew", "<ROOT>/crew", 31, 32]],
     "expose_files": [["<ROOT>/op/.aws/sso/cache/token.json", "token.json"]],
+    "secret_files": [],
+    "secret_file_max_bytes": 262144,
     "env_prefixes": [
         "AWS_SECRET",
         "GIT_ASKPASS",
