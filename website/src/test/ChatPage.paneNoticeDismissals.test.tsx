@@ -13,6 +13,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent, within } from '@testing-library/react'
 import type { ComponentProps } from 'react'
 import { Provider } from 'react-redux'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 
 import ChatPaneNotices from '../pages/chat/page/ChatPaneNotices'
@@ -49,12 +50,19 @@ function allUp(over: Partial<Props> = {}): Props {
 }
 
 function renderNotices(p: Props) {
+  // The pane's unrestored-tabs notice reads its count through `useQuery`, so the
+  // harness needs the provider the real tree always supplies from `App.tsx`. Retry
+  // off: nothing here mocks that endpoint, and the shared retry ladder would spend
+  // its backoff on every test in this file.
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
-    <Provider store={createTestStore()}>
-      <MemoryRouter>
-        <ChatPaneNotices {...p} />
-      </MemoryRouter>
-    </Provider>,
+    <QueryClientProvider client={client}>
+      <Provider store={createTestStore()}>
+        <MemoryRouter>
+          <ChatPaneNotices {...p} />
+        </MemoryRouter>
+      </Provider>
+    </QueryClientProvider>,
   )
 }
 

@@ -5928,6 +5928,23 @@ class DashboardState:
     # shared by every __new__-built instance. __init__ and the restore each
     # assign a fresh set(), so mutation only ever touches an instance attribute.
     unrestored_slot_keys: "frozenset[str] | set[str]" = frozenset()
+    # Whether the last open-tab restore could READ the registry at all. False means
+    # every generation that might hold the set was refused by the OS, so this process
+    # has no basis for treating ``_slots`` as the authoritative open-tab set and
+    # ``open_slots_restored`` stays down for its whole life. Defaults True so a
+    # surface that never runs a restore is not held in merge mode forever.
+    open_slots_knowable: bool = True
+    # What this boot's open-tab restore could not SHOW, as ``{"count", "keys"}``, for
+    # the dashboard's own notice. A separate field from ``unrestored_slot_keys``
+    # because the two answer different questions and change at different times: the
+    # keys above are live reopen-seed state the persist writers fold in on every
+    # flush, while this is one frozen reading taken when the restore finished. Reading
+    # the live set instead would make the notice say a different number each time it
+    # was asked, and say nothing at all once a later restore cleared it.
+    #
+    # ``None`` means no restore has reported, which a reader must not render as zero:
+    # "no tabs were dropped" and "nobody has looked yet" are different answers.
+    unrestored_slot_notice: "dict[str, Any] | None" = None
     crew: Any = None  # Crew Mode control plane (set by gateway; None = unavailable)
     # Gateway-owned restore/open task. The class default keeps lightweight
     # ``__new__`` fixtures on the already-ready baseline; a real gateway

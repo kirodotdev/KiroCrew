@@ -76,6 +76,7 @@ from kiro_crew.dashboard.chat_api.slot_detail import (  # noqa: F401
     _snapshot_slot_window,
     api_chat_slot_detail,
     api_chat_slots,
+    api_chat_slots_unrestored,
 )
 from kiro_crew.dashboard.chat_api.slot_lifecycle import (  # noqa: F401
     _await_guarded_history_write,

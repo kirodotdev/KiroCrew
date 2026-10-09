@@ -746,6 +746,42 @@ _SESSION_TYPES: tuple[EntryType, ...] = (
         ),
     ),
     EntryType(
+        "session/unrestored",
+        "This session's tab was listed as open at startup and did not come back.",
+        (
+            Field(
+                "listed",
+                JSON_INT,
+                required=True,
+                note="Keys the open-tab snapshot listed this boot.",
+            ),
+            Field(
+                "restored",
+                JSON_INT,
+                required=True,
+                note="How many of them became tabs.",
+            ),
+            Field(
+                "kept",
+                JSON_INT,
+                required=True,
+                note=(
+                    "How many stayed in the reopen seed for the next boot, this one "
+                    "included. A kept key is not gone; it is not SHOWN."
+                ),
+            ),
+        ),
+        note=(
+            "Not a close. session/closed says the gateway stopped serving the session "
+            "for a stated reason, which is the opposite of what happened here: the "
+            "session is intact and the registry of open TABS lost it. All three fields "
+            "are required because the one tab only means something against the set -- "
+            "one of sixteen that did not come back is a lost working set, one of one "
+            "is a single unreadable transcript -- and the emitter counts all three "
+            "before it writes any of them."
+        ),
+    ),
+    EntryType(
         "session/adopted",
         "Another session took this one over, so it now hangs under that session.",
         (

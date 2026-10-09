@@ -379,7 +379,7 @@ _MOVED: dict[str, str] = {
 #: The signature of every function the facade defined, as it was at that base.
 _SIGNATURES: dict[str, str] = {
     "_apply_recent_session": "(state: 'DashboardState', key: 'str', slot_name: 'str', session: 'dict', meta: 'dict', messages: 'list[dict]', *, conv_log: \"'ConversationLog'\", kiro_model_map: 'dict[str, str]', restore_cfg: \"'KiroCrewConfig | None'\", member_identity: 'tuple[str, str] | None' = ('', '__unresolved__'), agent: 'str | None' = None, effort_marker: 'bool' = False) -> 'None'",
-    "_apply_restored_open_slot": "(state: 'DashboardState', key: 'str', *, meta: 'dict', readable: 'bool', messages: 'list[dict] | None', model_map: 'dict[str, str] | None', unrestored: 'set[str]', member_identity: 'tuple[str, str] | None' = ('', '__unresolved__'), agent: 'str | None' = None, effort_marker: 'bool' = False, conv_log: 'ConversationLog | None' = None, started: 'float | None' = None, preserve_remote_only: 'bool' = False) -> 'int'",
+    "_apply_restored_open_slot": "(state: 'DashboardState', key: 'str', *, meta: 'dict', readable: 'bool', messages: 'list[dict] | None', model_map: 'dict[str, str] | None', unrestored: 'set[str]', member_identity: 'tuple[str, str] | None' = ('', '__unresolved__'), agent: 'str | None' = None, effort_marker: 'bool' = False, conv_log: 'ConversationLog | None' = None, started: 'float | None' = None, preserve_remote_only: 'bool' = False, dropped: 'set[str] | None' = None) -> 'int'",
     "_approx_window_payload_bytes": "(window: 'list[dict]') -> 'int'",
     "_archive_dropped_lines": "(state: 'DashboardState', history_key: 'str', old_lines: 'list[str]', new_lines: 'list[str]') -> 'None'",
     "_attach_variants": "(slot: '_ChatSlot', m: 'dict') -> 'None'",

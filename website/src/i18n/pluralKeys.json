@@ -160,6 +160,7 @@
   "pages.chat.subagentRunCard.agent_running",
   "pages.chat.turnBlock.worked_through_step",
   "pages.chatPage.knowledge_item",
+  "pages.chatPage.tabs_were_not_restored",
   "pages.chatSidebar.already_on_model",
   "pages.chatSidebar.archive_session",
   "pages.chatSidebar.archived_count",

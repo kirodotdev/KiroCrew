@@ -118,6 +118,49 @@ async def api_chat_slots(request: web.Request) -> web.Response:
     return web.Response(text=body, content_type="application/json")
 
 
+async def api_chat_slots_unrestored(request: web.Request) -> web.Response:
+    """GET /api/chat/slots/unrestored — the tabs this boot's restore could not show.
+
+    A PULL rather than a broadcast, because the fact is settled during startup and
+    the browser that needs to hear it usually connects minutes later: a WebSocket
+    frame sent while no client is attached is a notice nobody ever sees.
+
+    ``reported`` separates "no tabs were dropped" from "the restore has not reported
+    yet", which a bare ``count: 0`` cannot. A client rendering an unreported read as
+    "nothing was lost" would state as fact something nobody has measured.
+
+    ``unknowable`` is the third answer, and it is why two booleans are needed rather
+    than one. A restore whose registry no generation of which could be read FINISHES
+    -- so it is reported -- and has no count to offer: tabs may be missing and this
+    boot cannot say which or how many. Collapsed into ``reported: false`` it reads as
+    "still restoring", so the client hides the notice and re-asks forever, which is
+    the silence this whole route exists to end. Collapsed into ``count: 0`` it reads
+    as "nothing was dropped", which is the claim nobody measured.
+
+    The count only. The keys are recorded on the session logs and in the gateway log,
+    where a reader can act on them; putting them on the wire with nothing reading
+    them would ship a list of session keys to every caller of this route for no
+    purpose, and a field with no consumer is a field nothing keeps honest.
+    """
+    state: DashboardState = request.app["state"]
+    notice = getattr(state, "unrestored_slot_notice", None)
+    if not isinstance(notice, dict):
+        return web.json_response({"reported": False, "count": 0, "unknowable": False})
+    count = notice.get("count")
+    keys = [key for key in notice.get("keys", []) if isinstance(key, str)]
+    return web.json_response(
+        {
+            "reported": True,
+            # The recorded count, not ``len(keys)``: they are the same number today and
+            # a reader must not silently repair a disagreement into a smaller loss.
+            "count": count if isinstance(count, int) and not isinstance(count, bool) else len(keys),
+            # Absent on a report written before this field existed, which is a
+            # knowable restore by construction: the one that is not now says so.
+            "unknowable": notice.get("unknowable") is True,
+        }
+    )
+
+
 def _finite_number(value: Any) -> float | None:
     """Return *value* as a float when it is a real, finite number, else None.
 

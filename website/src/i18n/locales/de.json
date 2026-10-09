@@ -11576,7 +11576,12 @@
       "run_in_terminal_copy_failed_error": "Der Befehl konnte nicht kopiert werden, daher wurde nichts an das Terminal gesendet. Kopiere ihn aus dem Codeblock und füge ihn selbst ein.",
       "run_in_terminal_no_tab_error": "Der Befehl konnte nicht ausgeführt werden: Es ließ sich kein neues Terminal öffnen, weil bereits zu viele offen sind. Schließe eines und versuche es erneut.",
       "run_in_terminal_cwd_pending_error": "Der Befehl konnte nicht ausgeführt werden: Das Arbeitsverzeichnis dieses Chats ist noch nicht geladen. Versuche es gleich noch einmal.",
-      "run_in_terminal_config_read_failed_error": "Deine Terminal-Einstellungen konnten nicht gelesen werden, daher wurde „das aktuelle Terminal wiederverwenden“ übersprungen und der Befehl in einem neuen Terminal geöffnet. Lade neu, um es erneut zu versuchen."
+      "run_in_terminal_config_read_failed_error": "Deine Terminal-Einstellungen konnten nicht gelesen werden, daher wurde „das aktuelle Terminal wiederverwenden“ übersprungen und der Befehl in einem neuen Terminal geöffnet. Lade neu, um es erneut zu versuchen.",
+      "open_older_sessions": "Ältere Sitzungen öffnen",
+      "tabs_were_not_restored_one": "{{count}} Tab, der vor dem Neustart geöffnet war, wurde nicht wiederhergestellt.",
+      "tabs_were_not_restored_other": "{{count}} Tabs, die vor dem Neustart geöffnet waren, wurden nicht wiederhergestellt.",
+      "dismiss_until_next_visit": "Bis zum nächsten Besuch ausblenden",
+      "could_not_check_restored_tabs": "Es konnte nicht geprüft werden, ob nach dem letzten Neustart alle Tabs wiederhergestellt wurden."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 übersprungen — aktuell ausgewählt)",

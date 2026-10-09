@@ -11741,7 +11741,13 @@
       "run_in_terminal_copy_failed_error": "Non è stato possibile copiare il comando, quindi non è stato inviato nulla al terminale. Copialo dal blocco di codice e incollalo tu stesso.",
       "run_in_terminal_no_tab_error": "Impossibile eseguire il comando: non è stato possibile aprire un nuovo terminale perché ce ne sono già troppi aperti. Chiudine uno e riprova.",
       "run_in_terminal_cwd_pending_error": "Impossibile eseguire il comando: la directory di lavoro di questa chat non è ancora stata caricata. Riprova tra un momento.",
-      "run_in_terminal_config_read_failed_error": "Non è stato possibile leggere le impostazioni del terminale, quindi «riutilizza il terminale corrente» è stato saltato e il comando è stato aperto in un nuovo terminale. Ricarica per riprovare."
+      "run_in_terminal_config_read_failed_error": "Non è stato possibile leggere le impostazioni del terminale, quindi «riutilizza il terminale corrente» è stato saltato e il comando è stato aperto in un nuovo terminale. Ricarica per riprovare.",
+      "open_older_sessions": "Apri Sessioni più vecchie",
+      "tabs_were_not_restored_many": "{{count}} schede che erano aperte prima del riavvio non sono state ripristinate.",
+      "tabs_were_not_restored_one": "{{count}} scheda che era aperta prima del riavvio non è stata ripristinata.",
+      "tabs_were_not_restored_other": "{{count}} schede che erano aperte prima del riavvio non sono state ripristinate.",
+      "dismiss_until_next_visit": "Nascondi fino alla prossima visita",
+      "could_not_check_restored_tabs": "Non è stato possibile verificare se tutte le schede sono state ripristinate dopo l'ultimo riavvio."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 saltata — attualmente selezionata)",

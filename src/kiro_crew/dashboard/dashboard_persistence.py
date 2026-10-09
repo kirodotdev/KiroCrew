@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from collections.abc import Callable
 from functools import partial
 from pathlib import Path
@@ -57,6 +58,21 @@ class DashboardPersistenceCoordinator:
         self._wall_time_provider = wall_time_provider
         self._slot_saver_provider = slot_saver_provider
         self._shutdown_event_provider = shutdown_event_provider
+        # The open-tab key SET this coordinator last wrote, with the path it wrote
+        # it to. The open-tab write now fsyncs the file and its directory, which is
+        # far from free on a 5s cadence -- and almost every one of those writes is
+        # byte-identical to the file already there, because the set only changes when
+        # a tab is opened, closed or restored. Remembering what landed is what keeps
+        # the durable write rare instead of periodic.
+        #
+        # Keyed on the path as well as the set: a test (or a home switch) can repoint
+        # ``config_dir`` under a live coordinator, where an unchanged set must not
+        # suppress the first write to the NEW file.
+        self._open_slots_written: tuple[Path, frozenset[str]] | None = None
+        # Guards the whole sample-compare-rotate-write-publish sequence above. A
+        # plain Lock rather than an RLock: nothing inside that sequence re-enters it,
+        # and an RLock would quietly permit a future caller that does.
+        self._open_slots_lock = threading.Lock()
 
     @staticmethod
     def _owner_method(
@@ -210,29 +226,141 @@ class DashboardPersistenceCoordinator:
         violation from a foreign handle open on the file): the seed exists but
         could not be read, so the caller must NOT write -- a merge against an
         empty read would shrink the file and lose the very tabs the seed holds.
+
+        A file that holds no answer at all -- absent, zero-length, truncated -- is
+        read from the PREVIOUS generation beside it instead, the same fallback the
+        restore drivers take and for the same reason: the merge exists to stop a
+        boot-window flush shrinking the seed, and a crash that truncated the live
+        file is exactly when the seed it must preserve is in the other file. An
+        ASIDE that cannot be read is ``None`` too, not an empty seed: the damaged
+        live file plus an unreadable aside is the one combination where this call
+        knows nothing at all, and answering ``[]`` there would merge against nothing
+        and publish the live slots alone.
         """
         try:
-            raw = self._json_codec_provider().loads(path.read_text(encoding="utf-8"))
+            text = path.read_text(encoding="utf-8")
         except FileNotFoundError:
-            return []
-        except Exception:
+            return self._previous_generation_keys(path)
+        except UnicodeDecodeError:
+            # Undecodable bytes are DAMAGE, and a torn write is how they get there.
+            # Caught by name because it is a ``ValueError``: the OSError clause below
+            # does not see it, and letting it out of a merge read would abort the
+            # flush over a file whose whole purpose is to be recoverable.
+            self._logger_provider().debug(
+                "open_slots.json is not valid UTF-8; reading the previous generation",
+                exc_info=True,
+            )
+            return self._previous_generation_keys(path)
+        except OSError:
             # The seed may well exist and be non-empty; we just could not read
             # it this instant. Signal "unknown" so the caller skips the write
             # and preserves the on-disk seed for the next flush to retry.
+            #
+            # Narrowed to OSError deliberately. A file this call OPENED and read is
+            # not momentarily unreadable: if what came back does not parse, the
+            # content is damaged, which is an answer -- and routing damage down this
+            # branch would skip the write forever while the aside beside it held the
+            # keys the whole time.
             self._logger_provider().debug(
                 "open_slots.json unreadable; skipping pre-restore write", exc_info=True
             )
             return None
+        try:
+            raw = self._json_codec_provider().loads(text)
+        except Exception:
+            return self._previous_generation_keys(path)
         keys = raw.get("keys") if isinstance(raw, dict) else None
         if not isinstance(keys, list):
-            return []
+            return self._previous_generation_keys(path)
         return [key for key in keys if isinstance(key, str)]
 
+    def _previous_generation_keys(self, path: Path) -> list[str] | None:
+        """The string ``keys`` the previous generation beside *path* holds.
+
+        ``None`` carries the caller's own third state: the aside exists and could not
+        be READ, so this call learned nothing. An absent or damaged aside answers
+        ``[]`` -- there is genuinely no earlier set -- and only a refused read is
+        unknown, because only a refused read can be hiding an intact one.
+        """
+        from kiro_crew.dashboard.slot_persistence.restore_inputs import (
+            OPEN_SLOTS_PREV_FILE,
+            OpenSlotsUnreadable,
+            open_slot_keys_in,
+        )
+
+        try:
+            keys = open_slot_keys_in(path.with_name(OPEN_SLOTS_PREV_FILE))
+        except OpenSlotsUnreadable:
+            self._logger_provider().debug(
+                "open_slots.json.prev unreadable; skipping pre-restore write", exc_info=True
+            )
+            return None
+        return [key for key in (keys or ()) if isinstance(key, str)]
+
+    def _rotate_open_slots_generation(self, path: Path) -> None:
+        """Keep the generation currently on disk as ``open_slots.json.prev``.
+
+        Only a USABLE generation is kept: the aside is the answer the restore falls
+        back to, so copying a zero-length or truncated file over it would overwrite
+        the last good open-tab set with the damage this whole mechanism exists to
+        survive. A file that holds no answer is left where it is and the aside keeps
+        whatever older set it already held.
+
+        Best effort by construction. The caller's own write is what matters, and a
+        rotation that could not be made is a lost fallback rather than a lost tab.
+        """
+        from kiro_crew.dashboard.slot_persistence.restore_inputs import (
+            OPEN_SLOTS_PREV_FILE,
+            open_slot_keys_usable,
+        )
+
+        try:
+            # ONE read, screened and then copied. Reading twice -- once to judge the
+            # generation, once to copy it -- could judge one generation and copy the
+            # next, which is how an aside ends up holding bytes nothing screened.
+            #
+            # A read that fails here leaves the aside alone, which is the safe side:
+            # the aside keeps whatever older set it held, and the caller's own write
+            # still lands.
+            text = path.read_text(encoding="utf-8")
+            if not open_slot_keys_usable(text):
+                return
+            self._atomic_write_provider()(
+                path.with_name(OPEN_SLOTS_PREV_FILE),
+                text,
+                mode=0o600,
+                fsync=True,
+            )
+        except Exception:
+            self._logger_provider().debug(
+                "Failed to keep the previous open_slots.json generation", exc_info=True
+            )
+
     def _persist_open_slots(self, owner: Any) -> None:
-        """Atomically snapshot the current persistent open-slot keys."""
+        """Atomically snapshot the current persistent open-slot keys.
+
+        SERIALIZED end to end: sampling the live keys, comparing them against what
+        this coordinator last wrote, rotating the aside, writing, fsyncing the
+        directory and publishing the new cache value are one critical section.
+
+        ``atomic_write`` makes each write atomic against a READER, which says nothing
+        about two writers. Both callers run off the event loop -- the periodic flush
+        on its executor and the pre-restart save on its own thread -- so they really
+        do interleave, and unserialized the interleaving corrupts the CACHE rather
+        than the file: the writer that sampled ``[A, B]`` can publish that as "what
+        is on disk" after the writer that sampled ``[A]`` has already landed. Every
+        later flush then compares against ``[A, B]``, matches, and skips the write
+        that would have repaired the file, so B is gone at the next boot -- a lost
+        tab from a cache line, with the file itself never corrupt at any instant.
+        """
         if owner.restoring_open_slots:
             self._logger_provider().debug("open_slots snapshot skipped: restore in progress")
             return
+        with self._open_slots_lock:
+            self._persist_open_slots_locked(owner)
+
+    def _persist_open_slots_locked(self, owner: Any) -> None:
+        """The body of :meth:`_persist_open_slots`, with its lock already held."""
         try:
             path = self._config_dir_provider() / "open_slots.json"
             # Incognito, temporary, and future non-persistent modes must never
@@ -283,14 +411,63 @@ class DashboardPersistenceCoordinator:
                     if key not in seen:
                         seen.add(key)
                         keys.append(key)
+            # Nothing to make durable when the set is the one already on disk, and
+            # the flush asks this question every 5s for the life of the process. The
+            # SET is what the file records -- order carries no meaning to any reader
+            # of it -- so a reordered ``_slots`` is not a change. ``ts`` moves on
+            # every write and is deliberately not part of the comparison: rewriting
+            # the file to advance a timestamp nothing reads would make the skip
+            # unreachable.
+            written = frozenset(keys)
+            if self._open_slots_written == (path, written) and path.exists():
+                return
+            # The generation about to be replaced becomes the fallback, BEFORE the
+            # replacement starts. Ordered this way because the window the fallback
+            # covers is the replacement itself.
+            self._rotate_open_slots_generation(path)
             payload = self._json_codec_provider().dumps(
                 {"keys": keys, "ts": self._wall_time_provider()}
             )
             # The canonical writer uses a unique temporary file, which avoids
             # collisions between the periodic and shutdown flush threads.
-            self._atomic_write_provider()(path, payload, mode=0o600)
+            #
+            # ``fsync=True`` plus the directory fsync below is what makes the open-tab
+            # registry survive an unclean reboot. ``atomic_write`` is atomic against a
+            # CONCURRENT READER -- the rename publishes the whole file or none of it --
+            # which is a different property from surviving a power loss: without the
+            # file fsync the data blocks may not have reached the disk when the rename
+            # does, and without the directory fsync the rename itself may not have. A
+            # filesystem that commits metadata ahead of data then brings the file back
+            # present and zero-length, which reads as "no tab was open" and prunes the
+            # user's whole working set on the next flush.
+            self._atomic_write_provider()(path, payload, mode=0o600, fsync=True)
+            self._fsync_dir(path.parent)
+            self._open_slots_written = (path, written)
         except Exception:
+            # Including a failed write: what landed is unknown, so forget what this
+            # coordinator believes is on disk rather than letting the skip above
+            # suppress the retry.
+            self._open_slots_written = None
             self._logger_provider().debug("Failed to persist open_slots.json", exc_info=True)
+
+    def _fsync_dir(self, directory: Path) -> None:
+        """Commit *directory*'s own entries, so the rename that published the file lasts.
+
+        Raising, not ``best_effort``. The helper is already quiet exactly where a
+        directory sync cannot be EXPRESSED -- Windows has no directory descriptor,
+        and a filesystem that rejects the call reports it through the errno set the
+        helper screens -- so what ``best_effort`` would additionally swallow is an
+        ``EIO``: the device declining the write. This caller's next statement
+        publishes ``_open_slots_written``, which makes every later flush skip the
+        write while the set is unchanged, so a swallowed ``EIO`` would suppress the
+        retry of the one write it just failed to make durable. Raised, it lands in
+        the caller's ``except``, which forgets the cache and leaves the write
+        retryable. ``best_effort`` is for a caller past its point of no return; this
+        one is one statement short of it.
+        """
+        from kiro_crew.atomic_write import fsync_dir
+
+        fsync_dir(directory)
 
     def broadcast_context_usage(
         self,
