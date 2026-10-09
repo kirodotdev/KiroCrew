@@ -876,6 +876,54 @@ class TestMrTimelineNotesFetch(unittest.TestCase):
         self.assertNotIn("comment", kinds)
 
 
+class TestTimelineLabelColours(unittest.TestCase):
+    """The timeline reads the project's label set only when an event lacks a colour.
+
+    A project with over a hundred labels pays two requests per full read of the
+    set, a large share of the burst that trips a GitLab rate limit, and each
+    label event already carries its label's colour.
+    """
+
+    LABELS = [{"name": "bug", "color": "#ff0000", "description": ""}]
+
+    def setUp(self):
+        self.calls: list[str] = []
+
+    def _fake_api(self, label_events=()):
+        def fake(path, **kwargs):
+            if kwargs.get("method", "GET") == "GET":
+                self.calls.append(path)
+            endpoint = path.split("?")[0]
+            if endpoint.endswith("/labels"):
+                return list(self.LABELS)
+            if endpoint.endswith("/resource_label_events"):
+                return list(label_events)
+            if endpoint.endswith("/issues/5"):
+                return {"iid": 5, "title": "t", "state": "opened", "labels": ["bug"]}
+            return []
+
+        return fake
+
+    def _label_reads(self) -> int:
+        return sum(1 for p in self.calls if p.split("?")[0].endswith("/labels"))
+
+    def test_timeline_skips_the_label_set_when_events_carry_colours(self):
+        event = {"action": "add", "label": {"name": "bug", "color": "#ff0000"}, "user": {"username": "a"}}
+        with mock.patch.object(gitlab_client, "_glab_api", side_effect=self._fake_api([event])):
+            events = gitlab_client.list_pr_timeline("g", "p", 7, host="gitlab.com")
+        self.assertEqual(self._label_reads(), 0, self.calls)
+        labeled = [e for e in events if e["kind"] == "labeled"]
+        self.assertEqual(labeled[0]["label"]["color"], "ff0000")
+
+    def test_timeline_reads_the_label_set_for_a_colourless_event(self):
+        event = {"action": "add", "label": {"name": "bug"}, "user": {"username": "a"}}
+        with mock.patch.object(gitlab_client, "_glab_api", side_effect=self._fake_api([event])):
+            events = gitlab_client.list_issue_timeline("g", "p", 5, host="gitlab.com")
+        self.assertEqual(self._label_reads(), 1, self.calls)
+        labeled = [e for e in events if e["kind"] == "labeled"]
+        self.assertEqual(labeled[0]["label"]["color"], "ff0000")
+
+
 class TestInvestigationNamespace(unittest.TestCase):
     """Investigation records must not collide across GitLab's two sequences.
 
