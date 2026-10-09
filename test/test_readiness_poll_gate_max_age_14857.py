@@ -79,6 +79,15 @@ def _reset_refusal_warning():
     kiro_readiness._clear_refusal_warning()
 
 
+@pytest.fixture(autouse=True)
+def _empty_catalog_cache(monkeypatch: pytest.MonkeyPatch):
+    # ``api_models`` serves a warm module-level catalog before it would reach the
+    # unresolved-binary 503 this file asserts. Another test in the same worker
+    # can leave that cache warm, which turned the 503 into a 200 on the release
+    # runner. A fresh cache per test makes the outcome independent of order.
+    monkeypatch.setattr(agents, "_catalog_cache", agents._CatalogCache())
+
+
 @pytest.mark.asyncio
 async def test_api_models_keeps_the_tight_bound_and_reprobes_a_stale_latch() -> None:
     """``/api/models`` is polled only while degraded and has no spawn cooldown, so
