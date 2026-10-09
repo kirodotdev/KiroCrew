@@ -87,6 +87,7 @@ from kiro_crew.acp._dispatch import (
     meta_builtin_server_names,
     parse_claude_compaction_notice,
     parse_codex_compaction_update,
+    parse_message_id,
     parse_prompt_token_usage,
     parse_refusal,
     parse_session_modes,
@@ -160,6 +161,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
+    ACP_BACKENDS_FORK_AT_MESSAGE,
     ACP_BACKENDS_HARNESS_OWNED_SESSIONS,
     ACP_BACKENDS_INLINE_COMPACTION,
     ACP_BACKENDS_INTERNAL_SANDBOX,
@@ -206,6 +208,7 @@ from kiro_crew.acp.types import (
     METHOD_METADATA,
     METHOD_PROMPT,
     METHOD_REQUEST_PERMISSION,
+    METHOD_SESSION_FORK,
     METHOD_SESSION_LOAD,
     METHOD_SESSION_NEW,
     METHOD_SESSION_RESUME,
@@ -766,16 +769,27 @@ _CLAUDE_PROJECT_SETTINGS_FILES: tuple[str, ...] = ("settings.local.json", "setti
 #: keeps the array withheld.
 CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION = (0, 84, 0)
 
+#: The oldest claude-agent-acp whose ``session/fork`` honours a fork point
+#: (``_meta.jetbrains.air.fork.messageId``). Older ones advertise
+#: ``sessionCapabilities.fork`` too but copy the whole session, so below it, or
+#: when the adapter reports no version, a rewind does not fork.
+CLAUDE_ACP_FORK_POINT_MIN_VERSION = (0, 71, 0)
 
-def _claude_adapter_honours_setting_sources(agent_version: str) -> bool:
-    """Whether *agent_version* is at or above the ``settingSources`` floor."""
+
+def _adapter_version_at_least(agent_version: str, floor: tuple[int, int, int]) -> bool:
+    """Whether *agent_version* is at or above *floor*."""
     # Bounded digit runs: the version is adapter-reported, and ``int()`` refuses a
     # run past the interpreter's digit limit with ``ValueError``.
     match = re.match(r"(\d{1,9})\.(\d{1,9})\.(\d{1,9})(?!\d)", agent_version or "")
     if not match:
         return False
     found = tuple(int(part) for part in match.groups())
-    return found >= CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION
+    return found >= floor
+
+
+def _claude_adapter_honours_setting_sources(agent_version: str) -> bool:
+    """Whether *agent_version* is at or above the ``settingSources`` floor."""
+    return _adapter_version_at_least(agent_version, CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION)
 
 
 #: Project settings keys that RESTRICT a session but cannot be carried inline:
@@ -2101,6 +2115,8 @@ class AcpClient:
         # the full budget, then hard-kill — losing the session).
         self._cancel_grace_secs: float = _CANCEL_GRACE_SECS
         self._resume_session_id: str | None = None
+        # (source session id, fork-point message id) for the next ensure_ready().
+        self._fork_request: tuple[str, str] | None = None
         self._resumed = False
         self._can_load_session = False
         # agentInfo.version from the initialize response — the version the
@@ -4669,6 +4685,14 @@ class AcpClient:
         """Set a kiro-cli session ID to restore via session/load on next ensure_ready()."""
         self._resume_session_id = sid
 
+    def set_fork_request(self, source_sid: str, message_id: str) -> None:
+        """Start the next ensure_ready() from a fork of *source_sid* cut at *message_id*.
+
+        Consumed by that handshake whether or not the fork succeeds; when it does
+        not, the handshake falls back to session/new.
+        """
+        self._fork_request = (source_sid, message_id)
+
     def rekey(
         self,
         session_key: str,
@@ -7098,6 +7122,46 @@ class AcpClient:
             "clientCapabilities": ACP_CLIENT_CAPABILITIES,
         }
 
+    async def _fork_session(
+        self, source_sid: str, message_id: str, capabilities: dict
+    ) -> str | None:
+        """Fork *source_sid* up to and including *message_id*: the new sid, or None.
+
+        Only a harness in ``ACP_BACKENDS_FORK_AT_MESSAGE``, at a version that reads
+        the ``_meta`` fork point sent here: a fork that ignored it would copy the
+        WHOLE session, including everything after *message_id* that the caller is
+        discarding.
+        """
+        session_capabilities = capabilities.get("sessionCapabilities")
+        if not (
+            self.backend in ACP_BACKENDS_FORK_AT_MESSAGE
+            and _adapter_version_at_least(self._agent_version, CLAUDE_ACP_FORK_POINT_MIN_VERSION)
+            and isinstance(session_capabilities, dict)
+            and isinstance(session_capabilities.get("fork"), dict)
+        ):
+            return None
+        params = {
+            "sessionId": source_sid,
+            "cwd": await self._session_work_dir(),
+            "mcpServers": [],
+            "_meta": {"jetbrains": {"air": {"fork": {"version": 1, "messageId": message_id}}}},
+        }
+        try:
+            fork_id = await self._send_request(METHOD_SESSION_FORK, params)
+            fork_resp = await self._wait_for_response(fork_id, timeout=_INIT_TIMEOUT)
+        except (AcpError, AcpTimeoutError):
+            logger.info(
+                "session/fork of %s at %s failed, falling back to session/new",
+                source_sid,
+                message_id,
+            )
+            return None
+        forked_sid = fork_resp.get("sessionId")
+        if not isinstance(forked_sid, str) or not forked_sid:
+            return None
+        logger.info("ACP session forked: %s -> %s at %s", source_sid, forked_sid, message_id)
+        return forked_sid
+
     async def _initialize_session(self) -> None:
         """Handshake: initialize → session/load or session/new → set_mode → set_model."""
         # 1. Initialize
@@ -7158,6 +7222,11 @@ class AcpClient:
         self._resumed = False
         resume_sid = self._resume_session_id
         self._resume_session_id = None  # consume — no retry loop
+        fork_request = self._fork_request
+        self._fork_request = None
+        if fork_request and not resume_sid and self._can_load_session:
+            # A successful fork is then restored like any resume.
+            resume_sid = await self._fork_session(*fork_request, capabilities)
         sent_snapshot: DerivedSpecSnapshot | None = None
 
         if resume_sid and self._can_load_session:
@@ -9101,7 +9170,12 @@ class AcpClient:
                         self.last_prompt_stats.text_chunks += 1
                         self._stale_eligible = not self._active_tool_calls
                         self._prompt_or_tool_seen = True
-                    yield AcpEvent(kind=kind, text=chunk, control_notice=_notice_chunk)
+                    yield AcpEvent(
+                        kind=kind,
+                        text=chunk,
+                        control_notice=_notice_chunk,
+                        message_id=parse_message_id((msg.params or {}).get("update")),
+                    )
                     if not is_thinking and _is_tool_interrupted_marker(chunk):
                         # kiro-cli's built-in security filter cancelled the turn's tools.
                         # It will not send a ``complete`` response — synthesize one so the

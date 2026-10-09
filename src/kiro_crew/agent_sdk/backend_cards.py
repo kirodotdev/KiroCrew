@@ -465,6 +465,10 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "which verb restores a session, and which capability advertises it. The "
         "user reopens a chat either way"
     ),
+    "ACP_BACKENDS_FORK_AT_MESSAGE": (
+        "whether an edited message's rewind forks the native session or replays "
+        "the transcript as text. The edit runs either way"
+    ),
     "ACP_BACKENDS_SELF_SERVED_ACP": (
         "whether a harness's whole launch is a row of ACP_BACKEND_LAUNCH, so the "
         "spawn path, the install probe and the driver seams resolve argv from that "

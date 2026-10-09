@@ -10,6 +10,7 @@
     "events": [
       {
         "kind": "text_chunk",
+        "message_id": "msg_08f86c63c0013OUuLVstioZ9Hc",
         "text": "ok"
       }
     ],
@@ -25,6 +26,7 @@
     "events": [
       {
         "kind": "text_chunk",
+        "message_id": "msg_08f886467001KdthmC4SYsgWhT",
         "text": "## Objective\n- User is trying to get a reply from the Assistant.\n\n## Important Details\n- None\n\n## Work State\n### Completed\n- None\n\n### Active\n- None\n\n### Blocked\n- None\n\n## Next Move\n1. \"(none)\"\n2. \"(none)\"\n\n## Relevant Files\n- \"<conversation>\""
       }
     ],
@@ -46,6 +48,7 @@
     "events": [
       {
         "kind": "text_chunk",
+        "message_id": "msg_08f88d1aa0018lwvIUf6b6X3Mr",
         "text": "```json\n{\"name\": \"webfetch\", \"parameters\": {\"format\": \"markdown\", \"url\": \"https://opencode.ai/docs\"}} \n```"
       }
     ],
@@ -61,6 +64,7 @@
     "events": [
       {
         "kind": "text_chunk",
+        "message_id": "msg_08f8a8ff2001I1t7C79KjHdjZq",
         "text": "## Objective\n- The user wants to continue the conversation with the Assistant.\n\n## Important Details\n- The previous <prior-summary> is discarded.\n- A new web fetch request has been sent to `https://opencode.ai/docs`.\n\n## Work State\n### Completed\n- None\n\n### Active\n- Continue the next steps of the web fetch request from `{\"name\": \"webfetch\", \"parameters\": {\"format\": \"markdown\", \"url\": \"https://opencode.ai/docs\"}}`\n\n### Blocked\n- None\n\n## Next Move\n1. Retrieve metadata from the web page.\n2. `(none)`\n\n## Relevant Files\n- \"<conversation>\""
       }
     ],
@@ -82,6 +86,7 @@
     "events": [
       {
         "kind": "text_chunk",
+        "message_id": "msg_08f8b7b45001Fo2BUcut0AQT4n",
         "text": "```\n{\"name\": \"webfetch\", \"parameters\": {\"url\": \"https://opencode.ai/docs\"}} \n```"
       }
     ],
@@ -97,6 +102,7 @@
     "events": [
       {
         "kind": "text_chunk",
+        "message_id": "msg_08f8d37d50014bYbf4lteBqNCt",
         "text": "## Objective\n- The user wants to continue the conversation with no further details specified.\n\n## Important Details\n- The previous <prior-summary> is discarded.\n- A new web fetch request has been sent to `https://opencode.ai/docs`.\n\n## Work State\n### Completed\n- None\n\n### Active\n- Investigate metadata from the web page for the webfetch request from `{\"name\": \"webfetch\", \"parameters\": {\"url\": \"https://opencode.ai/docs\"}}`\n\n### Blocked\n- None\n\n## Next Move\n1. `(none)`\n\n## Relevant Files\n- \"<conversation>\""
       }
     ],
@@ -118,6 +124,7 @@
     "events": [
       {
         "kind": "text_chunk",
+        "message_id": "msg_08f8e0d470013vzwLwBXimhpiu",
         "text": "```\n{\"name\": \"webfetch\", \"parameters\":\n  {\"url\": \"https://opencode.ai/docs\",\n   \"format\": \"markdown\"}} \n```"
       }
     ],

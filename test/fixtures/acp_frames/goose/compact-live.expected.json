@@ -115,6 +115,7 @@
     "events": [
       {
         "kind": "text_chunk",
+        "message_id": "msg-1",
         "text": "ok"
       }
     ],
@@ -152,6 +153,7 @@
     "events": [
       {
         "kind": "text_chunk",
+        "message_id": "msg-2",
         "text": "ok"
       }
     ],
@@ -189,6 +191,7 @@
     "events": [
       {
         "kind": "text_chunk",
+        "message_id": "msg-3",
         "text": "ok"
       }
     ],
@@ -232,6 +235,7 @@
     "events": [
       {
         "kind": "text_chunk",
+        "message_id": "msg-5",
         "text": "Compaction complete"
       }
     ],
@@ -269,6 +273,7 @@
     "events": [
       {
         "kind": "text_chunk",
+        "message_id": "msg-6",
         "text": "ok"
       }
     ],

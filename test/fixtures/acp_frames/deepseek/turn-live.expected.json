@@ -76,6 +76,7 @@
     "events": [
       {
         "kind": "text_chunk",
+        "message_id": "msg-synthetic-a",
         "text": "I called the bash tool, but it did not produce any output. The `exit code: N` marker is available; investigating the failure will continue.\n\nChecking exit code 0 for the bash command; no output indicates an expected error or successful termination with no output, according to DSH. No result means success; see `work dir`. File contents will be read next.\n\n\nUsing `read` on file `../outside-probe.txt` as it exists now:\n\n\nFile has 0 lines and is empty. Next step?"
       }
     ],

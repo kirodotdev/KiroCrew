@@ -30,6 +30,7 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_CONTEXT_RECYCLE,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
+    ACP_BACKENDS_FORK_AT_MESSAGE,
     ACP_BACKENDS_HARNESS_MANAGED_COMPACTION,
     ACP_BACKENDS_HARNESS_OWNED_SESSIONS,
     ACP_BACKENDS_HOOKS_LIST,
@@ -138,6 +139,9 @@ METHOD_SESSION_LOAD = "session/load"
 #: which is why one membership set (``ACP_BACKENDS_RESUME_WITHOUT_LOAD``) decides
 #: which of the two a harness is sent rather than each having a restore path.
 METHOD_SESSION_RESUME = "session/resume"
+#: Copies a stored session into a new one and answers the new ``sessionId``; the
+#: source is left untouched. Advertised as ``sessionCapabilities.fork``.
+METHOD_SESSION_FORK = "session/fork"
 # kiro-cli extension: evict a session from the multiplexed process, freeing its
 # transcript/context + reaping its MCP children. Without this the shared
 # kiro-cli process retains every session's state for its whole lifetime, so RSS
@@ -877,6 +881,11 @@ class AcpEvent:
     #: (``AcpSessionHandle._run_turn``). Other harnesses leave the id off model
     #: text too, and nothing reads the flag for them.
     unattributed: bool = False
+    #: The backend's id for the model message a text chunk belongs to, from the
+    #: chunk's ``messageId``. claude-agent-acp stamps the provider's API message
+    #: id here, which is what its ``session/fork`` accepts as a fork point. Empty
+    #: when the frame carried none.
+    message_id: str = ""
     #: True when this event was SYNTHESIZED by the client rather than read off a
     #: backend frame. Only the claude compaction terminal sets it: an automatic
     #: compaction sends no terminal of its own, so one is manufactured once the

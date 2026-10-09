@@ -2818,6 +2818,7 @@ class _ChatSlot:
         "_closing",
         "credential_evidence",
         "segment_raw_text",
+        "segment_message_id",
         "key",
         "title",
         "agent",
@@ -3225,6 +3226,10 @@ class _ChatSlot:
         # describe it; the flush redacts THIS copy instead when it agrees with
         # the redacted one. Memory only, never persisted, dropped at each flush.
         self.segment_raw_text: str | None = ""
+        # The backend's id for the model message the current segment's text came
+        # from (the last one seen). Written onto the segment's row as
+        # ``meta["native_message_id"]`` at the flush, which drops it.
+        self.segment_message_id = ""
         # Serialized ``SourceRef.identity`` keys the user has explicitly unlinked
         # from this session. The derivation in ``SlotProjection.source_links``
         # filters against this, so a dismissed change stays gone across the

@@ -4191,7 +4191,8 @@ def _log_glued_footer_text(slot: Any, glued: list[str]) -> None:
 def _segment_row_meta(
     slot: _ChatSlot, blocked_links: list[dict], redactions: list[dict] | None = None
 ) -> dict | None:
-    """The assistant row's ``meta``: the decision strip plus redaction records.
+    """The assistant row's ``meta``: the decision strip, redaction records and the
+    segment's native message id, which this consumes.
 
     One function because every field has to reach ``slot.append`` in the same
     dict -- that call broadcasts the live frame from inside itself, so a field
@@ -4200,9 +4201,14 @@ def _segment_row_meta(
     what ``slot.append`` expects for a row with no meta.
     """
     meta = _decisions_strip_meta(slot)
-    if not blocked_links and not redactions:
+    message_id = getattr(slot, "segment_message_id", "")
+    if message_id:
+        slot.segment_message_id = ""
+    if not blocked_links and not redactions and not message_id:
         return meta
     out = dict(meta) if meta else {}
+    if message_id:
+        out["native_message_id"] = message_id
     if blocked_links:
         out["blocked_links"] = blocked_links
     if redactions:
@@ -9376,6 +9382,7 @@ async def _run_chat(
     # A credential in this turn's reply is traced only to this turn's tools.
     slot.credential_evidence.clear()
     slot.segment_raw_text = ""
+    slot.segment_message_id = ""
     # session_id -> {started, done, agent, task} for native kiro-cli subagents,
     # reconciled from `_kiro.dev/subagent/list_update` (one card per sub-agent).
     # The slot holds the same live dict so reconnect snapshots can restore cards.
@@ -12150,6 +12157,8 @@ async def _run_chat(
                 # text where the credential is intact and therefore matchable.
                 safe_chunk, _ = redact_exfiltration_urls(event.text)
                 safe_chunk, _ = redact_credentials(safe_chunk)
+                if event.message_id:
+                    slot.segment_message_id = event.message_id
                 _accumulate_segment_raw(slot, event.text)
                 assistant_text += safe_chunk
                 if event.control_notice:
