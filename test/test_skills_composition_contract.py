@@ -115,13 +115,14 @@ _LOADER_MEMBERS = {
     "method": """
         __init__ _adopt_extra_paths _adopt_snapshot
         _append_project_skill_bodies _archive_root _audit_project_skill_enforcement
-        _auto_activity _auto_created_ts _auto_slug_available _auto_slug_claim_lock
+        _auto_activity _auto_created_ts _auto_skill_mutation_lock _auto_slug_available _auto_slug_claim_lock
         _body_hits _body_matches _cached_frontmatter _candidate_layout_findings_at
         _candidate_layout_ok _catalog_fingerprint_hint _catalog_scope_id
         _catalog_scope_key _catalog_worker_loop _collect_scripts_pinned
         _confined_frontmatter_and_size _create_skill_pinned
-        _exact_read_while_building _get_disabled_app_names _invalidate_iter_cache _is_user_authored
-        _iter _iter_uncached _iter_visible _legacy_context _load_catalog_snapshot
+        _exact_read_while_building _get_disabled_app_names _holds_auto_skill_mutation_lock
+        _invalidate_iter_cache _is_user_authored _iter
+        _iter_uncached _iter_visible _legacy_context _load_catalog_snapshot
         _max_triggered_now _on_config_change _owned_hint _owning_app _pending_root
         _pending_scripts_verdict _pending_scripts_verdict_at _prune_versions _rank_key
         _read_candidate_pinned _read_enumerated_skill_bytes _read_exact_key
@@ -147,6 +148,7 @@ _LOADER_MEMBERS = {
         run_skill_lifecycle scoped_skills search_skills search_skills_report
         set_inject_on_trigger set_pinned split_triggered stage_skill_candidate sync_builtins trigger_hint
         update_auto_skill update_skill
+        _audit_pending_meta _existing_restage _pending_slugs_bounded audit restage_as_update
     """,
     "static": """
         _auto_slug_from_name _candidate_has_symlink _catalog_fingerprints_for
@@ -155,6 +157,7 @@ _LOADER_MEMBERS = {
         _parse_frontmatter_text _redact_text _repo_scope_satisfied
         _rewrite_update_frontmatter _safe_name _screen_extra_paths _short_desc
         _write_skill_md has_dollar_candidate strip_frontmatter
+        _audit_is_builtin _audit_trigger_words _description_words _jaccard
     """,
 }
 
@@ -173,6 +176,7 @@ _LOADER_SIGNATURES = {
     "_auto_slug_from_name": "(name: 'str') -> 'str'",
     "_body_hits": "(self, skills: 'list[dict]', terms: 'Iterable[str]', live_keys: 'list[str]', project_dir: 'str | Path | None') -> 'dict[str, int]'",
     "_body_matches": "(self, skills: 'list[dict]', terms: 'Iterable[str]', live_keys: 'list[str]', project_dir: 'str | Path | None') -> 'tuple[dict[str, set[str]], bool]'",
+    "_auto_skill_mutation_lock": "(self, name: 'str') -> 'Iterator[None]'",
     "_cached_frontmatter": "(self, path: 'Path', mtime: 'float | None' = None, *, within: 'str | None', canonical_root: 'str | None' = None, for_write: 'bool' = False) -> 'dict[str, str]'",
     "_candidate_has_symlink": "(pdir: 'Path') -> 'bool'",
     "_candidate_layout_findings_at": "(self, root_fd: 'int') -> 'list[str]'",
@@ -190,6 +194,7 @@ _LOADER_SIGNATURES = {
     "_emit_lazy_load_metric": "(t0: 'float', *, hit: 'bool') -> 'None'",
     "_exact_read_while_building": "(self, key: 'str', only: 'list[str] | None', project_dir: 'str | Path | None', max_bytes: 'int', refusal_reasons: 'list[str] | None' = None) -> 'str | None'",
     "_get_disabled_app_names": "(self) -> 'frozenset[str]'",
+    "_holds_auto_skill_mutation_lock": "(self, name: 'str') -> 'bool'",
     "_invalidate_iter_cache": "(self) -> 'None'",
     "_is_pending_slug_safe": "(slug: 'str') -> 'bool'",
     "_is_user_authored": "(self, s: 'dict') -> 'bool'",
@@ -215,7 +220,7 @@ _LOADER_SIGNATURES = {
     "_read_exact_key": "(self, key: 'str', *, only: 'list[str] | None', project_dir: 'str | Path | None', max_bytes: 'int') -> '_ExactRead'",
     "_read_global_skill_text": "(self, path: 'Path', max_bytes: 'int | None', *, canonical_root: 'str | None' = None, refusal_reasons: 'list[str] | None' = None) -> 'str | None'",
     "_readable_frontmatter": "(self, path: 'Path', *, within: 'str | None', mtime: 'float | None' = None, canonical_root: 'str | None' = None) -> 'dict[str, str] | None'",
-    "_read_pending_meta": "(self, slug: 'str') -> 'dict'",
+    "_read_pending_meta": "(self, slug: 'str', *, max_bytes: 'int | None' = None) -> 'dict'",
     "_recency_boost": "(self, path_str: 'str', fingerprint: 'str' = '') -> 'float'",
     "_record_use": "(self, key: 'str') -> 'None'",
     "_redact_deep": "(self, obj: 'object') -> 'object'",
@@ -274,7 +279,7 @@ _LOADER_SIGNATURES = {
     "pending_candidate_is_staged": "(self, slug: 'str') -> 'bool'",
     "preview_pending_update": "(self, slug: 'str') -> 'dict | None'",
     "prune_pending": "(self, ttl_days: 'int', *, now: 'float | None' = None) -> 'int'",
-    "read_auto_skill_body": "(self, name: 'str') -> 'str | None'",
+    "read_auto_skill_body": "(self, name: 'str', *, max_bytes: 'int | None' = None) -> 'str | None'",
     "read_scoped_skill": "(self, key: 'str', *, only: 'list[str] | None' = None, project_dir: 'str | Path | None' = None, max_bytes: 'int' = 99000) -> 'str | None'",
     "read_scoped_skill_page": "(self, key: 'str', *, only: 'list[str] | None' = None, project_dir: 'str | Path | None' = None, offset: 'int | None' = None, limit: 'int | None' = None, capacity: 'int' = 99000) -> 'SkillBodyPage | SkillReadRefusal'",
     "reconfigure": "(self, cfg: 'KiroCrewConfig') -> 'None'",
@@ -289,12 +294,21 @@ _LOADER_SIGNATURES = {
     "set_inject_on_trigger": "(self, name: 'str', inject: 'bool') -> 'bool'",
     "set_pinned": "(self, name: 'str', pinned: 'bool') -> 'bool'",
     "split_triggered": "(self, names: 'list[str]', project_dir: 'str | Path | None' = None) -> 'tuple[list[str], list[str]]'",
-    "stage_skill_candidate": "(self, slug: 'str', *, description: 'str', triggers: 'str', procedure_md: 'str', provenance: 'AutoSkillProvenance', scripts: 'list[dict] | None' = None, source: 'str' = 'consolidation', kind: 'str' = 'new', target: 'str | None' = None, base_version: 'int | None' = None, refusal: 'ClaimRefusal | None' = None) -> 'str | None'",
+    "stage_skill_candidate": "(self, slug: 'str', *, description: 'str', triggers: 'str', procedure_md: 'str', provenance: 'AutoSkillProvenance', scripts: 'list[dict] | None' = None, source: 'str' = 'consolidation', kind: 'str' = 'new', target: 'str | None' = None, base_version: 'int | None' = None, refusal: 'ClaimRefusal | None' = None, restaged_from: 'str | None' = None, base_digest: 'str | None' = None) -> 'str | None'",
     "strip_frontmatter": "(content: 'str') -> 'str'",
     "sync_builtins": "(self) -> 'None'",
     "trigger_hint": "(self, names: 'list[str]', project_dir: 'str | Path | None' = None) -> 'str'",
     "update_auto_skill": "(self, name: 'str', *, description: 'str', triggers: 'str', procedure_md: 'str', provenance: 'AutoSkillProvenance') -> 'bool'",
     "update_skill": "(self, name: 'str', content: 'str') -> 'bool'",
+    "_description_words": "(description: 'str') -> 'set[str]'",
+    "_jaccard": "(left: 'set[str]', right: 'set[str]') -> 'float'",
+    "_audit_trigger_words": "(triggers: 'str') -> 'set[str]'",
+    "_audit_is_builtin": "(skill_file: 'Path') -> 'bool'",
+    "_pending_slugs_bounded": "(self, limit: 'int') -> 'tuple[list[str], int]'",
+    "_audit_pending_meta": "(self, slug: 'str') -> 'dict'",
+    "audit": "(self) -> 'dict[str, object]'",
+    "_existing_restage": "(self, stem: 'str', source_slug: 'str', target_name: 'str', base_digest: 'str') -> 'str | None'",
+    "restage_as_update": "(self, pending_slug: 'str', target_live_name: 'str') -> 'str | None'",
 }
 
 _MODULE_NAMES = """
@@ -305,7 +319,7 @@ AUTO_SKILL_NAMESPACE AUTO_SKILL_SOURCE_VALUE AUTO_SLUG_CLAIM_LOCK_NAME
 AUTO_SLUG_CLAIM_LOCK_TIMEOUT_SECS AutoSkillProvenance CRON_SOURCE_DIVERGED
 CRON_SOURCE_IN_SYNC CRON_SOURCE_UNVERIFIABLE ClaimRefusal CronScriptSource
 InstalledSkillCurrency MAX_SKILL_VERSIONS PINNED_SKILL_BODIES_CAP PROJECT_SKILL_BODY_CAP
-PendingApprovalRefused RETIRED_CONDUCTOR_SKILL_SHA256 SKILLS_DIR_NAME
+PendingApprovalRefused RestageRefused RETIRED_CONDUCTOR_SKILL_SHA256 SKILLS_DIR_NAME
 SKILL_INSTALL_BEHIND SKILL_INSTALL_EDITED SKILL_INSTALL_IN_SYNC
 SKILL_INSTALL_UNVERIFIABLE SkillContextCapacityError SkillsLoader VERSIONS_DIRNAME
 _AUTO_NAME_PATTERN _BUILTIN_SKILLS_DIR _CATALOG_READ_BATCH _CATALOG_READ_WORKERS

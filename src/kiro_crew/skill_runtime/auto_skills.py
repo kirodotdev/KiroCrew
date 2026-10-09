@@ -15,13 +15,15 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import shutil
+import threading
 import time
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
+from functools import wraps
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterator, Literal
+from typing import TYPE_CHECKING, Callable, Iterator, Literal, TypeVar
 
 if TYPE_CHECKING:
     from kiro_crew.skills import AutoSkillProvenance, ClaimRefusal, SkillsLoader
@@ -65,26 +67,19 @@ def find_similar(
 
     *exclude* lets callers suppress self-matches during refinement.
     """
-    if not description:
-        return None
-    query_words = set(re.findall(r"\w+", description.lower()))
+    query_words = loader._description_words(description)
     if not query_words:
         return None
     best_name: str | None = None
-    best_score: float = 0.0
+    best_score = 0.0
     for name, skill_file, _within in loader._iter():
         if exclude and name == exclude:
             continue
         meta = loader._cached_frontmatter(skill_file, within=_within)
-        existing = meta.get("description", "")
-        if not existing:
-            continue
-        existing_words = set(re.findall(r"\w+", existing.lower()))
+        existing_words = loader._description_words(meta.get("description", ""))
         if not existing_words:
             continue
-        intersection = query_words & existing_words
-        union = query_words | existing_words
-        score = len(intersection) / len(union) if union else 0.0
+        score = loader._jaccard(query_words, existing_words)
         if score > best_score:
             best_score = score
             best_name = name
@@ -184,6 +179,27 @@ def create_auto_skill(
 
 
 def update_auto_skill(
+    loader: SkillsLoader,
+    name: str,
+    *,
+    description: str,
+    triggers: str,
+    procedure_md: str,
+    provenance: AutoSkillProvenance,
+) -> bool:
+    """Update one live auto-skill while holding its mutation lock."""
+    with loader._auto_skill_mutation_lock(name):
+        return _update_auto_skill_locked(
+            loader,
+            name,
+            description=description,
+            triggers=triggers,
+            procedure_md=procedure_md,
+            provenance=provenance,
+        )
+
+
+def _update_auto_skill_locked(
     loader: SkillsLoader,
     name: str,
     *,
@@ -673,6 +689,8 @@ def stage_skill_candidate(
     target: str | None = None,
     base_version: int | None = None,
     refusal: ClaimRefusal | None = None,
+    restaged_from: str | None = None,
+    base_digest: str | None = None,
 ) -> str | None:
     """Write a skill candidate to the pending queue (not live).
 
@@ -795,6 +813,15 @@ def stage_skill_candidate(
                 meta["target"] = target
             if base_version is not None:
                 meta["base_version"] = base_version
+            if restaged_from is not None:
+                # The pending candidate an update proposal was built from,
+                # so a repeat request is matched by source, not by a stem
+                # two long slugs can share.
+                meta["restaged_from"] = restaged_from
+            if base_digest is not None:
+                # SHA-256 of the live body the proposal was built against. A
+                # dashboard edit keeps ``version``, so approval checks this too.
+                meta["base_digest"] = base_digest
             (pdir / ".meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
         except Exception:
             # A partial write (e.g. disk full) must not leave a CLAIMED but empty
@@ -863,7 +890,14 @@ def dismiss_pending_skill(loader: SkillsLoader, slug: str) -> bool:
     # Captured BEFORE the removal so a same-slug replacement staged after
     # this instant keeps its notification (see approve_pending_skill).
     consumed_at = datetime.now(tz=timezone.utc).isoformat()
+    target = loader._read_pending_meta(slug).get("target")
     shutil.rmtree(pdir)
+    # A restaged proposal's loader-owned base record goes with it, so those
+    # records stay bounded by the pending queue.
+    if isinstance(target, str) and target:
+        target_slug = loader._auto_slug_from_name(target)
+        if loader._is_pending_slug_safe(target_slug):
+            sk._drop_restage_base(loader, target_slug, slug)
     logger.info("Dismissed pending skill: %s", slug)
     sk._emit_pending_consumed({"slug": slug, "outcome": "dismissed", "consumed_at": consumed_at})
     return True
@@ -914,3 +948,86 @@ def prune_pending(loader: SkillsLoader, ttl_days: int, *, now: float | None = No
         if ts <= cutoff and loader.dismiss_pending_skill(entry["slug"]):
             pruned += 1
     return pruned
+
+
+class _MutationLockEntry:
+    """One live auto-skill's lock plus the threads holding or awaiting it."""
+
+    __slots__ = ("lock", "users")
+
+    def __init__(self) -> None:
+        self.lock = threading.RLock()
+        self.users = 0
+
+
+_AUTO_MUTATION_LOCKS_GUARD = threading.Lock()
+# Holds an entry only while some thread holds or awaits that skill's lock, so
+# the registry is bounded by concurrent mutations, not by every name ever edited.
+_AUTO_MUTATION_LOCKS: dict[tuple[str, str], _MutationLockEntry] = {}
+_HELD_MUTATION_LOCKS = threading.local()
+_F = TypeVar("_F", bound=Callable[..., object])
+
+
+def _mutation_lock_key(loader: SkillsLoader, name: str) -> tuple[str, str]:
+    slug = name.split("/", 1)[1] if name.startswith("auto/") else name
+    return (os.path.realpath(loader._dir), slug)
+
+
+def _held_mutation_locks() -> dict[tuple[str, str], int]:
+    held = getattr(_HELD_MUTATION_LOCKS, "keys", None)
+    if held is None:
+        held = _HELD_MUTATION_LOCKS.keys = {}
+    return held
+
+
+@contextmanager
+def _auto_skill_mutation_lock(loader: SkillsLoader, name: str) -> Iterator[None]:
+    """Serialize mutations of one live auto-skill across loader instances."""
+    key = _mutation_lock_key(loader, name)
+    with _AUTO_MUTATION_LOCKS_GUARD:
+        entry = _AUTO_MUTATION_LOCKS.get(key)
+        if entry is None:
+            entry = _AUTO_MUTATION_LOCKS[key] = _MutationLockEntry()
+        entry.users += 1
+    try:
+        with entry.lock:
+            held = _held_mutation_locks()
+            held[key] = held.get(key, 0) + 1
+            try:
+                yield
+            finally:
+                held[key] -= 1
+                if not held[key]:
+                    del held[key]
+    finally:
+        with _AUTO_MUTATION_LOCKS_GUARD:
+            entry.users -= 1
+            # No thread holds or awaits it, so a later caller may safely get a
+            # fresh lock: evicting here is what keeps the registry bounded.
+            if not entry.users and _AUTO_MUTATION_LOCKS.get(key) is entry:
+                del _AUTO_MUTATION_LOCKS[key]
+
+
+def _holds_auto_skill_mutation_lock(loader: SkillsLoader, name: str) -> bool:
+    """Whether the calling thread holds ``name``'s mutation lock."""
+    return _mutation_lock_key(loader, name) in _held_mutation_locks()
+
+
+def with_pending_update_target_lock(fn: _F) -> _F:
+    """Hold an update candidate's live-target lock for the checked approval."""
+
+    @wraps(fn)
+    def locked(loader: SkillsLoader, slug: str):
+        if not loader._is_pending_slug_safe(slug):
+            return fn(loader, slug)
+        meta = loader._read_pending_meta(slug)
+        target = meta.get("target")
+        if not isinstance(target, str) or not target:
+            return fn(loader, slug)
+        target_slug = loader._auto_slug_from_name(target)
+        if not loader._is_pending_slug_safe(target_slug):
+            return fn(loader, slug)
+        with loader._auto_skill_mutation_lock(target_slug):
+            return fn(loader, slug)
+
+    return locked  # type: ignore[return-value]

@@ -49,6 +49,7 @@ from kiro_crew.skills import (
     PROJECT_SKILL_BODY_CAP,
     SKILL_READ_CAPACITY,
     PendingApprovalRefused,
+    RestageRefused,
     SkillReadRefusal,
 )
 from kiro_crew.validation import MAX_SKILL_KEY_CHARS
@@ -96,6 +97,16 @@ _CODE_PENDING_SKILL_UNREADABLE = "pending_skill_unreadable"
 _CODE_LIVE_SKILL_EXISTS = "live_skill_exists"
 _CODE_SCRIPT_VALIDATION_FAILED = "script_validation_failed"
 _CODE_PENDING_APPROVAL_REFUSED = "pending_approval_refused"
+
+# Bound the audit response even when one pending candidate links a large skill
+# library into a single component. The dashboard applies a smaller render cap;
+# these limits protect transport and cache size before the payload reaches it.
+_SKILL_AUDIT_MAX_CLUSTERS = 50
+_SKILL_AUDIT_MAX_MEMBERS = 20
+_SKILL_AUDIT_MAX_RELATIONS = 8
+_SKILL_AUDIT_MAX_UPDATE_TARGETS = 8
+# Longest restage target accepted; live skill names the audit offers are shorter.
+_SKILL_RESTAGE_MAX_TARGET_CHARS = 256
 
 #: The literal the dashboard's browser client sends as ``X-Session-Key`` on every
 #: request that has no chat to name (``website/src/api/client.ts``). It marks the
@@ -2725,6 +2736,237 @@ async def api_skills_pending(request: web.Request) -> web.Response:
         metadata={"count": len(items)},
     )
     return web.json_response({"pending": items})
+
+
+def _bound_skill_audit_clusters(clusters: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Cap fan-out while retaining relations that justify update actions."""
+    bounded: list[dict[str, Any]] = []
+    for cluster in clusters[:_SKILL_AUDIT_MAX_CLUSTERS]:
+        all_members = [
+            member for member in cluster.get("members") or [] if isinstance(member, dict)
+        ]
+        # Fill member slots in action order: pending members first, then the live
+        # skills they could update, then everything else. A plain slice would drop
+        # a pending member sorted after 20 live names, and its update actions with it.
+        target_names = {
+            str(target.get("target"))
+            for target in cluster.get("update_targets") or []
+            if isinstance(target, dict)
+        }
+        all_members.sort(
+            key=lambda member: (
+                0
+                if member.get("kind") == "pending"
+                else 1 if str(member.get("name")) in target_names else 2
+            )
+        )
+        members = all_members[:_SKILL_AUDIT_MAX_MEMBERS]
+        member_ids = {str(member.get("id")) for member in members}
+        pending_ids = {
+            str(member.get("slug")): str(member.get("id"))
+            for member in members
+            if member.get("kind") == "pending"
+        }
+        live_ids = {
+            str(member.get("name")): str(member.get("id"))
+            for member in members
+            if member.get("kind") == "live"
+        }
+        all_relations = list(cluster.get("relations") or [])
+        valid_relations = [
+            relation
+            for relation in all_relations
+            if isinstance(relation, dict)
+            and set(map(str, relation.get("members") or [])) <= member_ids
+        ]
+        all_targets = list(cluster.get("update_targets") or [])
+        valid_targets = [
+            target
+            for target in all_targets
+            if isinstance(target, dict)
+            and str(target.get("pending_slug")) in pending_ids
+            and str(target.get("target")) in live_ids
+        ][:_SKILL_AUDIT_MAX_UPDATE_TARGETS]
+
+        relations: list[dict[str, Any]] = []
+        retained_pairs: set[frozenset[str]] = set()
+        update_targets: list[dict[str, Any]] = []
+        for target in valid_targets:
+            pair = frozenset(
+                (
+                    pending_ids[str(target["pending_slug"])],
+                    live_ids[str(target["target"])],
+                )
+            )
+            backing = next(
+                (
+                    relation
+                    for relation in valid_relations
+                    if frozenset(map(str, relation.get("members") or [])) == pair
+                ),
+                None,
+            )
+            if backing is None:
+                continue
+            if pair not in retained_pairs:
+                if len(relations) >= _SKILL_AUDIT_MAX_RELATIONS:
+                    break
+                relations.append(backing)
+                retained_pairs.add(pair)
+            update_targets.append(target)
+
+        for relation in valid_relations:
+            if len(relations) >= _SKILL_AUDIT_MAX_RELATIONS:
+                break
+            pair = frozenset(map(str, relation.get("members") or []))
+            if pair in retained_pairs:
+                continue
+            relations.append(relation)
+            retained_pairs.add(pair)
+
+        bounded.append(
+            {
+                **cluster,
+                "members": members,
+                "relations": relations,
+                "update_targets": update_targets,
+                "omitted_members": len(all_members) - len(members),
+                "omitted_relations": len(all_relations) - len(relations),
+                "omitted_update_targets": len(all_targets) - len(update_targets),
+            }
+        )
+    return bounded
+
+
+async def api_skills_audit(request: web.Request) -> web.Response:
+    """GET /api/skills/-/audit — compare pending and live skills for overlap."""
+    state: DashboardState = request.app["state"]
+    skills = _get_skills(state)
+    try:
+        audit = await asyncio.get_running_loop().run_in_executor(discovery_executor(), skills.audit)
+    except Exception:
+        _sel().log_tool_invocation(
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name="api_skills_audit",
+            tool_kind="skill",
+            outcome="error",
+            metadata={},
+        )
+        return web.json_response({"error": "internal error", "code": "internal_error"}, status=500)
+    clusters = list(audit.get("clusters") or [])
+    total_clusters = len(clusters)
+    bounded_clusters = _bound_skill_audit_clusters(clusters)
+    _sel().log_tool_invocation(
+        session_key="",
+        agent="api",
+        source="dashboard",
+        tool_name="api_skills_audit",
+        tool_kind="skill",
+        outcome="ok",
+        metadata={
+            "count": total_clusters,
+            "returned": len(bounded_clusters),
+            "omitted_entries": int(audit.get("omitted_entries") or 0),
+            "omitted_relations": int(audit.get("omitted_relations") or 0),
+        },
+    )
+    return web.json_response(
+        {
+            "clusters": bounded_clusters,
+            "total_clusters": total_clusters,
+            "omitted_entries": int(audit.get("omitted_entries") or 0),
+            "omitted_relations": int(audit.get("omitted_relations") or 0),
+        }
+    )
+
+
+async def api_skill_pending_restage(request: web.Request) -> web.Response:
+    """POST /api/skills/-/pending/{slug}/restage — turn a candidate into an update."""
+    denied = _deny_non_owner_skill_operation(request, "skill_pending_restage")
+    if denied is not None:
+        return denied
+    state: DashboardState = request.app["state"]
+    skills = _get_skills(state)
+    slug = request.match_info["slug"]
+
+    def _bad_request(error: str, code: str) -> web.Response:
+        # Mutation endpoint: a refused request is audited like an accepted one.
+        _sel().log_tool_invocation(
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name="api_skill_pending_restage",
+            tool_kind="skill",
+            outcome="bad_request",
+            metadata={"slug": slug[:_SKILL_RESTAGE_MAX_TARGET_CHARS], "code": code},
+        )
+        return web.json_response({"error": error, "code": code}, status=400)
+
+    if len(slug) > _SKILL_RESTAGE_MAX_TARGET_CHARS:
+        # Refused, not cut: a cut slug could name a different candidate. Past
+        # this check every audited ``slug`` is within the bound.
+        return _bad_request("slug is too long", "slug_too_long")
+    if not _plain_stem_ok(slug):
+        return _bad_request("invalid slug", "invalid_slug")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    target = body.get("target") if isinstance(body, dict) else None
+    if not isinstance(target, str) or not target.strip():
+        return _bad_request("target is required", "target_required")
+    if len(target.strip()) > _SKILL_RESTAGE_MAX_TARGET_CHARS:
+        return _bad_request("target is too long", "target_too_long")
+    try:
+        staged = await asyncio.get_running_loop().run_in_executor(
+            discovery_executor(), skills.restage_as_update, slug, target.strip()
+        )
+    except RestageRefused as exc:
+        _sel().log_tool_invocation(
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name="api_skill_pending_restage",
+            tool_kind="skill",
+            outcome="rejected",
+            metadata={"slug": slug, "target": target.strip(), "code": exc.reason},
+        )
+        return web.json_response(
+            {"error": "candidate metadata exceeds the restage limit", "code": exc.reason},
+            status=409,
+        )
+    except Exception:
+        _sel().log_tool_invocation(
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name="api_skill_pending_restage",
+            tool_kind="skill",
+            outcome="error",
+            metadata={"slug": slug},
+        )
+        return web.json_response({"error": "internal error", "code": "internal_error"}, status=500)
+    _sel().log_tool_invocation(
+        session_key="",
+        agent="api",
+        source="dashboard",
+        tool_name="api_skill_pending_restage",
+        tool_kind="skill",
+        outcome="ok" if staged else "rejected",
+        metadata={"slug": slug, "target": target.strip(), "staged": staged},
+    )
+    if staged is None:
+        return web.json_response(
+            {
+                "error": "candidate or live auto-skill target was not found",
+                "code": "restage_rejected",
+            },
+            status=409,
+        )
+    staged_slug = staged.split("/", 1)[1]
+    return web.json_response({"staged": staged, "slug": staged_slug, "target": target.strip()})
 
 
 async def api_skill_pending_detail(request: web.Request) -> web.Response:
