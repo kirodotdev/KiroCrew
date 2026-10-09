@@ -14,6 +14,10 @@ the other half -- managing the shared templates themselves:
   installed one. Nothing is enrolled as a crewmate.
 * ``DELETE /api/agents/detail/{name}`` -- delete a template the user owns, refused
   while anything still references it (``409 template_referenced`` lists what).
+* ``GET/PUT /api/config/default-template`` -- the template a session runs when
+  nothing names one (``agent.default_agent``): a plain chat, a CLI chat, a
+  channel thread, a warm-pool process, an agent-less schedule. Distinct from
+  ``/api/config/default-agent``, which picks the default CREWMATE alias.
 
 What is NOT editable here, and why each is a rule rather than a gap:
 
@@ -56,9 +60,10 @@ from typing import Any, Callable
 from aiohttp import web
 
 from kiro_crew import agent_state
-from kiro_crew.agent import agents_spec_lock, kiro_agents_dir_path
+from kiro_crew.agent import _MAIN_AGENT_NAME, agents_spec_lock, kiro_agents_dir_path
 from kiro_crew.agent_capabilities import CapabilityError, require_unmanaged_template
 from kiro_crew.agent_discovery import (
+    SCOPE_GLOBAL,
     AgentInfo,
     _global_agent_info,
     _read_agent_spec,
@@ -69,9 +74,12 @@ from kiro_crew.agent_discovery import (
 from kiro_crew.agent_files import KAS_RESERVED_AGENT_IDS, OWNED_KIRO_AGENT_FILES
 from kiro_crew.agent_spec_format import is_markdown_spec
 from kiro_crew.config.loader import (
+    ConfigReadError,
     KiroCrewConfig,
+    coerce_dict_section,
     config_local_path,
     publish_materialized_agents,
+    read_config_for_update,
     refresh_materialized_agents,
     schedule_materialized_agents_refresh,
     update_config_locked,
@@ -83,7 +91,8 @@ from kiro_crew.cron import (
     cron_store_lock,
     dispatched_agents_from_disk,
 )
-from kiro_crew.dashboard.chat_utils import drained_to_thread
+from kiro_crew.dashboard.chat_utils import drained_to_thread, run_config_write
+from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import discovery_executor
 from kiro_crew.sel import sel
@@ -345,6 +354,17 @@ def _template_rows(folders: list[FolderPin]) -> list[dict[str, Any]]:
             # offer one that can only answer 404.
             reason = _READ_ONLY_RUNTIME
         row["read_only"] = reason
+        # Whether the tab's default-template picker may offer the row. Display
+        # data from the lenient scan (``private_to`` degrades to "" on an
+        # unreadable sidecar); the PUT re-derives it STRICTLY before writing.
+        # The PUT's name grammar is part of the rule: discovery keeps a spec's
+        # declared ``name`` as written, so a global spec declaring ``"My Agent"``
+        # is listed here yet can never be stored, and the picker must not offer
+        # a row whose every pick answers 400.
+        row["default_eligible"] = (
+            TEMPLATE_NAME_RE.fullmatch(info.name) is not None
+            and _default_template_refusal(info, info.private_to) is None
+        )
         row["used_by"] = _masked_refs(
             template_references(aliases, cfg, forks, crons, folders, webhooks), _roster_mask
         )
@@ -376,6 +396,252 @@ async def api_agent_templates(request: web.Request) -> web.Response:
             status=503,
         )
     return web.json_response({"templates": rows})
+
+
+class _IneligibleDefaultTemplate(Exception):
+    """*name* is installed but may not be the default; ``code`` says why."""
+
+    def __init__(self, code: str, detail: str):
+        super().__init__(code)
+        self.code = code
+        self.detail = detail
+
+
+class _DefaultTemplateOverriddenByLocal(Exception):
+    """The local overlay pins a different effective default template."""
+
+    def __init__(self, value: str):
+        super().__init__(value)
+        self.value = value
+
+
+class _DefaultTemplateUnverifiable(Exception):
+    """The locked eligibility re-check could not read its source of truth."""
+
+
+def _default_template_overridden_by_local() -> bool:
+    """Whether the local overlay states a string default, including ``""``."""
+    try:
+        local_data = read_config_for_update(config_local_path())
+    except ConfigReadError:
+        # GET is best-effort like the loader: a malformed or unreadable overlay
+        # does not make the open read endpoint fail.
+        return False
+    local_agent = local_data.get("agent")
+    return isinstance(local_agent, dict) and isinstance(local_agent.get("default_agent"), str)
+
+
+def _default_template_refusal(info: AgentInfo, private_owner: object) -> tuple[str, str] | None:
+    """Why installed template *info* may NOT be the default, as ``(code, detail)``.
+
+    The default is machine-global and resolved on every session start, so the
+    only acceptable targets are the ones every start can reach: a user-level or
+    package template. *private_owner* is the ``private_to`` the caller read --
+    leniently for the roster's display flag, STRICTLY for the write.
+
+    * ``template_private_copy`` -- a crewmate's private copy. It belongs to that
+      crewmate and its publish/reset cleanup deletes the file; a default pointing
+      at it would fall back silently the next time that cleanup runs.
+    * ``template_background_only`` -- a runtime spec that exists for a background
+      job (``kirocrew-lite`` and kin), never a chat.
+    * ``app_registered_template`` -- an app's materialized agent, unlinked when
+      the app is disabled. Same reasoning as the crewmate-default route.
+    """
+    # Deferred: both modules top-import this one. The owner's predicate is
+    # reached through the ``handlers.agents`` facade, the one import path and
+    # patch surface for every ``agent_admin`` owner.
+    from kiro_crew.dashboard.handlers.agent_catalog import _is_background_only
+    from kiro_crew.dashboard.handlers.agents import _is_app_registered, _roster_mask
+
+    name = info.name
+    if isinstance(private_owner, str) and private_owner:
+        # The owner is a crew name: operator-authored text the fork path stores
+        # untruncated, so it reaches the browser through the roster mask like
+        # every other such string.
+        return (
+            "template_private_copy",
+            f"Template {name!r} is crewmate {_roster_mask(private_owner)!r}'s private copy; "
+            "it cannot be the default template.",
+        )
+    if _is_background_only(info):
+        return (
+            "template_background_only",
+            f"Template {name!r} runs background jobs only; it cannot start a chat.",
+        )
+    if _is_app_registered(info):
+        return (
+            "app_registered_template",
+            f"Template {name!r} is installed by an app, which removes it when the "
+            "app is disabled; it cannot be the default template.",
+        )
+    return None
+
+
+def _eligible_default_template(name: str) -> AgentInfo:
+    """Thread-side: the installed GLOBAL template *name*, or why it cannot be the default.
+
+    Raises :class:`_IneligibleDefaultTemplate` with one of the
+    :func:`_default_template_refusal` codes, or ``template_not_found`` when no
+    global spec declares the name (a project template is reachable from one
+    checkout only, so it is "not found" here).
+    """
+    for info in list_agents(agents_dir=kiro_agents_dir_path()):
+        if info.name != name or info.scope != SCOPE_GLOBAL:
+            continue
+        # The sidecar read is STRICT, as every binding writer reads it: the
+        # roster's ``private_to`` degrades to "" on an unreadable sidecar, and a
+        # default that slipped through on that degradation would run a private
+        # definition. ``get_fork_info`` is what ``private_to`` is derived from.
+        fork = agent_state.get_fork_info(name, strict=True)
+        refusal = _default_template_refusal(info, (fork or {}).get("private_to"))
+        if refusal is not None:
+            raise _IneligibleDefaultTemplate(*refusal)
+        return info
+    raise _IneligibleDefaultTemplate(
+        "template_not_found", f"No installed template is named {name!r}."
+    )
+
+
+async def api_default_template(request: web.Request) -> web.Response:
+    """GET/PUT /api/config/default-template -- what a session runs when nothing names a template.
+
+    Reads and writes ``agent.default_agent``. GET answers ``{default_template,
+    effective}``: the stored value (``""`` when unset) and the template that
+    actually starts (the runtime's own ``kirocrew`` when unset), so a picker can
+    show the real answer without re-deriving the fallback. PUT takes
+    ``{"template": name}``; ``""`` clears the setting back to the runtime default.
+
+    NOT the crewmate default: ``/api/config/default-agent`` picks which crewmate
+    alias a crewmate-less dispatch resolves to and enrols a template into one.
+    This route never creates a crewmate and never touches ``cfg.agents``.
+    """
+    # circular import: handlers.agents top-imports this module.
+    from kiro_crew.dashboard.handlers.agents import _name_would_be_masked, _require_owner
+
+    if request.method == "PUT":
+        denied = await _require_owner(request, "default_template.write")
+        if denied is not None:
+            return denied
+        body, body_err = await read_bounded_json(request)
+        if body_err is not None:
+            return body_err
+        assert body is not None  # read_bounded_json returns (dict, None) on success
+        raw = body.get("template", "")
+        if not isinstance(raw, str):
+            return web.json_response(
+                {"error": "template must be a string", "code": "invalid_template_type"},
+                status=400,
+            )
+        name = raw.strip()
+        # Masked BEFORE the grammar check so a credential-shaped name is never
+        # echoed in an error body; the grammar then refuses anything a spec
+        # file could not be named.
+        if name and (_name_would_be_masked(name) or not TEMPLATE_NAME_RE.fullmatch(name)):
+            return web.json_response(
+                {
+                    "error": "template must be 1-63 letters, digits, dots, dashes or underscores",
+                    "code": "invalid_template_name",
+                },
+                status=400,
+            )
+        agents_dir = kiro_agents_dir_path()
+
+        def _set_default(data: dict) -> dict:
+            def _check_overlay_then_set(local_data: dict) -> None:
+                local_agent = local_data.get("agent")
+                # ANY string the overlay states wins the deep merge, "" included
+                # (an empty override pins the runtime default): the base value
+                # cannot be the effective one, so the write would be a lie.
+                if isinstance(local_agent, dict) and isinstance(
+                    local_agent.get("default_agent"), str
+                ):
+                    raise _DefaultTemplateOverriddenByLocal(local_agent["default_agent"])
+                if name:
+                    with agents_spec_lock(agents_dir):
+                        try:
+                            # Deletion and every spec writer take this lock, so the
+                            # ONE eligibility scan runs here, where a spec tombstoned
+                            # a moment earlier is already gone: a scan before the
+                            # lock would answer the same codes and still be stale.
+                            _eligible_default_template(name)
+                        except _IneligibleDefaultTemplate:
+                            raise
+                        except Exception as exc:
+                            raise _DefaultTemplateUnverifiable() from exc
+                coerce_dict_section(data, "agent")["default_agent"] = name
+                return None
+
+            # The overlay wins the deep merge, so pin it while checking and
+            # mutating the base. Returning None makes this a read-only lock hold.
+            update_config_locked(config_local_path(), mutate=_check_overlay_then_set)
+            return data
+
+        try:
+            # Both config locks, like every other dashboard config writer.
+            await run_config_write(update_config_locked, mutate=_set_default, stamp_meta=False)
+        except _DefaultTemplateOverriddenByLocal:
+            return web.json_response(
+                {
+                    # The overlay value is not echoed: it is operator-authored text
+                    # that never went through the roster mask.
+                    "error": "config.local.json pins agent.default_agent; "
+                    "remove that override before changing the default template",
+                    "code": "default_template_overridden_by_local",
+                    "override_path": str(config_local_path()),
+                },
+                status=409,
+            )
+        except _IneligibleDefaultTemplate as exc:
+            status = 404 if exc.code == "template_not_found" else 409
+            return web.json_response({"error": exc.detail, "code": exc.code}, status=status)
+        except _DefaultTemplateUnverifiable:
+            logger.warning("default template: locked eligibility check failed", exc_info=True)
+            return web.json_response(
+                {
+                    "error": f"Cannot verify template {name!r} right now; retry.",
+                    "code": "template_unverifiable",
+                },
+                status=409,
+            )
+        except ConfigReadError:
+            # Fail closed: writing back a {} baseline would drop every other setting.
+            logger.exception("Refusing to set default template: config unreadable")
+            return web.json_response(
+                {"error": "failed to read config file", "code": "config_unreadable"},
+                status=500,
+            )
+        sel().log_api_access(
+            caller=request.get("user", "dashboard"),
+            operation="default_template.write",
+            outcome="success",
+            source="dashboard",
+            resources=name or _MAIN_AGENT_NAME,
+        )
+        return web.json_response(
+            {"ok": True, "default_template": name, "effective": name or _MAIN_AGENT_NAME}
+        )
+    # circular import: handlers.agents top-imports this module.
+    from kiro_crew.dashboard.handlers.agents import _roster_mask
+    from kiro_crew.dashboard.handlers.source_providers import owner_view_for_request
+
+    cfg, overridden = await asyncio.gather(
+        asyncio.to_thread(KiroCrewConfig.load),
+        asyncio.to_thread(_default_template_overridden_by_local),
+    )
+    # Through the roster mask, as every other package- or operator-written
+    # string reaches the browser: the Slack ``!agent`` write path persists the
+    # name with no validation, so a credential- or URL-shaped value can be
+    # stored and must arrive as the sentinel, never verbatim.
+    stored = _roster_mask(cfg.agent.default_agent)
+    response: dict[str, object] = {
+        "default_template": stored,
+        "effective": stored or _MAIN_AGENT_NAME,
+        "overridden": overridden,
+    }
+    # The route stays open, but an absolute home-directory path is owner-only.
+    if overridden and owner_view_for_request(request):
+        response["override_path"] = str(config_local_path())
+    return web.json_response(response)
 
 
 def _find_infos(name: str) -> list[AgentInfo]:

@@ -30,6 +30,11 @@ def register(app: web.Application) -> None:
     # The templates tab: roster with editability + references, create, delete.
     app.router.add_get("/api/agents/templates", agent_templates.api_agent_templates)
     app.router.add_post("/api/agents/templates", agent_templates.api_agent_template_create)
+    # The template a session runs when nothing names one (``agent.default_agent``);
+    # beside the roster because the tab's picker reads both. Not the crewmate
+    # default, which is ``/api/config/default-agent`` in routes/agent_config.
+    app.router.add_get("/api/config/default-template", agent_templates.api_default_template)
+    app.router.add_put("/api/config/default-template", agent_templates.api_default_template)
     app.router.add_get("/api/models", handlers.api_models)
     app.router.add_get("/api/effort-levels", handlers.api_effort_levels)
     app.router.add_get("/api/slash-commands", handlers.api_slash_commands)

@@ -181,6 +181,10 @@ async def test_roster_marks_editability_and_references(agents_dir):
     assert rows["atlas"]["read_only"] == "package"
     assert rows["kirocrew-worker"]["read_only"] == "runtime"
     assert rows["atlas"]["used_by"] == []
+    # Editability and default-eligibility are different questions: a package
+    # template cannot be edited here but every session start can reach it.
+    assert rows["reviewer"]["default_eligible"] is True
+    assert rows["atlas"]["default_eligible"] is True
 
 
 @pytest.mark.asyncio
