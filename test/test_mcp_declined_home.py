@@ -28,15 +28,16 @@ _CMD = sys.executable
 
 
 @pytest.fixture(autouse=True)
-def _pin_default_home(monkeypatch, tmp_path):
+def _pin_default_home(_floor_monkeypatch, tmp_path):
     """Keep the guard's default-home comparison and breadcrumb off the real home."""
     from kiro_crew.config import paths
 
-    monkeypatch.setattr(paths, "_resolved_home", None, raising=False)
-    monkeypatch.setattr(paths, "_resolve_default_home", lambda: tmp_path / "pinned-default-home")
-    monkeypatch.setattr(paths, "_write_recovery_breadcrumb", lambda data_home: None, raising=False)
-    monkeypatch.delenv("KIRO_HOME", raising=False)
-    monkeypatch.delenv("KIROCREW_POD", raising=False)
+    mp = _floor_monkeypatch
+    mp.setattr(paths, "_resolved_home", None, raising=False)
+    mp.setattr(paths, "_resolve_default_home", lambda: tmp_path / "pinned-default-home")
+    mp.setattr(paths, "_write_recovery_breadcrumb", lambda data_home: None, raising=False)
+    mp.delenv("KIRO_HOME", raising=False)
+    mp.delenv("KIROCREW_POD", raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -1073,7 +1074,7 @@ class TestKasRefusedHomeGrant:
             "p",
             extra_tool_refs=["@outlook", "@calendar"],
         )
-        assert out["tools"] == ["fs_read", "@outlook", "@calendar"]
+        assert out["tools"] == ["fs_read", "read_file", "list_directory", "@outlook", "@calendar"]
         assert (
             to_client_custom_agent(
                 "a", {"name": "a", "tools": "*"}, "p", extra_tool_refs=["@outlook"]
