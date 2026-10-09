@@ -40,6 +40,7 @@ import uuid
 from pathlib import Path
 
 from kiro_crew import platform_compat
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.config.loader import config_dir
 
 logger = logging.getLogger(__name__)
@@ -183,7 +184,7 @@ def _install_fresh_id(path: Path) -> None:
         # world-readable.
         with contextlib.suppress(OSError):
             platform_compat.restrict_to_owner(tmp_path)
-        os.replace(tmp_path, str(path))
+        replace_with_retry(tmp_path, str(path))
         tmp_path = ""
     finally:
         if tmp_fd >= 0:

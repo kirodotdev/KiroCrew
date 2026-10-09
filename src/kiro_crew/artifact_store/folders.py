@@ -28,6 +28,7 @@ from kiro_crew.artifact_store.model import (
     ArtifactStillPublishedError,
     ArtifactValidationError,
 )
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.config.loader import config_dir
 
 if TYPE_CHECKING:
@@ -155,7 +156,7 @@ class ArtifactFolderStore:
                 os.fsync(fd)
             finally:
                 os.close(fd)
-            os.replace(tmp, str(self._path))
+            replace_with_retry(tmp, str(self._path))
         except Exception:
             try:
                 os.unlink(tmp)

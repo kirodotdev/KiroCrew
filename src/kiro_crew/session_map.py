@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import ParamSpec, TypeVar
 
 from kiro_crew.acp.types import PROVIDER_LABEL_DEFAULT
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.config.paths import config_dir, kiro_sessions_dir
 from kiro_crew.messaging.link import (
     SLACK_NAMESPACE,
@@ -987,7 +988,7 @@ class SessionMap:
             try:
                 with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
                     f.write(payload)
-                os.replace(tmp_path, str(self._path))
+                replace_with_retry(tmp_path, str(self._path))
             except Exception:
                 try:
                     os.unlink(tmp_path)
