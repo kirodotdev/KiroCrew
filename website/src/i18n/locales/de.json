@@ -11508,6 +11508,7 @@
       "mcp_session_no_report": "Noch keine Meldung aus dieser Sitzung",
       "mcp_session_no_tools": "Gestartet, aber diese Sitzung hat keines seiner Tools erhalten. Wahrscheinlich nutzt ein anderer Server dieselben Toolnamen. Benenne sie mit `toolAliases` in der Agent-Spezifikation um.",
       "mcp_session_no_tools_also": "Gestartet, aber diese Sitzung hat keines ihrer Tools erhalten (wahrscheinlich nutzt ein anderer Server dieselben Toolnamen; benenne sie mit `toolAliases` in der Agent-Spezifikation um): {{names}}",
+      "mcp_session_restart_to_load": "Starte eine neue Sitzung, um {{name}} zu laden, sobald die Anmeldedaten funktionieren: Der Fehler oben sieht nach fehlenden oder abgelehnten Anmeldedaten aus.",
       "mcp_session_source_note": "Die Liste ist die Konfiguration dieses Agents; der Status neben jedem Namen ist das, was diese Sitzung gemeldet hat.",
       "mcp_session_started": "In dieser Sitzung gestartet",
       "message_queued_until_session_ready": "{{error}}. Deine Nachricht wartet und wird gesendet, sobald eine Sitzung bereit ist — sie liegt aber nur in diesem Tab, wenn du also weg navigierst oder neu lädst, musst du sie neu eingeben.",

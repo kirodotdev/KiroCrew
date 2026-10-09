@@ -11674,6 +11674,7 @@
       "mcp_session_no_report": "Aucun rapport de cette session pour l'instant",
       "mcp_session_no_tools": "Démarré, mais cette session n'a reçu aucun de ses outils. Un autre serveur utilise probablement les mêmes noms d'outils. Renomme-les avec `toolAliases` dans la spécification de l'agent.",
       "mcp_session_no_tools_also": "Démarrés, mais cette session n'a reçu aucun de leurs outils (un autre serveur utilise probablement les mêmes noms ; renomme-les avec `toolAliases` dans la spécification de l'agent) : {{names}}",
+      "mcp_session_restart_to_load": "Démarre une nouvelle session pour charger {{name}} une fois ses identifiants fonctionnels : l’erreur ci-dessus ressemble à un identifiant manquant ou refusé.",
       "mcp_session_source_note": "La liste correspond à la configuration de cet agent ; l'état affiché à côté de chaque nom est ce que cette session a signalé.",
       "mcp_session_started": "Démarré dans cette session",
       "message_queued_until_session_ready": "{{error}}. Ton message est en file d’attente et sera envoyé dès qu’une session sera prête — mais il n’est conservé que dans cet onglet, donc si tu quittes la page ou la recharges, tu devras le ressaisir.",

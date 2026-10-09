@@ -11342,6 +11342,7 @@
       "mcp_session_no_report": "本会话尚无报告",
       "mcp_session_no_tools": "已启动，但本会话没有拿到它的任何工具。可能另一个服务器用了相同的工具名。请在 agent spec 中用 `toolAliases` 改名。",
       "mcp_session_no_tools_also": "已启动，但本会话没有拿到它们的任何工具（可能另一个服务器用了相同的工具名；请在 agent spec 中用 `toolAliases` 改名）：{{names}}",
+      "mcp_session_restart_to_load": "凭据可用后，开始新会话即可加载 {{name}}：上面的错误看起来是凭据缺失或被拒绝。",
       "mcp_session_source_note": "列表是该 agent 的配置；每个名称旁的状态来自本会话的上报。",
       "mcp_session_started": "已在本会话中启动",
       "message_queued_until_session_ready": "{{error}}。消息已排队，会在会话就绪后发送 — 但它只保存在此标签页中，因此离开或刷新页面后需要重新输入。",

@@ -111,6 +111,7 @@ class TestAcpClientCapture:
                 "failed": [],
                 "awaiting_auth": [],
                 "failures": {},
+                "restart_to_load": [],
             }
         )
 

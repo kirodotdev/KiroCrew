@@ -37,6 +37,14 @@ export function mcpSessionFailureReason(
 }
 
 /**
+ * True when ``name`` failed for want of a credential, so restarting the session
+ * once the credential exists loads it.
+ */
+export function mcpSessionNeedsRestart(name: string, report?: McpSessionReport | null): boolean {
+  return Boolean(report?.restart_to_load?.includes(name))
+}
+
+/**
  * True when ``name`` started in this session but gave it no tools.
  *
  * A separate fact from the state above: such a server DID start, so its ring

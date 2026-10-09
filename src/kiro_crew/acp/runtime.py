@@ -452,6 +452,12 @@ _REQUEST_TIMEOUT = 30.0
 # so it sits past the longest attempt: a slot freed while the engine can still
 # send that attempt's link would hand the link to the next sign-in.
 _MCP_SIGN_IN_TIMEOUT = 630.0
+# How long a credential re-attempt (a reset without startOAuth) may hold off a
+# sign-in. It opens no consent URL, so the slot does not have to outlast the
+# longest connect: past the engine's default 60 s connect timeout it is freed,
+# and a URL the engine still sends for it is refused because no sign-in is in
+# flight, or would reach a sign-in started since, which shows its own server.
+_MCP_REATTEMPT_TIMEOUT = 75.0
 # JSON-RPC server-error code for a consent URL Crew did not show anyone.
 _MCP_URL_NOT_OPENED = -32000
 # ``initialize`` budget: a cold start, not a control-plane round trip. kiro-cli
@@ -1112,6 +1118,10 @@ class AcpRuntime:
         # most one sign-in runs at a time and its URL goes to the session that
         # started it -- see begin_mcp_sign_in.
         self._mcp_sign_in: tuple[str, str] | None = None
+        # MCP re-attempts in flight on this process, as (session_id,
+        # server_name): a reset without startOAuth for a server that failed
+        # for want of a credential -- see begin_mcp_reattempt.
+        self._mcp_reattempts: set[tuple[str, str]] = set()
         if model is not None:
             if not MODEL_ID_RE.match(model):
                 raise ValueError(
@@ -4320,6 +4330,10 @@ class AcpRuntime:
             return False
         if self._mcp_sign_in is not None or session_id not in self._session_queues:
             return False
+        if self._mcp_reattempts:
+            # A consent URL the engine sent for a re-attempt would be handed
+            # to this sign-in's server; wait until the re-attempts are answered.
+            return False
         self._mcp_sign_in = (session_id, server_name)
         task = asyncio.ensure_future(self._run_mcp_sign_in(session_id, server_name))
         self._answer_tasks.add(task)
@@ -4344,6 +4358,54 @@ class AcpRuntime:
         finally:
             if self._mcp_sign_in == entry:
                 self._mcp_sign_in = None
+
+    def begin_mcp_reattempt(self, session_id: str, server_name: str) -> bool:
+        """Ask the engine to connect a failed MCP server of one session again.
+
+        For a server that failed to start for want of a credential that may
+        exist now. Sends ``_kiro/mcp/resetServer`` with ``startOAuth``
+        false in the background; the server's next ``_kiro/mcp/status`` entry
+        reports whether it connected. The host that takes this request is the
+        one that sends consent URLs, so the same capability gates both.
+
+        Returns False, starting nothing, on a host without the request, when
+        the session is not registered, while an OAuth sign-in holds the slot
+        (a consent URL this reset produced would be handed to that sign-in's
+        server), or while a re-attempt of the same server is still unanswered.
+        Re-attempts of different servers may run together: none of them opens
+        a consent URL, and one that arrives with no sign-in in flight is
+        refused.
+        """
+        if not self._harness.opens_external_urls or self._dead:
+            return False
+        entry = (session_id, server_name)
+        if self._mcp_sign_in is not None or session_id not in self._session_queues:
+            return False
+        if entry in self._mcp_reattempts:
+            return False
+        self._mcp_reattempts.add(entry)
+        task = asyncio.ensure_future(self._run_mcp_reattempt(session_id, server_name))
+        self._answer_tasks.add(task)
+        task.add_done_callback(self._answer_tasks.discard)
+        return True
+
+    async def _run_mcp_reattempt(self, session_id: str, server_name: str) -> None:
+        """Hold the re-attempt until the engine's reset answer arrives."""
+        entry = (session_id, server_name)
+        try:
+            await self._send_and_await(
+                METHOD_KAS_MCP_RESET_SERVER,
+                {"sessionId": session_id, "serverName": server_name, "startOAuth": False},
+                timeout=_MCP_REATTEMPT_TIMEOUT,
+            )
+        except Exception as exc:  # noqa: BLE001 -- the next turn may try again
+            logger.info(
+                "MCP re-attempt for %s ended without an answer: %s",
+                sanitize_sink_text(server_name, NAME_CAP),
+                type(exc).__name__,
+            )
+        finally:
+            self._mcp_reattempts.discard(entry)
 
     async def _answer_open_external_url(self, request_id: int | str, params: Any) -> None:
         """Deliver an MCP consent URL to the session whose sign-in is in flight.

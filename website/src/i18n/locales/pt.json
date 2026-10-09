@@ -11674,6 +11674,7 @@
       "mcp_session_no_report": "Ainda sem relatório desta sessão",
       "mcp_session_no_tools": "Iniciado, mas esta sessão não recebeu nenhuma das suas ferramentas. Provavelmente outro servidor usa os mesmos nomes de ferramenta. Renomeie-os com `toolAliases` na especificação do agente.",
       "mcp_session_no_tools_also": "Iniciados, mas esta sessão não recebeu nenhuma das suas ferramentas (provavelmente outro servidor usa os mesmos nomes; renomeie-os com `toolAliases` na especificação do agente): {{names}}",
+      "mcp_session_restart_to_load": "Inicie uma nova sessão para carregar {{name}} quando as credenciais funcionarem: o erro acima parece uma credencial ausente ou recusada.",
       "mcp_session_source_note": "A lista é a configuração deste agente; o status ao lado de cada nome é o que esta sessão relatou.",
       "mcp_session_started": "Iniciado nesta sessão",
       "message_queued_until_session_ready": "{{error}}. Sua mensagem está na fila e será enviada quando uma sessão estiver pronta — mas ela fica guardada apenas nesta aba, então se você sair da página ou recarregar será necessário digitá-la de novo.",

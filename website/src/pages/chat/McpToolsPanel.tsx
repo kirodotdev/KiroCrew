@@ -9,6 +9,7 @@ import {
   mcpSessionFailureReason,
   mcpSessionGaveNoTools,
   mcpSessionHasReport,
+  mcpSessionNeedsRestart,
   mcpSessionServerState,
   type McpSessionServerState,
 } from '../../lib/mcpSessionReport'
@@ -184,6 +185,7 @@ export default function McpToolsPanel({
           const sessionReason = mcpSessionFailureReason(s.name, sessionReport)
           const sessionLabel = i18nT(SESSION_LABEL_KEY[sessionState])
           const gaveNoTools = hasSessionReport && mcpSessionGaveNoTools(s.name, sessionReport)
+          const needsRestart = hasSessionReport && mcpSessionNeedsRestart(s.name, sessionReport)
           // With a report in hand the mark answers "did this start HERE" and is
           // drawn as a ring. Without one the configured `enabled` flag is a read of
           // mcp.json, so painting it `ok` claimed a session nobody had measured.
@@ -255,6 +257,14 @@ export default function McpToolsPanel({
                     message={sessionReason ? `${sessionLabel}: ${sessionReason}` : sessionLabel}
                     askAgent
                   />
+                  {/* A credential-shaped failure is not final: a new session loads
+                      the server once the credential works. Say so in body text,
+                      not muted text: it is the row's one actionable line. */}
+                  {needsRestart && (
+                    <div role="status" className="mt-0.5 text-[11px] text-text leading-snug">
+                      {i18nT('pages.chatPage.mcp_session_restart_to_load', { name: s.name })}
+                    </div>
+                  )}
                 </div>
               )}
               {/* Started, yet gave this session no tools: most often a tool name
