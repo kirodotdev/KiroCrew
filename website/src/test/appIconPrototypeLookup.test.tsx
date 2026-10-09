@@ -57,3 +57,14 @@ describe('appIcon', () => {
     expect(appIcon('').type).toBe(appIcon('definitely-not-an-icon').type)
   })
 })
+
+describe('audio icons', () => {
+  it('offers AudioLines and Mic so voice apps need not use a generic glyph', () => {
+    expect(APP_ICON_NAMES).toContain('AudioLines')
+    expect(APP_ICON_NAMES).toContain('Mic')
+    const fallback = render(appIcon(undefined)).container.innerHTML
+    for (const name of ['AudioLines', 'Mic']) {
+      expect(render(appIcon(name)).container.innerHTML).not.toBe(fallback)
+    }
+  })
+})

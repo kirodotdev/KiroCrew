@@ -591,9 +591,9 @@ app page.
 Lucide catalog, because resolving an arbitrary name would mean bundling every
 icon; an unrecognised or absent name renders a generic panel glyph.
 
-`Activity`, `Bell`, `BookOpen`, `Bot`, `Boxes`, `Bug`, `Cloud`, `Code`,
+`Activity`, `AudioLines`, `Bell`, `BookOpen`, `Bot`, `Boxes`, `Bug`, `Cloud`, `Code`,
 `Database`, `FileText`, `Files`, `Folder`, `FolderTree`, `GitBranch`, `Globe`,
-`Inbox`, `Layers`, `Link`, `ListTodo`, `MessageSquare`, `Package`, `PanelRight`,
+`Inbox`, `Layers`, `Link`, `ListTodo`, `Mic`, `MessageSquare`, `Package`, `PanelRight`,
 `Pin`, `Search`, `Settings`, `Shield`, `Sparkles`, `Star`, `Table`, `Tag`,
 `Terminal`, `Users`, `Wrench`, `Zap`
 

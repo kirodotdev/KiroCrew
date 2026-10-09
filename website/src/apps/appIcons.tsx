@@ -19,6 +19,7 @@
  */
 import {
   Activity,
+  AudioLines,
   Bell,
   BookOpen,
   Bot,
@@ -37,6 +38,7 @@ import {
   Layers,
   Link,
   ListTodo,
+  Mic,
   MessageSquare,
   Package,
   PanelRight,
@@ -57,6 +59,7 @@ import type { ReactElement } from 'react'
 
 const APP_ICONS: Record<string, ReactElement> = {
   Activity: <Activity size={16} />,
+  AudioLines: <AudioLines size={16} />,
   Bell: <Bell size={16} />,
   BookOpen: <BookOpen size={16} />,
   Bot: <Bot size={16} />,
@@ -75,6 +78,7 @@ const APP_ICONS: Record<string, ReactElement> = {
   Layers: <Layers size={16} />,
   Link: <Link size={16} />,
   ListTodo: <ListTodo size={16} />,
+  Mic: <Mic size={16} />,
   MessageSquare: <MessageSquare size={16} />,
   Package: <Package size={16} />,
   PanelRight: <PanelRight size={16} />,
