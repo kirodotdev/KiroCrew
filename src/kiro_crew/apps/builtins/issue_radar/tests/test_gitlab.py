@@ -22,8 +22,10 @@ loud:
 from __future__ import annotations
 
 import inspect
+import json
 import re
 import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -1017,6 +1019,98 @@ class TestListPagination(unittest.TestCase):
             with self.subTest(fn=fn.__name__):
                 path = self._path_for(lambda: fn("g", "p", host="gitlab.com"))
                 self.assertNotIn("per_page", path)
+
+
+class TestRateLimitBackoff(unittest.TestCase):
+    """A GitLab HTTP 429 is waited out, not surfaced on the first refusal.
+
+    Opening a busy project fans out into dozens of ``glab api`` calls, and a
+    self-managed instance's throttle trips on the burst; ``glab`` itself exits on
+    the first 429. Failing there blanks a whole pane (the activity timeline) for
+    a window that clears within seconds.
+    """
+
+    THROTTLED = subprocess.CompletedProcess([], 1, stdout="", stderr="glab: HTTP 429\n")
+
+    def _ok(self, rows):
+        return subprocess.CompletedProcess([], 0, stdout=json.dumps(rows), stderr="")
+
+    def _call(self, responses, *, paginate=False):
+        targets: list[str] = []
+        waits: list[float] = []
+        queue = list(responses)
+
+        def run(argv, **_kwargs):
+            targets.append(argv[2])
+            return queue.pop(0)
+
+        result = gitlab_transport.glab_api(
+            "projects/g%2Fp/merge_requests/1/notes",
+            host="gitlab.com",
+            timeout=5.0,
+            paginate=paginate,
+            method="GET",
+            body=None,
+            run=run,
+            page_size=2,
+            max_pages=10,
+            stderr_tail=lambda proc: (proc.stderr or "").strip(),
+            raise_if_auth_failure=lambda _tail, _host: None,
+            is_forbidden=gitlab_transport.is_forbidden,
+            sleep=waits.append,
+        )
+        return result, targets, waits
+
+    def test_throttled_request_is_resent_after_backing_off(self):
+        result, targets, waits = self._call([self.THROTTLED, self.THROTTLED, self._ok({"id": 1})])
+        self.assertEqual(result, {"id": 1})
+        self.assertEqual(len(targets), 3)
+        self.assertEqual(waits, [1.0, 2.0])
+
+    def test_throttled_page_is_resent_not_skipped(self):
+        result, targets, waits = self._call(
+            [self._ok([1, 2]), self.THROTTLED, self._ok([3])], paginate=True
+        )
+        self.assertEqual(result, [1, 2, 3])
+        self.assertEqual(
+            [re.findall(r"[?&]page=(\d+)", t) for t in targets], [["1"], ["2"], ["2"]]
+        )
+        self.assertEqual(waits, [1.0])
+
+    def test_pages_share_one_retry_budget(self):
+        result, _targets, waits = self._call(
+            [self.THROTTLED, self._ok([1, 2]), self.THROTTLED, self._ok([3])],
+            paginate=True,
+        )
+        self.assertEqual(result, [1, 2, 3])
+        self.assertEqual(waits, [1.0, 2.0])
+
+    def test_a_long_list_waits_at_most_the_budget_in_total(self):
+        with self.assertRaises(ProviderCliError) as ctx:
+            self._call(
+                [self.THROTTLED, self._ok([1, 2]), self.THROTTLED, self.THROTTLED, self.THROTTLED],
+                paginate=True,
+            )
+        self.assertIn("HTTP 429", str(ctx.exception))
+
+    def test_persistent_throttle_fails_with_an_actionable_message(self):
+        with self.assertRaises(ProviderCliError) as ctx:
+            self._call([self.THROTTLED] * 4)
+        message = str(ctx.exception)
+        self.assertIn("HTTP 429", message)
+        self.assertIn("try again in a minute", message)
+
+    def test_other_failures_are_not_retried(self):
+        # One queued response: a retry would pop an empty queue and raise
+        # IndexError instead of the ProviderCliError asserted here.
+        failed = subprocess.CompletedProcess([], 1, stdout="", stderr="glab: HTTP 500\n")
+        with self.assertRaises(ProviderCliError):
+            self._call([failed])
+
+    def test_rate_limit_classification(self):
+        self.assertTrue(gitlab_transport.is_rate_limited("glab: HTTP 429"))
+        self.assertTrue(gitlab_transport.is_rate_limited("429 Too Many Requests"))
+        self.assertFalse(gitlab_transport.is_rate_limited("glab: HTTP 500"))
 
 
 class TestMergeRequestSearchState(unittest.TestCase):
