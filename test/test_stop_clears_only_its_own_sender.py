@@ -431,7 +431,6 @@ class TestWhatTheBubbleSaysAfterAPartialStop:
         """
         receipt = QueueReceipt(
             msg_id=7,
-            opened_by=BOB,
             lines=[
                 ReceiptLine(owner=BOB, text="bob asked"),
                 ReceiptLine(owner=ALICE, text="alice secret"),
@@ -1491,7 +1490,6 @@ class TestAnOwedRecordOnlyAddressesTheBubbleItBelongsTo:
             queue = ReceiptQueue()
             receipt = QueueReceipt(
                 msg_id=7,
-                opened_by=ALICE,
                 lines=[ReceiptLine(owner=ALICE, text="alice asked")],
             )
             receipt.terminalize(receipt_text(["alice asked"], answering=True))
@@ -1523,7 +1521,6 @@ class TestAnOwedRecordOnlyAddressesTheBubbleItBelongsTo:
         queue, alices_chat, _bobs_chat = asyncio.run(go())
         receipt = queue._receipts["s"]
         assert receipt.opened_on is alices_chat
-        assert receipt.opened_by == ALICE
 
     def test_a_whole_session_cancel_finalizes_through_the_bubbles_own_surface(self) -> None:
         """A clear that names no principal cannot assume its caller is the opener.
@@ -1715,7 +1712,6 @@ class TestATransitionForAnotherChatIsSilentHere:
             callers_chat = _Surface("bob")
             queue._receipts["s"] = QueueReceipt(
                 msg_id=7,
-                opened_by=ALICE,
                 lines=[ReceiptLine(owner=ALICE, text="alice asked", address="fake\x00alice")],
             )
             async with queue.lock:
