@@ -6581,6 +6581,46 @@ def _linux_boot_id() -> str | None:
         return None
 
 
+def host_boot_id() -> str | None:
+    """An identity for the host's CURRENT boot, or ``None`` when none is readable.
+
+    Two readings agree within one boot and differ across a reboot. Linux: the
+    kernel's per-boot UUID. macOS: ``kern.boottime``. Windows: the kernel's boot
+    counter (``PrefetchParameters\\BootId``). Anything less than reboot-unique is
+    not an answer: an unreadable identity is ``None``, never a coarse stand-in.
+    """
+    if sys.platform == "linux":
+        return _linux_boot_id()
+    try:
+        if sys.platform == "darwin":
+            import ctypes
+
+            class _Timeval(ctypes.Structure):
+                _fields_ = [("tv_sec", ctypes.c_long), ("tv_usec", ctypes.c_long)]
+
+            tv = _Timeval()
+            size = ctypes.c_size_t(ctypes.sizeof(tv))
+            libc = ctypes.CDLL(None)
+            if libc.sysctlbyname(b"kern.boottime", ctypes.byref(tv), ctypes.byref(size), None, 0):
+                return None
+            return f"darwin:{tv.tv_sec}" if tv.tv_sec > 0 else None
+        if IS_WINDOWS:
+            import winreg
+
+            # The kernel's boot counter: incremented on every boot, Fast Startup's
+            # hybrid boot included, and untouched by wall-clock steps.
+            with winreg.OpenKey(  # type: ignore[attr-defined]
+                winreg.HKEY_LOCAL_MACHINE,  # type: ignore[attr-defined]
+                r"SYSTEM\CurrentControlSet\Control\Session Manager"
+                r"\Memory Management\PrefetchParameters",
+            ) as key:
+                boot, _kind = winreg.QueryValueEx(key, "BootId")  # type: ignore[attr-defined]
+            return f"windows:{int(boot)}" if isinstance(boot, int) else None
+    except Exception:
+        return None
+    return None
+
+
 def _own_identity_token(pid: int) -> str | None:
     """Reboot-unique start-time token for THIS process, or ``None``.
 

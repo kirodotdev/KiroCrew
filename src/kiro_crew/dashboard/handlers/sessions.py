@@ -50,9 +50,10 @@ from kiro_crew.channel_transcript_migration import _orphan_target_stem
 from kiro_crew.cloud.login_target import parse_whoami_output
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable, cron_owner_matches
-from kiro_crew.dashboard import directive_queue
+from kiro_crew.dashboard import chat_trust_persistence, directive_queue
 from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
+    session_key_for,
     slot_history_key,
 )
 from kiro_crew.dashboard.handlers import kiro_usage_api
@@ -2579,6 +2580,86 @@ def _history_delete_candidate_keys(key: str) -> tuple[str, ...]:
     )
 
 
+def _trust_keys_for_delete(key: str, claim: _HistoryDeleteClaim) -> tuple[str, ...]:
+    """Every session key saved chat trust may be held under for history row *key*.
+
+    A closed dashboard row is named by its transcript stem (``dashboard_foo``)
+    while its trust was saved under the session key (``dashboard:foo``), and a
+    channel row by its own key; with no live slot the claim names neither, so
+    each slot spelling is also tried in its session-key form -- but only for a
+    row that IS a dashboard row by name, so a channel row (``slack_<ts>``) never
+    reaches a different chat's ``dashboard:`` key. Removing a key that was never
+    saved changes nothing.
+
+    Every candidate must name THIS row's own transcript file: a stacked stem
+    (``dashboard_dashboard_<n>``) normalizes onto a sibling's session key, whose
+    transcript is a different file the delete keeps, so that alias is dropped.
+    The claim's own keys count only once the claim proved the slot owns this
+    file (``path_match_verified``); a provisional claim can name a stacked
+    duplicate's slot.
+    """
+    own = set(transcript_stems(key))
+
+    def _names_this_file(candidate: str) -> bool:
+        return bool(set(transcript_stems(candidate)) & own)
+
+    keys: list[str | None] = [key]
+    if claim.path_match_verified:
+        keys += [claim.session_key, claim.history_key]
+    dashboard_row = key.startswith(("dashboard_", "dashboard:"))
+    for spelling in _history_delete_candidate_keys(key):
+        if spelling and _names_this_file(spelling):
+            keys.append(spelling)
+        if dashboard_row and spelling and ":" not in spelling:
+            session_key = session_key_for(spelling)
+            if _names_this_file(session_key):
+                keys.append(session_key)
+    return tuple(k for k in dict.fromkeys(keys) if k)
+
+
+async def _trust_keys_for_delete_async(
+    log: Any, key: str, claim: _HistoryDeleteClaim
+) -> tuple[str, ...]:
+    """:func:`_trust_keys_for_delete` plus every saved key this row's transcript IS.
+
+    A channel row with no live slot (``slack_<ts>``) holds its trust under
+    ``slack:<ts>``, which no spelling of the row's name yields. The signed store
+    is the gateway-owned source: every key it holds whose own transcript stem is
+    this row's (:func:`_linkable_stems_for_history_key`, computed from the row
+    key, not from anything in the file) is revoked with it. The transcript's
+    ``linked_session_key`` is added too, through the same validation, but is
+    never relied on -- the transcript is agent-writable, and removing that field
+    must not let a grant outlive its deleted row.
+    """
+    keys = _trust_keys_for_delete(key, claim)
+    linkable = _linkable_stems_for_history_key(key)
+    saved = await chat_trust_persistence.saved_session_keys()
+    owned = [k for k in saved if set(transcript_stems(k)) & linkable]
+    try:
+        linked, _readable = await asyncio.to_thread(_linked_session_key_for_history_key, log, key)
+    except Exception:
+        linked = ""
+    candidates = tuple(dict.fromkeys(k for k in (*keys, *owned, linked) if k))
+    try:
+        return await asyncio.to_thread(_keys_resolving_to_deleted_file, log, key, candidates)
+    except Exception:
+        return candidates
+
+
+def _keys_resolving_to_deleted_file(
+    log: Any, key: str, candidates: tuple[str, ...]
+) -> tuple[str, ...]:
+    """Only the *candidates* whose transcript IS the file this delete removes.
+
+    A stem overlap is not enough: ``slack:<ts>`` lists the bare ``<ts>`` stem as
+    its legacy fallback, but while its canonical ``slack_<ts>.jsonl`` exists the
+    session lives there (:meth:`ConversationLog._path` prefers it), so deleting
+    the bare legacy row must leave that session's saved trust alone.
+    """
+    deleted = log._path(key)
+    return tuple(k for k in candidates if log._path(k) == deleted)
+
+
 def _capture_history_delete_claim(state: DashboardState, key: str) -> _HistoryDeleteClaim:
     """Capture exact slot identity and monotonic manager generation pre-unlink."""
     deleted_stems = transcript_stems(key)
@@ -3128,6 +3209,15 @@ def _live_slot_sid(state: DashboardState, slot_key: str) -> str:
 
 async def api_session_delete(request: web.Request) -> web.Response:
     """DELETE /api/sessions/{key} — permanently delete a history session."""
+    # The fence holds the session's keys against a trust grant from before its
+    # saved trust is removed until the delete commits or rolls back.
+    async with chat_trust_persistence.delete_fence() as fence:
+        return await _delete_history_row(request, fence)
+
+
+async def _delete_history_row(
+    request: web.Request, fence: chat_trust_persistence.DeleteFence
+) -> web.Response:
     state: DashboardState = request.app["state"]
     key = request.match_info["key"]
     refusal = await _app_transcript_refusal(request, state, key, "session_delete")
@@ -3151,7 +3241,7 @@ async def api_session_delete(request: web.Request) -> web.Response:
             return _app_not_found(
                 request_app, "session_delete", f"session={key}", "app does not own the live slot"
             )
-        return await _delete_claimed_session(state, key, delete_claim, request_app)
+        return await _delete_claimed_session(state, key, delete_claim, request_app, fence)
 
 
 def _claim_history_delete(
@@ -3172,7 +3262,11 @@ def _claim_history_delete(
 
 
 async def _delete_claimed_session(
-    state: DashboardState, key: str, delete_claim: _HistoryDeleteClaim, request_app: str
+    state: DashboardState,
+    key: str,
+    delete_claim: _HistoryDeleteClaim,
+    request_app: str,
+    fence: chat_trust_persistence.DeleteFence,
 ) -> web.Response:
     """The body of :func:`api_session_delete`, run inside its in-flight window."""
     assert state.conversation_log is not None
@@ -3192,6 +3286,28 @@ async def _delete_claimed_session(
     # rolled back, because those units belong to a session that still exists.
     from kiro_crew import session_ledger
 
+    # Saved trust goes BEFORE the transcript: a chat recreated under the same
+    # deterministic key must never inherit it, and once the transcript is gone
+    # nothing re-runs this. A removal that fails refuses the delete, row intact;
+    # a delete that then does not commit puts the removed trust back.
+    trust_taken = await chat_trust_persistence.forget_deleted_session(
+        state,
+        await _trust_keys_for_delete_async(state.conversation_log, key, delete_claim),
+        fence,
+    )
+    if not trust_taken.ok:
+        return web.json_response(
+            {
+                "error": (
+                    "This session's saved chat trust could not be removed, so it was not "
+                    "deleted. Deleting it now could let a new chat under the same name "
+                    "inherit that trust."
+                ),
+                "code": "trust_revoke_not_durable",
+            },
+            status=409,
+        )
+
     # Resolve ambiguous slot ownership and read linked_session_key inside the
     # same canonical-plus-legacy lock set, before the unlink destroys either
     # piece of evidence. An unreadable owner claim refuses with the row intact.
@@ -3210,8 +3326,10 @@ async def _delete_claimed_session(
             request_app, "session_delete", f"session={key}", _NOT_TRANSCRIPT_OWNER
         )
     except _OwnerKeyUnreadable:
+        await chat_trust_persistence.restore_deleted_session_trust(trust_taken)
         return _cron_ownership_unknown_refusal(crons, swept.get(key, ()))
     except session_ledger.LedgerExclusionError:
+        await chat_trust_persistence.restore_deleted_session_trust(trust_taken)
         # Nothing was unlinked: the exclusion is written inside the same hold, before the
         # delete, so a refusal leaves the row intact.
         return web.json_response(
@@ -3227,6 +3345,8 @@ async def _delete_claimed_session(
         )
 
     if not ok:
+        # The session stays, so so does its saved trust.
+        await chat_trust_persistence.restore_deleted_session_trust(trust_taken)
         # Nothing was destroyed, so nothing may stay excluded: those units are a live
         # session's own record. A rollback that cannot be written answers retryable
         # rather than reporting a clean refusal over a record that now reads empty.
@@ -3790,6 +3910,15 @@ async def api_sessions_clear(request: web.Request) -> web.Response:
     refusal = _app_bulk_history_refusal(request, "sessions_clear")
     if refusal is not None:
         return refusal
+    # One fence for the batch: each row's keys are held from before its trust is
+    # removed until the whole clear is over.
+    async with chat_trust_persistence.delete_fence() as fence:
+        return await _clear_history_batch(request, fence)
+
+
+async def _clear_history_batch(
+    request: web.Request, fence: chat_trust_persistence.DeleteFence
+) -> web.Response:
     state: DashboardState = request.app["state"]
     if not state.conversation_log:
         return web.json_response({"error": "no conversation log"}, status=400)
@@ -3809,7 +3938,7 @@ async def api_sessions_clear(request: web.Request) -> web.Response:
     # because that is when the claim it took is acted on.
     with contextlib.ExitStack() as delete_windows:
         return await _clear_history_rows(
-            state, log, clearable, skipped, unreadable, swept, crons, delete_windows
+            state, log, clearable, skipped, unreadable, swept, crons, delete_windows, fence
         )
 
 
@@ -3822,6 +3951,7 @@ async def _clear_history_rows(
     swept: dict[str, set[str]],
     crons: Any,
     delete_windows: contextlib.ExitStack,
+    fence: chat_trust_persistence.DeleteFence,
 ) -> web.Response:
     """The per-row body of :func:`api_sessions_clear`, inside the rows' windows."""
     from kiro_crew import session_ledger
@@ -3839,6 +3969,14 @@ async def _clear_history_rows(
             continue
 
         delete_claim = _claim_history_delete(delete_windows, state, key)
+        # Saved trust goes before this row's transcript, for the same reason as
+        # the single delete; a row whose trust cannot be removed is left alone.
+        trust_taken = await chat_trust_persistence.forget_deleted_session(
+            state, await _trust_keys_for_delete_async(log, key, delete_claim), fence
+        )
+        if not trust_taken.ok:
+            undeletable.append({"id": key, "code": "trust_revoke_not_durable"})
+            continue
         # Per ROW, the same precondition the single delete applies: the ledger
         # exclusion is written before this row's transcript is unlinked, because a
         # failure after the unlink has nothing left to refuse and would leave this
@@ -3857,6 +3995,7 @@ async def _clear_history_rows(
             )
             if result is None:
                 skipped += 1
+                await chat_trust_persistence.restore_deleted_session_trust(trust_taken)
                 await _rollback_ledger_exclusion(session_ledger, delete_claim, restore_carry=True)
             elif result:
                 # Counted as CLEARED whatever the unstrand does: the transcript is gone,
@@ -3875,16 +4014,20 @@ async def _clear_history_rows(
                 count += 1
             else:
                 failed += 1
+                await chat_trust_persistence.restore_deleted_session_trust(trust_taken)
                 await _rollback_ledger_exclusion(session_ledger, delete_claim, restore_carry=True)
         except _OwnerKeyUnreadable:
+            await chat_trust_persistence.restore_deleted_session_trust(trust_taken)
             undeletable.append({"id": key, "code": CRON_OWNERSHIP_UNKNOWN_CODE})
         except session_ledger.LedgerExclusionError:
+            await chat_trust_persistence.restore_deleted_session_trust(trust_taken)
             # The exclusion or its rollback could not be written, so this row's transcript
             # is left alone and the row says why. Nothing was unlinked: the exclusion runs
             # inside the same hold, before the delete.
             undeletable.append({"id": key, "code": LEDGER_EXCLUSION_UNWRITABLE_CODE})
         except Exception:
             failed += 1
+            await chat_trust_persistence.restore_deleted_session_trust(trust_taken)
             # The rollback can fail too, and it must not turn one row's failure into the
             # whole batch's: the remaining rows are still deletable.
             try:

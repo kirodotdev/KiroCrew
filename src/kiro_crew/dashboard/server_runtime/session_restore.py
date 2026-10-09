@@ -12,6 +12,7 @@ if TYPE_CHECKING:
         cautious_boot,
         channel_slots,
         chat,
+        chat_trust_persistence,
         logger,
     )
 
@@ -48,6 +49,13 @@ async def _restore_dashboard_sessions(state: DashboardState, cfg: KiroCrewConfig
         )
         if restored:
             logger.info("Restored %d session(s)", restored)
+
+        # Give back the owner's per-chat trust on the chats just rebuilt, in the
+        # background: the record is read off-loop and nothing on the boot path
+        # waits for it, so a stalled store cannot hold the listener unbound.
+        # Until it lands the chats are untrusted, the safe direction; it pushes
+        # its own slots update when it restores anything.
+        chat_trust_persistence.schedule_restore(state)
 
         # Both restore paths above rehydrate tabs under their original
         # "chat-<N>-<ts>" keys but leave _slot_counter at its boot value of 0.

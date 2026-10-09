@@ -528,6 +528,34 @@ class TestRestartIndeterminateLock:
         assert sel_rec.calls[-1]["outcome"] == "denied"
 
 
+#: Captured before any fixture stubs it, for the test of the real lock-probe reading.
+_REAL_TARGETS_ANOTHER_HOME = cli_server._targets_another_homes_gateway
+
+
+@pytest.mark.parametrize(
+    ("holder", "expected"),
+    [
+        ("indeterminate", False),  # Windows mandatory lock: unsure is this home's gateway
+        ((4242, True), False),  # this home's lock holder is the target
+        ((7777, True), True),  # a different live gateway holds this home's lock
+        ((None, False), True),  # nothing runs in this home at all
+    ],
+)
+def test_only_positive_evidence_marks_a_target_as_another_homes_gateway(
+    monkeypatch, holder, expected
+) -> None:
+    from kiro_crew.gateway_lock import LockHolder, LockProbeError
+
+    def probe(_home):
+        if holder == "indeterminate":
+            raise LockProbeError("held, but no readable pid")
+        pid, alive = holder
+        return LockHolder(pid=pid, alive=alive, source="flock_owner" if pid else "none")
+
+    monkeypatch.setattr(cli_server, "lock_holder", probe)
+    assert _REAL_TARGETS_ANOTHER_HOME([4242]) is expected
+
+
 class TestStopOnWindows:
     """The Windows branch kills the whole tree via ``platform_compat``."""
 
@@ -539,7 +567,42 @@ class TestStopOnWindows:
         monkeypatch.setattr(cli_server, "_is_kirocrew_process", lambda pid: True)
         monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
         monkeypatch.setattr(cli_server, "_pid_exited", lambda pid: True)
+        # The target is this data home's own gateway.
+        monkeypatch.setattr(cli_server, "_targets_another_homes_gateway", lambda pids: False)
         monkeypatch.setattr("time.sleep", lambda s: None)
+
+    def test_an_indeterminate_lock_probe_still_stops_this_homes_gateway(
+        self, monkeypatch, sel_rec, capsys
+    ) -> None:
+        """Windows hides the stamped pid under its mandatory lock: unsure is not refusal."""
+        from kiro_crew.gateway_lock import LockProbeError
+
+        monkeypatch.setattr(
+            cli_server, "_targets_another_homes_gateway", _REAL_TARGETS_ANOTHER_HOME
+        )
+
+        def indeterminate(_home):
+            raise LockProbeError("held, but no readable pid")
+
+        monkeypatch.setattr(cli_server, "lock_holder", indeterminate)
+        seen: list[int] = []
+        monkeypatch.setattr(platform_compat, "kill_process_tree", lambda pid, sig: seen.append(pid))
+        cli_server._stop(5476)
+        assert seen == [4242]
+
+    def test_a_gateway_of_another_data_home_is_not_force_killed(
+        self, monkeypatch, sel_rec, capsys
+    ) -> None:
+        """The marker could only land in this home, so that gateway's trust would come back."""
+        monkeypatch.setattr(cli_server, "_targets_another_homes_gateway", lambda pids: True)
+        seen: list[int] = []
+        monkeypatch.setattr(platform_compat, "kill_process_tree", lambda pid, sig: seen.append(pid))
+        with pytest.raises(SystemExit) as exc:
+            cli_server._stop(5476)
+        assert exc.value.code == 1
+        assert seen == []
+        assert "not this data home's gateway" in capsys.readouterr().out
+        assert sel_rec.calls[-1]["outcome"] == "refused"
 
     def test_tree_kill_reports_terminated(self, monkeypatch, sel_rec, capsys) -> None:
         seen: list[int] = []

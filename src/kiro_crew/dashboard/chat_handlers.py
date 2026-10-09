@@ -42,6 +42,7 @@ from kiro_crew.config.loader import (
     resolve_agent_bindings,
 )
 from kiro_crew.dashboard import chat_api as _chat_api
+from kiro_crew.dashboard import chat_trust_persistence
 from kiro_crew.dashboard.channel_slots import channel_slot_name, note_slot_closed  # noqa: F401
 from kiro_crew.dashboard.chat_api import resume as _owner_resume
 from kiro_crew.dashboard.chat_api import slot_detail as _owner_slot_detail
@@ -9300,6 +9301,7 @@ async def api_chat_mode(request: web.Request) -> web.Response:
         request_app=request_app,
         cron_creator=cron_creator,
         audit_caller=audit_caller,
+        request=request,
     )
 
 
@@ -9312,6 +9314,7 @@ async def apply_approval_mode(
     request_app: str,
     cron_creator: str,
     audit_caller: Callable[[str], str],
+    request: web.Request | None = None,
 ) -> web.Response:
     """Apply an approval mode to ONE resolved slot (or every slot when ``slot`` is None).
 
@@ -9319,6 +9322,10 @@ async def apply_approval_mode(
     passed. Shared with the crewmate profile write (``PUT /api/agents/{name}``),
     which applies the stored permission to the crewmate's live DM slot through
     this same path rather than a copy of it.
+
+    ``request`` is the owner's ``/api/chat/mode`` request, which is what lets a
+    ``trust`` grant outlive a crash. Without one (the profile write) the grant
+    stays live-only; every revoke still removes the saved record.
     """
     # The safety override (YOLO) is PROCESS-GLOBAL while an approval mode is
     # per-slot, so revoking it on behalf of a request that named ONE slot drops
@@ -9358,6 +9365,12 @@ async def apply_approval_mode(
         # re-indexing state._slots.
         await asyncio.to_thread(safety_override().deactivate, "dashboard")
 
+    # A revoke below that could not remove the saved grant leaves trust the next
+    # boot would restore, so it must not be reported as done.
+    _durable_revoke_ok = True
+    # A trust grant refused because it could not be made durable; answered only
+    # after the shared policy reconciliation below has run.
+    _trust_refusal: tuple[int, str, str] | None = None
     if mode == "yolo":
         result = await asyncio.to_thread(safety_override().activate, "dashboard")
         if not result.active:
@@ -9391,7 +9404,23 @@ async def apply_approval_mode(
             _reads_sharing = [
                 s for s in list(state._slots.values()) if effective_session_key(s) == _reads_key
             ]
+            # Read-only trust is not remembered, and it replaces full trust, so the
+            # remembered grant has to go with it -- FIRST, under the key captured
+            # before any await, so a crash after the live switch cannot restore a
+            # grant still on disk and a rebind cannot aim the removal elsewhere.
+            _grants_before = chat_trust_persistence.grant_count()
+            _durable_revoke_ok = await chat_trust_persistence.persist_revoke_keys([_reads_key])
             await _end_trust_scopes(_reads_sharing, audit_caller)
+            if request_app and request is not None:
+                # Both awaits above sit between the app's authorization and the
+                # read grant, so an app disabled meanwhile is caught by a fresh
+                # read here, with no await between it and the publish below. The
+                # removal already done stays: it is the safe direction.
+                denied = await deny_app_session_control(
+                    request, request_app, slot, str(slot_key), "chat_mode", fresh=True
+                )
+                if denied is not None:
+                    return denied
             _reads_live = _still_owning(state, _reads_sharing, _reads_key)
             for _sharing in _reads_live:
                 _sharing._trust = False
@@ -9399,13 +9428,24 @@ async def apply_approval_mode(
                 _sharing._trust_scope = ""
             if _reads_live:
                 state.sessions.set_approval_policy(_reads_key, "")
+            # A Trust click saved during the awaits above was just cleared live.
+            _durable_revoke_ok = (
+                await chat_trust_persistence.revoke_again_if_granted(_grants_before, [_reads_key])
+                and _durable_revoke_ok
+            )
         else:
+            _grants_before = chat_trust_persistence.grant_count()
+            _durable_revoke_ok = await chat_trust_persistence.persist_revoke_all()
             await _end_trust_scopes(list(state._slots.values()), audit_caller)
             for s in state._slots.values():
                 s._trust = False
                 s._trust_reads = True
                 s._trust_scope = ""
                 state.sessions.set_approval_policy(effective_session_key(s), "")
+            _durable_revoke_ok = (
+                await chat_trust_persistence.revoke_again_if_granted(_grants_before)
+                and _durable_revoke_ok
+            )
         try:
             sel().log_api_access(
                 caller=audit_caller("dashboard:mode"),
@@ -9424,45 +9464,161 @@ async def apply_approval_mode(
             # address, and the propagation pass would then be decided by slot
             # iteration order rather than by what the operator asked for.
             _granted_key = effective_session_key(slot)
-            for _sharing in state._slots.values():
-                if effective_session_key(_sharing) == _granted_key:
-                    _sharing._trust = True
-            state.sessions.set_approval_policy(_granted_key, "auto")
-            linked_ch = getattr(slot, "_slack_channel", None)
-            if (
-                not request_app
-                and not cron_creator
-                and mgr
-                and linked_ch
-                and linked_ch in mgr._channels
-            ):
-                mgr._channels[linked_ch].trusted = True
-                mgr._channels[linked_ch]._save()
+            _granted = [
+                s for s in list(state._slots.values()) if effective_session_key(s) == _granted_key
+            ]
         else:
-            for s in state._slots.values():
-                s._trust = True
-                state.sessions.set_approval_policy(effective_session_key(s), "auto")
-            if mgr:
-                for ch in mgr._channels.values():
-                    ch.trusted = True
-                    ch._save()
-        _trusted_chs = (
-            [cid for cid, ch in mgr._channels.items() if ch.trusted]
-            if mgr and not request_app and not cron_creator
-            else []
-        )
-        try:
-            _res = slot_key or ",".join(s.key for s in state._slots.values())
-            if _trusted_chs:
-                _res += "|channels:" + ",".join(_trusted_chs)
-            sel().log_api_access(
-                caller=audit_caller("dashboard:mode"),
-                operation="mode_change:trust",
-                outcome="enabled",
-                resources=_res,
+            _granted = list(state._slots.values())
+        # Saved BEFORE it is published, so a grant the owner made durable is on
+        # disk before any tool call is auto-approved on it. A save that fails
+        # still turns trust on, live-only -- exactly what trust was before it was
+        # saved at all -- and the owner is told it will not survive a crash.
+        # ``None`` means this grant is not one that persists (not the owner's own
+        # session, or only app-owned chats) and goes ahead.
+        _gen = chat_trust_persistence.revoke_generation()
+        _identity = chat_trust_persistence.grant_identity(_granted)
+        # Each captured slot's own keys, read before any await: a slot removed
+        # during the save (its session deleted) is identified by these.
+        _slot_keys = {id(s): chat_trust_persistence.grant_identity([s]) for s in _granted}
+        # A refused grant takes back only what it added: a chat already saved
+        # before this click keeps its saved trust, as it keeps its live trust.
+        # Read only for a grant that persists: any other caller (an app token)
+        # must reach the live grant with no await after its authorization, so an
+        # app disabled meanwhile cannot slip trust through the disk read.
+        # Claimed before the first await, against the approval card's Trust too:
+        # two Trust controls saving the same chat would each read it unsaved,
+        # and the one that lost would take back the grant the other saved.
+        _mode_claim = list(_identity)
+        _claim_busy = any(k in _TRUST_SAVE_CLAIMS for k in _mode_claim)
+        if _claim_busy:
+            _trust_refusal = (
+                409,
+                "trust_save_in_progress",
+                "trust is already being saved for this chat; try again",
             )
-        except Exception:
-            logger.warning("SEL audit failed for trust mode activation", exc_info=True)
+        else:
+            _TRUST_SAVE_CLAIMS.update(_mode_claim)
+        try:
+            if not _claim_busy:
+                _held_before = (
+                    await chat_trust_persistence.saved_keys(_identity)
+                    if _identity
+                    and request is not None
+                    and chat_trust_persistence.persists_grant(request)
+                    else frozenset()
+                )
+                _saved = (
+                    await chat_trust_persistence.persist_grant(
+                        request, _granted, since_generation=_gen, keys=_identity
+                    )
+                    if request is not None
+                    else None
+                )
+                _superseded = chat_trust_persistence.revoke_generation() != _gen
+                # The saved keys must still be the keys trusted: a slot rebound or
+                # removed during the save would otherwise be trusted under a key the
+                # record does not hold, and lose the grant at the first crash. Every
+                # captured slot is checked, the all-chats grant's as well as one chat's.
+                _gone = [s for s in _granted if state._slots.get(s.key) is not s]
+                _rebound = chat_trust_persistence.grant_identity(_granted) != _identity or bool(
+                    _gone
+                )
+                _refusal = ""
+                if _superseded or _rebound:
+                    # A revoke landed, or the chat's identity moved, while the grant was
+                    # being saved. Take back what this write saved and publish nothing.
+                    # A removed slot's keys go whether or not they were saved before:
+                    # its session may be gone, and a chat recreated under the same
+                    # deterministic key must not inherit the grant.
+                    _gone_keys = {k for s in _gone for k in _slot_keys.get(id(s), ())}
+                    _refusal = "trust_superseded"
+                    # Any save that ran, even one that timed out: a timed-out write may
+                    # still land, and this revoke waits behind it in the write order.
+                    if _saved is not None and not await chat_trust_persistence.persist_revoke_keys(
+                        [k for k in _identity if k not in _held_before or k in _gone_keys]
+                    ):
+                        _refusal = "trust_revoke_not_durable"
+                if _refusal:
+                    try:
+                        sel().log_api_access(
+                            caller=audit_caller("dashboard:mode"),
+                            operation="mode_change:trust",
+                            outcome=f"refused:{_refusal}",
+                            resources=slot_key or ",".join(s.key for s in state._slots.values()),
+                        )
+                    except Exception:
+                        logger.warning("SEL audit failed for refused trust mode", exc_info=True)
+                    _refusals = {
+                        "trust_superseded": (
+                            409,
+                            "trust was not turned on: it was revoked, or the chat changed, "
+                            "while being saved",
+                        ),
+                        "trust_revoke_not_durable": (
+                            500,
+                            "trust was not turned on, but the saved grant could not be "
+                            "removed, so it may come back after a restart",
+                        ),
+                    }
+                    _status, _message = _refusals[_refusal]
+                    # Not returned here: the policy reconciliation and slots push below
+                    # must still run (an override this request deactivated has left
+                    # sessions at "auto"), so the refusal is answered after them.
+                    _trust_refusal = (
+                        _status,
+                        _refusal,
+                        _message,
+                    )
+                if _trust_refusal is not None:
+                    pass
+                elif slot is not None:
+                    for _sharing in _granted:
+                        _sharing._trust = True
+                    state.sessions.set_approval_policy(_granted_key, "auto")
+                    linked_ch = getattr(slot, "_slack_channel", None)
+                    if (
+                        not request_app
+                        and not cron_creator
+                        and mgr
+                        and linked_ch
+                        and linked_ch in mgr._channels
+                    ):
+                        mgr._channels[linked_ch].trusted = True
+                        mgr._channels[linked_ch]._save()
+                else:
+                    for s in _granted:
+                        s._trust = True
+                        state.sessions.set_approval_policy(effective_session_key(s), "auto")
+                    if mgr:
+                        for ch in mgr._channels.values():
+                            ch.trusted = True
+                            ch._save()
+                _trusted_chs = (
+                    [cid for cid, ch in mgr._channels.items() if ch.trusted]
+                    if mgr and not request_app and not cron_creator
+                    else []
+                )
+                try:
+                    _res = slot_key or ",".join(s.key for s in state._slots.values())
+                    if _trusted_chs:
+                        _res += "|channels:" + ",".join(_trusted_chs)
+                    if _trust_refusal is None:
+                        sel().log_api_access(
+                            caller=audit_caller("dashboard:mode"),
+                            operation="mode_change:trust",
+                            outcome="enabled",
+                            resources=_res,
+                        )
+                except Exception:
+                    logger.warning("SEL audit failed for trust mode activation", exc_info=True)
+                if _trust_refusal is None and _saved is False:
+                    chat_trust_persistence.notify_live_only(
+                        state, caller=audit_caller("dashboard:mode")
+                    )
+        finally:
+            # Released with no await before the pending approvals below resolve.
+            if not _claim_busy:
+                _TRUST_SAVE_CLAIMS.difference_update(_mode_claim)
     else:  # normal
         mgr = getattr(state, "channel_manager", None)
         if slot is not None:
@@ -9476,6 +9632,13 @@ async def apply_approval_mode(
             _revoked = [
                 s for s in list(state._slots.values()) if effective_session_key(s) == _revoked_key
             ]
+            # The saved grant goes FIRST, by the key captured before any await: a
+            # crash between the live switch and the disk write would otherwise
+            # restore it, and a rebind during the scope teardown would aim the
+            # removal at the wrong key. A failed removal still turns trust off live
+            # (the owner asked for it off) and is answered and announced below.
+            _grants_before = chat_trust_persistence.grant_count()
+            _durable_revoke_ok = await chat_trust_persistence.persist_revoke_keys([_revoked_key])
             await _end_trust_scopes(_revoked, audit_caller)
             _revoked_live = _still_owning(state, _revoked, _revoked_key)
             for _sharing in _revoked_live:
@@ -9484,6 +9647,11 @@ async def apply_approval_mode(
                 _sharing._trust_scope = ""
             if _revoked_live:
                 state.sessions.set_approval_policy(_revoked_key, "")
+            # A Trust click saved during the teardown above was just cleared live.
+            _durable_revoke_ok = (
+                await chat_trust_persistence.revoke_again_if_granted(_grants_before, [_revoked_key])
+                and _durable_revoke_ok
+            )
             linked_ch = getattr(slot, "_slack_channel", None)
             if (
                 slot in _revoked_live
@@ -9495,12 +9663,21 @@ async def apply_approval_mode(
                 mgr._channels[linked_ch].trusted = False
                 mgr._channels[linked_ch]._save()
         else:
+            # The all-chats off switch forgets every remembered grant, including
+            # those of chats that are not open right now -- before the live switch.
+            _grants_before = chat_trust_persistence.grant_count()
+            _durable_revoke_ok = await chat_trust_persistence.persist_revoke_all()
             await _end_trust_scopes(list(state._slots.values()), audit_caller)
             for s in state._slots.values():
                 s._trust = False
                 s._trust_reads = False
                 s._trust_scope = ""
                 state.sessions.set_approval_policy(effective_session_key(s), "")
+            # A Trust click saved during the teardown above was just cleared live.
+            _durable_revoke_ok = (
+                await chat_trust_persistence.revoke_again_if_granted(_grants_before)
+                and _durable_revoke_ok
+            )
             if mgr:
                 for ch in mgr._channels.values():
                     ch.trusted = False
@@ -9516,7 +9693,8 @@ async def apply_approval_mode(
             logger.warning("SEL audit failed for normal mode activation", exc_info=True)
 
     # If any slot has a pending approval and mode is trust/yolo, auto-approve it
-    if mode in ("trust", "yolo"):
+    # A refused trust grant approves nothing: the sweep below is the grant's.
+    if mode in ("trust", "yolo") and _trust_refusal is None:
         # A slot-scoped ``trust`` grants auto-approval to ONE session only (the
         # target slot and any slot sharing its effective key). The pending-approval
         # sweep MUST honour that scope: sweeping every slot's pending prompt would
@@ -9610,6 +9788,29 @@ async def apply_approval_mode(
         state.sessions.set_approval_policy(effective_session_key(slot), policy)
 
     state.push_slots_update()
+    if _trust_refusal is not None:
+        _refused_status, _refused_code, _refused_message = _trust_refusal
+        if _refused_code == "trust_revoke_not_durable":
+            chat_trust_persistence.notify_revoke_not_durable(state)
+        return web.json_response(
+            {"ok": False, "mode": mode, "code": _refused_code, "error": _refused_message},
+            status=_refused_status,
+        )
+    if not _durable_revoke_ok:
+        # The live revoke above stands; only the saved copy survived, and the next
+        # restart would hand it back. Say so rather than report success -- in the
+        # response and to the owner, since the picker does not show this code.
+        chat_trust_persistence.notify_revoke_not_durable(state)
+        return web.json_response(
+            {
+                "ok": False,
+                "mode": mode,
+                "code": "trust_revoke_not_durable",
+                "error": "trust was revoked for now, but the saved grant could not be "
+                "removed, so it may come back after a restart",
+            },
+            status=500,
+        )
     return web.json_response({"ok": True, "mode": mode})
 
 
@@ -9687,6 +9888,12 @@ def _deny_trust_pattern(name: str, request_id: str, action: str, code: str) -> w
     return web.json_response({"error": errors[code], "code": code}, status=400)
 
 
+#: Trust grants being saved right now: a card by (slot, request), and every session
+#: key a card or the mode switch is saving. Both Trust controls claim before their
+#: first await, so one can never take back a grant the other just saved.
+_TRUST_SAVE_CLAIMS: set[object] = set()
+
+
 async def api_chat_slot_approve(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/approve — resolve a pending tool approval."""
     state: DashboardState = request.app["state"]
@@ -9708,6 +9915,11 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
     assert body is not None  # read_bounded_json returns (dict, None) on success
     action = body.get("action", "rejected")
     original_action = action
+    # Set when a card's standing trust could not be made durable; the call itself
+    # is still approved.
+    _card_trust_refused = False
+    _card_live_only = False
+    _card_rollback_failed = False
     request_id = body.get("request_id", "")
     if request_app and original_action == "yolo":
         return _deny_app_yolo(request_app, "tool_approval:yolo")
@@ -9825,8 +10037,98 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
         elif grantable != "1":
             return _deny_trust_pattern(name, request_id, original_action, "pattern_underivable")
         else:
-            owner._trust = True
-            state.sessions.set_approval_policy(effective_session_key(owner), "auto")
+            # Saved BEFORE the standing trust is set, so no later tool call is
+            # auto-approved on a grant that is not yet on disk. A save that fails
+            # still sets it, live-only, and the owner is told. The call this card
+            # asks about is approved either way.
+            # One Trust click per card at a time, claimed before any await: two
+            # concurrent clicks would both read an empty snapshot, and the one
+            # that loses would then take back the winner's saved grant.
+            _card_claim = [
+                (owner.key, request_id),
+                *chat_trust_persistence.grant_identity([owner]),
+            ]
+            if any(c in _TRUST_SAVE_CLAIMS for c in _card_claim):
+                return web.json_response(
+                    {
+                        "ok": False,
+                        "code": "approval_already_resolved",
+                        "error": "this approval is already being answered with Trust",
+                    },
+                    status=409,
+                )
+            _TRUST_SAVE_CLAIMS.update(_card_claim)
+            try:
+                _card_gen = chat_trust_persistence.revoke_generation()
+                _card_identity = chat_trust_persistence.grant_identity([owner])
+                # A take-back removes only what this save added (see the mode switch),
+                # and is read only for a grant that persists (also see there).
+                _card_held_before = (
+                    await chat_trust_persistence.saved_keys(_card_identity)
+                    if _card_identity and chat_trust_persistence.persists_grant(request)
+                    else frozenset()
+                )
+                _card_saved = await chat_trust_persistence.persist_grant(
+                    request, [owner], since_generation=_card_gen, keys=_card_identity
+                )
+                _card_added = [k for k in _card_identity if k not in _card_held_before]
+                if fut.done():
+                    # Another request (a second click, the mirrored card) resolved this
+                    # approval while the grant was being saved. That answer stands:
+                    # take back what was saved and grant nothing here -- after a
+                    # timed-out save too, which may still land.
+                    if (
+                        _card_saved is not None
+                        and not await chat_trust_persistence.persist_revoke_keys(_card_added)
+                    ):
+                        # The take-back could not remove the saved grant, so a crash
+                        # would hand back trust this request never turned on.
+                        chat_trust_persistence.notify_revoke_not_durable(state)
+                        return web.json_response(
+                            {
+                                "ok": False,
+                                "code": "trust_revoke_not_durable",
+                                "error": "this approval was answered elsewhere and trust was "
+                                "not turned on, but the grant saved meanwhile could not be "
+                                "removed, so it may come back after a restart",
+                            },
+                            status=500,
+                        )
+                    return web.json_response(
+                        {
+                            "ok": False,
+                            "code": "approval_already_resolved",
+                            "error": "this approval was answered elsewhere while trust was "
+                            "being saved; trust was not turned on",
+                        },
+                        status=409,
+                    )
+                _card_gone = state._slots.get(owner.key) is not owner
+                if (
+                    chat_trust_persistence.revoke_generation() != _card_gen
+                    or chat_trust_persistence.grant_identity([owner]) != _card_identity
+                    or _card_gone
+                ):
+                    # A revoke overtook the save, or the chat's key was rebound or its
+                    # slot removed during it: take back what it wrote, under the key
+                    # it was written by. A removed slot's keys go even when saved
+                    # before, since a chat recreated under them must not inherit it.
+                    if (
+                        _card_saved is not None
+                        and not await chat_trust_persistence.persist_revoke_keys(
+                            list(_card_identity) if _card_gone else _card_added
+                        )
+                    ):
+                        _card_rollback_failed = True
+                    _card_trust_refused = True
+                else:
+                    owner._trust = True
+                    state.sessions.set_approval_policy(effective_session_key(owner), "auto")
+                    _card_live_only = _card_saved is False
+            finally:
+                # Released with no await before the approval resolves below, so
+                # a later click finds the card answered.
+                _TRUST_SAVE_CLAIMS.difference_update(_card_claim)
             action = "approved"
     # Trust-reads: auto-approve read-only bash commands for this slot
     # Defer setting _trust_reads until after the approval future is consumed
@@ -9946,6 +10248,9 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
     # Flagging the slot dirty is required for it to survive a RESTART too: the
     # periodic flush skips non-dirty slots.
     if request_id:
+        # A refused card trust resolves as a plain approval, so the card does not
+        # read "Trusted" for a chat that is not.
+        _card_shown = original_action in ("trust", "trust_reads") and not _card_trust_refused
         if _mark_permission_resolved(
             (
                 [message for message in owner.messages if row_mid(message) == request_mid]
@@ -9953,7 +10258,7 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
                 else owner.messages
             ),
             request_id,
-            original_action if original_action in ("trust", "trust_reads") else resolved,
+            original_action if _card_shown else resolved,
         ):
             owner._dirty = True
     # Broadcast first to ensure frontend is unblocked
@@ -9979,6 +10284,55 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
         )
     except Exception:
         logger.warning("SEL audit failed for approval %s", request_id, exc_info=True)
+    if _card_live_only:
+        chat_trust_persistence.notify_live_only(state, caller=audit_caller())
+    if _card_trust_refused:
+        # The call the card asked about is approved; the standing trust for the
+        # rest of the session was never set, because a revoke overtook the save
+        # and the later click wins.
+        try:
+            sel().log_api_access(
+                caller=audit_caller(),
+                operation="tool_approval:trust",
+                outcome="refused:trust_superseded",
+                resources=request_id,
+            )
+        except Exception:
+            logger.warning("SEL audit failed for unsaved card trust", exc_info=True)
+        try:
+            # The card itself reports only that the call was approved, so the
+            # owner hears here why the chat did not stay trusted.
+            state.notify(
+                "agent",
+                "Chat trust not turned on",
+                "The call was approved, but trust for the rest of this chat was "
+                "turned off while it was being saved, so it was not turned on.",
+            )
+        except Exception:
+            logger.warning("could not deliver the superseded-trust notice", exc_info=True)
+        if _card_rollback_failed:
+            # The call stands approved; trust was not turned on, but the grant a
+            # revoke overtook could not be removed, so a crash could restore it.
+            chat_trust_persistence.notify_revoke_not_durable(state)
+            return web.json_response(
+                {
+                    "ok": False,
+                    "approved": True,
+                    "code": "trust_revoke_not_durable",
+                    "error": "this call was approved and trust was not turned on, but "
+                    "the grant saved meanwhile could not be removed, so it may come "
+                    "back after a restart",
+                },
+                status=500,
+            )
+        return web.json_response(
+            {
+                "ok": True,
+                "code": "trust_superseded",
+                "error": "this call was approved, but trust for the session was not "
+                "turned on because it was revoked while being saved",
+            }
+        )
     return web.json_response({"ok": True})
 
 

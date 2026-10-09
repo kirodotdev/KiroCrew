@@ -817,6 +817,40 @@ async def test_app_send_refused_when_the_slot_closes_during_the_permission_read(
 
 
 @pytest.mark.asyncio
+async def test_app_disabled_during_the_read_trust_revoke_gets_no_read_trust(state) -> None:
+    """The saved-grant removal awaits after the app's authorization: a fresh read follows it."""
+    slot = _user_slot(state)
+    granted = {"value": True}
+    revoking = asyncio.Event()
+    release = asyncio.Event()
+
+    async def parked_revoke(_keys) -> bool:
+        revoking.set()
+        await asyncio.wait_for(release.wait(), 5)
+        return True
+
+    with (
+        patch(_GRANT_CHECK, lambda _app: granted["value"]),
+        patch(
+            "kiro_crew.dashboard.chat_trust_persistence.persist_revoke_keys",
+            new=parked_revoke,
+        ),
+    ):
+        async with _app_client(state) as client:
+            change = asyncio.create_task(
+                client.post("/api/chat/mode", json={"mode": "trust_reads", "slot": "s1"})
+            )
+            await asyncio.wait_for(revoking.wait(), 5)
+            granted["value"] = False
+            release.set()
+            resp = await change
+
+    assert resp.status == 404
+    assert slot._trust_reads is False
+    assert slot._trust is False
+
+
+@pytest.mark.asyncio
 async def test_app_send_refused_when_the_slot_is_relinked_during_the_command_read(state) -> None:
     slot = _user_slot(state, agent="researcher")
     reading = threading.Event()
