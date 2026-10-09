@@ -834,7 +834,8 @@ except WorkerSlotTimeout as exc:
   slot key is leased by one lease at a time across all apps. A further acquire
   waits up to `timeout` seconds, then raises `WorkerSlotTimeout` naming the
   app, the limit and the wait. A slot owned by another app raises
-  `ValueError`; pick keys prefixed with your app name. A lease whose slot was
+  `ValueError`, and so does a chat a person or a cron job opened; pick keys
+  prefixed with your app name. A lease whose slot was
   deleted is freed by the next acquire. Call
   `set_worker_slot_limit("<app-name>", n)` once at startup if your app really
   runs several workers side by side. The limit lives in the gateway process

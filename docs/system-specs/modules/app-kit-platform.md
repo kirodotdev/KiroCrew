@@ -3476,6 +3476,10 @@ slot another create path made first (ChatEmbed's own POST) carries neither.
   every app (requested and folded keys both count), and a slot whose `_app` is
   another app is refused with `ValueError`, so one app's trust grant or working
   directory never lands on another app's worker.
+- **Only app slots are adopted.** An unowned slot whose `_origin` is `user`
+  or `cron` (a chat a person or a cron job opened) is refused with
+  `ValueError` and left unchanged. Unowned `app`-origin or untagged slots are
+  still re-stamped, which keeps the ChatEmbed case working.
 - **Lost leases are reclaimed.** Every acquire, and a waiting acquire every
   0.5s, drops leases whose slot `state.get_slot(key)` no longer returns
   (deleted or replaced), withdrawing their trust, so a lease the app lost

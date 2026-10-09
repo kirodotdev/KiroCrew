@@ -383,6 +383,80 @@ async def test_another_app_cannot_lease_a_key_already_leased(_env):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("origin", ["user", "cron"])
+async def test_a_person_or_cron_slot_is_not_adopted(_env, origin):
+    state = _State()
+    slot = state.slots["chat-1"] = _Slot("chat-1")
+    slot._origin = origin
+    slot.project = "/home/me/repo"
+    with pytest.raises(ValueError, match="an app may only adopt slots it created"):
+        await acquire_worker_slot(state, "demo", "chat-1", project="/tmp/x", trust=True)
+    assert state.slots["chat-1"] is slot
+    assert slot._app == ""
+    assert slot.project == "/home/me/repo"
+    assert _env.override.calls == []
+    assert state.pushes == 0
+    again = await acquire_worker_slot(state, "demo", "demo-1", project="/w", timeout=0.05)
+    await again.release()
+
+
+@pytest.mark.asyncio
+async def test_an_unowned_app_origin_slot_is_still_restamped():
+    state = _State()
+    slot = state.slots["embed-1"] = _Slot("embed-1")
+    slot._origin = "app"
+    lease = await acquire_worker_slot(state, "demo", "embed-1", project="/work/repo")
+    assert slot._app == "demo"
+    assert slot.project == "/work/repo"
+    await lease.release()
+
+
+def _real_state(monkeypatch, tmp_path):
+    from kiro_crew.dashboard.state import DashboardState
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = DashboardState(
+        sessions=mock.MagicMock(count=0),
+        crons=mock.MagicMock(
+            list_jobs=mock.MagicMock(return_value=[]), status=mock.MagicMock(return_value={})
+        ),
+        lessons=mock.MagicMock(load_all=mock.MagicMock(return_value=[])),
+        start_time=0.0,
+    )
+    state.push_slots_update = lambda: None
+    return state
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", ["chat-1", "dashboard:chat-1", "dashboard_chat-1"])
+async def test_a_person_slot_is_not_adopted_under_any_spelling_of_its_key(
+    _env, monkeypatch, tmp_path, key
+):
+    from kiro_crew.dashboard.state import SlotOrigin
+
+    state = _real_state(monkeypatch, tmp_path)
+    slot = state.get_or_create_slot(name="chat-1", origin=SlotOrigin.USER)
+    slot.project = "/home/me/repo"
+    with pytest.raises(ValueError, match="an app may only adopt slots it created"):
+        await acquire_worker_slot(state, "demo", key, project="/tmp/x", trust=True)
+    assert state.get_slot("chat-1") is slot
+    assert slot._app == ""
+    assert slot.project == "/home/me/repo"
+    assert _env.override.calls == []
+
+
+@pytest.mark.asyncio
+async def test_real_state_still_restamps_an_untagged_slot(monkeypatch, tmp_path):
+    state = _real_state(monkeypatch, tmp_path)
+    slot = state.get_or_create_slot(name="embed-1")
+    lease = await acquire_worker_slot(state, "demo", "embed-1", project="/work/repo")
+    assert lease.slot is slot
+    assert slot._app == "demo"
+    assert slot.project == "/work/repo"
+    await lease.release()
+
+
+@pytest.mark.asyncio
 async def test_a_slot_owned_by_another_app_is_refused(_env):
     state = _State()
     a = await acquire_worker_slot(state, "a", "worker", project="/a")

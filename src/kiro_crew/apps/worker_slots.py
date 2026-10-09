@@ -54,6 +54,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 from kiro_crew.apps.audit_sdk import AuditSDK
+from kiro_crew.dashboard.state import SlotOrigin
 from kiro_crew.safety_override import safety_override
 from kiro_crew.sel import sel
 
@@ -69,6 +70,8 @@ MAX_TRUST_TTL_SECS = 24 * 60 * 60
 DEFAULT_TRUST_TTL_SECS = 60 * 60
 #: How often a waiting acquire re-checks for leases whose slot is gone.
 _RECLAIM_POLL_SECS = 0.5
+#: Slot origins an app never adopts: chats a person or a cron job opened.
+_PERSONAL_ORIGINS = frozenset({SlotOrigin.USER, SlotOrigin.CRON})
 
 
 class WorkerSlotTimeout(TimeoutError):
@@ -342,7 +345,8 @@ async def acquire_worker_slot(
     Waits up to *timeout* seconds while *app* already holds as many leases as its
     limit (default 1), or while *key* is leased by anyone, and raises
     :class:`WorkerSlotTimeout` if neither frees. Raises ``ValueError`` if the
-    slot belongs to another app. The slot is created if missing and re-stamped
+    slot belongs to another app, or is an unowned slot a person or a cron job
+    opened (an app adopts only slots it created). The slot is created if missing and re-stamped
     either way: hidden as *app*'s and working in *project*. Requested trust lasts
     until release or *trust_ttl_secs* (capped at :data:`MAX_TRUST_TTL_SECS`); a
     grant whose audit cannot be written is not made, and
@@ -373,6 +377,13 @@ async def acquire_worker_slot(
         owner = str(getattr(slot, "_app", "") or "")
         if owner and owner != app:
             raise ValueError(f"slot {key!r} belongs to app {owner!r}")
+        # Check the slot actually returned (the registry may fold the key): an
+        # unowned slot a person or a cron job opened is theirs, never re-stamped.
+        # Unowned APP-origin or untagged slots stay adoptable (ChatEmbed re-stamp).
+        if not owner and str(getattr(slot, "_origin", "") or "") in _PERSONAL_ORIGINS:
+            raise ValueError(
+                f"slot {key!r} belongs to a person/cron; an app may only adopt slots it created"
+            )
         # The registry may fold the requested name; the folded key is the identity.
         canonical = str(getattr(slot, "key", key) or key)
         if canonical != key and (
