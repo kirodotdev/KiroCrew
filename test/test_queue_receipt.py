@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -558,11 +559,21 @@ class TestAnAddressKeyNamesOneConversation:
         the failure surfaces as an attribute error in whichever suite happens to touch
         it rather than at the fake's own definition. Checked as an ASSIGNMENT, because a
         mention in a docstring satisfies a substring search and writes nothing.
+
+        Only a file whose text can spell ``send_receipt`` is parsed. A method name is
+        an identifier in the source, and the parser folds identifiers through NFKC, so
+        a file holding neither the literal name nor an NFKC form of it cannot define the
+        method. Parsing every test file costs most of the per-test time budget.
         """
         root = Path(Q.__file__).resolve().parent.parent.parent.parent
         missing = []
         for path in sorted((root / "test").glob("test_*.py")):
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            src = path.read_text(encoding="utf-8")
+            if "send_receipt" not in src and (
+                src.isascii() or "send_receipt" not in unicodedata.normalize("NFKC", src)
+            ):
+                continue
+            tree = ast.parse(src)
             for node in ast.walk(tree):
                 if not isinstance(node, ast.ClassDef):
                     continue
