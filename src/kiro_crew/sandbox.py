@@ -738,6 +738,13 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # Gateway resolve-once artifacts choose the entry point substituted for an
     # approved npm launcher. The installer runs in the unsandboxed gateway.
     "mcp/resolved",
+    # This gateway's stable random identity (``gateway_identity.GATEWAY_ID_FILE``). The
+    # Remote Crew cycle guard compares it to refuse a chain that loops back on itself,
+    # so a sandboxed writer would choose whether a loop is detected. The read path
+    # already judges the descriptor it opens; this seal is the write half. Read-only,
+    # not hidden: the id is random, carries nothing secret, and is already served on
+    # ``/api/health``. The only writer is the unsandboxed gateway's first-read mint.
+    "gateway_id",
 )
 
 #: Crew-home leaves that MUST stay read-write for a sandboxed process. Every entry is
@@ -990,6 +997,9 @@ _CREW_CHILD_READABLE_LEAVES: tuple[str, ...] = (
     # Launch trees and records contain no credential. Their integrity is enforced
     # by the read-only mount; foreign harnesses may read the resolved package tree.
     "mcp/resolved",
+    # A random id with no host, user or path in it, already published on
+    # ``/api/health``. Its risk is a write, answered by the read-only seal.
+    "gateway_id",
 )
 
 
@@ -2538,6 +2548,29 @@ def _note_established(established: list[str] | None, target: str) -> None:
         established.append(target)
 
 
+def _mint_gateway_id_before_seal() -> None:
+    """Mint the real gateway id so the read-only seal has the gateway's own inode to bind.
+
+    The id is minted lazily on first read and never changes after that, and
+    ``mount(2)`` cannot seal an absent name. Minting here, before the launcher builds
+    its mounts, gives the ``gateway_id`` READONLY leaf a target on a fresh install.
+    A pre-created stub would not do: the gateway's later mint would ``os.replace`` the
+    bound name from the host namespace, which detaches the bind in a running sandbox.
+
+    Skipped for an absent data home, which this path deliberately never scaffolds.
+    Imported lazily so this module keeps not loading the config loader. Never raises:
+    ``gateway_id`` already falls back to a process-local id on any failure.
+    """
+    try:
+        if not os.path.isdir(config_dir()):
+            return
+        from kiro_crew import gateway_identity
+
+        gateway_identity.gateway_id()
+    except Exception:  # pragma: no cover - defensive; a spawn must not fail on this
+        logger.debug("could not mint the gateway id before sealing", exc_info=True)
+
+
 def _materialize_sealable_ceilings(established: list[str] | None = None) -> list[str]:
     """Create every absent sealable ceiling; return the paths actually created.
 
@@ -2581,6 +2614,7 @@ def _materialize_sealable_ceilings(established: list[str] | None = None) -> list
     """
     created: list[str] = []
     dir_targets, file_targets = _sealable_absent_ceilings()
+    _mint_gateway_id_before_seal()
 
     for target in dir_targets:
         normalized = os.path.normpath(target)

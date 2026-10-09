@@ -1015,14 +1015,14 @@ _WRITE_PROTECTED_HOME_PATHS += [
     for prefix in _CREW_HOME_PREFIXES
 ]
 _WRITE_PROTECTED_HOME_PATHS += [
-    # MCP launch approval and resolved launcher artifacts. gatewayd spawns a
-    # stubbed server's backend OUTSIDE the sandbox, as the user. The approval
-    # directory records which launch each name may run; ``mcp/resolved`` supplies
-    # an executable substituted for an approved npm launcher. Every writer runs
-    # in the gateway. Reading either path decides nothing inside the sandbox.
+    # Gateway-written inputs to decisions made outside the sandbox. gatewayd spawns a stubbed
+    # server's backend as the user: ``mcp-launch-approvals`` records which launch each name may
+    # run and ``mcp/resolved`` supplies the substituted executable. ``gateway_id`` is the id the
+    # Remote Crew cycle guard compares; a write would choose whether a loop is detected. All
+    # are written by the gateway, and reading them decides nothing inside the sandbox.
     f"{prefix}/{leaf}"
     for prefix in _CREW_HOME_PREFIXES
-    for leaf in ("mcp-launch-approvals", "mcp/resolved")
+    for leaf in ("mcp-launch-approvals", "mcp/resolved", "gateway_id")
 ]
 _WRITE_PROTECTED_HOME_PATHS += [
     # The cloud launcher's LAUNCH RECORD (``cloud/launch_state.py``): the profile, region
