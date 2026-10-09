@@ -1154,6 +1154,7 @@ class TestProviderReclaimsAtShutdown:
         provider._client.session_id = None
         provider._client.process_tree_confirmed_dead = True
         provider._client.shutdown = AsyncMock()
+        provider._client.confirm_member_projection = AsyncMock()
         if claimed:
 
             @asynccontextmanager

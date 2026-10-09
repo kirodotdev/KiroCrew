@@ -638,6 +638,13 @@ relaxation does not resurrect them automatically.
 `prepare_member_capabilities(member, project_dir)` verifies the saved spec and
 Parent identity without claiming that a provider loaded it. API runtime state
 remains pending or unverified until runtime integration supplies observations.
+Enrolled members may start on Kiro, Claude, Codex or DeepSeek in a dedicated
+fresh process. Claude, Codex and DeepSeek confirm the saved spec their MCP
+projection was built from after a successful ACP session response; withheld or
+mismatched projections refuse startup. Native activation is still required on
+Kiro. The saved-version and governance checks bracket every path. Projection gaps
+keep the runtime unverified, and MCP readiness remains a separate requirement.
+Saving never updates a live session.
 The existing fork refresh delegates enrolled definitions to this resolver.
 Legacy PATCH and direct rebind refuse an enrolled definition rather than
 bypassing its intent. Unreadable authoritative state returns bounded

@@ -902,14 +902,16 @@ class AcpProvider(LLMProvider):
 
     @property
     def member_capabilities_supported(self) -> bool:
-        """Full saved member-spec loading is opt-in (harness-parity H6)."""
+        """Saved member-spec loading or projection is opt-in (harness-parity H6)."""
         return self._client.backend in ACP_BACKENDS_MEMBER_CAPABILITIES
 
     @property
     def loaded_capability_template(self) -> str:
-        if isinstance(self._client, AcpSessionProvider):
-            return self._client.loaded_capability_template
-        return ""
+        return self._client.loaded_capability_template
+
+    @property
+    def capability_projection_gaps(self) -> tuple[str, ...]:
+        return self._client.capability_projection_gaps
 
     @property
     def mcp_config_hot_reload(self) -> bool:
@@ -2249,8 +2251,15 @@ class AcpProvider(LLMProvider):
             if self.is_kiro_backend:
                 await self._note_zero_tool_servers()
         else:
-            # ── CC path: legacy AcpClient (unchanged) ──
+            # ── CC path: legacy AcpClient ──
+            self._client.member_context = self.member_context
             await self._client.ensure_ready()
+            # An enrolled member's saved spec is confirmed against what this session
+            # actually consumed, once the session exists. Called on THIS arm only: the
+            # Kiro and KAS runtimes take the branch above, so their construction paths
+            # gain no call, await or branch for it (harness-parity H13). A no-op for
+            # every session that projects nothing.
+            await self._client.confirm_member_projection()
 
         await self._apply_initial_effort()
 
@@ -2549,6 +2558,11 @@ class AcpProvider(LLMProvider):
         # comparing receipts so a recycled conversation receives the full text.
         if isinstance(self._client, AcpClient):
             await self._client.ensure_ready()
+            # A respawn inside ensure_ready creates a NEW session on this same
+            # adapter-only arm, so the member gate is re-armed here as well: a session
+            # that came into existence on this turn is confirmed before its prompt. A
+            # no-op for every other session, and for one already confirmed.
+            await self._client.confirm_member_projection()
         send = self._client.stream_events
         if not allow_image:
             send = functools.partial(send, allow_image=False)

@@ -284,4 +284,5 @@ class ClaudeCodeMirror(AgentConfigMirror):
             disabled_servers=projection.disabled_servers,
             derived_spec_snapshot=projection.derived_spec_snapshot,
             zero_tools=projection.zero_tools,
+            agent_spec=projection.agent_spec,
         )

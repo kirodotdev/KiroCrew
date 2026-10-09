@@ -163,6 +163,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_INLINE_COMPACTION,
     ACP_BACKENDS_INTERNAL_SANDBOX,
     ACP_BACKENDS_LOAD_WITHOUT_MODES,
+    ACP_BACKENDS_MEMBER_CAPABILITIES,
     ACP_BACKENDS_MEMBER_DISPATCH,
     ACP_BACKENDS_MEMBER_PANEL,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
@@ -1942,6 +1943,20 @@ class AcpClient:
         # ``session/load`` response instead, against this snapshot. Resolved and
         # cleared together with the array, for the same per-spawn freshness reason.
         self._session_mcp_snapshot: DerivedSpecSnapshot | None = None
+        # The spec the array above was built from -- what an enrolled member's
+        # session consumed. Read AFTER the session exists (by
+        # :meth:`confirm_member_projection`, from the adapter-only arm of the client
+        # startup path), so unlike the snapshot it survives a re-seed that drops the
+        # array cache: the host already holds the array this describes, and dropping
+        # the cache for the NEXT session must not erase what THIS one consumed.
+        self._session_agent_spec: dict[str, Any] | None = None
+        self.member_context = False
+        self._loaded_capability_template = ""
+        self._capability_projection_gaps: tuple[str, ...] = ()
+        # Session id :meth:`confirm_member_projection` already confirmed, so a start
+        # that re-enters on a live session does not judge it again. Cleared with the
+        # session, never by the re-seed, which happens DURING the start that confirms.
+        self._confirmed_capability_session = ""
         # This session's agent spec, snapshotted once per spawn for the
         # unresolved-ref guard alone (see _guard_unresolved_mcp_refs). Held for
         # the same reason as the array above and read at the same kind of site:
@@ -2622,6 +2637,7 @@ class AcpClient:
         # Kept beside the array it describes, so the post-consume check judges the
         # generation these elements were built from and not a later read of the file.
         self._session_mcp_snapshot = projection.derived_spec_snapshot
+        self._session_agent_spec = projection.agent_spec
         servers = projection.params.get("mcpServers") or []
         out = list(servers) if isinstance(servers, list) else []
         # The restriction half of the projection's withhold set, from the SAME parse the
@@ -3184,6 +3200,22 @@ class AcpClient:
         )
         return servers
 
+    def _deepseek_session_mcp_servers(self) -> list:
+        """MCP server array passed to a deepseek ``session/new`` / ``session/load``.
+
+        The deepseek twin of :meth:`_goose_session_mcp_servers`: ``dsh --profile acp``
+        reads no ``~/.kiro/agents/<name>.json``, and once deepseek is in ``MIRRORS``
+        :meth:`_pooled_mcp_servers` answers ``[]`` for it, so this array is the only
+        route for Crew's own tools as well as the spec's servers. An element whose
+        command cannot start fails ``session/new`` whole on this harness
+        (``test/fixtures/acp_frames/deepseek/mcp-stdio-rollback-live.jsonl``).
+
+        In-memory only. The spawn path warms ``_session_mcp_cache`` off the loop, so
+        this accessor adds no scheduling or failure point to a call site shared with
+        kiro-cli (harness-parity H13).
+        """
+        return self._session_mcp_servers()
+
     def _claude_local_settings_path(self) -> Path:
         return self._work_dir / ".claude" / "settings.local.json"
 
@@ -3385,9 +3417,18 @@ class AcpClient:
         )
 
     def _invalidate_session_mcp_projection(self) -> None:
-        """Drop the MCP array and the spec snapshot that authorized it."""
+        """Drop the MCP array, the spec snapshot that authorized it, and the
+        member-projection verdict recorded against it.
+
+        NOT ``_session_agent_spec``: that names what the host's live session
+        consumed, and the re-seed which calls this runs DURING the start whose
+        confirmation reads it (see :meth:`confirm_member_projection`). It is dropped
+        with the session, in ``_reset_state``.
+        """
         self._session_mcp_cache = None
         self._session_mcp_snapshot = None
+        self._loaded_capability_template = ""
+        self._capability_projection_gaps = ()
 
     def _withdraw_shared_reader_lease(self, path: Path, owner: str) -> bool:
         """Withdraw the durable reader lease before clearing its lease flag."""
@@ -4587,6 +4628,70 @@ class AcpClient:
         # teardown's ordinary settle transaction hands it back from here.
         self._claude_settings_claim_unrevoked = False
         self._invalidate_session_mcp_projection()
+
+    async def confirm_member_projection(self) -> None:
+        """Confirm the projection this session consumed. Blocking.
+
+        Called from the adapter-only arm of the client startup path, AFTER
+        ``ensure_ready`` returned, so a session whose array was withheld, whose saved
+        intent cannot be read, or whose saved intent is not the spec the array was
+        built from is refused before its first prompt. A host that sends no array
+        (kiro-cli, which receives its servers through ``--agent``) and a session with
+        no saved intent are both no-ops -- and because the call sits on that arm and
+        not on a step of the shared construction path, Kiro's startup gains no
+        conditional, call or failure point in service of an adapter (harness-parity
+        H13).
+
+        Idempotent for the session it confirmed: a later start that re-enters on the
+        same live session does not judge it again against a saved intent that may have
+        moved since the session was created. State recorded by the confirmation is
+        dropped with the session, so a NEW session is always judged afresh.
+        """
+        if not self.member_context or not self._session_id:
+            return
+        if self._confirmed_capability_session == self._session_id:
+            return
+        if (
+            self.backend not in ACP_BACKENDS_MEMBER_CAPABILITIES
+            or self.backend not in ACP_BACKENDS_SESSION_MCP_ARRAY
+        ):
+            return
+        await asyncio.to_thread(self._confirm_member_projection, self._session_agent_spec)
+        self._confirmed_capability_session = self._session_id
+
+    def _confirm_member_projection(self, spec: dict[str, Any] | None) -> None:
+        """Confirm the consumed projection, never a spec re-read after startup."""
+        if not self.member_context:
+            return
+        from kiro_crew.agent_capabilities import CapabilityError, confirm_consumed_projection
+
+        try:
+            gaps = confirm_consumed_projection(
+                self._agent,
+                spec,
+                withheld=self._seeds_local_settings and not self._permission_surface_governed,
+            )
+        except CapabilityError as exc:
+            raise AcpError(f"{exc.code}: saved spec projection could not be confirmed") from exc
+        if gaps is None:
+            return
+        self._capability_projection_gaps = gaps
+        self._loaded_capability_template = self._agent
+
+    @property
+    def loaded_capability_template(self) -> str:
+        """Saved template whose projection was consumed by this live session."""
+        if (
+            self.backend in ACP_BACKENDS_MEMBER_CAPABILITIES
+            and self.is_ready
+            and self._is_process_alive()
+        ):
+            return self._loaded_capability_template
+        return ""
+
+    @property
+    def capability_projection_gaps(self) -> tuple[str, ...]:
+        return self._capability_projection_gaps
 
     @property
     def is_ready(self) -> bool:
@@ -6793,6 +6898,12 @@ class AcpClient:
         # a replacement process must not inherit this one's snapshot.
         self._session_mcp_cache = None
         self._session_mcp_snapshot = None
+        self._session_agent_spec = None
+        self._loaded_capability_template = ""
+        self._capability_projection_gaps = ()
+        # Per SESSION, not per spawn: a replacement process' session is judged on its
+        # own consumed spec, even when it resumes the same id.
+        self._confirmed_capability_session = ""
         # Same per-spawn freshness rule as the array above: an edited spec must be
         # what the next session's guard judges, not this one's.
         self._mcp_ref_spec = None
@@ -6975,6 +7086,7 @@ class AcpClient:
                 *(self._claude_session_mcp_servers() if self._is_claude else []),
                 *(self._opencode_session_mcp_servers() if self._is_opencode else []),
                 *(self._goose_session_mcp_servers() if self._is_goose else []),
+                *(self._deepseek_session_mcp_servers() if self._is_deepseek else []),
                 *(await asyncio.to_thread(self._pooled_mcp_servers)),
             ],
         }
@@ -7043,6 +7155,7 @@ class AcpClient:
                 *(self._claude_session_mcp_servers() if self._is_claude else []),
                 *(self._opencode_session_mcp_servers() if self._is_opencode else []),
                 *(self._goose_session_mcp_servers() if self._is_goose else []),
+                *(self._deepseek_session_mcp_servers() if self._is_deepseek else []),
                 *(await asyncio.to_thread(self._pooled_mcp_servers)),
             ]
             # Rebuilt AFTER the array, from the same re-seed: the envelope carries
@@ -7196,6 +7309,7 @@ class AcpClient:
                             *(self._claude_session_mcp_servers() if self._is_claude else []),
                             *(self._opencode_session_mcp_servers() if self._is_opencode else []),
                             *(self._goose_session_mcp_servers() if self._is_goose else []),
+                            *(self._deepseek_session_mcp_servers() if self._is_deepseek else []),
                             *(await asyncio.to_thread(self._pooled_mcp_servers)),
                         ],
                     }

@@ -400,6 +400,7 @@ def opencode_projection(
         harness_deny_rules=rules,
         derived_spec_snapshot=projection.derived_spec_snapshot,
         zero_tools=projection.zero_tools,
+        agent_spec=projection.agent_spec,
     )
 
 

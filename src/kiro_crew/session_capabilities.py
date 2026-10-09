@@ -104,7 +104,8 @@ def verify_saved(prepared: CapabilityPreparation, cwd: str) -> None:
 
 
 def loaded_stamp(provider: Any, prepared: CapabilityPreparation) -> LoadedCapabilities:
-    """Only an observed active template on a dedicated new process is evidence."""
+    """Require native activation or a verified projection on a fresh process."""
+
     if (
         provider.member_capabilities_supported is not True
         or provider.loaded_capability_template != prepared.template
@@ -135,6 +136,7 @@ def runtime_view(state: SessionRegistryState, member: str, saved_revision: str) 
         provider = session.provider
         status = "pending"
         error_code = ""
+        projection_gaps: tuple[str, ...] = ()
         if stamp is not None and stamp.revision == saved_revision:
             status = "unverified"
             if (
@@ -145,6 +147,7 @@ def runtime_view(state: SessionRegistryState, member: str, saved_revision: str) 
                 and governance_answer_generation() == stamp.governance_generation
             ):
                 status = "applied"
+                projection_gaps = provider.capability_projection_gaps
                 report = provider.mcp_session_report()
                 payload = report.payload() if report is not None else None
                 if payload and (payload.get("failed") or payload.get("unresolved_refs")):
@@ -153,6 +156,8 @@ def runtime_view(state: SessionRegistryState, member: str, saved_revision: str) 
                 elif payload and payload.get("awaiting_auth"):
                     status = "pending"
                     error_code = "capability_mcp_auth_required"
+                elif projection_gaps:
+                    status = "unverified"
                 elif stamp.mcp_servers and (
                     not payload or not set(stamp.mcp_servers) <= set(payload.get("ready", []))
                 ):

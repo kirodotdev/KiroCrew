@@ -158,6 +158,9 @@ class SessionProjection:
     ``OPENCODE_CONFIG_CONTENT``). Carried beside the params, not inside them, for
     the reason ``denied_tools`` is. Empty everywhere else.
     """
+    agent_spec: dict[str, Any] | None = None
+    """The exact parsed spec this projection consumed; absent when withheld."""
+
     derived_spec_snapshot: Any = None
     """The ``agent.DerivedSpecSnapshot`` the ``mcpServers`` array was built from.
 

@@ -1012,6 +1012,14 @@ class AcpRuntimeProtocol(Protocol):
 
     def death_summary(self) -> str | None: ...
 
+    def _member_projection_needs_confirmation(self, mirror_used: bool) -> bool:
+        """Whether this start must confirm the array a mirror built. Synchronous."""
+        ...
+
+    async def _confirm_member_projection(self, handle: AcpSessionHandle) -> None:
+        """Refuse a member session whose consumed projection is not the saved intent."""
+        ...
+
 
 class AcpSessionHandle:
     """Handle for a single ACP session on a shared runtime.
@@ -1327,6 +1335,18 @@ class AcpSessionHandle:
         # ``_deny_spec_disabled_tool`` a single falsy read on those sessions.
         # Mirrors ``AcpClient._spec_denied_tools``.
         self.spec_denied_tools: frozenset[tuple[str, str]] = frozenset()
+        # The parsed agent spec this session's mirrored array was built from, set by
+        # the runtime from the same projection. None on a host with no mirror. A
+        # member session's loaded-check reads this, never a re-read of the file.
+        self.consumed_agent_spec: dict[str, Any] | None = None
+        self.mirror_used: bool = False
+        # A member session's confirmation result, recorded by the runtime from the
+        # mirrored arm: the saved template whose consumed projection matched, plus
+        # the projection gaps that keep the Capabilities view "unverified". Both
+        # stay at their defaults for a host with no mirror and for a session whose
+        # consumed spec matched no saved intent.
+        self.confirmed_projection_template: str = ""
+        self.capability_projection_gaps: tuple[str, ...] = ()
         # The capabilities the agent batch this session registered auto-approves
         # (see ``kas_agents.projected_auto_approved``); None when no batch was sent.
         self.kas_auto_approved: frozenset[str] | None = None
@@ -3404,6 +3424,10 @@ class AcpSessionHandle:
         backend = self._runtime.acp_backend
         if acp_tool_gate.routing_for(backend) is not acp_tool_gate.Routing.SESSION_CONFIG:
             return
+        if self.mirror_used and self._runtime._member_projection_needs_confirmation(
+            self.mirror_used
+        ):
+            await self._runtime._confirm_member_projection(self)
         option_id, value = acp_tool_gate.permission_config_for(backend)
         issue = acp_tool_gate.session_config_issue(backend, self._config_options)
         if issue:

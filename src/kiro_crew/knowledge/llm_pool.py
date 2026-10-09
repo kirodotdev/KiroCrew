@@ -191,10 +191,10 @@ def _get_acp_backend(config: Optional[dict] = None) -> str:
     resolved backend is safe to hand it, asked rather than enumerated so a
     backend that later earns both answers needs no change here:
     ``SessionCapabilities.honors_zero_tool_ban`` (kiro-cli/KAS natively, plus
-    opencode/goose via ``AcpClient._deny_zero_tools``; not claude, whose routing
-    is unenforced so an inherited pre-approval can skip the permission request;
-    not codex, whose sessions run on ``AcpRuntime`` with no such refusal; not
-    pi/deepseek, which have no mirror at all) and ``.acp_client_spawnable`` (not
+    opencode/goose/deepseek via ``AcpClient._deny_zero_tools``; not claude, whose
+    routing is unenforced so an inherited pre-approval can skip the permission
+    request; not codex, whose sessions run on ``AcpRuntime`` with no such refusal;
+    not pi, which has no mirror) and ``.acp_client_spawnable`` (not
     kas/codex, which need ``AcpRuntime`` and have no arm in ``AcpClient._spawn``).
 
     The pool reads raw ``config.json``, which never passed the loader's
@@ -532,8 +532,8 @@ class AcpWorker(Worker):
         This pool's ``acp_backend`` is restricted by ``_get_acp_backend`` to a
         backend that answers both ``honors_zero_tool_ban`` and
         ``acp_client_spawnable`` True, and those do NOT all answer these capabilities
-        the same way -- kiro takes the slash command, opencode and goose take
-        neither -- which is exactly why they are asked here instead of an identity.
+        the same way -- kiro takes the slash command, deepseek the config option,
+        opencode and goose neither -- which is exactly why they are asked here instead of an identity.
         ``test_agent_sdk_capabilities`` pins every member's answers, so a backend
         that later qualifies with different answers is caught there, not assumed to
         inherit an existing member's.

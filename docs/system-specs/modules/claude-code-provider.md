@@ -38,6 +38,24 @@ Whether a *deployment* may pick a registered harness is answered by the
 (`apply_selectable_denials`, floored at `GOVERNANCE_FLOOR_BACKEND` = kiro-cli).
 Whether a *machine* can run it is answered by `agent_sdk.probe_backend`.
 
+## Editor-managed member specs
+
+Claude accepts enrolled members on a dedicated AcpClient process. The mirror
+retains the exact parsed spec beside the MCP array. After session/new or
+session/load succeeds, the client compares that consumed spec with the saved
+materialization digest and exposes its template only on the live session. A
+withheld array or mismatched digest refuses startup. Cache invalidation and
+process teardown clear the evidence. Allocation still verifies saved bytes,
+project identity and governance before and after startup.
+
+Prompt, declared file resources and mapped skills use the existing member
+essentials and skill-context paths, resolved against the saved private template.
+Native tool allowlists, per-tool MCP mount grants, spec hooks, toolsSettings,
+excludedTools and auto-approval shortcuts are not fully projected; when present,
+the runtime stays unverified.
+This support does not change auto-approval, permission routing, or the inherited
+global-settings gap below.
+
 ## The Claude harness
 
 `acp/harness/claude.py` owns the whole Claude launch, and it is a live path on a

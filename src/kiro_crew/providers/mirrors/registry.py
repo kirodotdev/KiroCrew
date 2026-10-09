@@ -42,6 +42,7 @@ from kiro_crew.acp_backends import (
 from kiro_crew.providers.mirrors.base import AgentConfigMirror
 from kiro_crew.providers.mirrors.claude_code import ClaudeCodeMirror
 from kiro_crew.providers.mirrors.codex import CodexMirror
+from kiro_crew.providers.mirrors.deepseek import DeepSeekMirror
 from kiro_crew.providers.mirrors.goose import GooseMirror
 from kiro_crew.providers.mirrors.opencode import OpenCodeMirror
 
@@ -202,6 +203,7 @@ MIRRORS: dict[str, type[AgentConfigMirror]] = {
     ACP_BACKEND_CODEX: CodexMirror,
     ACP_BACKEND_OPENCODE: OpenCodeMirror,
     ACP_BACKEND_GOOSE: GooseMirror,
+    ACP_BACKEND_DEEPSEEK: DeepSeekMirror,
 }
 
 #: Every backend this build can spell, and how its MCP surface is reached.
@@ -338,25 +340,17 @@ PROJECTIONS: dict[str, McpProjection] = {
         per_tool_deny=PerToolDeny.WHOLE_SERVER,
     ),
     ACP_BACKEND_DEEPSEEK: McpProjection(
-        kind=ProjectionKind.BROKER_ONLY,
-        reason=(
-            "deepseek accepts stdio entries in the session/new mcpServers array, which "
-            "is why it IS in ACP_BACKENDS_SESSION_MCP_ARRAY and why it is not a "
-            "no-channel: the broker stubs _pooled_mcp_servers appends for a backend "
-            "outside MIRRORS are shaped as stdio elements "
-            "(mcp_gateway.session_servers._acp_server_entry emits command/args/env) and "
-            "that is the shape this harness mounts. Captured end to end rather than "
-            "inferred: test/fixtures/acp_frames/deepseek/mcp-stdio-mount-live.jsonl sends "
-            "one such element pointing at a real stdio MCP server, session/new returns a "
-            "sessionId, the server is asked initialize/tools/list/tools/call, and the "
-            "turn carries the resulting tool_call and its result. So a deepseek session "
-            "holds Crew's pooled tools, and holds them reachably. What it does not hold "
-            "is the servers its own agent spec declares, or the spec's per-tool deny "
-            "set, because no mirror translates them. One hazard rides along, in "
-            "mcp-stdio-rollback-live.jsonl: an element whose command cannot start fails "
-            "the WHOLE session rather than being dropped"
-        ),
-        tracking="docs/request-for-change/rfc-agent-config-mirror.md#5-migration",
+        kind=ProjectionKind.MIRROR,
+        reason="deepseek.py -- the session/new mcpServers array, on the stdio element "
+        "shape measured end to end in test/fixtures/acp_frames/deepseek/"
+        "mcp-stdio-mount-live.jsonl (mounted, then initialize, tools/list and tools/call "
+        "asked by dsh itself). Until this mirror the backend was BROKER_ONLY: it held "
+        "Crew's pooled stubs but not the servers its own agent spec declares. One hazard "
+        "rides along, in mcp-stdio-rollback-live.jsonl: an element whose command cannot "
+        "start fails the WHOLE session rather than being dropped",
+        # No per-call deny path is verified for this harness, so a narrowed server is
+        # withheld whole, the direction that cannot leave a switched-off tool reachable.
+        per_tool_deny=PerToolDeny.WHOLE_SERVER,
     ),
 }
 

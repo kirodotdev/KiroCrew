@@ -712,6 +712,7 @@ def test_honor_zero_tool_ban_membership_matches_the_rule() -> None:
         sdk_backends.ACP_BACKEND_KAS,
         sdk_backends.ACP_BACKEND_OPENCODE,
         sdk_backends.ACP_BACKEND_GOOSE,
+        sdk_backends.ACP_BACKEND_DEEPSEEK,
     }
 
 
@@ -723,7 +724,7 @@ def test_the_knowledge_pool_client_takes_the_default_backend() -> None:
     ``AcpWorker`` constructs its ``AcpClient`` with ``acp_backend=``, and
     ``llm_pool._get_acp_backend`` restricts the value to whatever answers both
     ``honors_zero_tool_ban`` and ``acp_client_spawnable`` True -- today
-    kiro/opencode/goose. claude is NOT a member: its routing
+    kiro/opencode/goose/deepseek. claude is NOT a member: its routing
     (``Routing.SEEDED_SETTINGS``) is declared but not enforced by this core, so
     an inherited ``~/.claude`` pre-approval can skip the permission request the
     refusal needs to run. Asking the EFFORT capabilities rather than the identity
@@ -734,6 +735,7 @@ def test_the_knowledge_pool_client_takes_the_default_backend() -> None:
     assumed to inherit an existing member's.
     """
     from kiro_crew.agent_sdk.backends import (
+        ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_KIRO,
         ACP_BACKEND_OPENCODE,
@@ -758,6 +760,7 @@ def test_the_knowledge_pool_client_takes_the_default_backend() -> None:
         ACP_BACKEND_KIRO,
         ACP_BACKEND_OPENCODE,
         ACP_BACKEND_GOOSE,
+        ACP_BACKEND_DEEPSEEK,
     }, (
         "the set of backends this pool trusts changed -- decide the effort "
         "channel for whichever member is new or missing deliberately, then "
@@ -769,6 +772,8 @@ def test_the_knowledge_pool_client_takes_the_default_backend() -> None:
     assert capabilities_for(ACP_BACKEND_KIRO).effort_via_slash_command is True
     assert capabilities_for(ACP_BACKEND_OPENCODE).effort_via_slash_command is False
     assert capabilities_for(ACP_BACKEND_GOOSE).effort_via_slash_command is False
+    assert capabilities_for(ACP_BACKEND_DEEPSEEK).effort_via_config_option is True
+    assert capabilities_for(ACP_BACKEND_DEEPSEEK).effort_via_slash_command is False
 
 
 def test_effort_via_slash_command_membership_is_the_kiro_family() -> None:

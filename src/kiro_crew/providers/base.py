@@ -366,13 +366,19 @@ class LLMProvider(ABC):
 
     @property
     def member_capabilities_supported(self) -> bool:
-        """Whether a dedicated startup can load a complete member agent spec."""
+        """Whether a dedicated startup can verify native loading or a saved projection."""
+
         return False
 
     @property
     def loaded_capability_template(self) -> str:
-        """Confirmed active full-spec template; empty means no loading evidence."""
+        """Confirmed saved template; projection gaps are reported separately."""
         return ""
+
+    @property
+    def capability_projection_gaps(self) -> tuple[str, ...]:
+        """Saved fields this runtime cannot demonstrate applying."""
+        return ()
 
     @property
     def exit_code(self) -> int | None:

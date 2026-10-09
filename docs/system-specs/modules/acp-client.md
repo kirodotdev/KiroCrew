@@ -701,6 +701,12 @@ existing death summary is amended without changing its reason or stderr tail.
 
 ## Backend Selection
 
+Mirrored runtime members confirm the consumed spec in the adapter-only
+session permission-routing body after session/new or session/load succeeds.
+Confirmation requires both a mirrored array and member context, independently
+of the derived-spec snapshot. Kiro and KAS return before this body; their session
+construction gains no member-confirmation conditional.
+
 `AcpSessionHandle.active_agent` records the mode named by session configuration,
 a completed mode handshake or an observed agent-switch event. A queued mode
 request clears that observation until confirmation. `AcpSessionProvider` exposes

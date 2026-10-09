@@ -108,12 +108,15 @@ already reads TRUE for KAS on a plain public build.
 | H8 | New harness identifiers live in `agent_sdk/backends.py` — a LEAF module behind the agent-SDK boundary, so every consumer can name the constants rather than copy them — and are added to `ACP_BACKENDS_KNOWN`; every capability set is a subset of it; and `AcpProvider.__init__` rejects anything outside it. `ACP_BACKEND_KIRO` is the empty string, so a value that falls through every identity check spawns `kiro-cli` under a foreign label. `acp/types.py` and the `acp_backends` shim both re-export the vocabulary and remain import sites for existing callers. | `test_harness_parity.py::test_capability_sets_are_subsets_of_known_backends`, `::test_unknown_backend_rejected_at_construction`, `::test_codex_is_selectable_and_answerable` | `agent_sdk/backends.py` (`ACP_BACKENDS_KNOWN`), `providers/acp.py` (`AcpProvider.__init__`), `scripts/check_harness_parity.py` (`VOCABULARY_PATH`) |
 
 `ACP_BACKENDS_MEMBER_CAPABILITIES` is the H6 opt-in for loading an enrolled
-member's full saved agent spec. Only Kiro belongs today; this is separate from
-session sharing and per-session member dispatch. Both `AcpProvider` and
+member's saved agent spec. Kiro verifies native activation; Claude, Codex and
+DeepSeek verify the exact spec consumed by their MCP projection after session
+creation or load (Claude's projection must also be governed). This is separate from session sharing and per-session member dispatch. Both `AcpProvider` and
 `AcpSessionProvider` answer `member_capabilities_supported` from this set.
 Support alone does not prove a template is loaded: dedicated runtime ownership,
-liveness, active-mode confirmation, saved-version checks and MCP readiness still
-apply. Pinned by `test_harness_parity.py::test_member_capabilities_are_opt_in`
+liveness, native activation or projection consumption, saved-version checks and
+MCP readiness still apply. The projecting backends report unsupported native tool restrictions,
+per-tool mounts, hooks, toolsSettings, excludedTools and auto-approval shortcuts as projection gaps; those
+sessions start but remain unverified rather than claiming full-spec parity. Pinned by `test_harness_parity.py::test_member_capabilities_are_opt_in`
 and `test_session_capabilities.py::test_real_session_provider_member_support_is_explicit`.
 
 `ACP_BACKENDS_NATIVE_TODOS` is the H6 opt-in for the harness-native `/todos`

@@ -22,7 +22,7 @@ from kiro_crew import agent as agent_mod
 from kiro_crew.acp import client as client_mod
 from kiro_crew.acp import session_mcp
 from kiro_crew.acp.client import AcpClient
-from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
+from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, ACP_BACKEND_DEEPSEEK
 from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
 from kiro_crew.providers.mirrors import claude_code as claude_mirror
 from kiro_crew.providers.mirrors import registry as mirrors_registry
@@ -776,6 +776,21 @@ class TestClientSeam:
         client._reset_state()
         client._write_claude_local_settings()
         assert "foo" in _by_name(client._session_mcp_servers())
+
+    @pytest.mark.parametrize("pooled", [False, True])
+    def test_deepseek_mirror_keeps_crew_servers(self, tmp_path, agents_dir, monkeypatch, pooled):
+        """deepseek is MIRRORED now, so the mirror places Crew's servers itself, as it
+        does for goose and opencode, rather than the BROKER_ONLY shared append. What
+        must survive the move is that a deepseek session still carries them."""
+        _write_spec(agents_dir, servers={}, tools=[])
+        client = AcpClient(
+            work_dir=tmp_path, agent="crew-deepseek", acp_backend=ACP_BACKEND_DEEPSEEK
+        )
+        names = ("kirocrew-core", "kirocrew-cron")
+        broker = [{"name": name, "command": "/broker"} for name in names]
+        monkeypatch.setattr(client, "_pooled_mcp_servers", lambda: broker if pooled else [])
+
+        assert set(names) <= set(_by_name(client._session_mcp_servers()))
 
     def test_the_seam_hands_down_the_pooled_stub_names(self, tmp_path, agents_dir, monkeypatch):
         # The client owns the overlay, so it is the only layer that can answer

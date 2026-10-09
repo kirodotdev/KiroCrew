@@ -999,6 +999,7 @@ class SessionMcpProjection(NamedTuple):
     #: the harness's own native ones the array has no opinion on. See
     #: ``AcpClient._spec_zero_tools``.
     zero_tools: bool = False
+    agent_spec: dict[str, Any] | None = None
 
 
 def session_mcp_projection(
@@ -1049,6 +1050,7 @@ def session_mcp_projection(
         allowlist=_tools_allowlist(spec)._replace(muted=disabled_servers),
         derived_spec_snapshot=snapshot,
         zero_tools=isinstance(spec_tools, list) and not spec_tools,
+        agent_spec=spec,
     )
 
 

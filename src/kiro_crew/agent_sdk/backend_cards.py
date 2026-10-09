@@ -180,7 +180,7 @@ from kiro_crew.agent_sdk.backend_mcp_ability import ability_payload
 LINE_CREW_TOOLS = "crew_tools"
 #: A crew-member chat gets the session-control tools mounted.
 LINE_MEMBER_THREAD_TOOLS = "member_thread_tools"
-#: An enrolled member's whole saved agent spec is loaded at spawn.
+#: An enrolled member's saved spec is loaded or projected at spawn.
 LINE_MEMBER_SAVED_AGENT = "member_saved_agent"
 #: A Side Chat turn may execute read-only tools.
 LINE_SIDE_CHAT_TOOLS = "side_chat_tools"

@@ -610,14 +610,7 @@ class DeepseekLaunch(ProcessAdapter):
         _deepseek_bin, argv, spawn_label, stderr_label = (
             await launch_mod.resolve_self_served_launch(self.backend)
         )
-        # No spec translation is warmed here, and its absence is the declared state
-        # rather than an omission: this harness has no mirror, so the session's MCP
-        # resolution would answer with an empty list, and warming it would buy a
-        # disk read and a thread hop for that answer. What DOES reach the session is
-        # the shared broker append, which stays on the composition path for every
-        # mirror-less backend. See ``providers/mirrors/registry`` for the projection
-        # this harness declares.
-        #
+        await session._prepare_session_mcp()
         # The refuse-then-mask preflight every ENFORCED harness takes, and FIRST for
         # the reason the pi adapter gives: the read-back below starts a child of this
         # harness, and it must not run outside the mask the session runs under. The
