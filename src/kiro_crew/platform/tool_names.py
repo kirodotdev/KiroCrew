@@ -13,7 +13,7 @@ the create/overwrite tool -- and also the capability name KAS files ``str_replac
 the family and none of the rest. So a name written for kiro-cli names less on KAS
 than it does on kiro-cli unless something translates it.
 
-Two readings live here, one per direction, and both are consumed:
+Three readings live here, and all are consumed:
 
 * :data:`KAS_TOOL_FAMILY_BY_KIRO_CLI_NAME` -- the MOUNT direction.
   ``kas_agents._project_tools`` carries each kiro-cli name with its family
@@ -24,6 +24,11 @@ Two readings live here, one per direction, and both are consumed:
   ``str_replace`` exactly where it binds to ``fs_write``. A mount widened in one
   vocabulary and a rule read in the other is how the operator's own control
   stops applying.
+* :data:`KIRO_TOOL_ALIASES` -- kiro-cli's OWN short spellings.
+  kiro-cli stamps ``shell``, ``read`` and ``write`` on the built-ins a spec and a
+  rule call ``execute_bash``, ``fs_read`` and ``fs_write``; the KAS projection
+  matches a spec entry under either spelling and ``hooks.on_tool_call`` reads a
+  stamp under the one a rule is written in.
 
 A LEAF on purpose: stdlib only, so both the ACP projection and the PreToolUse
 gate can import it with no cycle (``hooks`` cannot import from ``kiro_crew.acp``
@@ -151,6 +156,22 @@ KIRO_CLI_NAME_BY_KAS_TOOL: dict[str, str] = {
 #: must not become a deletion grant on KAS. A deny under ``fs_write`` still
 #: reaches it, because an operator who denied writes denied deletes.
 POLICY_ALIAS_DENY_ONLY_IDS: frozenset[str] = frozenset({"delete_file"})
+
+#: kiro-cli's short spelling of a built-in -> the name a spec or a rule is written in.
+#:
+#: kiro-cli's legacy ``shell`` spec key, which is also the ``_meta.kiro.toolName``
+#: it stamps on its shell built-in (recorded live in
+#: ``test/fixtures/acp_frames/kiro/session.jsonl``), and the short ``read`` /
+#: ``write`` names KAS's own tool table classifies as ``fs_read`` / ``fs_write``.
+#: A value is only ever a name ``governance.BUILTIN_TOOL_SCOPES`` already governs:
+#: the deny rules, governance and the read-only proof all resolve a stamp through
+#: this table (``hooks._host_builtin_alias``), and the proof's own allowlist then
+#: decides what a resolved name may prove.
+KIRO_TOOL_ALIASES: dict[str, str] = {
+    "shell": "execute_bash",
+    "read": "fs_read",
+    "write": "fs_write",
+}
 
 
 def expand_kiro_cli_tool_names(entries: list[str]) -> list[str]:
