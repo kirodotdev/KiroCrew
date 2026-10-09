@@ -3949,6 +3949,17 @@ class CronService:
                     # contention is caught below and logged — the merge is
                     # best-effort and the next run / reaper re-persists.
                     await asyncio.to_thread(self._merge_job_result, terminal)
+                except CronStoreBusy as exc:
+                    # The lock was never won, so nothing was merged and the
+                    # one-shot consume did not run. A delete_after_run at-job
+                    # is still enabled (the consume is what stops it), so
+                    # without the deferral it is due again on the next tick.
+                    # Same owed rule as the consume in _merge_job_result.
+                    logger.warning("Result merge for job '%s' skipped: %s", job.name, exc)
+                    if terminal.delete_after_run and not (
+                        terminal.fire_time_denied or terminal.run_never_started
+                    ):
+                        self.defer_removal(terminal.id)
                 except Exception:
                     logger.exception("Failed to merge result for job '%s'", job.name)
                 # Record history
