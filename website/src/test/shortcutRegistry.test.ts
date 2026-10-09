@@ -17,6 +17,7 @@ import {
   type Chord,
 } from '../lib/shortcutRegistry'
 import { SHORTCUT_LABEL_KEY } from '../hooks/useKeyboardShortcuts'
+import { DEFAULT_PANEL_TOGGLE_BINDINGS } from '../lib/panelToggleShortcuts'
 
 type Ev = Pick<KeyboardEvent, 'code' | 'key' | 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey'>
 const ev = (code: string, mods: Partial<Ev> = {}): Ev =>
@@ -141,6 +142,24 @@ describe('shortcutRegistry — table invariants', () => {
   it('keeps the literal-Ctrl chords literal: ⌃G on every platform, ⌃1–9 on macOS (Alt+1–9 elsewhere)', () => {
     expect(shortcutEntry('agent-monitor')?.defaults).toEqual({ mac: { key: 'g', ctrl: true }, other: { key: 'g', ctrl: true } })
     expect(shortcutEntry('chat-1')?.defaults).toEqual({ mac: { key: '1', ctrl: true }, other: { key: '1', alt: true } })
+  })
+
+  it('MRU walk on macOS is ⌃⌥` / ⌃⌥⇧`, not the Option+` grave-accent dead key; Alt+` elsewhere', () => {
+    // Option+` on macOS starts composing a grave accent (è), so a bare Option
+    // chord there is both unreachable and a trap for anyone typing an accent.
+    // Holding Control takes the key out of the layout's dead-key map. ⌃` alone
+    // is the terminal toggle, so the MRU chord keeps Option alongside it.
+    expect(shortcutEntry('chat-mru')?.defaults).toEqual({ mac: { key: '`', ctrl: true, alt: true }, other: { key: '`', alt: true } })
+    expect(shortcutEntry('chat-mru-back')?.defaults).toEqual({ mac: { key: '`', ctrl: true, alt: true, shift: true }, other: { key: '`', alt: true, shift: true } })
+    expect(shortcutEntry('chat-mru')?.aliases).toBeUndefined()
+    expect(shortcutEntry('chat-mru-back')?.aliases).toBeUndefined()
+    // Distinct from the terminal toggles (⌃` / ⌃⇧`) on the same key.
+    for (const id of ['chat-mru', 'chat-mru-back']) {
+      const mac = shortcutEntry(id)!.defaults.mac!
+      for (const terminal of [DEFAULT_PANEL_TOGGLE_BINDINGS['terminal'], DEFAULT_PANEL_TOGGLE_BINDINGS['terminal-new']]) {
+        expect(JSON.stringify(normalizeChord(mac))).not.toBe(JSON.stringify(normalizeChord(terminal!)))
+      }
+    }
   })
 
   it('registryAltNonShiftKeys lists exactly the Option/Alt chords the handler now claims pre-panel', () => {

@@ -1,5 +1,5 @@
 import React from 'react'
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { closeCrewWindow, currentCrewWindow, markCrewWindowShown, openCrewWindow } from '../pages/chat/crew-window/crewWindowStore'
 import * as chatSlice from '../store/chatSlice'
 import { fireEvent, screen, act, render } from '@testing-library/react'
@@ -206,23 +206,51 @@ describe('useKeyboardShortcuts — toggle behavior', () => {
     expect(prevented).toBe(true)
   })
 
-  it('Alt+` arms a one-shot beforeinput guard that cancels the macOS dead-key char', () => {
-    const store = createTestStore({
-      dashboard: { slots: [{ key: 'slot-1', title: 'Chat 1', messages: 0, running: false }, { key: 'slot-2', title: 'Chat 2', messages: 0, running: false }] } as unknown as RootState['dashboard'],
-      chat: { activeSlot: 'slot-2', slotHistory: ['slot-1'] } as unknown as RootState['chat'],
+  describe('MRU walk chord', () => {
+    function setupMru(platform: string) {
+      Object.defineProperty(navigator, 'platform', { value: platform, configurable: true })
+      const store = createTestStore({
+        dashboard: { ...dashboardReducer(undefined, { type: '@@test/init' }), slots: [{ key: 'slot-1', title: 'Chat 1', messages: 0, running: false }, { key: 'slot-2', title: 'Chat 2', messages: 0, running: false }] } as unknown as RootState['dashboard'],
+        chat: { ...chatReducer(undefined, { type: '@@test/init' }), activeSlot: 'slot-2', slotHistory: ['slot-1'] } as unknown as RootState['chat'],
+      })
+      renderHookWithProviders(
+        () => useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat }),
+        { store },
+      )
+      return store
+    }
+    const press = (mods: KeyboardEventInit) =>
+      !document.dispatchEvent(new KeyboardEvent('keydown', { code: 'Backquote', cancelable: true, bubbles: true, ...mods }))
+    let prevPlatform = ''
+    beforeEach(() => { prevPlatform = navigator.platform })
+    afterEach(() => { Object.defineProperty(navigator, 'platform', { value: prevPlatform, configurable: true }) })
+
+    it('macOS: ⌃⌥` jumps to the last visited session', () => {
+      const store = setupMru('MacIntel')
+      expect(press({ ctrlKey: true, altKey: true })).toBe(true)
+      expect(store.getState().chat.activeSlot).toBe('slot-1')
     })
-    renderHookWithProviders(
-      () => useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat }),
-      { store },
-    )
-    // Alt+` (MRU toggle) fires while a text field is focused. On macOS Option+`
-    // is a dead key whose grave-accent char still arrives via beforeinput, which
-    // keydown.preventDefault() cannot cancel — the handler arms a one-shot guard.
-    document.dispatchEvent(new KeyboardEvent('keydown', { code: 'Backquote', altKey: true, cancelable: true, bubbles: true }))
-    // The stray composed character arrives via beforeinput → must be cancelled.
-    expect(!document.dispatchEvent(new Event('beforeinput', { cancelable: true, bubbles: true }))).toBe(true)
-    // One-shot: the next beforeinput is NOT cancelled.
-    expect(!document.dispatchEvent(new Event('beforeinput', { cancelable: true, bubbles: true }))).toBe(false)
+
+    it('macOS: ⌃⌥⇧` walks back the MRU history', () => {
+      const store = setupMru('MacIntel')
+      expect(press({ ctrlKey: true, altKey: true, shiftKey: true })).toBe(true)
+      expect(store.getState().chat.activeSlot).toBe('slot-1')
+    })
+
+    it('macOS: Option+` is left alone — it is the grave-accent dead key', () => {
+      const store = setupMru('MacIntel')
+      expect(press({ altKey: true })).toBe(false)
+      expect(press({ altKey: true, shiftKey: true })).toBe(false)
+      expect(store.getState().chat.activeSlot).toBe('slot-2')
+    })
+
+    it('Windows/Linux: Alt+` jumps to the last visited session; Ctrl+Alt+` (AltGr) does not', () => {
+      const store = setupMru('Win32')
+      expect(press({ ctrlKey: true, altKey: true })).toBe(false)
+      expect(store.getState().chat.activeSlot).toBe('slot-2')
+      expect(press({ altKey: true })).toBe(true)
+      expect(store.getState().chat.activeSlot).toBe('slot-1')
+    })
   })
 
   it('responds to SHORTCUTS_ENABLED_EVENT to re-enable', () => {

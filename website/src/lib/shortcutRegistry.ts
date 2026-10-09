@@ -133,8 +133,16 @@ export const SHORTCUT_REGISTRY: readonly ShortcutEntry[] = [
   { id: 'chat-next', group: 'chat-navigation', dispatch: 'code', defaults: both({ key: 'ArrowRight', alt: true }) },
   { id: 'chat-prev-bracket', group: 'chat-navigation', dispatch: 'code', defaults: both({ key: '[', mod: true }) },
   { id: 'chat-next-bracket', group: 'chat-navigation', dispatch: 'code', defaults: both({ key: ']', mod: true }) },
-  { id: 'chat-mru', group: 'chat-navigation', dispatch: 'code', defaults: both({ key: '`', alt: true }) },
-  { id: 'chat-mru-back', group: 'chat-navigation', dispatch: 'code', defaults: both({ key: '`', alt: true, shift: true }) },
+  // MRU walk. On macOS Option+` is the grave-accent dead key: it composes è
+  // instead of reaching the handler as a clean chord, and claiming it would
+  // eat the accent for anyone typing one. Holding Control takes the key out of
+  // the layout's dead-key map. ⌃` alone is the terminal toggle
+  // (panelToggleShortcuts), and ⌘` is the OS window cycler, so the Mac chord
+  // is ⌃⌥`. Alt+` stays the chord on Windows/Linux.
+  { id: 'chat-mru', group: 'chat-navigation', dispatch: 'code',
+    defaults: mac({ key: '`', ctrl: true, alt: true }, { key: '`', alt: true }) },
+  { id: 'chat-mru-back', group: 'chat-navigation', dispatch: 'code',
+    defaults: mac({ key: '`', ctrl: true, alt: true, shift: true }, { key: '`', alt: true, shift: true }) },
   // ---- Panel navigation (code-driven: CORE_PANEL_MAP + the extension seam) ---
   { id: 'nav-chat', group: 'panel-navigation', dispatch: 'code', defaults: both({ key: 'c', alt: true }) },
   { id: 'nav-notifications', group: 'panel-navigation', dispatch: 'code', defaults: both({ key: 'n', alt: true }) },
