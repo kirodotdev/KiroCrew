@@ -10886,6 +10886,21 @@
         "worked_through_step_one": "{{count}} चरण पूरा किया",
         "worked_through_step_other": "{{count}} चरण पूरे किए"
       },
+      "toolRunGroup": {
+        "duration": "{{duration}}",
+        "tool_calls_other": "{{count}} टूल कॉल",
+        "verb_built": "बिल्ड किया",
+        "verb_edited": "संपादित किया",
+        "verb_explored": "एक्सप्लोर किया",
+        "verb_fetched": "फ़ेच किया",
+        "verb_gitted": "Git चलाया",
+        "verb_printed": "प्रिंट किया",
+        "tool_calls_one": "{{count}} टूल कॉल",
+        "verb_ran": "चलाया",
+        "verb_searched": "खोजा",
+        "verb_used_mcp": "इस्तेमाल किया",
+        "verb_worked": "काम किया"
+      },
       "userMessage": {
         "cancel": "रद्द करें",
         "cancel_esc": "रद्द करें (Esc)",

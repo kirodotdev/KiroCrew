@@ -66,7 +66,8 @@ const user = (s: string): ChatMessage => ({ role: 'user', content: s, ts: `${++s
 /** A turn long enough that flushTurn emits a `turn` object (items.length > 2). */
 const aTurn = (): ChatMessage[] => { seq = 0; return [user('go'), tool(), text('a'), tool()] }
 
-const label = () => screen.getByRole('button').textContent
+/** The turn's own disclosure toggle — the ONE button whose label these tests read. */
+const label = () => screen.getAllByRole('button').find(b => b.className.includes('text-[12px]'))!.textContent
 
 describe('TurnBlock — user disclosure survives running-flag churn', () => {
   it('keeps the expand when a stale running:false frame lands mid-turn', () => {

@@ -10729,6 +10729,20 @@
         "hide_tool_calls": "도구 호출 숨기기",
         "worked_through_step_other": "{{count}}개 단계 수행"
       },
+      "toolRunGroup": {
+        "duration": "{{duration}}",
+        "tool_calls_other": "{{count}}회 도구 호출",
+        "verb_built": "빌드함",
+        "verb_edited": "편집함",
+        "verb_explored": "탐색함",
+        "verb_fetched": "가져옴",
+        "verb_gitted": "Git 실행",
+        "verb_printed": "출력함",
+        "verb_ran": "실행함",
+        "verb_searched": "검색함",
+        "verb_used_mcp": "사용함",
+        "verb_worked": "처리함"
+      },
       "userMessage": {
         "cancel": "취소",
         "cancel_esc": "취소 (Esc)",

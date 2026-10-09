@@ -10667,6 +10667,21 @@
         "worked_through_step_one": "[Ẁøŕķèð ţĥŕøùğĥ {{count}} şţèþ ··················]",
         "worked_through_step_other": "[Ẁøŕķèð ţĥŕøùğĥ {{count}} şţèþş ···············]"
       },
+      "toolRunGroup": {
+        "verb_explored": "[Èẋþĺøŕèð ············]",
+        "verb_searched": "[Şèàŕçĥèð ············]",
+        "verb_edited": "[Èðìţèð ·········]",
+        "verb_ran": "[Ŕàñ ·····]",
+        "verb_fetched": "[Ƒèţçĥèð ···········]",
+        "verb_used_mcp": "[Ùşèð ······]",
+        "verb_gitted": "[Ŕàñ ğìţ ···········]",
+        "verb_built": "[Ɓùìĺţ ········]",
+        "verb_printed": "[Þŕìñţèð ···········]",
+        "verb_worked": "[Ẁøŕķèð ţĥŕøùğĥ ·············]",
+        "tool_calls_one": "[{{count}} ţøøĺ çàĺĺ ···············]",
+        "tool_calls_other": "[{{count}} ţøøĺ çàĺĺş ··········]",
+        "duration": "[{{duration}}]"
+      },
       "deepLink": {
         "message_unavailable": "[Ţĥìş ɱèşşàğè ìş ñø ĺøñğèŕ ìñ ţĥìş çøñṽèŕşàţìøñ. ························]"
       },

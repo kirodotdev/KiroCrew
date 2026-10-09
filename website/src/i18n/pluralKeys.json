@@ -250,5 +250,6 @@
   "pages.overview.memoryTab.consolidate_failed_session",
   "pages.overview.memoryTab.skipped_temporary_count",
   "pages.overview.memoryTab.skipped_incognito_count",
-  "pages.chat.crewLog.subagents_unmatched"
+  "pages.chat.crewLog.subagents_unmatched",
+  "pages.chat.toolRunGroup.tool_calls"
 ]

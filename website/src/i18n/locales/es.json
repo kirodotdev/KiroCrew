@@ -11043,6 +11043,22 @@
         "worked_through_step_one": "Completó {{count}} paso",
         "worked_through_step_other": "Completó {{count}} pasos"
       },
+      "toolRunGroup": {
+        "duration": "{{duration}}",
+        "tool_calls_one": "{{count}} llamada de herramienta",
+        "tool_calls_many": "{{count}} llamadas de herramientas",
+        "tool_calls_other": "{{count}} llamadas de herramientas",
+        "verb_built": "Compiló",
+        "verb_edited": "Editó",
+        "verb_explored": "Exploró",
+        "verb_fetched": "Obtuvo",
+        "verb_gitted": "Ejecutó Git",
+        "verb_printed": "Imprimió",
+        "verb_ran": "Ejecutó",
+        "verb_searched": "Buscó",
+        "verb_used_mcp": "Usó",
+        "verb_worked": "Trabajó en"
+      },
       "userMessage": {
         "cancel": "Cancelar",
         "cancel_esc": "Cancelar (Esc)",

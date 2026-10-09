@@ -11043,6 +11043,22 @@
         "worked_through_step_one": "A parcouru {{count}} étape",
         "worked_through_step_other": "A parcouru {{count}} étapes"
       },
+      "toolRunGroup": {
+        "duration": "{{duration}}",
+        "tool_calls_one": "{{count}} appel d’outil",
+        "tool_calls_many": "{{count}} appels d’outils",
+        "tool_calls_other": "{{count}} appels d’outils",
+        "verb_built": "A compilé",
+        "verb_edited": "A modifié",
+        "verb_explored": "A exploré",
+        "verb_fetched": "A récupéré",
+        "verb_gitted": "A exécuté Git",
+        "verb_printed": "A imprimé",
+        "verb_ran": "A exécuté",
+        "verb_searched": "A recherché",
+        "verb_used_mcp": "A utilisé",
+        "verb_worked": "A travaillé sur"
+      },
       "userMessage": {
         "cancel": "Annuler",
         "cancel_esc": "Annuler (Esc)",

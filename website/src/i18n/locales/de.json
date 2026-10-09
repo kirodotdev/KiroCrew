@@ -10886,6 +10886,21 @@
         "worked_through_step_one": "{{count}} Schritt durchgearbeitet",
         "worked_through_step_other": "{{count}} Schritte durchgearbeitet"
       },
+      "toolRunGroup": {
+        "duration": "{{duration}}",
+        "tool_calls_other": "{{count}} Werkzeugaufrufe",
+        "verb_built": "Gebaut",
+        "verb_edited": "Bearbeitet",
+        "verb_explored": "Durchsucht",
+        "verb_fetched": "Abgerufen",
+        "verb_gitted": "Git ausgeführt",
+        "verb_printed": "Ausgegeben",
+        "tool_calls_one": "{{count}} Werkzeugaufruf",
+        "verb_ran": "Ausgeführt",
+        "verb_searched": "Gesucht",
+        "verb_used_mcp": "Verwendet",
+        "verb_worked": "Bearbeitet"
+      },
       "userMessage": {
         "cancel": "Abbrechen",
         "cancel_esc": "Abbrechen (Esc)",

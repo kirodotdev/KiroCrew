@@ -10729,6 +10729,20 @@
         "hide_tool_calls": "ツール呼び出しを非表示",
         "worked_through_step_other": "{{count}} ステップを処理"
       },
+      "toolRunGroup": {
+        "duration": "{{duration}}",
+        "tool_calls_other": "{{count}} 回のツール呼び出し",
+        "verb_built": "ビルド",
+        "verb_edited": "編集",
+        "verb_explored": "調査",
+        "verb_fetched": "取得",
+        "verb_gitted": "Git 実行",
+        "verb_printed": "出力",
+        "verb_ran": "実行",
+        "verb_searched": "検索",
+        "verb_used_mcp": "使用",
+        "verb_worked": "処理"
+      },
       "userMessage": {
         "cancel": "キャンセル",
         "cancel_esc": "キャンセル (Esc)",

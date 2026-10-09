@@ -4678,6 +4678,21 @@
         "worked_through_step_one": "Worked through {{count}} step",
         "worked_through_step_other": "Worked through {{count}} steps"
       },
+      "toolRunGroup": {
+        "verb_explored": "Explored",
+        "verb_searched": "Searched",
+        "verb_edited": "Edited",
+        "verb_ran": "Ran",
+        "verb_fetched": "Fetched",
+        "verb_used_mcp": "Used",
+        "verb_gitted": "Ran git",
+        "verb_built": "Built",
+        "verb_printed": "Printed",
+        "verb_worked": "Worked through",
+        "tool_calls_one": "{{count}} tool call",
+        "tool_calls_other": "{{count}} tool calls",
+        "duration": "{{duration}}"
+      },
       "deepLink": {
         "message_unavailable": "This message is no longer in this conversation."
       },

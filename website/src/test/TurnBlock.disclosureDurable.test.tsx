@@ -60,13 +60,18 @@ const tool = (): ChatMessage => ({ role: 'tool', content: '🔧 Running: shell',
 const text = (s: string): ChatMessage => ({ role: 'assistant', content: s, ts: `${++seq}` })
 const user = (s: string): ChatMessage => ({ role: 'user', content: s, ts: `${++seq}` })
 const aTurn = (): ChatMessage[] => { seq = 0; return [user('go'), tool(), text('a'), tool()] }
-const label = () => screen.getByRole('button').textContent
+
+/** The turn's own disclosure toggle — the ONE button whose label these tests read.
+ *  (A multi-call run inside the fold mounts its own run-row button; the turn
+ *  toggle is the bare text-[12px] row.) */
+const turnToggle = () => screen.getAllByRole('button').find(b => b.className.includes('text-[12px]'))!
+const label = () => turnToggle().textContent
 
 describe('turn disclosure survives virtualizer unmount', () => {
   it('keeps an expand when the row scrolls out of the mounted window and back', () => {
     const m = aTurn()
     const { rerender } = render(<Transcript messages={m} running={false} mounted={true} />)
-    fireEvent.click(screen.getByRole('button'))
+    fireEvent.click(turnToggle())
     expect(label()).toContain('Hide')
 
     // Row leaves the mounted window, then the user scrolls back to it.
@@ -80,8 +85,8 @@ describe('turn disclosure survives virtualizer unmount', () => {
   it('keeps an explicit collapse across an unmount too', () => {
     const m = aTurn()
     const { rerender } = render(<Transcript messages={m} running={false} mounted={true} />)
-    fireEvent.click(screen.getByRole('button'))   // expand
-    fireEvent.click(screen.getByRole('button'))   // collapse again
+    fireEvent.click(turnToggle())   // expand
+    fireEvent.click(turnToggle())   // collapse again
     expect(label()).toContain('tool call')
 
     rerender(<Transcript messages={m} running={false} mounted={false} />)
@@ -94,7 +99,7 @@ describe('turn disclosure survives virtualizer unmount', () => {
   it('survives an unmount combined with running-flag churn', () => {
     const m = aTurn()
     const { rerender } = render(<Transcript messages={m} running={false} mounted={true} />)
-    fireEvent.click(screen.getByRole('button'))
+    fireEvent.click(turnToggle())
 
     // Agent resumes, the row scrolls away, a stale idle frame lands, row returns.
     rerender(<Transcript messages={m} running={true} mounted={true} />)

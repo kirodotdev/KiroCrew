@@ -10886,6 +10886,21 @@
         "worked_through_step_one": "{{count}}টি ধাপ সম্পন্ন করেছে",
         "worked_through_step_other": "{{count}}টি ধাপ সম্পন্ন করেছে"
       },
+      "toolRunGroup": {
+        "duration": "{{duration}}",
+        "tool_calls_other": "{{count}}টি টুল কল",
+        "verb_built": "বিল্ড করেছে",
+        "verb_edited": "সম্পাদনা করেছে",
+        "verb_explored": "ঘুরে দেখেছে",
+        "verb_fetched": "আনা হয়েছে",
+        "verb_gitted": "Git চালিয়েছে",
+        "verb_printed": "প্রিন্ট করেছে",
+        "tool_calls_one": "{{count}}টি টুল কল",
+        "verb_ran": "চালিয়েছে",
+        "verb_searched": "খুঁজেছে",
+        "verb_used_mcp": "ব্যবহার করেছে",
+        "verb_worked": "কাজ করেছে"
+      },
       "userMessage": {
         "cancel": "বাতিল",
         "cancel_esc": "বাতিল (Esc)",

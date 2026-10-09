@@ -10729,6 +10729,20 @@
         "hide_tool_calls": "隐藏工具调用",
         "worked_through_step_other": "已完成 {{count}} 个步骤"
       },
+      "toolRunGroup": {
+        "duration": "{{duration}}",
+        "tool_calls_other": "{{count}} 次工具调用",
+        "verb_built": "构建了",
+        "verb_edited": "编辑了",
+        "verb_explored": "浏览了",
+        "verb_fetched": "抓取了",
+        "verb_gitted": "执行了 Git",
+        "verb_printed": "打印了",
+        "verb_ran": "运行了",
+        "verb_searched": "搜索了",
+        "verb_used_mcp": "使用了",
+        "verb_worked": "处理了"
+      },
       "userMessage": {
         "cancel": "取消",
         "cancel_esc": "取消 (Esc)",

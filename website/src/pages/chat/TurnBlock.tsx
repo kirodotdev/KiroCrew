@@ -15,6 +15,8 @@ import { isSystemNoticeRow } from './CompactionCard'
 import { isDiffToolMessage } from './toolDiff'
 import { findOptionMarkers, stripOptionMarkers } from '../../app-sdk/protocol/optionMarker'
 import { hasKeepVisibleMarker } from '../../app-sdk/protocol/keepVisibleMarker'
+import { summarizeToolRun } from './toolRunSummary'
+import ToolRunGroup from './ToolRunGroupCard'
 import { i18nT } from '../../i18n/t'
 
 // A workflow_run launch renders as its own always-visible inline card
@@ -323,7 +325,11 @@ function mergeTurnThinking(items: TurnItem[]): TurnItem[] {
  *  renders it for ChatEmbed with no Provider mounted, and a pane must scope the
  *  set to its OWN session key, not the globally-active slot.
  */
-function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMPTY_ID_SET, disclosure, disclosureKey, onDisclosureChange }: { turn: Extract<DisplayItem, {kind:'turn'}>; renderItem: (item: TurnItem, i: number) => ReactNode; collapseAll?: boolean; appToolCallIds?: ReadonlySet<string>; disclosure?: boolean; disclosureKey?: string; onDisclosureChange?: (key: string, expanded: boolean) => void }) {
+function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMPTY_ID_SET, disclosure, disclosureKey, onDisclosureChange, transcriptHot = false }: { turn: Extract<DisplayItem, {kind:'turn'}>; renderItem: (item: TurnItem, i: number) => ReactNode; collapseAll?: boolean; appToolCallIds?: ReadonlySet<string>; disclosure?: boolean; disclosureKey?: string; onDisclosureChange?: (key: string, expanded: boolean) => void;
+  /** True while the transcript is streaming at high frequency. Passed through
+   *  to the per-run group's tool rows (see ToolCallLine's `transcriptHot`).
+   *  ChatPage's run-group rows read it the same way its transcript rows do. */
+  transcriptHot?: boolean }) {
   // memo() bails out of the provider-level language repaint, so this component
   // subscribes to language generation itself: its i18nT() strings must
   // re-translate even when no prop moves.
@@ -534,15 +540,50 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
     if (seg.type === 'visible') {
       children.push(<div key={rowKey(seg.idx)}>{renderItem(seg.it, seg.idx)}</div>)
     } else {
-      children.push(
-        <AnimatePresence key={`c-${rowKey(seg.items[0].idx)}`} initial={false}>
-          {expanded && (
-            <CollapsibleSection expanded={true}>
-              {seg.items.map(({ it, idx }) => renderItem(it, idx))}
-            </CollapsibleSection>
-          )}
-        </AnimatePresence>,
-      )
+      // Per-RUN grouping (DFL-71 phase 1): inside the turn's own fold, each
+      // contiguous run of TWO OR MORE ordinary tool calls collapses further
+      // into ONE row whose header is the run's dominant verb + call count. A
+      // single-call segment keeps the plain row: wrapping one pill in a second
+      // disclosure buys nothing and would double the click depth on the most
+      // common shape (tool → prose → tool). `isTool` is the SAME predicate
+      // splitSegments' exemptions route through — the workflow_run /
+      // spawn_run cards, completion cards, MCP-App rows, diff cards, errors,
+      // OAuth / app injects, widgets / images, [OPTIONS:] hand-backs,
+      // keep-visible markers and legacy crew replies are all `visible`
+      // segments OUTSIDE any run group here, untouched; approvals never reach
+      // this loop at all (groupDisplayItems hands permission rows to the
+      // pinned ApprovalBar). Disclosure is host-owned (useRowDisclosure via
+      // ToolRunGroup) keyed by the run's lead row identity, so a user's
+      // expansion survives the virtualizer recycling the row.
+      if (seg.items.length > 1) {
+        const msgs = seg.items.map(({ it }) => (it.kind === 'single' ? it.msg : null)).filter((m): m is Extract<TurnItem, { kind: 'single' }>['msg'] => m !== null)
+        const leadIdx = seg.items[0].idx
+        children.push(
+          <ToolRunGroup
+            key={`run-${rowKey(leadIdx)}`}
+            messages={msgs}
+            summary={summarizeToolRun(msgs)}
+            turnRunning={!turn.complete}
+            disclosureKey={`run-${rowKey(leadIdx)}`}
+            transcriptHot={transcriptHot}
+          />,
+        )
+      } else {
+        // Runs of one keep the plain row, but still behind the TURN fold: the
+        // turn toggle's contract ("N tool calls" hides every tool row) is
+        // unchanged — run grouping is a second layer INSIDE it, never a
+        // replacement for it.
+        const { it: only, idx: onlyIdx } = seg.items[0]
+        children.push(
+          <AnimatePresence key={`s-${rowKey(onlyIdx)}`} initial={false}>
+            {expanded && (
+              <CollapsibleSection expanded={true}>
+                {renderItem(only, onlyIdx)}
+              </CollapsibleSection>
+            )}
+          </AnimatePresence>,
+        )
+      }
     }
   }
   return <>{children}</>

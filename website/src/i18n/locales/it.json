@@ -11043,6 +11043,22 @@
         "worked_through_step_one": "Ha elaborato {{count}} passaggio",
         "worked_through_step_other": "Ha elaborato {{count}} passaggi"
       },
+      "toolRunGroup": {
+        "duration": "{{duration}}",
+        "tool_calls_one": "{{count}} chiamata di strumento",
+        "tool_calls_many": "{{count}} chiamate di strumenti",
+        "tool_calls_other": "{{count}} chiamate di strumenti",
+        "verb_built": "Ha compilato",
+        "verb_edited": "Ha modificato",
+        "verb_explored": "Ha esplorato",
+        "verb_fetched": "Ha recuperato",
+        "verb_gitted": "Ha eseguito Git",
+        "verb_printed": "Ha stampato",
+        "verb_ran": "Ha eseguito",
+        "verb_searched": "Ha cercato",
+        "verb_used_mcp": "Ha usato",
+        "verb_worked": "Ha lavorato su"
+      },
       "userMessage": {
         "cancel": "Annulla",
         "cancel_esc": "Annulla (Esc)",

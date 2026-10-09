@@ -590,6 +590,17 @@
     "components.cliPanel.use_starting_directory": "Button below the invalid-directory terminal error. Explicitly retries without the refused workspace path, using the server-configured terminal starting directory (not necessarily the home directory); never resends the failed command.",
     "components.cliPanel.use_starting_directory_hint": "Tooltip on the Use terminal starting directory button. Says where the new shell opens: the server-side terminal directory setting dashboard.terminal.cwd (keep that config key in English verbatim), else the server's home directory. Also says the refused command is not resent.",
     "pages.chat.quoteCard.you": "Author label on a quote card (the composer's staged quote and the quote at the top of a sent message) when the quoted message was written by the current user. \"You\" names the reader as the speaker of the quoted words; the informal second person where the language distinguishes.",
-    "pages.chat.quoteCard.assistant": "Author label on a quote card when the quoted message was written by the assistant: the product name the surface already uses for it (\"Message Kiro Crew…\"); a crewmate DM shows the crewmate's name instead of this label."
+    "pages.chat.quoteCard.assistant": "Author label on a quote card when the quoted message was written by the assistant: the product name the surface already uses for it (\"Message Kiro Crew…\"); a crewmate DM shows the crewmate's name instead of this label.",
+    "pages.chat.toolRunGroup.verb_ran": "Run-group header verb for a run of shell-execution tool calls in the chat transcript: the run executed commands (past tense of \"run a command\").",
+    "pages.chat.toolRunGroup.verb_edited": "Run-group header verb for a run of file edit/create tool calls in the chat transcript.",
+    "pages.chat.toolRunGroup.verb_fetched": "Run-group header verb for a run of web fetch/search tool calls in the chat transcript.",
+    "pages.chat.toolRunGroup.verb_used_mcp": "Run-group header verb for a run of MCP tool calls in the chat transcript: the run used MCP tools.",
+    "pages.chat.toolRunGroup.verb_gitted": "Run-group header verb for a run of git / GitHub CLI tool calls in the chat transcript.",
+    "pages.chat.toolRunGroup.verb_built": "Run-group header verb for a run of build / test / lint / install tool calls in the chat transcript.",
+    "pages.chat.toolRunGroup.verb_printed": "Run-group header verb for a run of print (echo) tool calls in the chat transcript.",
+    "pages.chat.toolRunGroup.verb_explored": "Run-group header verb for a run of file read / list tool calls in the chat transcript: the run explored (read) files.",
+    "pages.chat.toolRunGroup.verb_searched": "Run-group header verb for a run of search (grep / glob) tool calls in the chat transcript.",
+    "pages.chat.toolRunGroup.verb_worked": "Run-group header verb fallback when no call in the run could be classified: the agent worked through the calls.",
+    "pages.chat.toolRunGroup.duration": "Total wall-clock duration of a tool run, shown in the run header. {{duration}} is a localized duration like \"3m 12s\"."
   }
 }

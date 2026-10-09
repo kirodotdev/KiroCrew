@@ -11200,6 +11200,23 @@
         "worked_through_step_one": "Проработан {{count}} шаг",
         "worked_through_step_other": "Проработано {{count}} шага"
       },
+      "toolRunGroup": {
+        "duration": "{{duration}}",
+        "tool_calls_one": "{{count}} вызов инструмента",
+        "tool_calls_few": "{{count}} вызова инструментов",
+        "tool_calls_many": "{{count}} вызовов инструментов",
+        "tool_calls_other": "{{count}} вызовов инструментов",
+        "verb_built": "Собрал",
+        "verb_edited": "Изменил",
+        "verb_explored": "Просмотрел",
+        "verb_fetched": "Получил",
+        "verb_gitted": "Выполнил Git",
+        "verb_printed": "Вывел",
+        "verb_ran": "Выполнил",
+        "verb_searched": "Искал",
+        "verb_used_mcp": "Использовал",
+        "verb_worked": "Работал над"
+      },
       "userMessage": {
         "cancel": "Отмена",
         "cancel_esc": "Отмена (Esc)",
