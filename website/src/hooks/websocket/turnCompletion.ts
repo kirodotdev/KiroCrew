@@ -10,6 +10,7 @@ import { setSlotStatusDetail, refreshSlot, warmSlotCache, selectSidebarSubagentC
 import { dispatchMcNotification, TURN_DONE_KIND, shouldChimeOnTurnDone } from '../notificationEvent'
 import { shouldNotifyOnChatComplete } from '../chatCompleteNotify'
 import { isSlotMutedByCreator } from '../sessionMute'
+import { takeTurnErrored } from '../turnError'
 import { isMemberThreadSlot, takeMemberThreadSpoke } from '../unreadOnAttention'
 import { postNativeNotification } from '../../lib/nativeNotify'
 import { normalizeRunSessionKey } from '../../apps/workflows/runModel'
@@ -40,6 +41,9 @@ export function useTurnCompletion({ dispatch, queryClient, reconnectingRef }: Tu
       // (chime, toast, unread). Function-scoped so the unread dispatch after
       // the attention block can read it too.
       let muted = false
+      // Taken for EVERY chat_done (take-and-clear), muted or not, so a
+      // failure never carries into the next turn's completion.
+      const turnErrored = !!data.slot && takeTurnErrored(data.slot)
       // Keep transcript finalization independent from attention: a parent
       // can finish a turn while its children or workflow still owe work.
       // A frame's activity hint wins over coalesced snapshots; older
@@ -73,10 +77,12 @@ export function useTurnCompletion({ dispatch, queryClient, reconnectingRef }: Tu
         // Criterion 2: a completion that pauses for the USER (needs_input or a
         // live question card) still raises the turn-done chime and toast even
         // on a muted session -- the mute silences a routine "turn finished",
-        // not a session that is actually waiting on the user. (Tool-approval
-        // prompts stay exempt too, via approvals.ts.) The unread badge is a
-        // separate axis and stays suppressed for a muted session (criterion 7).
-        const muteSuppresses = muted && !completionNeedsInput
+        // not a session that is actually waiting on the user. A turn that
+        // ended in a terminal error row is the third exemption (tool-approval
+        // prompts, via approvals.ts, are the first): the worker has stopped,
+        // and a silenced failure stalls it unseen. The unread badge is a
+        // separate axis (criterion 7), exempt only for that failure.
+        const muteSuppresses = muted && !completionNeedsInput && !turnErrored
         completionNeedsAttention = shouldChimeOnTurnDone({
           slot: data.slot,
           reconnecting: reconnectingRef.current,
@@ -122,9 +128,10 @@ export function useTurnCompletion({ dispatch, queryClient, reconnectingRef }: Tu
       attendArrival(data.slot, (data as { ts?: string }).ts, reconnectingRef.current, slot => {
         // Criterion 7: a muted session never becomes unread from its own
         // activity -- no row dot, no folder rollup, nothing in the nav/tab/relay
-        // counts. Cache is still warmed so switching to the row renders the
-        // finished answer instantly (criterion 5: rows stay readable).
-        if (!muted && (!memberThread || memberSpoke)) dispatch(markSlotUnread({ slot, ts: (data as { ts?: string }).ts || undefined }))
+        // counts -- except a turn that ended in a terminal error, which the
+        // user must see. Cache is still warmed so switching to the row renders
+        // the finished answer instantly (criterion 5: rows stay readable).
+        if ((!muted || turnErrored) && (!memberThread || memberSpoke)) dispatch(markSlotUnread({ slot, ts: (data as { ts?: string }).ts || undefined }))
         dispatch(warmSlotCache(slot))
       })
       if (data.slot) {

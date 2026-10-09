@@ -8,6 +8,7 @@ import { sseChatMessage, appendSlotMessage, setSlotStatusDetail, sseToolActivity
 import { dispatchMcNotification, APPROVAL_KIND, shouldChimeOnPermissionRow } from '../notificationEvent'
 import { chatMessageMarksUnread, isMemberThreadSlot, memberThreadRowMarksUnread, noteMemberThreadRow, unreadWatermarkTs } from '../unreadOnAttention'
 import { isSlotMutedByCreator } from '../sessionMute'
+import { isTerminalErrorRow, noteTurnErrorRow } from '../turnError'
 import { noteUnsavedRowTs } from '../../lib/slotReadRelay'
 import { emitThemeSound } from '../themeSound'
 import { isReconcileNote } from '../../lib/noteContract'
@@ -77,6 +78,9 @@ export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: Cha
       // badge for a member thread asks "did this turn say anything", and a
       // row the user watched arrive still counts as said.
       if (data.slot && isMemberThreadSlot(data.slot, store.getState().dashboard.slots)) noteMemberThreadRow(data.slot, data.role)
+      // Recorded on or off screen, like the member record: the turn's
+      // `chat_done` reads it to exempt a failed turn from the mute.
+      if (data.slot) noteTurnErrorRow(data.slot, data)
       attendArrival(data.slot, data.ts, reconnectingRef.current, slot => {
         const slots = store.getState().dashboard.slots
         const marks = isMemberThreadSlot(slot, slots)
@@ -85,7 +89,9 @@ export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: Cha
         // Criterion 7: a session muted by its creator never becomes
         // unread from its own activity. This is the chat_message half of the
         // two automatic markSlotUnread sites; turnCompletion.ts has the other.
-        if (marks && !isSlotMutedByCreator(slots, slot)) {
+        // A terminal error row is exempt: the worker has stopped, and a
+        // silenced failure stalls it unseen just as a silenced approval would.
+        if (marks && (!isSlotMutedByCreator(slots, slot) || isTerminalErrorRow(data))) {
           dispatch(markSlotUnread({ slot, ts: unreadWatermarkTs(data.role, data.ts), localTs: data.ts || undefined }))
         }
       })
