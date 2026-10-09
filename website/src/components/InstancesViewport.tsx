@@ -62,6 +62,7 @@ import { clearPaneHttpCache, paneOriginFor } from '../lib/paneCache'
 import { connectInstanceInto } from '../lib/connectInstance'
 import { LINUX_CAPTION_CONTROLS_WIDTH, TRAFFIC_LIGHT_INSET_PX, WIN_CAPTION_OVERLAY_WIDTH } from '../lib/electron'
 import { isEmbeddedPane } from '../lib/embedded'
+import { PANE_ACTIVE_SLOT_TYPE, PANE_SLOT_HINT_PARAM, readPaneSlot, rememberPaneSlot } from '../lib/paneLastSlot'
 import ErrorNotice from './ErrorNotice'
 import { errMessage } from '../utils/thunkError'
 import { reportInstanceFailure } from '../utils/instanceFailureReport'
@@ -559,6 +560,11 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         reactiveMintsRef.current.set(id, spent + 1)
         paneLog('auth-expired', { id, spent: spent + 1 })
         void refreshToken(id)
+      } else if (data.type === PANE_ACTIVE_SLOT_TYPE) {
+        // The pane's chat changed. The SENDER is already trusted (its origin
+        // resolved to a warm tunnel above); the key is shape-checked inside.
+        // Kept so the next load of this crew reopens it (#16009).
+        rememberPaneSlot(id, (data as { key?: unknown }).key)
       } else if (data.type === 'mc-switch-instance') {
         // The embedded pane's inline switcher asks the parent to flip
         // the active tab. The SENDER is already trusted (its origin resolved to a
@@ -1042,9 +1048,17 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   }, [instancesQuery.data, warmCap, autoWarm])
 
   const warmIds = useMemo(() => Object.keys(warm), [warm])
+  // The src a pane was LOADED with, per id. The last-chat hint is read once per
+  // load (port, token, Retry count); re-reading it on every render would change
+  // the src, and a new src reloads the pane.
+  const srcCacheRef = useRef<Record<string, { load: string; src: string }>>({})
   const srcFor = useCallback(
     (id: string) => {
       const w = warm[id]
+      if (!w) { delete srcCacheRef.current[id]; return '' }
+      const load = `${w.port}|${w.token}|${reloadSeq[id] || 0}`
+      const cached = srcCacheRef.current[id]
+      if (cached?.load === load) return cached.src
       // Use the parent dashboard's OWN hostname (not a hardcoded 127.0.0.1) so
       // the iframe is same-site with the parent, so SameSite=Lax auth cookies
       // ride the iframe's subrequests. The scheme stays http: the gateway binds
@@ -1054,9 +1068,13 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
       // https here would instead fail the TLS handshake against the plain-http
       // forwarded port and never load. Non-loopback origins never reach here:
       // the pane is not mounted for them (see nonLoopbackOrigin).
-      return w ? `http://${window.location.hostname}:${w.port}/?token=${encodeURIComponent(w.token)}` : ''
+      const hint = readPaneSlot(id)
+      const src = `http://${window.location.hostname}:${w.port}/?token=${encodeURIComponent(w.token)}`
+        + (hint ? `&${PANE_SLOT_HINT_PARAM}=${encodeURIComponent(hint)}` : '')
+      srcCacheRef.current[id] = { load, src }
+      return src
     },
-    [warm],
+    [warm, reloadSeq],
   )
 
   // Build the switcher model relayed to the embedded pane `id`: the full tab

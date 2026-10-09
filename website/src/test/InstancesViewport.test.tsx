@@ -1781,3 +1781,87 @@ describe('InstancesViewport', () => {
     })
   })
 })
+
+// #16009: a reconnect lands the pane on a new port, so its own origin-scoped
+// storage is empty. The hub keeps the pane's last chat and hands it back.
+describe('InstancesViewport last-chat hint (#16009)', () => {
+  beforeEach(() => { localStorage.clear() })
+
+  const paneSrc = () => (document.querySelector('iframe') as HTMLIFrameElement | null)?.getAttribute('src') ?? ''
+  const post = (data: unknown, origin: string) =>
+    act(async () => { window.dispatchEvent(new MessageEvent('message', { data, origin })) })
+  const renderWarm = () => {
+    vi.mocked(api.listInstances).mockResolvedValue({
+      instances: [{
+        id: 'cd-1', name: 'Cloud One', ssh_host: 'cd-1-alias', remote_port: 7777, local_port: 7778,
+        ttl: '20h', remote_bin: '',
+        status: { instance_id: 'cd-1', state: 'connected', local_port: 7778, remote_port: 7777 },
+      }],
+      warm_set_cap: 5,
+    })
+    const store = createTestStore({
+      instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: { 'cd-1': true } },
+    })
+    renderWithProviders(<InstancesViewport />, { store })
+    return store
+  }
+
+  it('reopens the chat the pane last showed when the tunnel comes back on a new port', async () => {
+    const store = renderWarm()
+    await waitFor(() => expect(paneSrc()).toContain(':7778/'))
+    const before = paneSrc()
+    await post({ source: 'kirocrew', type: 'mc-pane-active-slot', key: 'chat-2' }, 'http://127.0.0.1:7778')
+    // Remembering must not reload the pane it came from.
+    expect(paneSrc()).toBe(before)
+    expect(before).not.toContain('lastSid')
+
+    await act(async () => { store.dispatch(setWarm({ id: 'cd-1', conn: { port: 50002, token: 'tok2' } })) })
+    await waitFor(() => expect(paneSrc()).toContain(':50002/'))
+    expect(paneSrc()).toContain('lastSid=chat-2')
+  })
+
+  it('keeps one last chat per crew when two panes report different chats', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue({
+      instances: ['cd-1', 'cd-2'].map((id, i) => ({
+        id, name: id, ssh_host: `${id}-alias`, remote_port: 7777, local_port: 7778 + i,
+        ttl: '20h', remote_bin: '',
+        status: { instance_id: id, state: 'connected', local_port: 7778 + i, remote_port: 7777 },
+      })),
+      warm_set_cap: 5,
+    })
+    const store = createTestStore({
+      instances: {
+        warm: { 'cd-1': { port: 7778, token: 'tok' }, 'cd-2': { port: 7779, token: 'tok' } },
+        activeId: 'cd-1', mru: ['cd-1', 'cd-2'], unread: {}, ready: { 'cd-1': true, 'cd-2': true },
+      },
+    })
+    renderWithProviders(<InstancesViewport />, { store })
+    const srcs = () => [...document.querySelectorAll('iframe')].map(f => f.getAttribute('src') ?? '')
+    await waitFor(() => expect(srcs().length).toBe(2))
+    await post({ type: 'mc-pane-active-slot', key: 'chat-a' }, 'http://127.0.0.1:7778')
+    await post({ type: 'mc-pane-active-slot', key: 'chat-b' }, 'http://127.0.0.1:7779')
+
+    await act(async () => {
+      store.dispatch(setWarm({ id: 'cd-1', conn: { port: 50001, token: 't1' } }))
+      store.dispatch(setWarm({ id: 'cd-2', conn: { port: 50002, token: 't2' } }))
+    })
+    await waitFor(() => {
+      const s = srcs()
+      expect(s.find(x => x.includes(':50001/'))).toContain('lastSid=chat-a')
+      expect(s.find(x => x.includes(':50002/'))).toContain('lastSid=chat-b')
+    })
+  })
+
+  it('ignores the relay from an origin that is not a warm pane, and a malformed key', async () => {
+    const store = renderWarm()
+    await waitFor(() => expect(paneSrc()).toContain(':7778/'))
+    await post({ type: 'mc-pane-active-slot', key: 'chat-2' }, 'http://127.0.0.1:9999')
+    await post({ type: 'mc-pane-active-slot', key: 'chat-2' }, 'https://evil.example')
+    await post({ type: 'mc-pane-active-slot', key: 'a&token=x' }, 'http://127.0.0.1:7778')
+    await post({ type: 'mc-pane-active-slot', key: 42 }, 'http://127.0.0.1:7778')
+
+    await act(async () => { store.dispatch(setWarm({ id: 'cd-1', conn: { port: 50002, token: 'tok2' } })) })
+    await waitFor(() => expect(paneSrc()).toContain(':50002/'))
+    expect(paneSrc()).not.toContain('lastSid')
+  })
+})
