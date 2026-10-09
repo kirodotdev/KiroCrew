@@ -231,6 +231,7 @@
       "proxy_challenge_reload": "Lade diesen Browser-Tab neu — erscheint eine Anmeldeseite, ist die Sitzung deines Zugriffsproxys abgelaufen. Wenn nicht, hat ein Proxy oder eine Firewall vor diesem Dashboard die Anfrage abgewiesen; prüfe die Protokolle des Proxys oder versuche es später erneut.",
       "proxy_challenge_framed": "Öffne {{origin}} in einem neuen Tab — erscheint eine Anmeldeseite, ist die Sitzung deines Zugriffsproxys abgelaufen. In diesem Panel funktioniert die Anmeldung nicht. Melde dich dort an und lade dann diese Seite neu.",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Vom Tunnel-Edge gedrosselt (HTTP 429) — zu viele Anfragen in kurzer Folge. Das Dashboard versucht es automatisch erneut; falls das anhält, warte ein paar Sekunden und lade die Seite neu.",
+      "too_many_open_sessions_http_429_close_old": "Zu viele Sitzungen sind geöffnet. Schließe ein paar alte Sitzungen (sie bleiben im Verlauf und lassen sich jederzeit wieder öffnen) und versuche es erneut.",
       "reauth_command": "kirocrew token",
       "run_kirocrew_token_then_paste_sign_in_url": "Führe kirocrew token in einem Terminal aus, füge die Anmelde-URL unten ein und drücke die Eingabetaste.",
       "session_expired": "Sitzung abgelaufen.",
@@ -9580,7 +9581,9 @@
     "useSessionActions": {
       "close_this_session": "Diese Sitzung schließen?",
       "reload_failed": "Sitzung konnte nicht neu geladen werden. Der Agent ist möglicherweise mitten in einem Zug oder das Gateway ist nicht erreichbar; versuchen Sie es erneut, wenn die Sitzung inaktiv ist.",
-      "reload_failed_subagents": "Unteragenten arbeiten noch an dieser Sitzung. Versuchen Sie es erneut, wenn sie fertig sind."
+      "fork_failed": "Diese Sitzung konnte nicht dupliziert werden — {{productName}} ist nicht erreichbar. Prüfe deine Verbindung und versuche es erneut.",
+      "reload_failed_subagents": "Unteragenten arbeiten noch an dieser Sitzung. Versuchen Sie es erneut, wenn sie fertig sind.",
+      "duplicate_failed_reason": "Diese Sitzung konnte nicht dupliziert werden: {{reason}}"
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "Audio-Worklet nicht verfügbar",

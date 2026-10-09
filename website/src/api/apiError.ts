@@ -101,6 +101,23 @@ export const isEdgeChallengeError = (e: unknown): boolean =>
  */
 export const friendlyErrText = (status: number, body: string): string => {
   if (status === 429) {
+    // Two different 429s reach here. The live-slot caps -- `slot_cap_reached`
+    // (global) and `creator_slot_cap_reached` (per-caller) -- are hit by
+    // Duplicate/Fork (each mints a new slot) once too many session tabs are
+    // open; a generic "wait a few seconds and reload" is a dead end there,
+    // because a reload re-restores the same open tabs straight back over the
+    // cap, so the guidance names the one thing that clears it. Match the parsed
+    // `code` EXACTLY, not a substring of the body, so an unrelated 429 whose
+    // message happens to contain the text does not get the wrong copy. Every
+    // other 429 is the tunnel edge's burst throttle, where retrying works.
+    let code: unknown
+    const t = body.trim()
+    if (t.startsWith('{')) {
+      try { code = (JSON.parse(t) as { code?: unknown }).code } catch { /* not JSON */ }
+    }
+    if (code === 'slot_cap_reached' || code === 'creator_slot_cap_reached') {
+      return i18nT('api.client.too_many_open_sessions_http_429_close_old')
+    }
     return i18nT('api.client.rate_limited_by_the_tunnel_edge_http_429_too_man')
   }
   // Backends return errors as {"error": "…"} (or detail/message). Unwrap the

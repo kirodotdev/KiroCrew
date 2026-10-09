@@ -231,6 +231,7 @@
       "proxy_challenge_reload": "Reload this browser tab — if a sign-in page appears, your access proxy’s session expired. If not, a proxy or firewall in front of this dashboard refused the request; check the proxy’s logs, or retry later.",
       "proxy_challenge_framed": "Open {{origin}} in a new tab — if a sign-in page appears, your access proxy’s session expired. Signing in inside this panel won’t work. Sign in there, then reload this page.",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Rate limited by the tunnel edge (HTTP 429) — too many requests in a burst. The dashboard retries automatically; if this persists, wait a few seconds and reload.",
+      "too_many_open_sessions_http_429_close_old": "Too many sessions are open. Close a few old sessions (they stay in History and reopen anytime), then try again.",
       "reauth_command": "kirocrew token",
       "run_kirocrew_token_then_paste_sign_in_url": "Run kirocrew token in a terminal, then paste the sign-in URL below and press Enter.",
       "session_expired": "Session expired.",
@@ -3961,7 +3962,9 @@
     "useSessionActions": {
       "close_this_session": "Close this session?",
       "reload_failed": "Session reload failed. The agent may be mid-turn or the gateway unreachable; try again when the session is idle.",
-      "reload_failed_subagents": "Sub-agents are still working on this session. Try again when they finish."
+      "fork_failed": "Couldn't duplicate this session — couldn't reach {{productName}}. Check your connection and try again.",
+      "reload_failed_subagents": "Sub-agents are still working on this session. Try again when they finish.",
+      "duplicate_failed_reason": "Couldn't duplicate this session: {{reason}}"
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "audio worklet unavailable",

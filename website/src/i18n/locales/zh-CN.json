@@ -230,6 +230,7 @@
       "proxy_challenge_reload": "请重新加载此浏览器标签页：如果出现登录页面，说明访问代理的会话已过期。否则，则是此仪表板前方的代理或防火墙拒绝了请求；请查看代理日志，或稍后重试。",
       "proxy_challenge_framed": "请在新标签页中打开 {{origin}}：如果出现登录页面，说明访问代理的会话已过期。在此面板内无法完成登录。请在那里登录后，重新加载此页面。",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "隧道边缘已限流（HTTP 429）— 短时间内请求过多。仪表板会自动重试；如果持续出现，等待几秒后重新加载。",
+      "too_many_open_sessions_http_429_close_old": "打开的会话过多。关闭一些旧的会话（它们会保留在历史记录中，随时可以重新打开），然后重试。",
       "reauth_command": "kirocrew token",
       "run_kirocrew_token_then_paste_sign_in_url": "在终端中运行 kirocrew token，然后将登录 URL 粘贴到下方并按 Enter。",
       "session_expired": "会话已过期。",
@@ -9452,7 +9453,9 @@
     "useSessionActions": {
       "close_this_session": "关闭此会话？",
       "reload_failed": "会话重新加载失败。代理可能正在处理消息或网关不可达；请等会话空闲后重试。",
-      "reload_failed_subagents": "该会话的子代理仍在工作中。等它们完成后再试。"
+      "fork_failed": "无法复制此会话 — 无法连接到 {{productName}}。请检查网络连接后重试。",
+      "reload_failed_subagents": "该会话的子代理仍在工作中。等它们完成后再试。",
+      "duplicate_failed_reason": "无法复制此会话：{{reason}}"
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "audio worklet 不可用",

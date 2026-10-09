@@ -232,6 +232,7 @@
       "proxy_challenge_reload": "Recarregue esta aba do navegador: se aparecer uma página de login, a sessão do seu proxy de acesso expirou. Caso contrário, um proxy ou firewall na frente deste painel recusou a solicitação; verifique os logs do proxy ou tente de novo mais tarde.",
       "proxy_challenge_framed": "Abra {{origin}} em uma nova aba: se aparecer uma página de login, a sessão do seu proxy de acesso expirou. Dentro deste painel não funciona. Entre por lá e depois recarregue esta página.",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Limite de taxa aplicado pela borda do túnel (HTTP 429) — muitas solicitações em rajada. O painel repete a tentativa automaticamente; se isso persistir, aguarde alguns segundos e recarregue.",
+      "too_many_open_sessions_http_429_close_old": "Há sessões abertas demais. Feche algumas sessões antigas (elas permanecem no Histórico e podem ser reabertas a qualquer momento) e tente novamente.",
       "reauth_command": "kirocrew token",
       "run_kirocrew_token_then_paste_sign_in_url": "Execute kirocrew token num terminal, cole abaixo a URL de início de sessão e pressione Enter.",
       "session_expired": "Sessão expirada.",
@@ -9708,7 +9709,9 @@
     "useSessionActions": {
       "close_this_session": "Fechar esta sessão?",
       "reload_failed": "Falha ao recarregar a sessão. O agente pode estar no meio de um turno ou o gateway inacessível; tente novamente quando a sessão estiver ociosa.",
-      "reload_failed_subagents": "Os subagentes ainda estão trabalhando nesta sessão. Tente novamente quando terminarem."
+      "fork_failed": "Não foi possível duplicar esta sessão — não foi possível acessar o {{productName}}. Verifique sua conexão e tente novamente.",
+      "reload_failed_subagents": "Os subagentes ainda estão trabalhando nesta sessão. Tente novamente quando terminarem.",
+      "duplicate_failed_reason": "Não foi possível duplicar esta sessão: {{reason}}"
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "audio worklet indisponível",

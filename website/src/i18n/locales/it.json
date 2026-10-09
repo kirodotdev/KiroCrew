@@ -232,6 +232,7 @@
       "proxy_challenge_reload": "Ricarica questa scheda del browser: se compare una pagina di accesso, la sessione del tuo proxy di accesso è scaduta. Altrimenti un proxy o un firewall davanti a questa dashboard ha rifiutato la richiesta; controlla i log del proxy oppure riprova più tardi.",
       "proxy_challenge_framed": "Apri {{origin}} in una nuova scheda: se compare una pagina di accesso, la sessione del tuo proxy di accesso è scaduta. Dentro questo pannello non funziona. Accedi lì, poi ricarica questa pagina.",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Limitazione della frequenza applicata dall'edge del tunnel (HTTP 429) — troppe richieste ravvicinate. La dashboard riprova automaticamente; se il problema persiste, attendi qualche secondo e ricarica.",
+      "too_many_open_sessions_http_429_close_old": "Ci sono troppe sessioni aperte. Chiudi qualche vecchia sessione (restano nella cronologia e puoi riaprirle quando vuoi), poi riprova.",
       "reauth_command": "kirocrew token",
       "run_kirocrew_token_then_paste_sign_in_url": "Esegui kirocrew token in un terminale, incolla qui sotto l'URL di accesso e premi Invio.",
       "session_expired": "Sessione scaduta.",
@@ -9708,7 +9709,9 @@
     "useSessionActions": {
       "close_this_session": "Chiudere questa sessione?",
       "reload_failed": "Ricarica della sessione non riuscita. L'agente potrebbe essere impegnato in un turno o il gateway non raggiungibile; riprova quando la sessione è inattiva.",
-      "reload_failed_subagents": "I sub-agenti stanno ancora lavorando su questa sessione. Riprova quando avranno finito."
+      "fork_failed": "Impossibile duplicare questa sessione: {{productName}} non è raggiungibile. Controlla la connessione e riprova.",
+      "reload_failed_subagents": "I sub-agenti stanno ancora lavorando su questa sessione. Riprova quando avranno finito.",
+      "duplicate_failed_reason": "Impossibile duplicare questa sessione: {{reason}}"
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "audio worklet non disponibile",

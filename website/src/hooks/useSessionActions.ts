@@ -236,6 +236,20 @@ export function useSessionActions(mode?: string): SessionActions {
         dispatch(switchSlot(data.key))
       }
     },
+    // Duplicate goes through this mutation with no per-call handler, so without
+    // this an error was swallowed and the button did nothing visible -- the
+    // slot-cap 429 that Duplicate most often hits just vanished. Surface it the
+    // same way reloadMutation does (alert(); the dashboard has no global toast).
+    // An ApiError carries the human reason on err.message (apiFailure sets it to
+    // friendlyErrText(status, body) in api/client.ts): wrap it in a keyed
+    // template so even a bare "not found" names the subject and reads as a whole
+    // sentence. A non-ApiError means fetch itself rejected (nothing was reached),
+    // so there is no server reason -- use the standalone connection copy.
+    onError: (err) => {
+      alert(err instanceof ApiError
+        ? i18nT('hooks.useSessionActions.duplicate_failed_reason', { reason: err.message })
+        : i18nT('hooks.useSessionActions.fork_failed'))
+    },
   })
 
   const pinMutation = useMutation({
