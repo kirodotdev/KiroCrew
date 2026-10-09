@@ -987,6 +987,14 @@ export interface McpSessionReport {
    * gateway from before the guard shipped sends no such key.
    */
   unresolved_refs?: string[]
+  /**
+   * Servers that started but gave this session no tools — usually a tool name
+   * that clashes with another server's, so the backend kept only one. Optional
+   * because an older gateway sends no such key.
+   */
+  no_tools?: string[]
+  /** How many more such servers there were than `no_tools` lists (bucket cap). */
+  no_tools_omitted?: number
   /** Reported initialized. */
   ready: string[]
   /** Reported a startup failure. */

@@ -36,6 +36,22 @@ export function mcpSessionFailureReason(
   return report?.failures?.[name] ?? ''
 }
 
+/**
+ * True when ``name`` started in this session but gave it no tools.
+ *
+ * A separate fact from the state above: such a server DID start, so its ring
+ * stays `started`; this flags the warning shown beside it.
+ */
+export function mcpSessionGaveNoTools(name: string, report?: McpSessionReport | null): boolean {
+  return Boolean(report?.no_tools?.includes(name))
+}
+
+/** Servers that gave this session no tools and are NOT in ``names``. */
+export function mcpSessionExtraNoTools(names: string[], report?: McpSessionReport | null): string[] {
+  const shown = new Set(names)
+  return [...new Set(report?.no_tools ?? [])].filter(n => !shown.has(n))
+}
+
 /** How many of ``names`` this session reported as started. */
 export function mcpSessionStartedCount(
   names: string[],

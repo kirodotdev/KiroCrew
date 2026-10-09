@@ -11621,6 +11621,8 @@
       "mcp_session_awaiting_auth": "Esperando autorización",
       "mcp_session_failed": "No se pudo iniciar en esta sesión",
       "mcp_session_no_report": "Aún no hay informe de esta sesión",
+      "mcp_session_no_tools": "Se inició, pero esta sesión no recibió ninguna de sus herramientas. Probablemente otro servidor usa los mismos nombres de herramienta. Cámbialos con `toolAliases` en la especificación del agente.",
+      "mcp_session_no_tools_also": "Se iniciaron, pero esta sesión no recibió ninguna de sus herramientas (probablemente otro servidor usa los mismos nombres; cámbialos con `toolAliases` en la especificación del agente): {{names}}",
       "mcp_session_source_note": "La lista es la configuración de este agente; el estado junto a cada nombre es lo que informó esta sesión.",
       "mcp_session_started": "Iniciado en esta sesión",
       "message_queued_until_session_ready": "{{error}}. Tu mensaje está en cola y se enviará cuando haya una sesión lista — pero solo se guarda en esta pestaña, así que si sales o recargas tendrás que volver a escribirlo.",

@@ -70,6 +70,8 @@ class TestBuckets:
         assert r.payload() == {
             "configured": [],
             "unresolved_refs": [],
+            "no_tools": [],
+            "no_tools_omitted": 0,
             "ready": ["github-mcp"],
             "failed": [],
             "awaiting_auth": [],
@@ -101,6 +103,8 @@ class TestBuckets:
         assert r.payload() == {
             "configured": [],
             "unresolved_refs": [],
+            "no_tools": [],
+            "no_tools_omitted": 0,
             "ready": ["builder-mcp"],
             "failed": [],
             "awaiting_auth": [],

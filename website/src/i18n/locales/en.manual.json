@@ -5079,6 +5079,8 @@
       "mcp_session_awaiting_auth": "Waiting for authorization",
       "mcp_session_failed": "Failed to start in this session",
       "mcp_session_no_report": "No report from this session yet",
+      "mcp_session_no_tools": "Started, but this session got none of its tools. Another server probably uses the same tool names. Rename them with `toolAliases` in the agent spec.",
+      "mcp_session_no_tools_also": "Started, but this session got none of their tools (another server probably uses the same tool names; rename them with `toolAliases` in the agent spec): {{names}}",
       "mcp_session_source_note": "The list is this agent's configuration; the status beside each name is what this session reported.",
       "mcp_session_started": "Started in this session",
       "message_queued_until_session_ready": "{{error}}. Your message is queued and will be sent when a session is ready — but it is held in this tab only, so if you navigate away or reload you will need to retype it.",

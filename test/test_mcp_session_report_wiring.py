@@ -105,6 +105,8 @@ class TestAcpClientCapture:
             == {
                 "configured": [],
                 "unresolved_refs": [],
+                "no_tools": [],
+                "no_tools_omitted": 0,
                 "ready": ["a"],
                 "failed": [],
                 "awaiting_auth": [],

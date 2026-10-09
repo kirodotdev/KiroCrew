@@ -391,6 +391,71 @@ class KasMcpReadiness:
         )
 
 
+def _command_data(result: object) -> dict[str, Any] | None:
+    """The ``data`` object of a native ``commands/execute`` result, if any."""
+    data = result.get("data") if isinstance(result, dict) else None
+    return data if isinstance(data, dict) else None
+
+
+def servers_exposing_no_tools(
+    mcp_result: object, tools_result: object, spec: object
+) -> tuple[str, ...]:
+    """Servers that started and that the spec grants, yet gave the session no tool.
+
+    Reads kiro-cli's native ``/mcp`` result (each server's status after its
+    ``tools/list``) and its ``/tools`` result (the tools the session actually
+    exposes, each tagged ``mcp:<server>``). A server that is ``running`` and
+    contributes no exposed tool is the visible trace of a dropped tool-name
+    clash: when two servers publish the same name, kiro-cli keeps one and drops
+    the other's whole set without a word.
+
+    The spec is read so a server the agent never asked for is not reported: a
+    ``tools`` list that does not grant the server (``*``, ``@server`` or
+    ``@server/tool``) hides it on purpose, and so does an ``excludedTools`` entry
+    or a per-server ``disabledTools``. Anything unreadable answers empty, so the
+    caller warns only on evidence.
+    """
+    mcp_data = _command_data(mcp_result)
+    tools_data = _command_data(tools_result)
+    servers = mcp_data.get("servers") if mcp_data is not None else None
+    tools = tools_data.get("tools") if tools_data is not None else None
+    if not isinstance(servers, list) or not isinstance(tools, list) or not isinstance(spec, dict):
+        return ()
+    granted_tools = spec.get("tools")
+    if not isinstance(granted_tools, list):
+        return ()
+    grant_all, refs = parse_tools_refs(granted_tools)
+    excluded = spec.get("excludedTools")
+    excluded = excluded if isinstance(excluded, list) else []
+    declared = spec.get("mcpServers")
+    declared = declared if isinstance(declared, dict) else {}
+    exposed = {
+        row["source"][len("mcp:") :]
+        for row in tools
+        if isinstance(row, dict)
+        and isinstance(row.get("source"), str)
+        and row["source"].startswith("mcp:")
+    }
+    out: list[str] = []
+    for server in servers:
+        if not isinstance(server, dict) or server.get("status") != "running":
+            continue
+        name = server.get("name")
+        if not isinstance(name, str) or not name or name in exposed:
+            continue
+        if not (grant_all or name in refs) or "*" in excluded or f"@{name}" in excluded:
+            continue
+        entry = declared.get(name)
+        if isinstance(entry, dict) and entry.get("disabledTools"):
+            continue
+        clean = sanitize_sink_text(name, _NAME_CAP)
+        if clean and clean not in out:
+            out.append(clean)
+    # Not capped here: :meth:`McpSessionReport.record_no_tools` owns the bound
+    # and counts what it drops, so a long answer is never silently shortened.
+    return tuple(out)
+
+
 def _joined(names: list[str]) -> str:
     """Join names for one line, counting the tail instead of printing it.
 
@@ -427,6 +492,15 @@ class McpSessionReport:
     #: spec asked for a server nothing configured -- so there is no row for it to
     #: be missing FROM, which is exactly why the defect was invisible three times.
     unresolved_refs: tuple[str, ...] = ()
+    #: Servers that started and that the spec grants, yet gave this session no
+    #: tool (see :func:`servers_exposing_no_tools`). Usually a tool-name clash
+    #: with another server: the backend kept the other server's tools and
+    #: dropped this one's. Set by :meth:`record_no_tools`.
+    no_tools: tuple[str, ...] = ()
+    #: How many more such servers there were than :attr:`no_tools` keeps. The
+    #: bucket is capped like every other; the overflow is counted and said in
+    #: the payload and the summary rather than dropped without a word.
+    no_tools_omitted: int = 0
     _ready: list[str] = field(default_factory=list)
     _failed: list[str] = field(default_factory=list)
     _awaiting_auth: list[str] = field(default_factory=list)
@@ -451,6 +525,8 @@ class McpSessionReport:
         """
         self.configured = roster_names(servers)
         self.unresolved_refs = ()
+        self.no_tools = ()
+        self.no_tools_omitted = 0
         self._started = True
         self._ready.clear()
         self._failed.clear()
@@ -488,6 +564,26 @@ class McpSessionReport:
             if ref and ref not in seen:
                 seen.append(ref)
         self.unresolved_refs = tuple(seen[:_BUCKET_CAP])
+
+    def record_no_tools(self, names: Any) -> bool:
+        """Record the servers that started but gave this session no tool.
+
+        Set rather than accumulated, like :meth:`record_unresolved_refs`: each
+        call is a fresh reading of the whole inventory. Capped at the bucket
+        size; names past the cap are counted in :attr:`no_tools_omitted`.
+        Returns True when the answer changed.
+        """
+        seen: list[str] = []
+        for raw in names if isinstance(names, (list, tuple)) else ():
+            if not isinstance(raw, str):
+                continue
+            name = sanitize_sink_text(raw, _NAME_CAP)
+            if name and name not in seen:
+                seen.append(name)
+        before = (self.no_tools, self.no_tools_omitted)
+        self.no_tools = tuple(seen[:_BUCKET_CAP])
+        self.no_tools_omitted = max(0, len(seen) - _BUCKET_CAP)
+        return (self.no_tools, self.no_tools_omitted) != before
 
     def record_frame(self, msg: JsonRpcMessage, *, owned: bool) -> bool:
         """Fold one notification in. Returns True when the report changed.
@@ -650,6 +746,7 @@ class McpSessionReport:
         return not (
             self.configured
             or self.unresolved_refs
+            or self.no_tools
             or self._ready
             or self._failed
             or self._awaiting_auth
@@ -667,11 +764,12 @@ class McpSessionReport:
         one is declared: a consumer must be able to name the capability instead of
         probing for it.
 
-        Three buckets, kept apart because the reader's next move differs: a server
+        Four buckets, kept apart because the reader's next move differs: a server
         that FAILED needs its startup fixed, one AWAITING AUTHORIZATION needs a
-        person to authorize it, and an UNRESOLVED REF means the agent spec asked
+        person to authorize it, an UNRESOLVED REF means the agent spec asked
         for a server nothing configured -- so there is no row for it to be missing
-        from. ``ready`` and ``configured`` are deliberately absent: this is the
+        from -- and one that GAVE NO TOOLS started fine but lost its tools, most
+        often to a same-named tool on another server. ``ready`` and ``configured`` are deliberately absent: this is the
         summary a consumer prints only when something is wrong, and naming the
         healthy servers in it would make the clean case indistinguishable at a
         glance.
@@ -705,6 +803,12 @@ class McpSessionReport:
                 "declared by the agent spec but not configured: "
                 + _joined(list(self.unresolved_refs))
             )
+        if self.no_tools:
+            parts.append(
+                "started but gave no tools (a tool name may clash with another server's): "
+                + _joined(list(self.no_tools))
+                + (f" (+{self.no_tools_omitted} not listed)" if self.no_tools_omitted else "")
+            )
         return "; ".join(parts)
 
     def payload(self) -> dict[str, Any] | None:
@@ -728,6 +832,8 @@ class McpSessionReport:
         return {
             "configured": list(self.configured),
             "unresolved_refs": list(self.unresolved_refs),
+            "no_tools": list(self.no_tools),
+            "no_tools_omitted": self.no_tools_omitted,
             "ready": list(self._ready),
             "failed": list(self._failed),
             "awaiting_auth": list(self._awaiting_auth),

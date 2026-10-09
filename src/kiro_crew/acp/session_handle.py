@@ -3222,6 +3222,23 @@ class AcpSessionHandle:
         except AcpTimeoutError:
             return ""
 
+    async def command_result(self, command: str) -> dict[str, Any]:
+        """Execute a native kiro command and return its structured result.
+
+        Mirrors :meth:`AcpClient.command_result`: for internal callers whose
+        contract is the command's ``data`` object (the ``/mcp`` and ``/tools``
+        inventories). The result is backend output, so a caller must reduce it
+        to bounded, typed values before anything reaches an external surface.
+        """
+        cmd_name, cmd_args = parse_slash_command(command)
+        req_id = await self._send_awaited(
+            METHOD_COMMANDS_EXECUTE,
+            {"sessionId": self._session_id, "command": {"command": cmd_name, "args": cmd_args}},
+        )
+        msg = await self._wait_for_response(req_id, timeout=60.0)
+        result = msg.result
+        return result if isinstance(result, dict) else {}
+
     async def set_config_option(self, config_id: str, value: str) -> None:
         """Set a session config option (e.g. effort level).
 

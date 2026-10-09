@@ -25,7 +25,11 @@ from kiro_crew.acp.client import (
     resolve_pin_spelling_on,
     sandbox_init_failure_for_runtime,
 )
-from kiro_crew.acp.mcp_session_report import sanitize_sink_text
+from kiro_crew.acp.mcp_session_report import (
+    McpSessionReport,
+    sanitize_sink_text,
+    servers_exposing_no_tools,
+)
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeError
 from kiro_crew.acp.session_handle import (
     _READ_PATH_PROBE_DEADLINE_SECS,
@@ -33,6 +37,7 @@ from kiro_crew.acp.session_handle import (
     AcpSessionHandle,
     EntitlementRevalidating,
 )
+from kiro_crew.acp.session_mcp import agent_spec_snapshot
 from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.types import (
     ACP_BACKEND_CODEX,
@@ -379,6 +384,10 @@ _RESUME_MAX_ATTEMPTS = 4  # total session/load attempts before fresh fallback
 # Bound on the setup failure's own text in the failed-setup warning: enough for
 # an RPC error's message, short enough that one line stays one line.
 _SETUP_FAILURE_LOG_CAP = 300
+# Whole budget for the start-time /mcp + /tools read (see
+# AcpProvider._note_zero_tool_servers). Both answer in well under a second; the
+# bound only stops a silent backend from holding the start.
+_ZERO_TOOL_CHECK_TIMEOUT_SECS = 5.0
 _RESUME_BACKOFF_BASE_S = 1.0  # backoff = base * 2**attempt → 1s, 2s, 4s between attempts
 # Substrings (matched case-insensitively) of a session/load error that name a
 # TRANSIENT native-lock condition — one that clears once the previous holder
@@ -2237,11 +2246,68 @@ class AcpProvider(LLMProvider):
             # AcpSessionProvider. One process hosts parent + all subagent
             # sessions (session sharing).
             await self._start_kiro_runtime()
+            if self.is_kiro_backend:
+                await self._note_zero_tool_servers()
         else:
             # ── CC path: legacy AcpClient (unchanged) ──
             await self._client.ensure_ready()
 
         await self._apply_initial_effort()
+
+    async def _note_zero_tool_servers(self) -> None:
+        """Warn when a started MCP server gave this session no tools.
+
+        On kiro-cli, two servers that publish the same tool name collide: one
+        server's tools reach the model and the other's whole set is dropped,
+        with no frame saying so. Both servers still report ``running``, so the
+        only trace is a server with no tool in the session's ``/tools`` list.
+        This reads ``/mcp`` and ``/tools`` once, records any such server on the
+        session's MCP report (the dashboard MCP panel and run summaries read
+        it), and logs a warning. Naming the clash is all it does: which server
+        wins is the backend's tool table, not Crew's.
+
+        ``/tools`` is only read when at least two servers are running, since a
+        clash needs two. Bounded, and never fails the start: on any error the
+        session simply has no warning.
+        """
+        client = self._client
+        if not hasattr(client, "command_result"):
+            return
+        try:
+
+            async def _read() -> tuple[str, ...]:
+                mcp = await client.command_result("/mcp")
+                data = mcp.get("data") if isinstance(mcp, dict) else None
+                servers = data.get("servers") if isinstance(data, dict) else None
+                running = [
+                    row
+                    for row in (servers if isinstance(servers, list) else [])
+                    if isinstance(row, dict) and row.get("status") == "running"
+                ]
+                if len(running) < 2:
+                    return ()
+                tools = await client.command_result("/tools")
+                spec = await asyncio.to_thread(
+                    agent_spec_snapshot, client._agent, work_dir=self.cwd or None
+                )
+                return servers_exposing_no_tools(mcp, tools, spec)
+
+            names = await asyncio.wait_for(_read(), timeout=_ZERO_TOOL_CHECK_TIMEOUT_SECS)
+        except Exception:
+            logger.debug("MCP zero-tool check skipped", exc_info=True)
+            return
+        report = self.mcp_session_report()
+        if not isinstance(report, McpSessionReport):
+            return
+        report.record_no_tools(names)
+        if report.no_tools:
+            logger.warning(
+                "ACP: MCP server(s) started but gave this session no tools; a tool "
+                "name likely clashes with another server's and the backend kept only "
+                "one: %s%s",
+                ", ".join(report.no_tools),
+                f" (+{report.no_tools_omitted} not listed)" if report.no_tools_omitted else "",
+            )
 
     async def _apply_initial_effort(self) -> None:
         """Apply the resolved effort to a fresh session on the config-option channel.

@@ -1,11 +1,13 @@
 import { useState } from 'react'
-import { Zap, ChevronRight } from 'lucide-react'
+import { Zap, ChevronRight, TriangleAlert } from 'lucide-react'
 import ErrorNotice from '../../components/ErrorNotice'
 import { i18nT } from '../../i18n/t'
 import { mcpToolStatus, type McpToolStatus } from '../../lib/mcpLoadedTools'
 import {
+  mcpSessionExtraNoTools,
   mcpSessionExtraServers,
   mcpSessionFailureReason,
+  mcpSessionGaveNoTools,
   mcpSessionHasReport,
   mcpSessionServerState,
   type McpSessionServerState,
@@ -106,6 +108,11 @@ export default function McpToolsPanel({
   const extraServers = hasSessionReport
     ? mcpSessionExtraServers(servers.map(s => s.name), sessionReport)
     : []
+  const extraNoTools = hasSessionReport
+    ? mcpSessionExtraNoTools(servers.map(s => s.name), sessionReport)
+    : []
+  // Names past the report's cap are counted, not listed: say how many.
+  const noToolsOmitted = sessionReport?.no_tools_omitted ?? 0
 
   return (
     <div>
@@ -176,6 +183,7 @@ export default function McpToolsPanel({
           const sessionState = mcpSessionServerState(s.name, sessionReport)
           const sessionReason = mcpSessionFailureReason(s.name, sessionReport)
           const sessionLabel = i18nT(SESSION_LABEL_KEY[sessionState])
+          const gaveNoTools = hasSessionReport && mcpSessionGaveNoTools(s.name, sessionReport)
           // With a report in hand the mark answers "did this start HERE" and is
           // drawn as a ring. Without one the configured `enabled` flag is a read of
           // mcp.json, so painting it `ok` claimed a session nobody had measured.
@@ -218,7 +226,15 @@ export default function McpToolsPanel({
                       : undefined
                   }
                 />
-                <code className="text-text flex-1">{s.name}</code>
+                <code className="text-text flex-1 inline-flex items-center gap-1 min-w-0">
+                  <span className="truncate">{s.name}</span>
+                  {/* The ring stays "started" (the server did start), so the
+                      problem needs its own mark on the name, where a reader
+                      scanning the rows will see it. */}
+                  {gaveNoTools && (
+                    <TriangleAlert size={11} className="text-warn shrink-0" aria-hidden="true" />
+                  )}
+                </code>
                 {totalLoadable > 0 && toolSearchOn && (
                   <span className="text-[10px] text-muted tabular-nums">
                     {loadedN}/{totalLoadable}
@@ -239,6 +255,15 @@ export default function McpToolsPanel({
                     message={sessionReason ? `${sessionLabel}: ${sessionReason}` : sessionLabel}
                     askAgent
                   />
+                </div>
+              )}
+              {/* Started, yet gave this session no tools: most often a tool name
+                  that clashes with another server's, which the backend resolves
+                  by silently dropping one server's whole set. Text, not just a
+                  colour, so it reads without hovering. */}
+              {gaveNoTools && (
+                <div role="status" className="ml-3.5 mb-1 text-[11px] text-warn leading-snug">
+                  {i18nT('pages.chatPage.mcp_session_no_tools')}
                 </div>
               )}
               {isOpen && (
@@ -289,6 +314,15 @@ export default function McpToolsPanel({
         // there is to show.
         <div className="mt-2 pt-2 border-t border-border text-[10px] text-muted leading-snug">
           {i18nT('pages.chatPage.mcp_session_also_started', { names: extraServers.join(', ') })}
+        </div>
+      )}
+      {(extraNoTools.length > 0 || noToolsOmitted > 0) && (
+        // A spec-declared server is often absent from the configured list, and
+        // that is exactly the clash case, so it is named here instead of lost.
+        <div role="status" className="mt-2 text-[11px] text-warn leading-snug">
+          {i18nT('pages.chatPage.mcp_session_no_tools_also', {
+            names: [...extraNoTools, ...(noToolsOmitted > 0 ? [`+${noToolsOmitted}`] : [])].join(', '),
+          })}
         </div>
       )}
     </div>
