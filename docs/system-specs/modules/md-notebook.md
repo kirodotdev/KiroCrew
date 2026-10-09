@@ -32,18 +32,22 @@ appears in the Apps library ready to be switched on rather than enabling itself.
 
 ## State Layout
 
-Rooted at `MD_NOTEBOOK_HOME`, defaulting to `~/.kiro/crew/workspace/md-notebook/`:
+Clone data is rooted at `MD_NOTEBOOK_HOME`, defaulting to `~/.kiro/crew/workspace/md-notebook/`.
+The state files are NOT: they live in the top-level `md-notebook-staging/` directory at the crew
+data home ROOT (`~/.kiro/crew/md-notebook-staging/`), whatever `MD_NOTEBOOK_HOME` says.
 
 | Path | Contents |
 | --- | --- |
-| `vaults.json` | Vault descriptors. No secrets, but `localPath` is what sync runs git against, so it is in `_SENSITIVE_HOME_DIRS`. Published through the staging directory + `os.replace`. |
-| `pat` | GitHub token, chmod 0600, never echoed back to the UI (only a boolean is). Also listed in `_SENSITIVE_HOME_DIRS`, so agent file tools cannot read it through the shared gate — 0600 alone does not isolate another process running as the same user. Cleared by writing an EMPTY file, never by `unlink`: the empty file is the reader's absent-equivalent, and removing the inode would delete the sandbox mask's mount target. |
-| `settings.json` | The `autoSync` authorization bit, `autoSyncMins` cadence, and `lastSync` stamps. Published through the staging directory with `fsync`, so a rename from an unflushed page cache cannot discard an acknowledged toggle. |
-| `../../md-notebook-staging/` | Write-staging directory for the three state files above, at the crew data home ROOT. Every state writer opens its temp HERE and renames onto the target, so no temp carrying PAT bytes ever lands at a name the sandbox masks do not cover. Masked as a whole directory. It is top-level rather than a child of this directory because a mask covers the leaf and not its ancestors: under the agent-writable `workspace/md-notebook` it could be renamed out from under its own mask. Same filesystem, so the publish rename stays atomic. |
+| `<crew-home>/md-notebook-staging/` | The state directory, a direct child of the crew data home, masked as a WHOLE directory. Holds the three state files below and the one-shot migration marker `.migrated`. A writer stages its temp INSIDE this directory and renames it onto the target name in the same directory, so the in-flight bytes (PAT included) stay behind the one directory mask and the publish rename stays within one directory on one mount. Top-level rather than under `workspace/md-notebook/` because a mask covers the leaf and not its ancestors: under that agent-writable tree it could be renamed out from under its own mask by moving the parent aside. |
+| `<crew-home>/md-notebook-staging/vaults.json` | Vault descriptors. No secrets, but `localPath` is what sync runs git against, so it is fenced by `is_sensitive_path`. |
+| `<crew-home>/md-notebook-staging/pat` | GitHub token, chmod 0600, never echoed back to the UI (only a boolean is). Fenced by `is_sensitive_path`, so agent file tools cannot read it through the shared gate — 0600 alone does not isolate another process running as the same user. Cleared by writing an EMPTY file, never by `unlink`: the empty file is the reader's absent-equivalent. |
+| `<crew-home>/md-notebook-staging/settings.json` | The `autoSync` authorization bit, `autoSyncMins` cadence, and `lastSync` stamps. Published with `fsync`, so a rename from an unflushed page cache cannot discard an acknowledged toggle. |
+| `workspace/md-notebook/{pat,vaults.json,settings.json}` | LEGACY bare spellings an older build kept the state in. Read only by the one-shot migration; masked and fenced so a copy left behind stays hidden. |
+| `workspace/md-notebook/.state/` | LEGACY hidden directory an older build kept the state in. Read only by the one-shot migration; masked and fenced as a whole directory for the same reason. |
 | `vaults/<id>/` | Vaults this app cloned itself. Attached vaults stay where the user has them. |
 
-The three state files and the staging directory resolve through the crew data home and
-ignore `MD_NOTEBOOK_HOME`; only clone data under `vaults/` follows it.
+The state directory resolves through the crew data home and ignores `MD_NOTEBOOK_HOME`; only
+clone data under `vaults/` follows it.
 
 A vault descriptor carries `id`, `name`, `repo`, `localPath`, `branch`, `readOnly`, an
 optional `subfolder` scope, plus `knowledge` and `knowledgeSourceId`. The `external` field
@@ -52,32 +56,46 @@ never persisted.
 
 ## Sandbox
 
-`sandbox._CREW_HIDDEN_LEAVES` bind-masks the three state files and `md-notebook-staging` in every
-sandbox tier, so an agent's spawned subprocesses cannot read the GitHub token or repoint a
-vault. The backend itself is a sandboxed spawn that OWNS those files, so exactly that one
-spawn gets them back: `_APP_BACKEND_OWNED_LEAVES` declares the leaves it owns and
-`apps/backend.py` passes `app_backend_visible_targets()` as `extra_visible_dirs`, gated on
-shipped-builtin provenance. A spelling that sits beneath an independently masked directory
-is refused rather than carved, because carving it would unmask that whole foreign tree.
+`sandbox._CREW_HIDDEN_LEAVES` bind-masks the whole `md-notebook-staging/` state directory, the
+legacy bare state-file spellings directly under `workspace/md-notebook/`, and the legacy
+`workspace/md-notebook/.state/` directory, in every sandbox tier, so an agent's spawned
+subprocesses cannot read the GitHub token or repoint a vault. The backend itself is a sandboxed
+spawn that OWNS the state, so exactly that one spawn gets the state directory back:
+`_APP_BACKEND_OWNED_LEAVES` declares it and `apps/backend.py` passes
+`app_backend_visible_targets()` as `extra_visible_dirs`, gated on shipped-builtin provenance.
+The backend reads the migration marker there too, to retire a pending retry before a live
+write. The legacy spellings are NOT carved back — the backend reads and writes only the state
+directory — so they stay masked as a fence for stale on-disk copies. A spelling that sits
+beneath an independently masked directory is refused rather than carved, because carving it
+would unmask that whole foreign tree.
 
-Two properties keep the mask meaningful now that the backend can create these files:
+Two geometric properties make the mask hold for every publish:
 
-* **The masks are materialised before launch.** `mount(2)` cannot target an absent path and
-  the launcher's hiding loops guard on existence, so an absent leaf would get no mask at
-  all and a namespace spawned before the first vault attach would read the PAT saved after
-  it. `_materialize_md_notebook_mask_targets()` creates each leaf's absent-equivalent
-  document (`pat` empty, `vaults.json` `[]`, `settings.json` `{}`) before launch. It refuses
-  the spawn for a non-regular file at a leaf or a creation failure, but a link in the chain
-  DEGRADES instead: that leaf is skipped and the spawn proceeds, because refusing would let
-  one optional app's on-disk layout stop every sandboxed process on the host — an operator
-  who symlinks `workspace/` to another disk would find no agent could start, over a Notes
-  file they may never have created. Skipping is safe only because it is keyed off the same
-  predicate that withholds the carve-out (`carveout_chain_has_planted_link`, applied in
-  `app_backend_visible_targets`): while a link is in the chain the backend cannot write this
-  state at all, so an unmaterialised — and therefore unmasked — leaf has nothing to expose.
-  The two are never decided separately, and a test pins them together. The staging directory
-  is a direct child of the data home, so the shared `_materialize_maskable_dirs` covers it
-  under its own rule.
+* **No agent-renamable ancestor.** The state directory is a direct child of the crew data home,
+  like `aws-control-staging`. A state directory nested under the agent-writable
+  `workspace/md-notebook/` could be taken out from under its own mask by renaming that parent
+  aside and recreating it: a later PAT write would then land in a directory a subsequent
+  namespace does not mask, and no descriptor pin or path recheck closes that race, because the
+  mask follows the PATH while the write follows whatever is at it. Directly under the root
+  there is no such parent, so a write by name always lands behind the mask.
+* **A whole-directory mask.** Masking the directory rather than each state file as its own leaf
+  is what lets the backend publish safely: a rename of a name INSIDE the directory never
+  replaces the directory's own bind-mount point, so a live agent keeps seeing the masked empty
+  view whatever the backend writes underneath. A per-file leaf mask would instead be detached
+  by a publish rename over that leaf, exposing the fresh file. The clone data under
+  `workspace/md-notebook/vaults/` stays outside the mask and fully visible.
+
+Further properties keep the mask meaningful now that the backend can create these files:
+
+* **The mount targets exist before launch.** `mount(2)` cannot target an absent path and the
+  launcher's hiding loops guard on existence. The state directory is in
+  `_CREW_PRECREATE_HIDDEN_DIR_LEAVES`, so `_materialize_maskable_dirs` creates it before every
+  spawn and refuses a link or non-directory at its name. `_materialize_md_notebook_mask_targets()`
+  then gives each state file inside it a regular-file occupant holding its absent-equivalent
+  document (`pat` empty, `vaults.json` `[]`, `settings.json` `{}`), refusing the spawn for a link
+  or special file at a state name. A link AT the state directory makes that materialiser skip,
+  and the same link refuses the spawn in `_materialize_maskable_dirs` and the hidden-leaf alias
+  pass, so the carve-out is never granted over a linked directory; a test pins the coupling.
 * **The backend spawn starts isolated.** It launches with `-I` and runs the module through
   `runpy` with an explicit import root, so interpreter startup hooks (`sitecustomize`,
   `usercustomize`, user-site `.pth`) from an agent-writable directory do not execute in the
@@ -85,59 +103,102 @@ Two properties keep the mask meaningful now that the backend can create these fi
   `python -m` launch.
 * **Pre-upgrade orphans are swept.** Older writers staged beside the target, so a crash in
   that window could leave a PAT-bearing `*.tmp` at a name no mask covers. Every `*.tmp`
-  direct child of the state directory is such an orphan by construction — the writers now
-  stage in the top-level staging directory, and note temps live beside their note under
-  `vaults/<id>/` — so the sweep removes them. Because it DELETES, its guard is stronger
-  than the materialiser's: the descent from the crew data home is ANCHORED and
-  per-component, each step `open`ed `O_NOFOLLOW | O_DIRECTORY` relative to the descriptor
-  above it, with every `lstat`/`unlink` issued against the pinned final descriptor. Opening
-  the joined path would be unsound however carefully the chain was pre-checked, because
-  `O_NOFOLLOW` constrains only the FINAL component: an intermediate directory swapped
-  between check and open would redirect the whole descent and the sweep would unlink inside
-  a tree the agent chose. A root whose descent fails is skipped, not escalated to a spawn
-  refusal — skipping removes the hazard, while refusing would break every spawn on a host
-  that merely symlinks its legacy home. It removes regular files only, exempts
-  another spawn's `_CEILING_TEMP_PREFIX` in-flight temp, and refuses the spawn if an
-  eligible orphan cannot be removed.
-  Unlike materialisation this runs on BOTH launch paths, Linux and macOS: a Seatbelt deny
-  covers the named leaves, never an arbitrary `*.tmp` sibling, so an orphan would otherwise
-  stay readable on macOS forever. A removal is logged as a security event — the token in
-  that file was readable by anything running as this user, so it should be rotated.
-* **A skipped root has its whole state directory masked.** Skipping the sweep leaves the
-  one thing the three leaf masks cannot cover: an orphan whose name is neither `pat` nor a
-  state file. So the same predicate that withholds the carve-out also adds the state
-  DIRECTORY to the hidden set, on both launch paths, and a directory mask covers every name
-  inside it. This is deliberately conditional rather than always-on: the directory also
-  holds the vault clone data agents are MEANT to read, so masking it wholesale on a healthy
-  host would hide the user's notes and defeat the app. It applies only where the chain is
-  linked — where the carve-out is already withheld, the app is already non-functional for
-  that root, and hiding the directory costs nothing that still works. The predicate is
-  asked about a LEAF path, the same shape the carve-out filter passes, because it judges a
-  path's parent chain: asking about the directory would miss a link at the directory itself,
-  which is exactly the case the final-component refusal leaves unswept.
+  direct child of the `workspace/md-notebook/` directory is such an orphan by construction —
+  writers stage inside the masked state directory, and note temps live beside their note under
+  `vaults/<id>/` — so the sweep removes them. Because it DELETES, its guard is strong: the
+  descent from the crew data home is ANCHORED and per-component, each step `open`ed
+  `O_NOFOLLOW | O_DIRECTORY` relative to the descriptor above it, with every `lstat`/`unlink`
+  issued against the pinned final descriptor. Opening the joined path would be unsound however
+  carefully the chain was pre-checked, because `O_NOFOLLOW` constrains only the FINAL
+  component: an intermediate directory swapped between check and open would redirect the whole
+  descent and the sweep would unlink inside a tree the agent chose. A root whose descent fails
+  is skipped, not escalated to a spawn refusal — skipping removes the hazard, while refusing
+  would break every spawn on a host that merely symlinks its legacy home. It removes regular
+  files only, exempts another spawn's `_CEILING_TEMP_PREFIX` in-flight temp, and refuses the
+  spawn if an eligible orphan cannot be removed. Unlike materialisation this runs on BOTH launch
+  paths, Linux and macOS: a Seatbelt deny covers the named leaves, never an arbitrary `*.tmp`
+  sibling, so an orphan would otherwise stay readable on macOS forever. A removal is logged as a
+  security event — the token in that file was readable by anything running as this user, so it
+  should be rotated.
+* **A linked app directory is masked whole.** Skipping the sweep leaves the one thing the
+  legacy-name masks cannot cover: an orphan whose name is neither a bare state file nor `.state`.
+  So when the `workspace/md-notebook/` chain holds a link, `_md_notebook_degraded_mask_dirs` adds
+  that whole directory to the hidden set, on both launch paths, and a directory mask covers
+  every name inside it. This is deliberately conditional rather than always-on: the directory
+  holds the vault clone data agents are MEANT to read, so masking it wholesale on a healthy host
+  would hide the user's notes. The predicate is asked about a LEAF path inside the directory,
+  because it judges a path's parent chain: asking about the directory would miss a link at the
+  directory itself, which is exactly the case the final-component refusal leaves unswept.
 
-The agent-side file-tool gate (`security.is_sensitive_path`) fences all four paths
-independently of the OS mask, so the agent's own reach through tool calls is unchanged.
+The agent-side file-tool gate (`security.is_sensitive_path`) fences the state directory and
+every legacy spelling independently of the OS mask, so the agent's own reach through tool calls
+is unchanged.
+
+### The state-write publish stays inside the masked state directory
+
+`_write_state_staged_sync` is the single entry point every state writer
+(`_write_pat_sync`/`_write_vaults_sync`/`_write_settings_sync`) calls. It refuses a write whose
+parent chain passes through a planted symlink or junction (`atomic_write.refuse_linked_parent`),
+durably retires any pending migration retry for that file, then stages the temp inside the state
+directory with `mkstemp` and publishes it by name with `replace_with_retry` (which carries the
+Windows sharing-violation retry). Both the temp and the target are in one directory on one
+mount, so the rename never crosses a mount point — there is no cross-mount `EXDEV`, and no
+in-flight temp ever lands at a name the mask does not cover. The whole publish runs in the
+backend process; nothing has to run in the gateway.
+
+The temp is 0600 before any payload byte (`mkstemp`), and `restrict_to_owner` adds the
+owner-only DACL on Windows, warn-not-fail per the PAT policy. On failure the temp is removed; a
+removal that itself fails leaves the orphan inside the masked directory.
+
+The legacy migration sources resolve under the LITERAL `md-notebook` subdir (`_STATE_APP_DIR`),
+never the env-derived `KIROCREW_APP_NAME`, so a gateway carrying a foreign `KIROCREW_APP_NAME`
+cannot make the migration promote files from a tree the masks and the `is_sensitive_path` fence
+do not cover.
+
+### Upgrading an on-disk layout that keeps state under `workspace/md-notebook/`
+
+Older builds stored `pat`/`vaults.json`/`settings.json` either directly under
+`workspace/md-notebook/` or inside `workspace/md-notebook/.state/`.
+`migrate_legacy_state_into_state_dir` moves each one into the state directory, trying the
+`.state/` copy before the bare one so the newer layout wins where both hold real content. It
+runs in the GATEWAY process — before every Linux spawn (inside the materialiser) and before the
+Notes backend spawn — which sees the real crew data home with no bind masks: the sandboxed
+backend cannot do it, because the mask hands it back only the state directory and keeps the
+legacy spellings masked and uncarved. The move is a rename within the crew data home, so it is
+same-filesystem and atomic, and the owner-only mode is re-asserted on the moved file. A legacy
+LINK or special file is never moved.
+
+The migration is driven by whether real state is present, not merely by whether a destination
+exists. The materialiser plants an absent-equivalent file at each destination on every Linux
+spawn, so a migration that skipped any destination that merely EXISTS would strand the user's
+real credential — the app would then read an empty state. So a file migrates when the legacy
+copy carries REAL content and the destination is absent OR holds only an absent-equivalent stub;
+a real destination file wins, and a legacy copy that is itself only a stub is skipped.
+`_ABSENT_EQUIVALENT_STATE` carries the stub bytes for each name, kept byte-identical to the
+materialiser's stubs (a test pins the two).
+
+The migration is ONE-SHOT. The first pass writes the `.migrated` marker inside the state
+directory whether or not anything moved, so a legacy name an agent writes after the upgrade is
+never promoted into the fenced directory. A genuine legacy file the first pass could not move is
+recorded in the marker's `pending` map by its source spelling (`pat` or `.state/pat`) and a
+content hash, and a later pass retries only that source while it still hashes the same. A live
+write retires that file's pending entries durably before it publishes, failing closed, so a user's
+PAT clear cannot be undone by a later retry.
 
 ### Why the state writers do not go through `atomic_write`
 
-`_write_state_staged_sync` stages its temp in the top-level staging directory and renames
-onto the target, rather than calling `atomic_write`. That is a deliberate fork of the
-secret-write chokepoint, recorded here so it stays a decision:
+`_write_state_staged_sync` stages its temp inside the masked state directory and renames onto
+the target there, rather than calling `atomic_write`. Now that the temp and the target share one
+directory, `atomic_write`'s own `mkstemp(dir=path.parent)` staging would land in the same place,
+so the remaining reasons are narrower:
 
-* `atomic_write` stages in the TARGET's parent (`mkstemp(dir=path.parent)`), and its
-  pinned-parent path opens that temp through a directory descriptor precisely so the
-  location cannot be re-resolved. Staging elsewhere is not a parameter it has; adding
-  `staging_dir=` would have to either bypass that fence or duplicate it for a second
-  directory, on a primitive with many callers and a large contract (ACL preservation,
-  retry, fsync, restrict-on-error policy).
-* The one guard the fork must not shed is the planted-link refusal that
-  `restrict_to_owner=True` implied. It is not reimplemented: `atomic_write.refuse_linked_parent`
-  is the same private helper made public for exactly this caller class, and tests fail if
-  either call site drops it.
-* The cost is real and accepted: a future guard added inside `atomic_write` does not reach
-  this writer. Moving the state into one masked directory would remove the reason for the
-  fork entirely; `staging_dir=` is the right change only if that move is not made.
+* The writer must retire a pending migration retry durably before the publish, and fail closed
+  if it cannot; that ordering is specific to this caller.
+* The one guard the fork must not shed is the planted-link refusal that `restrict_to_owner=True`
+  implies. It is not reimplemented: `atomic_write.refuse_linked_parent` is the same helper made
+  public for exactly this caller class, and tests fail if either call site drops it.
+* The cost is real and accepted: a future guard added inside `atomic_write` does not reach this
+  writer.
 
 ## Routes
 

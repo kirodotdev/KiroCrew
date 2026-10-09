@@ -1087,7 +1087,11 @@ def test_pat_stays_under_crew_home_ignoring_md_notebook_home(monkeypatch, tmp_pa
     pat = server_mod._pat_file()
     # The PAT is under the crew data home, NOT the stray MD_NOTEBOOK_HOME.
     assert str(stray) not in str(pat), pat
-    assert pat.parts[-3:] == ("workspace", "md-notebook", "pat"), pat
+    # The three state files live in the masked top-level ``md-notebook-staging/``
+    # directory, a direct child of the crew data home behind the sensitive-path floor,
+    # which is the property this test guards.
+    assert pat.parts[-2:] == ("md-notebook-staging", "pat"), pat
+    assert pat.parent.parent.resolve() == crew.resolve(), pat
     assert str(crew) in str(pat), pat
     # settings.json carries `autoSync` (authorizes unattended push), so like the
     # PAT it MUST stay under the crew data home behind the sensitive-path floor —
@@ -1178,6 +1182,195 @@ def test_vault_registry_commit_retries_windows_sharing_violation(fixtures, monke
 
     assert json.loads(server_mod._vaults_json().read_text(encoding="utf-8")) == vaults
     assert state["n"] == 2, "the transient rename must be retried exactly once"
+
+
+def test_state_write_stages_inside_the_state_dir(fixtures, monkeypatch) -> None:
+    """A state write stages its temp INSIDE the state directory, beside its target.
+
+    The whole top-level state directory is one bind mask in the sandbox, so staging the temp
+    inside it keeps the in-flight bytes (the PAT included) behind that mask at every
+    instant and makes the publish a same-directory rename. Prove the staging directory IS
+    the state directory by recording where ``mkstemp`` is told to create the temp.
+    """
+    server_mod, _remote, _seed = fixtures
+    seen_dirs: list[str] = []
+    real_mkstemp = server_mod.tempfile.mkstemp
+
+    def recording_mkstemp(*args, **kwargs):
+        seen_dirs.append(kwargs.get("dir"))
+        return real_mkstemp(*args, **kwargs)
+
+    monkeypatch.setattr(server_mod.tempfile, "mkstemp", recording_mkstemp)
+    server_mod._write_pat_sync("ghp_inside_state")
+    assert server_mod._pat_file().read_text(encoding="utf-8") == "ghp_inside_state"
+    assert seen_dirs == [
+        str(server_mod._state_dir())
+    ], "the state temp must be staged inside the masked state directory, not elsewhere"
+
+
+def test_state_write_is_a_same_directory_rename(fixtures, monkeypatch) -> None:
+    """The publish renames within one directory, so no cross-mount EXDEV can arise.
+
+    The staged temp and the target share the state directory, so the rename never crosses a
+    mount point — a staging directory bind-mounted separately from the target makes the
+    rename raise ``[Errno 18]`` in the backend's namespace. Prove it by capturing the
+    rename's source and destination directories and asserting they are the same directory.
+    """
+    server_mod, _remote, _seed = fixtures
+    seen: list[tuple[str, str]] = []
+    real_replace = server_mod.replace_with_retry
+
+    def recording_replace(src, dst):
+        seen.append((str(Path(src).parent), str(Path(dst).parent)))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(server_mod, "replace_with_retry", recording_replace)
+    server_mod._write_pat_sync("ghp_same_dir")
+    assert server_mod._pat_file().read_text(encoding="utf-8") == "ghp_same_dir"
+    assert len(seen) == 1
+    src_dir, dst_dir = seen[0]
+    assert (
+        src_dir == dst_dir == str(server_mod._state_dir())
+    ), "src and dst must be the same state directory, so the rename stays on one mount"
+
+
+def test_a_renamed_aside_app_dir_cannot_capture_a_later_pat_write(fixtures) -> None:
+    """A PAT write lands in the top-level state directory however the app tree is moved.
+
+    ``workspace/md-notebook`` is agent-writable, so a same-uid agent can rename it aside and
+    recreate it. A state directory nested under it would travel with the rename and leave
+    its mask behind; the state directory is a direct child of the crew data home instead, so
+    the rename cannot carry it anywhere and the next write publishes behind the same mask.
+    """
+    server_mod, _remote, _seed = fixtures
+    app_dir = server_mod._crew_data_home()
+    app_dir.mkdir(parents=True, exist_ok=True)
+    server_mod._write_pat_sync("ghp_before")
+    target = server_mod._pat_file()
+    assert target.parent.parent == app_dir.parent.parent, "state dir is not top-level"
+
+    moved = app_dir.with_name("md-notebook-moved")
+    app_dir.rename(moved)
+    app_dir.mkdir()
+    server_mod._write_pat_sync("ghp_after")
+
+    assert server_mod._pat_file() == target
+    assert target.read_text(encoding="utf-8") == "ghp_after"
+    for tree in (moved, app_dir):
+        assert not any(p.name == "pat" for p in tree.rglob("*")), f"a PAT reached {tree}"
+
+
+def test_upgrade_migrates_all_legacy_state_none_lost(fixtures, monkeypatch) -> None:
+    """An upgrade carries real bare state into the state dir, even past materialiser stubs.
+
+    The sandbox materialiser plants an empty absent-equivalent file at each state-dir
+    target on every spawn (an empty PAT, an empty vault list, default settings) so the bind
+    mask has a mount point. A migration that skipped any destination that merely EXISTS
+    would see those stubs and strand the user's real credential, vault list and settings at
+    the bare name — reading an empty state in the app. The migration must treat a stub as
+    "nothing migrated yet" and move the real bare files across, losing none.
+    """
+    server_mod, _remote, _seed = fixtures
+    legacy = server_mod._legacy_state_dir()
+    legacy.mkdir(parents=True, exist_ok=True)
+    # Real bare state from an older build.
+    (legacy / "pat").write_text("ghp_real_legacy", encoding="utf-8")
+    (legacy / "vaults.json").write_text(
+        '[{"id": "v1", "localPath": "/abs/vault"}]', encoding="utf-8"
+    )
+    (legacy / "settings.json").write_text(
+        '{"autoSync": true, "autoSyncMins": 15}', encoding="utf-8"
+    )
+    # The materialiser's absent-equivalent stubs already present at the destinations.
+    state = server_mod._state_dir()
+    state.mkdir(parents=True, exist_ok=True)
+    for name, stub in server_mod._ABSENT_EQUIVALENT_STATE.items():
+        (state / name).write_bytes(stub)
+
+    moved = server_mod.migrate_legacy_state_into_state_dir()
+
+    assert sorted(Path(p).name for p in moved) == ["pat", "settings.json", "vaults.json"]
+    assert (state / "pat").read_text(encoding="utf-8") == "ghp_real_legacy"
+    assert (state / "vaults.json").read_text(encoding="utf-8").startswith('[{"id": "v1"')
+    assert '"autoSync": true' in (state / "settings.json").read_text(encoding="utf-8")
+    # Nothing lost: every real value is now readable through the backend's own helpers.
+    assert server_mod._read_pat_sync() == "ghp_real_legacy"
+
+
+def test_upgrade_keeps_a_real_state_copy_over_a_bare_one(fixtures, monkeypatch) -> None:
+    """A REAL state-dir file wins over a bare legacy copy; a stub does not block the move.
+
+    When the state dir already holds a real (non-stub) file, that is the live state and the
+    migration leaves it — overwriting it with a bare copy would resurrect stale state. The
+    distinction is stub-vs-real, not exists-vs-absent, so the two cases are tested together.
+    """
+    server_mod, _remote, _seed = fixtures
+    legacy = server_mod._legacy_state_dir()
+    legacy.mkdir(parents=True, exist_ok=True)
+    state = server_mod._state_dir()
+    state.mkdir(parents=True, exist_ok=True)
+    # A bare legacy PAT, but the state dir already holds a REAL (newer) PAT.
+    (legacy / "pat").write_text("ghp_stale_bare", encoding="utf-8")
+    (state / "pat").write_text("ghp_live_state", encoding="utf-8")
+    moved = server_mod.migrate_legacy_state_into_state_dir()
+    assert str(state / "pat") not in moved, "a real state-dir file must not be overwritten"
+    assert (state / "pat").read_text(encoding="utf-8") == "ghp_live_state"
+
+
+def test_upgrade_skips_a_bare_stub_with_nothing_to_rescue(fixtures, monkeypatch) -> None:
+    """A bare legacy copy that is itself only an absent-equivalent stub is not migrated.
+
+    A bare ``pat`` of zero bytes (or a bare ``vaults.json`` of ``[]``) carries nothing a
+    real state would, so moving it over a destination would overwrite a possibly-real file
+    with emptiness. The migration skips it.
+    """
+    server_mod, _remote, _seed = fixtures
+    legacy = server_mod._legacy_state_dir()
+    legacy.mkdir(parents=True, exist_ok=True)
+    (legacy / "pat").write_bytes(b"")  # an absent-equivalent bare stub
+    moved = server_mod.migrate_legacy_state_into_state_dir()
+    assert str(server_mod._state_dir() / "pat") not in moved
+
+
+def test_state_paths_pin_sandbox_constants(fixtures) -> None:
+    """The backend's state-dir name and file names stay in lockstep with the sandbox mask.
+
+    The OS mask (``sandbox._MD_NOTEBOOK_STATE_DIR``), the materialiser's absent-equivalent
+    stubs (``sandbox._MD_NOTEBOOK_PRECREATE_CONTENT``) and the backend's own path helpers
+    must agree, or a write would land outside the mask or the migration would compare the
+    wrong bytes. Pin them here so a change to one side fails loudly.
+    """
+    server_mod, _remote, _seed = fixtures
+    from kiro_crew import sandbox
+
+    assert server_mod._STATE_DIR_LEAF == sandbox._MD_NOTEBOOK_STATE_DIR
+    assert server_mod._STATE_FILE_NAMES == sandbox._MD_NOTEBOOK_STATE_FILES
+    # The absent-equivalent map matches the materialiser's stub bytes, keyed by basename.
+    materialiser = {
+        key.rsplit("/", 1)[-1]: val for key, val in sandbox._MD_NOTEBOOK_PRECREATE_CONTENT.items()
+    }
+    assert server_mod._ABSENT_EQUIVALENT_STATE == materialiser
+
+
+def test_state_paths_ignore_a_foreign_app_name_env(fixtures, monkeypatch) -> None:
+    """A foreign KIROCREW_APP_NAME must not move the state files off the masked path.
+
+    The OS sandbox mask and the sensitive-path fence are pinned to literal names: the
+    top-level ``md-notebook-staging/`` state directory, and the legacy
+    ``workspace/md-notebook/`` spellings the migration reads. If the path helpers derived
+    either from the env ``KIROCREW_APP_NAME`` (as a gateway launched from a shell carrying a
+    foreign value would), the live PAT or the migration's sources would resolve to an
+    unmasked, same-uid-writable name. Both must stay literal regardless of the env.
+    """
+    server_mod, _remote, _seed = fixtures
+    monkeypatch.setenv("KIROCREW_APP_NAME", "totally-different-app")
+    for target in (server_mod._pat_file(), server_mod._vaults_json(), server_mod._settings_json()):
+        parts = target.parts
+        assert target.parent.name == "md-notebook-staging", (target, "state file escaped")
+        assert "totally-different-app" not in parts, (target, "env APP_NAME redirected the path")
+    legacy = server_mod._legacy_state_dir()
+    assert legacy.name == "md-notebook", (legacy, "migration source escaped the literal")
+    assert "totally-different-app" not in legacy.parts
 
 
 # ---------------------------------------------------------------------------
@@ -3069,6 +3262,14 @@ def test_notebook_pat_is_behind_the_sensitive_path_floor() -> None:
     # without the operator, so it is behind the floor under both prefixes too.
     assert is_sensitive_path("~/.kiro/crew/workspace/md-notebook/settings.json") is True
     assert is_sensitive_path("~/.kirocrew/workspace/md-notebook/settings.json") is True
+    # The live state directory and every name inside it — the three state files, the
+    # migration marker and any in-flight temp — under both prefixes.
+    for prefix in ("~/.kiro/crew", "~/.kirocrew"):
+        for name in ("pat", "vaults.json", "settings.json", ".migrated", "tmpab12cd34.tmp"):
+            assert is_sensitive_path(f"{prefix}/md-notebook-staging/{name}") is True, name
+        # The retired ``.state/`` directory stays fenced for a copy left behind.
+        for name in ("pat", "vaults.json", "settings.json"):
+            assert is_sensitive_path(f"{prefix}/workspace/md-notebook/.state/{name}") is True
     # Notes themselves must stay readable — the floor covers the token, not the vault.
     assert is_sensitive_path("~/.kiro/crew/workspace/md-notebook/vaults/v1/note.md") is False
 

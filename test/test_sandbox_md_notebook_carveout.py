@@ -77,23 +77,24 @@ def crew_home(tmp_path, monkeypatch):
 
 
 class TestALinkedChainMasksTheWholeStateDirectory:
-    """A degraded root hides its whole state directory, and a healthy one does NOT.
+    """A linked ``workspace/md-notebook`` chain hides that whole directory; a healthy one
+    does NOT.
 
-    Skipping the sweep on a linked chain leaves one thing behind that the three leaf masks
-    cannot cover: a legacy staging orphan holding real PAT bytes, whose name is neither
-    ``pat`` nor a state file. A directory mask covers every name inside it.
+    Skipping the sweep on a linked chain leaves one thing behind that the legacy-name masks
+    cannot cover: a legacy staging orphan holding real PAT bytes, whose name is neither a
+    bare state file nor ``.state``. A directory mask covers every name inside it.
 
     The negative half matters just as much. That directory also holds the vault clone data,
     which agents are MEANT to read, so masking it wholesale on a healthy host would hide
-    the user's notes and defeat the app. The mask is therefore keyed to the same predicate
-    that withholds the carve-out: it appears only where the app is already non-functional.
+    the user's notes and defeat the app. The mask therefore appears only where the chain is
+    linked, which is where the sweep cannot run.
     """
 
     def test_a_healthy_host_does_not_mask_the_state_directory(self, crew_home) -> None:
-        (crew_home / "workspace" / "md-notebook").mkdir(parents=True)
+        (crew_home / "workspace" / "md-notebook" / "vaults").mkdir(parents=True)
 
         assert sb._md_notebook_degraded_mask_dirs() == [], (
-            "a healthy host masked the whole state directory, which would hide the vault "
+            "a healthy host masked the whole app directory, which would hide the vault "
             "clone data agents are meant to read"
         )
 
@@ -105,13 +106,17 @@ class TestALinkedChainMasksTheWholeStateDirectory:
 
         masked = sb._md_notebook_degraded_mask_dirs()
 
+        # The degraded fallback masks the whole ``md-notebook/`` directory (reached through
+        # the planted link): it holds the legacy bare names, the retired ``.state/`` AND any
+        # orphan beside them, so masking it fences every legacy exposure at once.
         assert str(crew_home / "workspace" / "md-notebook") in masked
 
     def test_the_orphan_the_sweep_cannot_delete_is_masked_instead(self, crew_home, tmp_path):
         """The two halves meet here: the sweep leaves the orphan, the mask hides it.
 
         A directory the sweep refuses to descend keeps its orphan, so the mask must name
-        that directory — otherwise the PAT bytes in it stay readable in every sandbox.
+        the bare ``md-notebook/`` directory — the orphan sits as its DIRECT child, at a name
+        no legacy-name mask covers, so it would otherwise stay readable in every sandbox.
         """
         victim = tmp_path / "victim-orphan"
         (victim / "md-notebook").mkdir(parents=True)
@@ -123,10 +128,10 @@ class TestALinkedChainMasksTheWholeStateDirectory:
 
         assert orphan.exists(), "the sweep deleted through a planted link"
         assert removed == []
-        state_dir = str(crew_home / "workspace" / "md-notebook")
-        assert state_dir in sb._md_notebook_degraded_mask_dirs(), (
-            "the sweep could not delete the orphan AND the directory is unmasked, so the "
-            "PAT bytes in it stay readable inside the sandbox"
+        parent_dir = str(crew_home / "workspace" / "md-notebook")
+        assert parent_dir in sb._md_notebook_degraded_mask_dirs(), (
+            "the sweep could not delete the orphan AND the directory holding it is "
+            "unmasked, so the PAT bytes in it stay readable inside the sandbox"
         )
 
     def test_both_launch_paths_carry_the_degraded_mask(self, monkeypatch, tmp_path) -> None:
@@ -148,41 +153,51 @@ class TestALinkedChainMasksTheWholeStateDirectory:
             ), f"the {mode} Seatbelt profile does not carry the degraded state-directory mask"
 
 
-class TestTheStagingDirectoryIsMaskedAndCarvedBack:
-    """The write-staging directory is fenced from agents and returned to the backend.
+class TestTheStateDirectoryIsMaskedAndCarvedBack:
+    """The top-level state directory is fenced from agents and carved back to the backend.
 
-    The three leaf masks cover exactly three names, so the temp the writers publish
-    through needs its own cover. It is masked as a whole DIRECTORY (every name inside it,
-    present and future) and handed back only to the spawn that owns the leaves — carving
-    out the leaves alone would move the EPERM from the leaf to the staging dir.
+    Every state file, the migration marker and every in-flight temp live inside it, so the
+    mask stays in every mode for every OTHER sandboxed process, while the Notes backend's
+    own spawn gets the directory back so it can read and publish its state.
     """
 
     @pytest.mark.parametrize("mode", _MODES)
     @pytest.mark.parametrize("prefix", _CREW_PREFIXES)
-    def test_the_staging_dir_is_masked_in_every_mode(self, mode: str, prefix: str) -> None:
-        assert _crew_path(prefix, sb._MD_NOTEBOOK_STAGING_LEAF) in _hidden_dirs(mode)
+    def test_the_state_dir_is_masked_in_every_mode(self, mode: str, prefix: str) -> None:
+        assert _crew_path(prefix, sb._MD_NOTEBOOK_STATE_DIR) in _hidden_dirs(mode)
 
-    def test_the_backend_gets_the_staging_dir_back(self) -> None:
+    def test_the_state_dir_is_the_top_level_staging_leaf(self) -> None:
+        # One directory, one name: the mask, the carve-out, the precreate list and the
+        # sensitive-path fence all name the same top-level leaf.
+        assert sb._MD_NOTEBOOK_STATE_DIR == sb._MD_NOTEBOOK_STAGING_LEAF == "md-notebook-staging"
+
+    def test_the_backend_gets_the_state_dir_back(self) -> None:
         targets = sb.app_backend_visible_targets(sb.MD_NOTEBOOK_APP_NAME)
+        # Under whichever home spelling resolves on this host — the carve-out refuses a
+        # spelling whose parent chain holds a symlink.
+        assert any(
+            t.endswith(os.sep + sb._MD_NOTEBOOK_STATE_DIR) for t in targets
+        ), "the state directory must be carved back to the backend"
+        # Nothing under ``workspace/md-notebook`` is carved back: the legacy spellings are
+        # read only by the gateway-side migration.
+        assert not any(f"workspace{os.sep}md-notebook" in t for t in targets), targets
 
-        for prefix in _CREW_PREFIXES:
-            assert _crew_path(prefix, sb._MD_NOTEBOOK_STAGING_LEAF) in targets
-
-    def test_the_launcher_lifts_the_staging_mask_for_that_spawn(self) -> None:
-        hidden = _hidden_dirs(
-            "standard",
-            extra_visible_dirs=sb.app_backend_visible_targets(sb.MD_NOTEBOOK_APP_NAME),
-        )
-
-        for prefix in _CREW_PREFIXES:
-            assert _crew_path(prefix, sb._MD_NOTEBOOK_STAGING_LEAF) not in hidden
+    def test_the_launcher_lifts_the_state_mask_for_the_backend_spawn_only(self) -> None:
+        carved = sb.app_backend_visible_targets(sb.MD_NOTEBOOK_APP_NAME)
+        assert carved, "no carve-out resolved, so this test would pass vacuously"
+        hidden_for_backend = _hidden_dirs("standard", extra_visible_dirs=carved)
+        hidden_for_agents = _hidden_dirs("standard")
+        for target in carved:
+            assert target not in hidden_for_backend, f"{target} still masked for the backend"
+            assert target in hidden_for_agents, f"{target} unmasked for an ordinary spawn"
 
     def test_the_precreate_table_covers_exactly_the_state_leaves(self) -> None:
         """Materialising a leaf needs its own absent-equivalence argument, so the two
         tables must not drift: a leaf added to the mask without one would be created
         with no proof that empty means absent to its reader."""
         assert set(sb._MD_NOTEBOOK_PRECREATE_CONTENT) == set(sb._MD_NOTEBOOK_STATE_LEAVES)
-        assert sb._MD_NOTEBOOK_STAGING_LEAF not in sb._MD_NOTEBOOK_PRECREATE_CONTENT
+        for leaf in sb._MD_NOTEBOOK_PRECREATE_CONTENT:
+            assert os.path.dirname(leaf) == sb._MD_NOTEBOOK_STATE_DIR
 
 
 class TestANewOwnedLeavesAppCannotSilentlySkipMaterialization:
@@ -197,9 +212,13 @@ class TestANewOwnedLeavesAppCannotSilentlySkipMaterialization:
     """
 
     def test_every_owned_leaves_app_is_covered_by_materialization(self) -> None:
+        # md-notebook owns the whole top-level state DIRECTORY. Its mount target is
+        # precreated by ``_materialize_maskable_dirs`` (it is in
+        # ``_CREW_PRECREATE_HIDDEN_DIR_LEAVES``), and the per-file materialiser gives
+        # ``pat``/``vaults.json``/``settings.json`` inside it absent-equivalent documents
+        # before launch.
         covered = {
-            sb.MD_NOTEBOOK_APP_NAME: set(sb._MD_NOTEBOOK_PRECREATE_CONTENT)
-            | {sb._MD_NOTEBOOK_STAGING_LEAF},
+            sb.MD_NOTEBOOK_APP_NAME: {sb._MD_NOTEBOOK_STATE_DIR},
             # NOT dev-fleet: its live-target pointer stays masked from its own backend
             # (build children share that namespace — see
             # test_sandbox_dev_fleet_live_target.py); the pointer is still materialised
@@ -222,6 +241,14 @@ class TestANewOwnedLeavesAppCannotSilentlySkipMaterialization:
                 f"{app}'s owned leaves and its materialisation coverage have drifted: "
                 f"{set(leaves) ^ covered[app]}"
             )
+        # The state directory's mount target is precreated, and every state FILE inside it
+        # still carries its own absent-equivalence argument, so the precreate tables must
+        # cover exactly the directory and the three state leaves.
+        assert sb._MD_NOTEBOOK_STATE_DIR in sb._CREW_PRECREATE_HIDDEN_DIR_LEAVES
+        assert set(sb._MD_NOTEBOOK_PRECREATE_CONTENT) == set(sb._MD_NOTEBOOK_STATE_LEAVES)
+        assert {f"{sb._MD_NOTEBOOK_STATE_DIR}/{n}" for n in sb._MD_NOTEBOOK_STATE_FILES} == set(
+            sb._MD_NOTEBOOK_STATE_LEAVES
+        )
 
 
 class TestAbsentStateFilesAreMaterializedSoTheMaskCanMount:
@@ -239,7 +266,7 @@ class TestAbsentStateFilesAreMaterializedSoTheMaskCanMount:
 
     def test_every_leaf_is_created_with_its_absent_equivalent_document(self, crew_home):
         created = sb._materialize_md_notebook_mask_targets()
-        state = crew_home / "workspace" / "md-notebook"
+        state = crew_home / sb._MD_NOTEBOOK_STATE_DIR
         assert set(created) == {str(state / n) for n in ("pat", "vaults.json", "settings.json")}
         assert (state / "vaults.json").read_bytes() == b"[]\n"
         assert (state / "settings.json").read_bytes() == b"{}\n"
@@ -247,29 +274,48 @@ class TestAbsentStateFilesAreMaterializedSoTheMaskCanMount:
         # The PAT mount target is a credential path: owner-only from birth.
         assert os.stat(state / "pat").st_mode & 0o077 == 0
 
-    def test_the_staging_dir_is_materialized_by_the_shared_direct_child_path(self) -> None:
-        """The staging directory is a DIRECT child of the data home, so it belongs to
+    def test_the_state_dir_is_materialized_by_the_shared_direct_child_path(self) -> None:
+        """The state directory is a DIRECT child of the data home, so it belongs to
         ``_materialize_maskable_dirs`` — whose plain ``mkdir`` is only sound for direct
-        children — rather than to the nested md-notebook materialiser."""
-        assert sb._MD_NOTEBOOK_STAGING_LEAF in sb._CREW_PRECREATE_HIDDEN_DIR_LEAVES
-        assert "/" not in sb._MD_NOTEBOOK_STAGING_LEAF
+        children — rather than to the per-file md-notebook materialiser."""
+        assert sb._MD_NOTEBOOK_STATE_DIR in sb._CREW_PRECREATE_HIDDEN_DIR_LEAVES
+        assert "/" not in sb._MD_NOTEBOOK_STATE_DIR
 
-    def test_the_staging_dir_has_no_agent_writable_ancestor(self) -> None:
+    def test_the_state_dir_has_no_agent_writable_ancestor(self) -> None:
         """A mask covers the leaf, NOT its ancestors. Under ``workspace/md-notebook`` — a
-        tree the agent can write at OS level — the staging dir could be renamed out from
+        tree the agent can write at OS level — the state dir could be renamed out from
         under its own mask, and a later PAT write would publish through the replacement,
-        unmasked, into a live agent's view. Top-level, like ``aws-control-staging``."""
-        assert not sb._MD_NOTEBOOK_STAGING_LEAF.startswith("workspace/")
+        unmasked, into a live agent's view. Top-level, like ``aws-control-staging``: every
+        state file's parent is the state directory, and the state directory's parent is the
+        data-home root itself."""
+        assert not sb._MD_NOTEBOOK_STATE_DIR.startswith("workspace/")
+        assert os.path.dirname(sb._MD_NOTEBOOK_STATE_DIR) == ""
         for leaf in sb._MD_NOTEBOOK_STATE_LEAVES:
-            assert not sb._MD_NOTEBOOK_STAGING_LEAF.startswith(os.path.dirname(leaf))
+            assert os.path.dirname(leaf) == sb._MD_NOTEBOOK_STATE_DIR
 
-    def test_the_backend_and_the_mask_name_the_same_staging_dir(self) -> None:
-        """The writer spells the leaf itself rather than importing the sandbox module into
-        the app backend's process, so the two spellings are pinned here: a mismatch would
-        stage PAT bytes at a name nothing masks."""
+    def test_the_backend_and_the_mask_name_the_same_state_dir(self) -> None:
+        """The backend spells its state dir and file names itself rather than importing
+        the sandbox module into the app backend's process, so the two spellings are pinned
+        here: a mismatch would stage PAT bytes at a name nothing masks."""
         from kiro_crew.apps.builtins.md_notebook import server
 
-        assert server._STAGING_LEAF == sb._MD_NOTEBOOK_STAGING_LEAF
+        assert server._STATE_DIR_LEAF == sb._MD_NOTEBOOK_STATE_DIR
+        assert server._STATE_FILE_NAMES == sb._MD_NOTEBOOK_STATE_FILES
+        assert server._RETIRED_STATE_SUBDIR == os.path.basename(sb._MD_NOTEBOOK_RETIRED_STATE_DIR)
+
+    def test_the_backend_resolves_its_state_dir_directly_under_the_data_home(
+        self, crew_home, monkeypatch
+    ):
+        """End to end on the backend's own resolver: the live state directory is a direct
+        child of the crew data-home root, not of ``workspace/md-notebook``."""
+        from kiro_crew.apps.builtins.md_notebook import server
+
+        monkeypatch.setattr(server, "_HOME", None)
+        monkeypatch.setattr(server, "config_dir", lambda: crew_home)
+        assert server._state_dir() == crew_home / sb._MD_NOTEBOOK_STATE_DIR
+        assert server._state_dir().parent == crew_home
+        assert server._pat_file().parent == server._state_dir()
+        assert server._migration_marker_path().parent == server._state_dir()
 
     def test_the_sweep_runs_on_the_macos_launch_path_too(self) -> None:
         """Materialising is Linux-only for a real reason — a Seatbelt deny is a path rule
@@ -291,13 +337,15 @@ class TestAbsentStateFilesAreMaterializedSoTheMaskCanMount:
         from kiro_crew.apps.builtins.md_notebook import server
 
         sb._materialize_md_notebook_mask_targets()
-        monkeypatch.setattr(server, "_HOME", crew_home / "workspace" / "md-notebook")
+        monkeypatch.setattr(server, "_HOME", None)
+        monkeypatch.setattr(server, "config_dir", lambda: crew_home)
+        assert (server._state_dir() / "pat").is_file(), "the stub this test reads is absent"
         assert server._read_vaults_sync() == []
         assert server._read_settings_sync() == server._default_settings()
         assert server._read_pat_sync() is None
 
     def test_existing_state_is_left_byte_for_byte_alone(self, crew_home):
-        state = crew_home / "workspace" / "md-notebook"
+        state = crew_home / sb._MD_NOTEBOOK_STATE_DIR
         state.mkdir(parents=True)
         (state / "vaults.json").write_text('[{"id": "real"}]')
         assert sb._materialize_md_notebook_mask_targets()  # creates only the other two
@@ -501,19 +549,11 @@ class TestAbsentStateFilesAreMaterializedSoTheMaskCanMount:
         with pytest.raises(sb.SandboxCeilingUnsealable):
             sb._materialize_md_notebook_mask_targets()
 
-    def test_a_planted_intermediate_symlink_degrades_the_app_not_the_host(
-        self, crew_home, tmp_path
-    ):
-        """The planted-link hazard, materialiser edition: ``os.makedirs`` follows a RESOLVING symlink planted
-        at ``workspace/md-notebook`` (an agent-writable tree a spawned subprocess can
-        symlink at OS level), so materialising would land the files at the link's target
-        while the launcher masks the lexical path.
-
-        The response is to SKIP the leaf and let the spawn proceed, not to refuse it.
-        Refusing would let one optional app's on-disk layout take every sandboxed process
-        on the host down with it — an operator who symlinks ``workspace/`` to another disk
-        would find no agent could start, over a Notes file they may never have created.
-        """
+    def test_a_linked_app_dir_does_not_reach_the_state_stubs(self, crew_home, tmp_path):
+        """A link at ``workspace/md-notebook`` (an operator who symlinks ``workspace/`` to
+        another disk) leaves the state stubs untouched: they live in the top-level state
+        directory, so the materialiser creates them normally and never writes through the
+        link."""
         elsewhere = tmp_path / "elsewhere-mask"
         elsewhere.mkdir()
         (crew_home / "workspace").mkdir(parents=True)
@@ -521,56 +561,63 @@ class TestAbsentStateFilesAreMaterializedSoTheMaskCanMount:
 
         created = sb._materialize_md_notebook_mask_targets()
 
-        assert created == [], "the materialiser wrote through a planted link"
+        state = crew_home / sb._MD_NOTEBOOK_STATE_DIR
+        assert set(created) == {str(state / n) for n in sb._MD_NOTEBOOK_STATE_FILES}
         assert list(elsewhere.iterdir()) == [], (
             "the materialiser followed the planted link and created state at "
             f"its target: {list(elsewhere.iterdir())!r}"
         )
 
-    def test_skipping_materialisation_and_withholding_the_carveout_are_one_decision(
+    def test_a_linked_state_dir_is_never_written_through_and_refuses_the_spawn(
+        self, crew_home, tmp_path
+    ):
+        """A link AT the state directory: the per-file materialiser skips (it cannot tell
+        where a write would land) and writes nothing through it, and the shared
+        direct-child materialiser — which runs first on the spawn path — refuses the spawn,
+        so no namespace launches with the mask bound over a referent."""
+        elsewhere = tmp_path / "elsewhere-state"
+        elsewhere.mkdir()
+        (crew_home / sb._MD_NOTEBOOK_STATE_DIR).symlink_to(elsewhere, target_is_directory=True)
+
+        assert sb._materialize_md_notebook_mask_targets() == []
+        assert list(elsewhere.iterdir()) == [], "the materialiser wrote through the link"
+        with pytest.raises(sb.SandboxCeilingUnsealable):
+            sb._materialize_maskable_dirs()
+
+    def test_a_skipped_materialisation_never_launches_with_the_carveout(
         self, crew_home, tmp_path, monkeypatch
     ):
         """THE safety coupling, pinned in one place because separating the two reopens the
-        exact hole this file exists to close.
+        hole this file exists to close.
 
-        Skipping materialisation leaves a leaf unmasked, which is only harmless while
-        nothing can write it. That is guaranteed by the carve-out being withheld under the
-        SAME predicate: if a future change made the materialiser skip while
-        ``app_backend_visible_targets`` still handed the backend its state paths, the
-        backend could publish a PAT to a name no mask covers.
+        The per-file materialiser skips a state file whose chain holds a link, while the
+        carve-out filter judges the state DIRECTORY's own chain — so for a link AT the state
+        directory the materialiser skips and the carve-out is still granted. That pairing is
+        safe only because the same link refuses the spawn before anything launches: in the
+        direct-child materialiser and again in the hidden-leaf alias pass. If a future change
+        let either refusal lapse, the backend would be handed a carve-out over a linked
+        directory with no stubs in it — this test fails first.
         """
         elsewhere = tmp_path / "elsewhere-coupling"
         elsewhere.mkdir()
-        (crew_home / "workspace").mkdir(parents=True)
-        (crew_home / "workspace" / "md-notebook").symlink_to(elsewhere, target_is_directory=True)
-        # The carve-out resolves against $HOME, so point it at the same planted tree.
-        monkeypatch.setattr(sb.Path, "home", staticmethod(lambda: crew_home.parent.parent))
+        (crew_home / sb._MD_NOTEBOOK_STATE_DIR).symlink_to(elsewhere, target_is_directory=True)
 
-        skipped = sb._materialize_md_notebook_mask_targets() == []
-        carved = sb.app_backend_visible_targets(sb.MD_NOTEBOOK_APP_NAME)
-        # Scope to the spelling whose chain actually carries the planted link — the one the
-        # materialiser just skipped. The legacy ``.kirocrew`` spelling has no link in its
-        # chain and the backend never writes it (it resolves state through ``config_dir()``),
-        # so carving that one out grants nothing the owner did not already have.
-        planted = str(crew_home / "workspace" / "md-notebook")
-        state_leaf_carved = [t for t in carved if t.startswith(planted)]
-
-        assert skipped, "materialisation did not skip, so this coupling is not under test"
-        assert state_leaf_carved == [], (
-            "materialisation was skipped for a planted chain while the carve-out still "
-            f"handed the backend those same state paths — a PAT could publish unmasked: "
-            f"{state_leaf_carved!r}"
-        )
+        assert (
+            sb._materialize_md_notebook_mask_targets() == []
+        ), "materialisation did not skip, so this coupling is not under test"
+        with pytest.raises(sb.SandboxCeilingUnsealable):
+            sb._materialize_maskable_dirs()
+        with pytest.raises(sb.SandboxCeilingUnsealable):
+            sb._refuse_aliased_masked_leaves()
+        assert list(elsewhere.iterdir()) == []
 
     def test_a_resolving_leaf_symlink_refuses_the_spawn(self, crew_home, tmp_path):
-        """A RESOLVING link at the leaf is refused too, not only a dangling one:
-        mount(2) resolves its target, so a resolving ``pat`` link would put the
-        mask on the referent while the lexical name stays an agent-replaceable
-        link — swap it after launch and a later PAT write publishes to an
-        unmasked name inside the live namespace."""
+        """A RESOLVING link at the leaf is refused too, not only a dangling one: the
+        backend reads ``pat`` through it, so a link there would hand it whatever the link
+        names — refuse it before launch rather than trust a referent."""
         real = tmp_path / "somewhere-else-pat"
         real.write_bytes(b"")
-        state = crew_home / "workspace" / "md-notebook"
+        state = crew_home / sb._MD_NOTEBOOK_STATE_DIR
         state.mkdir(parents=True)
         (state / "pat").symlink_to(real)
         with pytest.raises(sb.SandboxCeilingUnsealable):
@@ -580,18 +627,16 @@ class TestAbsentStateFilesAreMaterializedSoTheMaskCanMount:
         """A DANGLING leaf link takes the other route to the same refusal: ``exists()``
         is False for one, so it reaches the publish, where ``os.link`` fails EEXIST on
         the link's own name and the race re-check lstats it as a link."""
-        state = crew_home / "workspace" / "md-notebook"
+        state = crew_home / sb._MD_NOTEBOOK_STATE_DIR
         state.mkdir(parents=True)
         (state / "pat").symlink_to(tmp_path / "nothing-here")
         with pytest.raises(sb.SandboxCeilingUnsealable):
             sb._materialize_md_notebook_mask_targets()
 
     def test_a_special_file_at_a_leaf_refuses_the_spawn(self, crew_home):
-        """An EXISTING target is acceptable only as a regular file: the
-        launcher's hiding loops classify with isdir/isfile, and a FIFO at
-        ``pat`` matches neither — the mask is silently skipped for the whole
-        sandbox."""
-        state = crew_home / "workspace" / "md-notebook"
+        """An EXISTING target is acceptable only as a regular file: a FIFO at ``pat``
+        would block or mislead the backend's reader."""
+        state = crew_home / sb._MD_NOTEBOOK_STATE_DIR
         state.mkdir(parents=True)
         os.mkfifo(state / "pat")
         with pytest.raises(sb.SandboxCeilingUnsealable):
@@ -619,16 +664,17 @@ class TestAbsentStateFilesAreMaterializedSoTheMaskCanMount:
         """The call site: every Linux spawn gets mount targets before its child
         mounts, so no agent namespace can predate the mask."""
         sb.namespace_argv(["/bin/true"])
-        state = crew_home / "workspace" / "md-notebook"
+        state = crew_home / sb._MD_NOTEBOOK_STATE_DIR
+        assert state.is_dir(), "the state directory's mount target is absent"
         for name in ("pat", "vaults.json", "settings.json"):
             assert (state / name).is_file(), f"{name} absent after namespace_argv"
 
 
 class TestStateWritersStageInsideTheMask:
-    """The three leaf masks cover exactly three names — a temp staged BESIDE the
-    target holds the same bytes (PAT included) at a name no mask covers, and a
-    SIGKILL between write and rename leaves it there forever. Every state writer must stage
-    under the whole-directory top-level staging mask instead."""
+    """A temp staged BESIDE the target holds the same bytes (PAT included) at a name no
+    mask covers, and a SIGKILL between write and rename leaves it there forever. Every state
+    writer stages its temp INSIDE the whole-directory state mask instead, so the in-flight
+    bytes and any crash orphan both stay behind that mask."""
 
     @pytest.fixture()
     def server(self, tmp_path, monkeypatch):
@@ -641,68 +687,55 @@ class TestStateWritersStageInsideTheMask:
         def _boom(tmp, target):
             raise AssertionError("simulated crash at publish time")
 
+        # The by-name floor funnels its publish through ``replace_with_retry``; crash there.
         monkeypatch.setattr(server, "replace_with_retry", _boom)
-        # Suppress the failure-path unlink so the orphan the crash WOULD leave
-        # is observable — this models SIGKILL, which runs no cleanup at all.
+        # Suppress the failure-path unlink so the orphan the crash WOULD leave is observable
+        # — this models SIGKILL, which runs no cleanup at all.
         monkeypatch.setattr(server.Path, "unlink", lambda self, *a, **k: None)
         with pytest.raises(AssertionError):
             server._write_pat_sync("ghp_secret")
 
-        state = server._HOME
-        orphans_beside_target = list(state.iterdir())
-        assert (
-            not orphans_beside_target
-        ), f"a PAT temp was staged beside the target, outside the mask: {orphans_beside_target!r}"
-        staged = list(server._staging_dir().iterdir())
-        assert staged, "the temp was not staged under the masked staging dir at all"
-        assert staged[0].read_text() == "ghp_secret"
+        state = server._state_dir()
+        entries = list(state.iterdir()) if state.exists() else []
+        # The orphan temp is INSIDE the masked state directory, beside where the target
+        # would be — not at a sibling name outside the mask.
+        assert entries, "the temp was not staged inside the masked state dir at all"
+        temps = [p for p in entries if p.name.endswith(".tmp")]
+        assert temps, f"no staged temp inside the state dir; found {[p.name for p in entries]!r}"
+        assert temps[0].read_text() == "ghp_secret"
         if os.name == "posix":
-            assert os.stat(staged[0]).st_mode & 0o077 == 0
+            assert os.stat(temps[0]).st_mode & 0o077 == 0
 
     def test_each_writer_publishes_to_its_target_with_no_residue(self, server):
         server._write_pat_sync("ghp_token")
         server._write_vaults_sync([{"id": "v1"}])
         server._write_settings_sync({"autoSync": True})
-        state = server._HOME
+        state = server._state_dir()
         assert (state / "pat").read_text() == "ghp_token"
         assert "v1" in (state / "vaults.json").read_text()
         assert "autoSync" in (state / "settings.json").read_text()
-        assert list(server._staging_dir().iterdir()) == [], "a successful write left residue"
         assert {p.name for p in state.iterdir()} == {
             "pat",
             "vaults.json",
             "settings.json",
-        }, "a writer left a temp beside its target"
+        }, "a writer left a temp inside the state dir after a successful publish"
 
     def test_a_planted_parent_link_refuses_the_write(self, server, tmp_path):
         """The planted-link guard atomic_write enforces, which staging here must keep: a
         secret write whose parent chain passes through a planted link is refused, because
-        mkdir/mkstemp/rename all follow it and the token lands outside the sensitive-path
-        fence."""
+        mkdir and the staging create would follow it and the token lands outside the
+        sensitive-path fence."""
         elsewhere = tmp_path / "elsewhere"
         elsewhere.mkdir()
-        # server fixture sets _HOME to tmp_path/"state" without creating it;
-        # plant the state dir itself as a link to a foreign directory.
-        server._HOME.symlink_to(elsewhere, target_is_directory=True)
+        # Plant the state dir itself as a link to a foreign directory, so the target's
+        # parent chain passes through it.
+        server._state_dir().symlink_to(elsewhere, target_is_directory=True)
         with pytest.raises(OSError):
             server._write_pat_sync("ghp_secret")
         assert list(elsewhere.iterdir()) == [], (
             "the PAT write followed a pre-planted parent link and published "
             f"the token outside the fence: {list(elsewhere.iterdir())!r}"
         )
-
-    def test_a_planted_staging_link_refuses_the_write(self, server, tmp_path):
-        """Same guard, one component deeper: the staging dir itself must be a real
-        directory, not a link redirecting every temp (PAT bytes included)."""
-        elsewhere = tmp_path / "elsewhere-staging"
-        elsewhere.mkdir()
-        server._HOME.mkdir(parents=True)
-        server._staging_dir().symlink_to(elsewhere, target_is_directory=True)
-        with pytest.raises(OSError):
-            server._write_pat_sync("ghp_secret")
-        assert (
-            list(elsewhere.iterdir()) == []
-        ), "the staged temp followed a pre-planted staging link outside the mask"
 
     def test_clearing_the_pat_keeps_the_mask_mount_target(self, server):
         """Clearing must atomically empty the file, never unlink it: the inode
@@ -712,7 +745,7 @@ class TestStateWritersStageInsideTheMask:
         server._write_pat_sync("ghp_token")
         assert server._read_pat_sync() == "ghp_token"
         server._write_pat_sync("")  # what api_pat's clear branch calls
-        pat_file = server._HOME / "pat"
+        pat_file = server._state_dir() / "pat"
         assert pat_file.is_file(), "the PAT clear removed the mask's mount target"
         assert pat_file.read_bytes() == b""
         assert server._read_pat_sync() is None, "empty must read as absent"
@@ -723,7 +756,7 @@ class TestStateWritersStageInsideTheMask:
         An ``os.unlink`` there would delete the mask's mount target while every
         writer-level assertion above still passed."""
         server._write_pat_sync("ghp_token")
-        pat_file = server._HOME / "pat"
+        pat_file = server._state_dir() / "pat"
         assert pat_file.is_file()
 
         async def _fake_body(_request):
@@ -740,3 +773,457 @@ class TestStateWritersStageInsideTheMask:
         assert pat_file.is_file(), "the clear route removed the mask's mount target"
         assert pat_file.read_bytes() == b""
         assert json.loads(response.text)["hasPat"] is False
+
+
+class TestADirectoryMaskSurvivesAnInDirPublish:
+    """The three state files are masked as ONE whole directory, not three leaves.
+
+    If each state file were its own leaf mask, publishing (a rename onto ``pat``) would
+    replace the directory entry that ``pat`` bind mount sits on, detaching the mount in a
+    live agent's namespace — the fresh real PAT would then be readable by a same-uid
+    sandboxed agent. Masking the whole state directory puts the
+    bind-mount point AT the directory: a rename of a name INSIDE it never replaces the
+    directory's own mount point, so the agent keeps seeing the masked (empty tmpfs)
+    directory whatever the gateway publishes underneath. These tests pin that geometry
+    structurally — a real namespace cannot be spawned under CI's unprivileged runner —
+    which is what the fix rests on: the mask names the DIRECTORY, and every publish target
+    is a child NAME inside it.
+    """
+
+    @pytest.mark.parametrize("mode", _MODES)
+    @pytest.mark.parametrize("prefix", _CREW_PREFIXES)
+    def test_the_whole_state_directory_is_masked_not_its_files(self, mode, prefix):
+        hidden = _hidden_dirs(mode)
+        # The DIRECTORY is masked...
+        assert _crew_path(prefix, sb._MD_NOTEBOOK_STATE_DIR) in hidden, (
+            "the state directory is not masked as a whole, so a publish rename of a file "
+            "inside it would be unprotected"
+        )
+        # ...and the three state FILES are NOT individually masked leaves any more. If they
+        # were, a rename onto one would detach that leaf's mount — the exposure this closes.
+        for leaf in sb._MD_NOTEBOOK_STATE_LEAVES:
+            assert _crew_path(prefix, leaf) not in hidden, (
+                f"{leaf} is still masked as an individual leaf; a publish rename onto it "
+                "would detach the bind mount and expose the file to a sandboxed agent"
+            )
+
+    def test_every_publish_target_is_a_name_inside_the_masked_directory(
+        self, tmp_path, monkeypatch
+    ):
+        """The backend's publish geometry: each state writer renames onto a child NAME of
+        the masked state directory, never onto the directory (the mount point) itself.
+        A rename of a child inside a wholly-masked directory cannot detach the directory's
+        bind mount, so the published bytes stay behind the mask in a live agent's view."""
+        from kiro_crew.apps.builtins.md_notebook import server
+
+        monkeypatch.setattr(server, "_HOME", tmp_path / "state")
+        state_dir = server._state_dir()
+        for target in (server._pat_file(), server._vaults_json(), server._settings_json()):
+            # The target's PARENT is exactly the masked state directory...
+            assert target.parent == state_dir, (
+                f"{target} is not inside the masked state directory; publishing it would "
+                "cross the directory's mount point"
+            )
+            # ...and the target is NOT the directory itself (which is the bind-mount point).
+            assert target != state_dir
+
+    def test_the_legacy_names_stay_masked_for_stale_copies(self):
+        """A state file can sit at a legacy spelling — directly under
+        ``workspace/md-notebook/`` or inside the retired ``workspace/md-notebook/.state/`` —
+        written by an older build or left by a migration that could not move it. Such a copy
+        can still hold the real PAT, so those spellings must stay masked (and uncarved) on an
+        upgraded host."""
+        legacy = (*sb._MD_NOTEBOOK_RETIRED_STATE_LEAVES, sb._MD_NOTEBOOK_RETIRED_STATE_DIR)
+        for mode in _MODES:
+            hidden = _hidden_dirs(mode)
+            for prefix in _CREW_PREFIXES:
+                for retired in legacy:
+                    assert _crew_path(prefix, retired) in hidden, (
+                        f"the legacy spelling {retired} is unmasked; a stale PAT copy would "
+                        "be readable by a sandboxed agent"
+                    )
+        # And the legacy spellings are NOT carved back to the backend — it reads only the
+        # state directory, so nothing legitimately needs them unmasked.
+        carved = sb.app_backend_visible_targets(sb.MD_NOTEBOOK_APP_NAME)
+        for prefix in _CREW_PREFIXES:
+            for retired in legacy:
+                assert _crew_path(prefix, retired) not in carved, (
+                    f"the legacy spelling {retired} was carved back to the backend; it must "
+                    "stay masked so a stale PAT copy cannot be read"
+                )
+
+    def test_renaming_the_app_dir_aside_cannot_redirect_a_pat_write(self, tmp_path, monkeypatch):
+        """The state directory cannot be renamed out from under its own mask.
+
+        A same-uid agent can write ``workspace/md-notebook`` — it holds the clone data — so
+        it can rename that tree aside and recreate it. Were the state directory nested there,
+        the rename would carry it out from under its mask and a later PAT write would land in
+        a directory a subsequent namespace does not mask. The state directory is a direct
+        child of the data-home root instead, so the rename leaves it where it was: the next
+        write publishes into the same masked directory, and nothing reaches either app tree.
+        """
+        from kiro_crew.apps.builtins.md_notebook import server
+
+        crew_home = tmp_path / "crew"
+        app_dir = crew_home / "workspace" / "md-notebook"
+        app_dir.mkdir(parents=True)
+        monkeypatch.setattr(server, "_HOME", None)
+        monkeypatch.setattr(server, "config_dir", lambda: crew_home)
+
+        server._write_pat_sync("ghp_before")
+        state_dir = crew_home / sb._MD_NOTEBOOK_STATE_DIR
+        assert (state_dir / "pat").read_text() == "ghp_before"
+
+        # The agent renames the app tree aside and recreates it.
+        moved = crew_home / "workspace" / "md-notebook-moved"
+        app_dir.rename(moved)
+        app_dir.mkdir()
+
+        server._write_pat_sync("ghp_after")
+
+        assert server._pat_file() == state_dir / "pat"
+        assert (state_dir / "pat").read_text() == "ghp_after"
+        for tree in (moved, app_dir):
+            leaked = [p for p in tree.rglob("*") if p.is_file()]
+            assert leaked == [], f"a PAT write reached the agent-writable tree {tree}: {leaked}"
+
+
+class TestLegacyStateMigratesIntoTheStateDir:
+    """The gateway moves a legacy state file (``workspace/md-notebook/{pat,…}`` or the
+    retired ``.state/``) into the top-level state dir — real filesystem, idempotent, fail-soft —
+    so an existing user's live PAT is not stranded at an uncarved legacy name."""
+
+    @pytest.fixture()
+    def server(self, tmp_path, monkeypatch):
+        from kiro_crew.apps.builtins.md_notebook import server
+
+        monkeypatch.setattr(server, "_HOME", tmp_path / "md-notebook")
+        return server
+
+    def test_a_legacy_pat_moves_into_state(self, server):
+        legacy = server._legacy_state_dir()
+        legacy.mkdir(parents=True)
+        (legacy / "pat").write_text("ghp_legacy")
+        (legacy / "vaults.json").write_text('[{"id": "v1"}]')
+        (legacy / "settings.json").write_text('{"autoSync": true}')
+
+        moved = server.migrate_legacy_state_into_state_dir()
+
+        state = server._state_dir()
+        assert (state / "pat").read_text() == "ghp_legacy"
+        assert (state / "vaults.json").read_text() == '[{"id": "v1"}]'
+        assert (state / "settings.json").read_text() == '{"autoSync": true}'
+        assert set(moved) == {str(state / n) for n in ("pat", "vaults.json", "settings.json")}
+        # The PAT lands owner-only.
+        if os.name == "posix":
+            assert os.stat(state / "pat").st_mode & 0o077 == 0
+
+    def test_migration_is_idempotent_and_never_clobbers_new_state(self, server):
+        legacy = server._legacy_state_dir()
+        legacy.mkdir(parents=True)
+        (legacy / "pat").write_text("ghp_stale_legacy")
+        # A newer PAT already written under the new layout must WIN over the stale legacy one.
+        state = server._state_dir()
+        state.mkdir(parents=True)
+        (state / "pat").write_text("ghp_current")
+
+        moved = server.migrate_legacy_state_into_state_dir()
+
+        assert (
+            state / "pat"
+        ).read_text() == "ghp_current", (
+            "the migration clobbered the current PAT with a stale legacy copy"
+        )
+        assert str(state / "pat") not in moved
+        # A second run is a no-op.
+        assert server.migrate_legacy_state_into_state_dir() == []
+
+    def test_migration_is_a_noop_with_no_legacy_state(self, server):
+        assert server.migrate_legacy_state_into_state_dir() == []
+
+    def test_a_bare_file_written_after_the_first_migration_is_never_laundered(self, server):
+        """One-shot: a bare file that appears AFTER the first migration is not promoted.
+
+        The materialiser plants only the state-dir targets, and the launcher's
+        ``isfile``-guarded mask does not cover an ABSENT bare leaf, so once the first pass
+        empties the bare names a sandboxed agent could write its own bare ``settings.json``
+        choosing the unattended ``git push`` target. Re-running the migration must NOT move
+        that agent-written file into the fenced state dir. The completion marker makes the
+        promotion loop one-shot.
+        """
+        state = server._state_dir()
+        # First boot: no legacy state at all, so the pass moves nothing but seals the marker.
+        assert server.migrate_legacy_state_into_state_dir() == []
+        marker = server._migration_marker_path()
+        assert marker.exists(), "the first migration did not write the completion marker"
+        # The state-dir settings target reads as the absent-equivalent stub.
+        assert (
+            server._is_absent_equivalent_state("settings.json", state / "settings.json")
+            or not (state / "settings.json").exists()
+        )
+
+        # An agent now writes a REAL bare settings.json choosing autoSync + a push target.
+        legacy = server._legacy_state_dir()
+        legacy.mkdir(parents=True, exist_ok=True)
+        (legacy / "settings.json").write_text('{"autoSync": true}')
+
+        moved = server.migrate_legacy_state_into_state_dir()
+
+        assert moved == [], "a bare file written after the first migration was laundered"
+        # The state-dir target is untouched — still the stub / absent, never the agent's file.
+        if (state / "settings.json").exists():
+            assert server._is_absent_equivalent_state(
+                "settings.json", state / "settings.json"
+            ), "the agent-written bare settings.json was promoted into the fenced state dir"
+
+    def test_a_failed_move_is_recorded_pending_and_retried_not_stranded(self, server, monkeypatch):
+        """A genuine legacy file that fails to move is retried, not sealed away.
+
+        A per-file rename failure (e.g. a Windows sharing violation) must not strand the
+        real credential at the bare name forever: the first pass records it in the marker's
+        ``pending`` map by content hash, and a later run retries THAT file and completes
+        the move.
+        """
+        legacy = server._legacy_state_dir()
+        legacy.mkdir(parents=True, exist_ok=True)
+        (legacy / "vaults.json").write_text('[{"id": "v1", "remoteUrl": "real"}]')
+        state = server._state_dir()
+
+        # First pass: force the vaults.json move to fail.
+        real_replace = server.replace_with_retry
+
+        def _flaky(src, dst, *a, **k):
+            if str(src).endswith("vaults.json"):
+                raise OSError("simulated sharing violation")
+            return real_replace(src, dst, *a, **k)
+
+        monkeypatch.setattr(server, "replace_with_retry", _flaky)
+        assert server.migrate_legacy_state_into_state_dir() == []
+
+        marker = server._migration_marker_path()
+        pending = server._read_migration_pending(marker)
+        assert "vaults.json" in pending, "a failed move was not recorded for retry"
+        assert pending["vaults.json"] == server._file_identity(legacy / "vaults.json")
+
+        # Later run with the lock cleared: the same content is retried and the move completes.
+        monkeypatch.setattr(server, "replace_with_retry", real_replace)
+        moved = server.migrate_legacy_state_into_state_dir()
+        assert moved == [str(state / "vaults.json")]
+        assert (state / "vaults.json").read_text().startswith('[{"id": "v1"')
+        assert server._read_migration_pending(marker) == {}, "pending did not clear after retry"
+
+    def test_a_pending_retry_ignores_an_agent_replacement_at_the_same_name(
+        self, server, monkeypatch
+    ):
+        """The scoped retry promotes only the recorded content, never an agent's replacement.
+
+        If, between the failed first pass and the retry, an agent unlinks the pending
+        legacy file and drops its own at the same bare name with DIFFERENT content (its own
+        push remote), its content hash differs from the recorded one. The retry must NOT
+        promote the agent's file — it is not the recorded legacy credential.
+        """
+        legacy = server._legacy_state_dir()
+        legacy.mkdir(parents=True, exist_ok=True)
+        (legacy / "vaults.json").write_text('[{"id": "legit"}]')
+        state = server._state_dir()
+
+        real_replace = server.replace_with_retry
+
+        def _flaky(src, dst, *a, **k):
+            if str(src).endswith("vaults.json"):
+                raise OSError("simulated sharing violation")
+            return real_replace(src, dst, *a, **k)
+
+        monkeypatch.setattr(server, "replace_with_retry", _flaky)
+        server.migrate_legacy_state_into_state_dir()
+
+        # Agent replaces the bare file with its own, different content (attacker remote).
+        (legacy / "vaults.json").unlink()
+        (legacy / "vaults.json").write_text('[{"id": "attacker", "remoteUrl": "evil"}]')
+
+        monkeypatch.setattr(server, "replace_with_retry", real_replace)
+        moved = server.migrate_legacy_state_into_state_dir()
+        assert moved == [], "an agent replacement at a pending name was promoted"
+        if (state / "vaults.json").exists():
+            assert server._is_absent_equivalent_state(
+                "vaults.json", state / "vaults.json"
+            ), "the agent's replacement vaults.json was laundered into the state dir"
+
+    def test_a_live_write_retires_a_pending_retry_so_a_cleared_pat_is_not_restored(
+        self, server, monkeypatch
+    ):
+        """A user clear must stick: a pending retry does not move the old PAT back over it.
+
+        If the legacy PAT move fails and is recorded pending, then the user clears the PAT
+        (an empty write, which reads as the absent-equivalent stub), a later migration must
+        NOT see that stub and restore the old token. The live write retires the pending
+        entry, so the clear is final.
+        """
+        legacy = server._legacy_state_dir()
+        legacy.mkdir(parents=True, exist_ok=True)
+        (legacy / "pat").write_text("ghp_old_real")
+        state = server._state_dir()
+
+        real_replace = server.replace_with_retry
+
+        def _flaky(src, dst, *a, **k):
+            if str(src).endswith("/pat"):
+                raise OSError("simulated sharing violation")
+            return real_replace(src, dst, *a, **k)
+
+        monkeypatch.setattr(server, "replace_with_retry", _flaky)
+        server.migrate_legacy_state_into_state_dir()
+        assert "pat" in server._read_migration_pending(server._migration_marker_path())
+
+        # The user clears the PAT: an empty (absent-equivalent) live write to the state dir.
+        monkeypatch.setattr(server, "replace_with_retry", real_replace)
+        server._write_state_staged_sync(state / "pat", "")
+        assert "pat" not in server._read_migration_pending(
+            server._migration_marker_path()
+        ), "the live clear did not retire the pending retry"
+
+        # Next migration must NOT restore the old token over the user's clear.
+        server.migrate_legacy_state_into_state_dir()
+        pat_bytes = (state / "pat").read_bytes() if (state / "pat").exists() else b""
+        assert pat_bytes == b"", "a pending retry restored a PAT the user had cleared"
+
+    def test_the_completion_marker_lives_outside_the_legacy_subtree(self, server):
+        """The one-shot marker must survive a rename of the agent-writable app subtree.
+
+        If the marker lived under the agent-renamable ``workspace/md-notebook``, an agent
+        could rename that subtree aside and recreate it with forged legacy files; the next
+        spawn would see no marker and reopen promotion. The marker therefore lives inside
+        the top-level state directory, outside the legacy subtree.
+        """
+        server.migrate_legacy_state_into_state_dir()
+        marker = server._migration_marker_path()
+        assert marker.exists(), "the first migration did not write the completion marker"
+        legacy = server._legacy_state_dir()
+        assert marker.parent == server._state_dir()
+        assert legacy not in marker.parents and legacy != marker.parent, (
+            "the completion marker lives inside the agent-renamable app subtree; renaming "
+            "that subtree would erase the one-shot and reopen promotion"
+        )
+
+    def test_a_retired_state_dir_copy_migrates(self, server):
+        """The retired ``workspace/md-notebook/.state/`` layout is a migration source too."""
+        retired = server._retired_state_dir()
+        retired.mkdir(parents=True)
+        (retired / "pat").write_text("ghp_from_retired_state")
+        (retired / "settings.json").write_text('{"autoSync": true}')
+
+        moved = server.migrate_legacy_state_into_state_dir()
+
+        state = server._state_dir()
+        assert set(moved) == {str(state / "pat"), str(state / "settings.json")}
+        assert (state / "pat").read_text() == "ghp_from_retired_state"
+        assert not (retired / "pat").exists(), "the retired copy was not moved"
+        assert server._read_pat_sync() == "ghp_from_retired_state"
+
+    def test_the_retired_state_dir_wins_over_a_bare_copy(self, server):
+        """Where both legacy layouts hold real content, the newer ``.state/`` copy lands and
+        the bare copy is left alone, still fenced by its own mask."""
+        legacy = server._legacy_state_dir()
+        retired = server._retired_state_dir()
+        retired.mkdir(parents=True)
+        (legacy / "pat").write_text("ghp_older_bare")
+        (retired / "pat").write_text("ghp_newer_state")
+
+        moved = server.migrate_legacy_state_into_state_dir()
+
+        state = server._state_dir()
+        assert moved == [str(state / "pat")]
+        assert (state / "pat").read_text() == "ghp_newer_state"
+        assert (legacy / "pat").read_text() == "ghp_older_bare"
+
+    def test_a_retired_state_dir_file_after_the_first_pass_is_never_laundered(self, server):
+        """The one-shot covers the retired ``.state/`` source as well as the bare names: a
+        file an agent drops there after the first pass is never promoted."""
+        assert server.migrate_legacy_state_into_state_dir() == []
+        retired = server._retired_state_dir()
+        retired.mkdir(parents=True)
+        (retired / "vaults.json").write_text('[{"id": "attacker", "remoteUrl": "evil"}]')
+
+        assert server.migrate_legacy_state_into_state_dir() == []
+        assert not (server._state_dir() / "vaults.json").exists()
+
+    def test_a_legacy_symlink_is_never_moved_into_the_state_dir(self, server, tmp_path):
+        """Renaming a legacy LINK would plant it inside the fenced directory, where the
+        backend would read whatever its referent holds. Only a regular file migrates."""
+        referent = tmp_path / "attacker-settings.json"
+        referent.write_text('{"autoSync": true}')
+        retired = server._retired_state_dir()
+        retired.mkdir(parents=True)
+        (retired / "settings.json").symlink_to(referent)
+
+        assert server.migrate_legacy_state_into_state_dir() == []
+        dst = server._state_dir() / "settings.json"
+        assert not dst.is_symlink() and not dst.exists()
+
+    def test_a_pending_retired_state_copy_is_retried_and_retired_by_a_live_write(
+        self, server, monkeypatch
+    ):
+        """A failed move from the retired ``.state/`` source is recorded under its own key,
+        and a live write retires it, so a user's clear is not undone by a later retry."""
+        retired = server._retired_state_dir()
+        retired.mkdir(parents=True)
+        (retired / "pat").write_text("ghp_old_real")
+        real_replace = server.replace_with_retry
+
+        def _flaky(src, dst, *a, **k):
+            if os.path.basename(os.path.dirname(str(src))) == ".state":
+                raise OSError("simulated sharing violation")
+            return real_replace(src, dst, *a, **k)
+
+        monkeypatch.setattr(server, "replace_with_retry", _flaky)
+        server.migrate_legacy_state_into_state_dir()
+        marker = server._migration_marker_path()
+        assert set(server._read_migration_pending(marker)) == {".state/pat"}
+
+        monkeypatch.setattr(server, "replace_with_retry", real_replace)
+        server._write_pat_sync("")
+        assert server._read_migration_pending(marker) == {}, "the live clear left it pending"
+        server.migrate_legacy_state_into_state_dir()
+        assert (server._state_dir() / "pat").read_bytes() == b""
+        assert (retired / "pat").read_text() == "ghp_old_real", "the stale copy was promoted"
+
+    def test_a_marker_cannot_name_a_source_the_migration_does_not_own(self, server):
+        """``pending`` keys outside the known source spellings are dropped on read, so a
+        forged or corrupted marker cannot steer the retry at an arbitrary path."""
+        marker = server._migration_marker_path()
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps({"pending": {"../../evil": "x", ".state/pat": "y"}}))
+        assert server._read_migration_pending(marker) == {".state/pat": "y"}
+
+    def test_a_clear_fails_closed_when_pending_retirement_cannot_persist(self, server, monkeypatch):
+        """A clear is not acknowledged if the pending retirement cannot be made durable.
+
+        If retirement could log-and-continue, api_pat would report a clear as succeeded
+        while a stale pending entry survived — and the next migration would restore the old
+        credential over the acknowledged clear. The write must RAISE instead, so the caller
+        never acknowledges a clear it could not make final.
+        """
+        legacy = server._legacy_state_dir()
+        legacy.mkdir(parents=True, exist_ok=True)
+        (legacy / "pat").write_text("ghp_old_real")
+        state = server._state_dir()
+        real_replace = server.replace_with_retry
+
+        def _flaky(src, dst, *a, **k):
+            if str(src).endswith("/pat"):
+                raise OSError("simulated sharing violation")
+            return real_replace(src, dst, *a, **k)
+
+        monkeypatch.setattr(server, "replace_with_retry", _flaky)
+        server.migrate_legacy_state_into_state_dir()
+        assert "pat" in server._read_migration_pending(server._migration_marker_path())
+
+        # The marker write (retirement) now fails; the clear must propagate, not ack.
+        monkeypatch.setattr(server, "replace_with_retry", real_replace)
+
+        def _boom_marker(*_a, **_k):
+            raise OSError("simulated marker persistence failure")
+
+        monkeypatch.setattr(server, "_write_migration_marker", _boom_marker)
+        with pytest.raises(OSError):
+            server._write_state_staged_sync(state / "pat", "")

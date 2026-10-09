@@ -231,26 +231,48 @@ _AUTH_STORE_STAGING_LEAF: str = "auth-store-staging"
 #: Named so the mask, the backend carve-out that lifts it, and the materialiser that
 #: gives it a mount target cannot drift apart on a literal.
 MD_NOTEBOOK_APP_NAME: str = "md-notebook"
-_MD_NOTEBOOK_STATE_LEAVES: tuple[str, ...] = (
-    f"workspace/{MD_NOTEBOOK_APP_NAME}/pat",
-    f"workspace/{MD_NOTEBOOK_APP_NAME}/vaults.json",
-    f"workspace/{MD_NOTEBOOK_APP_NAME}/settings.json",
-)
-#: The backend's write-staging directory, masked as a WHOLE DIRECTORY like ``whatsapp``.
-#: Every md-notebook state writer stages its temp file HERE and renames onto its target,
-#: because a temp staged BESIDE the target carries the real PAT bytes under a name the
-#: three leaf masks do not cover — and a SIGKILL between write and rename leaves that
-#: unmasked sibling readable by a same-uid sandboxed agent forever. A directory mask
-#: covers every name inside it, present and future, so the staging window and any crash
-#: orphan both stay masked.
+#: The md-notebook state DIRECTORY: ``pat``/``vaults.json``/``settings.json`` and the
+#: one-shot migration marker live INSIDE it, and every state write stages its temp inside
+#: it and renames that temp onto a target NAME inside it.
 #:
-#: A TOP-LEVEL leaf, for the same reason ``aws-control-staging`` is one: a mask covers the
-#: leaf, not its ancestors, so a staging dir under the agent-writable
-#: ``workspace/md-notebook`` could be renamed out from under its own mask and a later PAT
-#: write would publish through the replacement, unmasked, into a live agent's view. It
-#: stays on the same filesystem as the state files (both under the crew data home), so the
-#: publish rename is still atomic.
+#: A TOP-LEVEL leaf, a direct child of the crew data-home root, for the reason
+#: ``aws-control-staging`` is one: a mask covers the leaf, not its ancestors. A state
+#: directory under the agent-writable ``workspace/md-notebook`` could be renamed out from
+#: under its own mask by moving that parent aside, and a later PAT write would publish into
+#: a directory a subsequent namespace does not mask; directly under the root there is no
+#: agent-renamable ancestor to move. Masked as a WHOLE directory like
+#: ``apps/aws-control/data`` ("Whole DIRECTORY, not the leaf file, because an atomic write
+#: renames a sibling temp into place"): a per-file leaf mask is detached in a live agent's
+#: namespace when a publish renames over the entry it is mounted on, while a rename of an
+#: entry INSIDE a wholly-masked directory never touches the directory's own mount point.
+#: The temp and the target share this one directory on one mount, so the publish rename
+#: never raises ``EXDEV``.
 _MD_NOTEBOOK_STAGING_LEAF: str = f"{MD_NOTEBOOK_APP_NAME}-staging"
+_MD_NOTEBOOK_STATE_DIR: str = _MD_NOTEBOOK_STAGING_LEAF
+#: The basenames of the three state files that live inside :data:`_MD_NOTEBOOK_STATE_DIR`.
+#: Spelled as basenames (not full paths) because the directory mask covers them by
+#: construction; the materialiser and the backend path helpers join them onto the dir.
+_MD_NOTEBOOK_STATE_FILES: tuple[str, ...] = ("pat", "vaults.json", "settings.json")
+#: The full relative paths of the three state files, for the hardlink refusal and the
+#: per-file materialiser that gives each an absent-equivalent stub inside the masked dir.
+_MD_NOTEBOOK_STATE_LEAVES: tuple[str, ...] = tuple(
+    f"{_MD_NOTEBOOK_STATE_DIR}/{name}" for name in _MD_NOTEBOOK_STATE_FILES
+)
+#: The bare state-file spellings DIRECTLY under ``workspace/md-notebook/``, where an older
+#: build kept them. The gateway migrates real state out of them into
+#: :data:`_MD_NOTEBOOK_STATE_DIR`, but a copy at the bare name can still be on disk — left
+#: by a migration that could not move it — holding the real PAT. These spellings stay
+#: masked, like the ``~/.kirocrew`` and ``ledgers`` roots kept for stale on-disk state, so
+#: an upgraded host never exposes a stale credential. UNCARVED (never handed back to the
+#: backend): the backend reads and writes only the state directory.
+_MD_NOTEBOOK_RETIRED_STATE_LEAVES: tuple[str, ...] = tuple(
+    f"workspace/{MD_NOTEBOOK_APP_NAME}/{name}" for name in _MD_NOTEBOOK_STATE_FILES
+)
+#: The retired hidden subdirectory ``workspace/md-notebook/.state`` an older build kept the
+#: state files in. A second migration source beside the bare names, and masked as a WHOLE
+#: directory for the same reason they are: a copy left in it can hold the real PAT.
+#: UNCARVED, for the same reason.
+_MD_NOTEBOOK_RETIRED_STATE_DIR: str = f"workspace/{MD_NOTEBOOK_APP_NAME}/.state"
 
 #: Crew-home leaves with no legitimate in-sandbox reader — bind-masked in every mode.
 _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
@@ -350,17 +372,24 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # ``security.paths`` so the file tools refuse it too. All three, because each
     # one alone leaves a different path open.
     "work",
-    # The Notes state files below are OWNED by the md-notebook backend, which is itself
-    # a sandboxed spawn (`apps/backend.py`), so the mask alone would break the app: the
-    # registry write's final rename gets EPERM and attach/clone always fails.
-    # The backend spawn therefore passes them back as ``extra_visible_dirs`` via
-    # :func:`app_backend_visible_targets` — the mask still applies to every OTHER
-    # sandboxed process, which is the population it exists to fence.
-    *_MD_NOTEBOOK_STATE_LEAVES,
-    # The staging directory those three writers publish through. Masked as a whole
-    # DIRECTORY so the in-flight temp — which holds the same bytes as the leaves above,
-    # PAT included — and any crash orphan are covered at every name, present and future.
-    _MD_NOTEBOOK_STAGING_LEAF,
+    # The Notes state DIRECTORY, a top-level leaf masked as a WHOLE: ``pat``,
+    # ``vaults.json``, ``settings.json`` and the migration marker live inside it, and every
+    # state write stages its temp inside it and renames onto a name inside it, so neither
+    # the in-flight temp nor a crash orphan is ever at an unmasked name. A direct child of
+    # the data home so no agent-writable ancestor can be renamed to take it out from under
+    # this mask. The directory is OWNED by the md-notebook backend (itself a sandboxed
+    # spawn, `apps/backend.py`), so the blanket mask would break the app; the backend spawn
+    # passes it back as ``extra_visible_dirs`` via :func:`app_backend_visible_targets` —
+    # every OTHER sandboxed process keeps the mask.
+    _MD_NOTEBOOK_STATE_DIR,
+    # The bare state-file spellings DIRECTLY under ``workspace/md-notebook/``, and the
+    # retired ``workspace/md-notebook/.state`` directory, where older builds kept them. The
+    # gateway migrates real state out of both, but a copy left in either can still hold the
+    # real PAT. Kept masked (and UNCARVED: the backend reads only the state directory) so an
+    # upgraded host never exposes a stale credential, exactly as the
+    # ``ledgers``/``~/.kirocrew`` roots are kept for stale on-disk state.
+    *_MD_NOTEBOOK_RETIRED_STATE_LEAVES,
+    _MD_NOTEBOOK_RETIRED_STATE_DIR,
     # Browser session material. The extension token reaches the CLI through the
     # environment, never by ``open()``, so masking the file costs nothing; the other
     # four are retired leaves with no reader left in the tree. The LIVE browser paths
@@ -1093,11 +1122,16 @@ _APP_BACKEND_OWNED_LEAVES: dict[str, tuple[str, ...]] = {
     # the gateway execs next. The pointer stays masked; Dev Fleet moves the cutover to a
     # gateway-process route instead (``dev_fleet/gateway_routes.py``).
     MD_NOTEBOOK_APP_NAME: (
-        *_MD_NOTEBOOK_STATE_LEAVES,
-        # The writers stage here and rename onto the leaves above, so the backend needs
-        # this directory back too — carving out only the three targets would leave every
-        # state write failing on the masked staging dir instead of the masked leaf.
-        _MD_NOTEBOOK_STAGING_LEAF,
+        # The whole top-level state directory, carved back as a unit. The backend reads the
+        # three state files and the migration marker from inside it, and publishes new
+        # content by staging a temp INSIDE it and renaming that temp onto a name inside it,
+        # so it needs the directory itself handed back — the mask still fences every OTHER
+        # sandboxed process. The marker must be readable here so a live write can retire a
+        # pending migration retry; without it a user's PAT clear could be undone by the
+        # next boot's retry. The bare state-file spellings and the retired ``.state``
+        # directory are NOT here: the backend reads and writes only this directory, so they
+        # stay masked (uncarved) for stale copies left under ``workspace/md-notebook/``.
+        _MD_NOTEBOOK_STATE_DIR,
     ),
 }
 
@@ -1695,12 +1729,12 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # First created by the first member-born session's vouch, so a sandbox spawned
     # before then would otherwise see the directory appear unmasked.
     "vouched-executions",
-    # md-notebook's write-staging directory, for the same reason and by the same rule: a
-    # direct child of the data home, so the plain ``mkdir`` above is sound. Left to lazy
+    # md-notebook's state directory, for the same reason and by the same rule: a direct
+    # child of the data home, so the plain ``mkdir`` above is sound. Left to lazy
     # creation, a sandbox spawned before the first state write finds it absent, the
     # ``sensitive_dirs`` loop skips it, and the directory the backend creates later shows
-    # up INSIDE that running sandbox — with the PAT staging window in it.
-    _MD_NOTEBOOK_STAGING_LEAF,
+    # up INSIDE that running sandbox — with the PAT in it.
+    _MD_NOTEBOOK_STATE_DIR,
     # The live-target stub's staging directory, by the same rule: created before the
     # first spawn so the mask has a mount target, and the temp the materialiser stages
     # in it is never visible to a running namespace.
@@ -1800,15 +1834,13 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     "backup",
 )
 
-#: The masked md-notebook leaves materialised before a namespace spawn, and what each
-#: holds. This is the per-leaf argument the sibling-gap note above asks for: ``mount(2)``
-#: cannot mask an absent path and the ``sensitive_files`` loop guards on ``isfile``, so an
-#: ABSENT leaf gets NO mask, and a namespace that outlives the leaf's later creation reads
-#: the real bytes — the PAT among them. That was vacuous while nothing could create these
-#: files on a sandboxed host; the backend carve-out
-#: (:func:`app_backend_visible_targets`) makes creation possible, so the mask has to be
-#: made non-vacuous first. Each document is its reader's absent-equivalent, and the
-#: md-notebook backend is the only reader:
+#: The md-notebook state files materialised before a namespace spawn, and what each holds.
+#: They sit inside the wholly-masked state directory, whose own mount target comes from
+#: :data:`_CREW_PRECREATE_HIDDEN_DIR_LEAVES`; each file still gets a regular-file occupant
+#: so a link or special file at a state name is refused before launch (see
+#: :func:`_materialize_md_notebook_mask_targets`). Creating them is safe only because each
+#: document is its reader's absent-equivalent, and the md-notebook backend is the only
+#: reader:
 #:
 #:   * ``vaults.json`` — ``_read_vaults_sync`` returns ``[]`` for absent (OSError) and
 #:     for ``[]`` alike;
@@ -1821,9 +1853,9 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
 #: view is the pinned empty MASK file either way, never this document, which is exactly
 #: the mask's intent.
 _MD_NOTEBOOK_PRECREATE_CONTENT: dict[str, bytes] = {
-    f"workspace/{MD_NOTEBOOK_APP_NAME}/pat": b"",
-    f"workspace/{MD_NOTEBOOK_APP_NAME}/vaults.json": b"[]\n",
-    f"workspace/{MD_NOTEBOOK_APP_NAME}/settings.json": b"{}\n",
+    f"{_MD_NOTEBOOK_STATE_DIR}/pat": b"",
+    f"{_MD_NOTEBOOK_STATE_DIR}/vaults.json": b"[]\n",
+    f"{_MD_NOTEBOOK_STATE_DIR}/settings.json": b"{}\n",
 }
 assert set(_MD_NOTEBOOK_PRECREATE_CONTENT) == set(_MD_NOTEBOOK_STATE_LEAVES)
 
@@ -2047,19 +2079,24 @@ _CREW_ALIAS_TOLERATED_LEAVES: frozenset[str] = frozenset({".env"})
 #: Masked leaves where a planted link at an INTERMEDIATE component DEGRADES instead of
 #: refusing, because a sibling control already answers that case.
 #:
-#: Derived from :data:`_MD_NOTEBOOK_PRECREATE_CONTENT`, not hand-listed, so the two cannot
-#: drift. Those leaves are the ones :func:`carveout_chain_has_planted_link` governs, and its
-#: docstring states the reasoning this set defers to: withholding the CARVE-OUT is the
-#: proportionate response, since while the chain holds a planted link the owning backend
-#: cannot write that state at all, so a leaf left unmasked has nothing to expose. Refusing
-#: the spawn instead would let one optional app's on-disk layout take every sandboxed
-#: process on the host down with it -- an operator who symlinks ``workspace/`` to another
-#: disk would find no agent could start, over a file they may never have created.
+#: The md-notebook state entries in :data:`_CREW_HIDDEN_LEAVES` that sit under the
+#: agent-writable ``workspace/md-notebook/``: the bare-name spellings and the retired
+#: ``.state`` directory. Both are legacy-only — the live state directory is a direct child
+#: of the data home and has no intermediate component to link, so it is not here and a
+#: link AT it refuses like any other top-level leaf. These legacy entries degrade rather
+#: than refuse because nothing writes them any more and the gateway's
+#: :func:`_md_notebook_degraded_mask_dirs` masks the whole ``workspace/md-notebook/`` tree
+#: when its chain holds a link, so a stale copy under such a chain is hidden either way.
+#: Refusing the spawn instead would let one optional app's on-disk layout take every
+#: sandboxed process on the host down with it — an operator who symlinks ``workspace/`` to
+#: another disk would find no agent could start, over a file they may never have created.
 #:
 #: Every OTHER multi-component masked leaf refuses, because no such compensating control
 #: exists for it: nothing withholds anything when ``apps/aws-control`` is a link, so the
 #: mask binds the referent while the writable alias name persists.
-_CREW_ALIAS_CHAIN_DEGRADE_LEAVES: frozenset[str] = frozenset(_MD_NOTEBOOK_PRECREATE_CONTENT)
+_CREW_ALIAS_CHAIN_DEGRADE_LEAVES: frozenset[str] = frozenset(
+    {_MD_NOTEBOOK_RETIRED_STATE_DIR} | set(_MD_NOTEBOOK_RETIRED_STATE_LEAVES)
+)
 
 #: Masked leaves where an extra HARD LINK refuses the spawn rather than warning.
 #:
@@ -2120,6 +2157,10 @@ _CREW_HARDLINK_REFUSED_LEAVES: frozenset[str] = frozenset(
         *(f"{AUTH_SQLITE_DB}{suffix}" for suffix in AUTH_SQLITE_SIDECAR_SUFFIXES),
         ".env",
         f"workspace/{MD_NOTEBOOK_APP_NAME}/pat",
+        # The migration moves the bare PAT into the top-level state directory, so a hardlink
+        # alias made against the PAT before the move must be caught at the new location too;
+        # the bare entry above stays, for a host that has not migrated yet.
+        _MD_NOTEBOOK_STATE_LEAVES[0],
         "ops_mission_control_secrets.json",
         "browser-cookies.txt",
         "playwright-storage-state.json",
@@ -3569,8 +3610,9 @@ def _masked_leaf_alias_search_hint(target: str) -> str:
     # holding a space otherwise turns the remedy into a two-directory search that answers a
     # different question without erroring, so it has to survive being pasted.
     # The search directory is the DATA HOME, not the leaf's own parent. Every entry in
-    # _CREW_HARDLINK_REFUSED_LEAVES but one is a root-level name, for which the two
-    # coincide; ``workspace/<md-notebook>/pat`` is the exception, and using its parent there
+    # _CREW_HARDLINK_REFUSED_LEAVES but the md-notebook PAT spellings is a root-level name,
+    # for which the two coincide; ``workspace/<md-notebook>/pat`` and
+    # ``md-notebook-staging/pat`` are the exceptions, and using their parent there
     # would search one app's state directory while the sentence below promises the data home,
     # so a second name anywhere else under the home would report as absent. Strip whichever
     # leaf this target ends with to recover the home the caller was iterating.
@@ -3968,21 +4010,23 @@ def live_target_pointer_unfitness() -> LiveTargetUnfitness | None:
 
 
 def _md_notebook_degraded_mask_dirs() -> list[str]:
-    """The md-notebook state directories to mask WHOLESALE because the app is degraded.
+    """The legacy md-notebook directories to mask WHOLESALE because their chain is linked.
 
-    Normally only the three secret leaves are masked, and that is deliberate: the same
-    directory holds the vault clone data, which agents are meant to read. Masking it
-    wholesale on a healthy host would hide the user's notes from every agent — the app's
-    whole purpose.
+    Normally ``workspace/md-notebook/`` is NOT masked as a whole, and that is deliberate: it
+    holds the vault clone data, which agents are meant to read. Only the legacy state
+    spellings inside it (the bare names and the retired ``.state`` directory) are masked,
+    because the live state lives in the top-level state directory instead. Masking the app
+    directory wholesale on a healthy host would hide the user's notes from every agent —
+    the app's whole purpose.
 
-    When a component of the chain is a planted link the calculus inverts. The carve-out is
-    withheld under this same predicate, so the backend cannot write there and the app is
-    already non-functional for that root; hiding the directory costs nothing that still
-    works. What it buys is the one exposure skipping leaves behind: a legacy staging orphan
-    holding real PAT bytes that :func:`_sweep_one_md_notebook_state_dir` cannot delete
-    through a link, and that the three leaf masks do not cover because its name is neither
-    ``pat`` nor a state file. A directory mask covers every name inside it, orphans
-    included.
+    When a component of its chain is a planted link the calculus inverts.
+    :func:`_sweep_one_md_notebook_state_dir` refuses to descend such a chain, so a legacy
+    staging orphan holding real PAT bytes survives there unswept — and its name is neither a
+    bare state file nor ``.state``, so no legacy-name mask covers it. Masking the whole
+    ``workspace/md-notebook/`` directory covers that orphan, the bare state spellings and
+    the retired ``.state`` directory at once. The cost is that this root's clone tree is
+    hidden from sandboxed processes until the operator replaces the link with a real
+    directory; fail-safe over-hiding is the right trade on a tree this process cannot verify.
 
     Masking is fail-safe in the direction that matters: the launcher binds an empty
     directory over the resolved path INSIDE the namespace only, so a link pointing
@@ -4001,15 +4045,14 @@ def _md_notebook_degraded_mask_dirs() -> list[str]:
     except Exception:  # pragma: no cover - defensive
         logger.debug("could not resolve $HOME for the md-notebook mask")
     for root in dict.fromkeys(roots):
-        state_dir = os.path.join(root, *_MD_NOTEBOOK_STATE_COMPONENTS)
-        # Ask the predicate about a LEAF, exactly as the carve-out filter does, not about
-        # the directory: it judges a path's PARENT chain, so passing the directory would
-        # miss a link at the directory itself — the very case the sweep's final-component
-        # refusal leaves unswept. Sharing the input shape keeps "withheld" and "masked"
-        # literally the same decision rather than two that merely agree today.
-        probe = os.path.join(state_dir, os.path.basename(_MD_NOTEBOOK_STATE_LEAVES[0]))
+        app_dir = os.path.join(root, *_MD_NOTEBOOK_STATE_COMPONENTS)
+        # Ask the predicate about a LEAF inside the directory, not about the directory: it
+        # judges a path's PARENT chain, so passing the directory would miss a link at the
+        # directory itself — the very case the sweep's final-component refusal leaves
+        # unswept.
+        probe = os.path.join(app_dir, os.path.basename(_MD_NOTEBOOK_RETIRED_STATE_LEAVES[0]))
         if carveout_chain_has_planted_link(probe):
-            dirs.append(state_dir)
+            dirs.append(app_dir)
     return dirs
 
 
@@ -4069,9 +4112,11 @@ def _sweep_legacy_md_notebook_temps() -> list[str]:
     return removed
 
 
-#: The components between a crew data home and the md-notebook state directory. The
-#: sweep descends them ONE AT A TIME from the home, so each name is resolved by the
-#: kernel inside a directory this process already holds open.
+#: The components between a crew data home and the md-notebook APP directory —
+#: ``workspace/md-notebook`` — DIRECTLY under which legacy bare state files and their
+#: ``*.tmp`` orphans can sit (staged there by an older build that renamed beside its
+#: target). The sweep descends these components ONE AT A TIME from the home, so each name
+#: is resolved by the kernel inside a directory this process already holds open.
 _MD_NOTEBOOK_STATE_COMPONENTS: tuple[str, ...] = ("workspace", MD_NOTEBOOK_APP_NAME)
 
 
@@ -4469,21 +4514,18 @@ def _sweep_one_md_notebook_state_dir(root: str) -> list[str]:
 
 
 def _materialize_md_notebook_mask_targets(established: list[str] | None = None) -> list[str]:
-    """Create md-notebook's absent state files and staging dir so their masks can mount.
+    """Create md-notebook's absent state files inside the masked state directory.
 
-    The NESTED counterpart to :func:`_materialize_maskable_dirs`, whose plain ``mkdir``
-    is sound only for a DIRECT child of the data home. These leaves sit under
-    ``workspace/md-notebook/``, and that restriction names exactly why the difference
-    matters: the intermediate components are agent-writable, so a RESOLVING link planted
-    at one of them would land the materialised files under an attacker-chosen tree while
-    the launcher masks the lexical path. Every chain this function walks therefore goes
-    through :func:`atomic_write.refuse_linked_parent` BEFORE any
-    ``mkdir``, because ``mkdir`` itself follows a planted link.
-
-    Closes the sibling gap named at :data:`_CREW_PRECREATE_READONLY_DIR_LEAVES`: the
-    ``sensitive_files`` mask loop guards on ``isfile``, so an ABSENT leaf gets no mask at
-    all. :data:`_MD_NOTEBOOK_PRECREATE_CONTENT` carries the per-leaf absent-equivalence
-    argument that gap note requires.
+    The per-file companion to :func:`_materialize_maskable_dirs`, which creates the
+    top-level state directory itself (a direct child of the data home, so its plain
+    ``mkdir`` is sound) and so gives the whole-directory mask its mount target. This
+    function gives each of the three state files inside it a REGULAR-FILE occupant holding
+    its absent-equivalent document, so the backend reads a defined "no state" and a link or
+    special file at a state name is refused before launch rather than left for a publish to
+    meet. Every chain it walks still goes through :func:`atomic_write.refuse_linked_parent`
+    BEFORE any ``mkdir``, because ``mkdir`` itself follows a planted link, so a stub can
+    never land under a tree a link chose. :data:`_MD_NOTEBOOK_PRECREATE_CONTENT` carries
+    the per-leaf absent-equivalence argument.
 
     Runs on the Linux spawn path only, at the same site as
     :func:`_materialize_sealable_ceilings`; the macOS profile needs nothing here because
@@ -4506,26 +4548,20 @@ def _materialize_md_notebook_mask_targets(established: list[str] | None = None) 
     if not os.path.isdir(root):
         return created
 
-    # The staging DIRECTORY is not created here: it is a direct child of the data home, so
+    # The state DIRECTORY is not created here: it is a direct child of the data home, so
     # ``_materialize_maskable_dirs`` above already covers it under its own rule. The legacy
     # sweep is not here either — it must run on the macOS path too, so both launch sites
     # call it directly.
     for leaf, content in _MD_NOTEBOOK_PRECREATE_CONTENT.items():
         target = os.path.join(root, leaf)
-        # A link planted at an intermediate component means this process cannot tell which
-        # directory the write would reach, so the leaf is SKIPPED rather than materialised —
-        # and the spawn proceeds. Refusing here would let one optional app's on-disk layout
-        # take every sandboxed process on the host down with it: an operator who symlinks
-        # ``workspace/`` to another disk would find no agent could start, over a Notes file
-        # they may never have created.
-        #
-        # Skipping is safe only because it is keyed off the SAME predicate that withholds
-        # the carve-out (:func:`carveout_chain_has_planted_link`, applied in
-        # :func:`app_backend_visible_targets`). While the condition holds the backend cannot
-        # write this state at all, so a leaf left unmaterialised — and therefore unmasked —
-        # has nothing to expose. The two must never be decided separately: granting the
-        # carve-out while skipping materialisation is exactly the hole this function exists
-        # to close, which is why a test pins them together.
+        # A link in the chain means this process cannot tell which directory the write
+        # would reach, so the leaf is SKIPPED rather than materialised. The predicate is
+        # the one the carve-out filter uses (:func:`carveout_chain_has_planted_link`), and
+        # both trust the layout above the data home; below it the only component is the
+        # state directory itself, and a link there refuses the spawn in
+        # :func:`_materialize_maskable_dirs` (which runs first) and in the hidden-leaf alias
+        # pass, so no namespace launches with the carve-out granted over a linked state
+        # directory. The backend's own writer refuses the same linked chain.
         if carveout_chain_has_planted_link(target):
             continue
         if os.path.exists(target):
@@ -4585,6 +4621,21 @@ def _materialize_md_notebook_mask_targets(established: list[str] | None = None) 
             # Validated and accepted, so established on the same footing as one this
             # pass published itself.
             _note_established(established, target)
+    # Run the legacy-state migration here, gateway-side, BEFORE this spawn's child execs —
+    # so a genuine legacy file is rescued and the one-shot is sealed before ANY sandboxed
+    # agent (this app's or another's) gets a shell to write a legacy name. Running it only
+    # when the Notes backend spawns would leave a window on a fresh host where Notes is
+    # disabled by default: an agent in some other app's namespace could write a bare
+    # settings.json the first Notes enable would then promote. The migration is idempotent
+    # and marker-gated, so running it on every spawn costs one stat after the first pass.
+    # Lazy import, so loading this module does not pull the Notes backend and its aiohttp
+    # chain in. Fail-soft — the migration must never fail a spawn.
+    try:
+        from kiro_crew.apps.builtins.md_notebook import server as _md_server
+
+        _md_server.migrate_legacy_state_into_state_dir()
+    except Exception:  # pragma: no cover - defensive; a spawn must not fail on this
+        logger.warning("md-notebook state migration raised during spawn prep", exc_info=True)
     return created
 
 

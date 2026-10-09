@@ -127,7 +127,8 @@ _SENSITIVE_HOME_DIRS: list[str] = [
     # from under the gate.
     *host_auth.credential_leaves(),
     # (The Notes builtin's GitHub PAT lives under the crew data-home at
-    # ``<prefix>/workspace/md-notebook/pat``; it is added below via
+    # ``<prefix>/md-notebook-staging/pat``, with legacy copies fenced at
+    # ``<prefix>/workspace/md-notebook/pat``; both are added below via
     # ``_CREW_SECRET_LEAVES`` so BOTH ``.kiro/crew`` and the legacy ``.kirocrew``
     # data-home are covered — ``config_dir()`` can resolve to either.)
     # Enterprise SSO cookie store. The public core ships no bundled SSO
@@ -223,8 +224,10 @@ _CREW_SECRET_LEAVES: list[str] = [
     # neither read nor overwrite them through file tools. The Meetings backend
     # opens this directory directly, so its save/overlay/revert flow is unaffected.
     "apps/meetings/data/edits",
-    # The Notes builtin stores a GitHub Personal Access Token here so it can
-    # push a vault. Owner-only mode (0600) does not isolate another process
+    # An older build of the Notes builtin stored its GitHub Personal Access Token
+    # here; the live copy sits in ``md-notebook-staging`` below, and this spelling
+    # stays fenced for a copy the migration could not move. Owner-only mode (0600)
+    # does not isolate another process
     # running as the same UID, and the token is a live bearer credential for the
     # user's repositories, so it belongs behind the shared floor like every other
     # credential store. The app's own backend opens it directly rather than
@@ -252,28 +255,35 @@ _CREW_SECRET_LEAVES: list[str] = [
     # add``/``commit``/``push`` against. A prompt-injected agent that could
     # rewrite this file would repoint a vault at an unrelated repository and have
     # the app commit and push work from it outside the hook controls, so the
-    # agent must not be able to write it. The app's own backend opens it directly
-    # rather than through this gate, so it keeps working.
+    # agent must not be able to write it. An older build kept it at this bare
+    # spelling; the live copy is in ``md-notebook-staging`` below, and this one
+    # stays fenced for a copy the migration could not move.
     "workspace/md-notebook/vaults.json",
     # The Notes builtin's sync settings. ``autoSync`` here is the bit that
     # AUTHORIZES the background loop's unattended ``git push`` (using the
     # app's stored PAT), and ``autoSyncMins`` sets its cadence. A prompt-injected
     # agent that could write this file would flip on unattended pushing without
     # the operator's consent — the same escalation the ``vaults.json`` entry
-    # above guards against, one step earlier. The user toggles it through the
-    # HMAC-gated ``PUT /api/settings``; the app's own backend opens the file
-    # directly rather than through this gate, so it keeps working.
+    # above guards against, one step earlier. An older build kept it at this bare
+    # spelling; the live copy is in ``md-notebook-staging`` below, and this one
+    # stays fenced for a copy the migration could not move.
     "workspace/md-notebook/settings.json",
-    # The Notes builtin's write-staging directory. Every state writer above stages
-    # its temp file in here before renaming onto its target, so during a write —
-    # and after a crash between write and rename — a file in this directory holds
-    # the same bytes as the leaves above, PAT included. Classified as the whole
-    # DIRECTORY (like ``whatsapp``) so every temp name, present and future, is
-    # covered. A TOP-LEVEL leaf, not one under ``workspace/md-notebook``, so an
-    # agent-writable ancestor cannot be renamed out from under it. The app's own
-    # backend opens it directly rather than through this gate, so writes keep
-    # working.
+    # The Notes builtin's state DIRECTORY. The three state files —
+    # ``pat``/``vaults.json``/``settings.json`` — and the one-shot migration marker live
+    # INSIDE it, and every state writer stages its temp file in here before renaming onto
+    # its target, so during a write — and after a crash between write and rename — any
+    # file in this directory can hold the live PAT. Classified as the whole DIRECTORY (like
+    # ``whatsapp``) so every name inside it, present and future, is fenced. A TOP-LEVEL
+    # leaf, not one under ``workspace/md-notebook``, so an agent-writable ancestor cannot be
+    # renamed out from under it. The app's own backend opens it directly rather than
+    # through this gate, so reads and writes keep working.
     "md-notebook-staging",
+    # The retired state DIRECTORY ``workspace/md-notebook/.state/`` an older build kept the
+    # three state files in. Nothing writes it, but the gateway migrates real state out of
+    # it, and a copy left behind can still hold the PAT, so it stays fenced as a whole
+    # directory — as the bare spellings above
+    # (``workspace/md-notebook/{pat,vaults.json,settings.json}``) do for the same reason.
+    "workspace/md-notebook/.state",
     # Where the sandbox launcher stages the live-target pointer's absent-equivalent
     # stub before linking it into place. Classified as the whole DIRECTORY so the
     # in-flight temp is never a visible, linkable name: a second hard link to that

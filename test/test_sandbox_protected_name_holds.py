@@ -321,7 +321,18 @@ class TestLeafOnlyPopulationIsRecorded:
     #: launch fingerprints; ``mcp/resolved`` holds executables substituted for an
     #: approved launch. Each sits beside writable siblings, so no parent stand-in
     #: can hold it.
-    EXPECTED: dict[str, int] = {"standard": 265, "cc": 272, "strict": 273}
+    #:
+    #: One directory landed since, three entries per tier:
+    #:
+    #: * ``workspace/md-notebook/.state`` -- the Notes builtin's RETIRED state directory,
+    #:   which an older build kept ``pat`` / ``vaults.json`` / ``settings.json`` in; it
+    #:   stays masked for a copy the migration left behind. It is a mask over the
+    #:   DIRECTORY, so it holds every name inside it for the namespace lifetime; it is
+    #:   leaf-only only in this gate's sense that its OWN parent is not masked, and it
+    #:   cannot be -- ``workspace/md-notebook`` is the user's visible notes tree and must
+    #:   stay live. Same category as ``auth-store-staging``: a masked directory at a spot
+    #:   whose parent no stand-in can hold.
+    EXPECTED: dict[str, int] = {"standard": 268, "cc": 275, "strict": 276}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

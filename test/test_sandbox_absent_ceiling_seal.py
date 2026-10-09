@@ -983,8 +983,11 @@ class TestAMaskedCredentialLeafRefusesASecondHardLink:
             "token_signing.key",
             # refresh-token chain state; a read continues a session
             "refresh_chains.json",
-            # live GitHub PAT
+            # live GitHub PAT, at the bare pre-migration name
             "workspace/md-notebook/pat",
+            # the same PAT after the one-shot migration moves it into the masked top-level
+            # state dir; a pre-move hardlink alias must still be caught at the new name
+            "md-notebook-staging/pat",
             # named secrets store
             "ops_mission_control_secrets.json",
             # channel tokens
@@ -1005,10 +1008,22 @@ class TestAMaskedCredentialLeafRefusesASecondHardLink:
     def test_the_refused_set_names_only_masked_leaves(self):
         """An entry outside ``_CREW_HIDDEN_LEAVES`` would refuse over a path nothing masks.
 
-        A test rather than a module-level ``assert``, for the reason the tolerated set's own
-        invariant gives: ``python -O`` strips an assert.
+        A leaf counts as masked when it is a hidden leaf itself OR sits inside a hidden
+        DIRECTORY leaf — ``md-notebook-staging/pat`` is masked by the whole state-directory
+        mask, not by a per-file entry, and the directory mask fences every name
+        inside it just the same. A test rather than a module-level ``assert``, for the reason
+        the tolerated set's own invariant gives: ``python -O`` strips an assert.
         """
-        stray = sorted(sandbox._CREW_HARDLINK_REFUSED_LEAVES - set(sandbox._CREW_HIDDEN_LEAVES))
+        hidden = set(sandbox._CREW_HIDDEN_LEAVES)
+
+        def _masked(leaf: str) -> bool:
+            if leaf in hidden:
+                return True
+            # Covered when any ancestor directory is a hidden leaf.
+            parts = leaf.split("/")
+            return any("/".join(parts[:i]) in hidden for i in range(1, len(parts)))
+
+        stray = sorted(leaf for leaf in sandbox._CREW_HARDLINK_REFUSED_LEAVES if not _masked(leaf))
         assert not stray, f"refused on a hard link but not masked: {stray}"
 
     def test_the_sqlite_sidecars_come_from_the_shared_suffix_constant(self):
@@ -1804,7 +1819,9 @@ class TestACredentialLeafBehindALinkedComponentIsNotRefused:
         (victim / "/".join(parts[1:-1])).mkdir(parents=True, exist_ok=True)
         target = victim / "/".join(parts[1:])
         target.write_bytes(b"secret")
-        os.link(target, victim / "second-name")
+        # A unique alias name per leaf: two multi-component leaves can share a first
+        # component, so a single ``second-name`` would collide on the second plant.
+        os.link(target, victim / f"second-name-{leaf.replace('/', '-')}")
         assert target.stat().st_nlink == 2
         planted = crew_home / parts[0]
         if planted.is_symlink():
@@ -2207,10 +2224,11 @@ class TestALinkedComponentBelowTheDataHomeRefuses:
     def test_the_md_notebook_leaves_degrade_instead_of_refusing(self, crew_home, tmp_path, caplog):
         """Matching the sibling control rather than overriding it.
 
-        ``carveout_chain_has_planted_link`` withholds the carve-out for exactly these
-        leaves, and while it does the backend cannot write that state, so an unmasked leaf
-        has nothing to expose. Refusing here instead would let one optional app's layout
-        take every sandboxed process on the host down with it. Degrading still REPORTS.
+        These are the LEGACY md-notebook spellings under ``workspace/md-notebook/``: nothing
+        writes them, and ``_md_notebook_degraded_mask_dirs`` masks that whole directory when
+        its chain is linked, so a stale copy stays hidden either way. Refusing here instead
+        would let one optional app's layout take every sandboxed process on the host down
+        with it. Degrading still REPORTS.
         """
         victim = tmp_path / "workspace-elsewhere"
         victim.mkdir()
@@ -2227,11 +2245,15 @@ class TestALinkedComponentBelowTheDataHomeRefuses:
             "passes through a component that is a link" in r.getMessage() for r in caplog.records
         ), "degrading must not be silent"
 
-    def test_the_degrade_set_is_derived_from_the_carveout_leaves(self):
-        """Hand-listing it is how the two would drift apart."""
+    def test_the_degrade_set_is_exactly_the_legacy_md_notebook_spellings(self):
+        """Hand-listing it is how the set would drift from the legacy constants. The live
+        state directory is NOT in it: a top-level leaf has no intermediate component to
+        degrade over, so a link at it refuses like any other top-level leaf."""
         assert sandbox._CREW_ALIAS_CHAIN_DEGRADE_LEAVES == frozenset(
-            sandbox._MD_NOTEBOOK_PRECREATE_CONTENT
+            {sandbox._MD_NOTEBOOK_RETIRED_STATE_DIR}
+            | set(sandbox._MD_NOTEBOOK_RETIRED_STATE_LEAVES)
         )
+        assert sandbox._MD_NOTEBOOK_STATE_DIR not in sandbox._CREW_ALIAS_CHAIN_DEGRADE_LEAVES
         assert sandbox._CREW_ALIAS_CHAIN_DEGRADE_LEAVES <= set(sandbox._CREW_HIDDEN_LEAVES)
 
 

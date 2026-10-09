@@ -194,7 +194,13 @@ def _url_payload_command(n: int) -> str:
 #: helper strips a local-drive namespace prefix and a default-stream suffix, and
 #: ``_candidate_forms`` resolves the folded spelling while keeping the raw one as a
 #: candidate. No target, no matching rule and no threshold moved.
-_PACKAGE_LINE_BUDGET = 28_572
+#:
+#: Raised for the Notes builtin's state classification in ``paths.py``: the retired
+#: ``workspace/md-notebook/.state`` directory leaf added to ``_CREW_SECRET_LEAVES`` beside
+#: the top-level ``md-notebook-staging`` state directory, plus the classification comments
+#: that record why the live directory is top-level and why each legacy spelling stays
+#: fenced. Those are ten lines the gate cannot avoid.
+_PACKAGE_LINE_BUDGET = 28_582
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

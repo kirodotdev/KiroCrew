@@ -4,11 +4,13 @@ Ported from the app's Node backend. The gateway proxies
 ``/apps/md-notebook/api/*`` to this process, preserving the ``/api/`` prefix, so
 the routes below are exactly the paths the UI calls.
 
-State layout (overridable via ``MD_NOTEBOOK_HOME`` for tests):
+State layout (the clone root follows ``MD_NOTEBOOK_HOME`` when it is set; the state
+files never do):
 
-    <home>/vaults.json      vault descriptors (no secrets)
-    <home>/pat              GitHub token, chmod 0600
-    <home>/vaults/<id>/     vaults this app cloned itself
+    <crew-home>/md-notebook-staging/vaults.json   vault descriptors (no secrets)
+    <crew-home>/md-notebook-staging/settings.json sync settings
+    <crew-home>/md-notebook-staging/pat           GitHub token, chmod 0600
+    <home>/vaults/<id>/                           vaults this app cloned itself
 
 Two kinds of vault: one this app cloned into ``<home>/vaults/``, and one
 "attached" in place — a folder the user also edits with Obsidian, an editor, or
@@ -20,12 +22,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import ntpath
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -40,7 +44,7 @@ from kiro_crew import hooks, platform_compat, security
 from kiro_crew.apps.builtins.md_notebook import git_ops
 from kiro_crew.apps.builtins.md_notebook import notes as notes_mod
 from kiro_crew.apps.proxy_auth import raw_request_target, verify_proxy_request
-from kiro_crew.atomic_write import refuse_linked_parent, replace_with_retry
+from kiro_crew.atomic_write import atomic_write, refuse_linked_parent, replace_with_retry
 from kiro_crew.config.paths import config_dir
 from kiro_crew.constants import WINDOWS_DEVICE_STEMS
 from kiro_crew.loop_lock import LoopBoundLock
@@ -52,12 +56,39 @@ logger = logging.getLogger(__name__)
 PORT = int(os.environ.get("PORT", 9137))
 APP_NAME = os.environ.get("KIROCREW_APP_NAME", "md-notebook")
 
-#: The state writers' staging directory, a TOP-LEVEL leaf in the crew data home. Must stay
-#: byte-identical to ``sandbox._MD_NOTEBOOK_STAGING_LEAF``, which is what masks it from the
-#: agent and hands it back to this backend's own spawn — a mismatch would silently stage
-#: PAT bytes outside the mask. Spelled here rather than imported so this app backend does
-#: not pull the sandbox module into its own process; a test pins the two together.
-_STAGING_LEAF = "md-notebook-staging"
+#: The LITERAL app directory under ``workspace/`` that holds the vault clones and, on an
+#: upgraded host, the legacy state files the one-shot migration reads. Spelled literally —
+#: NOT derived from the env ``APP_NAME`` — because the OS sandbox masks
+#: (``sandbox._MD_NOTEBOOK_RETIRED_STATE_LEAVES``) and the ``is_sensitive_path`` fence are
+#: pinned to the literal ``md-notebook``. A gateway (or backend) whose environment carries
+#: a foreign ``KIROCREW_APP_NAME`` would otherwise resolve the migration's sources to
+#: ``workspace/<foreign>/`` — a tree an agent can write — and promote whatever it finds
+#: there into the fenced state directory.
+_STATE_APP_DIR = "md-notebook"
+
+#: The TOP-LEVEL masked directory that holds the three live state files and the one-shot
+#: migration marker — ``<crew-home>/md-notebook-staging/{pat,vaults.json,settings.json}``.
+#: A literal kept byte-identical to ``sandbox._MD_NOTEBOOK_STATE_DIR`` (a test pins the two):
+#: this module does not import the sandbox constant, so the backend process does not pull
+#: the sandbox module's import chain in just for a name.
+#:
+#: A DIRECT child of the crew data-home root, not a subdirectory of the agent-writable
+#: ``workspace/md-notebook``. A bind mask covers the leaf it names, not its ancestors: a
+#: state directory under ``workspace/md-notebook`` could be taken out from under its mask by
+#: renaming that agent-writable parent aside, and a later PAT write would then publish into
+#: a directory a subsequent sandbox does not mask. Directly under the root there is no such
+#: parent to rename — the same reason ``aws-control-staging`` is a top-level leaf. The OS
+#: sandbox masks this WHOLE directory as a unit, so a publish renames a staged temp onto a
+#: target NAME inside it without replacing a bind-mounted leaf, and the rename stays within
+#: one directory on one mount (no ``EXDEV``). Clone DATA stays under
+#: ``workspace/md-notebook/vaults/``, outside this mask, where agents are meant to read it.
+_STATE_DIR_LEAF = "md-notebook-staging"
+
+#: The RETIRED hidden subdirectory of the app dir an older build kept the state files in —
+#: ``workspace/md-notebook/.state/``. Read only by the one-shot migration, as a second
+#: source beside the bare names; nothing writes it. Kept byte-identical to the final
+#: component of ``sandbox._MD_NOTEBOOK_RETIRED_STATE_DIR`` (a test pins the two).
+_RETIRED_STATE_SUBDIR = ".state"
 
 
 # Data-home paths are resolved LAZILY, never at import time: the
@@ -87,11 +118,10 @@ def _crew_data_home() -> Path:
     """The app's data root under the KiroCrew data home, IGNORING
     ``MD_NOTEBOOK_HOME``.
 
-    The PAT is stored here (never under ``MD_NOTEBOOK_HOME``) so it always sits
-    behind ``is_sensitive_path()``'s floor, which protects
-    ``<crew-home>/workspace/md-notebook/pat``. A user pointing
-    ``MD_NOTEBOOK_HOME`` at an unprotected directory must not be able to relocate
-    the live GitHub credential out from behind that floor.
+    The migration reads its legacy sources from here (never from ``MD_NOTEBOOK_HOME``),
+    because those are the paths the sandbox masks and the ``is_sensitive_path()`` fence
+    protect: a user pointing ``MD_NOTEBOOK_HOME`` at an unprotected directory must not be
+    able to choose what the migration promotes into the fenced state directory.
     """
     # config_dir is imported at module scope but CALLED here (lazily) — issue
     # #874 forbids resolving the data home at import time, not importing the
@@ -101,47 +131,367 @@ def _crew_data_home() -> Path:
     except Exception:
         override = os.environ.get("KIROCREW_HOME")
         base = Path(override) if override else Path.home() / ".kiro" / "crew"
-    return base / "workspace" / APP_NAME
+    return base / "workspace" / _STATE_APP_DIR
 
 
 def _home() -> Path:
     return _HOME if _HOME is not None else _default_home()
 
 
+def _crew_home_root() -> Path:
+    """The crew data-home ROOT (the directory ``config_dir()`` resolves to), under which
+    the TOP-LEVEL masked leaves like ``md-notebook-staging`` sit — NOT the app subdir
+    ``workspace/md-notebook``. Honors ``KIROCREW_HOME`` on every call, like
+    :func:`_crew_data_home`.
+    """
+    try:
+        return config_dir()
+    except Exception:
+        override = os.environ.get("KIROCREW_HOME")
+        return Path(override) if override else Path.home() / ".kiro" / "crew"
+
+
+def _state_dir() -> Path:
+    """The top-level masked directory holding the three state files and the marker.
+
+    ``<crew-home>/md-notebook-staging`` (see :data:`_STATE_DIR_LEAF`): a direct child of the
+    crew data-home root, never under ``MD_NOTEBOOK_HOME`` and never under the agent-writable
+    ``workspace/md-notebook``, so the PAT, the vault registry and the sync settings all sit
+    behind the whole-directory mask and ``is_sensitive_path()``'s fence. Under the ``_HOME``
+    test hook it sits BESIDE the hook directory (``_HOME.parent / md-notebook-staging``),
+    outside the hook's own tree, which keeps tests in their tmp isolation and keeps the
+    state directory distinct from the legacy sources the hook directory stands for.
+    """
+    if _HOME is not None:
+        return _HOME.parent / _STATE_DIR_LEAF
+    return _crew_home_root() / _STATE_DIR_LEAF
+
+
+def _migration_marker_path() -> Path:
+    """Where the one-shot migration-completion marker lives: inside :func:`_state_dir`.
+
+    Not under the agent-renamable ``workspace/md-notebook`` subtree: an agent that renames
+    that subtree aside and recreates it with forged bare files must NOT be able to erase
+    the "already migrated" fact and reopen promotion. The state directory is masked and
+    fenced, and is carved back to the Notes backend alone, which must READ the marker to
+    retire a pending retry before a live write.
+    """
+    return _state_dir() / _MIGRATION_DONE_MARKER
+
+
 def _vaults_json() -> Path:
     # The vault REGISTRY carries each vault's remoteUrl/gitDir, which the
     # unattended auto-sync loop trusts as the `git push` target and its anti-tamper
-    # pins. Like the PAT and the sync settings it therefore MUST live under the
-    # protected crew data home, never under MD_NOTEBOOK_HOME — otherwise an
-    # operator's (or a prompt-injected agent's) MD_NOTEBOOK_HOME could relocate the
-    # registry outside is_sensitive_path()'s fence and repoint the push. The clone
-    # DATA (`_clone_root`) stays under _home(): it is bulk per-instance content, not
-    # an authorization surface. The _HOME test hook still applies for tmp isolation.
-    base = _HOME if _HOME is not None else _crew_data_home()
-    return base / "vaults.json"
+    # pins. Like the PAT and the sync settings it therefore MUST live in the
+    # masked state dir, never under MD_NOTEBOOK_HOME — otherwise an operator's (or
+    # a prompt-injected agent's) MD_NOTEBOOK_HOME could relocate the registry
+    # outside is_sensitive_path()'s fence and repoint the push. The clone DATA
+    # (`_clone_root`) stays under _home(): it is bulk per-instance content, not an
+    # authorization surface.
+    return _state_dir() / "vaults.json"
 
 
 def _settings_json() -> Path:
-    # Like the PAT, the sync settings MUST live under the protected crew data
-    # home, never under MD_NOTEBOOK_HOME, so the `autoSync` bit — which authorizes
-    # the background loop's unattended `git push` — always sits behind
-    # is_sensitive_path()'s floor. Resolving via `_home()` would let an operator's
-    # MD_NOTEBOOK_HOME relocate it outside the fence, where an agent could flip it.
-    # The _HOME test hook still applies so tests keep their tmp isolation.
-    base = _HOME if _HOME is not None else _crew_data_home()
-    return base / "settings.json"
+    # Like the PAT, the sync settings MUST live in the masked state dir, never
+    # under MD_NOTEBOOK_HOME, so the `autoSync` bit — which authorizes the
+    # background loop's unattended `git push` — always sits behind
+    # is_sensitive_path()'s floor, where an agent cannot flip it.
+    return _state_dir() / "settings.json"
 
 
 def _pat_file() -> Path:
-    # The PAT MUST live under the protected crew data home, never under
-    # MD_NOTEBOOK_HOME, so it stays behind is_sensitive_path()'s floor. The
-    # _HOME test hook still applies so tests keep their tmp isolation.
-    base = _HOME if _HOME is not None else _crew_data_home()
-    return base / "pat"
+    # The PAT MUST live in the masked state dir, never under MD_NOTEBOOK_HOME, so
+    # it stays behind the whole-directory mask and is_sensitive_path()'s floor.
+    return _state_dir() / "pat"
 
 
 def _clone_root() -> Path:
     return _home() / "vaults"
+
+
+#: The three state files' basenames, in the order the migration moves them. Kept in
+#: lockstep with ``sandbox._MD_NOTEBOOK_STATE_FILES`` (a test pins the two).
+_STATE_FILE_NAMES = ("pat", "vaults.json", "settings.json")
+
+#: Marker written inside the state directory once the legacy migration has run.
+#: The migration promotes a legacy file with REAL content over an absent-equivalent stub
+#: in the state directory, so it MUST stop promoting ARBITRARY legacy names after one pass:
+#: the legacy sources sit under the agent-writable ``workspace/md-notebook``, and their
+#: masks bind only a name that exists, so once the first pass empties them a sandboxed
+#: agent could write a ``settings.json``/``vaults.json`` of its own there — which a
+#: re-running migration would then launder INTO the fenced state directory, choosing the
+#: unattended ``git push`` target and arming autoSync.
+#:
+#: So the first pass writes this marker — a JSON file inside the masked state directory —
+#: the moment it completes, whether or not anything moved. From then on the general
+#: promotion is CLOSED: a legacy name created after the upgrade is never a candidate. The
+#: marker's ``pending`` map carries only the genuine legacy files THIS first pass SAW but
+#: could not move (e.g. a Windows sharing violation), each keyed by its source spelling
+#: (``pat`` for the bare name, ``.state/pat`` for the retired subdirectory) and recorded by
+#: a CONTENT HASH captured at that first pass. A later run retries ONLY those recorded
+#: sources, and only while the on-disk file still hashes to the SAME content — an agent
+#: that drops its own file at the name to arm a push must write DIFFERENT content, which
+#: changes the hash, so it is never mistaken for the pending legacy file (a hash, not
+#: ``(dev, ino)``, because an inode number is reused after an unlink). When ``pending``
+#: empties the migration is complete. This closes both the laundering window (shut at the
+#: first pass, before any later agent write can be promoted) and the stranding bug (a
+#: failed move is retried, not sealed away).
+_MIGRATION_DONE_MARKER = ".migrated"
+
+#: Every ``pending`` key the marker may carry: each state file under each source spelling.
+_PENDING_KEYS = frozenset(
+    {*_STATE_FILE_NAMES, *(f"{_RETIRED_STATE_SUBDIR}/{name}" for name in _STATE_FILE_NAMES)}
+)
+
+#: The absent-equivalent bytes for each state file — what the file reads as when there is
+#: no real state: an empty PAT, an empty vault list, default settings. Kept byte-identical
+#: to the stubs ``sandbox._MD_NOTEBOOK_PRECREATE_CONTENT`` plants in the state directory on
+#: every Linux spawn (a test pins the two). The migration reads these to tell a
+#: materialiser stub (safe to overwrite with real legacy state) from a real state file
+#: (which wins), and to skip a legacy copy that itself carries nothing worth rescuing.
+_ABSENT_EQUIVALENT_STATE: dict[str, bytes] = {
+    "pat": b"",
+    "vaults.json": b"[]\n",
+    "settings.json": b"{}\n",
+}
+
+
+def _is_absent_equivalent_state(name: str, path: Path) -> bool:
+    """Whether *path* holds only the absent-equivalent stub for state file *name*.
+
+    True when the file's bytes equal the materialiser's absent-equivalent content for that
+    name — an empty PAT, an empty vault list, default settings — so the migration treats it
+    as "nothing real here": a destination stub may be overwritten with a real legacy file,
+    and a legacy stub is not worth moving. An unreadable file is treated as NOT a stub
+    (fail toward preserving it): a file the migration cannot read must not be silently
+    overwritten. A name with no known absent-equivalent is likewise not a stub.
+    """
+    expected = _ABSENT_EQUIVALENT_STATE.get(name)
+    if expected is None:
+        return False
+    try:
+        return path.read_bytes() == expected
+    except OSError:
+        return False
+
+
+def _legacy_state_dir() -> Path:
+    """The bare app directory — ``workspace/md-notebook/`` — directly under which a state
+    file can sit at its bare name, written by an older build.
+
+    Resolved like ``_crew_data_home`` so the migration reads from the crew data home (never
+    ``MD_NOTEBOOK_HOME``). Under the ``_HOME`` test hook the bare dir is the hook directory
+    itself, since that is where such a bare file (in a test) sits.
+    """
+    return _HOME if _HOME is not None else _crew_data_home()
+
+
+def _retired_state_dir() -> Path:
+    """The retired ``workspace/md-notebook/.state/`` directory, a second migration source."""
+    return _legacy_state_dir() / _RETIRED_STATE_SUBDIR
+
+
+def _migration_sources(name: str) -> tuple[tuple[str, Path], ...]:
+    """The ``(pending_key, path)`` legacy sources for state file *name*, newest layout first.
+
+    The retired ``.state/`` copy comes first because the build that wrote it ran after the
+    one that wrote bare names, so where both hold real content the ``.state/`` copy is the
+    more recent; once it lands, the bare copy finds a real destination and is left alone.
+    """
+    return (
+        (f"{_RETIRED_STATE_SUBDIR}/{name}", _retired_state_dir() / name),
+        (name, _legacy_state_dir() / name),
+    )
+
+
+def _pending_key_name(key: str) -> str:
+    """The state-file basename a ``pending`` key names, whichever source spelling it uses."""
+    return key.rsplit("/", 1)[-1]
+
+
+def _file_identity(path: Path) -> Optional[str]:
+    """A content fingerprint of *path* (``sha256`` hex), or ``None`` if it cannot be read.
+
+    The scoped retry promotes a pending legacy file only while the source still carries the
+    SAME content this fingerprint recorded at the first pass. Content, not ``(dev, ino)``:
+    an inode number is reused after an unlink on most filesystems, so an agent that unlinks
+    the pending file and drops its own at the same name could land the SAME inode and
+    defeat an identity check — but to arm an attacker-chosen ``git push`` it must write
+    DIFFERENT content (its own remote), which changes the hash. Identical content is not an
+    attack: promoting bytes equal to the stranded legacy file's changes nothing.
+    """
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _read_migration_pending(marker: Path) -> dict[str, str]:
+    """The ``{source_key: content_hash}`` still-pending map from the migration marker.
+
+    A marker that is missing, unreadable, or malformed reads as "nothing pending" — the
+    general promotion window is already closed by the marker's existence, so the only cost
+    of a lost pending map is that a genuine legacy file that failed to move is not retried,
+    which is strictly safer than re-opening promotion. Keys outside :data:`_PENDING_KEYS`
+    are dropped, so a marker cannot name a source the migration does not own.
+    """
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    pending = data.get("pending") if isinstance(data, dict) else None
+    if not isinstance(pending, dict):
+        return {}
+    return {
+        key: h for key, h in pending.items() if key in _PENDING_KEYS and isinstance(h, str) and h
+    }
+
+
+def _write_migration_marker(marker: Path, pending: dict[str, str], *, fsync: bool = False) -> None:
+    """Write the migration marker in the state directory recording what needs retry.
+
+    Written through :func:`atomic_write` with ``restrict_to_owner=True``, so the temp is
+    owner-only BEFORE any byte lands and before the rename — an agent cannot read a
+    half-written ``pending`` map nor race a mode gap. ``fsync`` persists it durably when the
+    caller must not acknowledge an action (a credential clear) before the marker change
+    survives a crash. Its parent chain is refused if it passes through a planted link.
+    ``pending`` empty means the migration is complete; a non-empty map names the genuine
+    legacy sources a later run should retry, by the content hash each had when this pass
+    failed to move it.
+    """
+    refuse_linked_parent(marker)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write(
+        marker,
+        json.dumps({"pending": pending}),
+        restrict_to_owner=True,
+        restrict_on_error="warn",
+        fsync=fsync,
+    )
+
+
+def migrate_legacy_state_into_state_dir() -> list[str]:
+    """Move legacy state files into the top-level masked state directory.
+
+    Two legacy sources per state file, both under ``workspace/md-notebook/``: the bare name
+    (``workspace/md-notebook/<name>``) and the retired subdirectory
+    (``workspace/md-notebook/.state/<name>``), tried in :func:`_migration_sources` order.
+    Runs in the GATEWAY process (which sees the real crew data home with no bind masks)
+    before a sandboxed spawn — the sandboxed backend cannot do it, because the OS mask hands
+    it back only the state directory and keeps both legacy spellings masked (uncarved). Each
+    file is moved atomically with :func:`replace_with_retry` (a rename within the crew data
+    home, so same-filesystem and atomic), and the owner-only mode is re-asserted on it.
+
+    A file is migrated when the legacy copy is a REGULAR file carrying REAL content and the
+    destination is absent OR holds only an absent-equivalent stub. The second condition is
+    load-bearing: the sandbox materialiser creates an absent-equivalent file at each
+    destination on EVERY Linux spawn, so a plain ``if dst.exists(): continue`` would see
+    that stub and skip the move — stranding the user's real legacy PAT/vaults/settings and
+    reading an empty state in the app. A legacy LINK is never moved: renaming it would
+    plant a link inside the fenced directory whose referent an agent chooses.
+
+    STOPS PROMOTING ARBITRARY LEGACY NAMES AFTER ONE PASS, gated on a JSON marker inside
+    the state directory (see :data:`_MIGRATION_DONE_MARKER`). The first pass attempts every
+    genuine legacy file, then writes the marker immediately — whether or not anything moved
+    — so a legacy name a sandboxed agent writes AFTER the upgrade is never a promotion
+    candidate. The marker's ``pending`` map carries only the genuine legacy sources THIS
+    first pass saw but could not move, each by a CONTENT HASH captured then; a later run
+    retries ONLY those, and only while the source still hashes to the SAME content.
+
+    Fail-SOFT per file: a per-file error is logged, the source is recorded in ``pending``
+    for a scoped retry, and the pass continues — a gateway must boot even if one legacy file
+    cannot be moved (its legacy-name mask still fences it until a later boot finishes the
+    move). The marker is written as the LAST step with whatever ``pending`` remains.
+    Returns the list of destination paths it populated this call, for the audit log and
+    for tests.
+    """
+    moved: list[str] = []
+    state_dir = _state_dir()
+    marker = _migration_marker_path()
+
+    first_pass = not marker.exists()
+    # On a later run the marker already exists; retry ONLY the sources it recorded as
+    # still pending, never an arbitrary legacy name an agent may have dropped since.
+    pending = {} if first_pass else _read_migration_pending(marker)
+    if not first_pass and not pending:
+        # Fully migrated already: nothing is pending and the general promotion is closed.
+        return moved
+
+    still_pending: dict[str, str] = {}
+    for name in _STATE_FILE_NAMES:
+        dst = state_dir / name
+        for key, src in _migration_sources(name):
+            if not first_pass and key not in pending:
+                continue
+            try:
+                try:
+                    src_mode = os.lstat(src).st_mode
+                except FileNotFoundError:
+                    # On a retry, a recorded pending file that is simply gone needs no
+                    # retry; on the first pass, an absent legacy name has nothing to move.
+                    continue
+                if not stat.S_ISREG(src_mode):
+                    # A link or special file is not a state file any writer produced; moving
+                    # a link would plant it inside the fenced directory.
+                    continue
+                if not first_pass:
+                    # Retry only while the source still hashes to the content the first
+                    # pass recorded. An agent that dropped its own file at this name since
+                    # then wrote different content to arm a push, so it is not the pending
+                    # legacy file and must not be promoted.
+                    src_id = _file_identity(src)
+                    if src_id is None or src_id != pending.get(key):
+                        continue
+                if _is_absent_equivalent_state(name, src):
+                    # The legacy copy carries nothing a real state would — an empty PAT, an
+                    # empty vault list, default settings. There is nothing to rescue, so do
+                    # not overwrite a possibly-real destination with it.
+                    continue
+                if dst.exists() and not _is_absent_equivalent_state(name, dst):
+                    # A REAL destination copy already present (freshly written, or moved from
+                    # the newer source just now) wins over this legacy copy. Leave the legacy
+                    # copy alone: its legacy-name mask keeps it fenced. A stub at dst does
+                    # NOT count as present — the move below replaces it.
+                    continue
+                # The destination parent chain must not pass through a planted link, or the
+                # move could land the credential outside the sensitive-path fence.
+                refuse_linked_parent(dst)
+                state_dir.mkdir(parents=True, exist_ok=True)
+                replace_with_retry(src, dst)
+                try:
+                    restrict_to_owner(dst)
+                except OSError:
+                    logger.warning(
+                        "migrated Notes state %s but could not restrict it to owner-only",
+                        name,
+                        exc_info=True,
+                    )
+                moved.append(str(dst))
+            except OSError:
+                logger.warning(
+                    "could not migrate legacy Notes state file %s into the state directory",
+                    key,
+                    exc_info=True,
+                )
+                # Record this genuine legacy source for a scoped retry, by the content it has
+                # right now, so a later boot retries THIS content and not an agent's
+                # replacement.
+                src_id = _file_identity(src)
+                if src_id is not None:
+                    still_pending[key] = src_id
+    if moved:
+        logger.info("migrated %d legacy Notes state file(s) into the state directory", len(moved))
+    # Write the marker as the LAST step, DURABLY (fsync). On the first pass this CLOSES the
+    # general promotion window — a legacy name an agent writes afterward is never a
+    # candidate — while ``pending`` keeps exactly the genuine legacy sources this pass could
+    # not move, for a scoped retry. The marker lives in the top-level state directory,
+    # outside the agent-renamable ``workspace/md-notebook`` subtree, so renaming that
+    # subtree cannot erase the "closed" fact and reopen promotion. Fail-CLOSED: a marker
+    # that cannot be persisted PROPAGATES — the caller (the gateway-side spawn prologue)
+    # logs it, and the next spawn re-attempts the first pass cleanly rather than proceeding
+    # as if promotion were closed on an unpersisted marker.
+    _write_migration_marker(marker, still_pending, fsync=True)
+    return moved
 
 
 # Capability probe. The gateway keeps an app's backend alive across UI reloads,
@@ -404,7 +754,7 @@ def _atomic_write_text_sync(path: Path, content: str) -> None:
 
     Stages BESIDE the target (a note inside the vault, possibly a different
     filesystem from the crew home). State files (vaults/settings/PAT) use
-    ``_write_state_staged_sync`` instead, which stages in the masked staging
+    ``_write_state_staged_sync`` instead, which stages inside the masked state
     dir. The note save drives the two halves itself so it can republish one
     temp across attempts.
     """
@@ -418,64 +768,37 @@ def _atomic_write_text_sync(path: Path, content: str) -> None:
             raise
 
 
-def _staging_dir() -> Path:
-    """The masked write-staging directory every STATE writer publishes through.
-
-    Every state writer (vaults/settings/PAT) stages its temp file HERE and renames onto
-    its target. A temp staged beside the target — the previous shape — carries the real PAT
-    bytes under a name the OS sandbox's three leaf masks do not cover, and a SIGKILL
-    between write and rename left that unmasked sibling readable by a same-uid sandboxed
-    agent forever.
-
-    A TOP-LEVEL directory in the crew data home (``sandbox._MD_NOTEBOOK_STAGING_LEAF``),
-    NOT a child of the state directory, for the reason the sibling ``aws-control-staging``
-    leaf records: a mask covers the leaf, not its ancestors, so a staging dir under the
-    agent-writable ``workspace/md-notebook`` could be renamed out from under its own mask
-    and a later PAT write would publish through the replacement, unmasked, into a live
-    agent's view. It stays on the same filesystem as the targets, so the publish rename is
-    still atomic. NOTE saves are deliberately untouched — they stage beside the note inside
-    the vault, which may be a different filesystem, and hold no secret.
-    """
-    # Mirrors ``_crew_data_home``'s resolution, minus the app subdirectory: the staging
-    # directory is a sibling of ``workspace``, not of the state files. Under the ``_HOME``
-    # test hook it sits beside that hook's directory, which keeps it on the same
-    # filesystem as the targets — the only property the rename depends on.
-    if _HOME is not None:
-        return _HOME.parent / _STAGING_LEAF
-    try:
-        base = config_dir()
-    except Exception:
-        override = os.environ.get("KIROCREW_HOME")
-        base = Path(override) if override else Path.home() / ".kiro" / "crew"
-    return base / _STAGING_LEAF
-
-
 def _write_state_staged_sync(target: Path, content: str, *, fsync_file: bool = False) -> None:
-    """Stage *content* in the masked staging dir, then rename onto *target*.
+    """Stage *content* inside the masked state directory, then rename onto *target*.
 
-    ``mkstemp`` opens the temp 0600 on POSIX before any payload byte;
-    ``restrict_to_owner`` adds the owner-only DACL on Windows (chmod is a no-op
-    there), warn-not-fail per the original PAT policy — losing the credential
-    write is worse than a permissions warning. On failure the temp is removed;
-    a removal that itself fails leaves the orphan inside the mask, not beside
-    the target.
+    Both the staged temp and the target sit INSIDE the top-level ``md-notebook-staging``
+    directory, so the publish rename is within one directory on one mount and cannot raise
+    ``EXDEV``. That whole directory is one bind mask, and it is a DIRECT child of the crew
+    data-home root: no agent-writable ancestor exists that could be renamed aside to take
+    the directory out from under its mask, so a write by name always lands behind the mask.
+    The in-flight temp (which holds the same bytes as the target, the PAT included) and any
+    crash orphan stay inside that mask at every instant.
+
+    The temp is 0600 before any payload byte (``mkstemp`` on POSIX); ``restrict_to_owner``
+    adds the owner-only DACL on Windows, warn-not-fail per the PAT policy — losing the
+    credential write is worse than a permissions warning. :func:`replace_with_retry` carries
+    the Windows sharing-violation retry. On failure the temp is removed; a removal that
+    itself fails leaves the orphan inside the mask.
     """
-    staging = _staging_dir()
-    # The planted-link refusal atomic_write enforces:
-    # atomic_write(restrict_to_owner=True)
-    # refuses a secret write whose parent chain passes through a planted
-    # symlink/junction — otherwise mkdir(parents=True), mkstemp and the rename
-    # all follow the link and the token lands OUTSIDE the sensitive-path fence
-    # while the caller sees success. Moving the staging off atomic_write must
-    # not shed that guard. Both chains this write walks, checked BEFORE the
-    # mkdirs (mkdir walks THROUGH a planted link and would build the tree
-    # under its target); the probe name is never created, only its chain is
-    # judged.
+    # The planted-link refusal atomic_write enforces: refuse a secret write whose parent
+    # chain passes through a planted symlink/junction, so mkdir and mkstemp cannot follow
+    # the link and land the token OUTSIDE the sensitive-path fence while the caller sees
+    # success. Checked BEFORE the mkdir, because mkdir walks THROUGH a planted link.
     refuse_linked_parent(target)
-    refuse_linked_parent(staging / ".chain-probe")
-    staging.mkdir(parents=True, exist_ok=True)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=str(staging), suffix=".tmp")
+    # Retire any pending migration retry for this file FIRST and durably: a live write
+    # (including a user CLEAR writing absent-equivalent bytes) is the new truth, and a stale
+    # ``pending`` entry would otherwise let the next boot move the OLD credential back over
+    # it. Fail-closed — if retirement cannot persist this RAISES before the write, so the
+    # caller never acknowledges a clear it could not make final.
+    _retire_migration_pending(target.name)
+    state = target.parent
+    state.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(state), suffix=".tmp")
     tmp = Path(tmp_name)
     try:
         try:
@@ -498,12 +821,39 @@ def _write_state_staged_sync(target: Path, content: str, *, fsync_file: bool = F
         raise
 
 
+def _retire_migration_pending(name: str) -> None:
+    """Durably drop every pending migration retry for state file *name* before a live write.
+
+    Both source spellings of *name* are dropped — the bare ``workspace/md-notebook/<name>``
+    and the retired ``workspace/md-notebook/.state/<name>`` — because either one would
+    otherwise be promoted over the write on a later boot.
+
+    FAIL-CLOSED: a retirement that cannot persist RAISES, so the caller aborts the write
+    rather than acknowledging it. A user CLEAR that leaves a stale ``pending`` entry would
+    otherwise be reversed on the next boot — the retry sees the cleared file as a stub and
+    moves the OLD credential back over the acknowledged clear. Making retirement durable
+    before the write commits is what makes the clear final. Fsynced so the retirement
+    survives a crash between here and the write. A no-op (no marker, or ``name`` not
+    pending) returns without raising.
+    """
+    marker = _migration_marker_path()
+    if not marker.exists():
+        return
+    pending = _read_migration_pending(marker)
+    keys = [key for key in pending if _pending_key_name(key) == name]
+    if not keys:
+        return
+    for key in keys:
+        del pending[key]
+    _write_migration_marker(marker, pending, fsync=True)
+
+
 def _write_vaults_sync(vaults: list[dict[str, Any]]) -> None:
     """Replace the vault registry, retrying the Windows rename window.
 
     Same reason as the note writer above: this file is read back by every
     later request, so a handle can be open on it when the rename lands.
-    Staged in the masked staging dir — see :func:`_staging_dir`.
+    Staged inside the masked state dir — see :func:`_write_state_staged_sync`.
     """
     _write_state_staged_sync(_vaults_json(), json.dumps(vaults, indent=2))
 
@@ -526,14 +876,14 @@ def _read_pat_sync() -> Optional[str]:
 
 
 def _write_pat_sync(pat: str) -> None:
-    # Stage in the MASKED staging dir, fsync, then atomically replace. A direct
+    # Stage inside the MASKED state dir, fsync, then atomically replace. A direct
     # O_TRUNC open would empty the existing token before the new bytes land, so
     # a failure partway (a full disk is the realistic one) would lose a valid
-    # credential — and a temp staged BESIDE the target would hold the real PAT
-    # bytes at a name the sandbox's leaf masks do not cover (see _staging_dir).
-    # The temp is 0600 from mkstemp on POSIX and owner-only-DACL'd on Windows
-    # before any payload byte, warn-not-fail; written 0600 and never echoed
-    # back (only a boolean).
+    # credential — and a temp staged BESIDE the target in an unmasked directory
+    # would hold the real PAT bytes at a name no mask covers (see
+    # _write_state_staged_sync). The temp is 0600 from mkstemp on POSIX and
+    # owner-only-DACL'd on Windows before any payload byte, warn-not-fail;
+    # written 0600 and never echoed back (only a boolean).
     _write_state_staged_sync(_pat_file(), pat, fsync_file=True)
 
 
@@ -629,9 +979,9 @@ def _read_settings_sync() -> dict[str, Any]:
 
 
 def _write_settings_sync(settings: dict[str, Any]) -> None:
-    # Staged in the masked staging dir like the other state writers (see
-    # _staging_dir); the helper creates both the staging dir and the target's
-    # own parent, which diverges from _home() when the _HOME test hook is unset.
+    # Staged inside the masked state dir like the other state writers (see
+    # _write_state_staged_sync); the helper creates the state dir, which is the
+    # target's own parent, so the staged temp and the target share one directory.
     # fsync preserved from the previous path (_stage_note_text_sync fsync'd):
     # settings carry the autoSync authorization bit and the lastSync stamp, and
     # a rename published from an unflushed page cache can discard an
