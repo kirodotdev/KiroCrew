@@ -1226,6 +1226,8 @@
     "commandBar": {
       "action_ask": "질문",
       "ask_agent": "에이전트에게 질문: ‘{{query}}’",
+      "action_show_all_blocked": "모두 보기",
+      "attention_more_other": "확인 필요 {{count}}개 더",
       "group_attention": "확인 필요",
       "group_recent_sessions": "최근 세션",
       "action_enter": "뷰 열기",

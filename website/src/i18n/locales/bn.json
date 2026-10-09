@@ -5025,6 +5025,9 @@
     "commandBar": {
       "action_ask": "জিজ্ঞাসা করুন",
       "ask_agent": "এজেন্টকে জিজ্ঞাসা করুন: “{{query}}”",
+      "action_show_all_blocked": "সব দেখাও",
+      "attention_more_one": "আরও {{count}}টি অপেক্ষায়",
+      "attention_more_other": "আরও {{count}}টি অপেক্ষায়",
       "group_attention": "আপনাকে প্রয়োজন",
       "group_recent_sessions": "সাম্প্রতিক সেশন",
       "action_enter": "ভিউ খুলুন",

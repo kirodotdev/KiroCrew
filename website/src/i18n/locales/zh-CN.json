@@ -4945,6 +4945,8 @@
     "commandBar": {
       "action_ask": "提问",
       "ask_agent": "问一下 agent：“{{query}}”",
+      "action_show_all_blocked": "全部显示",
+      "attention_more_other": "还有 {{count}} 个等你处理",
       "group_attention": "等你处理",
       "group_recent_sessions": "最近的会话",
       "action_enter": "打开视图",

@@ -5105,6 +5105,10 @@
     "commandBar": {
       "action_ask": "Chiedi",
       "ask_agent": "Chiedi all’agente: «{{query}}»",
+      "action_show_all_blocked": "Mostra tutto",
+      "attention_more_many": "altre {{count}} in attesa",
+      "attention_more_one": "{{count}} altra in attesa",
+      "attention_more_other": "altre {{count}} in attesa",
       "group_attention": "Richiede la tua attenzione",
       "group_recent_sessions": "Sessioni recenti",
       "action_enter": "Apri vista",

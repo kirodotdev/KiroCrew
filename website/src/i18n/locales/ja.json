@@ -1226,6 +1226,8 @@
     "commandBar": {
       "action_ask": "質問",
       "ask_agent": "エージェントに質問：「{{query}}」",
+      "action_show_all_blocked": "すべて表示",
+      "attention_more_other": "ほか{{count}}件が対応待ち",
       "group_attention": "あなたの対応待ち",
       "group_recent_sessions": "最近のセッション",
       "action_enter": "ビューを開く",

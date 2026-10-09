@@ -5025,6 +5025,9 @@
     "commandBar": {
       "action_ask": "पूंरें",
       "ask_agent": "ऐजेंट से पूंरें: “{{query}}”",
+      "action_show_all_blocked": "सभी दिखाएँ",
+      "attention_more_one": "{{count}} और रुका हुआ",
+      "attention_more_other": "{{count}} और रुके हुए",
       "group_attention": "तुम्हारी ज़रूरत है",
       "group_recent_sessions": "हाल के सेशन",
       "action_enter": "व्यू खोलें",

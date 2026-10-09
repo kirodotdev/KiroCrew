@@ -1294,6 +1294,10 @@
     "commandBar": {
       "action_ask": "Demander",
       "ask_agent": "Demander à l’agent : « {{query}} »",
+      "action_show_all_blocked": "Tout afficher",
+      "attention_more_many": "+{{count}} de plus en attente",
+      "attention_more_one": "+{{count}} de plus en attente",
+      "attention_more_other": "+{{count}} de plus en attente",
       "group_attention": "Requiert votre attention",
       "group_recent_sessions": "Sessions récentes",
       "action_enter": "Ouvrir la vue",

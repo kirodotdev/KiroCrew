@@ -1260,6 +1260,9 @@
     "commandBar": {
       "action_ask": "Fragen",
       "ask_agent": "Den Agenten fragen: „{{query}}“",
+      "action_show_all_blocked": "Alle anzeigen",
+      "attention_more_one": "{{count}} weitere wartet",
+      "attention_more_other": "{{count}} weitere warten",
       "group_attention": "Braucht dich",
       "group_recent_sessions": "Letzte Sitzungen",
       "action_enter": "Ansicht öffnen",

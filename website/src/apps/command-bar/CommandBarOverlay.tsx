@@ -5,6 +5,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowRight,
   Check,
+  ChevronsDown,
   Clock,
   Command,
   Cog,
@@ -152,6 +153,9 @@ const DEBOUNCE_MS = 150
  * under Search Sessions.
  */
 const RECENT_SESSION_ROWS = 3
+
+/** Row id of the attention group's "+N more blocked" row. */
+const ATTENTION_MORE_ID = 'attention:more'
 
 /**
  * A settings row's matcher: the settings scorer decides whether and how well it
@@ -403,6 +407,7 @@ type Slot =
 function actionLabel(slot: Slot): string {
   switch (slot.tag) {
     case 'root':
+      if (slot.row.expand) return i18nT('apps.commandBar.action_show_all_blocked')
       if (slot.row.kind === 'view') return i18nT('apps.commandBar.action_enter')
       // A `prompt` row steps into a field rather than acting, so Enter is named for
       // proceeding. Calling it "Run" would promise that this Enter approves or
@@ -620,6 +625,12 @@ export default function CommandBarOverlay({
   const [previewClipped, setPreviewClipped] = useState(false)
 
   const [selected, setSelected] = useState(0)
+  /**
+   * Whether the reader asked to see every session waiting on them. Until then the
+   * attention group keeps the root's per-group cap and ends on a row counting the
+   * rest, so a seventh blocked session is never dropped without a trace.
+   */
+  const [attentionExpanded, setAttentionExpanded] = useState(false)
   /**
    * A keyboard Enter that landed in the debounce window, held until the rows answer
    * the query it was pressed against -- and no later one.
@@ -935,6 +946,7 @@ export default function CommandBarOverlay({
     setUsage(loadUsage())
     setActionError(null)
     setPendingRow(null)
+    setAttentionExpanded(false)
   }, [open])
 
   useEffect(() => {
@@ -1280,8 +1292,21 @@ export default function CommandBarOverlay({
   // the row selected against the previous query. Debounce exists for the scoped
   // views, which do hit the network.
   const ranked: RankedRow[] = useMemo(
-    () => (scope ? [] : rankRootRows(rootRows, query, usage)),
-    [scope, rootRows, query, usage],
+    () =>
+      scope
+        ? []
+        : rankRootRows(rootRows, query, usage, Date.now(), {
+            attentionExpanded,
+            attentionOverflowRow: hidden => ({
+              id: ATTENTION_MORE_ID,
+              title: i18nT('apps.commandBar.attention_more', { count: hidden }),
+              group: 'attention',
+              kind: 'invoke',
+              icon: <ChevronsDown size={14} className="lucide-inline" />,
+              expand: () => setAttentionExpanded(true),
+            }),
+          }),
+    [scope, rootRows, query, usage, attentionExpanded],
   )
 
   // Sessions view. Enabled only inside the scope, so the root cannot trigger it.
@@ -1668,6 +1693,12 @@ export default function CommandBarOverlay({
       // work twice -- two sessions from one intent -- because the bar stays open
       // until the promise settles.
       if (pendingRow) return
+      // Revealing the rest of a list is not a use of any one row, so it records no
+      // frecency and leaves the bar open on the rows it revealed.
+      if (row.expand) {
+        row.expand()
+        return
+      }
       use(row.id)
       if (row.kind === 'view') {
         // Entering is the activation event: the engine's first query happens

@@ -5185,6 +5185,11 @@
     "commandBar": {
       "action_ask": "Спросить",
       "ask_agent": "Спросить агента: «{{query}}»",
+      "action_show_all_blocked": "Показать все",
+      "attention_more_few": "ещё {{count}} ждут",
+      "attention_more_many": "ещё {{count}} ждут",
+      "attention_more_one": "ещё {{count}} ждёт",
+      "attention_more_other": "ещё {{count}} ждут",
       "group_attention": "Требуется ваше участие",
       "group_recent_sessions": "Недавние сессии",
       "action_enter": "Открыть представление",
