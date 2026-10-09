@@ -6597,10 +6597,14 @@ class TestDenyMatchingIsQuoteNormalized:
         anything.
         """
         from kiro_crew import security
+        from kiro_crew.security import rm_floor
 
         monkeypatch.setattr(
             security, "_deny_segment_views", lambda segment, emit_self=True: (segment.lower(),)
         )
+        # The argv floor reads quote-removed argv on its own, so it is switched off
+        # here to keep this cross about the normalized VIEW alone.
+        monkeypatch.setattr(rm_floor, "_RM_FLOOR_BY_KIND", {})
         for cmd in self.RESPELLINGS:
             assert security.is_denied(cmd) is None, (
                 f"raw text now matches {cmd!r} on its own -- the cross above no longer "
@@ -7277,27 +7281,19 @@ class TestDenyMatchingIsQuoteNormalized:
         assert is_denied(r"$'dd\0junk' if=/dev/zero of=/dev/sda") is not None
         assert is_denied(r"$'mkfs\0junk' /dev/sda") is not None
 
-    def test_flag_interposition_is_a_catalog_gap_not_a_view_gap(self):
-        """DOCUMENTED GAP, with the evidence that places it outside this change.
+    def test_flag_interposition_is_caught_by_the_argv_floor(self):
+        """An interposed flag breaks the contiguous catalog text, not the argv.
 
         ``$'rm\\0junk' -rf --no-preserve-root /`` normalizes to exactly the command
-        bash runs -- the view is correct -- but the rule ``rm -rf /.*`` requires its
-        text contiguous and does not tolerate an interposed flag, so nothing matches.
-        The PLAIN spelling is allowed too, on base and here alike, which is what
-        shows this is the built-in rule's authoring rather than anything
-        normalization can reach: no view can make a non-matching pattern match.
-
-        Closing it means editing a shipped rule's regex, which changes matching for
-        the whole catalog and is a separate decision.  Pinned so the gap is findable;
-        when it is closed, the first assertion flips.
+        bash runs, and the rule ``rm -rf /.*`` requires its text contiguous, so no
+        view makes the pattern match. The recursive-force argv floor reads the flags
+        wherever they sit, so both spellings are refused.
         """
         from kiro_crew import security
 
-        # The catalog cannot see the flag-interposed form in ANY spelling...
-        assert is_denied("rm -rf --no-preserve-root /") is None
-        # ...while the contiguous shape the rule is authored for is refused.
+        assert is_denied("rm -rf --no-preserve-root /") is not None
+        assert is_denied(r"$'rm\0junk' -rf --no-preserve-root /") is not None
         assert is_denied("rm -rf /") is not None
-        # ...and the view for the escaped spelling IS the command bash runs.
         views = security._deny_segment_views(r"$'rm\0junk' -rf --no-preserve-root /")
         assert "rm -rf --no-preserve-root /" in views, views
 
@@ -11140,3 +11136,142 @@ class TestHostsFileWarmUp:
         monkeypatch.setattr(_argv_floor, "_hosts_file_paths", lambda: (big,))
         _argv_floor._hosts_file_warm_worker()
         assert _argv_floor._host_is_self("swapbox") is False
+
+
+class TestRecursiveForceRmFloor:
+    """Every flag spelling and every home spelling of a root/home wipe is refused.
+
+    The catalog rows match the contiguous ``RM -rf /`` and ``RM -rf ~`` text only;
+    the argv floor in ``rm_floor`` reads recursive + force in any packing, order or
+    long form against the root or the home directory itself.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "RM -fr /",
+            "RM -rfv /",
+            "RM -r -f /",
+            "RM -R -f /",
+            "RM --recursive --force /",
+            "RM --rec --forc /",
+            "RM -rf --no-preserve-root /",
+            "RM / -rf",
+            "RM -fr -- /",
+            "RM -fr //",
+            "RM -fr /*",
+            "RM -fr ~",
+            "RM -r -f ~",
+            "RM -fr ~/",
+            "RM -fr ~/*",
+            "bash -c 'RM -fr /'",
+            "echo $(RM -r -f /)",
+            "cd /tmp && RM -fr ~",
+            'echo "`RM -fr /`"',
+            "cat <<EOF\nhi\nEOF\nRM -fr /",
+            "RM -fr / 2>/dev/null",
+            "RM -fr ~>/dev/null",
+            "RM -fr x &>/dev/null /",
+            'echo "$(RM -fr /)"',
+            'x="$(RM -fr ~)"',
+            "cat <<EOF\n$(RM -fr ~)\nEOF",
+            "echo '<<EOF'\nRM -fr /",
+            "echo \\<<EOF\nRM -fr /",
+            "RM -fr ${HOME:?}",
+            'RM -fr "${HOME:-/tmp}"',
+        ],
+    )
+    def test_flag_spellings_of_a_root_or_home_wipe_are_denied(self, command):
+        assert is_denied(command.replace("RM", "rm")) is not None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "RM -rf $HOME",
+            "RM -rf ${HOME}",
+            'RM -rf "$HOME"',
+            'RM -rf "$HOME"/',
+            "RM -fr $HOME/",
+            "RM -r -f ${HOME}",
+        ],
+    )
+    def test_home_variable_spellings_are_denied(self, command):
+        assert is_denied(command.replace("RM", "rm")) is not None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "RM -rf ./build",
+            "RM -fr /tmp/build-cache",
+            "RM -r -f /tmp/build-cache",
+            "RM -rf $HOME/.cache",
+            "RM -fr $HOME_BACKUP",
+            "RM -f /",
+            "RM -r /tmp/x",
+            "RM -f ~",
+            "RM x",
+            "find / -name RM -o -name -fr -o -path /",
+            "timeout 5 printf '%s\\n' RM -fr /",
+            "RM -rf node_modules&&cd ~",
+            "RM -rf dist &&cd /",
+            "RM -fr /tmp/x& cd ~",
+            "RM -fr '~'",
+            "RM -fr '$HOME'",
+            "RM -fr '/*'",
+            "RM -fr \\~",
+            'RM -fr "\\$HOME"',
+            'home=./build; RM -fr "$home"',
+            "printf '%s\\n' ';' RM -fr /",
+            "echo '`RM -fr /`'",
+            "RM -fr build 0< /",
+            "RM -fr build > /",
+            "echo hi # RM -fr /",
+            "gh pr create --body \"$(cat <<'EOF'\nRM -r -f / and RM --recursive --force ~\nEOF\n)\"",
+            "echo ok # $(RM -fr ~)",
+            "cat <<'EOF'\n$(RM -fr ~)\nEOF",
+            'HO=./build; RM -fr "$HO"ME',
+            "RM -fr ${HOME:+./build}",
+            "a=(RM -fr /)",
+        ],
+    )
+    def test_descendants_and_partial_flags_stay_allowed(self, command):
+        assert is_denied(command.replace("RM", "rm")) is None
+
+    def test_a_nested_home_variable_is_denied(self, monkeypatch):
+        # The walk expands $HOME inside a nested body, and it descends only into a
+        # body shorter than its parent, so the home path is pinned short here; the
+        # Windows spelling also exercises the backslash path.
+        home = "C:\\h" if sys.platform == "win32" else "/h"
+        monkeypatch.setenv("HOME", home)
+        monkeypatch.setenv("USERPROFILE", home)
+        assert is_denied("bash -c 'rm -fr $HOME'") is not None
+        assert is_denied("bash -c 'rm -fr $HOME/x'") is None
+
+    def test_the_floor_reports_the_catalog_row(self):
+        reason = is_denied("rm -fr /")
+        assert reason is not None
+        assert "local-destructive-rm-rf-root" in reason
+        assert "Matched structurally" in reason
+
+    def test_a_disabled_row_disables_its_floor(self):
+        only_home = ["rm -rf ~.*"]
+        assert is_denied("rm -fr /", denied_regexes=only_home) is None
+        assert is_denied("rm -fr ~", denied_regexes=only_home) is not None
+
+    def test_a_floor_error_leaves_the_regex_rows_in_force(self, monkeypatch):
+        from kiro_crew.security import rm_floor
+
+        def _boom(_text):
+            raise RuntimeError("walk failed")
+
+        monkeypatch.setattr(rm_floor, "_rm_wipe_targets", _boom)
+        assert is_denied("rm -fr /") is None
+        assert is_denied("rm -rf /") is not None
+
+    def test_a_printed_body_is_not_a_wipe(self):
+        assert is_denied("echo bash -c 'rm -fr /'") is None
+        assert is_denied("echo bash -c 'rm -fr /' | sh") is not None
+
+    def test_a_printed_copy_does_not_exempt_a_run_copy(self):
+        assert is_denied("echo bash -c 'rm -fr ~' ; echo $(rm -fr ~)") is not None
+        assert is_denied("echo bash -c 'rm -fr /' ; bash -c 'rm -fr /'") is not None
