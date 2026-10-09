@@ -4735,6 +4735,12 @@ DASHBOARD_WRITE_SCHEMA = ToolSchema(
     ],
 )
 
+#: Empty and registered, for ``PANEL_TEMPLATES_SCHEMA``'s reason. The catalog is the
+#: same for every caller except for the seq numbers, and those come from the calling
+#: session's own identity -- so there is no argument that could narrow or widen it, and
+#: an accepted one would be a filter the tool does not apply.
+DASHBOARD_TYPES_SCHEMA = ToolSchema(tool_name="dashboard_types")
+
 DASHBOARD_TEMPLATES_SCHEMA = ToolSchema(
     tool_name="dashboard_templates",
     fields=[
@@ -4785,6 +4791,7 @@ MCP_PANEL_SCHEMAS: dict[str, ToolSchema] = {
     "panel_publish": PANEL_PUBLISH_SCHEMA,
     "panel_templates": PANEL_TEMPLATES_SCHEMA,
     "dashboard_fields": DASHBOARD_FIELDS_SCHEMA,
+    "dashboard_types": DASHBOARD_TYPES_SCHEMA,
     "dashboard_write": DASHBOARD_WRITE_SCHEMA,
     "dashboard_templates": DASHBOARD_TEMPLATES_SCHEMA,
     "dashboard_preview": DASHBOARD_PREVIEW_SCHEMA,
