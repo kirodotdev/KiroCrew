@@ -115,7 +115,6 @@ describe('pages/chat/page owners', () => {
       'useColdFileTabHydration',
       'useComposerChips',
       'useTurnRecovery',
-      'useComposerDockMetrics',
       'useTranscriptRows',
       'useStableRowKeys',
       'useBusyTurnControls',

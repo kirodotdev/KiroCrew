@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useMemo } from 'react'
 import { AnimatePresence } from 'framer-motion'
 
 import ErrorNotice from '../../../components/ErrorNotice'
@@ -6,63 +6,14 @@ import { TipCard, type useTipTrigger } from '../../../components/TipCard'
 import { i18nT } from '../../../i18n/t'
 import type { RootState } from '../../../store'
 import FolderSuggestionCard from '../FolderSuggestionCard'
-import type { useScrollManager } from '../useScrollManager'
 import type { useComposerSessionControls } from './sessionControls'
 
 /**
- * The composer dock that floats over the bottom of the transcript: the
- * clearance it measures for the scroller underneath, and the memoized band it
- * shows above the composer (session-control failures, the folder-suggestion
- * card, the ambient tip).
+ * The memoized band the composer dock shows above the composer
+ * (session-control failures, the folder-suggestion card, the ambient tip).
+ * The dock's own measurement — the clearance the scroller underneath pays —
+ * is `pages/chat/composerDockMetrics.ts`, shared with the pane.
  */
-
-/**
- * The dock's measured height and scrollbar gutter, plus the composer box ref
- * (the quote flight's target).
- */
-export function useComposerDockMetrics(scrollerRef: ReturnType<typeof useScrollManager>['scrollerRef']) {
-  const inputAreaRef = useRef<HTMLDivElement>(null)
-  // The composer dock floats over the bottom of the transcript scroller, so the
-  // scroller has to be told how much of its bottom edge is covered. Measured
-  // rather than summed from parts: the dock's height is whatever the status
-  // stack, the follow-up chips, the approval bar and the composer's own growth
-  // add up to at this instant, and every one of those changes independently.
-  // A callback ref, not a mount effect: the dock lives inside the pane's
-  // conditional branch, so a `[]` effect can run before it exists and never
-  // look again. The ref fires in the commit phase each time the box mounts or
-  // unmounts, and its synchronous setState lands before paint — the first
-  // painted frame already carries the right padding, where an effect-timed
-  // measurement paints one frame with the last line under the glass, then jumps.
-  const [dockH, setDockH] = useState(0)
-  // The scroller reserves a `scrollbar-gutter: stable` column on its right, and
-  // its rows are centred in the content box that EXCLUDES that column. The dock
-  // is inset by the same width, so its column lines up with the transcript's and
-  // the thumb stays uncovered down to the pane's bottom edge. Measured, not the
-  // 6px the stylesheet asks for: an engine that ignores `::-webkit-scrollbar`
-  // reserves its own width.
-  const [dockGutter, setDockGutter] = useState(0)
-  const dockObserverRef = useRef<ResizeObserver | null>(null)
-  const dockRef = useCallback((el: HTMLDivElement | null) => {
-    dockObserverRef.current?.disconnect()
-    dockObserverRef.current = null
-    if (!el) { setDockH(0); setDockGutter(0); return }
-    const measure = () => {
-      setDockH(el.offsetHeight)
-      const sc = scrollerRef.current
-      setDockGutter(sc ? Math.max(0, sc.offsetWidth - sc.clientWidth) : 0)
-    }
-    measure()
-    if (typeof ResizeObserver === 'undefined') return
-    const ro = new ResizeObserver(measure)
-    ro.observe(el)
-    // The gutter is the scroller's own reserved column, so watch the scroller
-    // too: an engine with overlay scrollbars changes that width without the
-    // dock resizing.
-    if (scrollerRef.current) ro.observe(scrollerRef.current)
-    dockObserverRef.current = ro
-  }, [scrollerRef])
-  return { inputAreaRef, dockH, dockGutter, dockRef }
-}
 
 interface ComposerAboveBandOptions {
   /** Catalog generation: the band's i18nT labels re-key on a catalog load. */

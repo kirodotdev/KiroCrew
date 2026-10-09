@@ -1628,7 +1628,11 @@ session the crewmate ran — a patrol wake, a cron, a sub-agent, a chat you
 opened), not "chats", so it does not contradict a chat that just said the
 crewmate has not spoken. Not "sessions" either: the RFC's vocabulary table keeps
 that word out of user copy. The composer of a crewmate's chat
-addresses the crewmate by name ("Message <name>…"), not the product. The roster row
+addresses the crewmate by name ("Message <name>…"), not the product. The
+composer floats over the transcript like the main chat's (#18279; the dock
+layout in
+[page-layout](../../../website/docs/page-layout.md#decided-the-transcript-scrolls-under-the-composer-glass)),
+so the conversation scrolls under the glass. The roster row
 beside the chat quotes the same thing the chat draws: its `last_message` is
 SPEECH only (`last_speech_info` on the cold read, a
 `member/message` event without `preview` for a machinery row on the live path —

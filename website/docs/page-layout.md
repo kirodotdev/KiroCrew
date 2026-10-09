@@ -304,9 +304,14 @@ controls, and a control under the glass is an ambiguous tap. A failed suggestion
 fetch shows an `ErrorNotice` there instead.
 It is `isolate` so WelcomeView's own z-indexes order its cards against each other
 and never against the composer's, and its column uses `safe center` and compact
-rows under 600px tall so a short window still fits both rows above the dock. The
-side-panel `ChatPane.tsx` keeps
-its bars in flow and needs none of this.
+rows under 600px tall so a short window still fits both rows above the dock.
+
+`ChatPane.tsx` (split panes and a crewmate's chat) floats its composer the same
+way: one dock root (`composer-dock-root`) over the scroller's bottom edge holding
+the jump pill, the bars, the queue, the question card, the notices and the
+composer, measured by the same `useComposerDockMetrics` and paid for by the same
+`DOCK_CLEARANCE_PX` (`pages/chat/composerDockMetrics.ts`, shared by both hosts).
+The pane has no welcome hero, so nothing in it ends above the dock.
 
 The same reading applies at the TOP of a chat that a host crowns with a glass
 chip: the Members page's DM header (the Glass identity pill, the switcher, the

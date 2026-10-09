@@ -4,7 +4,9 @@
 // delegates stick-to-bottom follow to the virtualized transcript behind
 // ChatMessageList (chat-core P5-e) and mounts the shared EdgeFade /
 // JumpToBottomButton chrome. These tests pin the wiring at the host level:
-//   1. both edge fades render (top under the header, bottom above the bars),
+//   1. the top edge fade renders under the header, and there is NO bottom fade:
+//      the composer dock floats over the scroller (ChatPage's layout, #18279)
+//      and the scroller pays for the covered strip with its padding instead,
 //   2. the jump-to-bottom pill appears once the user scrolls up and jumping
 //      lands back at the bottom,
 //   3. the scroller's scroll events drive the pill state,
@@ -156,15 +158,31 @@ describe('ChatPane shared scroll chrome', () => {
     expect((plain.container.querySelector('.relative.z-\\[2\\]') as HTMLElement).style.top).toBe('')
   })
 
-  it('renders both edge fades around the transcript scroller', () => {
+  it('renders the top edge fade only; the composer dock floats over the scroller', () => {
     const { container } = renderPane()
     const topFade = container.querySelector('.bg-gradient-to-b.from-bg')
-    const bottomFade = container.querySelector('.bg-gradient-to-t.from-bg')
     expect(topFade).not.toBeNull()
-    expect(bottomFade).not.toBeNull()
-    // Both are decorative: hidden from the a11y tree and pointer-inert.
+    // Decorative: hidden from the a11y tree and pointer-inert.
     expect(topFade!.getAttribute('aria-hidden')).toBe('true')
-    expect(bottomFade!.getAttribute('aria-hidden')).toBe('true')
+    // No opaque band between transcript and composer: the transcript scrolls
+    // under the glass, so a bottom fade would hide exactly what the layout
+    // exists to show (docs/decisions/2026-10-02-chat-transcript-scrolls-under-the-composer-glass.md).
+    expect(container.querySelector('.bg-gradient-to-t.from-bg')).toBeNull()
+    // The dock is out of flow over the scroller's bottom edge and holds the
+    // composer, so the scroller runs the full height of the pane.
+    const dock = container.querySelector('[data-testid="composer-dock-root"]') as HTMLElement
+    expect(dock).not.toBeNull()
+    expect(dock.className.split(/\s+/)).toEqual(expect.arrayContaining(['absolute', 'bottom-0', 'pointer-events-none']))
+    // Inert on the inner boxes, never the root (see the dockClearance pins):
+    // the jump pill's full-width wrapper is a direct child of the root and
+    // must stay pointer-inert, or it swallows input over the rows behind it.
+    expect(dock.className.split(/\s+/)).not.toContain('dock-inert')
+    const inputArea = screen.getAllByRole('textbox')[0].closest('.dock-inert') as HTMLElement
+    expect(inputArea).not.toBeNull()
+    expect(inputArea.parentElement).toBe(dock)
+    expect(dock.querySelector('[data-testid="composer-status-stack"]')!.className.split(/\s+/)).toContain('dock-inert')
+    const scroller = container.querySelector('.chat-container') as HTMLElement
+    expect(dock.compareDocumentPosition(scroller) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy()
   })
 
   it('shows the jump pill after a user scroll up, and jumping returns to the bottom', () => {
@@ -183,6 +201,14 @@ describe('ChatPane shared scroll chrome', () => {
     // Scrolled up: pill appears; clicking it lands at the bottom and hides it.
     act(() => { state.scrollTop = 100; scroller.dispatchEvent(new Event('scroll')) })
     const pill = screen.getByLabelText('Scroll to bottom')
+    // The pill's full-width wrapper is a direct child of the dock root and
+    // stays pointer-inert (only the button catches input), so the strip above
+    // the composer never swallows clicks or wheel meant for the rows under it.
+    const pillWrap = pill.parentElement as HTMLElement
+    expect(pillWrap.parentElement).toBe(container.querySelector('[data-testid="composer-dock-root"]'))
+    expect(pillWrap.className.split(/\s+/)).toContain('pointer-events-none')
+    expect(pillWrap.className.split(/\s+/)).not.toContain('dock-inert')
+    expect(pill.className.split(/\s+/)).toContain('pointer-events-auto')
     act(() => { pill.click() })
     flushFrames()
     expect(state.scrollTop).toBe(600)

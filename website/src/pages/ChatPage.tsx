@@ -93,7 +93,8 @@ import { useFollowUpChips } from './chat/page/followUpChips'
 import { useComposerSessionControls, useSessionControlChips } from './chat/page/sessionControls'
 import { useComposerChips } from './chat/page/composerChips'
 import { useTurnRecovery } from './chat/page/turnRecovery'
-import { useComposerAboveBand, useComposerDockMetrics } from './chat/page/composerDock'
+import { useComposerAboveBand } from './chat/page/composerDock'
+import { DOCK_CLEARANCE_PX, useComposerDockMetrics } from './chat/composerDockMetrics'
 import { useStableRowKeys, useTranscriptRows } from './chat/page/transcriptRows'
 import { useBusyTurnControls } from './chat/page/busyTurnControls'
 import { slotBusySteer } from '../components/chat-input/busySend'
@@ -188,19 +189,6 @@ const REAL_GESTURE_AUTH_MS = 20000
  */
 const TRANSCRIPT_TAIL_SPACER_PX = 16
 
-/**
- * Breathing room, in px, between the composer dock's top edge and the last line of
- * the transcript, on top of the dock's own measured height.
- *
- * The transcript scroller runs the full height of the pane and the dock floats
- * over its bottom edge (iOS toolbar layout), so the scroller's `paddingBottom` is
- * `dockH + this`: exactly the strip the dock covers, plus this margin, so the last
- * line stops clear of the glass instead of under it. There is no opaque fade band
- * between the two any more — the transcript scrolls under the glass and the
- * material's own blur and tint are what keep the dock legible over it.
- * ChatPage.dockClearance.test.tsx pins the wiring.
- */
-const DOCK_CLEARANCE_PX = 16
 /**
  * Strip of screen the mobile sessions drawer deliberately leaves uncovered, so a
  * sliver of the conversation behind it stays visible.

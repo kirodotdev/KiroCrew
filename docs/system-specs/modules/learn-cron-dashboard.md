@@ -4293,7 +4293,7 @@ scroll shell) and the owners under `pages/chat/page/`:
 | `transcriptJumps.ts` | Search-result, "Show in chat" and `?msg=` jumps |
 | `composerChips.ts`, `sessionRosters.ts`, `sessionControls.ts`, `sessionAutomation.ts`, `followUpChips.ts`, `welcomeState.ts` | The composer's model / effort / project chips and pin-to-agent write; agent and model rosters (the peer's for a remote-bound session); app session controls; the session's automation; follow-up chips; the welcome screen's suggestions |
 | `notificationTs.ts` | `uniqueNotificationTs`, a notification id unique within the tab |
-| `composerDock.tsx`, `ChatPaneNotices.tsx`, `MobileTopBar.tsx` | The composer dock's measurement and above-band; the pane's notices; the phone bar's share of the single top bar |
+| `composerDock.tsx`, `ChatPaneNotices.tsx`, `MobileTopBar.tsx` | The composer dock's above-band (its measurement is `pages/chat/composerDockMetrics.ts`, shared with `ChatPane`); the pane's notices; the phone bar's share of the single top bar |
 
 ChatPage keeps the send path, its `switchSlot` sites (the signed-token flow,
 fork, the error hand-off, the side chat, the worktree follow-up, split view and
