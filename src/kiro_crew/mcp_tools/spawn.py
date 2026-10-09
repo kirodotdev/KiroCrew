@@ -1400,6 +1400,24 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
     def _redact_sa(text: str) -> str:
         return redact(text)
 
+    def _inline_result(aid: str, raw: str) -> str:
+        """A finished child's retained output as this reply carries it.
+
+        Redacted, and past ``COMPLETION_KEEP_DEFAULT_CHARS`` replaced by the same
+        summary plus disk path that ``spawn_run`` gives, so a large transcript
+        does not fill the caller's context window. One rule for a child that
+        completed and one that ended in error.
+        """
+        result_text = _redact_sa(raw)
+        if len(result_text) > COMPLETION_KEEP_DEFAULT_CHARS:
+            try:
+                result_path = str(agent_dir_for_display(aid) / "result.txt")
+            except (ValueError, OSError):
+                result_path = ""
+            if result_path:
+                result_text = mcp_core.summarize_result(result_text, result_path)
+        return result_text
+
     # Validate individual agent entries (schema guarantees dict entries)
     for entry in agents_input:
         p = entry.get("prompt", "")
@@ -1564,6 +1582,13 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
                 "status": "error",
                 "error": _redact_sa(sa_st["error"]),
             }
+            if sa_st.get("done"):
+                # On a finished run ``error`` is why it ended badly, sent next to
+                # the output the run retained (a timed-out run keeps its partial
+                # work). This call marks the child collected, so its completion
+                # event is not injected either: the reply is where that output
+                # reaches the caller.
+                failure["text"] = _inline_result(aid, sa_st.get("result", ""))
             if aid in sa_deferred and not sa_st.get("done"):
                 failure["hint"] = (
                     "accepted at spawn time; its state couldn't be read now; "
@@ -1579,19 +1604,7 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
         else:
             completed += 1
             _settled_ids.add(aid)
-            result_text = _redact_sa(sa_st.get("result", ""))
-            # Apply the same summarize_result treatment as spawn_run:
-            # when results exceed completion_keep threshold, return a
-            # summary + disk path instead of the full transcript. This
-            # prevents massive tool_results from filling the model's
-            # context window and causing attention degradation.
-            if len(result_text) > COMPLETION_KEEP_DEFAULT_CHARS:
-                try:
-                    result_path = str(agent_dir_for_display(aid) / "result.txt")
-                except (ValueError, OSError):
-                    result_path = ""
-                if result_path:
-                    result_text = mcp_core.summarize_result(result_text, result_path)
+            result_text = _inline_result(aid, sa_st.get("result", ""))
             sa_results.append(
                 json.dumps(
                     {

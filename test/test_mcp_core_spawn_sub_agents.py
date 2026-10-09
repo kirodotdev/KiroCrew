@@ -550,6 +550,108 @@ class TestSpawnSubAgentsSummarization:
             assert mock_get.call_count >= 2
 
 
+class TestSpawnSubAgentsFailedChildTranscript:
+    """A finished child that ended in error keeps the output it retained.
+
+    On a finished run (``done`` is True) the server's ``error`` is the reason the
+    run ended badly, sent next to the ``result`` the run retained. The reply
+    carries that result as ``text``, with the same redaction and size cap as a
+    completed child. A payload that is not a finished run (a failed poll) carries
+    no result, and its block keeps its keys.
+    """
+
+    @staticmethod
+    def _blocks(reply: str) -> list[dict]:
+        import json
+
+        return [json.loads(block) for block in reply.split("\n\n")]
+
+    def _run(self, payload: dict, agent_id: str = "a1") -> list[dict]:
+        with patch("kiro_crew.mcp_core._post") as mock_post, \
+             patch("kiro_crew.mcp_core._get") as mock_get, \
+             patch("kiro_crew.mcp_core.sel"), \
+             patch.dict("os.environ", {"KIROCREW_SESSION_KEY": "s"}):
+            mock_post.return_value = {"id": agent_id}
+            mock_get.return_value = payload
+            reply = _call_tool("spawn_sub_agents", {
+                "agents": [{"prompt": "task"}],
+                "solo_reason": "bulk_data",
+            })
+        return self._blocks(reply)
+
+    def test_finished_child_that_ended_in_error_keeps_its_transcript(self):
+        blocks = self._run({
+            "done": True,
+            "agent": "w",
+            "error": "Timed out after 30 minutes",
+            "result": "step 1 done; step 2 wrote notes.md",
+        })
+
+        assert blocks == [{
+            "agent": "w",
+            "status": "error",
+            "error": "Timed out after 30 minutes",
+            "text": "step 1 done; step 2 wrote notes.md",
+        }]
+
+    def test_failed_childs_transcript_is_redacted(self):
+        blocks = self._run({
+            "done": True,
+            "agent": "w",
+            "error": "crashed",
+            "result": "key AKIAIOSFODNN7EXAMPLE found",
+        })
+
+        assert blocks[0]["status"] == "error"
+        assert "found" in blocks[0]["text"]
+        assert "AKIAIOSFODNN7EXAMPLE" not in blocks[0]["text"]
+
+    def test_large_transcript_of_a_failed_child_is_summarized_with_its_path(self):
+        from kiro_crew.context_management import COMPLETION_KEEP_DEFAULT_CHARS
+
+        large = "word " * 1000
+        assert len(large) > COMPLETION_KEEP_DEFAULT_CHARS
+        with patch("kiro_crew.mcp_core.summarize_result") as mock_summarize:
+            mock_summarize.return_value = "summary with path"
+            blocks = self._run(
+                {"done": True, "agent": "w", "error": "crashed", "result": large},
+                agent_id="fail123",
+            )
+
+        mock_summarize.assert_called_once()
+        text_arg, path_arg = mock_summarize.call_args[0]
+        assert text_arg == large
+        assert "fail123" in path_arg and path_arg.endswith("result.txt")
+        assert blocks[0]["text"] == "summary with path"
+
+    def test_failed_poll_of_an_unfinished_child_carries_no_text(self):
+        blocks = self._run({"done": False, "agent": "w", "error": "HTTP 503"})
+
+        assert blocks == [{"agent": "w", "status": "error", "error": "HTTP 503"}]
+
+    def test_finished_child_that_ended_in_error_is_still_counted_as_errored(self):
+        with patch("kiro_crew.mcp_core._post") as mock_post, \
+             patch("kiro_crew.mcp_core._get") as mock_get, \
+             patch("kiro_crew.mcp_core.sel") as mock_sel, \
+             patch.dict("os.environ", {"KIROCREW_SESSION_KEY": "s"}):
+            mock_post.return_value = {"id": "a1"}
+            mock_get.return_value = {
+                "done": True, "agent": "w", "error": "crashed", "result": "partial",
+            }
+            _call_tool("spawn_sub_agents", {
+                "agents": [{"prompt": "task"}],
+                "solo_reason": "bulk_data",
+            })
+
+        final = [
+            c.kwargs for c in mock_sel.return_value.log_tool_invocation.call_args_list
+            if c.kwargs.get("outcome") in ("completed", "partial")
+        ]
+        assert final and final[-1]["outcome"] == "partial"
+        assert final[-1]["metadata"]["errored"] == 1
+        assert final[-1]["metadata"]["completed"] == 0
+
+
 class TestSpawnList:
     def test_spawn_list_renders_running_and_done_agents(self):
         with patch("kiro_crew.mcp_core._get") as mock_get, \
