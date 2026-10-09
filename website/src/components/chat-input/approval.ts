@@ -235,7 +235,7 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
       // orphan: leaving it up makes every button look broken, so clear it and
       // say why instead of only logging to the console.
       if (err instanceof ApiError && err.status === 404) {
-        dispatch(resolveByApprovalId({ id: approvalId, slot: activeSlot || undefined, decision: 'stale' }))
+        dispatch(resolveByApprovalId({ id: approvalId, slot: activeSlot || undefined, decision: 'stale', allPending: true }))
         // Say WHOSE turn expired. Unattended sources deny-fast on a short
         // window (minutes), so by the time a human reads the card the job has
         // usually already been denied and moved on — "expired" alone reads as

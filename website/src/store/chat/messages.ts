@@ -271,8 +271,8 @@ export const messageReducers = {
     if (!resolve(state.messages)) resolve(state.slotMessages[safeKey(slot)])
   },
   removeByApprovalId(state: ChatState, action: PayloadAction<string>) { state.messages = state.messages.filter(m => m.meta?.approval_id !== action.payload) },
-  resolveByApprovalId(state: ChatState, action: PayloadAction<{ id: string; slot?: string; decision?: string; registry?: string }>) {
-    const { id, slot, registry } = action.payload
+  resolveByApprovalId(state: ChatState, action: PayloadAction<{ id: string; slot?: string; decision?: string; registry?: string; allPending?: boolean }>) {
+    const { id, slot, registry, allPending } = action.payload
     if (!slot || isUnsafeKey(slot)) return
     const messages = slot === state.activeSlot
       ? state.messages
@@ -292,6 +292,13 @@ export const messageReducers = {
     // write downgraded the decision. The reverse direction stays open: a
     // real decision landing after 'stale' is new information and overwrites.
     if (m?.meta && !(decision === 'stale' && m.meta.resolved)) m.meta.resolved = decision
+    // `allPending`: a bare-id 404 proves NO request is pending under this id
+    // (`resolve_approval` checks the state and slot registries), yet a
+    // chat-runner row and a coordinator row can carry it. Settling only
+    // `matches[0]` left the other row up, so the bar stayed under its
+    // "expired" notice. A successful decide does not pass this: it answered
+    // ONE request, and another row may still be live.
+    if (allPending) for (const other of matches ?? []) if (other.meta && !other.meta.resolved) other.meta.resolved = decision
     // If rejected, mark the matching toolLog entry so the pill can show a rejection icon.
     // Every rejection token counts: a reject-once that missed this would leave
     // the pill unmarked, and ToolCallLine then reads its 🚫 sibling as an
