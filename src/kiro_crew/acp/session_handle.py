@@ -1225,6 +1225,12 @@ class AcpSessionHandle:
         # (None otherwise). Arms the post-failure budget in _dispatch_events,
         # which ends an abandoned turn instead of draining to the ceiling.
         self._compaction_failed_at: float | None = None
+        # The request id of a prompt whose consumer left before its turn ended
+        # (a cancelled or closed stream), or None. The backend may still be
+        # running that turn and writing its frames to this session's queue, so
+        # the next turn cancels it and waits for its answer before sending
+        # (``_close_abandoned_turn``).
+        self._abandoned_prompt_id: int | None = None
         # Retryability of the LAST failed compaction, read by the dashboard's
         # STOP_REASON_COMPACTION_FAILED branch to decide between re-queuing the
         # abandoned message and giving up. Public (no leading underscore)
@@ -1667,6 +1673,8 @@ class AcpSessionHandle:
             self, "_steering_cancel_tasks", None
         ):
             await self._settle_abandoned_steering()
+        if self._abandoned_prompt_id is not None:
+            await self._close_abandoned_turn()
 
         self._cancelled = False
         self._cancel_ts = 0.0
@@ -2163,6 +2171,13 @@ class AcpSessionHandle:
             # Reached only when the dispatch loop returned on its own — not on a
             # close, a cancel, or an exception.
             _exhausted_clean = True
+        except (asyncio.CancelledError, GeneratorExit):
+            if not _yielded_terminal:
+                # The consumer left before the turn ended (a caller's timeout, a
+                # cancelled task, a closed stream). The backend has not been told,
+                # so its late frames would reach the next turn on this session.
+                self._abandoned_prompt_id = req_id
+            raise
         finally:
             if _mark is not None:
                 _mark(self._session_id, False)
@@ -4315,6 +4330,35 @@ class AcpSessionHandle:
                 logger.warning("destroy: failed to delete transcript %s", target, exc_info=True)
 
     # ── Internal dispatch ──
+
+    async def _close_abandoned_turn(self) -> None:
+        """Cancel the turn a consumer abandoned and wait for its answer.
+
+        ``session/update`` frames carry no request id, so the only boundary
+        between the abandoned turn's frames and the next turn's is the abandoned
+        prompt's own answer. This sends ``session/cancel`` and waits up to
+        ``_CANCEL_GRACE_SECS`` for that answer; :meth:`_wait_for_response`
+        re-queues every frame it read on the way, and the pre-turn drain that
+        follows discards them. A backend that does not answer within the grace
+        costs that one wait, logged, and the turn goes ahead.
+
+        The id is cleared only once the answer arrived or the grace ended. A turn
+        cancelled while it waits here, or that fails to send the cancel, leaves
+        the id in place, so the next turn closes the abandoned turn again.
+        """
+        req_id = self._abandoned_prompt_id
+        if req_id is None:
+            return
+        await self._runtime.send_notification(METHOD_CANCEL, {"sessionId": self._session_id})
+        try:
+            await self._wait_for_response(req_id, timeout=_CANCEL_GRACE_SECS)
+        except AcpError as exc:
+            logger.info(
+                "abandoned turn did not close cleanly before the next prompt (%s)",
+                type(exc).__name__,
+            )
+        if self._abandoned_prompt_id == req_id:
+            self._abandoned_prompt_id = None
 
     async def _wait_for_response(self, req_id: int, timeout: float = 30.0) -> JsonRpcMessage:
         """Drain queue until we get the response for req_id.
