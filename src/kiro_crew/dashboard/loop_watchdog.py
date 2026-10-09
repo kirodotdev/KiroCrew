@@ -57,8 +57,10 @@ things turn the silence that follows a wedge into an actionable artifact:
 
 2. **Soft observability (the daemon thread).**  A daemon thread measures the
    silence since the last beat on the **monotonic clock** and, in order:
-   emits stall enrichment (the stall timestamp and this process's
-   established TCP sockets) to the logger at WARNING at ``enrich_after``;
+   emits stall enrichment (the stall timestamp, this process's established
+   TCP sockets, and the main thread's Python stack as read from the daemon
+   thread, which is the frame the loop thread is blocked in) to the logger
+   at WARNING at ``enrich_after``;
    dumps all thread stacks *without* exiting at ``stall_after``, re-arming on
    recovery.  While the exit is armed that soft dump stays on stderr, so a
    recovered stall is not classified as a fatal crash; when no exit can
@@ -107,6 +109,69 @@ logger = logging.getLogger("kiro_crew.dashboard.loop_watchdog")
 #: two clocks otherwise advance in lock-step; on the wall-clock fallback a
 #: small NTP slew stays far below this floor.
 SUSPEND_SKEW_MIN_SECS: float = 2.0
+
+#: Innermost main-thread frames an enrichment line carries.  Twelve reaches from
+#: the blocking call up through the asyncio handle that ran it, which is the
+#: attribution an operator needs; a deeper chain would crowd the journal line.
+_STACK_MAX_FRAMES = 12
+
+#: Heading over the main-thread stack in the stall enrichment line.  The daemon
+#: thread reads that stack while the loop is still silent, so it is the frame
+#: the loop thread is blocked in.
+_STALL_STACK_HEADER = "main thread stack, read while the loop is silent (outermost call first):"
+
+#: Heading over the main-thread stack in the heartbeat-lag line.  The heartbeat
+#: measures a lag only once the loop runs again, and the capture follows that
+#: measurement on a worker thread, so the stack is what the loop thread runs at
+#: capture time: the blocking call only while that block is still in progress
+#: or has recurred.
+_LAG_STACK_HEADER = (
+    "main thread stack at capture time, read after the lag was measured (outermost call "
+    "first; it is the frame that blocked only if that block was still running or had recurred):"
+)
+
+#: The one line the lag enrichment carries instead of a stack when the loop
+#: thread is back in its selector at capture time: twelve frames of the idle
+#: loop would name nothing and invite a reader to trust the wrong frame.
+_LAG_LOOP_IDLE_LINE = (
+    "main thread at capture time: idle in the event loop's selector "
+    "(the frame that blocked had already returned)"
+)
+
+#: File names of the innermost Python frame of an idle event loop: the selector
+#: module on POSIX, the proactor's poll on Windows.
+_LOOP_IDLE_FRAME_FILES = ("selectors.py", "windows_events.py")
+
+
+def _default_stack_lines() -> list[str]:
+    """The main thread's Python stack, outermost call first, bounded and path-shortened.
+
+    One frame walk serves the gateway: :func:`kiro_crew.diag.threads.main_thread_stack`
+    is the reader the diag recorder's ``loop_stall`` event uses, and it already
+    reads the main thread from any thread through ``sys._current_frames``,
+    keeps the innermost frames and shortens each path to its last two
+    components.  Here that bound is :data:`_STACK_MAX_FRAMES`, and a cut stack
+    says so in its first line.
+    """
+    # Deferred on purpose: `kiro_crew.diag.threads` imports `perf_sampler`, this
+    # module is imported on the gateway boot path, and the first read happens
+    # on the watchdog or a worker thread at a lag or stall, never at boot.
+    from kiro_crew.diag.threads import main_thread_stack
+
+    captured = main_thread_stack(max_depth=_STACK_MAX_FRAMES)
+    frames = captured["main_thread_stack"]
+    if not frames:
+        return ["(no frame for the main thread)"]
+    lines = [f"  {frame}" for frame in frames]
+    if captured["stack_truncated"]:
+        lines.insert(0, f"  ... outer frames beyond the innermost {_STACK_MAX_FRAMES} omitted")
+    return lines
+
+
+def _loop_idle_at(innermost_frame: str) -> bool:
+    """True when *innermost_frame* is the event loop waiting in its selector."""
+    return any(name in innermost_frame for name in _LOOP_IDLE_FRAME_FILES)
+
 
 #: The mechanism the last :func:`_default_arm_later` armed the dump-then-exit
 #: on — ``"alarm"`` or ``"faulthandler"`` — or ``None`` while it holds no
@@ -316,9 +381,22 @@ class LoopStallWatchdog:
             recovered stall read as a fatal crash on the next startup.  Both
             production stalls to date froze the loop inside websocket frame
             parsing; this records *which* socket without needing a repro.
+            The main thread's stack follows the socket table in the same
+            line (see ``stack``): read by this thread while the loop is
+            silent, it is the frame the loop thread is blocked in, so a stall
+            that recovers before the alarm's dump still leaves its blocker in
+            the journal.
         enrich: Enrichment collector ``silence_secs -> lines``, injectable for
             tests.  Defaults to
             :func:`kiro_crew.dashboard.stall_enrichment.collect_stall_enrichment`.
+        stack: Main-thread stack reader ``() -> lines``, appended under its own
+            heading to the stall enrichment line and to the heartbeat-lag line;
+            injectable for tests.  Defaults to :func:`_default_stack_lines`,
+            which reads through :func:`kiro_crew.diag.threads.main_thread_stack`
+            and keeps the innermost :data:`_STACK_MAX_FRAMES` frames.  On the
+            lag line a stack whose innermost frame is the loop's selector is
+            replaced by one idle line.  A reader that raises costs the line
+            only its stack block.
         log: Logger, injectable for tests.
     """
 
@@ -339,6 +417,7 @@ class LoopStallWatchdog:
         dump_file: "typing.IO[str] | typing.Any | None" = None,
         enrich_after: float = 15.0,
         enrich: "Callable[[float], list[str]] | None" = None,
+        stack: "Callable[[], list[str]] | None" = None,
         log: logging.Logger | None = None,
     ) -> None:
         self._stall_after = stall_after
@@ -352,6 +431,7 @@ class LoopStallWatchdog:
         self._cancel_later = cancel_later or _default_cancel_later
         self._enrich_after = enrich_after
         self._enrich = enrich or collect_stall_enrichment
+        self._stack = stack or _default_stack_lines
         self._enriched = False
         self._lag_enriched = False
         self._lag_inflight = False
@@ -427,7 +507,9 @@ class LoopStallWatchdog:
         stall read as a fatal crash on the next startup.  Only faulthandler
         writes stacks into it.  The journal WARNING survives both outcomes —
         the process lives to keep logging on recovery, and journald has
-        already persisted the line when the alarm ends a fatal stall.
+        already persisted the line when the alarm ends a fatal stall.  That
+        line carries the main thread's stack as read from this thread, so a
+        stall that recovers before any dump still names its blocking frame.
         """
         mono = self._now()
         self._note_resume(mono)
@@ -439,6 +521,7 @@ class LoopStallWatchdog:
             except Exception:  # pragma: no cover - collector already degrades; belt & braces
                 self._log.exception("loop watchdog stall enrichment failed")
                 lines = ["=== STALL ENRICHMENT FAILED (collector raised) ==="]
+            lines = [*lines, *self._stack_block(_STALL_STACK_HEADER)]
             self._log.warning(
                 "event loop silent %.1fs — stall enrichment captured:\n%s",
                 silence,
@@ -475,9 +558,7 @@ class LoopStallWatchdog:
             return False
         # Healthy / recovered — silence is back below the first threshold.
         if self._dumped:
-            self._log.warning(
-                "event loop recovered after stall (last beat %.1fs ago)", silence
-            )
+            self._log.warning("event loop recovered after stall (last beat %.1fs ago)", silence)
         if self._enriched and not self._dumped:
             self._log.warning(
                 "event loop recovered after stall enrichment (last beat %.1fs ago)",
@@ -513,19 +594,51 @@ class LoopStallWatchdog:
         Logger only, never ``dump_file``, for the crash-sentinel reason that
         :meth:`check` gives. The collector's own header describes a capture
         taken during a stall, so it is replaced. Reads procfs: run off the loop.
+
+        The main thread's stack closes the line. The heartbeat measures a lag
+        only once the loop runs again, and this capture runs after that on a
+        worker thread, so the stack is what the loop thread runs at capture
+        time. When a block is still in progress or recurs (a loop starved by
+        repeated synchronous work, which never goes silent long enough for
+        :meth:`check` to enrich), that is the blocking frame, and the heading
+        says under which condition. When the loop is back in its selector the
+        frame that blocked has returned, the stack would name nothing, and one
+        idle line stands in for it.
         """
         try:
-            lines = self._enrich(lag)[1:]
-        except Exception:  # pragma: no cover - collector already degrades
-            self._log.exception("loop watchdog lag enrichment failed")
-            lines = ["(collector raised)"]
+            try:
+                lines = self._enrich(lag)[1:]
+            except Exception:  # pragma: no cover - collector already degrades
+                self._log.exception("loop watchdog lag enrichment failed")
+                lines = ["(collector raised)"]
+            lines = [*lines, *self._lag_stack_block()]
         finally:
             self._lag_inflight = False
         self._log.warning(
-            "event-loop heartbeat lag %.1fs — socket snapshot after recovery:\n%s",
+            "event-loop heartbeat lag %.1fs — snapshot after recovery:\n%s",
             lag,
             "\n".join(lines),
         )
+
+    def _lag_stack_block(self) -> list[str]:
+        """The lag line's stack block, or the idle line when the loop is in its selector."""
+        block = self._stack_block(_LAG_STACK_HEADER)
+        if len(block) > 1 and _loop_idle_at(block[-1]):
+            return [_LAG_LOOP_IDLE_LINE]
+        return block
+
+    def _stack_block(self, header: str) -> list[str]:
+        """*header* over the main thread's stack; a one-line note when the read fails.
+
+        The default reader never raises; an injected one may, and a failed
+        stack read must cost the enrichment line only its stack block, never
+        the sockets or the lag figure above it.
+        """
+        try:
+            return [header, *self._stack()]
+        except Exception:  # noqa: BLE001 - the stack is an addition to the line, never its gate
+            self._log.debug("loop watchdog main-thread stack capture failed", exc_info=True)
+            return [header, "(main-thread stack capture failed)"]
 
     def _note_resume(self, mono: float) -> None:
         """Compare the two clocks' advance since the last poll; log a suspend once.
@@ -588,9 +701,7 @@ class LoopStallWatchdog:
             except Exception:  # pragma: no cover - degrade to soft dump only
                 self._log.exception("loop watchdog failed to arm the stall alarm")
                 self._later_active = False
-        self._thread = threading.Thread(
-            target=self._run, name="loop-stall-watchdog", daemon=True
-        )
+        self._thread = threading.Thread(target=self._run, name="loop-stall-watchdog", daemon=True)
         self._thread.start()
         if self._exit_after is not None and self._enrich_after >= self._exit_after:
             # Not fatal — enrichment just never lands before the exit.  Flag it
