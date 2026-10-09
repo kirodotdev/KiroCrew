@@ -119,9 +119,10 @@ describe('latinLeaks', () => {
     expect(latinLeaks('https://<your-host>')).toEqual([])
   })
 
-  it('ignores interpolation placeholders and URLs, which pass through un-accented', () => {
+  it('ignores interpolation placeholders, URLs and canonical paths, which pass through un-accented', () => {
     expect(latinLeaks('{{count}}')).toEqual([])
     expect(latinLeaks('https://github.com/owner/repo')).toEqual([])
+    expect(latinLeaks('/Users/you/projects/myrepo')).toEqual([])
   })
 
   it('honours a raised minLetters', () => {

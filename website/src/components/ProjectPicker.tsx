@@ -5,6 +5,7 @@ import { FolderOpen, ChevronRight, ChevronLeft, Clock, Search, Star } from 'luci
 import { api } from '../api/client'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
 import ErrorNotice from './ErrorNotice'
+import { Popover, PopoverAnchor, PopoverContent } from './ui/popover'
 import { reportForError, type ErrorReport } from '../utils/errorReport'
 import { endsWithSeparator, isWindowsPath, lastSegment, parentIsDriveList, pathSeparator, stripTrailingSeparator } from '../utils/browsePath'
 import { searchErrorCause, type SearchErrorCause } from '../lib/searchErrorCause'
@@ -167,6 +168,9 @@ interface Props {
   anchorRef?: RefObject<HTMLElement | null>
   anchorRect?: DOMRect | null
   onSelect: (path: string) => void
+  /** Join a Radix modal dialog's pointer, focus, dismissal and scroll layers.
+   *  Opt-in so standalone and non-Radix-modal callers retain their behavior. */
+  modal?: boolean
   /**
    * Turn on the agent hand-off in the listing-failure notice. The hand-off
    * navigates to the chat and unmounts whatever this popover floats over, so
@@ -185,7 +189,7 @@ interface Props {
   startPath?: string
 }
 
-export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRect, onSelect, errorHandoff = false, startPath = '' }: Props) {
+export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRect, onSelect, modal = false, errorHandoff = false, startPath = '' }: Props) {
   const [tab, setTab] = useState<'favorites' | 'recent' | 'browse'>('recent')
   const [input, setInput] = useState('')
   const ime = useImeGuard()
@@ -438,7 +442,7 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
   }, [open, browse])
 
   useEffect(() => {
-    if (!open) return
+    if (!open || modal) return
     let cleanup = () => {}
     const timer = setTimeout(() => {
       const handler = (e: MouseEvent) => {
@@ -454,7 +458,7 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
       cleanup = () => document.removeEventListener('mousedown', handler)
     }, 0)
     return () => { clearTimeout(timer); cleanup() }
-  }, [open, onOpenChange, btnRef, getAnchorRect])
+  }, [open, modal, onOpenChange, btnRef, getAnchorRect])
 
   const select = (path: string) => {
     // The browse input carries a trailing delimiter for typing continuation
@@ -636,19 +640,19 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
     e.stopPropagation()
   }
 
-  return createPortal(
-    // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- keyboard-isolation barrier (see above), not an activatable control; there is no behaviour for a keyboard to be given, and every control inside here is a real input or button. Adding a role/tab stop would advertise an interaction this element does not have.
-    <div ref={dropRef} onKeyDown={isolateKeys} className="fixed z-[9999] bg-bg-elevated border border-border rounded-xl shadow-xl w-[400px] max-w-[calc(100vw-16px)] flex flex-col overflow-hidden animate-slide-up" style={(() => {
-      const dropMinH = 200
-      const spaceBelow = window.innerHeight - anchorR.bottom - 8
-      const flipUp = spaceBelow < dropMinH || anchorR.bottom > window.innerHeight / 2
-      const left = Math.max(8, Math.min(anchorR.right - 400, window.innerWidth - 408))
-      if (flipUp) {
-        const spaceAbove = anchorR.top - 8
-        return { bottom: window.innerHeight - anchorR.top + 4, left, height: Math.min(460, Math.max(200, spaceAbove)) }
-      }
-      return { top: anchorR.bottom + 4, left, height: Math.min(460, Math.max(200, spaceBelow)) }
-    })()}>
+  const dropMinH = 200
+  const spaceBelow = window.innerHeight - anchorR.bottom - 8
+  const flipUp = spaceBelow < dropMinH || anchorR.bottom > window.innerHeight / 2
+  const spaceAbove = anchorR.top - 8
+  const height = Math.min(460, Math.max(200, flipUp ? spaceAbove : spaceBelow))
+  const left = Math.max(8, Math.min(anchorR.right - 400, window.innerWidth - 408))
+  const position = flipUp
+    ? { bottom: window.innerHeight - anchorR.top + 4, left, height }
+    : { top: anchorR.bottom + 4, left, height }
+
+  const panel = (
+    // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- keyboard-isolation barrier, not an activatable control; controls inside are inputs or buttons.
+    <div ref={dropRef} onKeyDown={isolateKeys} className={`z-[9999] bg-bg-elevated border border-border rounded-xl shadow-xl w-[400px] max-w-[calc(100vw-16px)] flex flex-col overflow-hidden animate-slide-up ${modal ? 'relative' : 'fixed'}`} style={modal ? { height } : position}>
       {/* Tabs */}
       <div className="flex border-b border-border">
         <button className={`flex-1 px-3 py-2 text-[12px] font-medium flex items-center justify-center gap-1.5 transition-colors ${tab === 'favorites' ? 'text-accent border-b-2 border-accent' : 'text-muted hover:text-text'}`} onMouseDown={e => { e.preventDefault(); setTab('favorites') }}>
@@ -969,7 +973,23 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
           </div>
         </>
       )}
-    </div>,
-    document.body
+    </div>
+  )
+
+  if (!modal) return createPortal(panel, document.body)
+  return (
+    <Popover open={open} onOpenChange={onOpenChange} modal>
+      <PopoverAnchor virtualRef={{ current: { getBoundingClientRect: () => anchorR } }} />
+      <PopoverContent
+        asChild
+        side={flipUp ? 'top' : 'bottom'}
+        align="end"
+        collisionPadding={8}
+        className="w-[400px] max-w-[calc(100vw-16px)] rounded-xl p-0"
+        onCloseAutoFocus={e => { e.preventDefault(); btnRef?.current?.focus() }}
+      >
+        {panel}
+      </PopoverContent>
+    </Popover>
   )
 }
