@@ -567,7 +567,14 @@ class TerminalCoordinator(ManagerComponent):
         Note the recovery respawn's own ``_running_count += 1`` re-admit is
         unaffected: it runs after the interrupted run's ``finally`` has already
         released, and this token is per-``SubagentInfo``.
+
+        A ``queued`` record never holds a slot: admission registers a fresh,
+        unqueued record when it takes one, and the records left ``queued`` are a
+        waiting row's and a queued stop's terminal record. So no path frees a
+        slot through one, whichever terminal path reaches it.
         """
+        if info.queued:
+            return False
         if info._slot_released:
             return False
         info._slot_released = True

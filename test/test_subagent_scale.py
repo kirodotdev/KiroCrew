@@ -17,13 +17,15 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import pathlib
 import re
 import time
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from overload_fakes import settle_depth_emits, settle_store_writes
+from overload_fakes import ManagerHarness, settle_depth_emits, settle_store_writes, wait_taskq_open
 
 from kiro_crew import subagent as subagent_module
 from kiro_crew.subagent import (
@@ -802,6 +804,89 @@ class TestBatchIdentity:
             info = mgr.spawn("solo task")
             await asyncio.sleep(0)
         assert info.batch_id == "" and info.batch_total == 0
+
+
+@contextlib.contextmanager
+def _record_running_count(mgr: SubagentManager) -> Iterator[list[int]]:
+    """Record every value written to ``mgr._running_count`` while the block runs."""
+    writes: list[int] = []
+    current = {"count": mgr.__dict__.pop("_running_count")}
+
+    def _get(self: SubagentManager) -> int:
+        return current["count"] if self is mgr else self.__dict__["_running_count"]
+
+    def _set(self: SubagentManager, value: int) -> None:
+        if self is mgr:
+            writes.append(value)
+            current["count"] = value
+        else:
+            self.__dict__["_running_count"] = value
+
+    with patch.object(SubagentManager, "_running_count", property(_get, _set), create=True):
+        try:
+            yield writes
+        finally:
+            mgr.__dict__["_running_count"] = current["count"]
+
+
+class TestSecondStopOfAQueuedRun:
+    """A second Stop of a run stopped while it waited frees no slot and reaps nothing.
+
+    The first Stop registers the queued stop's terminal record (``queued=True``,
+    ``done=False`` until its report task runs). A second Stop in that window, the
+    same tick (a double click) or the next await, must answer "not running"
+    instead of reaping that record as a live run, which would free a lane slot
+    two running agents still hold and let the pump start a third.
+    """
+
+    CAP = 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("concurrent", [True, False], ids=["concurrent", "sequential"])
+    async def test_second_stop_frees_no_slot_and_starts_nothing(self, concurrent: bool) -> None:
+        h = ManagerHarness(max_concurrent=self.CAP)
+        reports: list[str] = []
+
+        async def on_done(info):  # type: ignore[no-untyped-def]
+            reports.append(info.id)
+
+        h.mgr._on_done = on_done
+        try:
+            await wait_taskq_open(h.mgr)
+            running = [h.spawn(f"running-{i}") for i in range(self.CAP)]
+            waiting = h.spawn("waiting")
+            await h.settle()
+            assert h.started == [info.id for info in running], "premise: two run, one waits"
+            assert h.mgr.running_count == self.CAP
+
+            with _record_running_count(h.mgr) as writes:
+                if concurrent:
+                    answers = list(
+                        await asyncio.gather(h.mgr.cancel(waiting.id), h.mgr.cancel(waiting.id))
+                    )
+                else:
+                    answers = [await h.mgr.cancel(waiting.id), await h.mgr.cancel(waiting.id)]
+                await h.settle()
+                assert h.mgr.running_count == self.CAP, "two runs still hold both slots"
+                assert answers == [True, False], "a second Stop of a stopped row is not running"
+                assert h.mgr._release_slot(h.mgr._agents[waiting.id]) is False
+
+                extra = h.spawn("extra")
+                await h.settle()
+                assert extra.id not in h.started, "a third run started with a cap of two"
+
+                for info in running:
+                    await h.end(info)
+                await h.end(extra)
+                await asyncio.gather(*list(h.mgr._report_tasks))
+
+            assert h.started == [*(info.id for info in running), extra.id]
+            assert h.mgr.running_count == 0
+            assert writes and 0 <= min(writes) and max(writes) <= self.CAP, writes
+            assert reports.count(waiting.id) == 1, reports
+            h.mgr._sessions.reset.assert_not_awaited()  # no run was reaped
+        finally:
+            h.close()
 
 
 # ── 3. Stall two-sweep confirmation ──────────────────────────────────

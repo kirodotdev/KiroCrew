@@ -1327,7 +1327,15 @@ class CancellationCoordinator(ManagerComponent):
             # registered run is never in the stagger queue, so no unqueue (and
             # no store call on the loop) is attempted for it either.
             return False
-        if not info or info.done:
+        if not info or info.done or info.queued:
+            # A registered ``queued`` record is a queued stop's terminal record
+            # (``_report_queued_stop``), registered with ``done=False`` until its
+            # report task runs. Its row never started and it holds no lane slot,
+            # so a second Stop landing in that window (a double-clicked Stop, a
+            # second client) takes this queued path, which finds the row
+            # already stopped, and never the reap below, which would free a
+            # slot the record does not hold.
+            #
             # A row a Stop all batch is cancelling and has not yet reported: the
             # batch owns its cancel and its one report, so this joins that
             # answer. Cancelling here too would land first and report the row,
