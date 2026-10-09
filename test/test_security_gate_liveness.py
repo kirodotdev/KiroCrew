@@ -164,11 +164,6 @@ def _url_payload_command(n: int) -> str:
 #: holds the canonical spelling and is off the event loop, so the anchors resolve
 #: inline. No new entry point, no target, no matching rule and no threshold moved.
 #:
-#: Raised again, from 28,572, for the ``local-destructive-dd-of-device`` rule in
-#: ``denied_rules.py``: ``dd`` with no ``if=`` operand reads stdin by default, so an
-#: invocation that points only ``of=`` at a raw disk device wipes it even though the
-#: command never names an input. The rule is its entry plus the description, nine lines.
-#:
 #: The number IS the package's measured total, carrying no spare room: a ratchet with
 #: headroom admits exactly the unreviewed growth it exists to catch, so the next line
 #: added here fails this gate and has to be re-pinned deliberately, with its reason
