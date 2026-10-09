@@ -144,6 +144,9 @@ def _home_dirs() -> set[str]:
     Union rather than a single accessor: see :func:`project_root_marker` for why
     one spelling is not enough. Unset/blank env vars are skipped; a failure to
     resolve any one channel must not lose the others.
+
+    Each candidate is added both as spelled and resolved: the walk runs on the
+    realpath, so a home reached through a symlink must match there too.
     """
     out: set[str] = set()
     candidates = [_home(), os.environ.get("USERPROFILE") or "", os.environ.get("HOME") or ""]
@@ -156,6 +159,7 @@ def _home_dirs() -> set[str]:
             continue
         try:
             out.add(_norm(c))
+            out.add(_norm(os.path.realpath(c)))
         except (OSError, ValueError):  # pragma: no cover -- defensive
             continue
     return out
