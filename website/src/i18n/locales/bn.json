@@ -11891,7 +11891,12 @@
       "archived_sessions_kept_other": "{{count}}টি আর্কাইভ করা সেশন পুরোনো সেশনে থাকবে",
       "archived_count_one": "{{count}}টি আর্কাইভ করা",
       "archived_count_other": "{{count}}টি আর্কাইভ করা",
-      "waiting_for_memory": "খালি RAM-এর অপেক্ষায়"
+      "waiting_for_memory": "খালি RAM-এর অপেক্ষায়",
+      "crew_status_disabled": "বন্ধ",
+      "crew_group_disabled": "বন্ধ আছে। চালু না করা পর্যন্ত সংযোগ হবে না।",
+      "crew_enable": "চালু করো",
+      "crew_enable_named": "{{name}} চালু করো",
+      "crew_enable_failed": "{{name}} চালু করা যায়নি"
     },
     "connectionsPage": {
       "action_failed": "অ্যাকশন ব্যর্থ: {{error}}",
@@ -16843,7 +16848,12 @@
         "your_code": "Your code: {{code}}",
         "your_crews": "তোমার ক্রু",
         "reported_host": "{{host}} (জানানো)",
-        "reported_host_hint": "এই crew বলছে সে এই মেশিনে আছে। এই ড্যাশবোর্ডের সেখানে কোনো পথ নেই।"
+        "reported_host_hint": "এই crew বলছে সে এই মেশিনে আছে। এই ড্যাশবোর্ডের সেখানে কোনো পথ নেই।",
+        "crew_enabled": "সংযোগ: চালু",
+        "crew_disabled": "সংযোগ: বন্ধ",
+        "crew_enabled_named": "{{name}} চালু আছে",
+        "crew_toggle_failed": "{{name}} পরিবর্তন করা যায়নি: {{error}}",
+        "crew_switch_hint": "বন্ধ করলে এই ড্যাশবোর্ডের ওই ক্রুর সাথে সংযোগ বন্ধ হয় এবং বন্ধই থাকে। মেশিনের সেশনগুলো চলতে থাকে।"
       },
       "webhooksPanel": {
         "inbound_webhooks": "ইনবাউন্ড webhook",

@@ -6852,7 +6852,12 @@
       "include_top_level_folders": "Include top-level folders",
       "no_empty_folders": "No empty folders to delete.",
       "some_folders_kept": "Some folders were kept: they are no longer empty.",
-      "deleting_folders": "Deleting…"
+      "deleting_folders": "Deleting…",
+      "crew_status_disabled": "Off",
+      "crew_group_disabled": "Off. No connection until you enable it.",
+      "crew_enable": "Enable",
+      "crew_enable_named": "Enable {{name}}",
+      "crew_enable_failed": "Could not enable {{name}}"
     },
     "contextBreakdown": {
       "axis_turn_n": "Turn {{n}}",
@@ -9532,7 +9537,12 @@
         "your_code": "Your code: {{code}}",
         "your_crews": "Your crews",
         "reported_host": "{{host}} (reported)",
-        "reported_host_hint": "This crew reports being on this machine. This dashboard has no route to it and never dials it — the connection rides the crew that reaches it."
+        "reported_host_hint": "This crew reports being on this machine. This dashboard has no route to it and never dials it — the connection rides the crew that reaches it.",
+        "crew_enabled": "Connections: On",
+        "crew_disabled": "Connections: Off",
+        "crew_enabled_named": "{{name}} enabled",
+        "crew_toggle_failed": "Could not change {{name}}: {{error}}",
+        "crew_switch_hint": "Off closes this dashboard's connection to that crew and keeps it closed. Sessions on the machine keep running."
       },
       "webhooksPanel": {
         "inbound_webhooks": "Inbound webhooks",

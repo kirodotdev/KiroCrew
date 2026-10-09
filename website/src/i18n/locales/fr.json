@@ -12078,7 +12078,12 @@
       "archived_count_many": "{{count}} archivées",
       "archived_count_one": "{{count}} archivée",
       "archived_count_other": "{{count}} archivées",
-      "waiting_for_memory": "En attente de RAM libre"
+      "waiting_for_memory": "En attente de RAM libre",
+      "crew_status_disabled": "Éteint",
+      "crew_group_disabled": "Éteint. Aucune connexion tant que tu ne l'actives pas.",
+      "crew_enable": "Activer",
+      "crew_enable_named": "Activer {{name}}",
+      "crew_enable_failed": "Impossible d'activer {{name}}"
     },
     "connectionsPage": {
       "action_failed": "Échec de l’action : {{error}}",
@@ -17082,7 +17087,12 @@
         "your_code": "Your code: {{code}}",
         "your_crews": "Tes crews",
         "reported_host": "{{host}} (annoncé)",
-        "reported_host_hint": "Cette équipe annonce se trouver sur cette machine. Ce tableau de bord n'y a aucune route et ne l'appelle jamais — la connexion passe par l'équipe qui l'atteint."
+        "reported_host_hint": "Cette équipe annonce se trouver sur cette machine. Ce tableau de bord n'y a aucune route et ne l'appelle jamais — la connexion passe par l'équipe qui l'atteint.",
+        "crew_enabled": "Connexions : activées",
+        "crew_disabled": "Connexions : éteintes",
+        "crew_enabled_named": "{{name}} activé",
+        "crew_toggle_failed": "Impossible de modifier {{name}} : {{error}}",
+        "crew_switch_hint": "Éteint ferme la connexion de ce tableau de bord à cette crew et la garde fermée. Les sessions sur la machine continuent."
       },
       "webhooksPanel": {
         "inbound_webhooks": "Webhooks entrants",

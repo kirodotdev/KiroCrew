@@ -12078,7 +12078,12 @@
       "archived_count_many": "{{count}} archivadas",
       "archived_count_one": "{{count}} archivada",
       "archived_count_other": "{{count}} archivadas",
-      "waiting_for_memory": "Esperando RAM libre"
+      "waiting_for_memory": "Esperando RAM libre",
+      "crew_status_disabled": "Apagado",
+      "crew_group_disabled": "Apagado. No se conecta hasta que lo actives.",
+      "crew_enable": "Activar",
+      "crew_enable_named": "Activar {{name}}",
+      "crew_enable_failed": "No se pudo activar {{name}}"
     },
     "connectionsPage": {
       "action_failed": "La acción falló: {{error}}",
@@ -17082,7 +17087,12 @@
         "your_code": "Your code: {{code}}",
         "your_crews": "Tus crews",
         "reported_host": "{{host}} (declarado)",
-        "reported_host_hint": "Este equipo declara estar en esta máquina. Este panel no tiene ruta hasta ella y nunca la marca: la conexión pasa por el equipo que sí la alcanza."
+        "reported_host_hint": "Este equipo declara estar en esta máquina. Este panel no tiene ruta hasta ella y nunca la marca: la conexión pasa por el equipo que sí la alcanza.",
+        "crew_enabled": "Conexiones: activadas",
+        "crew_disabled": "Conexiones: apagadas",
+        "crew_enabled_named": "{{name}} activado",
+        "crew_toggle_failed": "No se pudo cambiar {{name}}: {{error}}",
+        "crew_switch_hint": "Apagado cierra la conexión de este panel con esa crew y la mantiene cerrada. Las sesiones en la máquina siguen en marcha."
       },
       "webhooksPanel": {
         "inbound_webhooks": "Webhooks entrantes",

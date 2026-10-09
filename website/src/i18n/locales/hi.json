@@ -11891,7 +11891,12 @@
       "archived_sessions_kept_other": "{{count}} आर्काइव किए गए सत्र पुराने सत्र में रहेंगे",
       "archived_count_one": "{{count}} आर्काइव किया गया",
       "archived_count_other": "{{count}} आर्काइव किए गए",
-      "waiting_for_memory": "खाली RAM की प्रतीक्षा में"
+      "waiting_for_memory": "खाली RAM की प्रतीक्षा में",
+      "crew_status_disabled": "बंद",
+      "crew_group_disabled": "बंद है। चालू करने तक कनेक्ट नहीं होगा।",
+      "crew_enable": "चालू करो",
+      "crew_enable_named": "{{name}} चालू करो",
+      "crew_enable_failed": "{{name}} चालू नहीं हो सका"
     },
     "connectionsPage": {
       "action_failed": "कार्रवाई विफल: {{error}}",
@@ -16843,7 +16848,12 @@
         "your_code": "Your code: {{code}}",
         "your_crews": "तुम्हारे क्रू",
         "reported_host": "{{host}} (बताया गया)",
-        "reported_host_hint": "यह crew कहता है कि वह इस मशीन पर है। इस डैशबोर्ड का उस तक कोई रास्ता नहीं है।"
+        "reported_host_hint": "यह crew कहता है कि वह इस मशीन पर है। इस डैशबोर्ड का उस तक कोई रास्ता नहीं है।",
+        "crew_enabled": "कनेक्शन: चालू",
+        "crew_disabled": "कनेक्शन: बंद",
+        "crew_enabled_named": "{{name}} चालू है",
+        "crew_toggle_failed": "{{name}} बदला नहीं जा सका: {{error}}",
+        "crew_switch_hint": "बंद करने पर इस डैशबोर्ड का उस क्रू से कनेक्शन बंद हो जाता है और बंद रहता है। मशीन पर सेशन चलते रहते हैं।"
       },
       "webhooksPanel": {
         "inbound_webhooks": "इनबाउंड webhooks",

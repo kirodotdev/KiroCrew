@@ -11704,7 +11704,12 @@
       "deleting_folders": "正在删除…",
       "archived_sessions_kept_other": "{{count}} 个已归档会话保留在“较早的会话”中",
       "archived_count_other": "已归档 {{count}} 个",
-      "waiting_for_memory": "等待空闲内存"
+      "waiting_for_memory": "等待空闲内存",
+      "crew_status_disabled": "已关闭",
+      "crew_group_disabled": "已关闭。启用前不会连接。",
+      "crew_enable": "启用",
+      "crew_enable_named": "启用 {{name}}",
+      "crew_enable_failed": "无法启用 {{name}}"
     },
     "connectionsPage": {
       "action_failed": "操作失败：{{error}}",
@@ -16604,7 +16609,12 @@
         "your_code": "Your code: {{code}}",
         "your_crews": "你的 Crew",
         "reported_host": "{{host}}（对方告知）",
-        "reported_host_hint": "这个 crew 自称在这台机器上。本面板没有到它的路由，也从不拨它；连接要靠能到达它那个 crew 转。"
+        "reported_host_hint": "这个 crew 自称在这台机器上。本面板没有到它的路由，也从不拨它；连接要靠能到达它那个 crew 转。",
+        "crew_enabled": "连接：开",
+        "crew_disabled": "连接：关",
+        "crew_enabled_named": "{{name}} 已启用",
+        "crew_toggle_failed": "无法更改 {{name}}：{{error}}",
+        "crew_switch_hint": "关闭后，此仪表板与该成员机的连接会断开并保持断开。那台机器上的会话会继续运行。"
       },
       "webhooksPanel": {
         "inbound_webhooks": "入站 webhook",

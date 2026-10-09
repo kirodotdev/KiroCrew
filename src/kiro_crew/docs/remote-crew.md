@@ -120,6 +120,15 @@ reconnect because the token is re-minted and the remote dashboard boots again.
 Each row also carries badges read off its record: **SSM** or **SSH** for the
 transport, and **EC2** when the instance was provisioned by the cloud launcher.
 
+## Turning one crew off
+
+Each crew in **Settings → Remote Crew** has an on/off switch beside its status.
+Off closes that crew's tunnel and keeps it closed: no click, auto-connect or
+gateway restart opens it again. Its sidebar group reads **Disabled** with an
+**Enable** button, and an open pane for it shows offline. Turning it back on
+reconnects it. The crew's settings are kept the whole time. Only the owner can
+flip the switch.
+
 ## Crews reached through another crew
 
 A remote pane is a full dashboard, so it can list remote crews of its own. When

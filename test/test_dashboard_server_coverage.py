@@ -437,9 +437,9 @@ class TestReviveIntendedInstances:
         registry = MagicMock(
             list=MagicMock(
                 return_value=[
-                    SimpleNamespace(id="boom", was_connected=True),
-                    SimpleNamespace(id="degraded", was_connected=True),
-                    SimpleNamespace(id="ok", was_connected=True),
+                    SimpleNamespace(id="boom", was_connected=True, disabled=False),
+                    SimpleNamespace(id="degraded", was_connected=True, disabled=False),
+                    SimpleNamespace(id="ok", was_connected=True, disabled=False),
                 ]
             )
         )

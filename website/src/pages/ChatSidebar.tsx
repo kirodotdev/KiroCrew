@@ -47,6 +47,7 @@ import { useSessionPalette } from '../hooks/useSessionPalette'
 import { ancestorsOf, closedCreatorCitation, descendantsOf, orphanCitation } from '../lib/sessionLineage'
 import { partitionBulkSwitch } from '../lib/bulkModelSwitch'
 import { isEmbeddedPane } from '../lib/embedded'
+import { setCrewEnabled } from '../lib/crewEnabled'
 import { useReducedMotion } from '../hooks/useReducedMotion'
 import { useSimplifiedToolNames } from '../hooks/useSimplifiedToolNames'
 import { useLanguage } from '../i18n/LanguageProvider'
@@ -110,7 +111,7 @@ import { useStableCallbackProps } from './chat/useStableCallbackProps'
 import { sessionRowIdentity, historyRowIdentity } from './chat-sidebar/rowIdentity'
 import { buildSidebarRows, chipLabel, sameRowView, type ConductorRowView, type RowScene, type RowShell, type SessionRowView, type SidebarRows } from './chat-sidebar/rows'
 import { useSessionSources } from './chat-sidebar/sessionSources'
-import { CrewGroupSection, CrewOfflineContext, LocalGroupHeader, useCollapsedCrews } from './chat-sidebar/CrewGroups'
+import { CrewGroupSection, CrewOfflineContext, LocalGroupHeader, useCollapsedCrews, useCrewEnable } from './chat-sidebar/CrewGroups'
 import { crewOf, type CrewGroup } from '../hooks/useInstanceSessions'
 import { useSessionRename, useSessionAutoTitle, useFolderRename } from './chat-sidebar/rename'
 import { useSlotTitleGenerating } from '../hooks/slotTitleGeneration'
@@ -2891,6 +2892,9 @@ function ChatSidebar({
   } = sidebarRows.lanes
   const filterCounts = sidebarRows.statusCounts
   const [collapsedCrews, toggleCrewCollapsed, expandCrew] = useCollapsedCrews()
+  const enableCrew = useCallback((id: string) => setCrewEnabled(dispatch, id, true)
+    .finally(() => { void queryClient.invalidateQueries({ queryKey: ['instances'] }) }), [dispatch, queryClient])
+  const crewEnable = useCrewEnable(enableCrew, id => instancesList.find(i => i.id === id)?.name || id)
 
   const { hoverPinRef, heldDisplacedRef, releaseHoverPin, heldLane, onRootPointerOver } = useHoverHold()
 
@@ -3480,14 +3484,15 @@ function ChatSidebar({
   // The per-machine group chrome each list lane draws: `Local` above the lane's
   // own rows, the crew groups below them. Both are null with no crew group.
   const localGroupHeader = shownCrewGroups.length > 0 ? <LocalGroupHeader /> : null
-  const renderCrewGroups = (): React.ReactNode => shownCrewGroups.map(g => (
+  const renderCrewGroups = (): React.ReactNode => [crewEnable.notice, ...shownCrewGroups.map(g => (
     <CrewGroupSection key={g.id} group={g} rows={shownCrewRows.get(g.id) ?? []}
       collapsed={collapsedCrews.has(g.id)} onToggle={toggleCrewCollapsed} hideWhenEmpty={listNarrowed}
       chevron={<DisclosureChevron open={!collapsedCrews.has(g.id)} size={11} />}
+      onEnable={crewEnable.onEnable}
       renderRows={(rows, scope) => rows.map((s, i) => renderSessionRow(
         s, 0, i < rows.length - 1 && !isActiveRow(s) && !isActiveRow(rows[i + 1]), scope,
       ))} />
-  ))
+  ))]
 
   // ── Folder row: matches session-row width (full width minus drawer padding) ──
   // Recursively check if a folder or any descendant contains an unread slot.

@@ -11704,7 +11704,12 @@
       "deleting_folders": "削除中…",
       "archived_sessions_kept_other": "アーカイブ済みのセッション {{count}} 件は「以前のセッション」に残ります",
       "archived_count_other": "アーカイブ済み {{count}} 件",
-      "waiting_for_memory": "空きRAM待ち"
+      "waiting_for_memory": "空きRAM待ち",
+      "crew_status_disabled": "オフ",
+      "crew_group_disabled": "オフです。有効にするまで接続しません。",
+      "crew_enable": "有効にする",
+      "crew_enable_named": "{{name}} を有効にする",
+      "crew_enable_failed": "{{name}} を有効にできませんでした"
     },
     "connectionsPage": {
       "action_failed": "操作に失敗しました: {{error}}",
@@ -16604,7 +16609,12 @@
         "your_code": "Your code: {{code}}",
         "your_crews": "あなたのクルー",
         "reported_host": "{{host}}（申告値）",
-        "reported_host_hint": "この crew はこのマシン上にあると申告しています。このダッシュボードには経路がなく、接続は仲介する crew を経由します。"
+        "reported_host_hint": "この crew はこのマシン上にあると申告しています。このダッシュボードには経路がなく、接続は仲介する crew を経由します。",
+        "crew_enabled": "接続: オン",
+        "crew_disabled": "接続: オフ",
+        "crew_enabled_named": "{{name}} は有効",
+        "crew_toggle_failed": "{{name}} を変更できませんでした: {{error}}",
+        "crew_switch_hint": "オフにすると、このダッシュボードからの接続を閉じ、閉じたままにします。マシン上のセッションは動き続けます。"
       },
       "webhooksPanel": {
         "inbound_webhooks": "受信 Webhooks",

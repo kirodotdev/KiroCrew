@@ -12078,7 +12078,12 @@
       "archived_count_many": "{{count}} arquivadas",
       "archived_count_one": "{{count}} arquivada",
       "archived_count_other": "{{count}} arquivadas",
-      "waiting_for_memory": "Aguardando RAM livre"
+      "waiting_for_memory": "Aguardando RAM livre",
+      "crew_status_disabled": "Desligado",
+      "crew_group_disabled": "Desligado. Sem conexão até você ativar.",
+      "crew_enable": "Ativar",
+      "crew_enable_named": "Ativar {{name}}",
+      "crew_enable_failed": "Não foi possível ativar {{name}}"
     },
     "connectionsPage": {
       "action_failed": "Falha na ação: {{error}}",
@@ -17082,7 +17087,12 @@
         "your_code": "Your code: {{code}}",
         "your_crews": "Suas crews",
         "reported_host": "{{host}} (declarado)",
-        "reported_host_hint": "Esta equipe declara estar nesta máquina. Este painel não tem rota até ela e nunca a disca — a conexão passa pela equipe que a alcança."
+        "reported_host_hint": "Esta equipe declara estar nesta máquina. Este painel não tem rota até ela e nunca a disca — a conexão passa pela equipe que a alcança.",
+        "crew_enabled": "Conexões: ligadas",
+        "crew_disabled": "Conexões: desligadas",
+        "crew_enabled_named": "{{name}} ativado",
+        "crew_toggle_failed": "Não foi possível alterar {{name}}: {{error}}",
+        "crew_switch_hint": "Desligado fecha a conexão deste painel com essa crew e a mantém fechada. As sessões na máquina continuam rodando."
       },
       "webhooksPanel": {
         "inbound_webhooks": "Webhooks de entrada",

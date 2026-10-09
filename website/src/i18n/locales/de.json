@@ -11891,7 +11891,12 @@
       "archived_sessions_kept_other": "{{count}} archivierte Sitzungen bleiben in Ältere Sitzungen",
       "archived_count_one": "{{count}} archiviert",
       "archived_count_other": "{{count}} archiviert",
-      "waiting_for_memory": "Wartet auf freien Arbeitsspeicher"
+      "waiting_for_memory": "Wartet auf freien Arbeitsspeicher",
+      "crew_status_disabled": "Aus",
+      "crew_group_disabled": "Aus. Keine Verbindung, bis du sie aktivierst.",
+      "crew_enable": "Aktivieren",
+      "crew_enable_named": "{{name}} aktivieren",
+      "crew_enable_failed": "{{name}} konnte nicht aktiviert werden"
     },
     "connectionsPage": {
       "action_failed": "Aktion fehlgeschlagen: {{error}}",
@@ -16843,7 +16848,12 @@
         "your_code": "Your code: {{code}}",
         "your_crews": "Deine Crews",
         "reported_host": "{{host}} (gemeldet)",
-        "reported_host_hint": "Diese Crew gibt an, auf dieser Maschine zu laufen. Dieses Dashboard hat keine Route dorthin und wählt sie nie an — die Verbindung läuft über die Crew, die sie erreicht."
+        "reported_host_hint": "Diese Crew gibt an, auf dieser Maschine zu laufen. Dieses Dashboard hat keine Route dorthin und wählt sie nie an — die Verbindung läuft über die Crew, die sie erreicht.",
+        "crew_enabled": "Verbindungen: An",
+        "crew_disabled": "Verbindungen: Aus",
+        "crew_enabled_named": "{{name}} aktiviert",
+        "crew_toggle_failed": "{{name}} konnte nicht geändert werden: {{error}}",
+        "crew_switch_hint": "Aus schließt die Verbindung dieses Dashboards zur Crew und lässt sie geschlossen. Sitzungen auf dem Rechner laufen weiter."
       },
       "webhooksPanel": {
         "inbound_webhooks": "Eingehende Webhooks",

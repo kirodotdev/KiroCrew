@@ -252,12 +252,14 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
     reason: 'backup-restore form: the export\'s include-chat-history box, the export zip file picker and the merge/replace mode for that one import — per-export and per-import arguments, not persistent settings',
   },
   'RemoteCrewPanel.tsx': {
-    counts: { input: 7 },
+    counts: { input: 7, Toggle: 1 },
     reason:
       'setup-wizard AWS profile/region convenience fields (localStorage) behind a ' +
       'non-URL sub-tab a deep link cannot mount; plus the launch form\'s identity ' +
       'choice (2 radios), Identity Center start-URL/region and subnet ID fields — per-launch ' +
-      'arguments sent with the launch request, not persistent settings',
+      'arguments sent with the launch request, not persistent settings; the Toggle is the ' +
+      'per-crew on/off switch rendered once per runtime-fetched crew row, a field of that ' +
+      'crew\'s record, not a global setting',
   },
   'SecretsPanel.tsx': {
     counts: { Input: 2 },

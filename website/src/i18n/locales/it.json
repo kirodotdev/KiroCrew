@@ -12078,7 +12078,12 @@
       "archived_count_many": "{{count}} archiviate",
       "archived_count_one": "{{count}} archiviata",
       "archived_count_other": "{{count}} archiviate",
-      "waiting_for_memory": "In attesa di RAM libera"
+      "waiting_for_memory": "In attesa di RAM libera",
+      "crew_status_disabled": "Spento",
+      "crew_group_disabled": "Spento. Nessuna connessione finché non lo attivi.",
+      "crew_enable": "Attiva",
+      "crew_enable_named": "Attiva {{name}}",
+      "crew_enable_failed": "Impossibile attivare {{name}}"
     },
     "connectionsPage": {
       "action_failed": "Azione non riuscita: {{error}}",
@@ -17082,7 +17087,12 @@
         "your_code": "Your code: {{code}}",
         "your_crews": "Le tue crew",
         "reported_host": "{{host}} (dichiarato)",
-        "reported_host_hint": "Questo gruppo dichiara di essere su questa macchina. Questa dashboard non ha alcuna rotta verso di essa e non la contatta mai: la connessione passa dal gruppo che la raggiunge."
+        "reported_host_hint": "Questo gruppo dichiara di essere su questa macchina. Questa dashboard non ha alcuna rotta verso di essa e non la contatta mai: la connessione passa dal gruppo che la raggiunge.",
+        "crew_enabled": "Connessioni: attive",
+        "crew_disabled": "Connessioni: spente",
+        "crew_enabled_named": "{{name}} attivato",
+        "crew_toggle_failed": "Impossibile modificare {{name}}: {{error}}",
+        "crew_switch_hint": "Spento chiude la connessione di questa dashboard a quella crew e la tiene chiusa. Le sessioni sulla macchina continuano."
       },
       "webhooksPanel": {
         "inbound_webhooks": "Webhook in entrata",

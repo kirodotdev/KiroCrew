@@ -12265,7 +12265,12 @@
       "archived_count_many": "{{count}} в архиве",
       "archived_count_one": "{{count}} в архиве",
       "archived_count_other": "{{count}} в архиве",
-      "waiting_for_memory": "Ожидание свободной RAM"
+      "waiting_for_memory": "Ожидание свободной RAM",
+      "crew_status_disabled": "Выключен",
+      "crew_group_disabled": "Выключен. Подключения не будет, пока ты его не включишь.",
+      "crew_enable": "Включить",
+      "crew_enable_named": "Включить {{name}}",
+      "crew_enable_failed": "Не удалось включить {{name}}"
     },
     "connectionsPage": {
       "action_failed": "Не удалось выполнить действие: {{error}}",
@@ -17321,7 +17326,12 @@
         "your_code": "Your code: {{code}}",
         "your_crews": "Ваши команды",
         "reported_host": "{{host}} (заявлено)",
-        "reported_host_hint": "Эта команда заявляет, что находится на этой машине. У этой панели нет к ней маршрута, и она никогда не подключается напрямую."
+        "reported_host_hint": "Эта команда заявляет, что находится на этой машине. У этой панели нет к ней маршрута, и она никогда не подключается напрямую.",
+        "crew_enabled": "Подключения: вкл",
+        "crew_disabled": "Подключения: выкл",
+        "crew_enabled_named": "{{name}} включён",
+        "crew_toggle_failed": "Не удалось изменить {{name}}: {{error}}",
+        "crew_switch_hint": "Выключение закрывает подключение этой панели к экипажу и не даёт ему открыться. Сеансы на машине продолжают работать."
       },
       "webhooksPanel": {
         "inbound_webhooks": "Входящие webhooks",

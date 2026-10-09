@@ -11704,7 +11704,12 @@
       "deleting_folders": "삭제 중…",
       "archived_sessions_kept_other": "보관된 세션 {{count}}개는 이전 세션에 남습니다",
       "archived_count_other": "보관됨 {{count}}개",
-      "waiting_for_memory": "여유 RAM 대기 중"
+      "waiting_for_memory": "여유 RAM 대기 중",
+      "crew_status_disabled": "꺼짐",
+      "crew_group_disabled": "꺼짐. 켜기 전까지 연결하지 않습니다.",
+      "crew_enable": "사용",
+      "crew_enable_named": "{{name}} 사용",
+      "crew_enable_failed": "{{name}}을(를) 켤 수 없습니다"
     },
     "connectionsPage": {
       "action_failed": "작업에 실패했습니다: {{error}}",
@@ -16604,7 +16609,12 @@
         "your_code": "Your code: {{code}}",
         "your_crews": "내 크루",
         "reported_host": "{{host}}(스스로 보고)",
-        "reported_host_hint": "이 crew가 이 머신에 있다고 보고합니다. 이 대시보드는 경로가 없어 직접 연결하지 않으며, 연결은 중개 crew를 거칩니다."
+        "reported_host_hint": "이 crew가 이 머신에 있다고 보고합니다. 이 대시보드는 경로가 없어 직접 연결하지 않으며, 연결은 중개 crew를 거칩니다.",
+        "crew_enabled": "연결: 켜짐",
+        "crew_disabled": "연결: 꺼짐",
+        "crew_enabled_named": "{{name}} 사용 중",
+        "crew_toggle_failed": "{{name}}을(를) 변경할 수 없습니다: {{error}}",
+        "crew_switch_hint": "끄면 이 대시보드의 연결을 닫고 닫힌 상태로 둡니다. 그 머신의 세션은 계속 실행됩니다."
       },
       "webhooksPanel": {
         "inbound_webhooks": "인바운드 webhook",
