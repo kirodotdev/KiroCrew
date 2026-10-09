@@ -98,8 +98,17 @@ export const APPROVAL_MODE_ADJUSTED_LS_KEY = 'mc-approval-mode-adjusted'
  *  open request, so the user's eye lands on where the control lives. */
 const SPOTLIGHT_MS = 2000
 
-export default function ApprovalModePicker({ mode, slotKey, compact, openSignal, nudge, onNudgeDismiss, onNudgeHide }: {
+export default function ApprovalModePicker({ mode, slotKey, compact, openSignal, nudge, onNudgeDismiss, onNudgeHide, onPicked }: {
   mode: string; slotKey: string; compact?: boolean
+  /** Where focus goes after a PICK closes the menu. Radix's default returns
+   *  focus to the trigger, which is right for a cancel (Escape, outside click:
+   *  the user goes back to where they were) but wrong for a pick: the trigger
+   *  is a button, so the Enter the user means as "send" re-opens the menu
+   *  (#18313). The host owns the composer, so it decides; returning `true`
+   *  means it took focus (and Radix's trigger return is suppressed), `false`
+   *  (e.g. on touch, where focusing the box pops the keyboard) keeps the
+   *  default. Cancels never consult this. */
+  onPicked?: () => boolean
   /** A2: increment to open the menu from outside (the approval bar's
    *  "adjust approval mode" hint) and flash a spotlight ring on the trigger,
    *  teaching where the control lives. 0 / undefined = inert. */
@@ -146,6 +155,10 @@ export default function ApprovalModePicker({ mode, slotKey, compact, openSignal,
   // close-focus handler needs (state would be stale inside Radix's callback).
   const triggerBtnRef = useRef<HTMLButtonElement>(null)
   const openRef = useRef(false)
+  // Set by `pick` just before it closes, read once by the menu's
+  // onCloseAutoFocus: that callback cannot tell a pick-close from a cancel-close
+  // on its own, and only the pick hands focus to the composer.
+  const closingFromPickRef = useRef(false)
   openRef.current = open
 
   // Any open counts as discovery (and answers an active nudge) — route
@@ -211,6 +224,7 @@ export default function ApprovalModePicker({ mode, slotKey, compact, openSignal,
     // Close optimistically for the overwhelmingly common success case — a menu
     // that lingered on every pick while a round-trip completed would feel broken
     // — and re-open only on the policy refusal above.
+    closingFromPickRef.current = true
     onOpenChange(false)
   }
 
@@ -233,7 +247,20 @@ export default function ApprovalModePicker({ mode, slotKey, compact, openSignal,
           {!compact && displayText.label}
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent side="top" align="start" collisionPadding={8} className="w-[280px]">
+      <DropdownMenuContent
+        side="top"
+        align="start"
+        collisionPadding={8}
+        className="w-[280px]"
+        onCloseAutoFocus={e => {
+          // See `onPicked`. The flag is consumed here so a later cancel-close
+          // (or the policy-refusal re-open followed by Escape) falls back to
+          // Radix's return-to-trigger.
+          const fromPick = closingFromPickRef.current
+          closingFromPickRef.current = false
+          if (fromPick && onPicked?.()) e.preventDefault()
+        }}
+      >
         {/* Modes the `approval_modes` policy denies are hidden outright — a
             hidden control can't be probed or asked about, and `normal` (the
             interactive floor) is never deniable, so the list is never empty.
