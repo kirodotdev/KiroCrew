@@ -2723,23 +2723,21 @@ export default function MembersPage() {
   // The roster badge's mount/unmount tween honours the OS motion preference:
   // the state change still happens, it just cuts instead of fading.
   const reduceMotion = useReducedMotion()
-  // Whether Profile holds its in-flow column right now — the state whose two
-  // flips the face flies on. Floating opens and closes fly nothing: the pill
-  // stays, so the face never changes place.
+  // Whether Profile holds its in-flow column right now.
   const profileDocked = !!activeView && !!profile && profile.placement === 'column'
+  // Whether the card is up at all — the state whose two flips the face flies
+  // on, whichever placement the card takes. Floating, the pill stays beside the
+  // card with its face slot held empty: the face is IN the card.
+  const profileOpen = !!activeView && !!profile
   const [faceFlight, setFaceFlight] = useState<FaceFlight | null>(null)
   const flightKeyRef = useRef(0)
-  const wasDockedRef = useRef(profileDocked)
+  const wasOpenRef = useRef(profileOpen)
   useLayoutEffect(() => {
-    const was = wasDockedRef.current
-    wasDockedRef.current = profileDocked
-    if (was === profileDocked) return
-    // A column re-placed as the floating card (the window crossed below md) is
-    // still the open card, not a close: the pill comes back beside it and the
-    // face does not move. Measuring here would read the floating card's face,
-    // which took over `cardFaceRef`, and hide it.
-    if (!profileDocked && profile) { flightFromRef.current = null; return }
-    const from = profileDocked ? flightFromRef.current : cardFaceRef.current?.getBoundingClientRect() ?? null
+    const was = wasOpenRef.current
+    wasOpenRef.current = profileOpen
+    // A re-placement (column <-> floating) keeps the card open: no flip, no flight.
+    if (was === profileOpen) return
+    const from = profileOpen ? flightFromRef.current : cardFaceRef.current?.getBoundingClientRect() ?? null
     flightFromRef.current = null
     // No box to depart from (reduced motion, a never-laid-out face, a dock that
     // came from somewhere other than the pill) means a plain swap, not a flight.
@@ -2747,8 +2745,8 @@ export default function MembersPage() {
     // The folding card is AnimatePresence's exiting child, re-rendered with the
     // props it left with — `faceHidden` can no longer reach it — so its face is
     // unpainted here, on the element, for the rest of its exit.
-    if (!profileDocked && cardFaceRef.current) cardFaceRef.current.style.visibility = 'hidden'
-    const target = profileDocked ? cardFaceRef : pillFaceRef
+    if (!profileOpen && cardFaceRef.current) cardFaceRef.current.style.visibility = 'hidden'
+    const target = profileOpen ? cardFaceRef : pillFaceRef
     setFaceFlight({
       key: ++flightKeyRef.current,
       seed: active.name,
@@ -2758,7 +2756,7 @@ export default function MembersPage() {
       from,
       to: () => target.current?.getBoundingClientRect() ?? null,
     })
-  }, [profileDocked, profile, reduceMotion, active, activeSlot, isRunning])
+  }, [profileOpen, reduceMotion, active, activeSlot, isRunning])
   const endFaceFlight = useCallback(() => setFaceFlight(null), [])
   // A flight belongs to the crewmate it was measured on. Leaving that crewmate
   // mid-flight (Back, a bare /members, a team open) unmounts the copy before its
@@ -3921,7 +3919,7 @@ export default function MembersPage() {
                 <span
                   ref={pillFaceRef}
                   className="relative flex shrink-0 rounded-full"
-                  style={faceFlight ? { visibility: 'hidden' } : undefined}
+                  style={faceFlight || (profile && profile.placement === 'floating') ? { visibility: 'hidden' } : undefined}
                   data-testid="member-pill-face"
                 >
                   <CrewStateAvatar
@@ -4529,21 +4527,36 @@ export default function MembersPage() {
               )}
             </AnimatePresence>
           )
-          const profileSurface = profileDocked ? dockedSurface : profilePanel && threadColumnRef.current ? createPortal(
-            <div
-              className="absolute inset-0 z-30 flex justify-center px-2 py-2"
-              role="presentation"
-              onClick={(e) => { if (e.target === e.currentTarget) requestCloseProfile() }}
-              data-testid="crew-profile-modal"
-            >
-              <div
-                className="h-full rounded-2xl border border-border-strong bg-bg-elevated shadow-[var(--shadow-float,var(--shadow-lg)),inset_0_1px_0_var(--card-hl)] overflow-hidden flex flex-col animate-in zoom-in-95 fade-in-0 duration-200"
-                style={{ width: `min(${profileCardW}px, calc(100% - 16px))` }}
-                data-testid="crew-profile-card"
-              >{profilePanel}</div>
-            </div>,
+          // The floating card fades in and out on the face flight's clock while the
+          // face itself flies from the pill into the card head (and back): the one
+          // moving thing is the face, the card is the surface it lands on. Mounted
+          // through AnimatePresence so the close plays too; a plain portal unmounted
+          // it in one frame.
+          const floatingSurface = threadColumnRef.current ? createPortal(
+            <AnimatePresence initial={false}>
+              {profilePanel && !profileDocked && (
+                <motion.div
+                  key="crew-profile-floating"
+                  className="absolute inset-0 z-30 flex justify-center px-2 py-2"
+                  role="presentation"
+                  onClick={(e) => { if (e.target === e.currentTarget) requestCloseProfile() }}
+                  data-testid="crew-profile-modal"
+                >
+                  <motion.div
+                    className="h-full rounded-2xl border border-border-strong bg-bg-elevated shadow-[var(--shadow-float,var(--shadow-lg)),inset_0_1px_0_var(--card-hl)] overflow-hidden flex flex-col"
+                    style={{ width: `min(${profileCardW}px, calc(100% - 16px))` }}
+                    initial={reduceMotion ? false : { opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={reduceMotion ? undefined : { opacity: 0 }}
+                    transition={{ duration: FACE_FLIGHT_SECS, ease: FACE_FLIGHT_EASE }}
+                    data-testid="crew-profile-card"
+                  >{profilePanel}</motion.div>
+                </motion.div>
+              )}
+            </AnimatePresence>,
             threadColumnRef.current,
           ) : null
+          const profileSurface = profileDocked ? dockedSurface : floatingSurface
           // The side panel's host tabs: the dynamic Dashboard only. The Workspace
           // file browser is the one chat view left unwithheld (see
           // MEMBERS_WITHHELD_VIEWS); together they are the whole strip.

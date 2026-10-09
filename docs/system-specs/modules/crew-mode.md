@@ -1068,7 +1068,13 @@ holds the column beside the floating card. Opening SidePanel collapses that Prof
 column and restores the pill. If SidePanel is already open, or the viewport is a
 phone, the pill opens Profile as a full-height, rounded hover card centred
 horizontally in the chat width the open SidePanel leaves; both surfaces remain
-visible. The card matches SidePanel's vertical bounds but is not a SidePanel tab
+visible. The pill stays, but with its face slot held empty (`visibility: hidden`):
+the face is IN the card. Opening flies it there with the same `CrewFaceFlight`
+copy the docked card uses while the card fades in on the flight's clock, and
+closing flies it back while the card fades out — the floating portal is mounted
+through `AnimatePresence` so the close plays (#18329). The flight fires on the
+card opening or closing in either placement; a re-placement (column <-> floating)
+flies nothing. The card matches SidePanel's vertical bounds but is not a SidePanel tab
 or a second panel. Escape is handled on the card subtree, not the window, so it
 cannot close Profile from the roster switcher or another composer. While a
 pushed page is open, the covered tab subtree is both `aria-hidden` and `inert`,

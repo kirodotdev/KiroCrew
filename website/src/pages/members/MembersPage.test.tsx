@@ -1317,6 +1317,37 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(await screen.findByTestId('crew-profile-modal')).toBeInTheDocument()
     expect(screen.getByTestId('side-panel-root')).toBeInTheDocument()
     expect(screen.getByTestId('member-identity-pill')).toBeInTheDocument()
+    // The face is IN the card now: the pill keeps its slot but paints no face.
+    expect(screen.getByTestId('member-pill-face')).toHaveStyle({ visibility: 'hidden' })
+    expect(screen.getByTestId('crew-profile-face')).not.toHaveStyle({ visibility: 'hidden' })
+  })
+
+  it('with the side panel open, the pill face flies into the floating card and back on close', async () => {
+    // #18329: the floating card used to appear in place with no tie to the pill
+    // that opened it, and vanish in one frame. Same flight as the docked card.
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    await screen.findByTestId('side-panel-root')
+    const box = (left: number, size: number) =>
+      ({ x: left, y: 14, left, top: 14, right: left + size, bottom: 14 + size, width: size, height: size, toJSON: () => ({}) }) as DOMRect
+    vi.spyOn(await screen.findByTestId('member-pill-face'), 'getBoundingClientRect').mockReturnValue(box(640, 30))
+    fireEvent.click(screen.getByTestId('member-identity-pill'))
+
+    const flight = await screen.findByTestId('crew-face-flight')
+    expect(flight.parentElement).toBe(document.body)
+    expect(screen.getByTestId('crew-profile-modal')).toBeInTheDocument()
+    expect(screen.getByTestId('crew-profile-face')).toHaveStyle({ visibility: 'hidden' })
+    await waitFor(() => expect(screen.queryByTestId('crew-face-flight')).toBeNull(), { timeout: 3000 })
+    expect(screen.getByTestId('crew-profile-face')).not.toHaveStyle({ visibility: 'hidden' })
+    expect(screen.getByTestId('member-pill-face')).toHaveStyle({ visibility: 'hidden' })
+
+    // Close: the face flies back to the pill while the card fades out.
+    vi.spyOn(screen.getByTestId('crew-profile-face'), 'getBoundingClientRect').mockReturnValue(box(900, 84))
+    fireEvent.click(screen.getByTestId('crew-profile-close'))
+    await screen.findByTestId('crew-face-flight')
+    await waitFor(() => expect(screen.queryByTestId('crew-face-flight')).toBeNull(), { timeout: 3000 })
+    await waitFor(() => expect(screen.queryByTestId('crew-profile-modal')).toBeNull(), { timeout: 3000 })
+    expect(screen.getByTestId('member-pill-face')).not.toHaveStyle({ visibility: 'hidden' })
   })
 
   it('switching crewmates drops an open Profile instead of reopening it over the next one on the old tab', async () => {
@@ -1388,11 +1419,12 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
       expect(screen.getByTestId('crew-profile-modal')).toBeInTheDocument()
       expect(screen.getByTestId('crew-profile-panel')).toBeInTheDocument()
       expect(screen.getByTestId('member-identity-pill')).toHaveAttribute('aria-expanded', 'true')
-      // Still one card, no flight: the floating card's face is painted, the
-      // pill's face too, and no copy is in the air.
+      // Still one card, no flight: the floating card's face is painted and no
+      // copy is in the air. The pill's face slot is held empty, as it is for
+      // every floating card — the face is in the card.
       expect(screen.queryByTestId('crew-face-flight')).toBeNull()
       expect(screen.getByTestId('crew-profile-face')).not.toHaveStyle({ visibility: 'hidden' })
-      expect(screen.getByTestId('member-pill-face')).not.toHaveStyle({ visibility: 'hidden' })
+      expect(screen.getByTestId('member-pill-face')).toHaveStyle({ visibility: 'hidden' })
     } finally {
       window.matchMedia = orig
       setWindowWidth(WIDE_WINDOW)
