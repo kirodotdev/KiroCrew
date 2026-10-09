@@ -35,6 +35,10 @@ from kiro_crew.member_memory_auth import bind_private_session_store
 from kiro_crew.memory_stores import provision_member_memory
 from kiro_crew.providers.base import LLMEvent
 
+#: The eager-spawn tests need a pre-warm allowance, which is zero while the
+#: host's memory posture is critical (see ``ample_host_free_memory``).
+pytestmark = pytest.mark.usefixtures("ample_host_free_memory")
+
 GLOBAL_DEFAULT = "claude-opus-5"
 CREW_PIN = "claude-sonnet-5"
 SLOT_PIN = "claude-haiku-5"

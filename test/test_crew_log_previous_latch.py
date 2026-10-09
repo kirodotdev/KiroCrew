@@ -61,6 +61,10 @@ from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.chat_runner import _eager_spawn, _slot_predecessor_store
 from kiro_crew.dashboard.state import CrewLogPrevious, _ChatSlot
 
+#: The eager-prefetch tests need a pre-warm allowance, which is zero while the
+#: host's memory posture is critical (see ``ample_host_free_memory``).
+pytestmark = pytest.mark.usefixtures("ample_host_free_memory")
+
 PREDECESSOR = "sid-the-slot-was-writing"
 PREWARMED = "sid-the-prefetch-allocated"
 #: The store opened AFTER ``PREDECESSOR`` on the same slot, whose id the mapping

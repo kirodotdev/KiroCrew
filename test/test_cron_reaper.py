@@ -33,6 +33,10 @@ from kiro_crew.process_identity import (
 )
 from kiro_crew.session_lifecycle import TornDown, _TeardownScope
 
+#: These tests fire cron jobs through the due-scan, which defers firings while
+#: the host's memory posture is critical (see ``ample_host_free_memory``).
+pytestmark = pytest.mark.usefixtures("ample_host_free_memory")
+
 #: The platform kill primitives the kill path can reach. Each is pinned to a
 #: refusal for the whole module (``_kill_seam``): a test that drives one patches
 #: it inside its own block, and an unpinned call surfaces as a loud test failure
