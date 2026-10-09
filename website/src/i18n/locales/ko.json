@@ -7771,6 +7771,7 @@
       "ttl_time_to_live": "TTL (유효 기간)",
       "unexpected_response": "예기치 않은 응답",
       "via": "경유",
+      "confirm_publish_private": "비공개로 저장",
       "visibility": "공개 범위",
       "visibility_private": "비공개(나만)",
       "visibility_public": "공개(링크가 있는 모든 사용자)",

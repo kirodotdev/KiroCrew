@@ -834,6 +834,30 @@ async def test_republish_widening_pushes_content_before_sharing(store, fake_clie
 
 
 @pytest.mark.asyncio
+async def test_republish_dropping_a_shared_person_changes_sharing_first(store, fake_client):
+    # Removing someone from a shared publication takes access away from them, so the
+    # new content must not reach them before the sharing change.
+    store.create(name="Doc", content="v1", kind="text", slug="d")
+    await publish_sync.publish("d", visibility="SHARED", shared_with=["alice", "bob"])
+    store.update("d", content="v2", snapshot=True)
+    fake_client.calls.clear()
+    await publish_sync.publish("d", visibility="SHARED", shared_with=["alice"])
+    order = [name for name, _ in fake_client.calls if name in ("update_sharing", "upload_version")]
+    assert order == ["update_sharing", "upload_version"]
+
+
+@pytest.mark.asyncio
+async def test_republish_adding_a_shared_person_pushes_content_first(store, fake_client):
+    store.create(name="Doc", content="v1", kind="text", slug="d")
+    await publish_sync.publish("d", visibility="SHARED", shared_with=["alice"])
+    store.update("d", content="v2", snapshot=True)
+    fake_client.calls.clear()
+    await publish_sync.publish("d", visibility="SHARED", shared_with=["alice", "bob"])
+    order = [name for name, _ in fake_client.calls if name in ("update_sharing", "upload_version")]
+    assert order == ["upload_version", "update_sharing"]
+
+
+@pytest.mark.asyncio
 async def test_republish_narrowing_still_reports_push_error(store, fake_client):
     store.create(name="Doc", content="v1", kind="text", slug="d")
     await publish_sync.publish("d", visibility="PUBLIC")

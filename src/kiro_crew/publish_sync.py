@@ -510,6 +510,25 @@ def _visibility_rank(visibility: str | None) -> int:
     return _VISIBILITY_RANK.get((visibility or "").upper(), 2)
 
 
+def _narrows(
+    old_visibility: str | None,
+    old_shared_with: list[str] | None,
+    new_visibility: str | None,
+    new_shared_with: list[str] | None,
+) -> bool:
+    """Whether a sharing change takes access away from anyone who has it now.
+
+    A lower rank narrows; so does a shared publication that drops a person, since
+    that person is losing access just the same.
+    """
+    old_rank, new_rank = _visibility_rank(old_visibility), _visibility_rank(new_visibility)
+    if new_rank != old_rank:
+        return new_rank < old_rank
+    if new_rank == _VISIBILITY_RANK["SHARED"]:
+        return not set(new_shared_with or []) >= set(old_shared_with or [])
+    return False
+
+
 async def publish(
     slug: str,
     *,
@@ -583,8 +602,11 @@ async def _publish_unlocked(
         # Order the two steps by direction. Widening pushes first, so the new content
         # lands while the link is still narrow; narrowing changes sharing first, so the
         # new content never reaches the wider audience being withdrawn.
-        narrowing = sharing and _visibility_rank(visibility) < _visibility_rank(
-            art.publication.visibility
+        narrowing = sharing and _narrows(
+            art.publication.visibility,
+            art.publication.shared_with,
+            visibility,
+            shared_with,
         )
         if narrowing:
             await update_sharing(slug, visibility=visibility, shared_with=shared_with)

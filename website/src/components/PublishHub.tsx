@@ -645,7 +645,9 @@ export function PublishHub({
           )}
           <div className="flex gap-2">
             <Btn primary onClick={() => commitPublish(false)} disabled={busy}>
-              {busy ? i18nT('components.publishHub.publishing_2') : <><Upload size={12} /> {i18nT('components.publishHub.confirm_publish')}</>}
+              {busy ? i18nT('components.publishHub.publishing_2') : <><Upload size={12} /> {selected.core && selectedVisibility === 'PRIVATE'
+                ? i18nT('components.publishHub.confirm_publish_private')
+                : i18nT('components.publishHub.confirm_publish')}</>}
             </Btn>
             <Btn onClick={() => { setPreview(null); setSelectedId('') }}>{i18nT('components.publishHub.back')}</Btn>
           </div>

@@ -892,8 +892,9 @@ private teaches the user to click past it where it is public. The publish flow
 requests `visibility: PUBLIC` unless the user picks Private (offered only on a
 first publish, and only when the destination's sharing model supports both). A
 re-publish offers no choice and keeps the publication's current visibility,
-because the panel's copy of the publication can be stale. When a re-publish does
-narrow visibility, the publish engine changes sharing before it pushes content, so
+because the panel's copy of the publication can be stale. When a re-publish narrows
+who can see it (a lower visibility, or a shared list that drops someone), the
+publish engine changes sharing before it pushes content, so
 new content never reaches the audience being withdrawn. A
 Private request shows neither surface. So `False` asserts that even a
 publication the provider files as PUBLIC is served only to an authenticated

@@ -7771,6 +7771,7 @@
       "ttl_time_to_live": "TTL（存活时间）",
       "unexpected_response": "意外的响应",
       "via": "通过",
+      "confirm_publish_private": "私密保存",
       "visibility": "可见性",
       "visibility_private": "私密（仅你自己）",
       "visibility_public": "公开（任何拥有链接的人）",

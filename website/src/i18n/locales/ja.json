@@ -7771,6 +7771,7 @@
       "ttl_time_to_live": "TTL(有効期限)",
       "unexpected_response": "予期しないレスポンス",
       "via": "経由",
+      "confirm_publish_private": "非公開で保存",
       "visibility": "公開範囲",
       "visibility_private": "非公開（自分のみ）",
       "visibility_public": "公開（リンクを知っている全員）",

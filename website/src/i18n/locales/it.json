@@ -8005,6 +8005,7 @@
       "ttl_time_to_live": "TTL (durata di vita)",
       "unexpected_response": "Risposta inaspettata",
       "via": "tramite",
+      "confirm_publish_private": "Salva in privato",
       "visibility": "Visibilità",
       "visibility_private": "Privato (solo tu)",
       "visibility_public": "Pubblico (chiunque abbia il link)",

@@ -8122,6 +8122,7 @@
       "ttl_time_to_live": "TTL (время жизни)",
       "unexpected_response": "Неожиданный ответ",
       "via": "через",
+      "confirm_publish_private": "Сохранить приватно",
       "visibility": "Видимость",
       "visibility_private": "Приватно (только ты)",
       "visibility_public": "Публично (все, у кого есть ссылка)",

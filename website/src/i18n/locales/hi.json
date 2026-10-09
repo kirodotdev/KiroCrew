@@ -7886,6 +7886,7 @@
       "ttl_time_to_live": "TTL (जीवनकाल)",
       "unexpected_response": "अनपेक्षित प्रतिक्रिया",
       "via": "माध्यम से:",
+      "confirm_publish_private": "निजी रूप से सहेजो",
       "visibility": "दृश्यता",
       "visibility_private": "निजी (केवल तुम)",
       "visibility_public": "सार्वजनिक (लिंक वाला कोई भी)",

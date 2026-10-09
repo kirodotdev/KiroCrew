@@ -140,10 +140,12 @@ describe('PublishHub visibility choice for a built-in destination', () => {
     fireEvent.click(await screen.findByRole('radio', { name: /private/i }))
     fireEvent.click(screen.getByRole('button', { name: /^publish$/i }))
 
-    const confirm = await screen.findByRole('button', { name: /confirm/i })
+    const confirm = await screen.findByRole('button', { name: /confirm|save privately/i })
     expect(screen.queryByText(WARNING)).toBeNull()
     // The confirm step repeats the choice, so the user can check it before publishing.
     expect(screen.getByText(/only you/i)).toBeTruthy()
+    // And its button says what a private publish does.
+    expect(confirm.textContent).toMatch(/save privately/i)
     fireEvent.click(confirm)
 
     await waitFor(() => expect(publishBodies(fetchSpy)).toHaveLength(1))
@@ -160,7 +162,7 @@ describe('PublishHub visibility choice for a built-in destination', () => {
     expect((publicRadio as HTMLInputElement).checked).toBe(true)
     fireEvent.click(screen.getByRole('button', { name: /^publish$/i }))
 
-    const confirm = await screen.findByRole('button', { name: /confirm/i })
+    const confirm = await screen.findByRole('button', { name: /confirm|save privately/i })
     expect(screen.getByText(WARNING)).toBeTruthy()
     fireEvent.click(confirm)
     expect(await screen.findByRole('dialog')).toBeTruthy()
@@ -178,7 +180,7 @@ describe('PublishHub visibility choice for a built-in destination', () => {
     fireEvent.click(await screen.findByRole('button', { name: /^publish$/i }))
     expect(screen.queryByRole('radio')).toBeNull()
 
-    const confirm = await screen.findByRole('button', { name: /confirm/i })
+    const confirm = await screen.findByRole('button', { name: /confirm|save privately/i })
     expect(screen.getByText(WARNING)).toBeTruthy()
     fireEvent.click(confirm)
     expect(await screen.findByRole('dialog')).toBeTruthy()
@@ -196,7 +198,7 @@ describe('PublishHub visibility choice for a built-in destination', () => {
     fireEvent.click(await screen.findByRole('button', { name: /^publish$/i }))
     expect(screen.queryByRole('radio')).toBeNull()
 
-    const confirm = await screen.findByRole('button', { name: /confirm/i })
+    const confirm = await screen.findByRole('button', { name: /confirm|save privately/i })
     expect(screen.queryByText(WARNING)).toBeNull()
     // The confirm step names the visibility the re-publish keeps.
     expect(screen.getByText(/only you/i)).toBeTruthy()
@@ -217,7 +219,7 @@ describe('PublishHub visibility choice for a built-in destination', () => {
     fireEvent.click(await screen.findByRole('button', { name: /^publish$/i }))
     expect(screen.queryByRole('radio')).toBeNull()
 
-    fireEvent.click(await screen.findByRole('button', { name: /confirm/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /confirm|save privately/i }))
     await waitFor(() => expect(publishBodies(fetchSpy)).toHaveLength(1))
     expect(publishBodies(fetchSpy)[0]).toMatchObject({ visibility: 'SHARED', shared_with: ['alice', 'bob'] })
   })
@@ -250,7 +252,7 @@ describe('PublishHub visibility choice for a built-in destination', () => {
     fireEvent.click(await screen.findByText('Public Web'))
     fireEvent.click(await screen.findByRole('button', { name: /^publish$/i }))
 
-    const confirm = await screen.findByRole('button', { name: /confirm/i })
+    const confirm = await screen.findByRole('button', { name: /confirm|save privately/i })
     expect(screen.getByText(WARNING)).toBeTruthy()
     const before = fetchSpy.mock.calls.length
     fireEvent.click(confirm)
