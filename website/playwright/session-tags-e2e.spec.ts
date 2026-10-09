@@ -746,41 +746,105 @@ test.describe('E2E: sidebar tag columns', () => {
     const b = await (await request.post('/api/chat/slots', { data: { agent: 'default' } })).json()
     await request.patch(`/api/chat/slots/${a.key}/title`, { data: { title: 'E2E-17b first' } })
     await request.patch(`/api/chat/slots/${b.key}/title`, { data: { title: 'E2E-17b second' } })
-    await page.goto('/chat')
     const rowA = page.locator(`[data-slot-key="${a.key}"]`).first()
     const rowB = page.locator(`[data-slot-key="${b.key}"]`).first()
-    await rowA.click({ button: 'right' })
-    await page.getByRole('menuitem', { name: /Tags/ }).click()
     const picker = page.locator('[data-testid="slot-tag-picker"]')
-    await expect(picker).toBeVisible()
-
-    // Record whether the app suppressed the browser's own menu. A window-level
-    // bubble listener runs after React's root handler, so `defaultPrevented`
-    // reflects what the app did with the gesture.
-    await page.evaluate(() => {
-      window.addEventListener('contextmenu', e => { (window as unknown as { __ctx?: boolean }).__ctx = e.defaultPrevented })
-    })
-    // Real pointer on row B: the backdrop is what actually receives it, so drive
-    // the mouse rather than a locator click (which would refuse the intercepted
-    // target). Aim near the row's LEFT edge, not its centre — with the wide
-    // sidebar primeBrowser sets, the viewport-centred picker dialog overlaps the
-    // middle of the rows, and a right-click on the dialog is deliberately inert.
-    const box = await rowB.boundingBox()
-    if (!box) throw new Error('row B has no box')
-    const point = { x: box.x + 24, y: box.y + box.height / 2 }
-    const dialog = await picker.boundingBox()
-    if (!dialog) throw new Error('picker dialog has no box')
-    const insideDialog = point.x >= dialog.x && point.x <= dialog.x + dialog.width
-      && point.y >= dialog.y && point.y <= dialog.y + dialog.height
-    expect(insideDialog, 'test geometry: the click point must be on the backdrop, not the dialog').toBe(false)
-    await page.mouse.click(point.x, point.y, { button: 'right' })
-
-    await expect(picker).toBeHidden()
-    expect(await page.evaluate(() => (window as unknown as { __ctx?: boolean }).__ctx)).toBe(true)
-    // A fresh Kiro Crew context menu is open — and it is row B's: its Tags item
-    // opens the picker for B, and toggling a tag there updates B, not A.
     const menu = page.getByRole('menu').filter({ has: page.getByRole('menuitem', { name: /Tags/ }) })
-    await expect(menu).toBeVisible()
+
+    // The top elements at the click point, as the backdrop's elementBeneath()
+    // walks them, so a miss records what the forwarded right-click reached.
+    const hitTest = (point: { x: number, y: number }) => page.evaluate(({ x, y, key }) =>
+      document.elementsFromPoint(x, y).slice(0, 5).map(el => {
+        const role = el.getAttribute('role')
+        const testid = el.getAttribute('data-testid')
+        const inRowB = el.closest(`[data-slot-key="${key}"]`) !== null
+        return [
+          el.tagName.toLowerCase(),
+          role ? `[role=${role}]` : '',
+          testid ? `[testid=${testid}]` : '',
+          inRowB ? '[in row B]' : '',
+          `.${String(el.className).slice(0, 30)}`,
+        ].join('')
+      }), { ...point, key: b.key }).catch(e => [`unreadable: ${String(e).slice(0, 80)}`])
+
+    // A miss is tagged with a `flaky-gesture` annotation holding the page state
+    // and both hit tests, and the E2E harness (test/test_playwright_e2e.py)
+    // prints every such annotation to the job log and the step summary.
+    let step = 'open the Tags picker on row A'
+    let point = { x: 0, y: 0 }
+    let beneathBefore: string[] = []
+    try {
+      await page.goto('/chat')
+      await rowA.click({ button: 'right' })
+      await page.getByRole('menuitem', { name: /Tags/ }).click()
+      await expect(picker).toBeVisible()
+
+      // Record whether the app suppressed the browser's own menu. A window-level
+      // bubble listener runs after React's root handler, so `defaultPrevented`
+      // reflects what the app did with the gesture.
+      await page.evaluate(() => {
+        window.addEventListener('contextmenu', e => { (window as unknown as { __ctx?: boolean }).__ctx = e.defaultPrevented })
+      })
+      step = 'aim at row B'
+      // Real pointer on row B: the backdrop is what actually receives it, so drive
+      // the mouse rather than a locator click (which would refuse the intercepted
+      // target). Aim near the row's LEFT edge, not its centre — with the wide
+      // sidebar primeBrowser sets, the viewport-centred picker dialog overlaps the
+      // middle of the rows, and a right-click on the dialog is deliberately inert.
+      // Row B must be attached, visible and not moving before we aim at it: the
+      // point is read from its box, and a row still sliding in (layout spring)
+      // or swapping from a windowed stub would take the gesture somewhere else.
+      // The sidebar's search dock floats over the top of the list, so a row
+      // scrolled up under it is "visible" yet covered: centre row B in its
+      // scroller first, and check below that the point reaches row B.
+      await expect(rowB).toBeVisible()
+      await rowB.evaluate(el => el.scrollIntoView({ block: 'center' }))
+      await expect.poll(() => page.evaluate(key => new Promise<boolean>(resolve => {
+        const box = () => JSON.stringify(document.querySelector(`[data-slot-key="${key}"]`)?.getBoundingClientRect())
+        const first = box()
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve(first !== undefined && first === box())))
+      }), b.key), { message: 'row B box is stable across two frames' }).toBe(true)
+      const box = await rowB.boundingBox()
+      if (!box) throw new Error('row B has no box')
+      point = { x: box.x + 24, y: box.y + box.height / 2 }
+      const dialog = await picker.boundingBox()
+      if (!dialog) throw new Error('picker dialog has no box')
+      const insideDialog = point.x >= dialog.x && point.x <= dialog.x + dialog.width
+        && point.y >= dialog.y && point.y <= dialog.y + dialog.height
+      expect(insideDialog, 'test geometry: the click point must be on the backdrop, not the dialog').toBe(false)
+      // What the backdrop's elementBeneath() picks: the first element at the
+      // point that is not the backdrop or inside it. It must be part of row B.
+      await expect.poll(() => page.evaluate(({ x, y, key }) => {
+        const [backdrop, ...rest] = document.elementsFromPoint(x, y)
+        const beneath = rest.find(el => !backdrop.contains(el))
+        return beneath?.closest(`[data-slot-key="${key}"]`) != null
+      }, { ...point, key: b.key }), {
+        message: 'test geometry: the point must reach row B under the backdrop, not the search dock',
+      }).toBe(true)
+      beneathBefore = await hitTest(point)
+
+      await page.mouse.click(point.x, point.y, { button: 'right' })
+      step = 'menu on row B after the backdrop right-click'
+      await expect(picker).toBeHidden()
+      expect(await page.evaluate(() => (window as unknown as { __ctx?: boolean }).__ctx)).toBe(true)
+      // A fresh Kiro Crew context menu opens — and it is row B's: its Tags
+      // item opens the picker for B, and toggling a tag there updates B, not A.
+      await expect(menu).toBeVisible()
+    } catch (err) {
+      // A crashed page must not replace the assertion error rethrown below.
+      const state = await page.evaluate(key => ({
+        menus: document.querySelectorAll('[role="menu"]').length,
+        picker: !!document.querySelector('[data-testid="slot-tag-picker"]'),
+        active: `${document.activeElement?.tagName}.${String(document.activeElement?.className).slice(0, 40)}`,
+        rowB: document.querySelector(`[data-slot-key="${key}"]`)?.closest('[data-session-window]')?.getAttribute('data-session-window') ?? 'unwindowed',
+        rowBState: document.querySelector(`[data-slot-key="${key}"] [data-state]`)?.getAttribute('data-state') ?? null,
+        ctx: (window as unknown as { __ctx?: boolean }).__ctx ?? null,
+      }), b.key).catch(e => ({ unreadable: String(e).slice(0, 120) }))
+      const beneathAfter = await hitTest(point)
+      const description = `#17941: failed at ${step}: ${JSON.stringify({ ...state, point, beneathBefore, beneathAfter })}`
+      test.info().annotations.push({ type: 'flaky-gesture', description })
+      throw err
+    }
     await menu.getByRole('menuitem', { name: /Tags/ }).click()
     await expect(picker).toBeVisible()
     await picker.getByRole('menuitemcheckbox', { name: /Review/ }).click()
