@@ -29,12 +29,12 @@
 import { useEffect, useId, useMemo, useState } from 'react'
 import DOMPurify from 'dompurify'
 import {
-  Shield, Bot, Search, Tag, Users, Zap, Star, Package, Cat,
+  Shield, Bot, Search, Tag, Users, Zap, Star, Package, Cat, AudioLines, Mic,
 } from 'lucide-react'
 import { useTheme } from '../hooks/useTheme'
 
 const ICON_MAP: Record<string, typeof Shield> = {
-  Shield, Bot, Search, Tag, Users, Zap, Star, Package, Cat,
+  Shield, Bot, Search, Tag, Users, Zap, Star, Package, Cat, AudioLines, Mic,
 }
 
 // In-memory cache of fetched inline SVG markup, keyed by url.
