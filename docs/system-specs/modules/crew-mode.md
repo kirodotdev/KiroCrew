@@ -1017,6 +1017,30 @@ the same `aria-hidden` word, read through the same `signalsOf` resolver
 (`isNeedsYou`) — so the full roster, the folded switcher and the status filter
 never disagree about who is parked on a question.
 
+The thread header (`member-thread-header`: the switcher, the identity pill, the
+panel opener) floats OVER the top of the thread (#18325): an absolute row with no
+solid background, so the conversation scrolls under the Glass pill the way it
+scrolls under the composer dock, and the pill reads as a chip on the conversation
+rather than a bar above it. Every control on the row is a Glass chip — the
+switcher and the panel opener wear the pill's material at their own size, the
+phone back button too — because a bare button on a floating row sat on scrolled
+text and read as text printed over text; behind the three, a fade filling the
+header's own box (`from-bg via-bg/70 to-transparent`) dissolves rows toward the
+page colour before they reach the chips, so the chips sit on half-faded ground
+while the pane's top edge stays glass. The pane pays for the band with its
+scroller's top padding — `ChatPane`'s `topInset`, the header's measured height
+(`useMeasuredHeight`, never a constant) plus the pane's own 12px — so at scroll
+top nothing hides under the pill; the pinned-prompt band hangs under it by the
+same offset. Whatever can sit between the header and the pane (notices, the
+greeting cards) stays in flow in one `empty:hidden` box padded below the header
+by that height, and while that box has a height the pane's inset is 0: a card
+with controls is never under the glass, and the pane is under the header only
+when it is the thing directly below it. The row and its cells pass input through
+(`pointer-events-none`); only the controls catch it, so a wheel beside the pill
+reaches the transcript. It sits at z-20 — above the pane's own chrome (its dock
+and pinned prompt), below the floating Profile card (z-30), whose scrim covers
+it. No hairline under it (#9425).
+
 The centred identity pill opens `CrewProfilePanel`, not the editor. It ends in a
 small `ChevronRight` (decorative, `aria-hidden`): the one visible sign that this
 Glass chip is a door, since the switcher chip beside it is another Glass chip

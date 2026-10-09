@@ -75,7 +75,7 @@ function makeStore() {
   })
 }
 
-function renderPane() {
+function renderPane(props: { topInset?: number } = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const store = makeStore()
   const view = render(
@@ -83,7 +83,7 @@ function renderPane() {
       <QueryClientProvider client={qc}>
         <ThemeProvider>
           <MemoryRouter>
-            <ChatPane slotKey={SLOT} />
+            <ChatPane slotKey={SLOT} {...props} />
           </MemoryRouter>
         </ThemeProvider>
       </QueryClientProvider>
@@ -139,6 +139,23 @@ afterEach(() => {
 })
 
 describe('ChatPane shared scroll chrome', () => {
+  it('pays for a host band floating over its top edge (`topInset`, #18325)', () => {
+    const { container } = renderPane({ topInset: 48 })
+    // The scroller pads its rows below the band on top of its own 12px, so
+    // at scroll top nothing hides under it while rows still scroll under it.
+    const scroller = container.querySelector('.chat-container') as HTMLElement
+    expect(scroller.style.paddingTop).toBe('60px')
+    // The pinned-prompt band (its fold sentinel's parent) hangs under the band
+    // too: a relative offset, so it costs no flow height.
+    const pinBand = container.querySelector('.relative.z-\\[2\\]') as HTMLElement
+    expect(pinBand).not.toBeNull()
+    expect(pinBand.style.top).toBe('48px')
+    // Default: no band, nothing paid.
+    const plain = renderPane()
+    expect((plain.container.querySelector('.chat-container') as HTMLElement).style.paddingTop).toBe('12px')
+    expect((plain.container.querySelector('.relative.z-\\[2\\]') as HTMLElement).style.top).toBe('')
+  })
+
   it('renders both edge fades around the transcript scroller', () => {
     const { container } = renderPane()
     const topFade = container.querySelector('.bg-gradient-to-b.from-bg')

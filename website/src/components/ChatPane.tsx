@@ -135,6 +135,7 @@ export default function ChatPane({
   agentLocked,
   composerInput: ComposerInput = ChatInput,
   frameless,
+  topInset = 0,
   followContentWidth,
   hideEmptyHint,
   openSideChat,
@@ -181,6 +182,13 @@ export default function ChatPane({
    *  (border, rounded corners) would duplicate it. Split-view panes keep
    *  the chrome — there the bar IS the pane's identity. */
   frameless?: boolean
+  /** Height, in px, of a host band that floats OVER the pane's top edge (the
+   *  Members DM header, #18325): the scroller pads its rows below it, so at
+   *  scroll top nothing hides under the band while the conversation still
+   *  scrolls under it; the pinned-prompt band hangs under it too. Measured
+   *  by the host, never a constant. 0 (default): the pane's top edge is the
+   *  host's own content edge, as in a split pane under its title bar. */
+  topInset?: number
   /** The pane follows the user's Content width setting (transcript AND
    *  composer, both halves of CONTENT_WIDTH), resolved from the pane's own
    *  live chatConfig. Defaults to false = both variables pinned to '100%':
@@ -1683,7 +1691,12 @@ export default function ChatPane({
             the pane root is what this band is anchored to, so it can never
             paint over that header. right-1.5 keeps it off the scrollbar
             track, as on the main chat. */}
-        <div className="relative z-[2]">
+        {/* `top: topInset` (a relative offset, no flow height) moves the fold
+            sentinel — the line the banner sticks to, read by its
+            getBoundingClientRect — and the banner with it under a host band
+            floating over the pane's top, so the pinned prompt never hides
+            under that band. */}
+        <div className="relative z-[2]" style={topInset ? { top: topInset } : undefined}>
           <div ref={pin.pinFoldRef} aria-hidden className="h-0" />
           {pinnedState && (
             <div className="absolute top-0 left-0 right-1.5 pointer-events-none">
@@ -1735,7 +1748,10 @@ export default function ChatPane({
             scrollerRef,
             onScroll: onScrollPin,
             onAtBottomChange: setIsAtBottom,
-            scrollerStyle: { paddingTop: 12, paddingBottom: 12, minHeight: 0 },
+            // `topInset`: a host band floating over the pane's top (the
+            // Members DM header) is paid for here, so the first rows clear it
+            // at scroll top and pass under it once the reader scrolls.
+            scrollerStyle: { paddingTop: 12 + topInset, paddingBottom: 12, minHeight: 0 },
             // handOff off: its navigation would discard this pane's unsaved draft.
             earlier: pagesActiveSlot
               ? { hasMore: activeHasMore, loading: loadingOlder, failed: olderFailed, onLoad: loadOlder, handOff: false }

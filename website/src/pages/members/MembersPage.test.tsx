@@ -207,8 +207,8 @@ const CrewComposerRef = vi.hoisted(() => ({ current: null as unknown }))
  * contract is only "mount it with the thread's slot key", so a stub that
  * ECHOES the slot key is the strongest cheap assertion available. */
 vi.mock('../../components/ChatPane', () => ({
-  default: ({ slotKey, agentLocked, followContentWidth, busyMode, onOpenCommandCenter, composerInput }: { slotKey: string; agentLocked?: boolean; followContentWidth?: boolean; busyMode?: string; onOpenCommandCenter?: () => void; composerInput?: unknown }) => (
-    <div data-testid="chat-pane-stub" data-agent-locked={agentLocked ? '1' : '0'} data-follow-content-width={followContentWidth ? '1' : '0'} data-busy-mode={busyMode ?? 'split'} data-crew-composer={composerInput === CrewComposerRef.current ? '1' : '0'}>
+  default: ({ slotKey, agentLocked, followContentWidth, busyMode, topInset, onOpenCommandCenter, composerInput }: { slotKey: string; agentLocked?: boolean; followContentWidth?: boolean; busyMode?: string; topInset?: number; onOpenCommandCenter?: () => void; composerInput?: unknown }) => (
+    <div data-testid="chat-pane-stub" data-agent-locked={agentLocked ? '1' : '0'} data-follow-content-width={followContentWidth ? '1' : '0'} data-busy-mode={busyMode ?? 'split'} data-crew-composer={composerInput === CrewComposerRef.current ? '1' : '0'} data-top-inset={topInset ?? ''}>
       {slotKey}
       {onOpenCommandCenter && <button onClick={onOpenCommandCenter}>Open task dashboard</button>}
     </div>
@@ -2610,6 +2610,48 @@ describe('MembersPage identity pill and Profile entry', () => {
     expect(header.className).not.toMatch(/\bborder-border\b/)
     // Still set off from the transcript by its own padding.
     expect(header.className).toMatch(/\bpy-2\b/)
+  })
+
+  it('the DM header floats over the thread: the conversation scrolls under the glass pill (#18325)', async () => {
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    const header = await screen.findByTestId('member-thread-header')
+    const cls = header.className.split(/\s+/)
+    // Out of flow over the column's top edge, no background of its own, so the
+    // transcript passes under the pill the way it passes under the composer dock.
+    expect(cls).toEqual(expect.arrayContaining(['absolute', 'top-0', 'inset-x-0']))
+    expect(cls).not.toContain('bg-bg')
+    expect(cls).not.toContain('bg-card')
+    // Below the floating Profile card (z-30), whose scrim covers the header.
+    expect(cls).toContain('z-20')
+    // The row and its cells pass input through; only the controls catch it, so
+    // a wheel beside the pill scrolls the transcript.
+    expect(cls).toContain('pointer-events-none')
+    const pill = screen.getByTestId('member-identity-pill')
+    expect(pill.className.split(/\s+/)).toContain('pointer-events-auto')
+    // The fade behind the controls fills the header's own box and is inert;
+    // every other child is a cell that hands input to its controls.
+    const fade = header.querySelector(':scope > [aria-hidden]') as HTMLElement
+    expect(fade.className.split(/\s+/)).toEqual(expect.arrayContaining(['absolute', 'inset-0', 'pointer-events-none', 'bg-gradient-to-b']))
+    for (const cell of Array.from(header.children).filter(c => c !== pill && c !== fade)) {
+      expect(cell.className).toMatch(/\[&>\*\]:pointer-events-auto/)
+    }
+    // The side controls are glass like the pill, not bare text over the rows.
+    expect(screen.getByTestId('crewmate-switcher').className.split(/\s+/)).toContain('glass-hover')
+    const opener = screen.queryByTestId('member-panel-toggle')
+    if (opener) expect(opener.className.split(/\s+/)).toContain('glass-hover')
+    // The pane is told what the band costs (`topInset`, the header's measured
+    // height — 0 here, happy-dom has no layout — never a constant), and the
+    // block that can sit between header and pane is padded by the same number.
+    const pane = await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
+    expect(pane).toHaveAttribute('data-top-inset', '0')
+    // Padding on the outer box, measurement on the inner one: the padding
+    // never counts toward "is anything shown between", so a hidden
+    // (`md:hidden`) child cannot reserve a blank band (Opus finding on R3).
+    const between = header.nextElementSibling as HTMLElement
+    expect(between.style.paddingTop).toBe('0px')
+    expect(between.firstElementChild!.className.split(/\s+/)).toEqual(expect.arrayContaining(['flex', 'flex-col']))
+    expect(between.className).not.toMatch(/empty:hidden/)
   })
 
   it('opens the editor for the exact crew name, special characters and all', async () => {

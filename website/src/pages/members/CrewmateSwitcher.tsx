@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import type { MemberRosterRow } from '../../api/client'
 import { crewDisplayName } from '../../components/AgentSelector'
 import CrewStateAvatar from '../../components/CrewStateAvatar'
+import { Glass } from '../../components/Glass'
 import { Popover, PopoverContent, PopoverTrigger } from '../../components/ui/popover'
 import { fmtList } from '../../i18n/format'
 import { cn } from '../../lib/utils'
@@ -132,12 +133,18 @@ export default function CrewmateSwitcher({
       }}
     >
       <PopoverTrigger asChild>
-        {/* A plain header button, not a second Glass pill: two pills of
-            different heights side by side read as a mismatched pair. */}
-        <button
+        {/* A Glass chip (#18325): the header floats over the thread with no
+            background of its own, so a bare button here sat on scrolled rows
+            and read as text printed over text. The chip is the identity
+            pill's material at a smaller size; `glass-hover` is its hover step
+            and its open state, where the old button tinted itself. */}
+        <Glass
+          as="button"
           type="button"
+          variant="chip"
+          radius={999}
           className={cn(
-            'group flex items-center gap-1.5 h-[42px] pl-2.5 pr-3 rounded-full text-text hover:bg-bg-hover data-[state=open]:bg-bg-hover transition-colors cursor-pointer focus-ring shrink-0',
+            'group glass-hover flex items-center gap-1.5 h-[42px] pl-2.5 pr-3 rounded-full text-text data-[state=open]:[--glass-tint:color-mix(in_srgb,var(--text)_8%,var(--glass-tint-step))] transition-colors cursor-pointer focus-ring shrink-0',
             className,
           )}
           aria-label={chipLabel}
@@ -170,7 +177,7 @@ export default function CrewmateSwitcher({
           <span className="text-[12.5px] font-semibold" aria-hidden="true" data-testid="crewmate-switcher-label">{rosterLabel}</span>
           <span className="text-[12.5px] text-muted tabular-nums" aria-hidden="true" data-testid="crewmate-switcher-count">{members.length}</span>
           <ChevronDown size={13} className={cn('text-muted transition-transform', open && 'rotate-180')} aria-hidden="true" />
-        </button>
+        </Glass>
       </PopoverTrigger>
       <PopoverContent
         align="start"
