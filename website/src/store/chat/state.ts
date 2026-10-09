@@ -211,6 +211,14 @@ export interface ChatState {
    *  generation replaces the floor instead of being ordered against it. */
   lastChunkGen: string | undefined
   _wsChunkedDuringFetch: boolean
+  /** How many rows `messages` held when the active slot's switch fetch was
+   *  dispatched (the cache `switchSlot.pending` restored, or none). Rows past
+   *  it were appended LIVE while that fetch was in flight -- a send into the
+   *  slot being opened -- and `switchSlot.fulfilled` keeps the user's own
+   *  bubbles among them when the page it replaces the view with predates them.
+   *  Transient like `_wsChunkedDuringFetch`; optional so a preloaded test state
+   *  need not spell it. */
+  _switchLiveFrom?: number
   /** Count of live frames reduced into the ACTIVE view (`applyActiveFrame`),
    *  for the life of this tab. A thunk that awaits across several requests
    *  samples it before and after, and declines to replace `messages` when it

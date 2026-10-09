@@ -16,7 +16,7 @@ import { recentErrors, recordError, redactSecrets, type ErrorReport } from '../.
 import { chatSlotDetailPath } from '../../api/chatSlotPaths'
 import type { ChatState } from './state'
 import { fetchSlotDetail, isUnsafeKey, safeKey } from './wire'
-import { deduplicateByMid, floorForGen, olderHeadAbovePage, raiseChunkSeq, sameTranscript, serverRowCount, snapshotChunkGen, snapshotChunkSeq } from './transcript'
+import { deduplicateByMid, floorForGen, olderHeadAbovePage, raiseChunkSeq, sameTranscript, serverRowCount, snapshotChunkGen, snapshotChunkSeq, tailNotInPage } from './transcript'
 import { abortActiveOlderFetch, pagingCursorAfterKeptHead, slotCoverageShortfall, slotSwitchFetchLimit } from './paging'
 import { mergePreservedThinking, reinsertThinkingOrphans, type ThinkingAnchor } from './thinking'
 import { bumpRunEpoch, enterActiveSlot, pushHistory } from './runState'
@@ -482,6 +482,8 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
         state.slotLoading = true
       }
       state._wsChunkedDuringFetch = false
+      // Everything past this length is appended while the fetch is in flight.
+      state._switchLiveFrom = state.messages.length
     })
     .addCase(switchSlot.fulfilled, (state, action) => {
       // Before the guards below, so an early return still ends this claim. Keyed
@@ -526,6 +528,23 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
       // Hold the pre-fetch array so the assignment below can be skipped when
       // the fetched history turns out to be redundant (see sameTranscript).
       const existing = state.messages
+      // The user's own sends that landed while this fetch was in flight. A
+      // deep link opens a slot (`pending`, composer live) and the fetch for
+      // its page is still out when the user sends: the optimistic bubble -- or
+      // its echo, which has already given it the server `mid` -- sits in
+      // `existing` past the `pending` baseline, and the page, read BEFORE the
+      // send, does not carry it. Replacing wholesale would drop the user's
+      // message from the view until the end-of-turn refresh. Keep exactly
+      // those rows: live (past the baseline), the user's (a `sendId` only a
+      // send mints), not already on the page by identity (`tailNotInPage`),
+      // so a cached row the server since dropped cannot ride along and a page
+      // that already caught the send cannot double it. The trailing reply has
+      // its own re-attach below; these go in front of it, in send order.
+      const liveFrom = Math.min(state._switchLiveFrom ?? existing.length, existing.length)
+      const liveSends = tailNotInPage(
+        existing.slice(liveFrom).filter(m => m.role === 'user' && typeof m.meta?.sendId === 'string' && m.meta.sendId),
+        preserved,
+      )
       let next: ChatMessage[]
       if (
         state._wsChunkedDuringFetch
@@ -533,7 +552,7 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
         && lastLocal.content.length > 0
       ) {
         // WS chunks arrived during fetch — use fetched history + local streaming
-        next = [...preserved.filter(m => m.role !== 'streaming'), lastLocal]
+        next = [...preserved.filter(m => m.role !== 'streaming'), ...liveSends, lastLocal]
       } else if (
         lastLocal
         && (lastLocal.role === 'assistant' || lastLocal.role === 'streaming')
@@ -561,9 +580,9 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
         const finalized: ChatMessage = (lastLocal.role === 'streaming' && !running)
           ? { ...lastLocal, role: 'assistant' }
           : lastLocal
-        next = [...preserved.filter(m => m.role !== 'streaming'), finalized]
+        next = [...preserved.filter(m => m.role !== 'streaming'), ...liveSends, finalized]
       } else {
-        next = preserved
+        next = liveSends.length ? [...preserved, ...liveSends] : preserved
       }
       /* switchSlot fetches a BOUNDED page (OLDER_PAGE_LIMIT), and `pending`
        * restored this slot's cached transcript into `state.messages`, so
