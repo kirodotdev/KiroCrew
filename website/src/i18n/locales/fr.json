@@ -9733,6 +9733,7 @@
       "response_ready": "Réponse prête",
       "waiting_for_input": "En attente de ta réponse",
       "tool_approval": "Approbation d’outil : {{name}}",
+      "approval_waiting": "En attente de ton approbation : {{name}}",
       "approval_wait_expired": "L’attente d’approbation a expiré, la demande a donc été refusée.",
       "approval_rejected": "L’approbation a été rejetée, la demande a donc été refusée.",
       "unknown": "Inconnu"
