@@ -11878,7 +11878,10 @@
       "crew_enable": "启用",
       "crew_enable_named": "启用 {{name}}",
       "crew_spaces_unavailable": "无法加载 {{name}} 的文件夹。其聊天将不分文件夹列出。",
-      "crew_enable_failed": "无法启用 {{name}}"
+      "crew_enable_failed": "无法启用 {{name}}",
+      "chat_with_session": "与 {{title}} 对话",
+      "chat_with_session_desc": "开启本文件夹其他对话的那个会话",
+      "conductor_tag": "调度者"
     },
     "connectionsPage": {
       "action_failed": "操作失败：{{error}}",

@@ -11878,7 +11878,10 @@
       "crew_enable": "사용",
       "crew_enable_named": "{{name}} 사용",
       "crew_spaces_unavailable": "{{name}}의 폴더를 불러올 수 없습니다. 채팅은 폴더 없이 표시됩니다.",
-      "crew_enable_failed": "{{name}}을(를) 켤 수 없습니다"
+      "crew_enable_failed": "{{name}}을(를) 켤 수 없습니다",
+      "chat_with_session": "{{title}}과(와) 채팅",
+      "chat_with_session_desc": "이 폴더의 다른 채팅을 시작한 세션",
+      "conductor_tag": "지휘자"
     },
     "connectionsPage": {
       "action_failed": "작업에 실패했습니다: {{error}}",

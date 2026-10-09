@@ -148,6 +148,13 @@ export interface RowPlacement {
   /** Layout projection on for this copy (the facade's displacement-window gate). */
   rowAnimEnabled: boolean
   conductor?: ConductorRowView
+  /** This copy is the one its FOLDER is drawn around: pinned under the folder row,
+   *  at the folder row's own left edge, with every other row in the folder indented
+   *  under it. One boolean rather than a `ConductorRowView`, because the folder lane
+   *  knows none of that view's facts -- it does not nest, so there is no depth, no
+   *  chevron and no collapsed aggregate to carry. All the row does with it is wear
+   *  the tag that says WHY it is up there. */
+  folderConductor?: boolean
 }
 
 /** The shell values every row shows the same way. The shell builds it once per change
@@ -220,6 +227,8 @@ export interface SessionRowView {
   orderStamp: number
   rowAnimEnabled: boolean
   conductor: ConductorRowView | null
+  /** See `RowPlacement.folderConductor`. False in every lane but the folder tree. */
+  folderConductor: boolean
   isActive: boolean
   isOut: boolean
   isPinned: boolean
@@ -812,6 +821,7 @@ function rowView(slot: Slot, placement: RowPlacement, scene: RowScene, model: Vi
     orderStamp: placement.orderStamp,
     rowAnimEnabled: placement.rowAnimEnabled,
     conductor: placement.conductor ?? null,
+    folderConductor: placement.folderConductor ?? false,
     isActive: isActiveIn(scene, slot),
     isOut: local !== null && scene.local.poppedOut.has(local),
     isPinned: local !== null && model.pinned.has(local),
@@ -841,6 +851,7 @@ function rowView(slot: Slot, placement: RowPlacement, scene: RowScene, model: Vi
 const VIEW_FIELDS: Record<keyof SessionRowView, true> = {
   slot: true, identity: true, localKey: true, peerId: true, peerName: true, scope: true, navScope: true,
   holdContainer: true, showDivider: true, orderStamp: true, rowAnimEnabled: true, conductor: true,
+  folderConductor: true,
   isActive: true, isOut: true, isPinned: true, isUnread: true, isRunning: true, recent: true,
   subagentCount: true, subagentApprovalCount: true, digitBadge: true, isRenaming: true, renamingHere: true,
   renameValue: true, revealFlash: true, pinnedOrderIndex: true, pinnedReorderEnabled: true,

@@ -12066,7 +12066,10 @@
       "crew_enable": "चालू करो",
       "crew_enable_named": "{{name}} चालू करो",
       "crew_spaces_unavailable": "{{name}} से फ़ोल्डर लोड नहीं हो सके। इसकी चैट फ़ोल्डर के बिना दिखाई जा रही हैं।",
-      "crew_enable_failed": "{{name}} चालू नहीं हो सका"
+      "crew_enable_failed": "{{name}} चालू नहीं हो सका",
+      "chat_with_session": "{{title}} के साथ चैट",
+      "chat_with_session_desc": "वह सत्र जिसने इस फ़ोल्डर की बाकी चैट शुरू कीं",
+      "conductor_tag": "कंडक्टर"
     },
     "connectionsPage": {
       "action_failed": "कार्रवाई विफल: {{error}}",

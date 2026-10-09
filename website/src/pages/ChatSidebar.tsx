@@ -128,6 +128,7 @@ import { useSidebarTags } from './chat-sidebar/tags'
 import { useBoardColumns, useColumnPopover, useBoardColumnMutations, useColumnMatches, useBoardFolderCollapse } from './chat-sidebar/board'
 import { useHoverHold, useHoverPinLiveness } from './chat-sidebar/hoverHold'
 import { useLineageAvailable, useConductorLane, citedCreatorOf } from './chat-sidebar/conductor'
+import { detectFolderConductor } from './chat-sidebar/folderConductor'
 import { useShortcutOrder } from './chat-sidebar/shortcuts'
 import { useFolderDropOps, useSidebarMoveUndo, useSidebarDragHandlers, useNativeSessionDrag } from './chat-sidebar/dnd/useSidebarDrag'
 import { useSidebarReveal } from './chat-sidebar/reveal'
@@ -1947,6 +1948,26 @@ const SessionRow = memo(function SessionRow({ view, actions }: SessionRowProps) 
                 *  rare agent switch, and the repo's animation invariant is
                 *  framer-only (no new CSS @keyframes). */}
               <span key={agentName || 'empty'} title={agentDisplay || undefined} className={`truncate shrink-0 ${resolvedSlotTags.length > 0 || agentDiverged ? 'max-w-[50%]' : ''}`}>{agentDisplay || '\u00A0'}</span>
+              {/* WHY this card is sitting above its folder's other rows, in a
+                *  word, beside the agent name that is the card's own first line.
+                *  The accent bar down its left edge groups the card with the
+                *  folder row; on its own that bar is a decoration a reader has to
+                *  guess at, and the agent name says which AGENT is running, never
+                *  what the session is to the folder.
+                *
+                *  Same shape and the same accent tokens as every other marker on
+                *  this line (the peer-crew chip, the Members-page chip): nothing
+                *  here is a new colour, and the tag is the accent the bar already
+                *  is. Not a title attribute -- the menu item one row up carries
+                *  the sentence, and a hover-only gloss is unreachable on a touch
+                *  screen. */}
+              {view.folderConductor && (
+                <span
+                  className="shrink-0 inline-flex items-center px-1 rounded bg-accent-subtle text-accent text-[10px] leading-[12px] font-semibold"
+                  data-testid={`folder-conductor-tag-${rowIdentity}`}>
+                  {i18nT('pages.chatSidebar.conductor_tag')}
+                </span>
+              )}
               {/* Peer-OWNERSHIP badge: this session belongs to another machine.
                 *  The SAME component the `RemoteCrewChip` further down this row
                 *  uses, which says a LOCAL session dispatches its turns to a peer.
@@ -2897,6 +2918,29 @@ function ChatSidebar({
 
   const { hoverPinRef, heldDisplacedRef, releaseHoverPin, heldLane, onRootPointerOver } = useHoverHold()
 
+  /**
+   * The session CONDUCTING a folder, derived from the folder's own rows.
+   *
+   * Read once, by the folder's menu, to decide whether that menu offers the
+   * chat item and to name the session it opens. A folder whose rows resolve no
+   * conductor gets `null` and its menu is the menu on main, which is why no
+   * other branch in this file had to change: the ordinary folder row is still
+   * the only shape this lane draws.
+   *
+   * The whole row comes back rather than its key, because the item names the
+   * session it opens: a label that says only "conductor" leaves a first-time
+   * reader with no idea what the click does.
+   *
+   * Computed per render rather than memoized. `sidebarRows` is a fresh object
+   * every render, so a memo keyed on it would recompute anyway and only add a
+   * cache to read; the work is one pass over each folder's own rows.
+   */
+  const folderConductorOf = (folderId: string): Slot | null => {
+    const rows = sidebarRows.folderTree.rowsIn(folderId)
+    const key = detectFolderConductor(rows)
+    return key == null ? null : rows.find(r => r.key === key) ?? null
+  }
+
   const { lineageAvailable } = useLineageAvailable({ allRows })
   // Which lane the sidebar is actually rendering (see `renderedLane`). The tag-column
   // board wins when columns exist — flat view does not replace it, it applies INSIDE
@@ -3447,7 +3491,7 @@ function ChatSidebar({
   // total across scopes, which is what the clamp counts.
   const sessionRowStamps = new Map<string, Map<string, number>>()
   let sessionRowStampCount = 0
-  const renderSessionRow = (s: Slot, _indent: number, showDivider: boolean, scope = 'list', navScope = scope, holdContainer = navScope, conductor?: ConductorRowView) => {
+  const renderSessionRow = (s: Slot, _indent: number, showDivider: boolean, scope = 'list', navScope = scope, holdContainer = navScope, conductor?: ConductorRowView, folderConductor?: boolean) => {
     // Clamped, not raw: rows past the window share a stamp and bail out of a
     // displacement above them (see SIDEBAR_DISPLACEMENT_WINDOW).
     let scopeStamps = sessionRowStamps.get(scope)
@@ -3463,7 +3507,7 @@ function ChatSidebar({
       scopeStamps.set(stampKey, orderStamp)
     }
     const view = rowViews.view(s, {
-      scope, navScope, holdContainer, showDivider, orderStamp, conductor,
+      scope, navScope, holdContainer, showDivider, orderStamp, conductor, folderConductor,
       // staticRows (the compositor drawer) folds into the one row-animation
       // gate: projection under a WAAPI-driven ancestor mis-attributes the
       // panel's motion to the rows, so the drawer disables row animation
@@ -3657,8 +3701,36 @@ function ChatSidebar({
         <Item data-testid={tid('new-temporary')} onClick={() => { createChatInFolder(folder.id, { memoryMode: 'temporary' }) }}><VenetianMask size={13} className="text-aim" /> {i18nT('components.welcomeView.temporary')}</Item>
       </>
     )
+    // The conductor's own chat, reachable from the folder row instead of from an
+    // expand-and-scan. It is a MENU item rather than a button beside the row's
+    // other two, because a third peer action in that cluster is over the
+    // two-controls-per-row cap and the overflow menu is where the cap sends it.
+    // Both menus render from here, so the ⋯ menu and the right-click menu offer
+    // the same action. A folder whose rows resolve no conductor gets nothing
+    // added, which is why no other branch in this file changes: the row, the
+    // hover cluster and the session cards are what they are on main.
+    //
+    // The label NAMES the session and the second line says what that session is
+    // to this folder. A label carrying the word "conductor" and nothing else
+    // left a first-time reader unable to say what the click opens, and the two
+    // other chat affordances on the same row made that worse rather than
+    // clearer. The two-line shape is the one the ephemeral-chat items in this
+    // file already use.
+    const conductor = folderConductorOf(folder.id)
     return (
       <>
+        {conductor && (
+          <Item className="items-start" data-testid={tid('conductor-chat')} onClick={() => {
+            dispatch(switchSlot({ key: conductor.key, announceOnMissing: true }))
+            onSelectSlot?.(conductor.key)
+          }}>
+            <MessageSquare size={14} className="text-accent mt-[3px] shrink-0" />
+            <span className="flex min-w-0 flex-col gap-px">
+              <span className="truncate">{i18nT('pages.chatSidebar.chat_with_session', { title: conductor.title || conductor.key })}</span>
+              <span className="whitespace-normal text-[11px] leading-snug text-muted">{i18nT('pages.chatSidebar.chat_with_session_desc')}</span>
+            </span>
+          </Item>
+        )}
         <Item data-testid={tid('rename')} onClick={() => { suppressMenuRestoreRef.current = true; setEditingId(folder.id); setEditScope('list'); setEditName(folder.name) }}><Pencil size={13} /> {i18nT('pages.chatSidebar.rename')}</Item>
         <Item data-testid={tid('new-subfolder')} onClick={() => { setFolderModal({ mode: 'create', parentId: folder.id }) }}><FolderPlus size={13} /> {i18nT('pages.chatSidebar.new_subfolder')}</Item>
         {/* A flyout has nowhere to open at phone width, so inline the rows
@@ -4014,7 +4086,33 @@ function ChatSidebar({
   const renderFolderBlock = (folder: ChatFolder, depth: number, visited = new Set<string>(), dragHandleProps?: React.HTMLAttributes<HTMLElement>, forceCollapsed = false): React.ReactNode[] => {
     if (depth > 10 || visited.has(folder.id)) return []
     visited.add(folder.id)
-    const childSlots = sidebarRows.folderTree.rowsIn(folder.id)
+    const allChildSlots = sidebarRows.folderTree.rowsIn(folder.id)
+    /**
+     * The one row this folder is drawn AROUND, or null.
+     *
+     * A conducted folder is one conversation that opened the rest, and reading
+     * it off the lane meant expanding the folder and picking that card out of a
+     * time-sorted list where it sits wherever it last spoke. So it comes out of
+     * the list and goes directly under the folder row, at the folder row's own
+     * left edge, and what it opened stays in the body indented under it: the
+     * folder row and this card read as the one thing they are.
+     *
+     * Null is the ordinary folder, and `allChildSlots` is then handed on
+     * UNTOUCHED -- same array, same order, same nodes. That is the whole
+     * fallback: a folder nobody conducts is not a degraded conducted one, and
+     * the lane tens of thousands of people already read is unchanged for it.
+     */
+    const folderConductorSlot = (() => {
+      const key = detectFolderConductor(allChildSlots)
+      return key == null ? null : allChildSlots.find(s => s.key === key) ?? null
+    })()
+    // What the body draws: every row in the folder except the pinned one. The
+    // folder HEADER's count still reads `rowsIn` and so still counts the
+    // conductor -- it says how many sessions are filed here, and that is still
+    // all of them.
+    const childSlots = folderConductorSlot == null
+      ? allChildSlots
+      : allChildSlots.filter(s => s !== folderConductorSlot)
     const childNodes: React.ReactNode[] = []
     // Nested subfolders are sortables, exactly as root folders are: dragging one
     // either re-orders it among its siblings (drop on a sibling's edges or body)
@@ -4061,6 +4159,38 @@ function ChatSidebar({
     // Stale rows are collapsed into their own section and are stale precisely
     // because nothing is bumping them, so only the live list needs the hold.
     const { rows: freshChildSlots, navScope: treeChildScope, container: treeChildContainer } = heldLane(freshChildSlotsRaw, 'list', `tree:folder:${folder.id}`)
+    /**
+     * The pinned conductor card, drawn above the body rather than inside it.
+     *
+     * OUTSIDE the `FOLDER_BODY_CLS` div, which is what puts it at the folder
+     * row's left edge: that div carries the body's `ml-3` indent and its
+     * connector line, and the rows under it keep their own pad, so a card that
+     * skips it lands one step to the LEFT of its folder's other rows and the
+     * body's line now hangs the workers off this card instead of off the folder
+     * row. INSIDE `FolderBody` all the same, so collapsing the folder still
+     * folds the conductor away with everything else it holds -- the card is
+     * part of the folder's contents, not a second header.
+     *
+     * Not in `childNodes`: a pinned row must be first no matter how it sorts,
+     * and `freshChildSlots` is in lane order (recency, or the search ranking).
+     * Pinning by sorting would mean teaching that comparator about folders.
+     *
+     * Same lane scope and hold container as its siblings, so keyboard roving
+     * reaches it as the folder's first row. It is kept OUT of `heldLane`'s list
+     * because that list is the one a hover-hold displaces, and this row is the
+     * one row in the folder whose position is fixed.
+     *
+     * The 2px accent bar is what makes the two rows one block: it starts at the
+     * body's own inset, so it runs down the card's left edge BELOW the folder
+     * row's glyph and LEFT of the body's connector line, and the card's content
+     * lands 2px right of the folder name rather than a step in from it.
+     */
+    const folderConductorNode = folderConductorSlot && (
+      <div key={`folder-conductor-${folder.id}`} data-folder-conductor={folder.id}
+        className="border-l-2 border-accent rounded-l-[3px]">
+        {renderSessionRow(folderConductorSlot, depth, false, treeChildScope, treeChildScope, treeChildContainer, undefined, true)}
+      </div>
+    )
     freshChildSlots.forEach((s, i) => {
       const isActive = isActiveRow(s)
       const nextIsActive = isActiveRow(freshChildSlots[i + 1])
@@ -4089,7 +4219,11 @@ function ChatSidebar({
     // cannot show it. `folderNameMatchIds` covers the matched folder's subtree, so
     // a matched parent keeps its empty children too: they are part of what the
     // query asked to see.
-    if (listNarrowed && childNodes.length === 0
+    //
+    // The pinned conductor counts as content HERE as much as any other row: it
+    // is a row that passed the narrow (`rowsIn` is already filtered), so a
+    // folder dropped while it is on screen would hide a match.
+    if (listNarrowed && childNodes.length === 0 && !folderConductorNode
       && folderCreateError?.folderId !== folder.id
       && !folderNameMatchIds?.has(folder.id)) return []
     // Wrap children in a bordered container so the folder's extent is visually
@@ -4101,8 +4235,8 @@ function ChatSidebar({
     // most of the sidebar's height on rows holding nothing. Dropping the body
     // rather than collapsing it is why there is no per-folder expansion state:
     // nothing is hidden, so nothing needs re-reaching.
-    const emptyBody = hideEmptyFolderBody && childNodes.length === 0
-    const wrapped = childNodes.length > 0 ? (
+    const emptyBody = hideEmptyFolderBody && childNodes.length === 0 && !folderConductorNode
+    const body = childNodes.length > 0 ? (
       <div key={`folder-children-${folder.id}`} className={FOLDER_BODY_CLS}>
         <FolderRail name={folder.name} id={folder.id} onToggle={e => toggleListFolderCollapse(folder, e.currentTarget)} />
         {childNodes}
@@ -4128,6 +4262,9 @@ function ChatSidebar({
         </button>
       </div>
     )
+    // With no conductor this IS `body` -- the same node, not a fragment around
+    // it -- so an ordinary folder's tree is the tree on main down to the element.
+    const wrapped = folderConductorNode == null ? body : <>{folderConductorNode}{body}</>
     // Outer container wraps header + body so the entire folder block is a
     // single drag-drop target. Dropping anywhere inside (header, children,
     // empty space) assigns the dragged session to this folder.

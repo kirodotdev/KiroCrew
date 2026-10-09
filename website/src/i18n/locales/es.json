@@ -12254,7 +12254,10 @@
       "crew_enable": "Activar",
       "crew_enable_named": "Activar {{name}}",
       "crew_spaces_unavailable": "No se pudieron cargar las carpetas de {{name}}. Sus chats se muestran sin ellas.",
-      "crew_enable_failed": "No se pudo activar {{name}}"
+      "crew_enable_failed": "No se pudo activar {{name}}",
+      "chat_with_session": "Chat con {{title}}",
+      "chat_with_session_desc": "La sesión que inició los demás chats de esta carpeta",
+      "conductor_tag": "conductor"
     },
     "connectionsPage": {
       "action_failed": "La acción falló: {{error}}",
