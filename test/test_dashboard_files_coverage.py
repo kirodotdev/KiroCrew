@@ -1337,6 +1337,7 @@ class TestDashboardConfigPut:
             "merge_queued_messages",
             "tail_fork_enabled",
             "folder_suggestions_enabled",
+            "topic_tags_enabled",
             "link_previews",
             "quick_send",
             "session_grid",
@@ -1352,6 +1353,7 @@ class TestDashboardConfigPut:
     async def test_coded_boolean_errors_carry_a_machine_code(self, config_client_app):
         coded = {
             "folder_suggestions_enabled": "invalid_folder_suggestions_enabled",
+            "topic_tags_enabled": "invalid_topic_tags_enabled",
             "link_previews": "invalid_link_previews",
             "mcp_app_panel": "invalid_mcp_app_panel",
         }
@@ -1422,6 +1424,7 @@ class TestDashboardConfigPut:
             "tail_fork_enabled": True,
             "link_previews": True,
             "folder_suggestions_enabled": True,
+            "topic_tags_enabled": True,
         }
         async with TestClient(TestServer(config_client_app)) as client:
             resp = await client.put("/api/dashboard/config", json=payload)

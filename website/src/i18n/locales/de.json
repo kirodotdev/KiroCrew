@@ -15178,6 +15178,8 @@
         "discovery": "Entdecken",
         "rail_label": "Chat-Einstellungen",
         "side_panel": "Seitenleiste",
+        "topic_tags": "Themen-Tags",
+        "topic_tags_desc": "Taggt jede neue Sitzung in der Seitenleiste mit bis zu zwei Themen, etwa „debugging“. Nutzt einen Hintergrund-Modellaufruf pro neuer Sitzung.",
         "transcript": "Verlauf",
         "about_you": "Über Sie",
         "answer_only_details_on_request": "Nur Antwort — einfachste Worte, Details auf Anfrage",

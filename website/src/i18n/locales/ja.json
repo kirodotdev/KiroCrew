@@ -14938,6 +14938,8 @@
         "discovery": "発見",
         "rail_label": "チャット設定",
         "side_panel": "サイドパネル",
+        "topic_tags": "トピックタグ",
+        "topic_tags_desc": "新しいセッションごとに、サイドバーで「debugging」のようなトピックタグを最大 2 つ付けます。新しいセッションごとにバックグラウンドのモデル呼び出しを 1 回使います。",
         "transcript": "会話表示",
         "about_you": "自分について",
         "answer_only_details_on_request": "回答のみ — いちばん易しい言葉で、詳細は要望時に",

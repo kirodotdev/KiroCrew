@@ -346,6 +346,7 @@ export interface DashboardConfig {
   auto_open_git_panel: boolean
   session_card_source_links: boolean
   folder_suggestions_enabled: boolean
+  topic_tags_enabled?: boolean
   model_picker_hidden_models: string[]
   model_picker_configured?: boolean
 }

@@ -147,7 +147,6 @@ src/kiro_crew/connections/l0_record.py
 src/kiro_crew/connections/tool_aliases.py
 src/kiro_crew/cron_history.py
 src/kiro_crew/dashboard/channel_folders.py
-src/kiro_crew/dashboard/chat_auto_tag.py
 src/kiro_crew/dashboard/chat_folder_suggest.py
 src/kiro_crew/dashboard/chat_nav.py
 src/kiro_crew/dashboard/chat_title.py
@@ -840,7 +839,6 @@ test/test_subagent_stall.py
 test/test_subquestion_queue.py
 test/test_sweep_stale_permissions.py
 test/test_system_metrics_coalescing.py
-test/test_tag_session.py
 test/test_tail_fork_config.py
 test/test_tailnet_cli.py
 test/test_tailnet_e2e.py

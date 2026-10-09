@@ -7216,6 +7216,7 @@
         "feature_videos_enabled": false,
         "feature_videos_cache_max_mb": 500.0,
         "folder_suggestions_enabled": true,
+        "topic_tags_enabled": false,
         "tips_cadence_hours": 6.0,
         "tips_snooze_hours": 48.0,
         "tips_recency_decay": 0.6,
@@ -8262,6 +8263,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "dashboard.topic_tags_enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Topic Tags Enabled",
+      "help": "Ask the background model for up to two topic tags from a new chat session's first message. A session never gets more than three tags this way. Off by default because each new session costs one model call.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "dashboard.tips_cadence_hours",

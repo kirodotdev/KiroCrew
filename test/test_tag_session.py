@@ -138,7 +138,9 @@ class TestAutoTagDerivation:
         assert len(state._tags) == 1
         assert state._tags[0]["name"] == "DisapereBackend"
 
-    @pytest.mark.parametrize("name", ["workspace", "workspaces", "workplace", "kirocrew-workspace", "default"])
+    @pytest.mark.parametrize(
+        "name", ["workspace", "workspaces", "workplace", "kirocrew-workspace", "default"]
+    )
     async def test_trivial_workspace_basenames_are_noop(self, patch_save_slot, name):
         """Default/generic workspace dir names carry no signal — suppress them."""
         state = _make_state()
@@ -500,3 +502,344 @@ class TestAutoTagTruncationBeforeMatch:
         assert len(state._tags) == 1  # single definition, no duplicate
         assert state._tags[0]["name"] == base
         assert slot_a.tags == slot_b.tags == [state._tags[0]["id"]]
+
+
+# ── Topic tags (optional model pass) ─────────────────────────────────────────
+
+
+def _topic_slot(project="/x/repos/MyRepo", tags=None, message="Why does the build fail?"):
+    slot = _make_slot(project=project, tags=tags)
+    slot.messages = [{"role": "user", "content": message}] if message else []
+    slot._app = None
+    return slot
+
+
+@pytest.fixture
+def topic_model(monkeypatch):
+    """Patch the config gate and the background one-liner; record each call."""
+    calls: list[dict] = []
+    box = {"enabled": True, "reply": "debugging\ncode review"}
+
+    def _load():
+        return SimpleNamespace(dashboard=SimpleNamespace(topic_tags_enabled=box["enabled"]))
+
+    async def _oneliner(_sessions, prompt, **kw):
+        calls.append({"prompt": prompt, **kw})
+        return box["reply"]
+
+    monkeypatch.setattr("kiro_crew.dashboard.chat_auto_tag.KiroCrewConfig.load", _load)
+    monkeypatch.setattr("kiro_crew.dashboard.chat_auto_tag.run_bg_oneliner", _oneliner)
+    # Protected grants: a healthy store with no rows unless a test adds them.
+    from kiro_crew.dashboard.chat_tag_grants import GrantsSnapshot
+
+    box["rows"] = {}
+    box["reduced"] = None
+    monkeypatch.setattr("kiro_crew.dashboard.chat_auto_tag.refresh_cache", lambda: None)
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.chat_auto_tag.capture_grants_snapshot",
+        lambda: GrantsSnapshot(None, box["reduced"], box["rows"]),
+    )
+    box["calls"] = calls
+    return box
+
+
+def _names(state, slot):
+    by_id = {t["id"]: t["name"] for t in state._tags}
+    return [by_id[i] for i in slot.tags]
+
+
+def test_topic_tags_are_off_by_default():
+    from kiro_crew.config.sections import DashboardConfig
+
+    assert DashboardConfig().topic_tags_enabled is False
+
+
+@pytest.mark.asyncio
+class TestTopicTags:
+    async def test_enabled_adds_topic_tags_through_the_background_session(
+        self, patch_save_slot, topic_model
+    ):
+        state = _make_state()
+        slot = _topic_slot()
+
+        await maybe_auto_tag(state, slot)
+
+        assert _names(state, slot) == ["MyRepo", "debugging", "code review"]
+        assert len(topic_model["calls"]) == 1
+        call = topic_model["calls"][0]
+        assert call["sel_source"] == "chat_auto_tag"
+        assert call["sel_session_key"] == "test-slot"
+        assert "Why does the build fail?" in call["prompt"]
+
+    async def test_disabled_makes_no_model_call(self, patch_save_slot, topic_model):
+        topic_model["enabled"] = False
+        state = _make_state()
+        slot = _topic_slot()
+
+        await maybe_auto_tag(state, slot)
+
+        assert _names(state, slot) == ["MyRepo"]
+        assert topic_model["calls"] == []
+
+    async def test_cap_of_three_is_enforced_on_the_server(self, patch_save_slot, topic_model):
+        # No project tag, so two slots of room are left by one existing tag; the
+        # reply offers three names and only two may land.
+        topic_model["reply"] = "debugging\noncall\ncode review"
+        state = _make_state([{"id": "keep", "name": "keep", "status": False}])
+        slot = _topic_slot(project="", tags=["keep"])
+
+        await maybe_auto_tag(state, slot)
+
+        assert len(slot.tags) == 3
+        assert _names(state, slot) == ["keep", "debugging", "oncall"]
+        assert "code review" not in [t["name"] for t in state._tags]
+
+    async def test_full_session_skips_the_model_call(self, patch_save_slot, topic_model):
+        existing = [{"id": f"t{i}", "name": f"t{i}", "status": False} for i in range(3)]
+        state = _make_state(existing)
+        slot = _topic_slot(project="", tags=["t0", "t1", "t2"])
+
+        await maybe_auto_tag(state, slot)
+
+        assert slot.tags == ["t0", "t1", "t2"]
+        assert topic_model["calls"] == []
+
+    async def test_prose_and_none_replies_add_nothing(self, patch_save_slot, topic_model):
+        for reply in ("NONE", "Here are some tags: debugging, oncall.", ""):
+            topic_model["reply"] = reply
+            state = _make_state()
+            slot = _topic_slot(project="")
+
+            await maybe_auto_tag(state, slot)
+
+            assert slot.tags == [], reply
+            assert state._tags == [], reply
+
+    async def test_list_markers_are_stripped_and_case_folded(self, patch_save_slot, topic_model):
+        topic_model["reply"] = "1. Debugging\n- #Oncall"
+        state = _make_state()
+        slot = _topic_slot(project="")
+
+        await maybe_auto_tag(state, slot)
+
+        assert _names(state, slot) == ["debugging", "oncall"]
+
+    async def test_status_tag_names_are_never_applied(self, patch_save_slot, topic_model):
+        topic_model["reply"] = "review\ndebugging"
+        state = _make_state([{"id": "st", "name": "Review", "status": True}])
+        slot = _topic_slot(project="")
+
+        await maybe_auto_tag(state, slot)
+
+        assert "st" not in slot.tags
+        assert _names(state, slot) == ["debugging"]
+
+    async def test_credentials_are_redacted_before_the_prompt(self, patch_save_slot, topic_model):
+        secret = "AKIA" + "ABCDEFGHIJKLMNOP"
+        state = _make_state()
+        slot = _topic_slot(message=f"my key is {secret} please help")
+
+        await maybe_auto_tag(state, slot)
+
+        assert secret not in topic_model["calls"][0]["prompt"]
+
+    async def test_credential_in_the_reply_is_never_stored(self, patch_save_slot, topic_model):
+        # Upper-case key shape: the redactor must see it before any case folding.
+        topic_model["reply"] = "AKIA" + "ABCDEFGHIJKLMNOP\ndebugging"
+        state = _make_state()
+        slot = _topic_slot(project="")
+
+        await maybe_auto_tag(state, slot)
+
+        assert _names(state, slot) == ["debugging"]
+        assert all("akia" not in t["name"].lower() for t in state._tags)
+
+    async def test_a_tag_the_owner_kept_is_never_applied(self, patch_save_slot, topic_model):
+        topic_model["reply"] = "reviewed\ndebugging"
+        topic_model["rows"] = {"kept": ("none", False), "open": ("add-only", False)}
+        state = _make_state(
+            [
+                {"id": "kept", "name": "reviewed", "status": False},
+                {"id": "open", "name": "debugging", "status": False},
+            ]
+        )
+        slot = _topic_slot(project="")
+
+        events: list[dict] = []
+        with patch("kiro_crew.dashboard.chat_auto_tag.sel") as fake_sel:
+            fake_sel.return_value.log_api_access.side_effect = lambda **kw: events.append(kw)
+            await maybe_auto_tag(state, slot)
+
+        assert slot.tags == ["open"]
+        # Both grant decisions reach the audit log, the refusal with its reason.
+        by_tag = {e["resources"].rsplit("tag=", 1)[1]: e for e in events}
+        assert by_tag["kept"]["outcome"] == "denied"
+        assert by_tag["kept"]["error"] == "tag_policy_denied"
+        assert by_tag["open"]["outcome"] == "success"
+
+    async def test_no_new_tag_is_minted_while_grants_are_reduced(
+        self, patch_save_slot, topic_model
+    ):
+        topic_model["reduced"] = "quarantined"
+        state = _make_state()
+        slot = _topic_slot()
+
+        await maybe_auto_tag(state, slot)
+
+        # The project tag is not model-chosen and is not gated; topic tags are.
+        assert _names(state, slot) == ["MyRepo"]
+
+    async def test_a_send_during_the_model_call_starts_no_second_call(
+        self, patch_save_slot, topic_model, monkeypatch
+    ):
+        entered = asyncio.Event()
+        gate = asyncio.Event()
+
+        async def _slow(_sessions, prompt, **_kw):
+            topic_model["calls"].append({"prompt": prompt})
+            entered.set()
+            await gate.wait()
+            return "debugging"
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_auto_tag.run_bg_oneliner", _slow)
+        state = _make_state()
+        slot = _topic_slot(project="")
+
+        first = asyncio.create_task(maybe_auto_tag(state, slot))
+        try:
+            # The first attempt is parked inside the model call before the second send.
+            await asyncio.wait_for(entered.wait(), timeout=5)
+            await maybe_auto_tag(state, slot)
+        finally:
+            gate.set()
+        await asyncio.wait_for(first, timeout=5)
+
+        assert len(topic_model["calls"]) == 1
+        assert _names(state, slot) == ["debugging"]
+
+    async def test_grants_are_read_while_holding_the_tags_lock(
+        self, patch_save_slot, topic_model, monkeypatch
+    ):
+        # An owner's grant change holds this lock, so a read under it cannot see
+        # a grant that change has already replaced.
+        from kiro_crew.dashboard.chat_tag_grants import GrantsSnapshot
+        from kiro_crew.dashboard.chat_tags import _tags_write_lock
+
+        state = _make_state()
+        held: list[bool] = []
+
+        def _snap():
+            held.append(_tags_write_lock(state).locked())
+            return GrantsSnapshot(None, None, {})
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_auto_tag.capture_grants_snapshot", _snap)
+        slot = _topic_slot(project="")
+
+        await maybe_auto_tag(state, slot)
+
+        assert held == [True]
+        assert _names(state, slot) == ["debugging", "code review"]
+
+    async def test_a_rebound_slot_gets_no_tags_from_the_old_message(
+        self, patch_save_slot, topic_model, monkeypatch
+    ):
+        keys = {"k": "dashboard:test-slot"}
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_auto_tag.slot_history_key", lambda _slot: keys["k"]
+        )
+
+        async def _rebinding(_sessions, _prompt, **_kw):
+            keys["k"] = "cron:job-1"  # the slot is rebound while the model call runs
+            return "debugging"
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_auto_tag.run_bg_oneliner", _rebinding)
+        state = _make_state()
+        slot = _topic_slot(project="")
+
+        await maybe_auto_tag(state, slot)
+
+        assert slot.tags == []
+        assert state._tags == []
+        patch_save_slot.assert_not_awaited()
+
+    async def test_a_credential_across_the_cut_is_still_redacted(
+        self, patch_save_slot, topic_model
+    ):
+        from kiro_crew.dashboard.chat_auto_tag import _TOPIC_MESSAGE_CHARS
+
+        key = "AKIA" + "ABCDEFGHIJKLMNOP"
+        pad = "x " * ((_TOPIC_MESSAGE_CHARS - 8) // 2)
+        state = _make_state()
+        slot = _topic_slot(project="", message=pad + key + " tail")
+
+        await maybe_auto_tag(state, slot)
+
+        prompt = topic_model["calls"][0]["prompt"]
+        assert key[:8] not in prompt
+
+    async def test_a_protected_workflow_state_is_never_applied(self, patch_save_slot, topic_model):
+        # tags.json says "not a status", but the protected row says it is one.
+        topic_model["reply"] = "done\ndebugging"
+        topic_model["rows"] = {"done": ("add-remove", True)}
+        state = _make_state([{"id": "done", "name": "done", "status": False}])
+        slot = _topic_slot(project="")
+
+        await maybe_auto_tag(state, slot)
+
+        assert "done" not in slot.tags
+        assert _names(state, slot) == ["debugging"]
+
+    async def test_only_a_session_with_one_user_turn_is_tagged(self, patch_save_slot, topic_model):
+        # A resumed session whose once-flag was never saved: no second paid call.
+        state = _make_state()
+        slot = _topic_slot(project="")
+        slot.messages = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "reply"},
+            {"role": "user", "content": "second"},
+        ]
+
+        await maybe_auto_tag(state, slot)
+
+        assert topic_model["calls"] == []
+        assert slot.tags == []
+
+    async def test_the_transcript_is_pinned_before_the_project_tag_write(
+        self, patch_save_slot, topic_model, monkeypatch
+    ):
+        keys = {"k": "dashboard:test-slot"}
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_auto_tag.slot_history_key", lambda _slot: keys["k"]
+        )
+
+        async def _rebinding_load():
+            keys["k"] = "cron:job-1"  # rebound during the config read
+            return True
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_auto_tag._topic_tags_enabled", _rebinding_load
+        )
+        state = _make_state()
+        slot = _topic_slot(project="")
+
+        await maybe_auto_tag(state, slot)
+
+        assert slot.tags == []
+        patch_save_slot.assert_not_awaited()
+
+    async def test_model_failure_keeps_the_project_tag(self, patch_save_slot, monkeypatch):
+        async def _boom(*_a, **_kw):
+            raise RuntimeError("model unavailable")
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_auto_tag.KiroCrewConfig.load",
+            lambda: SimpleNamespace(dashboard=SimpleNamespace(topic_tags_enabled=True)),
+        )
+        monkeypatch.setattr("kiro_crew.dashboard.chat_auto_tag.run_bg_oneliner", _boom)
+        state = _make_state()
+        slot = _topic_slot()
+
+        await maybe_auto_tag(state, slot)
+
+        assert _names(state, slot) == ["MyRepo"]
+        assert slot._auto_tagged is True

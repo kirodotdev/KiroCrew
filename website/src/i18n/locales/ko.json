@@ -14938,6 +14938,8 @@
         "discovery": "알아보기",
         "rail_label": "채팅 설정",
         "side_panel": "사이드 패널",
+        "topic_tags": "주제 태그",
+        "topic_tags_desc": "사이드바의 새 세션마다 \"debugging\" 같은 주제 태그를 최대 2개 붙입니다. 새 세션마다 백그라운드 모델 호출을 한 번 씁니다.",
         "transcript": "대화 내용",
         "about_you": "사용자 정보",
         "answer_only_details_on_request": "답변만 — 가장 쉬운 말로, 자세한 내용은 요청 시",

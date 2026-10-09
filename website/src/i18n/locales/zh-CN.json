@@ -14938,6 +14938,8 @@
         "discovery": "发现",
         "rail_label": "聊天设置",
         "side_panel": "侧边面板",
+        "topic_tags": "主题标签",
+        "topic_tags_desc": "在侧边栏为每个新会话打上最多 2 个主题标签，例如“debugging”。每个新会话调用一次后台模型。",
         "transcript": "对话记录",
         "about_you": "关于你",
         "answer_only_details_on_request": "仅结论 — 最简单的话说清，细节按需提供",

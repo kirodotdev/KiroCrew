@@ -431,6 +431,18 @@ describe('ChatPanel — Messages', () => {
     )
   })
 
+  it('shows topic tags off by default and persists turning them on', async () => {
+    wrap('sessions')
+    const sw = await settledSwitch('Topic tags')
+    expect(sw).toHaveAttribute('aria-checked', 'false')
+    fireEvent.click(sw)
+    await waitFor(() =>
+      expect(updateDashboardConfigMock).toHaveBeenCalledWith({
+        topic_tags_enabled: true,
+      })
+    )
+  })
+
   it('rolls the Feature Tips preference back when the write fails', async () => {
     rejectOnce(tipsFeedbackMock)
     wrap('discovery')

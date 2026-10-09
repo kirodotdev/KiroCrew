@@ -8759,6 +8759,8 @@
         "discovery": "Discovery",
         "rail_label": "Chat settings",
         "side_panel": "Side panel",
+        "topic_tags": "Topic tags",
+        "topic_tags_desc": "Tags each new session in the sidebar with up to two topics, like \"debugging\". Uses one background-model call per new session.",
         "transcript": "Transcript",
         "answer_only_details_on_request": "Answer only — plainest words, details on request",
         "auto_add_documents": "Auto-Add Documents",

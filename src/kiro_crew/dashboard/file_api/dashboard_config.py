@@ -88,6 +88,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "mcp_app_panel",
             "auto_open_git_panel",
             "folder_suggestions_enabled",
+            "topic_tags_enabled",
             "session_card_source_links",
             "model_picker_hidden_models_add",
             "model_picker_hidden_models_remove",
@@ -356,6 +357,20 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
                     status=400,
                 )
             updates["folder_suggestions_enabled"] = val
+        if "topic_tags_enabled" in body:
+            val = body["topic_tags_enabled"]
+            if not isinstance(val, bool):
+                _sel().log_tool_invocation(
+                    session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
+                )
+                return web.json_response(
+                    {
+                        "error": "topic_tags_enabled must be a boolean",
+                        "code": "invalid_topic_tags_enabled",
+                    },
+                    status=400,
+                )
+            updates["topic_tags_enabled"] = val
         if "link_previews" in body:
             val = body["link_previews"]
             if not isinstance(val, bool):
@@ -603,6 +618,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "tail_fork_enabled": cfg.dashboard.tail_fork_enabled,
             "link_previews": cfg.dashboard.link_previews,
             "folder_suggestions_enabled": cfg.dashboard.folder_suggestions_enabled,
+            "topic_tags_enabled": cfg.dashboard.topic_tags_enabled,
             "model_picker_hidden_models": list(cfg.dashboard.model_picker_hidden_models),
             "model_picker_configured": cfg.dashboard.model_picker_configured,
             # Read-only here (absent from the PUT allowlist above): authorizing a

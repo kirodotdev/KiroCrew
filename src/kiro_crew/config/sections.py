@@ -3432,6 +3432,15 @@ class DashboardConfig:
             "Offer to file a newly-titled, unfiled chat session into a matching folder.",
         ),
     )
+    topic_tags_enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Topic Tags Enabled",
+            "Ask the background model for up to two topic tags from a new chat "
+            "session's first message. A session never gets more than three tags "
+            "this way. Off by default because each new session costs one model call.",
+        ),
+    )
     tips_cadence_hours: float = field(
         default=6.0,
         metadata=_meta(

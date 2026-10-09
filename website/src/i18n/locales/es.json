@@ -15418,6 +15418,8 @@
         "discovery": "Descubrir",
         "rail_label": "Ajustes del chat",
         "side_panel": "Panel lateral",
+        "topic_tags": "Etiquetas de tema",
+        "topic_tags_desc": "Etiqueta cada sesión nueva en la barra lateral con hasta dos temas, como «debugging». Usa una llamada al modelo en segundo plano por sesión nueva.",
         "transcript": "Conversación",
         "about_you": "Sobre ti",
         "answer_only_details_on_request": "Solo la respuesta — palabras sencillas, detalles a petición",

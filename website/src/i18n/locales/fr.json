@@ -15418,6 +15418,8 @@
         "discovery": "Découverte",
         "rail_label": "Paramètres du chat",
         "side_panel": "Panneau latéral",
+        "topic_tags": "Étiquettes de sujet",
+        "topic_tags_desc": "Étiquette chaque nouvelle session dans la barre latérale avec jusqu'à deux sujets, comme « debugging ». Utilise un appel de modèle en arrière-plan par nouvelle session.",
         "transcript": "Conversation",
         "about_you": "À propos de vous",
         "answer_only_details_on_request": "Réponse seule — mots les plus simples, détails sur demande",
