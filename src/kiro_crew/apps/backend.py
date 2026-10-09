@@ -55,6 +55,7 @@ from kiro_crew.sandbox import (
     MD_NOTEBOOK_APP_NAME,
     RLIMIT_PROFILE_BUILD,
     RLIMIT_PROFILE_TOOL,
+    _command_log_label,
     app_backend_visible_targets,
     carveout_shadowed_by_foreign_mask,
     cgroup_scope_argv,
@@ -75,7 +76,12 @@ if "_PART_MODULES" in globals():
         _importlib.reload(_sys.modules[_reloaded])
     del _reloaded
 
-from kiro_crew.apps.backend_runtime.pidfile import _proc_start_time, _record_app_pid  # noqa: E402
+from kiro_crew.apps.backend_runtime.pidfile import (  # noqa: E402
+    _adoption_provenance,
+    _proc_start_time,
+    _record_app_pid,
+    is_backend_quarantined,
+)
 from kiro_crew.apps.backend_runtime.ports import (  # noqa: E402
     _MAX_PORT,
     _MIN_PORT,
@@ -104,14 +110,19 @@ from kiro_crew.apps.backend_runtime.termination import (  # noqa: E402
 )
 from kiro_crew.apps.backend_runtime.tracking import (  # noqa: E402
     _LIFECYCLE_START,
+    AdoptionRefused,
     AppProcess,
     _advance_lifecycle_locked,
     _await_inflight_spawn,
     _health_reconcile_lock,
     _lock,
     _processes,
+    _quarantined_listener_notice,
     _spawn_publication_owner,
+    _unattributed_listener_notice,
     app_backend_lifecycle_flock,
+    clear_backend_notice,
+    record_backend_notice,
 )
 
 logger = logging.getLogger(__name__)
@@ -130,6 +141,7 @@ _BUILD_CAPABLE_APPS = frozenset({"dev-fleet"})
 # ---------------------------------------------------------------------------
 # Node.js binary resolution
 # ---------------------------------------------------------------------------
+
 
 def _resolve_nvm_path(binary_name: str) -> str | None:
     """Resolve a binary via nvm, returning its full path or None.
@@ -308,9 +320,7 @@ def _start_app_backend(app_name: str) -> AppProcess | None:
                 await_inflight = True
         if not await_inflight:
             # Reserve a STARTING placeholder so a concurrent call sees this spawn in flight.
-            spawn_placeholder = AppProcess(
-                app_name=app_name, starting=True, started_at=time.time()
-            )
+            spawn_placeholder = AppProcess(app_name=app_name, starting=True, started_at=time.time())
             _processes[app_name] = spawn_placeholder
     if await_inflight:
         logger.info("App %s backend is already starting — awaiting the in-flight spawn", app_name)
@@ -342,6 +352,8 @@ def _start_app_backend(app_name: str) -> AppProcess | None:
                 _clear_failed_spawn_state(app_name, spawn_placeholder)
                 return None
 
+            # A notice describes the last attempt only: this attempt replaces it.
+            clear_backend_notice(app_name)
             try:
                 owner_context = _spawn_publication_owner.set(spawn_placeholder)
                 try:
@@ -351,6 +363,13 @@ def _start_app_backend(app_name: str) -> AppProcess | None:
             except Exception:
                 _clear_failed_spawn_state(app_name, spawn_placeholder)
                 raise
+            if isinstance(result, AdoptionRefused):
+                # Surfaced on the app's status, enable, install and update responses
+                # (routes reads backend_notice), because the boot fan-out that hits
+                # this after an upgrade has no response of its own to carry it.
+                record_backend_notice(app_name, result.notice)
+                _clear_failed_spawn_state(app_name, spawn_placeholder)
+                return None
             if result is None:
                 _clear_failed_spawn_state(app_name, spawn_placeholder)
             return result
@@ -397,10 +416,12 @@ def _deps_boot_path() -> Path:
     return Path(os.path.abspath(_deps_boot_module.__file__))
 
 
-def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
+def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | AdoptionRefused | None:
     """The spawn body, single-flighted by the STARTING placeholder set in
-    :func:`start_app_backend`. Returns the real AppProcess on success or None on any
-    failure; the caller clears the placeholder on None/exception."""
+    :func:`start_app_backend`. Returns the real AppProcess on success,
+    :class:`AdoptionRefused` when a healthy listener on the app's port is refused,
+    or None on any other failure; the caller clears the placeholder on anything but
+    an AppProcess and records a refusal's notice for the user."""
     _spawn_owner = _spawn_publication_owner.get()
     root = app_dir(app_name)
     entry_point = manifest.backend.entryPoint
@@ -475,7 +496,10 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
             if not (_MIN_PORT <= port <= _MAX_PORT):
                 logger.error(
                     "App %s: port %d outside allowed range %d-%d",
-                    app_name, port, _MIN_PORT, _MAX_PORT,
+                    app_name,
+                    port,
+                    _MIN_PORT,
+                    _MAX_PORT,
                 )
                 return None
             # Claim it immediately so a concurrently-starting auto-port app cannot
@@ -511,13 +535,6 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
             healthy = _probe_adoption_health(port, manifest.backend.healthCheck)
 
             if healthy:
-                try:
-                    sel().log_api_access(
-                        caller="gateway", operation="app_backend_adopt",
-                        outcome="adopted", resources=f"{app_name} port={port}",
-                    )
-                except Exception as exc:
-                    logger.debug("SEL audit failed for app %s backend adopt: %s", app_name, exc)
                 # Record owning PIDs at adoption time, scoped to the listener
                 # the health probe actually reached. The probe above only ever
                 # talks to 127.0.0.1:<port>; loopback_owner_pids mirrors the
@@ -533,40 +550,125 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
                 if adopted is None:
                     return None
                 adopted_pids, adopted_start_times = adopted
-                logger.info("App %s: healthy instance already on port %d — adopting (pids=%s)", app_name, port, adopted_pids)
+                # QUARANTINE gate: an update whose spawn-record invalidation could not
+                # be confirmed (ENOSPC/EDQUOT) leaves a stale row on disk that still
+                # vouches for whatever rebinds this port -- which is the OLD-code
+                # survivor the update replaced. Attribution below would therefore
+                # ADOPT it as the new version. Refuse to adopt anything on this port
+                # until the record is confirmed gone (a confirmed forget or a fresh
+                # spawn clears the quarantine); the operator frees the disk and the
+                # next update/enable records a clean row. The pidfile's own
+                # fail-closed attribution is the backstop when the marker itself could
+                # not be written.
+                if is_backend_quarantined(app_name):
+                    logger.warning(
+                        "App %s: refusing to adopt the instance on port %d (pids %s): the "
+                        "app is quarantined because a prior update could not confirm "
+                        "deletion of its spawn record, so this listener may be the "
+                        "old-code survivor. Stop that process and retry once the disk "
+                        "is writable.",
+                        app_name,
+                        port,
+                        adopted_pids,
+                    )
+                    try:
+                        sel().log_api_access(
+                            caller="gateway",
+                            operation="app_backend_adopt",
+                            outcome="refused_quarantined",
+                            resources=f"{app_name} port={port}",
+                        )
+                    except Exception as exc:
+                        logger.debug(
+                            "SEL audit failed for app %s adopt quarantine: %s", app_name, exc
+                        )
+                    return AdoptionRefused(
+                        port=port,
+                        reason="quarantined",
+                        notice=_quarantined_listener_notice(app_name, port),
+                    )
+                # The owner set is what provenance is judged on, so this runs here
+                # rather than before the capture: a health answer on the declared
+                # port says nothing about which process gave it, and the identity
+                # question is "is this listener the spawn this gateway recorded for
+                # this app". A listener nothing attributes is refused — see
+                # _adoption_provenance for the routes and the fail-closed cases.
+                attributed, provenance = _adoption_provenance(app_name, adopted_pids)
+                try:
+                    sel().log_api_access(
+                        caller="gateway",
+                        operation="app_backend_adopt",
+                        outcome="adopted" if attributed else "refused_unattributed",
+                        resources=f"{app_name} port={port} provenance={provenance}",
+                    )
+                except Exception as exc:
+                    logger.debug("SEL audit failed for app %s backend adopt: %s", app_name, exc)
+                if not attributed:
+                    logger.warning(
+                        "App %s: refusing to adopt the instance on port %d (pids %s): %s. "
+                        "Stop that process before starting this app, or let the gateway "
+                        "spawn the backend on a port it owns.",
+                        app_name,
+                        port,
+                        adopted_pids,
+                        provenance,
+                    )
+                    return AdoptionRefused(
+                        port=port,
+                        reason=provenance,
+                        notice=_unattributed_listener_notice(app_name, port),
+                    )
+                logger.info(
+                    "App %s: healthy instance already on port %d — adopting (pids=%s, %s)",
+                    app_name,
+                    port,
+                    adopted_pids,
+                    provenance,
+                )
                 ap = AppProcess(
-                    app_name=app_name, port=port, pid=0, proc=None,
-                    healthy=True, started_at=time.time(), log_path=str(log_path),
+                    app_name=app_name,
+                    port=port,
+                    pid=0,
+                    proc=None,
+                    healthy=True,
+                    started_at=time.time(),
+                    log_path=str(log_path),
                     adopted_pids=adopted_pids,
                     adopted_start_times=adopted_start_times,
                     gateway_started=True,
                     # NOT `_admitted_builtin`. That classification is sound only for a
                     # process the gateway itself launched from the path the gate vetted.
-                    # Here the gateway launched nothing: it found a listener already
-                    # answering on the port and adopted it, and no check establishes
-                    # that the listener is executing the shipped code the manifest
-                    # declares. Carrying the exemption across would let anything that
-                    # answers a builtin's port inherit "shipped provenance" and be
-                    # skipped by the revocation sweep for good -- the next boot re-probes
-                    # and re-adopts to the same verdict, so it would never self-correct.
+                    # Here the gateway launched nothing on this call: it found a listener
+                    # already answering on the port. Provenance names that listener as a
+                    # spawn this gateway recorded for this app, which is what admits it
+                    # at all, but it does not establish that the process is still
+                    # executing the shipped code the manifest declares -- a spawn outlives
+                    # an in-place rewrite of the files it started from. Carrying the
+                    # exemption across would let a listener inherit "shipped provenance"
+                    # and be skipped by the revocation sweep for good -- the next boot
+                    # re-probes and re-adopts to the same verdict, so it would never
+                    # self-correct.
                     # The ceiling therefore applies to an adopted backend. A genuinely
                     # shipped one is stopped and respawned BY the gateway, which vets
                     # its execution path and classifies it correctly on that path.
                     admitted_builtin=False,
                 )
-                # Adopted (externally-managed) backends are deliberately NOT
-                # recorded for the startup stale-reap: the reap SIGTERMs a whole
-                # process GROUP (safe only for our own start_new_session children),
-                # whereas an external process's group may hold unrelated processes.
-                # If the gateway dies, the external instance keeps running and is
-                # simply re-probed and re-adopted on the next start — so reaping it
-                # would kill a healthy service we would immediately re-adopt. stop's
-                # adopted path kills only the re-validated PIDs for this reason.
+                # Adoption records no pidfile row of its own, and the startup
+                # stale-reap is why: the reap SIGTERMs a whole process GROUP (safe
+                # only for our own start_new_session children), while an adopted
+                # owner's group can hold processes no spawn of ours placed. The row
+                # this adoption was attributed BY stays exactly as an earlier spawn of
+                # this app wrote it, because it is the only handle either the reap or
+                # a later attribution has. What the row buys is NOT that this instance
+                # survives the next boot -- the reap runs first and terminates a live
+                # recorded leader whose start instant still matches -- but that the
+                # cases the reap leaves standing stay attributable: a dead leader whose
+                # group member holds the port, and a listener met by an enable rather
+                # than a boot. An instance no spawn of ours recorded is not adopted at
+                # all. stop's adopted path signals only the re-validated PIDs for the
+                # same process-group reason.
                 with _lock:
-                    if (
-                        _spawn_owner is not None
-                        and _processes.get(app_name) is not _spawn_owner
-                    ):
+                    if _spawn_owner is not None and _processes.get(app_name) is not _spawn_owner:
                         return None
                     _processes[app_name] = ap
                     _allocated_ports[app_name] = port
@@ -582,7 +684,8 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
             else:
                 try:
                     sel().log_api_access(
-                        caller="gateway", operation="app_backend_spawn",
+                        caller="gateway",
+                        operation="app_backend_spawn",
                         outcome="rejected_port_unhealthy",
                         resources=f"{app_name} port={port}",
                     )
@@ -590,7 +693,9 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
                     logger.debug("SEL audit failed for app %s port rejection: %s", app_name, exc)
                 logger.warning(
                     "App %s: port %d occupied by unhealthy process — "
-                    "kill it manually then retry", app_name, port,
+                    "kill it manually then retry",
+                    app_name,
+                    port,
                 )
                 return None
         except OSError:
@@ -769,11 +874,7 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
     bound_port = os.environ.get("KIROCREW_BOUND_PORT", "").strip()
     bound_host_env = os.environ.get("KIROCREW_BOUND_HOST", "").strip()
     gateway_origin = ""
-    if (
-        bound_port.isdigit()
-        and 1 <= int(bound_port) <= 65535
-        and bound_host_env in ("", "::1")
-    ):
+    if bound_port.isdigit() and 1 <= int(bound_port) <= 65535 and bound_host_env in ("", "::1"):
         # Host evidence: absent means loopback (the default bind shapes —
         # loopback itself, or a wildcard bind loopback reaches); "::1" is the
         # v6-loopback family marker. Only these two shapes are injected: a
@@ -893,8 +994,10 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
                 logger.info("Installing npm deps for app %s", app_name)
                 try:
                     sel().log_api_access(
-                        caller="gateway", operation="app_backend_npm_install",
-                        outcome="started", resources=f"{app_name}",
+                        caller="gateway",
+                        operation="app_backend_npm_install",
+                        outcome="started",
+                        resources=f"{app_name}",
                     )
                 except Exception as exc:
                     logger.debug("SEL audit failed for npm install %s: %s", app_name, exc)
@@ -906,7 +1009,10 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
                     sandboxed_npm = cgroup_scope_argv(sandboxed_npm)  # cgroup DoS ceiling
                     run_limited(
                         sandboxed_npm,
-                        cwd=str(root), env=env, capture_output=True, timeout=120,
+                        cwd=str(root),
+                        env=env,
+                        capture_output=True,
+                        timeout=120,
                     )
                 except Exception as exc:
                     logger.warning("Failed to install npm deps for app %s: %s", app_name, exc)
@@ -983,9 +1089,7 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
         cwd = str(root)
 
     # --- ASGI (Python) backend ---
-    elif backend_type == "asgi" or (
-        not backend_type and _is_asgi_entry(entry)
-    ):
+    elif backend_type == "asgi" or (not backend_type and _is_asgi_entry(entry)):
         # Prefer the app's venv interpreter, else the gateway's own (sys.executable) —
         # never a bare "python3": a bare name relies on PATH, which isn't guaranteed
         # (e.g. some build environments ship only a versioned interpreter, so
@@ -1180,12 +1284,16 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
     sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
 
     logger.info(
-        "Spawning app %s backend: %s", app_name, " ".join(sandboxed_cmd),
+        "Spawning app %s backend: %s",
+        app_name,
+        _command_log_label(cmd),
     )
     try:
         sel().log_api_access(
-            caller="gateway", operation="app_backend_spawn",
-            outcome="started", resources=f"{app_name} port={port}",
+            caller="gateway",
+            operation="app_backend_spawn",
+            outcome="started",
+            resources=f"{app_name} port={port}",
         )
     except Exception as exc:
         logger.debug("SEL audit failed for app %s backend spawn: %s", app_name, exc)
@@ -1274,7 +1382,9 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
         collided = "address already in use" in tail.lower() or "errno 98" in tail.lower()
         logger.error(
             "App %s backend exited immediately (rc=%s) on port %d%s — %s",
-            app_name, proc.returncode, port,
+            app_name,
+            proc.returncode,
+            port,
             " [PORT COLLISION]" if collided else "",
             tail or "(no output)",
         )
@@ -1487,15 +1597,33 @@ if _typing.TYPE_CHECKING:
     # shown, so a misspelled or mis-called ``backend.X`` stays a type error. The
     # composition-contract test pins this list equal to ``_EXPORTS``.
     from kiro_crew.apps.backend_runtime.pidfile import (  # noqa: F401
+        PidfileDeleteFailed,
+        PidfileRevokeFailed,
+        QuarantineUnreadable,
+        _env_spawn_instance,
         _forget_app_pid,
         _forget_app_pid_if,
+        _forget_exited_leader_row,
         _pidfile_lock,
         _pidfile_path,
+        _PidfileGuard,
+        _quarantine_path,
+        _quarantined_backends,
         _read_pidfile,
+        _read_pidfile_strict,
+        _read_quarantine,
+        _restore_app_pid,
+        _unrevoke_app_pid,
         _write_pidfile,
         atomic_write,
+        capture_backend_provenance,
+        clear_backend_quarantine,
+        forget_backend_provenance,
+        group_vouching_available,
         json,
+        quarantine_backend,
         retire_windows_app_tracking,
+        revoke_backend_provenance,
     )
     from kiro_crew.apps.backend_runtime.ports import (  # noqa: F401
         _PID_ANCESTRY_MAX_DEPTH,
@@ -1624,7 +1752,6 @@ if _typing.TYPE_CHECKING:
         _facade,
         _signal_backend_tree,
         _wait_for_pids,
-        group_vouching_available,
         signal_orphaned_spawn_group,
         stop_app_backend,
     )
@@ -1633,8 +1760,11 @@ if _typing.TYPE_CHECKING:
         _LIFECYCLE_STOP,
         ContextVar,
         Iterator,
+        NamedTuple,
+        _backend_notices,
         _lifecycle_generation,
         _restart_attempts,
+        backend_notice,
         contextlib,
         dataclass,
         field,

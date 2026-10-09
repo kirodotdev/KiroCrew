@@ -1,4 +1,5 @@
 """Tests for kiro_crew.apps.backend — backend process management."""
+
 from __future__ import annotations
 
 import json
@@ -189,14 +190,14 @@ def _make_app_with_backend(tmp_path, name="backend-app"):
     # Create a minimal backend that starts an HTTP server
     (src / "backend").mkdir()
     (src / "backend" / "server.py").write_text(
-        'import http.server, os, sys\n'
+        "import http.server, os, sys\n"
         'port = int(os.environ.get("PORT", 9100))\n'
-        'class H(http.server.BaseHTTPRequestHandler):\n'
-        '    def do_GET(self):\n'
-        '        self.send_response(200)\n'
-        '        self.end_headers()\n'
+        "class H(http.server.BaseHTTPRequestHandler):\n"
+        "    def do_GET(self):\n"
+        "        self.send_response(200)\n"
+        "        self.end_headers()\n"
         '        self.wfile.write(b"ok")\n'
-        '    def log_message(self, *a): pass\n'
+        "    def log_message(self, *a): pass\n"
         'http.server.HTTPServer(("127.0.0.1", port), H).serve_forever()\n'
     )
     return src
@@ -236,6 +237,7 @@ def app_env(tmp_path, monkeypatch, worker_id):
         # fixture must clean up properly. Use stop_app_backend → it killpg's the whole
         # process group (the sandbox wraps the child, so a plain terminate misses it).
         import socket as _sock
+
         ports = [getattr(ap, "port", 0) for ap in bmod._processes.values()]
         for name in list(bmod._processes.keys()):
             try:
@@ -259,9 +261,9 @@ def app_env(tmp_path, monkeypatch, worker_id):
                     s.close()
                     time.sleep(0.1)
 
-    _reap()       # clean slate before the test
+    _reap()  # clean slate before the test
     yield home
-    _reap()       # and reap anything the test left running
+    _reap()  # and reap anything the test left running
 
 
 class TestPortAllocation:
@@ -439,9 +441,7 @@ def test_the_namespace_launcher_forks_once_and_its_parent_only_waits(tier):
     assert "os.execvp" in exec_calls
 
 
-def test_spawn_sets_forking_launcher_false_for_a_noop_wrap(
-    tmp_path, app_env, monkeypatch
-):
+def test_spawn_sets_forking_launcher_false_for_a_noop_wrap(tmp_path, app_env, monkeypatch):
     """MUTATION TARGET: an unconfined (no-op wrap) spawn leaves the flag False.
 
     When ``wrap_argv`` returns the argv unchanged -- an unconfined host -- the root IS
@@ -522,9 +522,7 @@ class TestFixedAndAutoPortIsolation:
             "fixed-app": SimpleNamespace(
                 backend=SimpleNamespace(port=str(fixed), entryPoint="s.py")
             ),
-            "auto-app": SimpleNamespace(
-                backend=SimpleNamespace(port="auto", entryPoint="s.py")
-            ),
+            "auto-app": SimpleNamespace(backend=SimpleNamespace(port="auto", entryPoint="s.py")),
         }
         monkeypatch.setattr(bmod, "get_app_manifest", lambda n: manifests.get(n))
 
@@ -597,15 +595,21 @@ class TestFixedAndAutoPortIsolation:
         fixed = bmod._MIN_PORT + 7
         src = tmp_path / "source" / "fixed-app"
         src.mkdir(parents=True)
-        (src / APP_MANIFEST_FILENAME).write_text(json.dumps({
-            "name": "fixed-app", "version": "1.0.0",
-            "displayName": "Fixed", "description": "fixed port",
-            "backend": {
-                "entryPoint": "server.py",
-                "port": str(fixed),
-                "healthCheck": "/health",
-            },
-        }))
+        (src / APP_MANIFEST_FILENAME).write_text(
+            json.dumps(
+                {
+                    "name": "fixed-app",
+                    "version": "1.0.0",
+                    "displayName": "Fixed",
+                    "description": "fixed port",
+                    "backend": {
+                        "entryPoint": "server.py",
+                        "port": str(fixed),
+                        "healthCheck": "/health",
+                    },
+                }
+            )
+        )
         (src / "server.py").write_text("import time\ntime.sleep(30)\n")
         install_app(src)
 
@@ -768,9 +772,7 @@ class TestBootSpawnLatency:
         assert bmod._survived_spawn(_Alive(), 9100) is True
         elapsed = real_time.monotonic() - started
         budget = bmod._SPAWN_SURVIVAL_CHECKS * bmod._SPAWN_SURVIVAL_INTERVAL
-        assert elapsed < budget, (
-            f"healthy child burned {elapsed:.2f}s of a {budget:.2f}s budget"
-        )
+        assert elapsed < budget, f"healthy child burned {elapsed:.2f}s of a {budget:.2f}s budget"
 
     def test_survival_check_still_detects_a_late_exit(self, monkeypatch):
         """Liveness alone must NOT end the wait early.
@@ -902,9 +904,9 @@ class TestBootSpawnLatency:
             elapsed = real_time.monotonic() - started
 
         budget = bmod._SPAWN_SURVIVAL_CHECKS * bmod._SPAWN_SURVIVAL_INTERVAL
-        assert elapsed < budget * 1.6, (
-            f"failure path took {elapsed:.2f}s against a {budget:.2f}s budget"
-        )
+        assert (
+            elapsed < budget * 1.6
+        ), f"failure path took {elapsed:.2f}s against a {budget:.2f}s budget"
 
     def test_survival_check_without_a_port_polls_the_full_budget(self):
         """No port to observe → unchanged behavior (wait out the whole window)."""
@@ -935,9 +937,7 @@ class TestBootSpawnLatency:
         # TestPromotionRequiresAConfirmedEnabledApp.
         monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
 
-        monkeypatch.setattr(
-            bmod.platform_compat, "listening_pid_tool_available", lambda: False
-        )
+        monkeypatch.setattr(bmod.platform_compat, "listening_pid_tool_available", lambda: False)
         # Would short-circuit if consulted; it must not be.
         monkeypatch.setattr(bmod, "_port_is_listening", lambda port: True)
         monkeypatch.setattr(bmod, "_spawn_owns_listener", lambda port, pid: True)
@@ -1018,10 +1018,16 @@ class TestBackendLifecycle:
         # App without backend section
         src = tmp_path / "source" / "no-backend"
         src.mkdir(parents=True)
-        (src / APP_MANIFEST_FILENAME).write_text(json.dumps({
-            "name": "no-backend", "version": "1.0.0",
-            "displayName": "No Backend", "description": "No backend",
-        }))
+        (src / APP_MANIFEST_FILENAME).write_text(
+            json.dumps(
+                {
+                    "name": "no-backend",
+                    "version": "1.0.0",
+                    "displayName": "No Backend",
+                    "description": "No backend",
+                }
+            )
+        )
         install_app(src)
         result = start_app_backend("no-backend")
         assert result is None
@@ -1054,16 +1060,22 @@ class TestBackendLifecycle:
         name = "shell-app"
         src = tmp_path / "source" / name
         src.mkdir(parents=True)
-        (src / APP_MANIFEST_FILENAME).write_text(json.dumps({
-            "name": name, "version": "1.0.0",
-            "displayName": "Shell App", "description": "bash launcher backend",
-            "author": "tester",
-            "backend": {
-                "entryPoint": "bin/shell-app",
-                "port": "auto",
-                "healthCheck": "/health",
-            },
-        }))
+        (src / APP_MANIFEST_FILENAME).write_text(
+            json.dumps(
+                {
+                    "name": name,
+                    "version": "1.0.0",
+                    "displayName": "Shell App",
+                    "description": "bash launcher backend",
+                    "author": "tester",
+                    "backend": {
+                        "entryPoint": "bin/shell-app",
+                        "port": "auto",
+                        "healthCheck": "/health",
+                    },
+                }
+            )
+        )
         (src / "bin").mkdir()
         launcher = src / "bin" / "shell-app"
         # Bash launcher that would die instantly under a Python interpreter
@@ -1073,15 +1085,15 @@ class TestBackendLifecycle:
             "set -euo pipefail\n"
             f'exec "{sys.executable}" -c \''
             "import http.server, os\n"
-            "port = int(os.environ.get(\"PORT\", 9100))\n"
+            'port = int(os.environ.get("PORT", 9100))\n'
             "class H(http.server.BaseHTTPRequestHandler):\n"
             "    def do_GET(self):\n"
             "        self.send_response(200)\n"
             "        self.end_headers()\n"
-            "        self.wfile.write(b\"ok\")\n"
+            '        self.wfile.write(b"ok")\n'
             "    def log_message(self, *a):\n"
             "        pass\n"
-            "http.server.HTTPServer((\"127.0.0.1\", port), H).serve_forever()\n"
+            'http.server.HTTPServer(("127.0.0.1", port), H).serve_forever()\n'
             "'\n"
         )
         launcher.chmod(0o755)
@@ -1109,11 +1121,17 @@ class TestBackendLifecycle:
     def test_missing_entry_point(self, tmp_path, app_env):
         src = tmp_path / "source" / "bad-entry"
         src.mkdir(parents=True)
-        (src / APP_MANIFEST_FILENAME).write_text(json.dumps({
-            "name": "bad-entry", "version": "1.0.0",
-            "displayName": "Bad Entry", "description": "Missing entry",
-            "backend": {"entryPoint": "nonexistent.py"},
-        }))
+        (src / APP_MANIFEST_FILENAME).write_text(
+            json.dumps(
+                {
+                    "name": "bad-entry",
+                    "version": "1.0.0",
+                    "displayName": "Bad Entry",
+                    "description": "Missing entry",
+                    "backend": {"entryPoint": "nonexistent.py"},
+                }
+            )
+        )
         install_app(src)
         result = start_app_backend("bad-entry")
         assert result is None
@@ -1137,18 +1155,26 @@ class TestBackendLifecycle:
         # A symlink inside the app root pointing outside it — is_file() is True,
         # so only the resolve()+is_relative_to backstop catches the escape.
         (root / "server.py").symlink_to(outside / "evil.py")
-        (root / APP_MANIFEST_FILENAME).write_text(json.dumps({
-            "name": "escape-app", "version": "1.0.0",
-            "displayName": "Escape", "description": "escapes app root",
-            "backend": {"entryPoint": "server.py", "port": "auto"},
-        }))
+        (root / APP_MANIFEST_FILENAME).write_text(
+            json.dumps(
+                {
+                    "name": "escape-app",
+                    "version": "1.0.0",
+                    "displayName": "Escape",
+                    "description": "escapes app root",
+                    "backend": {"entryPoint": "server.py", "port": "auto"},
+                }
+            )
+        )
         manifest = get_app_manifest("escape-app")
         assert manifest is not None
         result = _start_app_backend_body("escape-app", manifest)
         assert result is None
         assert any("escapes app root" in r.message for r in caplog.records)
 
-    def test_third_party_backend_refused_when_gate_off(self, tmp_path, app_env, monkeypatch, caplog):
+    def test_third_party_backend_refused_when_gate_off(
+        self, tmp_path, app_env, monkeypatch, caplog
+    ):
         # security-review finding: the apps_allow_third_party off-switch must also block
         # the OUT-OF-PROCESS backend spawn, not just in-process module loads. A
         # file-path (third-party) backend must be refused (None, before any Popen)
@@ -1172,9 +1198,7 @@ class TestBackendLifecycle:
                 }
             )
         )
-        monkeypatch.setattr(
-            "kiro_crew.apps.execution.third_party_execution_allowed", lambda: False
-        )
+        monkeypatch.setattr("kiro_crew.apps.execution.third_party_execution_allowed", lambda: False)
         monkeypatch.setattr(
             bmod.subprocess, "Popen", lambda *a, **k: pytest.fail("spawned despite gate off")
         )
@@ -1219,9 +1243,7 @@ class TestBackendLifecycle:
             name,
             InstalledApp(name=name, origin="builtin", enabled=True),
         )
-        monkeypatch.setattr(
-            "kiro_crew.apps.execution.third_party_execution_allowed", lambda: False
-        )
+        monkeypatch.setattr("kiro_crew.apps.execution.third_party_execution_allowed", lambda: False)
 
         class _ReachedSpawn(Exception):
             pass
@@ -1276,9 +1298,7 @@ class TestBackendLifecycle:
             "evil-dotted",
             InstalledApp(name="evil-dotted", origin="builtin", enabled=True),
         )
-        monkeypatch.setattr(
-            "kiro_crew.apps.execution.third_party_execution_allowed", lambda: False
-        )
+        monkeypatch.setattr("kiro_crew.apps.execution.third_party_execution_allowed", lambda: False)
         monkeypatch.setattr(
             bmod.subprocess, "Popen", lambda *a, **k: pytest.fail("spawned despite gate off")
         )
@@ -1321,9 +1341,7 @@ class TestBackendLifecycle:
             name,
             InstalledApp(name=name, origin="builtin", enabled=True),
         )
-        monkeypatch.setattr(
-            "kiro_crew.apps.execution.third_party_execution_allowed", lambda: False
-        )
+        monkeypatch.setattr("kiro_crew.apps.execution.third_party_execution_allowed", lambda: False)
         monkeypatch.setattr(
             bmod.subprocess, "Popen", lambda *a, **k: pytest.fail("spawned mutable code")
         )
@@ -1357,20 +1375,26 @@ class TestBackendLifecycle:
         monkeypatch.setattr(bmod, "_SPAWN_SURVIVAL_CHECKS", 100)  # up to ~20s ceiling
         src = tmp_path / "source" / "die-app"
         src.mkdir(parents=True)
-        (src / APP_MANIFEST_FILENAME).write_text(json.dumps({
-            "name": "die-app", "version": "1.0.0",
-            "displayName": "Die", "description": "exits immediately",
-            "backend": {"entryPoint": "boom.py", "port": "auto", "healthCheck": "/health"},
-        }))
+        (src / APP_MANIFEST_FILENAME).write_text(
+            json.dumps(
+                {
+                    "name": "die-app",
+                    "version": "1.0.0",
+                    "displayName": "Die",
+                    "description": "exits immediately",
+                    "backend": {"entryPoint": "boom.py", "port": "auto", "healthCheck": "/health"},
+                }
+            )
+        )
         # boom.py: a backend that dies the instant it runs. The stderr line mimics
         # the real EADDRINUSE crash this test guards against, but is cosmetic here —
         # the test asserts on the None return, not the log contents. It is a
         # deliberate fake, not a real bind; fixture stderr like this is the kind of
         # thing that can mislead a static analyzer into flagging a phantom port.
         (src / "boom.py").write_text(
-            'import sys\n'
+            "import sys\n"
             'sys.stderr.write("OSError: [Errno 98] address already in use\\n")\n'
-            'sys.exit(1)\n'
+            "sys.exit(1)\n"
         )
         install_app(src)
         result = start_app_backend("die-app")
@@ -1398,8 +1422,7 @@ class TestBackendLifecycle:
         def _fake_body(app_name, manifest):
             spawn_calls["n"] += 1
             gate.wait(timeout=5)  # hold the placeholder in-flight while the 2nd call arrives
-            ap = AppProcess(app_name=app_name, port=9137, pid=4242, healthy=True,
-                            started_at=0.0)
+            ap = AppProcess(app_name=app_name, port=9137, pid=4242, healthy=True, started_at=0.0)
             with bmod._lock:
                 bmod._processes[app_name] = ap
                 bmod._allocated_ports[app_name] = 9137
@@ -1417,13 +1440,25 @@ class TestBackendLifecycle:
         threads = [threading.Thread(target=_go) for _ in range(2)]
         for t in threads:
             t.start()
-        time.sleep(0.3)   # let one claim the placeholder + the other hit the await
-        gate.set()        # release the single spawn body
+        # Release the spawn body only once one caller holds the placeholder inside it;
+        # the other either awaits that in-flight spawn or finds the result it publishes,
+        # and both shapes must converge on the one process.
+        from kiro_crew.testing.wait import wait_until
+
+        wait_until(
+            lambda: spawn_calls["n"] == 1
+            and getattr(bmod._processes.get("backend-app"), "starting", False),
+            timeout=10,
+            describe=lambda: (spawn_calls, bmod._processes.get("backend-app")),
+        )
+        gate.set()  # release the single spawn body
         for t in threads:
             t.join(timeout=10)
 
         # exactly ONE spawn body ran (single-flighted), both callers got the same proc
-        assert spawn_calls["n"] == 1, f"spawn body ran {spawn_calls['n']} times (race not single-flighted)"
+        assert (
+            spawn_calls["n"] == 1
+        ), f"spawn body ran {spawn_calls['n']} times (race not single-flighted)"
         non_none = [r for r in results if r is not None]
         assert len(non_none) == 2, f"a caller got None: {results}"
         assert {r.port for r in non_none} == {9137}
@@ -1492,8 +1527,9 @@ class TestShellDispatch:
     auto-detect path) with the explicit ``backend.type: "exec"`` route and the
     /bin/sh fallback for a non-executable ``.sh`` entry."""
 
-    def _dispatch_cmd(self, tmp_path, monkeypatch, name, entry_rel, content, *,
-                      executable, backend_type=""):
+    def _dispatch_cmd(
+        self, tmp_path, monkeypatch, name, entry_rel, content, *, executable, backend_type=""
+    ):
         """Install an app, then capture the argv the dispatch builds."""
         import kiro_crew.apps.backend as bmod
         from kiro_crew.apps.manager import get_app_manifest
@@ -1503,12 +1539,18 @@ class TestShellDispatch:
         backend: dict = {"entryPoint": entry_rel, "port": "auto"}
         if backend_type:
             backend["type"] = backend_type
-        (src / APP_MANIFEST_FILENAME).write_text(json.dumps({
-            "name": name, "version": "1.0.0",
-            "displayName": name, "description": "shell dispatch test",
-            "author": "tester",
-            "backend": backend,
-        }))
+        (src / APP_MANIFEST_FILENAME).write_text(
+            json.dumps(
+                {
+                    "name": name,
+                    "version": "1.0.0",
+                    "displayName": name,
+                    "description": "shell dispatch test",
+                    "author": "tester",
+                    "backend": backend,
+                }
+            )
+        )
         entry = src / entry_rel
         entry.parent.mkdir(parents=True, exist_ok=True)
         entry.write_text(content)
@@ -1539,44 +1581,54 @@ class TestShellDispatch:
         return captured["cmd"]
 
     def test_explicit_backend_type_exec_routes_to_shell_branch(
-            self, tmp_path, app_env, monkeypatch):
+        self, tmp_path, app_env, monkeypatch
+    ):
         # A launcher the auto-detect can NOT identify (extensionless, no
         # shebang — the stand-in for a compiled/ELF binary) must still hit the
         # shell branch when the manifest declares `"type": "exec"` explicitly.
         cmd = self._dispatch_cmd(
-            tmp_path, monkeypatch, "explicit-shell", "bin/launcher",
-            "echo hi\n", executable=True, backend_type="exec",
+            tmp_path,
+            monkeypatch,
+            "explicit-shell",
+            "bin/launcher",
+            "echo hi\n",
+            executable=True,
+            backend_type="exec",
         )
         assert len(cmd) == 1
         assert cmd[0].endswith("bin/launcher")
 
-    def test_non_executable_sh_entry_falls_back_to_bin_sh(self, tmp_path, app_env,
-                                                          monkeypatch):
+    def test_non_executable_sh_entry_falls_back_to_bin_sh(self, tmp_path, app_env, monkeypatch):
         # A shebang-less `.sh` entry that lost its exec bit is run via /bin/sh
         # as the last resort.
         cmd = self._dispatch_cmd(
-            tmp_path, monkeypatch, "sh-fallback", "run.sh",
-            "echo hi\n", executable=False,
+            tmp_path,
+            monkeypatch,
+            "sh-fallback",
+            "run.sh",
+            "echo hi\n",
+            executable=False,
         )
         assert cmd[0] == "/bin/sh"
         assert len(cmd) == 2
         assert cmd[1].endswith("run.sh")
 
-    def test_non_executable_bash_entry_honors_shebang(self, tmp_path, app_env,
-                                                      monkeypatch):
+    def test_non_executable_bash_entry_honors_shebang(self, tmp_path, app_env, monkeypatch):
         # A non-executable launcher with a bash shebang must run under ITS
         # declared interpreter, not /bin/sh — bash-isms like
         # `set -euo pipefail` die under dash-as-sh (Debian/Ubuntu).
         cmd = self._dispatch_cmd(
-            tmp_path, monkeypatch, "bash-shebang", "run.sh",
+            tmp_path,
+            monkeypatch,
+            "bash-shebang",
+            "run.sh",
             "#!/usr/bin/env bash\nset -euo pipefail\necho hi\n",
             executable=False,
         )
         assert cmd[:2] == ["/usr/bin/env", "bash"]
         assert cmd[2].endswith("run.sh")
 
-    def test_shell_backend_refused_on_non_posix(self, tmp_path, app_env,
-                                                monkeypatch):
+    def test_shell_backend_refused_on_non_posix(self, tmp_path, app_env, monkeypatch):
         # On native Windows (IS_POSIX False) the shell branch must fail fast
         # with a logged error and return None — never reach Popen with a
         # shebang-dependent argv or the nonexistent /bin/sh.
@@ -1586,13 +1638,18 @@ class TestShellDispatch:
         name = "win-shell-refused"
         src = tmp_path / "source" / name
         src.mkdir(parents=True)
-        (src / APP_MANIFEST_FILENAME).write_text(json.dumps({
-            "name": name, "version": "1.0.0",
-            "displayName": name, "description": "non-posix guard test",
-            "author": "tester",
-            "backend": {"entryPoint": "run.sh", "port": "auto",
-                        "type": "exec"},
-        }))
+        (src / APP_MANIFEST_FILENAME).write_text(
+            json.dumps(
+                {
+                    "name": name,
+                    "version": "1.0.0",
+                    "displayName": name,
+                    "description": "non-posix guard test",
+                    "author": "tester",
+                    "backend": {"entryPoint": "run.sh", "port": "auto", "type": "exec"},
+                }
+            )
+        )
         (src / "run.sh").write_text("#!/bin/sh\necho hi\n")
         install_app(src)
 
@@ -1638,10 +1695,14 @@ class TestBootAdmissionRevet:
         (app_env / "app_admission.json").write_text(
             json.dumps({"mode": "enforce", "banned": ["evil-app"]})
         )
-        apps = [{
-            "name": "evil-app", "enabled": True, "origin": "registry",
-            "manifest": {"backend": {"entryPoint": "server.py"}},
-        }]
+        apps = [
+            {
+                "name": "evil-app",
+                "enabled": True,
+                "origin": "registry",
+                "manifest": {"backend": {"entryPoint": "server.py"}},
+            }
+        ]
         monkeypatch.setattr(bmod, "list_apps", lambda: apps)
         result = bmod.start_enabled_app_backends()
         assert "evil-app" not in result
@@ -1650,15 +1711,23 @@ class TestBootAdmissionRevet:
     def test_builtin_still_boots_under_require_signature(self, tmp_path, app_env, monkeypatch):
         bmod, started = self._boot_env(monkeypatch)
         (app_env / "app_admission.json").write_text(
-            json.dumps({
-                "mode": "enforce", "require_signature": True,
-                "approved": [], "trust_keys": {},
-            })
+            json.dumps(
+                {
+                    "mode": "enforce",
+                    "require_signature": True,
+                    "approved": [],
+                    "trust_keys": {},
+                }
+            )
         )
-        apps = [{
-            "name": "core-builtin", "enabled": True, "origin": "builtin",
-            "manifest": {"backend": {"entryPoint": "server.py"}},
-        }]
+        apps = [
+            {
+                "name": "core-builtin",
+                "enabled": True,
+                "origin": "builtin",
+                "manifest": {"backend": {"entryPoint": "server.py"}},
+            }
+        ]
         monkeypatch.setattr(bmod, "list_apps", lambda: apps)
         monkeypatch.setattr(
             bmod,
@@ -1669,16 +1738,26 @@ class TestBootAdmissionRevet:
         # Builtin is exempt from the gate — start_app_backend was invoked for it.
         assert "core-builtin" in started
 
-    def test_deferred_backends_are_admitted_now_and_spawned_later(self, tmp_path, app_env, monkeypatch):
+    def test_deferred_backends_are_admitted_now_and_spawned_later(
+        self, tmp_path, app_env, monkeypatch
+    ):
         """``defer`` holds a name back from the main spawn wave without skipping its
         vetting; ``start_deferred_app_backends`` then spawns exactly that set, once.
         Dev Fleet is deferred so it is handed the gateway's actually-bound port."""
         bmod, started = self._boot_env(monkeypatch)
         apps = [
-            {"name": "dev-fleet", "enabled": True, "origin": "builtin",
-             "manifest": {"backend": {"entryPoint": "server.py"}}},
-            {"name": "md-notebook", "enabled": True, "origin": "builtin",
-             "manifest": {"backend": {"entryPoint": "server.py"}}},
+            {
+                "name": "dev-fleet",
+                "enabled": True,
+                "origin": "builtin",
+                "manifest": {"backend": {"entryPoint": "server.py"}},
+            },
+            {
+                "name": "md-notebook",
+                "enabled": True,
+                "origin": "builtin",
+                "manifest": {"backend": {"entryPoint": "server.py"}},
+            },
         ]
         monkeypatch.setattr(bmod, "list_apps", lambda: apps)
         bmod.start_enabled_app_backends()
@@ -1689,10 +1768,18 @@ class TestBootAdmissionRevet:
         bmod.start_deferred_app_backends()
         assert started == ["md-notebook", "dev-fleet"]
 
-    def test_a_deferred_app_that_is_disabled_is_not_spawned_later(self, tmp_path, app_env, monkeypatch):
+    def test_a_deferred_app_that_is_disabled_is_not_spawned_later(
+        self, tmp_path, app_env, monkeypatch
+    ):
         bmod, started = self._boot_env(monkeypatch)
-        apps = [{"name": "dev-fleet", "enabled": False, "origin": "builtin",
-                 "manifest": {"backend": {"entryPoint": "server.py"}}}]
+        apps = [
+            {
+                "name": "dev-fleet",
+                "enabled": False,
+                "origin": "builtin",
+                "manifest": {"backend": {"entryPoint": "server.py"}},
+            }
+        ]
         monkeypatch.setattr(bmod, "list_apps", lambda: apps)
         bmod.start_enabled_app_backends()
         bmod.start_deferred_app_backends()
@@ -1706,8 +1793,14 @@ class TestBootAdmissionRevet:
         must not outlive that: enablement is re-read at spawn time, and an
         unreadable state (None) is treated as not enabled."""
         bmod, started = self._boot_env(monkeypatch)
-        apps = [{"name": "dev-fleet", "enabled": True, "origin": "builtin",
-                 "manifest": {"backend": {"entryPoint": "server.py"}}}]
+        apps = [
+            {
+                "name": "dev-fleet",
+                "enabled": True,
+                "origin": "builtin",
+                "manifest": {"backend": {"entryPoint": "server.py"}},
+            }
+        ]
         monkeypatch.setattr(bmod, "list_apps", lambda: apps)
         bmod.start_enabled_app_backends()
         assert started == []
@@ -1727,8 +1820,14 @@ class TestBootAdmissionRevet:
         import kiro_crew.apps.manager as manager
 
         bmod, started = self._boot_env(monkeypatch)
-        apps = [{"name": "dev-fleet", "enabled": True, "origin": "builtin",
-                 "manifest": {"backend": {"entryPoint": "server.py"}}}]
+        apps = [
+            {
+                "name": "dev-fleet",
+                "enabled": True,
+                "origin": "builtin",
+                "manifest": {"backend": {"entryPoint": "server.py"}},
+            }
+        ]
         monkeypatch.setattr(bmod, "list_apps", lambda: apps)
         bmod.start_enabled_app_backends()
         monkeypatch.setattr(manager, "_app_activation_denied", lambda name: "policy tightened")
@@ -1765,10 +1864,18 @@ class TestBootAdmissionRevet:
 
         monkeypatch.setattr(bmod, "start_app_backend", _fake_start)
         apps = [
-            {"name": "boom-app", "enabled": True, "origin": "builtin",
-             "manifest": {"backend": {"entryPoint": "server.py"}}},
-            {"name": "ok-app", "enabled": True, "origin": "builtin",
-             "manifest": {"backend": {"entryPoint": "server.py"}}},
+            {
+                "name": "boom-app",
+                "enabled": True,
+                "origin": "builtin",
+                "manifest": {"backend": {"entryPoint": "server.py"}},
+            },
+            {
+                "name": "ok-app",
+                "enabled": True,
+                "origin": "builtin",
+                "manifest": {"backend": {"entryPoint": "server.py"}},
+            },
         ]
         monkeypatch.setattr(bmod, "list_apps", lambda: apps)
         # Must not raise despite boom-app's spawn raising.
@@ -1836,8 +1943,11 @@ class TestHealthGatedMcpRegistration:
         monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
         self._fast_health(bmod, monkeypatch)
         calls = []
-        monkeypatch.setattr(bmod, "_gate_mcp_registration",
-                            lambda name, port, *, healthy: calls.append((name, port, healthy)))
+        monkeypatch.setattr(
+            bmod,
+            "_gate_mcp_registration",
+            lambda name, port, *, healthy: calls.append((name, port, healthy)),
+        )
 
         monkeypatch.setattr(bmod, "loopback_urlopen", lambda *a, **k: _FakeHealthResp())
 
@@ -1862,8 +1972,11 @@ class TestHealthGatedMcpRegistration:
         monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
         self._fast_health(bmod, monkeypatch)
         calls = []
-        monkeypatch.setattr(bmod, "_gate_mcp_registration",
-                            lambda name, port, *, healthy: calls.append((name, port, healthy)))
+        monkeypatch.setattr(
+            bmod,
+            "_gate_mcp_registration",
+            lambda name, port, *, healthy: calls.append((name, port, healthy)),
+        )
 
         # urlopen "succeeds" but the app is NOT in _processes (stopped mid-check).
         monkeypatch.setattr(bmod, "loopback_urlopen", lambda *a, **k: _FakeHealthResp())
@@ -1882,11 +1995,15 @@ class TestHealthGatedMcpRegistration:
         monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
         self._fast_health(bmod, monkeypatch)
         calls = []
-        monkeypatch.setattr(bmod, "_gate_mcp_registration",
-                            lambda name, port, *, healthy: calls.append((name, port, healthy)))
+        monkeypatch.setattr(
+            bmod,
+            "_gate_mcp_registration",
+            lambda name, port, *, healthy: calls.append((name, port, healthy)),
+        )
 
         def _boom(*a, **k):
             raise OSError("connection refused")
+
         monkeypatch.setattr(bmod, "loopback_urlopen", _boom)
 
         with bmod._lock:
@@ -1930,8 +2047,9 @@ def test_devfleet_repo_survives_the_app_backend_env_allowlist(monkeypatch):
     # (same mechanism that carries KIROCREW_PROJECT_DIR and the
     # KIROCREW_DEVFLEET_BIN_* trusted-binary overrides).
     body = Path(bmod.__file__).read_text()
-    assert '_platform_extra["KIROCREW_DEVFLEET_REPO"]' in body, \
-        "the KIROCREW_DEVFLEET_REPO override no longer reaches app backends"
+    assert (
+        '_platform_extra["KIROCREW_DEVFLEET_REPO"]' in body
+    ), "the KIROCREW_DEVFLEET_REPO override no longer reaches app backends"
 
 
 def test_devfleet_repo_env_wins_repo_discovery(monkeypatch, tmp_path):
@@ -1982,13 +2100,22 @@ class TestGatewayOriginInjection:
         src = tmp_path / "source" / name
         (src / Path(entry_rel).parent).mkdir(parents=True, exist_ok=True)
         (src / entry_rel).write_text(body)
-        (src / APP_MANIFEST_FILENAME).write_text(json.dumps({
-            "name": name, "version": "1.0.0",
-            "displayName": name, "description": "typed entry",
-            "author": "tester",
-            "backend": {"entryPoint": entry_rel, "type": backend_type,
-                        "healthCheck": "/health"},
-        }))
+        (src / APP_MANIFEST_FILENAME).write_text(
+            json.dumps(
+                {
+                    "name": name,
+                    "version": "1.0.0",
+                    "displayName": name,
+                    "description": "typed entry",
+                    "author": "tester",
+                    "backend": {
+                        "entryPoint": entry_rel,
+                        "type": backend_type,
+                        "healthCheck": "/health",
+                    },
+                }
+            )
+        )
         install_app(src)
         return name
 
@@ -2044,9 +2171,7 @@ class TestGatewayOriginInjection:
         # The proxy secret is still injected when a secret exists.
         assert env["KIROCREW_PROXY_SECRET"] == self._SECRET
 
-    def test_specific_interface_bind_omits_the_origin(
-        self, tmp_path, app_env, monkeypatch
-    ):
+    def test_specific_interface_bind_omits_the_origin(self, tmp_path, app_env, monkeypatch):
         """A specific-interface KIROCREW_BOUND_HOST omits the origin (fail closed).
 
         A backend's callback carries no Origin header, and the gateway's CSRF
@@ -2084,9 +2209,7 @@ class TestGatewayOriginInjection:
         assert env is not None
         assert env["KIROCREW_GATEWAY_ORIGIN"] == "http://127.0.0.1:8123"
 
-    def test_no_bound_port_env_omits_the_origin(
-        self, tmp_path, app_env, monkeypatch
-    ):
+    def test_no_bound_port_env_omits_the_origin(self, tmp_path, app_env, monkeypatch):
         """With no KIROCREW_BOUND_PORT at all, origin AND proof are omitted (fail closed)."""
         name = self._install_backend_app(tmp_path)
         self._write_secret(name)
@@ -2128,9 +2251,9 @@ class TestGatewayOriginInjection:
 
         _result, env = self._capture_child_env(monkeypatch, name)
         assert env is not None
-        assert "KIROCREW_GATEWAY_ORIGIN" not in env, (
-            f"KIROCREW_BOUND_PORT={bad!r} is not valid bound-port evidence"
-        )
+        assert (
+            "KIROCREW_GATEWAY_ORIGIN" not in env
+        ), f"KIROCREW_BOUND_PORT={bad!r} is not valid bound-port evidence"
 
     def test_every_entrypoint_type_gets_the_same_generic_origin(
         self, tmp_path, app_env, monkeypatch
@@ -2149,12 +2272,14 @@ class TestGatewayOriginInjection:
         monkeypatch.setenv("KIROCREW_BOUND_PORT", "8123")
 
         cases = [
-            ("py-plain", "backend/server.py", "python",
-             'import http.server\n'),
-            ("py-asgi", "backend/app.py", "asgi",
-             'from fastapi import FastAPI\nimport uvicorn\napp = FastAPI()\n'),
-            ("node-app", "server.js", "node",
-             'require("http")\n'),
+            ("py-plain", "backend/server.py", "python", "import http.server\n"),
+            (
+                "py-asgi",
+                "backend/app.py",
+                "asgi",
+                "from fastapi import FastAPI\nimport uvicorn\napp = FastAPI()\n",
+            ),
+            ("node-app", "server.js", "node", 'require("http")\n'),
         ]
         if os.name == "posix":
             cases.append(("exec-app", "start.sh", "exec", "#!/bin/sh\nsleep 30\n"))
@@ -2166,9 +2291,9 @@ class TestGatewayOriginInjection:
             assert env is not None, f"{backend_type} entry never reached the spawn boundary"
             origins[backend_type] = env["KIROCREW_GATEWAY_ORIGIN"]
 
-        assert set(origins.values()) == {"http://127.0.0.1:8123"}, (
-            f"every entry type must get the same generic origin (saw {origins!r})"
-        )
+        assert set(origins.values()) == {
+            "http://127.0.0.1:8123"
+        }, f"every entry type must get the same generic origin (saw {origins!r})"
 
     @requires_symlinks
     def test_node_backend_is_spawned_with_the_resolved_entry_path(
@@ -2201,9 +2326,7 @@ class TestGatewayOriginInjection:
         assert entry_args, "the node spawn never reached the Popen boundary"
         assert entry_args == [str((real / "server.mjs").resolve())]
 
-    def test_child_gets_exact_proof_keyed_by_the_app_secret(
-        self, tmp_path, app_env, monkeypatch
-    ):
+    def test_child_gets_exact_proof_keyed_by_the_app_secret(self, tmp_path, app_env, monkeypatch):
         """With a secret and a valid bound port, the proof is HMAC-SHA256(secret, origin)."""
         import hashlib
         import hmac
@@ -2266,11 +2389,17 @@ class TestGatewayOriginInjection:
         name = "no-entrypoint-app"
         src = tmp_path / "source" / name
         src.mkdir(parents=True)
-        (src / APP_MANIFEST_FILENAME).write_text(json.dumps({
-            "name": name, "version": "1.0.0",
-            "displayName": "No Entry", "description": "no backend entryPoint",
-            "author": "tester",
-        }))
+        (src / APP_MANIFEST_FILENAME).write_text(
+            json.dumps(
+                {
+                    "name": name,
+                    "version": "1.0.0",
+                    "displayName": "No Entry",
+                    "description": "no backend entryPoint",
+                    "author": "tester",
+                }
+            )
+        )
         install_app(src)
         monkeypatch.setenv("KIROCREW_BOUND_PORT", "8123")
 
@@ -2378,7 +2507,11 @@ class TestTheCacheOnlyChildCanSeeTheCacheItMustBootFrom:
             with caplog.at_level(logging.WARNING, logger="kiro_crew.apps.backend"):
                 # An unwrapped argv is exactly what wrap_argv returns with no sandbox backend.
                 self._spawn_with_wrap(
-                    bmod, tmp_path, monkeypatch, "unconfined-app", lambda argv, **kw: (list(argv), None)
+                    bmod,
+                    tmp_path,
+                    monkeypatch,
+                    "unconfined-app",
+                    lambda argv, **kw: (list(argv), None),
                 )
             messages = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
             said = [m for m in messages if "no OS sandbox" in m]
@@ -2520,12 +2653,10 @@ class TestTheMdNotebookBackendCanSeeItsOwnStateFiles:
         bmod.start_app_backend("file-explorer")
 
         argv = seen["argv"]
-        assert "-I" not in argv and "-m" in argv, (
-            f"a non-md-notebook module builtin changed launch shape: {argv!r}"
-        )
-        assert seen.get("visible") == (), (
-            "a non-md-notebook builtin received the state carve-out"
-        )
+        assert (
+            "-I" not in argv and "-m" in argv
+        ), f"a non-md-notebook module builtin changed launch shape: {argv!r}"
+        assert seen.get("visible") == (), "a non-md-notebook builtin received the state carve-out"
 
     def test_a_third_party_app_wearing_the_name_keeps_the_mask(
         self, app_env, tmp_path, monkeypatch
@@ -2603,14 +2734,21 @@ class TestBackendLivenessWatch:
         monkeypatch.setattr(bmod, "_HEALTH_WATCH_INTERVAL", 0)
         gate_calls: list[tuple[str, int, bool]] = []
         monkeypatch.setattr(
-            bmod, "_gate_mcp_registration",
+            bmod,
+            "_gate_mcp_registration",
             lambda name, port, *, healthy: (gate_calls.append((name, port, healthy)), True)[1],
         )
 
         # mcp_healthy=True models the real precondition: a record only reaches the
         # watch after a promotion has already reconciled mcp.json for it.
-        ap = AppProcess(app_name="watched", port=9160, pid=4242,
-                        proc=_FakeProc(), healthy=True, mcp_healthy=True)
+        ap = AppProcess(
+            app_name="watched",
+            port=9160,
+            pid=4242,
+            proc=_FakeProc(),
+            healthy=True,
+            mcp_healthy=True,
+        )
         with bmod._lock:
             bmod._processes.clear()
             bmod._processes["watched"] = ap
@@ -2690,8 +2828,9 @@ class TestBackendLivenessWatch:
         # A stop/start replaces the record; the old watch must not carry its verdict
         # over to a backend it never observed.
         bmod, ap, probes, gate_calls = watched
-        replacement = AppProcess(app_name="watched", port=9161, pid=99,
-                                 proc=_FakeProc(), healthy=True)
+        replacement = AppProcess(
+            app_name="watched", port=9161, pid=99, proc=_FakeProc(), healthy=True
+        )
         with bmod._lock:
             bmod._processes["watched"] = replacement
         ap.proc = _FakeProc(returncode=1)  # the OLD generation is dead
@@ -2747,8 +2886,9 @@ class TestHealthSupervisorHandoff:
         ap = AppProcess(app_name="up", port=9170, healthy=True)
         watched: list[tuple[AppProcess, str]] = []
         monkeypatch.setattr(bmod, "_health_check_loop", lambda *_a, **_k: ap)
-        monkeypatch.setattr(bmod, "_watch_backend_health",
-                            lambda rec, path: watched.append((rec, path)))
+        monkeypatch.setattr(
+            bmod, "_watch_backend_health", lambda rec, path: watched.append((rec, path))
+        )
 
         bmod._supervise_backend_health(ap, "/health")
 
@@ -2764,8 +2904,7 @@ class TestHealthSupervisorHandoff:
         monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
         watched: list[Any] = []
         monkeypatch.setattr(bmod, "_health_check_loop", lambda *_a, **_k: None)
-        monkeypatch.setattr(bmod, "_watch_backend_health",
-                            lambda rec, path: watched.append(rec))
+        monkeypatch.setattr(bmod, "_watch_backend_health", lambda rec, path: watched.append(rec))
 
         bmod._supervise_backend_health(AppProcess(app_name="down", port=9171), "/health")
 
@@ -2783,9 +2922,11 @@ class TestHealthTransitionsRefuseAStaleRecord:
     @pytest.fixture
     def gate_calls(self, monkeypatch):
         import kiro_crew.apps.backend as bmod
+
         calls: list[tuple[str, int, bool]] = []
         monkeypatch.setattr(
-            bmod, "_gate_mcp_registration",
+            bmod,
+            "_gate_mcp_registration",
             lambda name, port, *, healthy: (calls.append((name, port, healthy)), True)[1],
         )
         with bmod._lock:
@@ -2828,9 +2969,11 @@ class TestMcpReconcileHonoursRecordIdentity:
     @pytest.fixture
     def wired(self, monkeypatch):
         import kiro_crew.apps.backend as bmod
+
         calls: list[tuple[str, int, bool]] = []
         monkeypatch.setattr(
-            bmod, "_gate_mcp_registration",
+            bmod,
+            "_gate_mcp_registration",
             lambda name, port, *, healthy: (calls.append((name, port, healthy)), True)[1],
         )
         with bmod._lock:
@@ -2904,7 +3047,8 @@ class TestMcpReconcileHonoursRecordIdentity:
         monkeypatch.setattr(bmod, "loopback_urlopen", lambda *a, **k: _FakeHealthResp())
         held: list[bool] = []
         monkeypatch.setattr(
-            bmod, "_gate_mcp_registration",
+            bmod,
+            "_gate_mcp_registration",
             lambda name, port, *, healthy: (held.append(_reconcile_lock_held()), True)[1],
         )
         ap = AppProcess(app_name="boot", port=9185, healthy=False)
@@ -2939,7 +3083,8 @@ class TestStartupProbeCannotPromoteAReplacement:
         monkeypatch.setattr(bmod, "_HEALTH_CHECK_RETRIES", 2)
         calls: list[tuple[str, int, bool]] = []
         monkeypatch.setattr(
-            bmod, "_gate_mcp_registration",
+            bmod,
+            "_gate_mcp_registration",
             lambda name, port, *, healthy: (calls.append((name, port, healthy)), True)[1],
         )
 
@@ -2986,8 +3131,9 @@ class TestFailedMcpReconcileIsRetried:
         # TestPromotionRequiresAConfirmedEnabledApp.
         monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
         monkeypatch.setattr(bmod, "_HEALTH_WATCH_INTERVAL", 0)
-        ap = AppProcess(app_name="w", port=9200, pid=1, proc=_FakeProc(),
-                        healthy=True, mcp_healthy=True)
+        ap = AppProcess(
+            app_name="w", port=9200, pid=1, proc=_FakeProc(), healthy=True, mcp_healthy=True
+        )
         with bmod._lock:
             bmod._processes.clear()
             bmod._processes["w"] = ap
@@ -2999,6 +3145,7 @@ class TestFailedMcpReconcileIsRetried:
                     bmod._processes.pop("w", None)
                 return _probe_outcome(False)
             return _probe_outcome(probes.pop(0))
+
         monkeypatch.setattr(bmod, "_health_probe", _scripted)
         try:
             yield bmod, ap, probes
@@ -3013,6 +3160,7 @@ class TestFailedMcpReconcileIsRetried:
         def _gate(name, port, *, healthy):
             attempts.append(healthy)
             return len(attempts) > 1  # the first write fails, the retry lands
+
         monkeypatch.setattr(bmod, "_gate_mcp_registration", _gate)
 
         # Demote on sweep 3, then two more sweeps with the verdict unchanged.
@@ -3026,7 +3174,8 @@ class TestFailedMcpReconcileIsRetried:
         bmod, ap, probes = watched
         attempts: list[bool] = []
         monkeypatch.setattr(
-            bmod, "_gate_mcp_registration",
+            bmod,
+            "_gate_mcp_registration",
             lambda name, port, *, healthy: (attempts.append(healthy), True)[1],
         )
 
@@ -3044,7 +3193,8 @@ class TestFailedMcpReconcileIsRetried:
         bmod, ap, probes = watched
         attempts: list[bool] = []
         monkeypatch.setattr(
-            bmod, "_gate_mcp_registration",
+            bmod,
+            "_gate_mcp_registration",
             lambda name, port, *, healthy: (attempts.append(healthy), True)[1],
         )
         ap.healthy = False
@@ -3078,7 +3228,8 @@ class TestStartupPollBelongsToOneGeneration:
         monkeypatch.setattr(bmod, "_HEALTH_CHECK_RETRIES", 4)
         calls: list[tuple[str, int, bool]] = []
         monkeypatch.setattr(
-            bmod, "_gate_mcp_registration",
+            bmod,
+            "_gate_mcp_registration",
             lambda name, port, *, healthy: (calls.append((name, port, healthy)), True)[1],
         )
         with bmod._lock:
@@ -3089,9 +3240,7 @@ class TestStartupPollBelongsToOneGeneration:
             with bmod._lock:
                 bmod._processes.clear()
 
-    def test_exhaustion_does_not_scrub_a_successor_that_replaced_it(
-        self, monkeypatch, wired
-    ):
+    def test_exhaustion_does_not_scrub_a_successor_that_replaced_it(self, monkeypatch, wired):
         # The harmful shape the design review named: the retiring poll's terminal scrub
         # deregisters by app name, taking the healthy successor's entry with it — and
         # because that bypasses the record, the successor's mcp_healthy still reads True,
@@ -3110,6 +3259,7 @@ class TestStartupPollBelongsToOneGeneration:
                 with bmod._lock:
                     bmod._processes["a"] = successor
             return _probe_outcome(False)
+
         monkeypatch.setattr(bmod, "_health_probe", _never_answers)
 
         assert bmod._health_check_loop(original, "/health") is None
@@ -3134,6 +3284,7 @@ class TestStartupPollBelongsToOneGeneration:
                 return _probe_outcome(False)
             # a later attempt would "succeed" against the OLD port
             return _probe_outcome(True)
+
         monkeypatch.setattr(bmod, "_health_probe", _probe)
 
         assert bmod._health_check_loop(original, "/health") is None
@@ -3159,8 +3310,14 @@ class TestTerminalScrubIsRetriedUntilItLands:
         # TestPromotionRequiresAConfirmedEnabledApp.
         monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
         monkeypatch.setattr(bmod, "_HEALTH_WATCH_INTERVAL", 0)
-        ap = AppProcess(app_name="x", port=9220, pid=3,
-                        proc=_FakeProc(returncode=1), healthy=True, mcp_healthy=True)
+        ap = AppProcess(
+            app_name="x",
+            port=9220,
+            pid=3,
+            proc=_FakeProc(returncode=1),
+            healthy=True,
+            mcp_healthy=True,
+        )
         with bmod._lock:
             bmod._processes.clear()
             bmod._processes["x"] = ap
@@ -3178,6 +3335,7 @@ class TestTerminalScrubIsRetriedUntilItLands:
         def _gate(name, port, *, healthy):
             attempts.append(healthy)
             return len(attempts) >= 3  # the first two writes fail
+
         monkeypatch.setattr(bmod, "_gate_mcp_registration", _gate)
 
         bmod._watch_backend_health(ap, "/health")
@@ -3189,7 +3347,8 @@ class TestTerminalScrubIsRetriedUntilItLands:
         bmod, ap = wired
         attempts: list[bool] = []
         monkeypatch.setattr(
-            bmod, "_gate_mcp_registration",
+            bmod,
+            "_gate_mcp_registration",
             lambda name, port, *, healthy: (attempts.append(healthy), True)[1],
         )
 
@@ -3209,6 +3368,7 @@ class TestTerminalScrubIsRetriedUntilItLands:
             with bmod._lock:
                 bmod._processes.pop("x", None)
             return False  # never lands
+
         monkeypatch.setattr(bmod, "_gate_mcp_registration", _gate)
 
         bmod._watch_backend_health(ap, "/health")
@@ -3221,7 +3381,8 @@ class TestTerminalScrubIsRetriedUntilItLands:
         ap.mcp_healthy = False
         attempts: list[bool] = []
         monkeypatch.setattr(
-            bmod, "_gate_mcp_registration",
+            bmod,
+            "_gate_mcp_registration",
             lambda name, port, *, healthy: (attempts.append(healthy), True)[1],
         )
 
@@ -3292,12 +3453,28 @@ class TestAdoptedRecoveryRebindsOwnership:
         # TestPromotionRequiresAConfirmedEnabledApp.
         monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
         monkeypatch.setattr(bmod, "_HEALTH_WATCH_INTERVAL", 0)
-        monkeypatch.setattr(
-            bmod, "_gate_mcp_registration", lambda name, port, *, healthy: True
+        monkeypatch.setattr(bmod, "_gate_mcp_registration", lambda name, port, *, healthy: True)
+        ap = AppProcess(
+            app_name="ad",
+            port=9240,
+            pid=0,
+            proc=None,
+            healthy=False,
+            mcp_healthy=False,
+            adopted_pids=[111],
+            adopted_start_times={111: "old"},
         )
-        ap = AppProcess(app_name="ad", port=9240, pid=0, proc=None, healthy=False,
-                        mcp_healthy=False, adopted_pids=[111],
-                        adopted_start_times={111: "old"})
+        # The re-bind attributes the owners it re-captures against the spawn this
+        # gateway recorded for the app, so the record has to be present for these
+        # cases to reach the promotion logic they exercise. Refusal on an
+        # unattributed set has its own pins in test_apps_backend_coverage.py.
+        monkeypatch.setattr(
+            bmod,
+            "_read_pidfile",
+            lambda: {"ad": {"pid": 0, "start_time": None, "port": 9240, "spawn_instance": "sp-ad"}},
+        )
+        monkeypatch.setattr(bmod, "group_vouching_available", lambda: True)
+        monkeypatch.setattr(bmod, "_env_spawn_instance", lambda _pid: "sp-ad")
         with bmod._lock:
             bmod._processes.clear()
             bmod._processes["ad"] = ap
@@ -3309,6 +3486,7 @@ class TestAdoptedRecoveryRebindsOwnership:
                     bmod._processes.pop("ad", None)
                 return _probe_outcome(False)
             return _probe_outcome(probes.pop(0))
+
         monkeypatch.setattr(bmod, "_health_probe", _scripted)
         try:
             yield bmod, ap, probes
@@ -3319,7 +3497,8 @@ class TestAdoptedRecoveryRebindsOwnership:
     def test_recovery_recaptures_the_owner_set(self, monkeypatch, watched):
         bmod, ap, probes = watched
         monkeypatch.setattr(
-            bmod, "_capture_adopted_owners",
+            bmod,
+            "_capture_adopted_owners",
             lambda name, port, path: ([222], {222: "new"}),
         )
         probes.append(True)
@@ -3334,9 +3513,7 @@ class TestAdoptedRecoveryRebindsOwnership:
         # Unhealthy-but-serving is recoverable next sweep; a mis-bound owner set is not,
         # because stop would signal the wrong PIDs while the replacement keeps running.
         bmod, ap, probes = watched
-        monkeypatch.setattr(
-            bmod, "_capture_adopted_owners", lambda name, port, path: None
-        )
+        monkeypatch.setattr(bmod, "_capture_adopted_owners", lambda name, port, path: None)
         probes.append(True)
 
         bmod._watch_backend_health(ap, "/health")
@@ -3351,7 +3528,8 @@ class TestAdoptedRecoveryRebindsOwnership:
         bmod, ap, probes = watched
         called: list[str] = []
         monkeypatch.setattr(
-            bmod, "_capture_adopted_owners",
+            bmod,
+            "_capture_adopted_owners",
             lambda name, port, path: called.append(name) or ([9], {9: "x"}),
         )
         ap.proc = _FakeProc()
@@ -3385,12 +3563,19 @@ class TestUnknownMcpStateStillGetsScrubbed:
         def _gate(name, port, *, healthy):
             attempts.append(healthy)
             return len(attempts) >= 3  # the first two scrubs fail
+
         monkeypatch.setattr(bmod, "_gate_mcp_registration", _gate)
         monkeypatch.setattr(bmod, "_health_probe", lambda *_a: _probe_outcome(False))
 
         # The state a failed startup reconcile leaves: promoted, never confirmed written.
-        ap = AppProcess(app_name="u", port=9250, pid=5,
-                        proc=_FakeProc(returncode=1), healthy=True, mcp_healthy=None)
+        ap = AppProcess(
+            app_name="u",
+            port=9250,
+            pid=5,
+            proc=_FakeProc(returncode=1),
+            healthy=True,
+            mcp_healthy=None,
+        )
         with bmod._lock:
             bmod._processes.clear()
             bmod._processes["u"] = ap
@@ -3412,13 +3597,20 @@ class TestUnknownMcpStateStillGetsScrubbed:
         monkeypatch.setattr(bmod, "_HEALTH_WATCH_INTERVAL", 0)
         attempts: list[bool] = []
         monkeypatch.setattr(
-            bmod, "_gate_mcp_registration",
+            bmod,
+            "_gate_mcp_registration",
             lambda name, port, *, healthy: (attempts.append(healthy), True)[1],
         )
         monkeypatch.setattr(bmod, "_health_probe", lambda *_a: _probe_outcome(False))
 
-        ap = AppProcess(app_name="u", port=9251, pid=5,
-                        proc=_FakeProc(returncode=0), healthy=False, mcp_healthy=False)
+        ap = AppProcess(
+            app_name="u",
+            port=9251,
+            pid=5,
+            proc=_FakeProc(returncode=0),
+            healthy=False,
+            mcp_healthy=False,
+        )
         with bmod._lock:
             bmod._processes.clear()
             bmod._processes["u"] = ap
@@ -3449,8 +3641,18 @@ class TestHealthProbeSecurity:
     @pytest.mark.parametrize(
         "path",
         [
-            "@example.com/", "health", "", "/a@b", "/x\ny", "/x\ty",
-            "/x\ry", "/x y", "http://example.com/", "/#frag", "/a\\b", "/[::1]",
+            "@example.com/",
+            "health",
+            "",
+            "/a@b",
+            "/x\ny",
+            "/x\ty",
+            "/x\ry",
+            "/x y",
+            "http://example.com/",
+            "/#frag",
+            "/a\\b",
+            "/[::1]",
         ],
     )
     def test_authority_smuggling_and_ambiguous_paths_are_refused(self, path):
@@ -3473,9 +3675,7 @@ class TestHealthProbeSecurity:
         assert urllib.parse.urlsplit(naive).hostname == "example.com"
         assert bmod._health_probe_url(9101, "@example.com/") is None
 
-    def test_an_invalid_path_never_reaches_http_and_warns_only_once(
-        self, monkeypatch, caplog
-    ):
+    def test_an_invalid_path_never_reaches_http_and_warns_only_once(self, monkeypatch, caplog):
         import logging
 
         import kiro_crew.apps.backend as bmod
@@ -3494,9 +3694,7 @@ class TestHealthProbeSecurity:
         assert len(warnings) == 1
         assert "@example.com/" in warnings[0]
 
-    def test_a_valid_path_uses_the_hardened_opener_with_the_exact_url(
-        self, monkeypatch
-    ):
+    def test_a_valid_path_uses_the_hardened_opener_with_the_exact_url(self, monkeypatch):
         import kiro_crew.apps.backend as bmod
 
         seen = {}
@@ -3541,9 +3739,7 @@ class TestHealthProbeSecurity:
                 bmod._processes.clear()
 
         monkeypatch.setattr(bmod, "_HEALTH_WATCH_INTERVAL", 0)
-        watch = AppProcess(
-            app_name="watch-contract", port=9103, healthy=True, mcp_healthy=True
-        )
+        watch = AppProcess(app_name="watch-contract", port=9103, healthy=True, mcp_healthy=True)
 
         def _watch_probe(port, path, **kwargs):
             calls.append((port, path, kwargs))
@@ -3576,6 +3772,7 @@ class TestProbeSurvivesAMalformedHttpResponse:
     def _serve_garbage(self, payload: bytes) -> int:
         import socket
         import threading
+
         srv = socket.socket()
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         srv.bind(("127.0.0.1", 0))
@@ -3601,6 +3798,7 @@ class TestProbeSurvivesAMalformedHttpResponse:
         # about which concrete exception urllib lets through, so faking it would beg
         # the question.
         import kiro_crew.apps.backend as bmod
+
         port = self._serve_garbage(b"NOT-HTTP garbage\r\n\r\n")
 
         assert bmod._health_probe(port, "/health").healthy is False
@@ -3610,6 +3808,7 @@ class TestProbeSurvivesAMalformedHttpResponse:
         # third-party code, and `BadStatusLine` carries it verbatim. Printed raw into the
         # log it could forge an entry, so the detail escapes it.
         import kiro_crew.apps.backend as bmod
+
         port = self._serve_garbage(b"NOT-HTTP \x1b[2Jforged WARNING line\r\n")
 
         detail = bmod._health_probe(port, "/health").detail
@@ -3621,6 +3820,7 @@ class TestProbeSurvivesAMalformedHttpResponse:
     def test_an_enormous_status_line_does_not_fill_the_log(self):
         # A status line may be 64 KB; one failed probe must not write a screenful.
         import kiro_crew.apps.backend as bmod
+
         port = self._serve_garbage(b"NOT-HTTP " + b"A" * 5000 + b"\r\n")
 
         detail = bmod._health_probe(port, "/health").detail
@@ -3632,6 +3832,7 @@ class TestProbeSurvivesAMalformedHttpResponse:
         # Same class of bug in the sibling probe — fixed together so one does not sit
         # next to the other still wrong.
         import kiro_crew.apps.backend as bmod
+
         port = self._serve_garbage(b"\x00\x01binary noise\r\n\r\n")
 
         assert bmod._probe_adoption_health(port, "/health") is False
@@ -3687,7 +3888,8 @@ class TestAFailedHealthCheckNamesWhatItObserved:
         monkeypatch.setattr(bmod, "_HEALTH_CHECK_RETRIES", 1)
         gate: list[bool] = []
         monkeypatch.setattr(
-            bmod, "_gate_mcp_registration",
+            bmod,
+            "_gate_mcp_registration",
             lambda _name, _port, *, healthy: (gate.append(healthy), True)[1],
         )
         with bmod._lock:
@@ -3727,9 +3929,7 @@ class TestAFailedHealthCheckNamesWhatItObserved:
         assert promoted is None and ap.healthy is False
         assert gate == [False]  # scrubbed, never promoted
 
-    def test_a_missing_handler_names_its_404_without_the_auth_hint(
-        self, exhausts_at_once, caplog
-    ):
+    def test_a_missing_handler_names_its_404_without_the_auth_hint(self, exhausts_at_once, caplog):
         # The other half of the same misconfiguration — a path nobody serves. Naming the
         # auth fix here would send the reader after the wrong thing.
         bmod, gate = exhausts_at_once
@@ -3802,8 +4002,7 @@ class TestAFailedHealthCheckNamesWhatItObserved:
             return bmod.HealthProbeOutcome.refused(403)
 
         monkeypatch.setattr(bmod, "_health_probe", _probe)
-        ap = AppProcess(app_name="d", port=9301, proc=_FakeProc(), healthy=True,
-                        mcp_healthy=True)
+        ap = AppProcess(app_name="d", port=9301, proc=_FakeProc(), healthy=True, mcp_healthy=True)
         with bmod._lock:
             bmod._processes.clear()
             bmod._processes["d"] = ap
@@ -3833,11 +4032,8 @@ class TestWatchSurvivesAnUnexpectedSweepFault:
         # TestPromotionRequiresAConfirmedEnabledApp.
         monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
         monkeypatch.setattr(bmod, "_HEALTH_WATCH_INTERVAL", 0)
-        monkeypatch.setattr(
-            bmod, "_gate_mcp_registration", lambda name, port, *, healthy: True
-        )
-        ap = AppProcess(app_name="w", port=9260, proc=_FakeProc(),
-                        healthy=True, mcp_healthy=True)
+        monkeypatch.setattr(bmod, "_gate_mcp_registration", lambda name, port, *, healthy: True)
+        ap = AppProcess(app_name="w", port=9260, proc=_FakeProc(), healthy=True, mcp_healthy=True)
         with bmod._lock:
             bmod._processes.clear()
             bmod._processes["w"] = ap
@@ -3851,6 +4047,7 @@ class TestWatchSurvivesAnUnexpectedSweepFault:
             with bmod._lock:  # second sweep: end the watch cleanly
                 bmod._processes.pop("w", None)
             return _probe_outcome(True)
+
         monkeypatch.setattr(bmod, "_health_probe", _probe)
         try:
             bmod._watch_backend_health(ap, "/health")
@@ -3867,8 +4064,7 @@ class TestWatchSurvivesAnUnexpectedSweepFault:
         # TestPromotionRequiresAConfirmedEnabledApp.
         monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
         monkeypatch.setattr(bmod, "_HEALTH_WATCH_INTERVAL", 0)
-        ap = AppProcess(app_name="w", port=9261, proc=_FakeProc(),
-                        healthy=True, mcp_healthy=True)
+        ap = AppProcess(app_name="w", port=9261, proc=_FakeProc(), healthy=True, mcp_healthy=True)
         with bmod._lock:
             bmod._processes.clear()
             bmod._processes["w"] = ap
@@ -3880,6 +4076,7 @@ class TestWatchSurvivesAnUnexpectedSweepFault:
             with bmod._lock:
                 bmod._processes.pop("w", None)
             raise RuntimeError("faults while being torn down")
+
         monkeypatch.setattr(bmod, "_health_probe", _probe)
         try:
             bmod._watch_backend_health(ap, "/health")
@@ -3904,11 +4101,10 @@ class TestScrubAlsoRefreshesMaterializedAgents:
         import kiro_crew.apps.bridges as brmod
 
         seen: list[str] = []
+        monkeypatch.setattr(brmod, "scrub_backend_mcp_url", lambda name, unreconciled=None: [])
         monkeypatch.setattr(
-            brmod, "scrub_backend_mcp_url", lambda name, unreconciled=None: []
-        )
-        monkeypatch.setattr(
-            brmod, "refresh_app_agents",
+            brmod,
+            "refresh_app_agents",
             lambda name, io_failures=None: (seen.append(name), [])[1],
         )
 
@@ -3925,10 +4121,12 @@ class TestScrubAlsoRefreshesMaterializedAgents:
         import kiro_crew.apps.bridges as brmod
 
         seen: list[str] = []
-        monkeypatch.setattr(brmod, "reregister_app_mcp_servers",
-                            lambda name, live_port=None, io_failures=None: [])
         monkeypatch.setattr(
-            brmod, "refresh_app_agents",
+            brmod, "reregister_app_mcp_servers", lambda name, live_port=None, io_failures=None: []
+        )
+        monkeypatch.setattr(
+            brmod,
+            "refresh_app_agents",
             lambda name, io_failures=None: (seen.append(name), [])[1],
         )
 
@@ -3943,14 +4141,13 @@ class TestScrubAlsoRefreshesMaterializedAgents:
         import kiro_crew.apps.backend as bmod
         import kiro_crew.apps.bridges as brmod
 
-        monkeypatch.setattr(
-            brmod, "scrub_backend_mcp_url", lambda name, unreconciled=None: []
-        )
+        monkeypatch.setattr(brmod, "scrub_backend_mcp_url", lambda name, unreconciled=None: [])
 
         def _refresh(name, io_failures=None):
             if io_failures is not None:
                 io_failures.append("a--agent.json")
             return []
+
         monkeypatch.setattr(brmod, "refresh_app_agents", _refresh)
 
         # The demotion path's agent refresh is gated on the app still being
@@ -3967,9 +4164,7 @@ class TestScrubAlsoRefreshesMaterializedAgents:
         import kiro_crew.apps.backend as bmod
         import kiro_crew.apps.bridges as brmod
 
-        monkeypatch.setattr(
-            brmod, "scrub_backend_mcp_url", lambda name, unreconciled=None: []
-        )
+        monkeypatch.setattr(brmod, "scrub_backend_mcp_url", lambda name, unreconciled=None: [])
         monkeypatch.setattr(brmod, "refresh_app_agents", lambda name, io_failures=None: [])
 
         # The demotion path's agent refresh is gated on the app still being
@@ -3992,9 +4187,11 @@ class TestSupervisorIsBoundAtSpawn:
 
     def test_the_starter_hands_over_the_record_itself(self, monkeypatch):
         import kiro_crew.apps.backend as bmod
+
         captured: list[object] = []
         monkeypatch.setattr(
-            bmod.threading, "Thread",
+            bmod.threading,
+            "Thread",
             lambda **kw: SimpleNamespace(start=lambda: captured.append(kw["args"])),
         )
         ap = AppProcess(app_name="s", port=9290)
@@ -4017,7 +4214,8 @@ class TestSupervisorIsBoundAtSpawn:
         monkeypatch.setattr(bmod, "_HEALTH_CHECK_RETRIES", 2)
         gate: list[tuple[str, int, bool]] = []
         monkeypatch.setattr(
-            bmod, "_gate_mcp_registration",
+            bmod,
+            "_gate_mcp_registration",
             lambda name, port, *, healthy: (gate.append((name, port, healthy)), True)[1],
         )
         monkeypatch.setattr(bmod, "_health_probe", lambda *_a: _probe_outcome(True))
@@ -4053,6 +4251,7 @@ class TestRegistrationReportsAgentIoFailuresToo:
             if io_failures is not None:
                 io_failures.append("a--agent.json")
             return ["a:backend"]
+
         monkeypatch.setattr(brmod, "reregister_app_mcp_servers", _reregister)
 
         assert bmod._gate_mcp_registration("a", 9300, healthy=True) is False
@@ -4062,7 +4261,8 @@ class TestRegistrationReportsAgentIoFailuresToo:
         import kiro_crew.apps.bridges as brmod
 
         monkeypatch.setattr(
-            brmod, "reregister_app_mcp_servers",
+            brmod,
+            "reregister_app_mcp_servers",
             lambda app_name, live_port=None, io_failures=None: ["a:backend"],
         )
 
@@ -4078,6 +4278,7 @@ class TestRegistrationReportsAgentIoFailuresToo:
         def _reregister(app_name, live_port=None, io_failures=None):
             seen["port"] = live_port
             return []
+
         monkeypatch.setattr(brmod, "reregister_app_mcp_servers", _reregister)
 
         assert bmod._gate_mcp_registration("a", 9302, healthy=True) is True
@@ -4096,9 +4297,11 @@ class TestPromotionRequiresAConfirmedEnabledApp:
     @pytest.fixture
     def tracked(self, monkeypatch):
         import kiro_crew.apps.backend as bmod
+
         calls: list[tuple[str, int, bool]] = []
         monkeypatch.setattr(
-            bmod, "_gate_mcp_registration",
+            bmod,
+            "_gate_mcp_registration",
             lambda name, port, *, healthy: (calls.append((name, port, healthy)), True)[1],
         )
         ap = AppProcess(app_name="app", port=9310, healthy=False, mcp_healthy=False)
@@ -4158,9 +4361,11 @@ class TestPromotionIsVerifiedAfterTheWrite:
     @pytest.fixture
     def tracked(self, monkeypatch):
         import kiro_crew.apps.backend as bmod
+
         calls: list[tuple[str, int, bool]] = []
         monkeypatch.setattr(
-            bmod, "_gate_mcp_registration",
+            bmod,
+            "_gate_mcp_registration",
             lambda name, port, *, healthy: (calls.append((name, port, healthy)), True)[1],
         )
         ap = AppProcess(app_name="app", port=9320, healthy=False, mcp_healthy=False)
@@ -4180,6 +4385,7 @@ class TestPromotionIsVerifiedAfterTheWrite:
         monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: next(states))
         undone: list[str] = []
         import kiro_crew.apps.bridges as brmod
+
         monkeypatch.setattr(brmod, "deregister_app", lambda n: undone.append(n))
 
         assert bmod._set_backend_health(ap, healthy=True) is False
@@ -4191,8 +4397,10 @@ class TestPromotionIsVerifiedAfterTheWrite:
         bmod, ap, calls = tracked
         monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
         import kiro_crew.apps.bridges as brmod
+
         monkeypatch.setattr(
-            brmod, "deregister_app",
+            brmod,
+            "deregister_app",
             lambda n: pytest.fail("must not undo a promotion that is still valid"),
         )
 
@@ -4207,7 +4415,8 @@ class TestPromotionIsVerifiedAfterTheWrite:
         ap.healthy = True
         ap.mcp_healthy = True
         monkeypatch.setattr(
-            bmod, "_app_enabled_state",
+            bmod,
+            "_app_enabled_state",
             lambda name: pytest.fail("a demotion must not consult enablement"),
         )
 
@@ -4227,10 +4436,9 @@ class TestUndoIsRetriedUntilItCompletes:
     @pytest.fixture
     def disabled(self, monkeypatch):
         import kiro_crew.apps.backend as bmod
+
         monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: False)
-        monkeypatch.setattr(
-            bmod, "_gate_mcp_registration", lambda name, port, *, healthy: True
-        )
+        monkeypatch.setattr(bmod, "_gate_mcp_registration", lambda name, port, *, healthy: True)
         ap = AppProcess(app_name="app", port=9330, healthy=True, mcp_healthy=True)
         with bmod._lock:
             bmod._processes.clear()
@@ -4244,8 +4452,10 @@ class TestUndoIsRetriedUntilItCompletes:
     def test_a_soft_failure_leaves_the_record_unreconciled(self, monkeypatch, disabled):
         bmod, ap = disabled
         import kiro_crew.apps.bridges as brmod
+
         monkeypatch.setattr(
-            brmod, "deregister_app",
+            brmod,
+            "deregister_app",
             lambda n: SimpleNamespace(errors=["could not remove agent: ENOSPC"]),
         )
 
@@ -4256,6 +4466,7 @@ class TestUndoIsRetriedUntilItCompletes:
     def test_a_clean_removal_is_recorded(self, monkeypatch, disabled):
         bmod, ap = disabled
         import kiro_crew.apps.bridges as brmod
+
         monkeypatch.setattr(brmod, "deregister_app", lambda n: SimpleNamespace(errors=[]))
 
         assert bmod._undo_promotion_of_disabled_app(ap) is True
@@ -4267,6 +4478,7 @@ class TestUndoIsRetriedUntilItCompletes:
 
         def _boom(n):
             raise OSError("agents dir unwritable")
+
         monkeypatch.setattr(brmod, "deregister_app", _boom)
 
         assert bmod._undo_promotion_of_disabled_app(ap) is False
@@ -4278,8 +4490,10 @@ class TestUndoIsRetriedUntilItCompletes:
         bmod, ap = disabled
         attempts: list[str] = []
         import kiro_crew.apps.bridges as brmod
+
         monkeypatch.setattr(
-            brmod, "deregister_app",
+            brmod,
+            "deregister_app",
             lambda n: (attempts.append(n), SimpleNamespace(errors=["still failing"]))[1],
         )
 
@@ -4291,8 +4505,10 @@ class TestUndoIsRetriedUntilItCompletes:
         bmod, ap = disabled
         ap.mcp_healthy = False  # already reconciled
         import kiro_crew.apps.bridges as brmod
+
         monkeypatch.setattr(
-            brmod, "deregister_app",
+            brmod,
+            "deregister_app",
             lambda n: pytest.fail("nothing of ours is registered; nothing to undo"),
         )
 
@@ -4317,15 +4533,18 @@ class TestDemotionRefreshIsGatedOnEnablement:
         refreshed: list[str] = []
         dropped: list[str] = []
         monkeypatch.setattr(
-            brmod, "scrub_backend_mcp_url",
+            brmod,
+            "scrub_backend_mcp_url",
             lambda name, unreconciled=None: (scrubbed.append(name), [])[1],
         )
         monkeypatch.setattr(
-            brmod, "refresh_app_agents",
+            brmod,
+            "refresh_app_agents",
             lambda name, io_failures=None: (refreshed.append(name), [])[1],
         )
         monkeypatch.setattr(
-            bmod, "_drop_disabled_app_resources",
+            bmod,
+            "_drop_disabled_app_resources",
             lambda name: (dropped.append(name), True)[1],
         )
         return bmod, scrubbed, refreshed, dropped
@@ -4366,9 +4585,7 @@ class TestDisabledCleanupResultIsTheReconcileResult:
         import kiro_crew.apps.backend as bmod
         import kiro_crew.apps.bridges as brmod
 
-        monkeypatch.setattr(
-            brmod, "scrub_backend_mcp_url", lambda name, unreconciled=None: []
-        )
+        monkeypatch.setattr(brmod, "scrub_backend_mcp_url", lambda name, unreconciled=None: [])
         monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: False)
         monkeypatch.setattr(bmod, "_drop_disabled_app_resources", lambda name: False)
 
@@ -4378,9 +4595,7 @@ class TestDisabledCleanupResultIsTheReconcileResult:
         import kiro_crew.apps.backend as bmod
         import kiro_crew.apps.bridges as brmod
 
-        monkeypatch.setattr(
-            brmod, "scrub_backend_mcp_url", lambda name, unreconciled=None: []
-        )
+        monkeypatch.setattr(brmod, "scrub_backend_mcp_url", lambda name, unreconciled=None: [])
         monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: False)
         monkeypatch.setattr(bmod, "_drop_disabled_app_resources", lambda name: True)
 
@@ -4404,11 +4619,13 @@ class TestTheUndoNeverTouchesASuccessor:
             bmod._processes.clear()
             bmod._processes["app"] = successor
         monkeypatch.setattr(
-            bmod, "_app_enabled_state",
+            bmod,
+            "_app_enabled_state",
             lambda name: pytest.fail("identity must be checked first"),
         )
         monkeypatch.setattr(
-            bmod, "_undo_promotion_of_disabled_app",
+            bmod,
+            "_undo_promotion_of_disabled_app",
             lambda ap: pytest.fail("must never deregister on behalf of a retired record"),
         )
         try:
@@ -4436,6 +4653,7 @@ class TestUnreadableManifestKeepsTheScrubUnlanded:
             if unreconciled is not None:
                 unreconciled.append(f"{name}: manifest unreadable")
             return []
+
         monkeypatch.setattr(brmod, "scrub_backend_mcp_url", _scrub)
 
         assert bmod._gate_mcp_registration("app", 9370, healthy=False) is False
@@ -4444,9 +4662,7 @@ class TestUnreadableManifestKeepsTheScrubUnlanded:
         import kiro_crew.apps.backend as bmod
         import kiro_crew.apps.bridges as brmod
 
-        monkeypatch.setattr(
-            brmod, "scrub_backend_mcp_url", lambda name, unreconciled=None: []
-        )
+        monkeypatch.setattr(brmod, "scrub_backend_mcp_url", lambda name, unreconciled=None: [])
         monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
         monkeypatch.setattr(brmod, "refresh_app_agents", lambda name, io_failures=None: [])
 
@@ -4468,12 +4684,11 @@ class TestUnknownEnablementNeverDeletes:
         import kiro_crew.apps.bridges as brmod
 
         dropped: list[str] = []
-        monkeypatch.setattr(
-            brmod, "scrub_backend_mcp_url", lambda name, unreconciled=None: []
-        )
+        monkeypatch.setattr(brmod, "scrub_backend_mcp_url", lambda name, unreconciled=None: [])
         monkeypatch.setattr(brmod, "refresh_app_agents", lambda name, io_failures=None: [])
         monkeypatch.setattr(
-            bmod, "_drop_disabled_app_resources",
+            bmod,
+            "_drop_disabled_app_resources",
             lambda name: (dropped.append(name), True)[1],
         )
         return bmod, dropped
@@ -4501,7 +4716,8 @@ class TestUnknownEnablementNeverDeletes:
 
         monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: None)
         monkeypatch.setattr(
-            brmod, "deregister_app",
+            brmod,
+            "deregister_app",
             lambda n: pytest.fail("an unknown state must never delete"),
         )
         ap = AppProcess(app_name="app", port=9382, healthy=False, mcp_healthy=True)
@@ -4529,7 +4745,8 @@ class TestATransitionAlwaysReconciles:
 
         calls: list[bool] = []
         monkeypatch.setattr(
-            bmod, "_gate_mcp_registration",
+            bmod,
+            "_gate_mcp_registration",
             lambda name, port, *, healthy: (calls.append(healthy), True)[1],
         )
         # healthy=True with mcp_healthy=False is exactly what a partial reconcile leaves.
@@ -4550,7 +4767,8 @@ class TestATransitionAlwaysReconciles:
         import kiro_crew.apps.backend as bmod
 
         monkeypatch.setattr(
-            bmod, "_gate_mcp_registration",
+            bmod,
+            "_gate_mcp_registration",
             lambda name, port, *, healthy: pytest.fail("nothing changed; nothing to write"),
         )
         ap = AppProcess(app_name="app", port=9391, healthy=False, mcp_healthy=False)
@@ -4580,9 +4798,7 @@ class TestTheUndoPathsAlsoRefuseAnUnknownState:
 
         deleted: list[str] = []
         monkeypatch.setattr(brmod, "deregister_app", lambda n: deleted.append(n))
-        monkeypatch.setattr(
-            bmod, "_gate_mcp_registration", lambda name, port, *, healthy: True
-        )
+        monkeypatch.setattr(bmod, "_gate_mcp_registration", lambda name, port, *, healthy: True)
         ap = AppProcess(app_name="app", port=9400, healthy=False, mcp_healthy=True)
         with bmod._lock:
             bmod._processes.clear()
@@ -4618,9 +4834,7 @@ class TestTheUndoPathsAlsoRefuseAnUnknownState:
         assert deleted == []
         assert ap.healthy is True
 
-    def test_the_post_write_verify_still_fires_on_a_confirmed_disable(
-        self, monkeypatch, tracked
-    ):
+    def test_the_post_write_verify_still_fires_on_a_confirmed_disable(self, monkeypatch, tracked):
         bmod, ap, deleted = tracked
         states = iter([True, False])
         monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: next(states))
@@ -4642,6 +4856,7 @@ class TestEnabledStateDistinguishesUnreadableFromDisabled:
 
     def _meta(self, monkeypatch, tmp_path):
         import kiro_crew.apps.manager as mgr
+
         app = tmp_path / "probe"
         app.mkdir(parents=True, exist_ok=True)
         monkeypatch.setattr(mgr, "app_dir", lambda name: app)
@@ -4678,6 +4893,7 @@ class TestEnabledStateDistinguishesUnreadableFromDisabled:
     ):
         # The path that matters: backend must see None, or no deletion is ever refused.
         import kiro_crew.apps.backend as bmod
+
         mgr, meta = self._meta(monkeypatch, tmp_path)
         meta.write_text("{ not json", encoding="utf-8")
 
@@ -4703,9 +4919,7 @@ class TestExecBackendShebangShim:
         script.chmod(0o755)
         return bk, root, script
 
-    def test_an_abi_matched_shebang_script_launches_through_deps_boot(
-        self, tmp_path
-    ):
+    def test_an_abi_matched_shebang_script_launches_through_deps_boot(self, tmp_path):
         import sys as _sys
 
         bk, root, script = self._spawn_cmd(tmp_path, f"#!{_sys.executable}")

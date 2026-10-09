@@ -373,7 +373,9 @@ class TestInstall:
         secret. The copied tree is now asked the data directory's own question
         before the record exists, and the whole copy goes with the refusal."""
         src = _make_app_source(tmp_path)
-        (src / "data").write_text("a file where the gateway's data directory goes\n", encoding="utf-8")
+        (src / "data").write_text(
+            "a file where the gateway's data directory goes\n", encoding="utf-8"
+        )
 
         result = install_app(src)
 
@@ -676,9 +678,7 @@ class TestUninstall:
         if not _mgr.platform_compat.IS_WINDOWS:
             linked_home = tmp_path / "home-link"
             linked_home.symlink_to(app_home)
-            monkeypatch.setattr(
-                _mgr, "app_dir", lambda name: linked_home / "apps" / name
-            )
+            monkeypatch.setattr(_mgr, "app_dir", lambda name: linked_home / "apps" / name)
 
         src = _make_app_source(tmp_path)
         install_app(src)
@@ -788,9 +788,7 @@ class TestUninstall:
         assert marker.exists(), "preserved data must be restored to data/"
         assert not (app_home / "apps" / ".test-app-data-tmp").exists()
 
-    def test_app_owned_names_sharing_the_deps_prefix_survive_uninstall(
-        self, tmp_path, app_home
-    ):
+    def test_app_owned_names_sharing_the_deps_prefix_survive_uninstall(self, tmp_path, app_home):
         """The sweep deletes only the gateway's own generated names: an
         app-owned entry that merely shares the .kirocrew-deps prefix (a
         user's backup dir) is preserved data, not a purge target."""
@@ -814,9 +812,7 @@ class TestUninstall:
             app_root / "data" / ".kirocrew-deps-staging-assets" / "art.bin"
         ).exists(), "app-owned staging-prefix data must survive"
 
-    def test_a_file_shaped_deps_artifact_is_purged_and_does_not_poison(
-        self, tmp_path, app_home
-    ):
+    def test_a_file_shaped_deps_artifact_is_purged_and_does_not_poison(self, tmp_path, app_home):
         """rmtree refuses non-directories, so a FILE written at a deps-tree
         name survives every uninstall and poisons the next quarantine
         rename. Shape-aware removal purges it - and a second
@@ -1470,9 +1466,7 @@ class TestInstalledApp:
             "deploy:local-segment@host.example:Owner/Repo.git",
         ],
     )
-    def test_write_boundary_preserves_non_uri_source_metadata(
-        self, app_home, coordinate: str
-    ):
+    def test_write_boundary_preserves_non_uri_source_metadata(self, app_home, coordinate: str):
         _write_installed(
             "metadata-app",
             InstalledApp(
@@ -1928,9 +1922,7 @@ class TestCopyAppTree:
         assert not (orphan / "leftover.bin").exists()
         assert (orphan / APP_MANIFEST_FILENAME).is_file()
 
-    def test_local_install_cannot_claim_a_repository_bound_grant(
-        self, tmp_path, app_home
-    ):
+    def test_local_install_cannot_claim_a_repository_bound_grant(self, tmp_path, app_home):
         from kiro_crew.config.loader import _invalidate_config_cache
 
         reviewed = "https://clone.example.test/Owner/reviewed-app"
@@ -1954,9 +1946,7 @@ class TestCopyAppTree:
         assert result.error_code == "app_trust_repository_mismatch"
         assert get_app("test-app") is None
 
-    def test_external_registration_cannot_claim_a_repository_bound_grant(
-        self, app_home
-    ):
+    def test_external_registration_cannot_claim_a_repository_bound_grant(self, app_home):
         from kiro_crew.config.loader import _invalidate_config_cache
 
         reviewed = "https://clone.example.test/Owner/reviewed-app"
@@ -1980,9 +1970,7 @@ class TestCopyAppTree:
         assert result.error_code == "app_trust_repository_mismatch"
         assert get_app("test-app") is None
 
-    def test_legacy_name_grant_cannot_install_repository_code(
-        self, tmp_path, app_home
-    ):
+    def test_legacy_name_grant_cannot_install_repository_code(self, tmp_path, app_home):
         from kiro_crew.config.loader import _invalidate_config_cache
 
         (app_home / "config.json").write_text(
@@ -2001,9 +1989,7 @@ class TestCopyAppTree:
         assert "Secret" not in result.error
         assert get_app("test-app") is None
 
-    def test_legacy_name_grant_cannot_claim_fresh_local_install(
-        self, tmp_path, app_home
-    ):
+    def test_legacy_name_grant_cannot_claim_fresh_local_install(self, tmp_path, app_home):
         from kiro_crew.config.loader import _invalidate_config_cache
 
         (app_home / "config.json").write_text(
@@ -2116,9 +2102,7 @@ class TestCopyAppTree:
         assert persisted is not None
         assert persisted.sourceUrl == reviewed
 
-    def test_registry_context_rechecks_binding_at_replacement_boundary(
-        self, tmp_path, app_home
-    ):
+    def test_registry_context_rechecks_binding_at_replacement_boundary(self, tmp_path, app_home):
         """A source changed after registry preflight cannot reach the copy step."""
         from kiro_crew.config.loader import _invalidate_config_cache
 
@@ -2165,9 +2149,7 @@ class TestCopyAppTree:
         assert first == "https://example.test/owner/first"
         assert second == "https://example.test/owner/second"
 
-    def test_legacy_name_grant_cannot_update_to_repository_code(
-        self, tmp_path, app_home
-    ):
+    def test_legacy_name_grant_cannot_update_to_repository_code(self, tmp_path, app_home):
         from kiro_crew.apps.manager import update_app
         from kiro_crew.config.loader import _invalidate_config_cache
 
@@ -2207,9 +2189,7 @@ class TestCopyAppTree:
         assert result.error_code == "app_trust_repository_mismatch"
         assert get_app("test-app") is None
 
-    def test_installed_legacy_local_grant_can_update_local_code(
-        self, tmp_path, app_home
-    ):
+    def test_installed_legacy_local_grant_can_update_local_code(self, tmp_path, app_home):
         from kiro_crew.apps.manager import update_app
         from kiro_crew.config.loader import _invalidate_config_cache
 
@@ -2243,7 +2223,9 @@ class TestCopyAppTree:
         assert secret.read_text(encoding="utf-8") == "s3cret"
 
     @requires_symlinks
-    def test_an_installed_data_link_refuses_the_update_before_the_transaction(self, tmp_path, app_home):
+    def test_an_installed_data_link_refuses_the_update_before_the_transaction(
+        self, tmp_path, app_home
+    ):
         """An installed `data` that is a LINK (an install from before the link
         refusal) cannot be preserved: the move would relocate the link beside the
         app directory, where its relative target does not resolve, put nothing
@@ -2270,10 +2252,14 @@ class TestCopyAppTree:
         assert result.error == _DATA_IS_A_LINK, result.error
         assert os.path.islink(dest / "data")
         assert (dest / "state" / "state.json").read_text(encoding="utf-8") == '{"k": 1}'
-        assert (dest / "data" / "state.json").read_text(encoding="utf-8") == '{"k": 1}'  # still reachable
+        assert (dest / "data" / "state.json").read_text(
+            encoding="utf-8"
+        ) == '{"k": 1}'  # still reachable
         assert _read_installed("test-app") == before  # version 1.0.0, untouched
         assert not (dest.parent / ".test-app-data-tmp").exists()
-        assert [p.name for p in dest.parent.iterdir() if p.name.startswith(".test-app-update-old-")] == []
+        assert [
+            p.name for p in dest.parent.iterdir() if p.name.startswith(".test-app-update-old-")
+        ] == []
         # The source of the refused update is not the app's business: untouched too.
         assert (v2 / APP_MANIFEST_FILENAME).is_file()
 
@@ -2307,7 +2293,9 @@ class TestCopyAppTree:
             "kiro_crew.apps.manager.is_link_or_junction", lambda path: Path(path) == junction
         )
         assert _owned_data_dir(junction) is False  # not a directory the gateway may move
-        assert preserved_data_awaits("test-app") is False  # so the preview preserves nothing over it
+        assert (
+            preserved_data_awaits("test-app") is False
+        )  # so the preview preserves nothing over it
 
         result = update_app(_make_app_source(tmp_path / "v2", version="2.0.0"))
 
@@ -2316,7 +2304,9 @@ class TestCopyAppTree:
         assert (dest / "data" / "state.json").read_text(encoding="utf-8") == '{"k": 1}'
         assert _read_installed("test-app") == before  # version 1.0.0, untouched
         assert not (dest.parent / ".test-app-data-tmp").exists()
-        assert [p.name for p in dest.parent.iterdir() if p.name.startswith(".test-app-update-old-")] == []
+        assert [
+            p.name for p in dest.parent.iterdir() if p.name.startswith(".test-app-update-old-")
+        ] == []
 
     @requires_symlinks
     def test_an_installed_data_link_to_an_outside_directory_refuses_the_update_before_the_transaction(
@@ -2346,9 +2336,13 @@ class TestCopyAppTree:
         assert (elsewhere / "sentinel.json").read_text(encoding="utf-8") == '{"kept": true}'
         assert _read_installed("test-app") == before  # version 1.0.0, untouched
         assert not (dest.parent / ".test-app-data-tmp").exists()
-        assert [p.name for p in dest.parent.iterdir() if p.name.startswith(".test-app-update-old-")] == []
+        assert [
+            p.name for p in dest.parent.iterdir() if p.name.startswith(".test-app-update-old-")
+        ] == []
 
-    def test_an_installed_data_file_refuses_the_update_before_the_transaction(self, tmp_path, app_home):
+    def test_an_installed_data_file_refuses_the_update_before_the_transaction(
+        self, tmp_path, app_home
+    ):
         """The FILE shape of the same loss: an installed `data` that is a regular
         file (an install from before the refusal, or the app's own runtime
         replacing its directory) is not a directory the gateway can move aside. A
@@ -2382,7 +2376,9 @@ class TestCopyAppTree:
         assert (dest / APP_MANIFEST_FILENAME).read_text(encoding="utf-8") == manifest_before
         assert _read_installed("test-app") == before  # version 1.0.0, untouched
         assert not (dest.parent / ".test-app-data-tmp").exists()
-        assert [p.name for p in dest.parent.iterdir() if p.name.startswith(".test-app-update-old-")] == []
+        assert [
+            p.name for p in dest.parent.iterdir() if p.name.startswith(".test-app-update-old-")
+        ] == []
         # The source of the refused update is not the app's business: untouched too.
         assert (v2 / APP_MANIFEST_FILENAME).is_file()
 
@@ -2414,7 +2410,9 @@ class TestCopyAppTree:
         assert list(elsewhere.iterdir()) == []
         assert os.path.islink(planted)
         assert _read_installed("test-app") == before
-        assert [p.name for p in dest.parent.iterdir() if p.name.startswith(".test-app-update-old-")] == []
+        assert [
+            p.name for p in dest.parent.iterdir() if p.name.startswith(".test-app-update-old-")
+        ] == []
 
     @requires_symlinks
     @pytest.mark.parametrize("secret_installed", [True, False])
@@ -2596,9 +2594,7 @@ class TestCopyAppTree:
         assert get_app("test-app")["sessionApprovalConsentPending"] is False
 
     def test_fresh_install_with_session_approval_requires_consent(self, tmp_path, app_home):
-        result = install_app(
-            _make_app_source(tmp_path, permissions={"sessionApproval": True})
-        )
+        result = install_app(_make_app_source(tmp_path, permissions={"sessionApproval": True}))
 
         assert result.ok, result.error
         assert result.notice == "session_approval_reconsent"
@@ -2615,9 +2611,7 @@ class TestCopyAppTree:
         # refresh that keeps it is not a new request.
         from kiro_crew.apps.manager import update_app
 
-        assert install_app(
-            _make_app_source(tmp_path, permissions={"sessionApproval": True})
-        ).ok
+        assert install_app(_make_app_source(tmp_path, permissions={"sessionApproval": True})).ok
         assert enable_app("test-app", session_approval_consent=True).ok
         v2 = _make_app_source(
             tmp_path / "v2",
@@ -2712,9 +2706,7 @@ class TestCopyAppTree:
         assert get_app("ext-keypad")["enabled"] is False
         assert get_app("ext-keypad")["sessionApprovalConsentPending"] is False
 
-    def test_failed_self_registration_widening_restores_metadata(
-        self, app_home, monkeypatch
-    ):
+    def test_failed_self_registration_widening_restores_metadata(self, app_home, monkeypatch):
         from kiro_crew.apps import manager as manager_mod
 
         assert register_external_app("ext-keypad", "1.0.0", "Keypad").ok
@@ -2757,9 +2749,7 @@ class TestCopyAppTree:
             "version": "1.0.0",
             "permissions": {"sessionApproval": True},
         }
-        assert register_external_app(
-            "ext-keypad", "1.0.0", "Keypad", manifest_data=manifest
-        ).ok
+        assert register_external_app("ext-keypad", "1.0.0", "Keypad", manifest_data=manifest).ok
         original = _read_installed("ext-keypad")
         assert original is not None
         real_write = manager_mod._write_installed
@@ -2907,9 +2897,7 @@ def _ship_test_builtin(monkeypatch, root, manifest_data):
     shipped = root / "shipped-builtins"
     shipped_app = shipped / manifest_data["name"]
     shipped_app.mkdir(parents=True)
-    (shipped_app / "app.json").write_text(
-        json.dumps(manifest_data), encoding="utf-8"
-    )
+    (shipped_app / "app.json").write_text(json.dumps(manifest_data), encoding="utf-8")
     monkeypatch.setattr(execution, "_BUILTINS_DIR", shipped)
     return shipped_app
 
@@ -2996,9 +2984,7 @@ class TestEnabledStateTellsUnreadableFromNotInstalled:
 
         assert app_enabled_state("shape-probe") is None
 
-    def test_genuine_absence_stays_false_under_the_windows_error_class(
-        self, app_home, monkeypatch
-    ):
+    def test_genuine_absence_stays_false_under_the_windows_error_class(self, app_home, monkeypatch):
         """The control for the above: the shape check must not swallow real absence.
 
         Uninstall depends on this False, so a fix for the wrong-shape case that also
@@ -3224,9 +3210,7 @@ class TestBootSkillReconcile:
         assert "test-app/kept-skill" in registered
         # symlink on POSIX, directory junction on non-admin Windows.
         assert platform_compat.is_link_or_junction(skills_root / "test-app" / "kept-skill")
-        assert (
-            skills_root / "test-app" / "kept-skill"
-        ).resolve() == kept_skill.resolve()
+        assert (skills_root / "test-app" / "kept-skill").resolve() == kept_skill.resolve()
         # Stale skill symlinks removed
         assert not (app_skills_dir / "old-skill").exists()
         assert not (skills_root / "old-skill").exists()
@@ -3680,9 +3664,7 @@ class TestRegisterExternalPreservesServerProvenance:
         assert meta.sourceUrl == self._REPOSITORY
         assert meta.origin == "registry"
 
-    def test_allow_all_refresh_preserves_pin_and_pinned_resolver(
-        self, app_home, monkeypatch
-    ):
+    def test_allow_all_refresh_preserves_pin_and_pinned_resolver(self, app_home, monkeypatch):
         from kiro_crew.apps import registry
 
         self._seed_registry_app()
@@ -3711,9 +3693,7 @@ class TestRegisterExternalPreservesServerProvenance:
             "gitUrl": self._REPOSITORY,
             "_registry": self._REGISTRY,
         }
-        monkeypatch.setattr(
-            registry, "_registry_app_candidates", lambda name: [attacker, pinned]
-        )
+        monkeypatch.setattr(registry, "_registry_app_candidates", lambda name: [attacker, pinned])
 
         def _bare_name_lookup(name):
             raise AssertionError(f"bare-name lookup attempted for {name}")
@@ -3721,9 +3701,7 @@ class TestRegisterExternalPreservesServerProvenance:
         monkeypatch.setattr(registry, "get_registry_app", _bare_name_lookup)
         assert registry._resolve_install_entry("self-app") == (pinned, "")
 
-    def test_repository_bound_refresh_uses_existing_pin_and_rejects_rebind(
-        self, app_home
-    ):
+    def test_repository_bound_refresh_uses_existing_pin_and_rejects_rebind(self, app_home):
         from kiro_crew.config.loader import _invalidate_config_cache
 
         self._seed_registry_app()
@@ -3889,7 +3867,9 @@ class TestCopyAppTreeAsInstalled:
         with pytest.raises(InstalledTreeRefused) as refused:
             copy_app_tree_as_installed(root, dest, data_preserved=False)
         assert str(refused.value) == _DATA_IS_A_FILE
-        assert gateway_data_dir_obstruction(dest) == _DATA_IS_A_FILE  # the tree it refused, as copied
+        assert (
+            gateway_data_dir_obstruction(dest) == _DATA_IS_A_FILE
+        )  # the tree it refused, as copied
         dest = tmp_path / "installed-update"
         copy_app_tree_as_installed(root, dest, data_preserved=True)
         assert not os.path.lexists(dest / "data")
@@ -4049,3 +4029,288 @@ class TestCopyAppTreeAsInstalled:
         assert (dest / "absolute.txt").resolve() == (dest / "requirements" / "prod.txt")
         # Kept verbatim: from the copy it reaches the checkout, outside the copy.
         assert (dest / "climbing.txt").resolve() == (root / "requirements" / "prod.txt").resolve()
+
+
+class TestUninstallRevokesBackendProvenance:
+    """GPT F1: provenance invalidation lives in the SHARED uninstall transaction.
+
+    The CLI uninstall (`kirocrew app uninstall` -> cli_commands -> uninstall_app)
+    reached ``uninstall_app`` directly and never revoked the spawn record, so an
+    offline uninstall left the row valid: a same-name reinstall plus a process that
+    survived the pre-uninstall SIGTERM would be adopted as the new app's backend
+    through the tree route. Revoking inside ``uninstall_app`` closes BOTH the CLI and
+    the dashboard paths at one seam.
+    """
+
+    def _seed_row(self, name: str) -> dict:
+        from kiro_crew.apps.backend_runtime import pidfile as pf
+
+        row = {
+            "pid": 54321,
+            "start_time": "st-54321",
+            "port": 9100,
+            "spawn_instance": "sp-old-install",
+        }
+        pf._write_pidfile({name: dict(row)})
+        return row
+
+    def test_uninstall_revokes_the_spawn_record_so_a_survivor_is_refused(
+        self, tmp_path, app_home
+    ) -> None:
+        from kiro_crew.apps.backend_runtime import pidfile as pf
+
+        assert install_app(_make_app_source(tmp_path, name="prov-app")).ok
+        row = self._seed_row("prov-app")
+        # The shared transaction the CLI goes through.
+        assert uninstall_app("prov-app").ok
+        # GPT F1: the revoked tombstone is LEFT in place (not deleted) as the durable
+        # fence a committed uninstall needs, so a stop racing the uninstall cannot
+        # resurrect provenance and a same-name reinstall's adopt path refuses the
+        # old-install survivor.
+        live = pf._read_pidfile().get("prov-app")
+        assert live is not None and live.get("revoked") is True, live
+        attributed, reason = pf._adoption_provenance("prov-app", [row["pid"]])
+        assert attributed is False, reason
+
+    def test_the_uninstall_tombstone_blocks_a_racing_stop_restore(self, tmp_path, app_home) -> None:
+        """GPT F1: after a committed uninstall, a concurrent gateway stop that tries to
+        RESTORE the forgotten row (an ordinary stop that found a detached survivor)
+        must not resurrect a non-revoked row. The tombstone's presence makes
+        _restore_app_pid (name-present early-return) refuse, so the restore is a
+        no-op and adoption stays refused."""
+        from kiro_crew.apps.backend_runtime import pidfile as pf
+
+        assert install_app(_make_app_source(tmp_path, name="prov-race")).ok
+        original = self._seed_row("prov-race")
+        assert uninstall_app("prov-race").ok
+        # Simulate the racing stop's restore of the pre-stop (non-revoked) row.
+        pf._restore_app_pid("prov-race", {k: v for k, v in original.items()})
+        live = pf._read_pidfile().get("prov-race")
+        assert (
+            live is not None and live.get("revoked") is True
+        ), "the restore must not overwrite the uninstall tombstone with a live row"
+        attributed, _ = pf._adoption_provenance("prov-race", [original["pid"]])
+        assert attributed is False
+
+    def test_uninstall_with_no_row_still_writes_a_tombstone(self, tmp_path, app_home) -> None:
+        """GPT F1 final hole: when the row is ALREADY ABSENT at revoke time (a stop
+        removed it first in the race), uninstall must still write a bare revoked
+        tombstone — otherwise a stop restoration after the uninstall resurrects
+        provenance and a same-name reinstall adopts the removed app's listener."""
+        from kiro_crew.apps.backend_runtime import pidfile as pf
+
+        assert install_app(_make_app_source(tmp_path, name="prov-norow")).ok
+        pf._write_pidfile({})  # no spawn row for this app at revoke time
+        assert uninstall_app("prov-norow").ok
+        live = pf._read_pidfile().get("prov-norow")
+        assert (
+            live is not None and live.get("revoked") is True
+        ), "uninstall must leave a tombstone even when no row existed at revoke time"
+        # A racing stop's later restore cannot resurrect provenance.
+        pf._restore_app_pid(
+            "prov-norow", {"pid": 777, "start_time": "s7", "port": 9, "spawn_instance": "i7"}
+        )
+        attributed, _ = pf._adoption_provenance("prov-norow", [777])
+        assert attributed is False
+
+    def test_uninstall_refuses_when_the_revocation_cannot_persist(
+        self, tmp_path, app_home, monkeypatch
+    ) -> None:
+        """GPT F2 at the uninstall seam: a durable revoke that cannot land
+        (ENOSPC/EDQUOT) must ABORT the uninstall rather than delete the files and
+        leave a live-vouching row behind, so the app and its (restorable) record
+        survive for a retry once the disk is writable."""
+        from kiro_crew.apps.backend_runtime import pidfile as pf
+
+        assert install_app(_make_app_source(tmp_path, name="prov-app2")).ok
+        self._seed_row("prov-app2")
+        # Make the durable revoke fail to confirm (swallowed write).
+        monkeypatch.setattr(pf, "_write_pidfile", lambda data: False)
+        result = uninstall_app("prov-app2")
+        assert not result.ok
+        assert result.error_code == "provenance_not_revoked", result.error
+        # The app is still installed (destructive step refused).
+        assert (app_home / "apps" / "prov-app2").is_dir()
+
+    def test_a_failed_uninstall_unrevokes_the_still_installed_apps_row(
+        self, tmp_path, app_home, monkeypatch
+    ) -> None:
+        """GPT F1: the uninstall revokes the row BEFORE the destructive step, so when
+        that step fails and rolls back, the still-installed app's row must be
+        UN-revoked — otherwise adoption/rebind rejects the app's own live backend.
+        _restore_app_pid is setdefault (it sees the revoked row still present and
+        refuses), so the rollback uses _unrevoke_app_pid, which clears the stamp."""
+        from kiro_crew.apps.backend_runtime import pidfile as pf
+
+        assert install_app(_make_app_source(tmp_path, name="prov-app3")).ok
+        row = self._seed_row("prov-app3")
+        # Let the durable revoke succeed, then make the destructive delete fail so the
+        # uninstall rolls back with the row already stamped revoked.
+        import shutil as _shutil
+
+        def _boom(*_a, **_k):
+            raise OSError("simulated rmtree failure")
+
+        monkeypatch.setattr(_shutil, "rmtree", _boom)
+        result = uninstall_app("prov-app3")
+        assert not result.ok, result
+        # App is still installed, and its row is un-revoked so adoption accepts the
+        # recorded leader again.
+        assert (app_home / "apps" / "prov-app3").is_dir()
+        live = pf._read_pidfile().get("prov-app3")
+        assert live is not None and not live.get("revoked"), live
+        monkeypatch.setattr(pf, "_proc_start_time", lambda _pid: row["start_time"])
+        attributed, reason = pf._adoption_provenance("prov-app3", [row["pid"]])
+        assert attributed is True, reason
+
+    def test_uninstall_holds_the_lifecycle_flock_across_revoke_and_removal(
+        self, tmp_path, app_home, monkeypatch
+    ) -> None:
+        """GPT 6.1: an in-flight spawn can overwrite uninstall's revocation unless the
+        uninstall holds ``app_backend_lifecycle_flock(name)`` across BOTH the revoke
+        and the file removal — the spawn path holds the same cross-process lock while
+        it persists its pidfile record. Assert the flock is entered and still held when
+        the revoke runs AND when the destructive removal runs, and released afterward.
+        """
+        from kiro_crew.apps.backend_runtime import pidfile as pf
+        from kiro_crew.apps.backend_runtime import tracking as tr
+
+        assert install_app(_make_app_source(tmp_path, name="prov-flock")).ok
+        self._seed_row("prov-flock")
+
+        held = {"depth": 0}
+        events: list[str] = []
+
+        import contextlib as _ctxlib
+
+        real_flock = tr.app_backend_lifecycle_flock
+
+        @_ctxlib.contextmanager
+        def _tracking_flock(app_name: str):
+            with real_flock(app_name):
+                held["depth"] += 1
+                events.append(f"enter:{app_name}")
+                try:
+                    yield
+                finally:
+                    events.append(f"exit:{app_name}")
+                    held["depth"] -= 1
+
+        monkeypatch.setattr(
+            "kiro_crew.apps.backend_runtime.tracking.app_backend_lifecycle_flock", _tracking_flock
+        )
+
+        real_revoke = pf.revoke_backend_provenance
+
+        def _revoke_under_lock(name: str):
+            assert held["depth"] > 0, "revoke ran WITHOUT the lifecycle flock held"
+            events.append("revoke")
+            return real_revoke(name)
+
+        monkeypatch.setattr(
+            "kiro_crew.apps.backend_runtime.pidfile.revoke_backend_provenance", _revoke_under_lock
+        )
+
+        import shutil as _shutil
+
+        real_rmtree = _shutil.rmtree
+
+        def _rmtree_under_lock(*a, **k):
+            assert held["depth"] > 0, "file removal ran WITHOUT the lifecycle flock held"
+            events.append("rmtree")
+            return real_rmtree(*a, **k)
+
+        monkeypatch.setattr(_shutil, "rmtree", _rmtree_under_lock)
+
+        assert uninstall_app("prov-flock").ok
+        # Both the revoke and the removal happened inside one held flock window.
+        assert "enter:prov-flock" in events and "exit:prov-flock" in events, events
+        assert (
+            events.index("enter:prov-flock")
+            < events.index("revoke")
+            < events.index("exit:prov-flock")
+        ), events
+        assert (
+            events.index("enter:prov-flock")
+            < events.index("rmtree")
+            < events.index("exit:prov-flock")
+        ), events
+        assert held["depth"] == 0, "the flock must be released after the uninstall"
+
+    def test_a_refused_uninstall_whose_grant_restore_also_fails_returns_a_note_not_a_500(
+        self, tmp_path, app_home, monkeypatch
+    ) -> None:
+        """Opus 5.5: when the durable revoke fails (full disk) the uninstall restores
+        the withdrawn grant and returns ``provenance_not_revoked``. If the SAME full
+        disk makes that restore config write raise too, an unguarded restore would
+        escape as a 500 / CLI traceback with the grant left withdrawn. The restore is
+        guarded: the uninstall still returns the structured refusal, now carrying a
+        note telling the user to re-grant."""
+        from kiro_crew.apps import manager as mgr
+        from kiro_crew.apps.backend_runtime import pidfile as pf
+
+        assert install_app(_make_app_source(tmp_path, name="prov-grant")).ok
+        self._seed_row("prov-grant")
+        # Revoke cannot persist (full disk).
+        monkeypatch.setattr(pf, "_write_pidfile", lambda data: False)
+
+        # And the grant-restore config write also fails on the same full disk.
+        def _restore_boom(*_a, **_k):
+            raise OSError("No space left on device")
+
+        monkeypatch.setattr(mgr, "_restore_trust_grant", _restore_boom)
+
+        result = uninstall_app("prov-grant")
+        assert not result.ok
+        assert result.error_code == "provenance_not_revoked", result.error
+        assert "re-grant" in result.error, result.error
+        # The app is still installed (nothing destroyed), ready for a retry.
+
+    def test_a_lifecycle_lock_acquisition_failure_restores_the_grant_not_a_500(
+        self, tmp_path, app_home, monkeypatch
+    ) -> None:
+        """GPT 6.1 / Opus 5.5: the grant is withdrawn BEFORE the lifecycle flock is
+        entered. Entering it goes through ``flock_exclusive`` -> ``file_lock``, which
+        raises ``OSError`` after the 300s ceiling (and on EACCES/ENOENT opening the
+        lockfile). An unguarded entry failure escaped OUTSIDE both restore arms,
+        leaving the installed app's execution grant withdrawn with no restore and a
+        CLI traceback / HTTP 500. Assert the acquisition failure is compensated: the
+        grant is restored and a retryable structured refusal is returned, with nothing
+        destroyed."""
+        from kiro_crew.apps import manager as mgr
+
+        assert install_app(_make_app_source(tmp_path, name="prov-lockfail")).ok
+        self._seed_row("prov-lockfail")
+
+        # The grant exists before the uninstall; track whether it is restored after
+        # the acquisition failure withdraws it.
+        restored = {"count": 0}
+        real_restore = mgr._restore_trust_grant
+
+        def _tracking_restore(*a, **k):
+            restored["count"] += 1
+            return real_restore(*a, **k)
+
+        monkeypatch.setattr(mgr, "_restore_trust_grant", _tracking_restore)
+
+        import contextlib as _ctxlib
+
+        @_ctxlib.contextmanager
+        def _flock_that_cannot_be_acquired(app_name: str):
+            # Mirror file_lock giving up after the 300s ceiling.
+            raise OSError("Resource temporarily unavailable")
+            yield  # pragma: no cover - never reached
+
+        monkeypatch.setattr(
+            "kiro_crew.apps.backend_runtime.tracking.app_backend_lifecycle_flock",
+            _flock_that_cannot_be_acquired,
+        )
+
+        result = uninstall_app("prov-lockfail")
+        assert not result.ok
+        assert result.error_code == "lifecycle_lock_unavailable", result.error
+        assert "retry" in result.error.lower(), result.error
+        # The grant was restored (not left withdrawn) ...
+        assert restored["count"] == 1, "the withdrawn grant must be restored on acquire failure"
+        # ... and nothing was destroyed: the app is still installed, ready for retry.
+        assert (app_home / "apps" / "prov-lockfail").is_dir()

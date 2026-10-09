@@ -21,7 +21,6 @@ import { writePrefill } from '../../utils/navIntent'
 import type { PasteBlock } from '../../utils/pasteTokens'
 import { isSafeReload } from '../../lib/safeReload'
 import { safeSetItem } from '../../utils/safeStorage'
-import { PANE_SLOT_HINT_PARAM, relayActiveSlotToParent } from '../../lib/paneLastSlot'
 import { shouldReplaceSessionUrl, popMaySwitchSession } from '../../utils/sessionUrlHistory'
 import { toSlug } from '../../utils/shareUrl'
 import { focusComposer } from './composerFocus'
@@ -132,11 +131,8 @@ export function useChatPageSessionController({
   useEffect(() => {
     if (activeSlot && filteredSlots.some(s => s.key === activeSlot)) {
       safeSetItem(slotStorageKey, activeSlot)
-      // In a remote-crew pane this storage dies with the tunnel's port, so the
-      // hub keeps a copy and hands it back as ?lastSid= (lib/paneLastSlot).
-      if (!embedded) relayActiveSlotToParent(activeSlot)
     }
-  }, [activeSlot, slotStorageKey, filteredSlots, embedded])
+  }, [activeSlot, slotStorageKey, filteredSlots])
   useEffect(() => () => { if (activeSlotRef.current && filteredSlotsRef.current.find(s => s.key === activeSlotRef.current)) safeSetItem(slotStorageKeyRef.current, activeSlotRef.current) }, [activeSlotRef, filteredSlotsRef])
 
   /* ── Session tabs ───────────────────────────────────────────────────────
@@ -895,13 +891,9 @@ export function useChatPageSessionController({
   // If no slots exist at all, auto-create one so the user lands in a ready chat
   const autoCreatedRef = useRef(false)
   const hadActiveSlotRef = useRef(false)
-  // The hub's record of this pane's last chat (#16009), used for the first
-  // pick only. A soft hint, unlike ?sid=: a chat that is gone falls through.
-  const slotHintRef = useRef(embedded ? null : searchParams.get(PANE_SLOT_HINT_PARAM))
   useEffect(() => {
     if (activeSlot) {
       hadActiveSlotRef.current = true
-      slotHintRef.current = null
       return
     }
     // Don't auto-select/auto-create while the challenge-redirect token effect
@@ -918,10 +910,7 @@ export function useChatPageSessionController({
     if (filteredSlots.length > 0 && isSafeReload() && !hadActiveSlotRef.current) return
     if (filteredSlots.length > 0) {
       const saved = localStorage.getItem(slotStorageKey)
-      const hint = slotHintRef.current
-      slotHintRef.current = null
-      const target = hint && filteredSlots.some(s => s.key === hint) ? hint
-        : saved && filteredSlots.find(s => s.key === saved) ? saved : filteredSlots[0].key
+      const target = saved && filteredSlots.find(s => s.key === saved) ? saved : filteredSlots[0].key
       dispatch(switchSlot(target))
     } else if (connected && slotsLoaded && !autoCreatedRef.current) {
       // Connected, slots fetched, and truly empty — auto-create one

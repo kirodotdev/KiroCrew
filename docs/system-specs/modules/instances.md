@@ -686,27 +686,12 @@ what its own edit invalidated, and never reopens anything on the user's behalf.
   currently-warm tunnel before trusting any message. The kinds it accepts are
   the ones `InstancesViewport`'s `onMessage` handles (unread slots, auth expired,
   switch instance, readiness and boot, chained-crew, crew pin, stable order,
-  focus mode and chrome, cursor-away watch and cancel, drag gaps, native notify,
-  pane active slot);
+  focus mode and chrome, cursor-away watch and cancel, drag gaps, native notify);
   a switch target is re-validated against the known instance list. `mc-native-notify`
   carries user-visible text, so it is accepted only from a resolved tunnel origin
   and only when every field has exactly the expected type
-  (`parseNativeNotifyEnvelope`), with title, body and tag bounded.
-  `mc-pane-active-slot` is accepted only from a resolved warm tunnel origin, and
-  its key is shape-checked (`isPaneSlotKey`, `[A-Za-z0-9._:-]{1,128}`) before it
-  is stored under the instance id that origin resolved to. The parent's outbound
-  `postMessage` is addressed to the pane's exact origin, never `*`.
-- **Last-chat hint on reconnect (#16009).** A pane's own `mc-active-slot-<mode>`
-  lives in its origin, which carries the tunnel's local port, so a reconnect on a
-  new port starts the pane with empty storage. The pane therefore reports its
-  active chat (`mc-pane-active-slot`), and the hub keeps one last chat per
-  instance id in its own storage (`lib/paneLastSlot.ts`). The hub adds
-  `lastSid=<chat>` to the pane URL only when it next loads that pane: the src is
-  computed once per port, token and Retry count, so recording a new chat never
-  changes the src of a pane that is already loaded. The pane uses the hint once,
-  for its first automatic pick, and only if that chat is still in its own slot
-  list. It is not a `?sid=` deep link: a gone chat falls back to the stored chat,
-  then the first chat, with no error banner.
+  (`parseNativeNotifyEnvelope`), with title, body and tag bounded. The parent's outbound `postMessage` is addressed to the pane's
+  exact origin, never `*`.
 - **CSP.** `frame-ancestors` is `'self'` plus the exact parent origin carried in
   the minted token's signed `embed_parent_port` claim, never a wildcard and never
   a hardcoded port, so a local page with no validly-signed token can never frame

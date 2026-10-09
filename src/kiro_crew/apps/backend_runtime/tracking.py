@@ -23,7 +23,7 @@ import time
 from collections.abc import Iterator
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, NamedTuple
 
 from kiro_crew import platform_compat
 from kiro_crew.apps.backend_runtime import _FACADE
@@ -240,12 +240,16 @@ def spawned_backend_names() -> list[str]:
     """App names whose backend THIS gateway process spawned (``proc`` set).
 
     The gateway-shutdown sweep stops exactly these. Adopted records
-    (``proc is None``) are deliberately excluded: an adopted backend is an
-    externally managed instance whose contract is to SURVIVE gateway exit and
-    be re-probed and re-adopted on the next start (see the adoption comment in
-    ``_start_app_backend_body``) — signalling it from shutdown would take down
-    an independent service. Deriving the sweep from this tracking table rather
-    than from persisted ``enabled`` metadata also keeps it honest in both
+    (``proc is None``) are deliberately excluded: an adopted backend holds no
+    handle of ours, so signalling it from shutdown would take down a service this
+    process did not start. What happens to it after that is the stale-reap's
+    decision, not a re-adoption: :func:`_reap_stale_app_backends` runs at the next
+    boot BEFORE anything spawns, and it terminates a recorded leader that is still
+    alive with a matching start instant. Re-adoption is what serves the cases the
+    reap deliberately leaves standing -- a dead leader whose group member still
+    holds the port with the row retained, and a listener met by an enable rather
+    than a boot. Deriving the sweep from this tracking table
+    rather than from persisted ``enabled`` metadata also keeps it honest in both
     directions: a child whose app was disabled cross-process (metadata-only)
     is still stopped, and an app with nothing running is never passed to
     :func:`stop_app_backend`, whose ``_forget_app_pid`` would otherwise erase
@@ -355,3 +359,63 @@ def app_backend_lifecycle_flock(app_name: str) -> Iterator[None]:
             yield
     finally:
         os.close(fd)
+
+
+# ---------------------------------------------------------------------------
+# Backend notices: why an enabled app's backend is not running
+# ---------------------------------------------------------------------------
+
+
+class AdoptionRefused(NamedTuple):
+    """The spawn body's answer when it refuses to adopt the listener on the app's port.
+
+    A refusal is not a failed spawn: the port is held by a healthy process this
+    gateway cannot attribute to the app, and nothing changes until the user stops
+    that process. ``notice`` is the sentence the user is shown; ``port`` and
+    ``reason`` are kept for callers and tests that need the parts.
+    """
+
+    port: int
+    reason: str
+    notice: str
+
+
+# Keyed by app name. One entry says why that app's backend is not running when the
+# answer is something the user has to act on; the next successful start clears it.
+# Guarded by ``_lock``, like the process table it describes.
+_backend_notices: dict[str, str] = {}
+
+
+def record_backend_notice(app_name: str, notice: str) -> None:
+    """Record the user-facing reason *app_name*'s backend is not running."""
+    with _lock:
+        _backend_notices[app_name] = notice
+
+
+def clear_backend_notice(app_name: str) -> None:
+    """Drop *app_name*'s backend notice, if it has one."""
+    with _lock:
+        _backend_notices.pop(app_name, None)
+
+
+def backend_notice(app_name: str) -> str | None:
+    """The user-facing reason *app_name*'s backend is not running, or None."""
+    with _lock:
+        return _backend_notices.get(app_name)
+
+
+def _unattributed_listener_notice(app_name: str, port: int) -> str:
+    return (
+        f"Port {port} is in use by another program, so the {app_name} backend could "
+        f"not start. Close the program using port {port}, then turn the app off and "
+        "on again."
+    )
+
+
+def _quarantined_listener_notice(app_name: str, port: int) -> str:
+    return (
+        f"Port {port} is in use, possibly by the previous version of {app_name} left "
+        "running after an update, so its backend could not start. Close the program "
+        f"using port {port}, check the disk has free space, then turn the app off and "
+        "on again."
+    )

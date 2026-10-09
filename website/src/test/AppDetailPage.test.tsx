@@ -355,3 +355,31 @@ describe('AppDetailPage — version reported for an installed app', () => {
     expect(screen.queryByText(/v0\.0\.0/)).toBeNull()
   })
 })
+
+describe('AppDetailPage — backend notice', () => {
+  beforeEach(() => {
+    getApp.mockReset()
+    listRegistry.mockReset()
+    system.mockReset()
+    system.mockResolvedValue({ hostname: '' })
+    listRegistry.mockResolvedValue({ apps: [], serverPlatform: { os: 'linux', arch: 'x86_64' } })
+  })
+
+  const NOTICE = 'Port 9123 is in use by another program, so the agent-worlds backend could not start. Close the program using port 9123, then turn the app off and on again.'
+
+  it('shows the server notice for an enabled app whose backend was refused', async () => {
+    getApp.mockResolvedValue({ ...BUILTIN, enabled: true, backend_notice: NOTICE })
+    renderDetail()
+    const notice = await screen.findByTestId('app-backend-notice')
+    expect(notice.textContent).toContain(NOTICE)
+    // The shared error surface, with its agent hand-off.
+    expect(notice.getAttribute('role')).toBe('alert')
+  })
+
+  it('shows nothing for a disabled app, where the notice no longer applies', async () => {
+    getApp.mockResolvedValue({ ...BUILTIN, enabled: false, backend_notice: NOTICE })
+    renderDetail()
+    await screen.findByTestId('app-icon')
+    expect(screen.queryByTestId('app-backend-notice')).toBeNull()
+  })
+})

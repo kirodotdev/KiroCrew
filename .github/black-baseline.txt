@@ -11,7 +11,6 @@ src/kiro_crew/acp/kas_wire.py
 src/kiro_crew/acp/worker_pool.py
 src/kiro_crew/apps/__init__.py
 src/kiro_crew/apps/app_storage.py
-src/kiro_crew/apps/backend.py
 src/kiro_crew/apps/builtins/auto_improvement/backend/routes.py
 src/kiro_crew/apps/builtins/auto_improvement/spine/gate.py
 src/kiro_crew/apps/builtins/auto_improvement/tests/test_data_home_isolation.py
@@ -125,13 +124,11 @@ src/kiro_crew/apps/dependencies.py
 src/kiro_crew/apps/dependency_ledger.py
 src/kiro_crew/apps/dev_mode.py
 src/kiro_crew/apps/execution.py
-src/kiro_crew/apps/manager.py
 src/kiro_crew/apps/manifest.py
 src/kiro_crew/apps/module_loader.py
 src/kiro_crew/apps/permissions.py
 src/kiro_crew/apps/route_registry.py
 src/kiro_crew/apps/scaffold.py
-src/kiro_crew/apps/teardown.py
 src/kiro_crew/artifact_source.py
 src/kiro_crew/beacon.py
 src/kiro_crew/builtin_skills/browser-recording/scripts/record_browser.py
@@ -292,8 +289,6 @@ test/test_api_file_diff.py
 test/test_api_input_validation.py
 test/test_api_kiro_hooks.py
 test/test_api_shutdown.py
-test/test_app_backend.py
-test/test_app_backend_stale_reap.py
 test/test_app_bridges.py
 test/test_app_cli.py
 test/test_app_config_self_heal.py
@@ -301,7 +296,6 @@ test/test_app_context.py
 test/test_app_dev_mode.py
 test/test_app_e2e.py
 test/test_app_execution.py
-test/test_app_manager.py
 test/test_app_manifest.py
 test/test_app_mcp_scoping.py
 test/test_app_permissions.py
@@ -317,7 +311,6 @@ test/test_approval_and_update_task.py
 test/test_approval_threading.py
 test/test_apps_registry.py
 test/test_apps_registry_coverage.py
-test/test_apps_routes_coverage.py
 test/test_apps_uninstall_keep_specific.py
 test/test_artifact_companion.py
 test/test_artifact_folder_handlers.py

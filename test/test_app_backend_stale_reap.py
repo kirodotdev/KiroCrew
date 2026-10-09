@@ -6,6 +6,7 @@ matches what was recorded at spawn (so a recycled pid, an unreadable start_time,
 or a pid owned by another uid is never killed). Entries it cannot confirm-and-kill
 but that are still alive are KEPT for a later attempt; handled entries are dropped.
 """
+
 from __future__ import annotations
 
 import signal
@@ -27,7 +28,9 @@ def test_record_read_forget_roundtrip(pidfile):
     with patch.object(backend_mod, "_proc_start_time", return_value="ST-1"):
         backend_mod._record_app_pid("code_reviewer", 4321, 9100)
     assert backend_mod._read_pidfile()["code_reviewer"] == {
-        "pid": 4321, "start_time": "ST-1", "port": 9100,
+        "pid": 4321,
+        "start_time": "ST-1",
+        "port": 9100,
     }
     backend_mod._forget_app_pid("code_reviewer")
     assert "code_reviewer" not in backend_mod._read_pidfile()
@@ -47,9 +50,7 @@ def _model_a_host_without_ps(monkeypatch, *, identity):
         raise FileNotFoundError(2, "No such file or directory", "ps")
 
     monkeypatch.setattr(backend_mod.subprocess, "check_output", _no_ps)
-    monkeypatch.setattr(
-        backend_mod.platform_compat, "process_start_time", lambda _pid: identity
-    )
+    monkeypatch.setattr(backend_mod.platform_compat, "process_start_time", lambda _pid: identity)
 
 
 def test_a_host_without_ps_still_records_a_reapable_identity(pidfile, monkeypatch):
@@ -69,14 +70,16 @@ def test_a_host_without_ps_still_records_a_reapable_identity(pidfile, monkeypatc
     entry = backend_mod._read_pidfile()["code_reviewer"]
     assert entry["start_time"] == "WIN-CREATION-8817", (
         "no start-time identity was recorded on a host without /proc or ps, so "
-        "the stale-reap can never positively identify this backend")
+        "the stale-reap can never positively identify this backend"
+    )
 
     # The consequence: with an identity on file, the reap can now confirm and act
     # -- and the recorded identity is what the terminate is PINNED to, so the
     # chain from probe to kill carries one value end to end.
     killed: list[tuple[int, str, int]] = []
     monkeypatch.setattr(
-        backend_mod.platform_compat, "pid_liveness",
+        backend_mod.platform_compat,
+        "pid_liveness",
         lambda _pid: backend_mod.platform_compat.PID_ALIVE,
     )
     monkeypatch.setattr(
@@ -193,6 +196,63 @@ def test_reap_skips_dead_pid(pidfile):
     assert backend_mod._read_pidfile() == {}  # dead entry dropped
 
 
+def test_reap_quarantines_dropped_names_when_removal_cannot_persist(pidfile, tmp_path, monkeypatch):
+    # GPT F1: under ENOSPC the stale-reap's _write_pidfile row removal fails, so the
+    # orphaned row survives on disk and would re-vouch for a SIGTERM-survivor the next
+    # adopt sees. The reap must then quarantine the dropped name IN MEMORY (no disk
+    # write needed) so the later adopt in this same generation refuses it.
+    qf = tmp_path / "app_backends.quarantine.json"
+    monkeypatch.setattr(backend_mod, "_quarantine_path", lambda: qf)
+    backend_mod._quarantined_backends.discard("app")
+    backend_mod._write_pidfile({"app": {"pid": 4321, "start_time": "ST-1", "port": 9100}})
+
+    def dead(pid, sig):
+        raise ProcessLookupError
+
+    try:
+        with (
+            patch.object(backend_mod.os, "kill", side_effect=dead),
+            patch.object(backend_mod.os, "killpg"),
+            patch.object(backend_mod, "_proc_start_time", return_value="ST-1"),
+            patch.object(backend_mod, "sel"),
+            # The removal write cannot land (disk full) -- returns False, same as
+            # the real ENOSPC/EDQUOT path.
+            patch.object(backend_mod, "_write_pidfile", return_value=False),
+        ):
+            backend_mod._reap_stale_app_backends()
+        assert backend_mod.is_backend_quarantined("app"), (
+            "an unpersisted row removal must quarantine the dropped name so the "
+            "survivor the retained row vouches for cannot be adopted"
+        )
+    finally:
+        backend_mod._quarantined_backends.discard("app")
+
+
+def test_reap_does_not_quarantine_when_removal_persists(pidfile, tmp_path, monkeypatch):
+    # The complement: when the removal write lands, there is no surviving row to
+    # re-vouch, so nothing is quarantined (the hold would only cost a needless refusal).
+    qf = tmp_path / "app_backends.quarantine.json"
+    monkeypatch.setattr(backend_mod, "_quarantine_path", lambda: qf)
+    backend_mod._quarantined_backends.discard("app")
+    backend_mod._write_pidfile({"app": {"pid": 4321, "start_time": "ST-1", "port": 9100}})
+
+    def dead(pid, sig):
+        raise ProcessLookupError
+
+    try:
+        with (
+            patch.object(backend_mod.os, "kill", side_effect=dead),
+            patch.object(backend_mod.os, "killpg"),
+            patch.object(backend_mod, "_proc_start_time", return_value="ST-1"),
+            patch.object(backend_mod, "sel"),
+        ):
+            backend_mod._reap_stale_app_backends()
+        assert backend_mod._read_pidfile() == {}  # row removed
+        assert not backend_mod.is_backend_quarantined("app")
+    finally:
+        backend_mod._quarantined_backends.discard("app")
+
+
 def test_reap_skips_pid_owned_by_other_uid(pidfile):
     # os.kill(pid, 0) raising PermissionError means the process EXISTS but is
     # ours to leave alone — not killed, and dropped (not our orphan).
@@ -243,10 +303,12 @@ def test_reap_per_pid_grace_not_shared(pidfile):
     # deadline would SIGKILL the second instantly but still kill both — so assert
     # BOTH pids are SIGKILLed (the regression would skip the SIGKILL entirely if
     # the budget were exhausted by the first and the while/else logic differed).
-    backend_mod._write_pidfile({
-        "a": {"pid": 11, "start_time": "ST", "port": 9100},
-        "b": {"pid": 22, "start_time": "ST", "port": 9101},
-    })
+    backend_mod._write_pidfile(
+        {
+            "a": {"pid": 11, "start_time": "ST", "port": 9100},
+            "b": {"pid": 22, "start_time": "ST", "port": 9101},
+        }
+    )
     killed: list[tuple[int, int]] = []
 
     with (
@@ -467,7 +529,9 @@ class TestDeadLeaderOrphanedGroup:
         def _signal(pgid, sig, instance, *, expected=None):
             calls.append((pgid, sig, instance, expected))
             members = {555: "s555"}
-            return (members, {}) if sig == backend_mod.platform_compat.SIGKILL else (members, members)
+            return (
+                (members, {}) if sig == backend_mod.platform_compat.SIGKILL else (members, members)
+            )
 
         monkeypatch.setattr(backend_mod, "signal_orphaned_spawn_group", _signal)
         # The member ignores SIGTERM, so the escalation must be reached. It stays
@@ -528,9 +592,9 @@ class TestDeadLeaderOrphanedGroup:
             backend_mod.platform_compat.SIGKILL,
         ]
         assert calls[1][1] == {555: "s555"}, "the escalation is scoped to the signalled members"
-        assert backend_mod._read_pidfile() == {}, (
-            "the final census found nothing live, so nothing is left for the row to recover"
-        )
+        assert (
+            backend_mod._read_pidfile() == {}
+        ), "the final census found nothing live, so nothing is left for the row to recover"
 
     def test_a_row_is_kept_when_the_reap_itself_fails(self, pidfile, monkeypatch):
         """A transient failure must not discard the orphan's only record.
@@ -574,9 +638,7 @@ class TestDeadLeaderOrphanedGroup:
 
         assert "app" in backend_mod._read_pidfile(), "a refused SIGKILL must keep the row"
 
-    def test_a_member_the_signal_could_not_reach_still_keeps_the_row(
-        self, pidfile, monkeypatch
-    ):
+    def test_a_member_the_signal_could_not_reach_still_keeps_the_row(self, pidfile, monkeypatch):
         """Retention must read the CENSUS, not the subset a signal reached.
 
         A group can hold a member A the signal reaches and a member B it cannot
@@ -657,7 +719,9 @@ class TestDeadLeaderOrphanedGroup:
 
         def _signal(pgid, sig, inst, *, expected=None):
             sigs.append(sig)
-            return {111: "s111"}, ({111: "s111"} if sig == backend_mod.platform_compat.SIGTERM else {})
+            return {111: "s111"}, (
+                {111: "s111"} if sig == backend_mod.platform_compat.SIGTERM else {}
+            )
 
         monkeypatch.setattr(backend_mod, "signal_orphaned_spawn_group", _signal)
         # Every signalled member exited during the grace: nothing to escalate.
@@ -691,9 +755,9 @@ class TestDeadLeaderOrphanedGroup:
 
         backend_mod._reap_stale_app_backends()
 
-        assert expected_seen == [{111: "s111"}], (
-            "the escalation is owed only to the members a SIGTERM actually reached"
-        )
+        assert expected_seen == [
+            {111: "s111"}
+        ], "the escalation is owed only to the members a SIGTERM actually reached"
 
     def test_a_group_whose_signals_are_all_refused_keeps_its_row(self, pidfile, monkeypatch):
         """The regression the signalled-count could not see.
@@ -721,9 +785,9 @@ class TestDeadLeaderOrphanedGroup:
 
         assert backend_mod._reap_stale_app_backends() == 0
 
-        assert "app" in backend_mod._read_pidfile(), (
-            "live vouched members that refused the signal must KEEP the row"
-        )
+        assert (
+            "app" in backend_mod._read_pidfile()
+        ), "live vouched members that refused the signal must KEEP the row"
 
     def test_a_vouched_member_that_has_since_exited_drops_its_row(self, pidfile, monkeypatch):
         """Retention needs a LIVE member, not merely a member in the census.
@@ -746,9 +810,7 @@ class TestDeadLeaderOrphanedGroup:
         assert backend_mod._reap_stale_app_backends() == 0
         assert backend_mod._read_pidfile() == {}
 
-    def test_an_empty_census_drops_the_row_only_once_the_group_is_gone(
-        self, pidfile, monkeypatch
-    ):
+    def test_an_empty_census_drops_the_row_only_once_the_group_is_gone(self, pidfile, monkeypatch):
         """An empty census is not evidence of an empty group.
 
         Every read the vouch makes is fail-OPEN — the /proc scan, each stat and each
@@ -775,9 +837,9 @@ class TestDeadLeaderOrphanedGroup:
         backend_mod._write_pidfile({"app": dict(row)})
         monkeypatch.setattr(backend_mod.platform_compat, "pgroup_exists", lambda _pgid: True)
         assert backend_mod._reap_stale_app_backends() == 0
-        assert "app" in backend_mod._read_pidfile(), (
-            "an unreadable census must not be read as an empty group"
-        )
+        assert (
+            "app" in backend_mod._read_pidfile()
+        ), "an unreadable census must not be read as an empty group"
 
     def test_a_vouched_group_that_dies_under_sigkill_drops_its_row(self, pidfile, monkeypatch):
         backend_mod._write_pidfile(
@@ -798,9 +860,9 @@ class TestDeadLeaderOrphanedGroup:
 
         backend_mod._reap_stale_app_backends()
 
-        assert backend_mod._read_pidfile() == {}, (
-            "the group is gone, so the row has nothing left to recover"
-        )
+        assert (
+            backend_mod._read_pidfile() == {}
+        ), "the group is gone, so the row has nothing left to recover"
 
     def test_a_row_without_an_instance_token_is_never_signalled(self, pidfile, monkeypatch):
         """No incarnation pin, no authority.
