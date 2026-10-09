@@ -131,6 +131,7 @@ async def test_a_retarget_drops_the_previous_subjects_delivered_terminal_marker(
         )
         assert loop.monitor is not None
         loop.monitor.terminal_delivered = "success"
+        service._terminal_reprobe_unknowns[loop.id] = 3
 
         updated = await service.update_monitor(
             loop.id, target="https://github.com/acme/widgets/pull/43"
@@ -139,6 +140,9 @@ async def test_a_retarget_drops_the_previous_subjects_delivered_terminal_marker(
         assert updated is not None and updated.monitor is not None
         assert updated.monitor.target.endswith("/pull/43")
         assert updated.monitor.terminal_delivered == ""
+        # The count goes with the marker, or the new subject's first delivered
+        # terminal would skip straight past its settlement-only re-probes.
+        assert loop.id not in service._terminal_reprobe_unknowns
         assert _stored_row(tmp_path)["monitor"]["terminal_delivered"] == ""
     finally:
         service.stop()
@@ -899,3 +903,399 @@ async def test_restart_reopened_delivered_terminal_clears_without_refiring(tmp_p
     assert loop.monitor.terminal_delivered == ""
     assert loop.cycle_count == 1
     await restarted.shutdown()
+
+
+def _delivered_terminal_loop(loop_id: str, delivered: str = "success") -> NudgeLoop:
+    """A channel PR watch whose final turn landed and whose settlement is still owed."""
+    monitor = _structured_monitor(kind="gh-pr", target="acme/widgets#42")
+    monitor.terminal_delivered = delivered
+    return NudgeLoop(
+        id=loop_id,
+        slot_key="slack:C0123456:1700000000.1",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        cycle_count=1,
+        monitor=monitor,
+        gate=True,
+    )
+
+
+def _poll_sequence(*steps: tuple[str, str, "_an.irq.Outcome"]):
+    """A poll fake answering ordinary ticks in order, one ``(state, status, outcome)``
+    per call. The settlement re-probe is patched separately, so only ordinary
+    observation reaches this fake."""
+    remaining = list(steps)
+
+    def _poll(identity, message, probe):
+        state, status, outcome = remaining.pop(0)
+        probe.observation = _reading(state, status=status)
+        return _an.irq.Verdict(outcome, "read")
+
+    return _poll
+
+
+async def _tick(service: AutoNudgeService, loop: NudgeLoop) -> None:
+    await asyncio.wait_for(service._timer(loop, delay=0.0), timeout=_LOST_RUN_SECS)
+    service._cancel_timer(loop.id)
+
+
+@pytest.mark.asyncio
+async def test_unobservable_subject_keeps_the_delivered_marker_without_settling(
+    tmp_path, monkeypatch
+):
+    """Absence of evidence must not retire a watch, and it is counted in memory.
+
+    A failed fetch, a probe defect or a binding that does not resolve cannot CONFIRM
+    that the subject is finished, and settling on that would be the silent stop this
+    design resolves away from. The count is not part of the stored row.
+    """
+
+    def _explode(*_a, **_k):
+        raise RuntimeError("gh unavailable")
+
+    monkeypatch.setattr(_an.irq, "poll", _explode)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=AsyncMock(return_value=True))
+    loop = _owed_terminal_loop("monitor42")
+    service._loops[loop.id] = loop
+
+    try:
+        await service._run_fire_cycle(loop)
+        assert loop.active is True, "an unobserved subject is not a finished one"
+        assert loop.monitor is not None
+        assert loop.monitor.terminal_pending == ""
+        assert loop.monitor.terminal_delivered == "success"
+        assert service._terminal_reprobe_unknowns[loop.id] == 1
+        persisted = _stored_row(tmp_path)["monitor"]
+        assert persisted["terminal_pending"] == ""
+        assert persisted["terminal_delivered"] == "success"
+        assert "terminal_reprobe_unknowns" not in persisted
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_MUTATION_an_indeterminate_reprobe_writes_nothing_and_keeps_the_marker(
+    tmp_path, monkeypatch
+):
+    """An ``unknown`` answer only counts. A store that refuses every write cannot
+    clear the marker or stall the count, because no write is attempted."""
+    on_fire = AsyncMock(return_value=True)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = _delivered_terminal_loop("monitor-terminal-unknown-no-write")
+    service._loops[loop.id] = loop
+    reprobe = AsyncMock(return_value="unknown")
+    monkeypatch.setattr(service, "_terminal_still_holds", reprobe)
+    writes = AsyncMock(side_effect=OSError("store unavailable"))
+    monkeypatch.setattr(service, "_write_monitor_snapshot_locked", writes)
+
+    try:
+        await _tick(service, loop)
+        assert service._terminal_reprobe_unknowns[loop.id] == 1
+    finally:
+        service.stop()
+
+    reprobe.assert_awaited_once()
+    writes.assert_not_awaited()
+    on_fire.assert_not_awaited()
+    assert loop.monitor is not None
+    assert loop.monitor.terminal_delivered == "success"
+
+
+@pytest.mark.asyncio
+async def test_exhausted_unknown_reprobes_then_a_holds_reading_settle_without_a_second_turn(
+    tmp_path, monkeypatch
+):
+    """A gh outage longer than the re-probe bound must not buy a second final turn.
+
+    Three indeterminate re-probes hand the tick to ordinary observation with the
+    marker kept. A still-unreadable subject then stays quiet (a judge screens it, as
+    an installed one would), and the merged reading that finally arrives settles the
+    watch through the ordinary terminal branch without firing. Clearing the marker at
+    the bound fails here: that reading marks a new owed turn and fires a second
+    'merged' turn.
+    """
+    on_fire = AsyncMock(return_value=True)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = _delivered_terminal_loop("monitor-terminal-unknown-then-holds")
+    monitor = loop.monitor
+    assert monitor is not None
+    service._loops[loop.id] = loop
+    reprobe = AsyncMock(return_value="unknown")
+    monkeypatch.setattr(service, "_terminal_still_holds", reprobe)
+    monkeypatch.setattr(service, "_judge_tick_is_quiet", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        _an.irq,
+        "poll",
+        _poll_sequence(
+            ("MERGED", "unavailable", _an.irq.Outcome.QUIET),
+            ("MERGED", "ok", _an.irq.Outcome.QUIET),
+        ),
+    )
+
+    try:
+        for expected in (1, 2, 3):
+            await _tick(service, loop)
+            assert service._terminal_reprobe_unknowns[loop.id] == expected
+            assert monitor.terminal_delivered == "success"
+
+        await _tick(service, loop)
+        assert reprobe.await_count == 3, "an exhausted count stops re-probing"
+        assert loop.active is True, "an unreadable subject is not a finished one"
+        assert monitor.terminal_delivered == "success"
+        assert monitor.terminal_pending == ""
+
+        await _tick(service, loop)
+        assert loop.id not in service._terminal_reprobe_unknowns
+    finally:
+        service.stop()
+
+    on_fire.assert_not_awaited()
+    assert reprobe.await_count == 3
+    assert loop.active is False
+    assert monitor.outcome is MonitorOutcome.SUCCESS
+    assert monitor.terminal_delivered == ""
+    assert monitor.terminal_pending == ""
+    stored = _stored_row(tmp_path)
+    assert stored["active"] is False
+    assert stored["monitor"]["terminal_delivered"] == ""
+
+
+@pytest.mark.asyncio
+async def test_exhausted_unknown_reprobes_do_not_spend_a_busy_retry_credit_on_a_second_turn(
+    tmp_path, monkeypatch
+):
+    """The retry credit a busy session's refusal granted buys no second final turn.
+
+    The refused terminal fire grants one observation-free follow-up tick so the next
+    tick retries the delivery. While the turn is owed that credit is never spent, so
+    it is still standing when the retry lands. Once the re-probe bound is exhausted
+    the tick has to observe the subject with the marker kept; spending the leftover
+    credit instead fires a second 'merged' turn for a terminal already delivered.
+    """
+    refusals = iter([False])
+
+    async def _busy_then_delivered(_loop: NudgeLoop) -> bool:
+        return next(refusals, True)
+
+    on_fire = AsyncMock(side_effect=_busy_then_delivered)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = _owed_terminal_loop("monitor-terminal-busy-retry-then-unknown")
+    monitor = loop.monitor
+    assert monitor is not None
+    service._loops[loop.id] = loop
+    reprobe = AsyncMock(return_value="unknown")
+    monkeypatch.setattr(service, "_terminal_still_holds", reprobe)
+    monkeypatch.setattr(_an.irq, "poll", _poll_sequence(("MERGED", "ok", _an.irq.Outcome.QUIET)))
+
+    try:
+        await service._run_fire_cycle(loop)
+        assert monitor.terminal_pending == "success", "a refused final turn stays owed"
+        assert monitor.followup_ticks == 1
+
+        await service._run_fire_cycle(loop)
+        assert monitor.terminal_pending == ""
+        assert monitor.terminal_delivered == "success"
+        assert monitor.followup_ticks == 1, "the owed turn never spent the retry credit"
+
+        while service._terminal_reprobe_unknowns.get(loop.id, 0) < 3:
+            await _tick(service, loop)
+        await _tick(service, loop)
+    finally:
+        service.stop()
+
+    assert on_fire.await_count == 2, "the exhausted bound fired a second final turn"
+    assert reprobe.await_count == 3
+    assert loop.active is False
+    assert monitor.outcome is MonitorOutcome.SUCCESS
+    assert monitor.terminal_delivered == ""
+
+
+@pytest.mark.asyncio
+async def test_exhausted_unknown_reprobes_still_deliver_the_kernel_backstop(tmp_path, monkeypatch):
+    """The kept marker does not hide the blind backstop: its wake fires a turn."""
+    on_fire = AsyncMock(return_value=True)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = _delivered_terminal_loop("monitor-terminal-unknown-backstop")
+    service._loops[loop.id] = loop
+    service._terminal_reprobe_unknowns[loop.id] = 3
+    reprobe = AsyncMock(return_value="unknown")
+    monkeypatch.setattr(service, "_terminal_still_holds", reprobe)
+    monkeypatch.setattr(
+        _an.irq, "poll", _poll_sequence(("MERGED", "unavailable", _an.irq.Outcome.WAKE))
+    )
+
+    try:
+        await _tick(service, loop)
+    finally:
+        service.stop()
+
+    on_fire.assert_awaited_once_with(loop)
+    assert loop.active is True
+    assert loop.monitor is not None
+    assert loop.monitor.terminal_delivered == "success"
+
+
+@pytest.mark.asyncio
+async def test_exhausted_unknown_reprobes_then_a_reopen_clears_and_the_next_close_fires(
+    tmp_path, monkeypatch
+):
+    """A reopen reaches the user and drops the kept marker, so its next close does too.
+
+    Keeping the marker across the reopen fails the final assertion: the second close
+    carries the delivered classification and would settle with no turn.
+    """
+    on_fire = AsyncMock(return_value=True)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = _delivered_terminal_loop("monitor-terminal-unknown-reopen", delivered="blocked")
+    monitor = loop.monitor
+    assert monitor is not None
+    service._loops[loop.id] = loop
+    service._terminal_reprobe_unknowns[loop.id] = 3
+    reprobe = AsyncMock(return_value="unknown")
+    monkeypatch.setattr(service, "_terminal_still_holds", reprobe)
+    monkeypatch.setattr(
+        _an.irq,
+        "poll",
+        _poll_sequence(
+            ("OPEN", "ok", _an.irq.Outcome.QUIET),
+            ("CLOSED", "ok", _an.irq.Outcome.QUIET),
+        ),
+    )
+
+    try:
+        await _tick(service, loop)
+        on_fire.assert_awaited_once_with(loop)
+        assert loop.active is True
+        assert monitor.terminal_delivered == ""
+        assert loop.id not in service._terminal_reprobe_unknowns
+        assert _stored_row(tmp_path)["monitor"]["terminal_delivered"] == ""
+
+        await _tick(service, loop)
+        # The new final turn earns its own settlement re-probe and a fresh count.
+        assert service._terminal_reprobe_unknowns[loop.id] == 1
+    finally:
+        service.stop()
+
+    reprobe.assert_awaited_once()
+    assert on_fire.await_count == 2, "the second close is a new final turn"
+    assert monitor.terminal_delivered == "blocked"
+
+
+@pytest.mark.asyncio
+async def test_MUTATION_a_reopen_publishes_the_cleared_marker_only_after_its_write_lands(
+    tmp_path, monkeypatch
+):
+    """The ordinary-path clear is staged like the ``gone`` one, so no other snapshot
+    can store a clear that this write then fails to make durable.
+
+    The first write that stores the cleared marker must run while the live marker is
+    still set; publishing the clear before taking ``_lock`` fails the first
+    assertion. A failed write leaves memory as stored, and the next open reading
+    retries the same way.
+    """
+    on_fire = AsyncMock(return_value=True)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = _delivered_terminal_loop("monitor-terminal-reopen-staged", delivered="blocked")
+    monitor = loop.monitor
+    assert monitor is not None
+    service._loops[loop.id] = loop
+    service._terminal_reprobe_unknowns[loop.id] = 3
+    monkeypatch.setattr(service, "_terminal_still_holds", AsyncMock(return_value="unknown"))
+    monkeypatch.setattr(
+        _an.irq,
+        "poll",
+        _poll_sequence(
+            ("OPEN", "ok", _an.irq.Outcome.QUIET),
+            ("OPEN", "ok", _an.irq.Outcome.QUIET),
+        ),
+    )
+    real_writer = service._write_monitor_snapshot_locked
+    live_at_clearing_writes: list[str] = []
+
+    async def _fail_the_first_clearing_write(payload=None, **kwargs):
+        rows = (payload if payload is not None else service._serialize_state())["loops"]
+        row = next(row for row in rows if row.get("id") == loop.id)
+        if row["monitor"]["terminal_delivered"] == "":
+            live_at_clearing_writes.append(monitor.terminal_delivered)
+            if len(live_at_clearing_writes) == 1:
+                raise OSError("store unavailable")
+        await real_writer(payload, **kwargs)
+
+    monkeypatch.setattr(service, "_write_monitor_snapshot_locked", _fail_the_first_clearing_write)
+    try:
+        await _tick(service, loop)
+        assert live_at_clearing_writes == ["blocked"], "the clear was published before its write"
+        assert monitor.terminal_delivered == "blocked", "a failed clear left memory cleared"
+
+        await _tick(service, loop)
+    finally:
+        service.stop()
+
+    # The retry's staged write is the second clearing write; a later one stores the
+    # clear only after it was published.
+    assert live_at_clearing_writes[:2] == ["blocked", "blocked"]
+    assert monitor.terminal_delivered == ""
+    assert loop.id not in service._terminal_reprobe_unknowns
+    assert _stored_row(tmp_path)["monitor"]["terminal_delivered"] == ""
+
+
+@pytest.mark.asyncio
+async def test_MUTATION_an_outage_past_one_reprobe_costs_no_extra_turn(tmp_path, monkeypatch):
+    """What a bound of three buys over one: an outage that outlasts the first
+    re-probe costs no turn on the finished subject.
+
+    The second tick re-probes again and settles. At a bound of one it observes
+    normally instead, the kernel cannot conclude on the unreadable subject
+    (FALLBACK), and the gate spends a model turn on a watch whose final turn has
+    already landed, so this test fails.
+    """
+    on_fire = AsyncMock(return_value=True)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = _delivered_terminal_loop("monitor-terminal-outage-past-one-reprobe")
+    monitor = loop.monitor
+    assert monitor is not None
+    service._loops[loop.id] = loop
+    reprobe = AsyncMock(side_effect=["unknown", "holds"])
+    monkeypatch.setattr(service, "_terminal_still_holds", reprobe)
+    monkeypatch.setattr(
+        _an.irq, "poll", _poll_sequence(("MERGED", "unavailable", _an.irq.Outcome.FALLBACK))
+    )
+
+    try:
+        await _tick(service, loop)
+        await _tick(service, loop)
+    finally:
+        service.stop()
+
+    on_fire.assert_not_awaited()
+    assert reprobe.await_count == 2
+    assert loop.active is False
+    assert monitor.outcome is MonitorOutcome.SUCCESS
+
+
+@pytest.mark.asyncio
+async def test_a_definite_reprobe_resets_the_unknown_count_and_settles_once(tmp_path, monkeypatch):
+    """A definite answer breaks the unknown streak and settles without delivery."""
+    on_fire = AsyncMock(return_value=True)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = _delivered_terminal_loop("monitor-terminal-unknown-reset")
+    monitor = loop.monitor
+    assert monitor is not None
+    service._loops[loop.id] = loop
+    reprobe = AsyncMock(side_effect=["unknown", "holds"])
+    monkeypatch.setattr(service, "_terminal_still_holds", reprobe)
+
+    try:
+        await _tick(service, loop)
+        assert service._terminal_reprobe_unknowns[loop.id] == 1
+        await asyncio.wait_for(service._timer(loop, delay=0.0), timeout=_LOST_RUN_SECS)
+        assert loop.id not in service._terminal_reprobe_unknowns
+    finally:
+        service.stop()
+
+    assert reprobe.await_count == 2
+    on_fire.assert_not_awaited()
+    assert monitor.terminal_delivered == ""
+    assert monitor.outcome is MonitorOutcome.SUCCESS
+    assert loop.active is False
+    assert _stored_row(tmp_path)["monitor"]["terminal_delivered"] == ""

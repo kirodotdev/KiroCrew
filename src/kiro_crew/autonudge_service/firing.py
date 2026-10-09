@@ -668,6 +668,8 @@ async def _settle_fire_cycle(
         monitor = loop.monitor
         monitor.terminal_delivered = monitor.terminal_pending
         monitor.terminal_pending = ""
+        # A fresh delivery earns its own settlement-only re-probes.
+        self._terminal_reprobe_unknowns.pop(loop.id, None)
         try:
             await self._persist_locked()
         except Exception:

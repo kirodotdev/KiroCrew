@@ -1364,6 +1364,7 @@ def remove_sync(
         self._monitor_mutation_locks.pop(loop_id, None)
     self._cancel_timer(loop_id)
     self._rearm_fail_count.pop(loop_id, None)
+    self._terminal_reprobe_unknowns.pop(loop_id, None)
     self._start_failure_deferred.pop(loop_id, None)
     self._rearm_pending.discard(loop_id)
     # Beside the line above, and for its reason: a claim released in one set and

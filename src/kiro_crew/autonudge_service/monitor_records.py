@@ -932,6 +932,9 @@ async def _update_monitor_admitted(
                 # The delivered marker names the OLD subject's terminal turn; kept,
                 # it would settle the new subject without observing it.
                 staged_state.terminal_delivered = ""
+                # Its re-probe count goes with it, or the new subject's first
+                # delivered terminal would skip the settlement-only re-probes.
+                self._terminal_reprobe_unknowns.pop(loop.id, None)
                 staged_state.completion_evidence_deadline = 0.0
                 staged_state.last_completion_fingerprint = ""
                 staged_state.consecutive_provider_errors = 0

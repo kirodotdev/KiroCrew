@@ -54,9 +54,19 @@ logger = logging.getLogger("kiro_crew.autonudge")
 _WAKE_FOLLOWUP_TICKS = 1
 
 
-#: A delivered terminal's re-probe answer. ``gone`` is every reading that does not
-#: confirm the terminal, whether it proves the subject came back or proves nothing.
-_TerminalReprobeResult = Literal["holds", "gone"]
+#: Indeterminate settlement-only re-probes before a delivered terminal's tick goes
+#: back to ordinary observation. Three permits two later cadence retries (ten
+#: minutes at the default five-minute interval). Ordinary observation keeps the
+#: delivered marker, so a terminal it reads under the same classification settles
+#: without a second turn, while the IRQ kernel's six-failure blind backstop and a
+#: reopened subject reach the user as they would on any watch. A smaller bound is
+#: not cheaper: an ordinary tick that cannot read the subject reaches no verdict and
+#: spends a turn, so at one, an outage that outlasts the first re-probe costs a turn
+#: on a watch whose final turn has already landed.
+_DELIVERED_REPROBE_UNKNOWN_LIMIT = 3
+
+
+_TerminalReprobeResult = Literal["holds", "gone", "unknown"]
 
 
 #: Consecutive quiet observations after which a gated loop is delivered anyway.
@@ -651,12 +661,18 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
     # keep watching a finished subject until its cycle cap ran out. A loop
     # watching sibling sessions carries no monitor at all, so for that one the
     # judge is the only screen there is and it has to run here or nowhere.
-    if monitor is not None and monitor.outcome is None and monitor.terminal_delivered:
+    if (
+        monitor is not None
+        and monitor.outcome is None
+        and monitor.terminal_delivered
+        and self._terminal_reprobe_unknowns.get(loop.id, 0) < _DELIVERED_REPROBE_UNKNOWN_LIMIT
+    ):
         # The terminal turn already landed. Re-firing it would duplicate both the
         # channel notification and its model turn, so this tick performs only the
-        # still-owed settlement -- even if a later edit flipped ``gate`` off. A
-        # re-probe that cannot confirm the terminal clears the marker, so the next
-        # tick observes the subject normally again.
+        # still-owed settlement -- even if a later edit flipped ``gate`` off. Once
+        # the re-probe has stayed indeterminate for the bounded count, the tick
+        # observes the subject normally with the marker kept, and the terminal
+        # branch below settles a matching reading without firing.
         await self._settle_delivered_terminal(loop)
         return True
     probe_will_run = monitor is not None and monitor.outcome is None and loop.gate
@@ -720,7 +736,19 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
     # granted none (the fire cycle skips it), so the allowance a work-ledger loop
     # can hold here is the one a refused fire grants to retry its delivery.
     pushed = loop.id in (getattr(self, "_pushed_running", None) or ())
-    if monitor.followup_ticks > 0 and not monitor.terminal_pending and not pushed:
+    if (
+        monitor.followup_ticks > 0
+        and not monitor.terminal_pending
+        and not monitor.terminal_delivered
+        and not pushed
+    ):
+        # NOT while a delivered terminal is still unsettled. The branch at the top
+        # hands such a tick to observation once its re-probes stay indeterminate
+        # for the bound, so the terminal branch can settle a matching reading
+        # without firing. A credit a refused final fire granted is still standing
+        # then, because the owed turn never spent it, and spending it here would
+        # fire a second final turn for a terminal that already landed.
+        #
         # NOT while a terminal turn is owed. The allowance exists to protect work
         # already in progress, which is why it skips observation -- but a subject
         # with terminal debt is FINISHED, so there is no in-progress work to
@@ -1054,8 +1082,16 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
         # restart in this window finds a plain live loop rather than one tagged
         # as finished and refused revival.
         if is_channel_key(loop.slot_key):
+            classification = "success" if succeeded else "blocked"
+            if monitor.terminal_delivered == classification:
+                # Reached only once the settlement-only re-probes stayed
+                # indeterminate: this reading is the confirmation they could not
+                # get, and the turn it would owe has already landed.
+                return await _settle_observed_delivered_terminal(
+                    self, loop, monitor, binding, classification
+                )
             if not monitor.terminal_pending:
-                monitor.terminal_pending = "success" if succeeded else "blocked"
+                monitor.terminal_pending = classification
                 try:
                     # Same writer as the settlements, for the same reason: a
                     # cancelled ``_persist_locked`` releases ``_lock`` mid-write.
@@ -1134,12 +1170,55 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
         self._emit("expired", loop)
         return True
 
-    if (
-        monitor.terminal_pending
-        and observation is not None
+    still_open = (
+        observation is not None
         and observation.reached
         and verdict.outcome is not irq.Outcome.FALLBACK
+    )
+    if monitor.terminal_delivered and (
+        still_open or (observation is None and verdict.outcome is irq.Outcome.QUIET)
     ):
+        # A kept delivered marker reaches ordinary observation only after its
+        # settlement-only re-probes stayed indeterminate. A definite still-open
+        # reading is that re-probe's ``gone``: the delivered terminal ended, so the
+        # marker must not settle a later terminal without its turn. Cleared the way
+        # the ``gone`` settlement clears it: staged and written under ``_lock``, and
+        # published only once that write landed, so a snapshot another writer takes
+        # meanwhile still stores the marker. A failed write leaves it as stored, and
+        # the next tick that reads the subject open retries.
+        cleared = False
+        try:
+            async with self._lock:
+                if loop.id in self._loops and loop.monitor is monitor:
+                    staged = deepcopy(loop)
+                    staged_monitor = staged.monitor
+                    assert staged_monitor is not None
+                    staged_monitor.terminal_delivered = ""
+                    try:
+                        await self._write_monitor_snapshot_locked(
+                            self._monitor_snapshot_with_replacement(loop, staged)
+                        )
+                    except asyncio.CancelledError:
+                        # The writer re-raises only after the write settled, so
+                        # the store holds the staged state and memory takes it.
+                        monitor.terminal_delivered = ""
+                        raise
+                    monitor.terminal_delivered = ""
+                    cleared = True
+        except Exception:
+            logger.exception(
+                "AutoNudge: could not persist the cleared delivered terminal marker for %s",
+                loop.id,
+            )
+        if cleared:
+            self._terminal_reprobe_unknowns.pop(loop.id, None)
+            logger.info(
+                "AutoNudge: loop %s had its subject come back after the final turn "
+                "was delivered -- observing it normally again",
+                loop.id,
+            )
+
+    if monitor.terminal_pending and still_open:
         # The subject came BACK. A channel loop defers its settlement as a durable
         # debt because only a delivered turn can carry the news, and that debt
         # outlives the observation that created it -- so a closed PR that is
@@ -1438,6 +1517,114 @@ def _publish_holds_settlement(loop: NudgeLoop, staged: NudgeLoop) -> None:
     loop.active = staged.active
 
 
+async def _commit_delivered_settlement(
+    svc: AutoNudgeService, loop: NudgeLoop, pending: str
+) -> None:
+    """Durably settle a confirmed delivered terminal, then announce it once.
+
+    Called under the loop's mutation lock and inside a drained section. The
+    settlement is staged on a copy, so a writer queued on ``_lock`` cannot serialize
+    an unconfirmed settlement and a failed write leaves the live loop at the state a
+    restart would load; the next tick then retries.
+    """
+    published = False
+    try:
+        async with svc._lock:
+            staged = deepcopy(loop)
+            staged_monitor = staged.monitor
+            assert staged_monitor is not None
+            staged_monitor.terminal_delivered = ""
+            staged_monitor.terminal_pending = ""
+            staged_monitor.outcome = (
+                MonitorOutcome.SUCCESS if pending == "success" else MonitorOutcome.BLOCKED
+            )
+            staged_monitor.stopped_reason = MONITOR_TERMINAL_REASON
+            staged_monitor.stopped_at = time.time()
+            staged.stopped_reason = MONITOR_TERMINAL_REASON
+            staged.active = False
+            svc._terminal_settlement_writes.add(loop.id)
+            try:
+                try:
+                    await svc._write_monitor_snapshot_locked(
+                        svc._monitor_snapshot_with_replacement(loop, staged)
+                    )
+                except asyncio.CancelledError:
+                    # The writer re-raises only after the write settled, so
+                    # the store holds the settlement and memory takes it.
+                    _publish_holds_settlement(loop, staged)
+                    svc._cancel_timer(loop.id)
+                    published = True
+                    raise
+                _publish_holds_settlement(loop, staged)
+                svc._cancel_timer(loop.id)
+                published = True
+            finally:
+                svc._terminal_settlement_writes.discard(loop.id)
+                if published:
+                    svc._terminal_reprobe_unknowns.pop(loop.id, None)
+    except asyncio.CancelledError:
+        if published:
+            # The durable settlement landed before cancellation propagated,
+            # so the terminal notice is owed in this process and never by a
+            # re-fire.
+            svc._emit("expired", loop)
+        raise
+    except Exception:
+        logger.exception(
+            "AutoNudge: could not persist the delivered terminal settlement "
+            "for %s -- leaving the watch live so it retries",
+            loop.id,
+        )
+        return
+    svc._emit("expired", loop)
+
+
+async def _settle_observed_delivered_terminal(
+    svc: AutoNudgeService,
+    loop: NudgeLoop,
+    monitor: MonitorState,
+    binding: tuple,
+    classification: str,
+) -> bool:
+    """Settle a delivered terminal that an ordinary tick read again; never fire.
+
+    Returns the tick's quiet answer. Only a loop that changed under the reading --
+    retargeted, removed, or its marker cleared -- answers ``False`` and fires as
+    usual; every other path, a refused lock or a failed write included, stays quiet
+    because the terminal turn has already landed, and the next tick reads again.
+    """
+    if not svc._accepting_mutations:
+        return True
+    settle_lock = await svc._acquire_mutation_lock(loop.id)
+    if settle_lock is None:
+        return True
+    try:
+        fresh = loop_subject(loop)
+        if (
+            loop.monitor is not monitor
+            or loop.id not in svc._loops
+            or monitor.terminal_delivered != classification
+            or ((monitor.kind, monitor.target, fresh.message) if fresh is not None else None)
+            != binding
+        ):
+            logger.info(
+                "AutoNudge: loop %s changed before its delivered terminal settled -- firing",
+                loop.id,
+            )
+            return False
+        logger.info(
+            "AutoNudge: loop %s read its delivered terminal (%s) again -- settling "
+            "without a second turn",
+            loop.id,
+            classification,
+        )
+        with _drain_registered_section(svc):
+            await _commit_delivered_settlement(svc, loop, classification)
+        return True
+    finally:
+        _release_mutation_lock(settle_lock)
+
+
 async def _settle_delivered_terminal(self: AutoNudgeService, loop: NudgeLoop) -> None:
     """Settle a terminal turn already recorded as delivered, without firing again.
 
@@ -1445,9 +1632,11 @@ async def _settle_delivered_terminal(self: AutoNudgeService, loop: NudgeLoop) ->
     cancels it like any running callback, and the delivered marker stays owed for the
     next start. Only the writes that act on a re-probe that returned are drained.
 
-    A re-probe that confirms the terminal settles it. Any other answer -- the subject
-    came back, or the re-probe could not read it -- clears the delivered marker as the
-    base behavior did, so the next tick observes the subject normally again.
+    A definite ``holds`` settles the terminal and a definite ``gone`` clears it. An
+    ``unknown`` keeps the marker and adds one to the loop's in-memory count, which
+    writes nothing. At :data:`_DELIVERED_REPROBE_UNKNOWN_LIMIT` the gate stops routing
+    quiet ticks here and observes the subject normally with the marker still set, so
+    an unreadable re-probe neither silences the watch nor buys a second terminal turn.
     """
     if not self._accepting_mutations:
         # Checked before the first await: a callback shutdown drained up to here
@@ -1467,6 +1656,27 @@ async def _settle_delivered_terminal(self: AutoNudgeService, loop: NudgeLoop) ->
         # Entered with no await after the re-probe returns: the drain covers the
         # writes that act on its answer, never the re-probe itself.
         with _drain_registered_section(self):
+
+            if reprobe not in ("holds", "gone"):
+                unknowns = self._terminal_reprobe_unknowns.get(loop.id, 0) + 1
+                self._terminal_reprobe_unknowns[loop.id] = unknowns
+                if unknowns >= _DELIVERED_REPROBE_UNKNOWN_LIMIT:
+                    logger.warning(
+                        "AutoNudge: loop %s terminal settlement stayed indeterminate "
+                        "for %d re-probes -- observing the subject normally again, "
+                        "keeping the delivered marker",
+                        loop.id,
+                        unknowns,
+                    )
+                else:
+                    logger.info(
+                        "AutoNudge: loop %s terminal settlement re-probe was "
+                        "indeterminate (%d/%d) -- retaining the delivered marker",
+                        loop.id,
+                        unknowns,
+                        _DELIVERED_REPROBE_UNKNOWN_LIMIT,
+                    )
+                return
 
             if reprobe == "gone":
                 # Stage the cleared marker. A failed write leaves the live monitor at
@@ -1495,65 +1705,16 @@ async def _settle_delivered_terminal(self: AutoNudgeService, loop: NudgeLoop) ->
                         loop.id,
                     )
                     return
+                self._terminal_reprobe_unknowns.pop(loop.id, None)
                 logger.info(
-                    "AutoNudge: loop %s could not confirm its delivered terminal -- "
-                    "dropping the owed settlement and keeping the watch alive",
+                    "AutoNudge: loop %s had its subject come back after the final "
+                    "turn was delivered -- dropping the owed settlement and keeping "
+                    "the watch alive",
                     loop.id,
                 )
                 return
 
-            # Stage the settlement together, so a writer queued on ``_lock`` cannot
-            # serialize an unconfirmed settlement and a failed write leaves the live
-            # loop at the state a restart would load. The next settlement-only tick
-            # re-probes and retries.
-            published = False
-            try:
-                async with self._lock:
-                    staged = deepcopy(loop)
-                    staged_monitor = staged.monitor
-                    assert staged_monitor is not None
-                    staged_monitor.terminal_delivered = ""
-                    staged_monitor.terminal_pending = ""
-                    staged_monitor.outcome = (
-                        MonitorOutcome.SUCCESS if pending == "success" else MonitorOutcome.BLOCKED
-                    )
-                    staged_monitor.stopped_reason = MONITOR_TERMINAL_REASON
-                    staged_monitor.stopped_at = time.time()
-                    staged.stopped_reason = MONITOR_TERMINAL_REASON
-                    staged.active = False
-                    self._terminal_settlement_writes.add(loop.id)
-                    try:
-                        try:
-                            await self._write_monitor_snapshot_locked(
-                                self._monitor_snapshot_with_replacement(loop, staged)
-                            )
-                        except asyncio.CancelledError:
-                            # The writer re-raises only after the write settled, so
-                            # the store holds the settlement and memory takes it.
-                            _publish_holds_settlement(loop, staged)
-                            self._cancel_timer(loop.id)
-                            published = True
-                            raise
-                        _publish_holds_settlement(loop, staged)
-                        self._cancel_timer(loop.id)
-                        published = True
-                    finally:
-                        self._terminal_settlement_writes.discard(loop.id)
-            except asyncio.CancelledError:
-                if published:
-                    # The durable settlement landed before cancellation propagated,
-                    # so the terminal notice is owed in this process and never by a
-                    # re-fire.
-                    self._emit("expired", loop)
-                raise
-            except Exception:
-                logger.exception(
-                    "AutoNudge: could not persist the delivered terminal settlement "
-                    "for %s -- leaving the watch live so it retries",
-                    loop.id,
-                )
-                return
-            self._emit("expired", loop)
+            await _commit_delivered_settlement(self, loop, pending)
     finally:
         _release_mutation_lock(settle_lock)
 
@@ -1561,18 +1722,21 @@ async def _settle_delivered_terminal(self: AutoNudgeService, loop: NudgeLoop) ->
 async def _terminal_still_holds(
     self: AutoNudgeService, loop: NudgeLoop, monitor: MonitorState
 ) -> _TerminalReprobeResult:
-    """Re-observe a delivered terminal as ``holds`` or ``gone``.
+    """Re-observe a delivered terminal as ``holds``, ``gone``, or ``unknown``.
 
     Used only where settlement is about to deactivate a loop, because that is the
-    one action here that stops work silently. The answer is deliberately asymmetric:
-    ``holds`` requires a fresh terminal carrying the SAME classification. Every other
-    reading is ``gone`` -- a definite one that the subject reopened or ended under
-    another classification, and every one that cannot answer: no target or probe, a
-    failed or unreachable fetch, a raised probe, its consecutive-failure backstop, or
-    an observation-less wake whose source the kernel cannot distinguish from that
-    backstop. The caller then clears the delivered marker as the base behavior did,
-    so an absence of evidence never retires the watch. The helper never reads an
-    owed-turn ``terminal_pending`` marker, so that path keeps its pre-change
+    one action here that stops work silently. ``holds`` requires a fresh terminal
+    carrying the SAME classification. ``gone`` requires a definite reading that the
+    subject reopened or ended under another classification. ``unknown`` means no
+    trustworthy answer exists: no target or probe, a failed or unreachable fetch, a
+    raised probe, its consecutive-failure backstop, or an observation-less wake whose
+    source the kernel cannot distinguish from that backstop.
+
+    The caller retries ``unknown`` settlement without delivery on each quiet tick, up
+    to :data:`_DELIVERED_REPROBE_UNKNOWN_LIMIT`; then ordinary observation takes the
+    tick with the marker kept, so the watch cannot remain silent forever and a
+    matching terminal it reads settles without a second turn. The helper never reads
+    an owed-turn ``terminal_pending`` marker, so that path keeps its pre-change
     fire-on-uncertainty behavior.
 
     Matching the classification matters as much as matching terminality. A pull
@@ -1596,8 +1760,7 @@ async def _terminal_still_holds(
         or probe is None
         or (target.kind, target.subject) != (monitor.kind, monitor.target)
     ):
-        # Cannot re-check, so cannot confirm. Keep the loop alive.
-        return "gone"
+        return "unknown"
     # A DISTINCT identity, because this call throws its verdict away. ``identity``
     # is the kernel's dedupe key -- ``poll``'s own contract says it "replaces the
     # cron job id in the state digest, so two drivers watching one subject keep
@@ -1610,21 +1773,24 @@ async def _terminal_still_holds(
         )
     except Exception:
         logger.warning(
-            "AutoNudge: could not revalidate the terminal verdict for %s -- keeping "
-            "the watch alive rather than settling on a stale observation",
+            "AutoNudge: could not revalidate the terminal verdict for %s -- "
+            "retaining the delivered marker for a bounded retry",
             loop.id,
             exc_info=True,
         )
-        return "gone"
+        return "unknown"
     if verdict.outcome is irq.Outcome.FALLBACK:
-        return "gone"
+        return "unknown"
     observation = _pr_observation_of(probe)
     if observation is None:
         # The observation-less work-ledger kind carries a typed terminal in the
-        # kernel verdict. Only a TERMINAL confirms it: QUIET is a still-open reading,
-        # and a WAKE also carries the kernel's blind consecutive-failure report.
-        if verdict.outcome is not irq.Outcome.TERMINAL:
+        # kernel verdict. QUIET is a definite still-open reading. WAKE is
+        # indeterminate here because the same outcome carries the kernel's blind
+        # consecutive-failure report and no typed bit distinguishes the two.
+        if verdict.outcome is irq.Outcome.QUIET:
             return "gone"
+        if verdict.outcome is not irq.Outcome.TERMINAL:
+            return "unknown"
         fresh = "success" if probes.terminal_succeeded(verdict.keys) else "blocked"
         if fresh != expected:
             logger.info(
@@ -1636,7 +1802,9 @@ async def _terminal_still_holds(
             )
             return "gone"
         return "holds"
-    if not (observation.reached and observation.is_terminal):
+    if not observation.reached:
+        return "unknown"
+    if not observation.is_terminal:
         return "gone"
     fresh = "success" if observation.merged else "blocked"
     if fresh != expected:

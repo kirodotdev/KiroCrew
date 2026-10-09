@@ -552,6 +552,12 @@ class AutoNudgeService:
         #: delivered. Same shape and same reason as the wake claim above: the charge
         #: belongs at the single point delivery is confirmed, never at the decision.
         self._pending_floor_tick: set[str] = set()
+        #: Consecutive indeterminate re-probes of a delivered terminal, per loop.
+        #: In memory on purpose: it only decides when the settlement-only branch
+        #: hands the tick back to ordinary observation, and the delivered marker
+        #: survives that hand-off, so a restart resetting it buys a few more quiet
+        #: re-probes and never a second terminal turn.
+        self._terminal_reprobe_unknowns: dict[str, int] = {}
         # Loop ids whose timer task is CURRENTLY inside its ``_on_fire`` await.
         # ``update()`` must not cancel such a timer: for channel-bound loops the
         # fire callback runs the unattended turn INLINE, so cancelling it kills
@@ -981,6 +987,7 @@ class AutoNudgeService:
         if preserve_admitted:
             return
         self._reconcile_candidates.clear()
+        self._terminal_reprobe_unknowns.clear()
         self._accepted_monitor_turns.clear()
         self._accepted_monitor_completion_authorities.clear()
         self._maintenance_quiescing.clear()
