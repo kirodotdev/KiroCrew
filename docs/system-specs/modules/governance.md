@@ -899,7 +899,8 @@ scoped to this directory rather than every entry, because widening the others ha
 blast radius (a write deny on `.aws` would break a legitimate token refresh).
 
 Those dir entries are `$HOME`-relative, so `KIROCREW_HOME` moves the cache out from under
-them — a limitation shared with the vault entries. This one directory does not inherit it:
+them — a limitation the vault avoids through `_RELOCATED_CREW_HIDDEN_LEAVES`. This one
+directory does not inherit it:
 `sandbox._relocated_policy_cache_dirs()` additionally masks the data-home path whenever it
 differs. Compared with **`normpath`, not `realpath`**: this runs inside the launcher and
 seatbelt builders, which run on the event loop for every async spawn, and a link-resolving

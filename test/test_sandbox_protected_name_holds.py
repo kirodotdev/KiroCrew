@@ -328,7 +328,12 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   read-only so an agent cannot choose whether a chaining loop is detected.
     #:   The spawn mints it before sealing and it never changes after that, so no
     #:   later host-side replace lands on the bound name.
-    EXPECTED: dict[str, int] = {"standard": 268, "cc": 275, "strict": 276}
+    #:
+    #: One entry per tier for the secret vault at a relocated data home. The
+    #: tier lists hold ``.vault`` only at the two ``$HOME``-joined spellings,
+    #: so the resolved ``config_dir()`` spelling is a third, leaf-only name,
+    #: the same hold ``kas`` gets there.
+    EXPECTED: dict[str, int] = {"standard": 269, "cc": 276, "strict": 277}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:
