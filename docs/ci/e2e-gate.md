@@ -181,6 +181,12 @@ darkening rather than at the reported failure):
   flake: record it in the flake ledger (the open `Flaky: <test name>` issue, labelled
   `area: tests`, as the `kirocrew-prepare-pr` skill describes) and rerun the job once.
   Never raise the ceiling or `retries` for it.
+- A spec may tag a failing attempt with a `flaky-gesture` annotation
+  (`GESTURE_MISS_ANNOTATION`) holding the page state at the failure. The harness
+  prints every one, with its description, to the log and to `$GITHUB_STEP_SUMMARY`,
+  so a flake's state is readable without downloading the report. The tag is only
+  evidence: the attempt still fails, and a later retry that passes still counts
+  against `MAX_FLAKY_SPECS`.
 
 The run itself is bounded by `PLAYWRIGHT_RUN_CEILING_SECS` (18 min, so the stop, the
 report and the summary fit inside the job's 25), and the harness stops Playwright as

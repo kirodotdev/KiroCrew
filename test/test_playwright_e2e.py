@@ -70,6 +70,12 @@ MAX_SKIPPED_SPECS = 0
 # SHRINK-ONLY: it cannot go lower, and raising it hides a flake.
 MAX_FLAKY_SPECS = 0
 
+# A spec may tag a failing attempt with this annotation type, its description
+# holding the page state at the failure. The reporters keep test stdout and the
+# report is uploaded only from a red job, so the run prints every one to the job
+# log and the step summary itself, from green and red runs alike.
+GESTURE_MISS_ANNOTATION = "flaky-gesture"
+
 # A bound on the WHOLE Playwright run, taken from the CI job's budget so the run's
 # report survives. It is not a lost-run ceiling (that bounds one wait inside a test
 # at 10x its measured worst case), and it can stop a slow run that would have
@@ -164,6 +170,49 @@ def _flaky_titles(report: Path) -> list[str]:
     return sorted(found)
 
 
+def _gesture_misses(report: Path) -> list[str]:
+    """``file > describe > title: description`` for each gesture-miss annotation.
+
+    Reads both the test-level and the per-result annotation lists, since reporter
+    versions differ in which one a runtime ``test.info().annotations`` push lands
+    in, and keeps each description once per test. Never fails: an unreadable
+    report has no misses to show.
+    """
+    try:
+        data = json.loads(report.read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+    found: list[str] = []
+
+    def walk(suite: dict, path: list[str]) -> None:
+        for spec in suite.get("specs") or ():
+            title = " > ".join([spec.get("file", "?"), *path, spec.get("title", "?")])
+            for test in spec.get("tests") or ():
+                lists = [test.get("annotations") or ()]
+                lists += [r.get("annotations") or () for r in test.get("results") or ()]
+                seen: list[str] = []
+                for notes in lists:
+                    for note in notes:
+                        if note.get("type") != GESTURE_MISS_ANNOTATION:
+                            continue
+                        text = str(note.get("description", ""))
+                        if text not in seen:
+                            seen.append(text)
+                found.extend(f"{title}: {text}" for text in seen)
+        for child in suite.get("suites") or ():
+            walk(child, path + [child["title"]] if child.get("title") else path)
+
+    for suite in data.get("suites") or ():
+        walk(suite, [])
+    return found
+
+
+def _print_gesture_misses(misses: list[str]) -> None:
+    """Echo each gesture miss to the job log: the reporters keep test stdout."""
+    for miss in misses:
+        print(f"[{GESTURE_MISS_ANNOTATION}] {miss}", flush=True)
+
+
 def _salvaged_counts(report: Path) -> tuple[str, list[str]] | None:
     """``(counts line, flaky titles)`` from whatever report a run left, or ``None``.
 
@@ -177,8 +226,8 @@ def _salvaged_counts(report: Path) -> tuple[str, list[str]] | None:
         return None
 
 
-def _write_step_summary(line: str, flaky: list[str]) -> None:
-    """Append the run's counts, and any flaky spec titles, to the job summary.
+def _write_step_summary(line: str, flaky: list[str], misses: list[str] | None = None) -> None:
+    """Append the run's counts, flaky spec titles and gesture misses to the summary.
 
     Best effort: a runner whose summary file this user cannot write (the CodeBuild
     fleet's) still gets both in the log and in the assertion message.
@@ -190,6 +239,11 @@ def _write_step_summary(line: str, flaky: list[str]) -> None:
     if flaky:
         body.append(f"**{len(flaky)} flaky spec(s)** (passed only on a retry):")
         body.extend(f"- {title}" for title in flaky)
+    if misses:
+        body.append(
+            f"**{len(misses)} gesture miss(es)** (a tagged attempt failed):"
+        )
+        body.extend(f"- {miss}" for miss in misses)
     try:
         with open(path, "a", encoding="utf-8") as handle:
             handle.write("\n".join(body) + "\n")
@@ -438,8 +492,10 @@ def test_dashboard_playwright_suite() -> None:
                     gateway=gw,
                 )
             salvaged = _salvaged_counts(report)
+            misses = _gesture_misses(report)
+            _print_gesture_misses(misses)
             if salvaged is not None:
-                _write_step_summary(*salvaged)
+                _write_step_summary(*salvaged, misses)
             # A stopped run fails with why it stopped, plus whatever counts its
             # report salvaged. Otherwise assert the counts even on failure: a red run
             # plus a collapsed spec count points at darkening, not at the failure.
@@ -549,6 +605,62 @@ def test_the_counts_and_flaky_titles_reach_the_step_summary(
     _write_step_summary("[test:e2e:playwright] executed=3", ["a.spec.ts > opens"])
     text = summary.read_text(encoding="utf-8")
     assert "executed=3" in text and "- a.spec.ts > opens" in text
+
+
+def _report_with_annotations(tmp_path: Path, tests: list[dict]) -> Path:
+    """A JSON report whose one describe block holds the given raw test entries."""
+    specs = [{"title": f"spec {i}", "file": "a.spec.ts", "tests": [t]} for i, t in enumerate(tests)]
+    suites = [{"title": "a.spec.ts", "suites": [{"title": "menu", "specs": specs}]}]
+    report = tmp_path / "results.json"
+    report.write_text(json.dumps({"stats": {}, "suites": suites}))
+    return report
+
+
+def test_a_gesture_miss_is_read_from_the_test(tmp_path: Path) -> None:
+    miss = {"type": GESTURE_MISS_ANNOTATION, "description": "attempt 1 missed"}
+    report = _report_with_annotations(
+        tmp_path,
+        [
+            {"status": "expected", "annotations": [miss]},
+            {"status": "expected", "annotations": [{"type": "issue", "description": "x"}]},
+        ],
+    )
+    assert _gesture_misses(report) == ["a.spec.ts > menu > spec 0: attempt 1 missed"]
+
+
+def test_a_gesture_miss_is_read_from_results_once(tmp_path: Path) -> None:
+    one = {"type": GESTURE_MISS_ANNOTATION, "description": "attempt 1 missed"}
+    two = {"type": GESTURE_MISS_ANNOTATION, "description": "attempt 2 missed"}
+    report = _report_with_annotations(
+        tmp_path,
+        [{"status": "expected", "annotations": [one], "results": [{"annotations": [one, two]}]}],
+    )
+    assert _gesture_misses(report) == [
+        "a.spec.ts > menu > spec 0: attempt 1 missed",
+        "a.spec.ts > menu > spec 0: attempt 2 missed",
+    ]
+
+
+def test_an_unreadable_report_has_no_gesture_misses(tmp_path: Path) -> None:
+    assert _gesture_misses(tmp_path / "absent.json") == []
+
+
+def test_gesture_misses_reach_the_step_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    _write_step_summary(
+        "[test:e2e:playwright] executed=3", [], ["a.spec.ts > opens: attempt 1 missed"]
+    )
+    text = summary.read_text(encoding="utf-8")
+    assert "gesture miss" in text and "- a.spec.ts > opens: attempt 1 missed" in text
+
+
+def test_gesture_misses_are_printed_to_the_log(capsys: pytest.CaptureFixture[str]) -> None:
+    _print_gesture_misses(["a.spec.ts > opens: attempt 1 missed"])
+    out = capsys.readouterr().out
+    assert f"[{GESTURE_MISS_ANNOTATION}] a.spec.ts > opens: attempt 1 missed" in out
 
 
 def test_an_unwritable_step_summary_does_not_fail_the_run(
