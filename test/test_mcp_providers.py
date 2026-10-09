@@ -540,10 +540,41 @@ class TestFetchJsonRead:
             "getproxies",
             lambda: {"https": "http://proxy.example:3128"},
         )
+        # Pinned so a bypass list on the host running the test cannot decide it.
+        monkeypatch.setattr(official_mod.urllib.request, "proxy_bypass", lambda _host: False)
 
         await official_mod._fetch_json("https://registry.example/v0.1/servers")
 
         assert response.sessions[0].get_kwargs["proxy"] == "http://proxy.example:3128"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("no_proxy", "expected"),
+        [
+            ("registry.example", None),
+            (".example", None),
+            ("*", None),
+            ("other.example", "http://proxy.example:3128"),
+        ],
+    )
+    async def test_no_proxy_host_is_fetched_directly(self, monkeypatch, no_proxy, expected):
+        """NO_PROXY keeps its meaning: a listed registry host goes direct.
+
+        Driven through the real environment, so ``getproxies`` and the bypass
+        check read the same variables; a host NO_PROXY does not list still
+        goes through the proxy.
+        """
+        for name in ("http_proxy", "https_proxy", "no_proxy", "all_proxy"):
+            monkeypatch.delenv(name, raising=False)
+            monkeypatch.delenv(name.upper(), raising=False)
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:3128")
+        monkeypatch.setenv("NO_PROXY", no_proxy)
+        raw = json.dumps({"servers": []}).encode("utf-8")
+        response = _serve(monkeypatch, raw)
+
+        await official_mod._fetch_json("https://registry.example/v0.1/servers")
+
+        assert response.sessions[0].get_kwargs["proxy"] == expected
 
     @pytest.mark.asyncio
     async def test_no_env_proxy_passes_none(self, monkeypatch):
