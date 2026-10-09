@@ -329,6 +329,7 @@ async def steer_into_running_turn(
     send_id: str | None = None,
     user_origin: bool = False,
     channel_origin: bool = False,
+    peer_send: bool = False,
     admission: dict | None = None,
     decision_strip: dict | None = None,
     attachments: dict | None = None,
@@ -524,6 +525,13 @@ async def steer_into_running_turn(
         # wrong, and a requeued text runs as its own channel-origin turn anyway;
         # ``chat_runner`` resets it at the turn's end and at the next turn's start.
         slot._turn_channel_narrowed = True
+    if not peer_send:
+        # A peer-send turn admits ``reset_conversation`` because every input it
+        # holds came from a peer's ``session_send``. Any other steer (the
+        # composer, a channel, an app) joins text of another provenance, so the
+        # turn loses that admission for the rest of the turn, at admission and
+        # before the RPC for the same reason as the channel narrowing above.
+        slot._turn_peer_send_voided = True
     if admission is not None:
         slot._steer_admissions[message] = admission
     if attachments or quote:

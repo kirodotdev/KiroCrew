@@ -464,7 +464,7 @@ class TestModes:
         _child(state, "chat-2", caller)
         ran: dict[str, str] = {}
 
-        async def _fake_run_chat(_state, slot, prompt):
+        async def _fake_run_chat(_state, slot, prompt, **_kwargs):
             ran["prompt"] = prompt
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_runner._run_chat", _fake_run_chat)

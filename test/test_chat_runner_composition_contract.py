@@ -801,6 +801,7 @@ def test_run_chat_keeps_its_entry_signature() -> None:
         "_replays_completion",
         "_steer_possibly_delivered",
         "_directive_user_origin",
+        "_directive_peer_origin",
         "_turn_provenance_restored",
         "_directive_self_wake",
         "_directive_loop_id",

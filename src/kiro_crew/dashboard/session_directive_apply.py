@@ -245,6 +245,53 @@ def _has_user_surface(session_key: str) -> bool:
     return has_dashboard_surface(session_key) or is_channel_session_key(session_key)
 
 
+def _reset_admission_refusal(slot: Any, session_key: str, *, producer_is_peer_send: bool) -> str:
+    """Why a NON-human turn may not reset its own conversation, or ``""``.
+
+    One producer is the session's own even though no person typed it: a
+    ``session_send`` from a peer. The sender already passed the session-control
+    authorization that also lets it stop or close this session, both of which
+    discard more than a reset does, and the reset drops only the model's memory
+    while the transcript stays.
+
+    The refusals keep the reasons the human-only gate exists. A cron job's own
+    slot and a key with no user surface (a sub-agent or task runner sharing the
+    slot) are headless whatever started the turn. A pinned session belongs to its
+    person, so a peer may not have it reset, and neither may a crew member's
+    ``member-<slug>`` DM thread, pinned flag or not. A cron delivery admits
+    nothing: the ``cron`` turn actor is a routing label, not an authenticated
+    producer. A self-wake never reaches this check; the conductor round-reset
+    gate, ``_refuse_unvouched_wake_reset``, decides it.
+    """
+    deny = (
+        "Error: reset_conversation only works from a user-facing session, on a "
+        "turn a person started or a session_send from another session; headless "
+        f"callers such as cron jobs and sub-agents are refused (this turn is {session_key!r}). "
+        "Nothing was changed."
+    )
+    if not producer_is_peer_send:
+        return deny
+    from kiro_crew.dashboard.slot_ownership import CRON_SLOT_PREFIX
+
+    if str(getattr(slot, "key", "") or "").startswith(CRON_SLOT_PREFIX):
+        return deny
+    if not _has_user_surface(session_key):
+        return deny
+    from kiro_crew.members import DM_SLOT_KEY_PREFIX
+
+    if getattr(slot, "pinned", False) or str(getattr(slot, "key", "") or "").casefold().startswith(
+        DM_SLOT_KEY_PREFIX
+    ):
+        # A crew member's DM thread is the person's conversation with that
+        # member whether or not its pin flag is set, so it is held like a pin.
+        return (
+            "Error: reset_conversation on a pinned session needs a turn its person "
+            "started; a session_send from another session cannot reset it. "
+            "Nothing was changed."
+        )
+    return ""
+
+
 class _DirectiveDenied(Exception):
     """Raised by an applier when the directive is REFUSED — a permission
     decision (e.g. a sensitive-path block), an unsupported session type, or an
@@ -285,6 +332,7 @@ async def apply_session_directive(
     producer_is_self_wake: bool = False,
     producer_is_channel: bool = False,
     producer_wake_loop_id: str = "",
+    producer_is_peer_send: bool = False,
 ) -> str:
     """Apply directive *kind*; return the confirmation TEXT only.
 
@@ -303,6 +351,7 @@ async def apply_session_directive(
         producer_is_self_wake=producer_is_self_wake,
         producer_is_channel=producer_is_channel,
         producer_wake_loop_id=producer_wake_loop_id,
+        producer_is_peer_send=producer_is_peer_send,
     )
     return outcome.text
 
@@ -329,6 +378,7 @@ async def apply_session_directive_outcome(
     producer_is_self_wake: bool = False,
     producer_is_channel: bool = False,
     producer_wake_loop_id: str = "",
+    producer_is_peer_send: bool = False,
 ) -> DirectiveOutcome:
     """Apply directive *kind* with *args* to *slot*/*session_key*; return the
     structured :class:`DirectiveOutcome` (confirmation text for the model plus
@@ -337,7 +387,9 @@ async def apply_session_directive_outcome(
     ``slot`` is ``None`` for a channel (TurnDriver) caller — see the module
     docstring. ``producer_wake_loop_id`` names the loop whose delivered wake
     this turn is (set with ``producer_is_self_wake`` by ``_fire_dashboard_nudge``);
-    the arming gate reads that row to tell a live wake from a stale one."""
+    the arming gate reads that row to tell a live wake from a stale one.
+    ``producer_is_peer_send`` admits ``reset_conversation`` alone; see :func:`_reset_admission_refusal`.
+    """
     if kind in _DASHBOARD_ONLY_DIRECTIVES and (
         slot is None or not has_dashboard_surface(session_key)
     ):
@@ -379,7 +431,17 @@ async def apply_session_directive_outcome(
         and not producer_is_user_facing
         and _has_user_surface(session_key)
     )
-    if (
+    if kind == "reset_conversation" and not producer_is_user_facing and not wake_reset:
+        if refusal := _reset_admission_refusal(
+            slot,
+            session_key,
+            producer_is_peer_send=producer_is_peer_send,
+        ):
+            _audit(session_key, kind, "denied")
+            return DirectiveOutcome(refusal)
+    # A user-facing ``reset_conversation`` skips the branch above and lands here,
+    # so it still needs ``_has_user_surface`` like ``set_project`` and ``chat_tag``.
+    elif (
         kind in _USER_SURFACE_DIRECTIVES
         and not wake_reset
         and (not producer_is_user_facing or not _has_user_surface(session_key))
@@ -411,7 +473,8 @@ async def apply_session_directive_outcome(
     # NOT the user-surface gate above: ``set_project`` / ``chat_tag`` stay
     # human-only, a wake must never retarget the slot's project, and
     # ``reset_conversation`` admits a wake only through
-    # ``_refuse_unvouched_wake_reset``.
+    # ``_refuse_unvouched_wake_reset`` and a peer send only through
+    # ``_reset_admission_refusal``.
     self_arm_ok = bool(producer_is_user_facing or producer_is_self_wake)
     try:
         if producer_is_self_wake and kind in _ARMING_DIRECTIVES:

@@ -3040,6 +3040,7 @@ class _ChatSlot:
         "_steer_user_origin",
         "_steer_channel_origin",
         "_turn_channel_narrowed",
+        "_turn_peer_send_voided",
         "_steer_admissions",
         "_steer_decision_strips",
         "_steer_possibly_delivered",
@@ -4149,6 +4150,12 @@ class _ChatSlot:
         # the turn, a declined or requeued steer included (narrowing is the direction
         # that cannot be wrong); the turn resets it at its end and at the next start.
         self._turn_channel_narrowed: bool = False
+        # Whether a steer that is NOT a peer's ``session_send`` has been admitted
+        # into the running turn. Set by `steer_into_running_turn(peer_send=False)`
+        # at admission; while True the turn's peer-send admission for
+        # ``reset_conversation`` is withdrawn. Reset by the turn at its end and at
+        # the next turn's start, like `_turn_channel_narrowed`.
+        self._turn_peer_send_voided: bool = False
         # The containment that held when an in-flight steer was AUTHORIZED, keyed by
         # the same message text and kept in the same LOCKSTEP. The requeue stamps it
         # on the queue entry instead of reading the slot again: its own moment is the

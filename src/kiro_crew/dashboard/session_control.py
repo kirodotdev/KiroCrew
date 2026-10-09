@@ -41,6 +41,7 @@ same refusals.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import uuid
@@ -7143,7 +7144,7 @@ async def send_to_target(
         # peer must not inherit the composer's exemption from the LINKED drop.
         async def _steer_delivery() -> str:
             return await steer_into_running_turn(
-                state, slot, prompt, user_origin=False, admission=admission
+                state, slot, prompt, user_origin=False, peer_send=True, admission=admission
             )
 
         delivery_progress.steer_await_entered = True
@@ -7203,7 +7204,7 @@ async def send_to_target(
                 return
             slot.enqueue_or_run_prompt(
                 prompt,
-                _run_chat,
+                functools.partial(_run_chat, _directive_peer_origin=True),
                 state,
                 extra_meta=send_origin_meta(state, caller_key),
             )
@@ -7387,7 +7388,10 @@ async def send_to_target(
         started = bool(
             slot.enqueue_or_run_prompt(
                 prompt,
-                _run_chat,
+                # The run arm's turn is this peer's delivery, which is what lets
+                # the target reset its own conversation from it. The queue arm
+                # carries the same fact in the sender stamp below.
+                functools.partial(_run_chat, _directive_peer_origin=True),
                 state,
                 # Only the QUEUE arm keeps it (the run arm has no entry): a
                 # delivery that waits is the one a later drain can drop, and this

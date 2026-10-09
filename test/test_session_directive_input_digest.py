@@ -134,11 +134,12 @@ def _stub_state(tmp_path):
     return state
 
 
-async def _drive(state, slot, events, monkeypatch, *, park=True, park_input=None):
+async def _drive(state, slot, events, monkeypatch, *, park=True, park_input=None, run_kwargs=None):
     """Stream *events* through ``_run_chat``; return the apply spy.
 
     *park* publishes the record the tool would have parked, under the digest of
     *park_input* (default: the raw call args), for THIS slot's session key.
+    *run_kwargs* replaces the turn's producer keywords (default: a human turn).
     """
     from kiro_crew.dashboard import chat_runner
 
@@ -168,7 +169,8 @@ async def _drive(state, slot, events, monkeypatch, *, park=True, park_input=None
     state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
     spy = AsyncMock(return_value=DirectiveOutcome("[applied]"))
     monkeypatch.setattr(chat_runner, "apply_session_directive_outcome", spy)
-    await chat_runner._run_chat(state, slot, "go", _directive_user_origin=True)
+    kwargs = {"_directive_user_origin": True} if run_kwargs is None else run_kwargs
+    await chat_runner._run_chat(state, slot, "go", **kwargs)
     task = getattr(slot, "task", None)
     if task is not None:
         await task
@@ -272,6 +274,39 @@ class TestEveryKasResultShapeArms:
         spy = await _drive(state, slot, _kas_events(_kas_duplicated(_tool_text())), monkeypatch)
         assert spy.call_args.args[4]["gate"] is True
         assert "gate" not in CALL_ARGS
+
+
+class TestOnlyAPeerSendCarriesTheResetMark:
+    """``_run_chat`` forwards the peer-send mark to the applier, and a cron
+    delivery gets no mark: its ``cron`` actor is set from a body-supplied
+    ``caller_session`` on the send_message origin path, so it proves nothing
+    about who produced the turn."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("run_kwargs", "expected"),
+        [
+            ({"_directive_peer_origin": True}, True),
+            ({"_turn_actor": "cron"}, False),
+            ({"_turn_actor": "subagent"}, False),
+            ({"_directive_user_origin": True}, False),
+        ],
+        ids=["peer-send", "cron", "subagent", "human"],
+    )
+    async def test_the_mark_follows_the_producer(self, tmp_path, monkeypatch, run_kwargs, expected):
+        state = _stub_state(tmp_path)
+        slot = state.get_or_create_slot("kas-reset-mark")
+        slot._titled = True
+        spy = await _drive(
+            state,
+            slot,
+            _kas_events(_kas_duplicated(_tool_text())),
+            monkeypatch,
+            run_kwargs=run_kwargs,
+        )
+        spy.assert_called_once()
+        assert spy.call_args.kwargs["producer_is_peer_send"] is expected
+        assert "producer_is_owner_cron" not in spy.call_args.kwargs
 
 
 class TestRawInputArrivesLate:

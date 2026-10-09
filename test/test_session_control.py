@@ -1003,7 +1003,7 @@ class TestTheRoutesRequireTheInternalSecret:
         # hand-built slot that authorize_target would refuse for unrelated reasons.
         _peer_target(state, "chat-2", caller)
 
-        async def _fake_run_chat(_state, _slot, _prompt):
+        async def _fake_run_chat(_state, _slot, _prompt, **_kwargs):
             return None
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_runner._run_chat", _fake_run_chat)
@@ -2006,7 +2006,7 @@ def test_send_to_an_idle_target_starts_a_turn_with_provenance(tmp_path, monkeypa
 
     ran: dict[str, str] = {}
 
-    async def _fake_run_chat(_state, slot, prompt):
+    async def _fake_run_chat(_state, slot, prompt, **_kwargs):
         ran["slot"] = slot.key
         ran["prompt"] = prompt
 
@@ -2035,6 +2035,32 @@ def test_send_to_an_idle_target_starts_a_turn_with_provenance(tmp_path, monkeypa
     )
 
 
+def test_send_to_an_idle_target_marks_the_turn_as_a_peer_delivery(tmp_path, monkeypatch):
+    """The run arm has no queue entry to carry the sender stamp, so the turn is
+    told directly that a peer delivered it. That mark is what admits the
+    target's own ``reset_conversation``."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    _peer_target(state, "chat-2", caller)
+    seen: dict[str, object] = {}
+
+    async def _fake_run_chat(_state, _slot_obj, _prompt, **kwargs):
+        seen.update(kwargs)
+
+    monkeypatch.setattr("kiro_crew.dashboard.chat_runner._run_chat", _fake_run_chat)
+
+    async def _drive():
+        await sc.send_to_target(
+            state, caller_session_key=_key(caller), target="chat-2", message="x"
+        )
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+    asyncio.run(_drive())
+
+    assert seen.get("_directive_peer_origin") is True
+
+
 def test_the_sent_body_passes_through_the_outbound_guard(tmp_path, monkeypatch):
     """The message goes through `sanitize_outbound` before it is persisted.
 
@@ -2053,7 +2079,7 @@ def test_the_sent_body_passes_through_the_outbound_guard(tmp_path, monkeypatch):
 
     ran: dict[str, str] = {}
 
-    async def _fake_run_chat(_state, slot, prompt):
+    async def _fake_run_chat(_state, slot, prompt, **_kwargs):
         ran["prompt"] = prompt
 
     monkeypatch.setattr("kiro_crew.dashboard.chat_runner._run_chat", _fake_run_chat)
@@ -2749,7 +2775,7 @@ async def test_steer_on_an_idle_target_just_starts_the_turn(tmp_path, monkeypatc
 
     monkeypatch.setattr(cd, "steer_into_running_turn", _never)
 
-    async def _fake_run_chat(_state, _slot, _prompt):
+    async def _fake_run_chat(_state, _slot, _prompt, **_kwargs):
         return None
 
     monkeypatch.setattr("kiro_crew.dashboard.chat_runner._run_chat", _fake_run_chat)
@@ -2807,7 +2833,7 @@ def test_send_to_a_remote_bound_target_is_refused_not_run_locally(tmp_path, monk
 
     ran: dict[str, str] = {}
 
-    async def _fake_run_chat(_state, slot, prompt):
+    async def _fake_run_chat(_state, slot, prompt, **_kwargs):
         ran["slot"] = slot.key
 
     monkeypatch.setattr("kiro_crew.dashboard.chat_runner._run_chat", _fake_run_chat)

@@ -7095,6 +7095,7 @@ async def _start_next_queued_turn(
     from kiro_crew.dashboard.session_control import (
         QUEUED_CONTAINMENT_META_KEY,
         audit_queued_allow,
+        send_origin_slot,
     )
 
     # The ALLOW side of the drain's permission decision: these entries
@@ -7281,6 +7282,10 @@ async def _start_next_queued_turn(
     # whoever could write the session file.
     if any(item.get(RESTORED_QUEUE_KEY) for item in consumed):
         _run_kwargs["_turn_provenance_restored"] = True
+    elif consumed and all(send_origin_slot(item.get("meta")) for item in consumed):
+        # Every entry is a peer's session_send this process admitted. The stamp
+        # is stripped on restore, and a restored entry never reaches this arm.
+        _run_kwargs["_directive_peer_origin"] = True
     if _settleable or _delivery_callbacks:
         _run_kwargs["_on_consumed"] = _note_consumed
     if _irreversible_delivery_callbacks:
@@ -7856,6 +7861,7 @@ async def _end_turn_tail(
         # with the turn; the next turn's provenance is its own opener's.
         # Outermost frame only: the depth-1 re-entry's exit is not the turn's end.
         slot._turn_channel_narrowed = False
+        slot._turn_peer_send_voided = False
     # A healthy `wait` clears its own state with a final keepalive ping, but
     # that ping is best-effort and cannot run at all if the MCP subprocess died
     # mid-sleep (hard stop, crash, gateway abort). Clearing at turn end is the
@@ -8203,6 +8209,12 @@ async def _run_chat(
     # by ``STEER_POSSIBLY_DELIVERED_NOTE``.
     _steer_possibly_delivered: bool = False,
     _directive_user_origin: bool = False,
+    # This turn's message was delivered by ``session_send`` from another session
+    # that passed the session-control authorization in THIS process: set by
+    # ``session_control.send_to_target`` on its run arm, and by the queue drain
+    # for entries carrying the sender stamp that a restore strips. Admits
+    # ``reset_conversation`` and nothing else.
+    _directive_peer_origin: bool = False,
     # This turn was drained from a queue entry a PREVIOUS process accepted
     # (`slot_queue_repository.RESTORED_QUEUE_KEY`). Its provenance therefore
     # rests on an ordinary writable file rather than on anything this process
@@ -8336,6 +8348,7 @@ async def _run_chat(
         # the depth-1 re-entry runs inside the same turn and must keep a narrowing
         # the turn already took.
         slot._turn_channel_narrowed = False
+        slot._turn_peer_send_voided = False
     # Dispatch appends the triggering row before entering this runner. Freeze
     # that row now, before await points, prompt expansion or new deliveries.
     _current_replay_message = _current_message
@@ -8374,6 +8387,17 @@ async def _run_chat(
         for both directive-application sites, so they cannot disagree.
         """
         return _directive_channel_origin or getattr(slot, "_turn_channel_narrowed", False) is True
+
+    def _directive_producer_is_peer_send() -> bool:
+        """The turn's peer-send provenance, WITHDRAWN once a steer of another provenance joins it.
+
+        ``_directive_peer_origin`` is the opener's and is fixed for the turn. A
+        composer, channel or app steer admitted mid-turn sets the slot's
+        ``_turn_peer_send_voided`` at admission, so a ``reset_conversation`` the
+        model emits after that text reached it is not filed as a peer's. The one
+        reader for both directive-application sites.
+        """
+        return _directive_peer_origin and getattr(slot, "_turn_peer_send_voided", False) is not True
 
     _session_stop_gen_at_entry = _session_stop_generation()
 
@@ -9649,6 +9673,7 @@ async def _run_chat(
                     _prompt_depth=1,
                     _directive_user_origin=_directive_user_origin,
                     _directive_self_wake=_directive_self_wake,
+                    _directive_peer_origin=_directive_peer_origin,
                     _directive_channel_origin=_directive_channel_origin,
                     _turn_actor=_turn_actor,
                 )
@@ -12966,6 +12991,7 @@ async def _run_chat(
                             dict(_oob.get("args") or {}),
                             producer_is_user_facing=_directive_user_origin,
                             producer_is_self_wake=_directive_self_wake,
+                            producer_is_peer_send=_directive_producer_is_peer_send(),
                             producer_is_channel=_directive_producer_is_channel(),
                             producer_wake_loop_id=_directive_loop_id,
                         )
@@ -13182,6 +13208,7 @@ async def _run_chat(
                                 _dir_args,
                                 producer_is_user_facing=_directive_user_origin,
                                 producer_is_self_wake=_directive_self_wake,
+                                producer_is_peer_send=_directive_producer_is_peer_send(),
                                 producer_is_channel=_directive_producer_is_channel(),
                                 producer_wake_loop_id=_directive_loop_id,
                             )
