@@ -36,7 +36,7 @@ import { useKiroUsageReadout, kiroUsageSegment } from './shell/topbar/kiroUsageR
 import { safeSetItem } from './utils/safeStorage'
 import { gcOrphanedStorage } from './utils/storageGc'
 import { useMetricsReadout, metricsSegment, MetricsCard, MetricsErrorNotice } from './shell/topbar/metricsReadout'
-import { Rocket, Bell, Code, RefreshCw, Package, Download, Hammer, XCircle, Check, AlertTriangle, X, Coins, Compass, LayoutGrid, Fullscreen, Menu, SquareTerminal, Bot, Smartphone, Search as SearchIcon } from 'lucide-react'
+import { Rocket, Bell, Code, RefreshCw, Package, Download, Hammer, XCircle, Check, AlertTriangle, X, Coins, Compass, LayoutGrid, Fullscreen, Menu, SquareTerminal, Bot, Smartphone, Search as SearchIcon, Plug, Unplug } from 'lucide-react'
 import { useFirstRunChapters, FirstRunChapters } from './shell/boot/firstRun'
 import ErrorNotice from './components/ErrorNotice'
 import { PREVIEW_EXPAND_EVENT } from './components/WebPreviewPanel'
@@ -2035,10 +2035,11 @@ export default function App() {
               <branding.topBarAside />
             </ErrorBoundary>
           )}
-          {/* Unified readout capsule — connection dot . system metrics .
+          {/* Unified readout capsule — connection glyph . system metrics .
               kiro-credits usage pooled into one bordered pill. Offline: the
-              whole capsule tints danger (red border + subtle red bg + red
-              dot), no "Offline" text — the color shift is the signal. When
+              glyph turns from a plug into an unplugged plug and the whole
+              capsule tints danger (red border + subtle red bg), no "Offline"
+              text — the shape change is the signal, the colour backs it. When
               auth expired the session-expired banner stays the primary signal;
               the capsule reddens quietly underneath it. (The upstream
               enterprise-SSO segment is dropped here: that SSO flow is stubbed
@@ -2104,7 +2105,13 @@ export default function App() {
                 aria-label={capsuleActionMsg}
                 aria-expanded={!capsuleCollapsed}
               >
-                <span aria-hidden="true" className={`w-1.5 h-1.5 rounded-full transition-colors duration-300 ${offline ? 'bg-danger animate-pulse [animation-iteration-count:3]! motion-reduce:animate-none' : 'bg-ok shadow-[0_0_8px_rgba(34,197,94,.4)]'}`} />
+                {/* The glyph's SHAPE carries the state (WCAG 1.4.1): a plug when
+                    connected, an unplugged plug when offline. Colour is only
+                    the second cue, so a red/green colour-blind reader still
+                    sees the state without hovering. */}
+                {offline
+                  ? <Unplug aria-hidden="true" data-conn-state="offline" size={12} strokeWidth={2.25} className="text-danger transition-colors duration-300 animate-pulse [animation-iteration-count:3]! motion-reduce:animate-none" />
+                  : <Plug aria-hidden="true" data-conn-state="connected" size={12} strokeWidth={2.25} className="text-ok transition-colors duration-300" />}
                 {/* Live-region announcement lives in its own hidden span:
                     role="status" on the button itself would override its
                     implicit button role for screen readers. */}

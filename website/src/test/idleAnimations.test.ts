@@ -29,10 +29,10 @@ function sliceAfter(marker: string, length: number): string {
   return APP.slice(at, at + length)
 }
 
-/** Every `animate-pulse` in `block` must sit in a class string that also
- *  carries the bounded iteration count. */
+/** Every `animate-pulse` in `block` must sit in a class string (single- or
+ *  double-quoted) that also carries the bounded iteration count. */
 function expectPulsesBounded(block: string) {
-  const classStrings = block.match(/'[^']*\banimate-pulse\b[^']*'/g) ?? []
+  const classStrings = block.match(/(['"])[^'"]*\banimate-pulse\b[^'"]*\1/g) ?? []
   expect(classStrings.length, `no animate-pulse class string found in: ${block.slice(0, 120)}`).toBeGreaterThan(0)
   for (const cls of classStrings) expect(cls, `unbounded pulse: ${cls}`).toContain(BOUNDED)
 }
@@ -44,9 +44,9 @@ describe('always-visible indicators do not animate forever', () => {
     expectPulsesBounded(block)
   })
 
-  it('gateway connection dot pulses a bounded number of times while offline', () => {
-    const block = sliceAfter('key="conn"', 900)
-    expect(block).toContain("offline ? 'bg-danger animate-pulse [animation-iteration-count:3]! motion-reduce:animate-none'")
+  it('gateway connection glyph pulses a bounded number of times while offline', () => {
+    const block = sliceAfter('key="conn"', 1500)
+    expect(block).toContain('<Unplug aria-hidden="true" data-conn-state="offline" size={12} strokeWidth={2.25} className="text-danger transition-colors duration-300 animate-pulse [animation-iteration-count:3]! motion-reduce:animate-none" />')
     expectPulsesBounded(block)
   })
 
