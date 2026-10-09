@@ -634,9 +634,7 @@ class TestFileWrite:
         not silently coerce an int to "42"."""
         before = tmp_file.read_text(encoding="utf-8")
         async with TestClient(TestServer(_make_app())) as client:
-            resp = await client.post(
-                "/api/file-write", json={"path": str(tmp_file), "content": 42}
-            )
+            resp = await client.post("/api/file-write", json={"path": str(tmp_file), "content": 42})
             assert resp.status == 400
             # The file is untouched: nothing was written on the rejected call.
             assert tmp_file.read_text(encoding="utf-8") == before

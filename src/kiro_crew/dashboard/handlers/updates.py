@@ -34,6 +34,7 @@ from kiro_crew.config.loader import (
 )
 from kiro_crew.dashboard.chat_utils import run_config_write
 from kiro_crew.dashboard.handlers._shared import (
+    producer_identity_meta,
     read_capped_response,
     require_owner_dashboard_request,
 )
@@ -2951,12 +2952,41 @@ async def _arm_packaged_app(request: web.Request) -> web.Response:
         # user's bell, so their next visit to the app lands on the request.
         # Once per distinct ask — a looping agent turn re-arming the same
         # request must not ring the bell once per iteration.
+        #
+        # The title/body carry requester-controlled text (the named version and
+        # the asking session). A ``system_origin()`` tag would pass this note on
+        # the HOST profile alone, so a messaging-denied producer that reaches this
+        # arm route would see its text egressed to the owner's routed chat DM.
+        #
+        # ``X-Session-Key`` is unverified and display-only here, so an app token
+        # could name any permitted owner session and have the bridge vet THAT
+        # session's profile rather than the app's own transport denial. The
+        # authority that must always be vetted is the AUTHENTICATED caller: the
+        # token-auth middleware set ``request["app"]`` for an app token, server
+        # side, from the token itself and never from the request body or header.
+        # Carry it as a ``producer_app`` subject unconditionally, merged with (not
+        # replacing) any app the named session resolves to, so BOTH are judged.
+        # The session key is still named so its agent/app are vetted too; a call
+        # that names neither an app nor a session leaves the note unattributed and
+        # the bridge refuses it rather than egressing under the permissive host —
+        # the same fail-closed rule the agent notification push relies on.
+        origin_session = request.headers.get("X-Session-Key", "").strip()
+        meta: dict[str, str] = {}
+        if origin_session:
+            meta["session_key"] = origin_session
+            meta.update(producer_identity_meta(state, origin_session, persisted=False))
+        caller_app = str(request.get("app") or "").strip()
+        if caller_app:
+            apps = [a for a in meta.get("producer_app", "").split("\n") if a]
+            if caller_app not in apps:
+                apps.append(caller_app)
+            meta["producer_app"] = "\n".join(apps)
         state.notify(
             "update",
             "An agent requested an app update",
             f"{requested_by} asked to update Kiro Crew to {label}. Approve it in Settings › About.",
             url="/settings/about",
-            meta=system_origin(),
+            meta=meta,
         )
     await _audit_update_event(
         request,

@@ -600,6 +600,19 @@ class BridgeDispatcher:
                 return
             remaining = deadline - loop.time()
             if remaining <= 0:
+                # Fail-safe: the drain budget is spent and fanout is still in flight.
+                # These notes are already durable on the dashboard (``schedule`` is gated
+                # on the persist future), so they are not lost -- but returning silently
+                # here would leave a terminal report that never reached chat with no
+                # trace at all. Make the
+                # strand VISIBLE instead: one WARNING naming how many legs did not finish,
+                # so an operator can see a shutdown cut delivery short. No re-sequencing.
+                logger.warning(
+                    "Notification bridge drain timed out with %d fanout task(s) still "
+                    "in flight; those chat deliveries did not complete before shutdown "
+                    "(the notes remain on the dashboard).",
+                    len(pending),
+                )
                 return
             await asyncio.wait(pending, timeout=remaining)
 
@@ -827,10 +840,29 @@ class BridgeDispatcher:
             # judged on each of them too.
             return f"note names more than {MAX_PRODUCER_KEYS} producer sessions"
         system = note.get("source") == "system" and note.get(SYSTEM_ORIGIN_KEY) == "1"
-        if system or self._producing_app(note):
-            # A system note, or an app's own push: its producer is named (the app is
-            # judged under its own profile below), and any session it also names
-            # is still asked as an added subject.
+        # The system tag is a pass on the HOST profile alone, but ONLY for a note that
+        # names no producer context at all -- a truly context-free host event (a config
+        # reload, a resource-pressure alert, a restart-crash dump). A producer that ALSO
+        # carries a session, app or agent yet tags itself system -- a route arm, a subagent
+        # completion, a skill-candidate hook, a legacy-orphan digest -- is NOT context-free.
+        # Fail-safe rule: a system-tagged note that names ANY producer context is held to
+        # the SAME attribution bar as an agent-produced note below; the tag does not grant
+        # a producer a host-only pass.
+        has_context = bool(
+            self._claimed_session(note)
+            or self._note_values(note, "producer_session")
+            or self._note_values(note, "producer_app")
+            or self._note_values(note, "producer_agent")
+            or self._note_values(note, "task_id")
+            or self._note_values(note, "job_id")
+            or note.get("producer_agent_required")
+        )
+        if system and not has_context:
+            # Context-free host event: the tag is honest, nothing names a producer.
+            return ""
+        if self._producing_app(note) and not has_context:
+            # An app's own push with no further context: the app is judged under its
+            # own profile below; nothing else to attribute.
             return ""
         agent_claims = bool(
             self._claimed_session(note)
@@ -841,8 +873,39 @@ class BridgeDispatcher:
         )
         if agent_claims:
             if self._note_values(note, "producer_agent"):
+                # Fail-safe: when the note DECLARES its agent attribution is required,
+                # every producer it names must have resolved an agent. A restart whose
+                # parent execution record is unreadable leaves the parent's agent
+                # unresolved while the note still carries a CHILD's ``producer_agent``, so
+                # a non-empty check alone would let the note through on the child's profile
+                # and skip the parent's. Partial attribution therefore DENIES outright.
+                #
+                # The producing SITE knows the per-producer resolution (it looked each
+                # one up), so it reports how many required producers resolved NO agent in
+                # ``producer_agent_unresolved``. The bridge denies when that count is
+                # positive. This is sound where a session count is not: a subagent
+                # completion names two sessions (``subagent:<id>`` and the conversation
+                # key) for ONE child run that resolves one agent -- zero unresolved, so it
+                # passes -- while an orphan digest whose parent record is unreadable
+                # reports a positive count and is refused, even if a sibling orphan
+                # resolved several agent names (a de-duplicated agent count could not tell
+                # those apart).
+                unresolved_raw = note.get("producer_agent_unresolved")
+                if unresolved_raw:
+                    try:
+                        unresolved = int(unresolved_raw)
+                    except (TypeError, ValueError):
+                        # A malformed count cannot establish completeness: refuse.
+                        return "producer agent unresolved for a required producer"
+                    if unresolved > 0:
+                        return "producer agent unresolved for a required producer"
                 return ""
             return "producer agent unresolved for an agent-produced note"
+        if self._producing_app(note) or self._note_values(note, "producer_app"):
+            # No agent-claim, but the note names its producing app (an app's own push,
+            # or a system-tagged producer carrying a server-set ``producer_app``). The
+            # app subject is vetted in ``_vet``, so this is attributed.
+            return ""
         return "note names no producer and is not tagged system-originated"
 
     def _vet(self, transport: str, note: Mapping[str, Any]) -> str:

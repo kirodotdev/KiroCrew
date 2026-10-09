@@ -1826,6 +1826,8 @@ class TestTaskNotify:
             "producer_session": "taskrunner:task-7:runtime",
             # A run always executes as some agent; one arriving without one is refused.
             "producer_agent_required": "1",
+            # No agent named here, so the one producer is unresolved -> the bridge refuses.
+            "producer_agent_unresolved": "1",
         }
         ds.push_refresh.assert_called_once_with("taskrunner")
 
@@ -1861,6 +1863,7 @@ class TestTaskNotify:
             "task_id": "task-7",
             "producer_session": "taskrunner:task-7:runtime",
             "producer_agent_required": "1",
+            "producer_agent_unresolved": "1",
             "session_key": "slack:T1:C1:1712793600",
         }
 

@@ -90,6 +90,18 @@ def default_agent_names() -> list[str]:
     except Exception:  # noqa: BLE001 - an unreadable config attributes nothing
         logger.debug("default agent lookup failed", exc_info=True)
         return []
+    return default_agent_names_from(config)
+
+
+def default_agent_names_from(config: object) -> list[str]:
+    """The default-agent names derived from an ALREADY-LOADED *config*.
+
+    The names-only tail of :func:`default_agent_names`, split out so a caller
+    holding a config in memory (the gateway's ``self._cfg``) resolves the default
+    without a fresh ``KiroCrewConfig.load()``. ``load()`` can read and validate
+    ``config.json`` from disk on a cache miss, so calling it from the event loop
+    blocks delivery; a caller on the loop passes its own config here instead.
+    """
     names: list[str] = []
     default = getattr(config, "default_agent", "")
     entry = getattr(config, "agents", {}).get(default) if isinstance(default, str) else None
@@ -104,6 +116,7 @@ __all__ = [
     "MAX_PRODUCER_KEYS",
     "SYSTEM_ORIGIN_KEY",
     "default_agent_names",
+    "default_agent_names_from",
     "producer_session_keys",
     "system_origin",
 ]

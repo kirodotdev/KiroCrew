@@ -1949,7 +1949,14 @@ async def test_reconcile_digest_names_every_orphans_producer():
     dm = AsyncMock(return_value=True)
     mgr = SubagentManager(sessions=MagicMock(), ctx_builder=None, on_orphan_dm=dm)
     orphans = [
-        {"id": "orph-1", "pid": None, "parent_session": "dashboard:chat-1", "task": "one"},
+        {
+            "id": "orph-1",
+            "pid": None,
+            "parent_session": "dashboard:chat-1",
+            "task": "one",
+            "agent": "writer",
+            "app": "my-app",
+        },
         {
             "id": "orph-2",
             "pid": None,
@@ -1973,8 +1980,76 @@ async def test_reconcile_digest_names_every_orphans_producer():
         "dashboard:chat-1",
         "subagent:orph-2",
     ]
-    assert meta["producer_agent"] == "researcher"
+    assert meta["producer_agent"].split("\n") == ["writer", "researcher"]
     assert meta["producer_app"] == "my-app"
+    # Both orphans resolved an agent, so none is unresolved: the bridge sends it.
+    assert meta["producer_agent_unresolved"] == "0"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_digest_with_an_agent_less_orphan_is_refused_at_the_bridge():
+    """GPT 6.1 (bridge.py): an orphan whose own/parent execution record is unreadable
+    resolves NO agent, yet the digest still carries a sibling orphan's producer_agent. The
+    digest must not egress on the resolved sibling's profile alone -- the unreadable
+    orphan's own agent-bound Slack denial would never be consulted. _merge_producers counts
+    the orphans that resolved no agent in producer_agent_unresolved, and the bridge refuses
+    the whole digest when it is positive."""
+    dm = AsyncMock(return_value=True)
+    mgr = SubagentManager(sessions=MagicMock(), ctx_builder=None, on_orphan_dm=dm)
+    orphans = [
+        # orph-1 resolves an agent; orph-2's record names none (an unreadable restart).
+        {
+            "id": "orph-1",
+            "pid": None,
+            "parent_session": "",
+            "task": "one",
+            "agent": "writer",
+            "app": "my-app",
+        },
+        {"id": "orph-2", "pid": None, "parent_session": "", "task": "two", "app": "my-app"},
+    ]
+    with (
+        patch("kiro_crew.subagent.list_orphans", return_value=orphans),
+        patch("kiro_crew.subagent.write_tombstone"),
+        patch("kiro_crew.subagent.sel"),
+    ):
+        await mgr._reconcile_orphans()
+
+    dm.assert_awaited_once()
+    meta = dm.await_args.kwargs["producer_meta"]
+    # One of the two orphans resolved no agent -> the bridge denies the whole digest.
+    assert meta["producer_agent_unresolved"] == "1"
+    assert meta["producer_agent"] == "writer"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_digest_with_an_app_less_orphan_stays_dashboard_only():
+    """Fail-safe: a legacy orphan's app can live only in member-memory, absent from
+    state.json, so an empty recorded app cannot be told from a genuinely app-less run
+    without an off-loop lookup. When ANY orphan records no app the whole digest carries NO
+    producer meta, so the bridge refuses it as unattributed and it stays dashboard-only --
+    genuine app-less orphans lose external
+    delivery too, the accepted cost of not egressing a note whose owning app's messaging
+    denial we cannot confirm."""
+    dm = AsyncMock(return_value=True)
+    mgr = SubagentManager(sessions=MagicMock(), ctx_builder=None, on_orphan_dm=dm)
+    orphans = [
+        {"id": "orph-1", "pid": None, "parent_session": "", "task": "one", "app": "my-app"},
+        # No app recorded -> cannot confirm ownership -> whole digest is dashboard-only.
+        {"id": "orph-2", "pid": None, "parent_session": "", "task": "two", "agent": "researcher"},
+    ]
+    with (
+        patch("kiro_crew.subagent.list_orphans", return_value=orphans),
+        patch("kiro_crew.subagent.write_tombstone"),
+        patch("kiro_crew.subagent.sel"),
+    ):
+        await mgr._reconcile_orphans()
+
+    dm.assert_awaited_once()
+    # No app resolved -> _merge_producers returns None -> the DM is invoked WITHOUT a
+    # producer_meta, so the note names no producer and the bridge keeps it dashboard-only.
+    assert "producer_meta" not in dm.await_args.kwargs
+    assert dm.await_args.args[1:] == ()
 
 
 @pytest.mark.asyncio
@@ -1991,8 +2066,9 @@ async def test_an_orphan_with_no_named_agent_names_its_execution_template():
             "task": "t",
             "agent": "",
             "execution_context": {"template_id": "inherited-tmpl", "selection_name": ""},
+            "app": "my-app",
         },
-        {"id": "orph-u", "pid": None, "parent_session": "", "task": "u"},
+        {"id": "orph-u", "pid": None, "parent_session": "", "task": "u", "app": "my-app"},
     ]
     with (
         patch("kiro_crew.subagent.list_orphans", return_value=orphans),

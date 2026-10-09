@@ -111,6 +111,10 @@ def test_system_origin_marks_the_note_and_keeps_its_meta() -> None:
 #: the dashboard sink resolves the agent from it. "system": no agent produced it, and
 #: its meta is built with ``system_origin``. "app": an app's own push, attributed by
 #: its server-set ``app:<name>`` source. "adapter": forwards a caller's payload.
+#: "dashboard-only": an agent-produced notice whose generating identity is NOT available
+#: at the publish site, so it is tagged NEITHER system nor with a producer -- the bridge's
+#: deny-unattributed rule then keeps it on the dashboard (never egressed to chat) until it
+#: can carry real attribution. Fail-safe, deliberate.
 _SITES: dict[tuple[str, str], str] = {
     ("apps/builtins/issue_radar/backend/watch.py", "_notify_new_issues"): "system",
     ("apps/builtins/ops_mission_control/backend/notify_out.py", "_push"): "app",
@@ -120,7 +124,7 @@ _SITES: dict[tuple[str, str], str] = {
     ("dashboard/handlers/messaging.py", "api_notification_agent_push"): "identity",
     ("dashboard/handlers/notifications_push.py", "api_push_notification"): "app",
     ("dashboard/handlers/terminal.py", "_notify_shell_failed"): "system",
-    ("dashboard/handlers/updates.py", "_arm_packaged_app"): "system",
+    ("dashboard/handlers/updates.py", "_arm_packaged_app"): "identity",
     ("dashboard/handlers/updates.py", "_apply"): "system",
     ("dashboard/messaging_api/proactive_send.py", "_deliver_send_message_fallback"): "identity",
     ("dashboard/notification_coordinator.py", "notify"): "adapter",
@@ -129,8 +133,10 @@ _SITES: dict[tuple[str, str], str] = {
     ("dashboard/server_runtime/heartbeat.py", "_report_prior_crash_dump"): "system",
     ("dashboard/server_runtime/safety_grants.py", "_notify_unattended_expiry"): "system",
     ("dashboard/server_runtime/safety_grants.py", "_notify_restart_dropped_grant"): "system",
-    ("dashboard/server_runtime/skill_learning.py", "_emit"): "system",
+    ("dashboard/server_runtime/skill_learning.py", "_emit"): "dashboard-only",
+    ("dashboard/slot_retention.py", "notify_left_in_history"): "system",
     ("dashboard/state.py", "__init__"): "identity",
+    ("dashboard/state.py", "knowledge_store"): "system",
     ("notifications/resource_pressure.py", "_push_slice_oom"): "system",
     ("notifications/resource_pressure.py", "_push_critical"): "system",
     ("notifications/resource_pressure.py", "_push_tight"): "system",
@@ -217,6 +223,16 @@ def test_every_publishing_site_is_attributed_or_tagged_system() -> None:
                 continue
             assert meta and meta != "None", f"{where} is listed identity but passes no meta"
             assert "system_origin(" not in meta, f"{where} tags an agent note as system"
+        elif kind == "dashboard-only":
+            # Deliberately unattributed: NOT system-tagged and names no producer, so the
+            # bridge's deny-unattributed rule keeps it on the dashboard. If a producer key
+            # or a system tag ever appears here it would become bridge-eligible, which is
+            # the behaviour this classification exists to prevent -- so assert neither is.
+            assert "system_origin(" not in meta, f"{where} is dashboard-only but tags system"
+            for producer_key in ("session_key", "producer_session", "producer_agent", "task_id"):
+                assert (
+                    producer_key not in meta
+                ), f"{where} is dashboard-only but its meta names {producer_key}: {meta!r}"
 
 
 def test_every_listed_site_still_exists() -> None:
@@ -236,6 +252,20 @@ def test_a_site_that_loses_its_attribution_is_denied_at_the_bridge(site) -> None
     if kind == "adapter":
         pytest.skip("forwards the caller's payload; attribution is the caller's")
     bridge = BridgeDispatcher(sink_resolver=lambda _t: None, settings_reader=lambda _c: {})
+    if kind == "dashboard-only":
+        # This site's note names no producer and is not system-tagged, so the bridge
+        # denies it (dashboard-only). The paired "attributed" form shows the bridge WOULD
+        # forward it once it carried real producer identity.
+        unattributed_note = {"source": "system", "channel": "system.skills"}
+        attributed = {
+            "source": "system",
+            "channel": "system.skills",
+            "session_key": "slack:T1:C1:1.2",
+            "producer_agent": "researcher",
+        }
+        assert bridge._unattributed(unattributed_note) != ""
+        assert bridge._unattributed(attributed) == ""
+        return
     if kind == "app":
         attributed = {"source": "app:some-app", "channel": "some-app.alerts"}
         stripped = {"source": "system", "channel": "some-app.alerts"}
@@ -400,3 +430,111 @@ def test_the_persisted_pass_judges_a_named_parent_even_when_a_child_agent_is_nam
         DashboardState._resolve_persisted_producer_agents(_state(), note)  # type: ignore[arg-type]
     assert looked_up == ["dashboard:closed-parent", "subagent:c1"]
     assert note["producer_agent"].split("\n") == ["child-agent", "parent-agent"]
+
+
+# ── Regression: the packaged-app arm notice vets its requester, never host-only ──
+#
+# The arm route publishes a note whose title/body carry requester-controlled text
+# (the named version and the asking session). Tagging it ``system_origin()`` passed
+# it on the host profile alone, so a messaging-denied producer that reached the arm
+# route saw its text egressed to the owner's routed chat DM. ``X-Session-Key`` is
+# unverified here, so the note must also carry the AUTHENTICATED caller app
+# (``request["app"]``, server-set from the token) as a ``producer_app`` subject,
+# merged with any app the named session resolves to, so the bridge vets the app's
+# own transport denial and not just a session the caller named. A call that names
+# neither leaves the note unattributed and the bridge refuses it.
+
+
+async def _drive_arm(
+    session_key: str | None,
+    *,
+    app: str = "",
+    session_meta: dict[str, str] | None = None,
+) -> dict[str, object]:
+    """Run ``_arm_packaged_app`` and return the meta it published, mocking the disk
+    and request-identity edges only. ``app`` is the authenticated ``request['app']``
+    the token-auth middleware would have set; ``session_meta`` is what the named
+    session resolves to via ``producer_identity_meta``."""
+    from kiro_crew.dashboard.handlers import updates as updates_mod
+
+    captured: dict[str, object] = {}
+    state = _state()
+    state.notify = lambda *a, **k: captured.update(k.get("meta") or {"__none__": True})  # type: ignore[attr-defined]
+
+    headers = {"X-Session-Key": session_key} if session_key is not None else {}
+    request_fields = {"app": app}
+    request = SimpleNamespace(
+        headers=headers,
+        app={"state": state},
+        get=lambda k, default=None: request_fields.get(k, default),
+        json=_async_return({}),
+        remote="unix",
+    )
+
+    with (
+        patch.object(updates_mod, "resolve_provider", lambda: None),
+        patch(
+            "kiro_crew.platform.app_update_request.get_app_update_requests",
+            lambda: SimpleNamespace(
+                arm=lambda target_version, requested_by: (
+                    SimpleNamespace(to_public=lambda _now: {}),
+                    True,  # is_new_ask
+                )
+            ),
+        ),
+        patch.object(updates_mod, "_audit_update_event", _async_noop()),
+        patch.object(
+            updates_mod, "producer_identity_meta", lambda _s, key, **_k: session_meta or {}
+        ),
+    ):
+        await updates_mod._arm_packaged_app(request)  # type: ignore[arg-type]
+    return captured
+
+
+def _async_return(value: object):
+    async def _coro():
+        return value
+
+    return lambda: _coro()
+
+
+def _async_noop():
+    async def _noop(*_a, **_k):
+        return None
+
+    return _noop
+
+
+@pytest.mark.asyncio
+async def test_the_arm_notice_names_its_requesting_session_not_the_host() -> None:
+    meta = await _drive_arm("dashboard:ui-5")
+    assert meta.get("session_key") == "dashboard:ui-5"
+    assert SYSTEM_ORIGIN_KEY not in meta
+
+
+@pytest.mark.asyncio
+async def test_the_arm_notice_with_no_producer_names_nothing() -> None:
+    # No ``X-Session-Key`` and no authenticated app -> empty meta -> the bridge
+    # refuses it as unattributed rather than egressing under the permissive host.
+    meta = await _drive_arm(None)
+    assert "session_key" not in meta
+    assert "producer_app" not in meta
+    assert SYSTEM_ORIGIN_KEY not in meta
+
+
+@pytest.mark.asyncio
+async def test_the_arm_notice_vets_the_authenticated_app_even_with_a_named_session() -> None:
+    # The attack path: an app token denied the transport names a permitted owner
+    # session in the unverified X-Session-Key. The authenticated app must still be
+    # a producer_app subject so the bridge vets ITS denial, not just the session's.
+    meta = await _drive_arm("dashboard:owner-permitted", app="denied-app")
+    assert "denied-app" in str(meta.get("producer_app", "")).split("\n")
+
+
+@pytest.mark.asyncio
+async def test_the_authenticated_app_is_merged_with_the_session_derived_app() -> None:
+    meta = await _drive_arm(
+        "dashboard:owner", app="caller-app", session_meta={"producer_app": "session-app"}
+    )
+    apps = str(meta.get("producer_app", "")).split("\n")
+    assert "caller-app" in apps and "session-app" in apps

@@ -1103,3 +1103,36 @@ class TestOnlyAGatewayWrittenFileArmsARoute:
         assert json.loads((home / name).read_text(encoding="utf-8")) == {
             "channel_settings": {"a": {"muted": True}}
         }
+
+    def test_a_run_of_failed_saves_does_not_evict_the_committed_routing_stamp(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """GPT 6.1 (v80): the pending stamp bounds its digest list, but recency alone let
+        a run of saves that fail to publish (a locked file, bytes unchanged) slide the
+        committed file's own digest out of the kept window -- after which a reload stripped
+        every route and the next successful save persisted that loss. The committed file's
+        digest is now pinned across the bound, so distinct failed saves cannot evict it."""
+        store = self._store(tmp_path, monkeypatch)
+        s = store()
+        s.update("system.approval", deliver_to=["slack"])
+        leaf = tmp_path / notification_settings._SETTINGS_FILENAME
+        committed = leaf.read_bytes()
+
+        class _Locked(BaseException):
+            pass
+
+        def _locked(_target, _data: bytes) -> None:
+            raise _Locked
+
+        # Three DISTINCT saves each fail at the publish, so each records a different
+        # pending digest while the file on disk never changes.
+        with monkeypatch.context() as scoped:
+            scoped.setattr(notification_settings, "_publish_staged", _locked)
+            for channel in ("system.agent", "system.update", "system.monitor"):
+                with pytest.raises(_Locked):
+                    s.update(channel, deliver_to=["slack"])
+
+        # The file is byte-for-byte what it was, and its routes survive a restart.
+        assert leaf.read_bytes() == committed
+        reloaded = store()
+        assert reloaded.get("system.approval").get("deliver_to") == ["slack"]

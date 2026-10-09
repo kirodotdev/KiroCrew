@@ -839,13 +839,37 @@ class OrphanStallMonitor(ManagerComponent):
 
     @staticmethod
     def _merge_producers(producers: list[dict[str, list[str]]]) -> dict[str, str] | None:
-        """Fold per-orphan identities into the bell meta the bridge reads (newline-joined)."""
+        """Fold per-orphan identities into the bell meta the bridge reads (newline-joined).
+
+        Fail-safe: a legacy orphan's app ownership can live only in member-memory, absent
+        from the ``state.json`` this reads, so an empty ``producer_app`` cannot be told
+        apart from a genuinely app-less run WITHOUT an off-loop member-memory lookup. When
+        ANY orphan in the digest records no app, the whole digest therefore carries NO
+        producer meta: the note names no producer, the
+        bridge refuses it as unattributed, and it stays dashboard-only. Genuine app-less
+        orphans lose external delivery too -- the accepted cost of not egressing a note
+        whose owning app's messaging denial we cannot confirm.
+        """
+        if any(not producer.get("producer_app") for producer in producers):
+            return None
         merged: dict[str, list[str]] = {}
         for producer in producers:
             for key, values in producer.items():
                 bucket = merged.setdefault(key, [])
                 bucket.extend(v for v in values if v not in bucket)
         meta = {key: "\n".join(values) for key, values in merged.items() if values}
+        if meta.get("producer_session"):
+            # Agent attribution is REQUIRED per orphan: the digest names each orphan's
+            # parent and child, and the bridge must consult every orphan's own agent
+            # profile. On a restart whose parent (or own) execution record is unreadable
+            # an orphan resolves NO agent name; without this the note would still egress
+            # on the agents that DID resolve, skipping the unreadable one's Slack denial
+            # (the gap GPT 6.1 named). Each orphan looked up its own agent here, so count
+            # the orphans that resolved none and report it: the bridge refuses the whole
+            # digest when any required producer's agent is unresolved. Reported even when
+            # zero so the bridge sees this is a required-attribution note.
+            unresolved = sum(1 for p in producers if not p.get("producer_agent"))
+            meta["producer_agent_unresolved"] = str(unresolved)
         return meta or None
 
     async def _send_orphan_slack_dm_impl(

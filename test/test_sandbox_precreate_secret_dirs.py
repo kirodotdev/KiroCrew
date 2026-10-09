@@ -173,6 +173,7 @@ _FILE_LEAVES: frozenset[str] = frozenset(
         "ops_mission_control_secrets.json",
         "refresh_chains.json",
         "token_signing.key",
+        sandbox._NOTIFICATION_SETTINGS_LEAF,
         sandbox._LIVE_TARGET_LEAF,
         sandbox.AUTH_SQLITE_DB,
         *(f"{sandbox.AUTH_SQLITE_DB}{suffix}" for suffix in sandbox.AUTH_SQLITE_SIDECAR_SUFFIXES),

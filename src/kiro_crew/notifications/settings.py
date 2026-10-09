@@ -255,11 +255,39 @@ def _record_pending_stamp(pending: bytes) -> None:
     ones already recorded, so nothing becomes authorized that was not before except
     the payload held in memory; a file a sandbox planted stays unmatched. Raises
     ``OSError`` before anything is published when it cannot be written.
+
+    Bounding to ``_MAX_STAMP_DIGESTS`` keeps the newest digests, but recency alone is
+    not enough: a save that fails to publish (a locked file) leaves the file unchanged
+    yet still records its candidate digest, so a run of such failures would slide the
+    digest of the file ACTUALLY on disk out of the kept window and the next load would
+    strip every route from a file this gateway did write. So the on-disk file's own
+    digest is pinned when it is already recorded (an unrecorded one is a file this
+    module did not write and must stay unmatched), and the bound then drops the oldest
+    OTHER digests -- never that pin, never the pending payload.
     """
-    # The newest digests are last; keep those, since one of them covers the file now.
-    digests = _recorded_digests()[-(_MAX_STAMP_DIGESTS - 1) :]
+    recorded = _recorded_digests()
     new = hashlib.sha256(pending).hexdigest()
-    _write_stamp_digests([d for d in digests if d != new] + [new])
+    # The digest of the bytes on disk now, kept only when it is already authorized, so
+    # a failed candidate's digest can be evicted but the committed file's never is.
+    current = _current_file_digest()
+    pinned = current if current in recorded else None
+    # Newest-last; keep the pin and the pending payload, fill the remaining slots with
+    # the most recent other digests, oldest dropped first.
+    keep = [d for d in recorded if d not in (new, pinned)][-(_MAX_STAMP_DIGESTS - 2) :]
+    digests = ([pinned] if pinned is not None else []) + keep + [new]
+    _write_stamp_digests(digests[-_MAX_STAMP_DIGESTS:])
+
+
+def _current_file_digest() -> str | None:
+    """sha256 of the settings file on disk now, or ``None`` when it cannot be read.
+
+    Pins the committed file's digest across the pending-stamp bound so a run of
+    failed saves cannot evict it (see :func:`_record_pending_stamp`).
+    """
+    try:
+        return hashlib.sha256(_settings_path().read_bytes()).hexdigest()
+    except OSError:
+        return None
 
 
 def _record_write_stamp(published: bytes) -> None:

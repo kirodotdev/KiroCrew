@@ -102,7 +102,11 @@ from kiro_crew.messaging.link import (
     split_namespaced_channel_id,
 )
 from kiro_crew.messaging.renderer import display_safe
-from kiro_crew.notifications.attribution import MAX_PRODUCER_KEYS, producer_session_keys
+from kiro_crew.notifications.attribution import (
+    MAX_PRODUCER_KEYS,
+    producer_session_keys,
+    system_origin,
+)
 from kiro_crew.notifications.bridge import BridgeDispatcher
 from kiro_crew.notifications.bus import (
     NotificationBus,
@@ -256,6 +260,7 @@ _BRIDGE_AUTH_IDENTITY_KEYS = frozenset(
         "producer_session",
         "producer_agent",
         "producer_agent_required",
+        "producer_agent_unresolved",
         "producer_system",
     }
 )
@@ -7515,7 +7520,13 @@ class DashboardState:
             # The log alone is not enough: an empty library with no word on
             # screen reads as data loss. The bell feed is where the user looks.
             for warning in self._knowledge_store.warnings:
-                self.notify("agent", "Knowledge library was reset", warning, url="/knowledge")
+                self.notify(
+                    "agent",
+                    "Knowledge library was reset",
+                    warning,
+                    meta=system_origin(),
+                    url="/knowledge",
+                )
         return self._knowledge_store
 
     def enable_yolo(self, *, from_config: bool = False) -> None:

@@ -236,7 +236,7 @@ def _url_payload_command(n: int) -> str:
 #: and its ``notification-settings-staging`` directory) with their security rationale.
 #: Feature code and its justification comments, disjoint from main's own growth. Value
 #: set BY MEASUREMENT after the rebase, not arithmetic.
-_PACKAGE_LINE_BUDGET = 28_741
+_PACKAGE_LINE_BUDGET = 28_774
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.state import MAX_LIVE_SLOTS, _normalize_slot_key
+from kiro_crew.notifications.attribution import system_origin
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import DashboardState, _ChatSlot
@@ -334,7 +335,7 @@ def notify_left_in_history(state: "DashboardState", count: int, reason: str) -> 
             "agent",
             "Sessions moved to History",
             f"{reason} Open History to resume one.",
-            meta={"count": count},
+            meta=system_origin(count=count),
             url=HISTORY_URL,
         )
     except Exception:  # noqa: BLE001 - the log line below is the fallback report

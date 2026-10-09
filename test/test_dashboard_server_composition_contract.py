@@ -2015,7 +2015,7 @@ async def test_a_staged_skill_rings_the_bell_on_the_serving_loop(
         "skills",
         title,
         body,
-        meta={"producer_system": "1", **payload},
+        meta=dict(payload),
         url=url,
         actions=actions,
     )

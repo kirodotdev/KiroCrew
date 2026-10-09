@@ -3039,6 +3039,17 @@ class TestInitTaskRunner:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def _cron_meta_stub(cfg: object | None = None) -> SimpleNamespace:
+    """A minimal ``self`` for the now-instance ``_cron_notif_meta``.
+
+    It reads only ``self._cfg`` (the already-loaded config), and only on the
+    no-named-agent fallback path; every other path ignores it.
+    """
+    if cfg is None:
+        cfg = SimpleNamespace(default_agent="", agents={})
+    return SimpleNamespace(_cfg=cfg)
+
+
 class TestNotifMeta:
     """Notification metadata builder."""
 
@@ -3088,6 +3099,8 @@ class TestNotifMeta:
             "slot": "my-slot",
             "producer_app": "my-app",
             "producer_session": "subagent:c1",
+            "producer_agent_required": "1",
+            "producer_agent_unresolved": "1",
         }
 
     def test_subagent_notif_meta_names_the_child_session_and_agent(self):
@@ -3102,6 +3115,8 @@ class TestNotifMeta:
             "slot": "my-slot",
             "producer_session": "subagent:c1\nsubagent:conv-9",
             "producer_agent": "researcher",
+            "producer_agent_required": "1",
+            "producer_agent_unresolved": "0",
         }
 
     def test_a_child_with_no_named_agent_names_its_inherited_template(self):
@@ -3132,6 +3147,8 @@ class TestNotifMeta:
         assert GatewayOrchestrator._subagent_notif_meta("", self._child(app="my-app")) == {
             "producer_app": "my-app",
             "producer_session": "subagent:c1",
+            "producer_agent_required": "1",
+            "producer_agent_unresolved": "1",
         }
 
     def test_every_subagent_completion_site_passes_the_child(self):
@@ -3145,7 +3162,10 @@ class TestNotifMeta:
         from kiro_crew.cron_service.model import CronJob
 
         job = CronJob(id="j1", name="n", message="m", agent_id="digest-agent")
-        assert GatewayOrchestrator._cron_notif_meta(job)["producer_agent"] == "digest-agent"
+        assert (
+            GatewayOrchestrator._cron_notif_meta(_cron_meta_stub(), job)["producer_agent"]
+            == "digest-agent"
+        )
 
     def test_cron_notif_meta_names_every_dispatched_agent_and_the_selection(self):
         from kiro_crew.cron_service.model import CronJob
@@ -3158,7 +3178,9 @@ class TestNotifMeta:
             agent_sequence=["planner", "writer"],
             execution_context={"selection_name": "crew-a", "template_id": "tmpl"},
         )
-        agents = GatewayOrchestrator._cron_notif_meta(job)["producer_agent"].split("\n")
+        agents = GatewayOrchestrator._cron_notif_meta(_cron_meta_stub(), job)[
+            "producer_agent"
+        ].split("\n")
         assert agents == ["planner", "writer", "crew-a", "tmpl"]
 
     def test_heartbeat_notes_name_the_heartbeat_session(self):
@@ -3174,7 +3196,7 @@ class TestNotifMeta:
         # GPT 6.1 (v62): an app-owned job's result must carry its app so the bridge
         # vets that app's profile; source is "system", so producer_app is the carrier.
         job = SimpleNamespace(id="j1", created_by="app:my-app", agent_id="digest")
-        assert GatewayOrchestrator._cron_notif_meta(job, failure_hash="h") == {
+        assert GatewayOrchestrator._cron_notif_meta(_cron_meta_stub(), job, failure_hash="h") == {
             "job_id": "j1",
             "failure_hash": "h",
             "producer_app": "my-app",
@@ -3184,26 +3206,34 @@ class TestNotifMeta:
     @pytest.mark.parametrize("created_by", [None, "", "dashboard", "app:", 42])
     def test_cron_notif_meta_without_an_owning_app_names_no_app(self, created_by):
         job = SimpleNamespace(id="j1", created_by=created_by, agent_id="digest")
-        assert GatewayOrchestrator._cron_notif_meta(job) == {
+        assert GatewayOrchestrator._cron_notif_meta(_cron_meta_stub(), job) == {
             "job_id": "j1",
             "producer_agent": "digest",
         }
 
-    def test_an_agent_job_naming_no_agent_names_the_default_agent(self):
-        # Fail-closed attribution: an agent turn with no named agent runs the
-        # configured default, which is named so the bridge does not refuse it.
+    def test_an_agent_job_naming_no_agent_reuses_the_loaded_config_off_the_loop(self):
+        # Opus 5.5 (bridge/gateway): an agent turn with no named agent runs the
+        # configured default, named so the bridge does not refuse it. The default is
+        # resolved from the gateway's already-loaded ``self._cfg`` -- NOT a fresh
+        # ``KiroCrewConfig.load()`` -- because this meta is built on the event loop and
+        # ``load()`` can read and validate ``config.json`` from disk on a cache miss.
         job = SimpleNamespace(id="j1", created_by="dashboard")
+        cfg = SimpleNamespace(
+            default_agent="default",
+            agents={"default": SimpleNamespace(kiro_agent="kirocrew")},
+        )
+        stub = _cron_meta_stub(cfg=cfg)
         with patch(
-            "kiro_crew.notifications.attribution.default_agent_names",
-            return_value=["default", "kirocrew"],
+            "kiro_crew.config.loader.KiroCrewConfig.load",
+            side_effect=AssertionError("config must not be loaded on the event loop"),
         ):
-            meta = GatewayOrchestrator._cron_notif_meta(job)
+            meta = GatewayOrchestrator._cron_notif_meta(stub, job)
         assert meta["producer_agent"] == "default\nkirocrew"
 
     @pytest.mark.parametrize("kind", ["script", "command"])
     def test_a_script_or_command_job_is_tagged_system_originated(self, kind):
         job = SimpleNamespace(id="j1", created_by="dashboard", **{kind: "x"})
-        assert GatewayOrchestrator._cron_notif_meta(job) == {
+        assert GatewayOrchestrator._cron_notif_meta(_cron_meta_stub(), job) == {
             "job_id": "j1",
             "producer_system": "1",
         }
