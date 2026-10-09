@@ -559,9 +559,14 @@ export function createTranscriptRenderers(
     },
     // Replaces the SDK's `user` entry (same id) ONLY when the host asks for it:
     // identical content path (renderUserContent — paste chips, inline images
-    // and file cards included), one prop different. Absent the flag no entry is emitted, so every other
-    // surface keeps the SDK row byte-for-byte.
-    ...(o.hideSteerBadge
+    // and file cards included), one or two props different. Two hosts ask: a
+    // steer-only surface (no badge) and a crewmate's chat (the accent fill,
+    // #17839). The crewmate case is its own trigger, not a consequence of the
+    // badge flag: the Members page left `steer-only` in #16684, so gating the
+    // accent on `hideSteerBadge` alone left #17918's fill unreachable on the
+    // one surface it was built for (#18361). Absent both no entry is emitted,
+    // so every other surface keeps the SDK row byte-for-byte.
+    ...(o.hideSteerBadge || crewmate
       ? [{
           id: 'user',
           roles: ['user'],
@@ -584,10 +589,12 @@ export function createTranscriptRenderers(
                   activeSession: o.activeSession,
                   messageTs: m.ts,
                 })}
-                hideSteerBadge
+                // Passed through, not forced: a crewmate chat in split busy
+                // mode still steers, and its Steered chip stays.
+                hideSteerBadge={o.hideSteerBadge}
                 // The accent fill pairs with the crewmate's gray bubble above
                 // (#17839); a host that hides the steer badge without a
-                // crewmate (none today) keeps the neutral surface.
+                // crewmate keeps the neutral surface.
                 tone={crewmate ? 'accent' : 'default'}
                 onReplyInThread={replyInThreadFor(m, ctx)}
                 onQuoteMessage={quoteMessageFor(m, ctx, 'user')}

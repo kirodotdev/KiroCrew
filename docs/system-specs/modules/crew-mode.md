@@ -1661,7 +1661,13 @@ own FILLED gray bubble (`.crewmate-bubble`, no border, `max-w-[72ch]`) in the fu
 text column, left-aligned; the user's bubble opposite is filled with the theme
 ACCENT (`bg-accent` / `text-accent-fg`, the `tone="accent"` variant of
 `UserMessage`), the iMessage pairing #17839 chose, so colour tells the two
-speakers apart before alignment does. `--bg-hover` is the gray because
+speakers apart before alignment does. The `user` entry that carries the tone is
+emitted by `createTranscriptRenderers` whenever the host passes `crewmate` (or
+asks to hide the steer badge); the crewmate is its own trigger, because the
+Members page runs the split busy mode (#16684) and a fill gated on the
+steer-only flag alone never reached it (#18361). The Steered chip is the host's
+call (`hideSteerBadge` passed through), so a steer in a crewmate chat still
+wears it. `--bg-hover` is the gray because
 `--bg-elevated` and `--card` equal the page background in kiro-light,
 highcontrast-light and everforest-light (the bubble would vanish), while
 `--bg-hover` sits above the page in every shipped theme; in forced-colors mode
@@ -1726,7 +1732,7 @@ them. `ChatPane` takes the triple as optional props and hands it to
 `createTranscriptRenderers`, which spreads it across every row it draws: the
 crewmate bubble (through `renderAssistantBubble`'s host options, with the row's
 `ts` so the short form can refuse a slot minted after the text naming it), the
-steer-only user row (through `renderUserContent`), and the sub-agent / workflow
+crewmate / steer-only user row (through `renderUserContent`), and the sub-agent / workflow
 completion cards. A pane host that passes none of it — a side chat, an embedded
 chat — renders those links plainly, as before.
 
