@@ -194,7 +194,12 @@ def _url_payload_command(n: int) -> str:
 #: helper strips a local-drive namespace prefix and a default-stream suffix, and
 #: ``_candidate_forms`` resolves the folded spelling while keeping the raw one as a
 #: candidate. No target, no matching rule and no threshold moved.
-_PACKAGE_LINE_BUDGET = 28_572
+#:
+#: Raised again, from 28,572, for naming the layer on a sensitive-path MATCH refusal
+#: in ``paths.py``: three diagnostic ids, one helper that appends the existing
+#: ``Refusal diagnostic:`` line, and the two producers telling their two lists apart
+#: instead of OR-ing them. No target, no matching rule and no decision moved.
+_PACKAGE_LINE_BUDGET = 28_597
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

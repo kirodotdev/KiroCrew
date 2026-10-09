@@ -3466,10 +3466,18 @@ def is_sensitive_resolved_path(resolved: str) -> bool:
     calling thread inside ``realpath``, exactly as that thread's own walk of the
     same mount would. Nothing is admitted while it blocks.
     """
-    return _path_in_home_dirs(resolved, _SENSITIVE_HOME_DIRS, pre_resolved=True) or (
-        _fold_windows_alias(resolved).casefold().endswith(_KEYSTONE_ARTIFACT_SUFFIXES)
-        and _is_keystone_publish_artifact(resolved, pre_resolved=True)
-    )
+    return bool(_resolved_path_rule(resolved))
+
+
+def _resolved_path_rule(resolved: str) -> str:
+    """:func:`is_sensitive_resolved_path`'s decision as the matching rule id, or ``""``."""
+    if _path_in_home_dirs(resolved, _SENSITIVE_HOME_DIRS, pre_resolved=True):
+        return SENSITIVE_PATH_RULE_HOME_DIR
+    if _fold_windows_alias(resolved).casefold().endswith(
+        _KEYSTONE_ARTIFACT_SUFFIXES
+    ) and _is_keystone_publish_artifact(resolved, pre_resolved=True):
+        return SENSITIVE_PATH_RULE_KEYSTONE_ARTIFACT
+    return ""
 
 
 def is_sensitive_canonical_path(resolved: str) -> bool:
@@ -3509,9 +3517,23 @@ def canonical_path_refusal(resolved: str) -> str | None:
         asyncio.get_running_loop()
     except RuntimeError:
         if is_sensitive_canonical_path(resolved):
-            return f"Blocked: access to sensitive path: {resolved}"
+            return _sensitive_match_refusal(resolved, _resolved_path_rule(resolved))
         return None
     return sensitive_path_refusal(resolved)
+
+
+#: Diagnostic ids on a match: the component names this LAYER, the rule which list.
+SENSITIVE_PATH_COMPONENT = "sensitive-path-tier"
+SENSITIVE_PATH_RULE_HOME_DIR = "sensitive-path-home-dir"
+SENSITIVE_PATH_RULE_KEYSTONE_ARTIFACT = "sensitive-path-keystone-artifact"
+
+
+def _sensitive_match_refusal(shown: str, rule: str) -> str:
+    """The unchanged match line, then the diagnostic LAST, below any forged one."""
+    return annotate_refusal(
+        f"Blocked: access to sensitive path: {shown}",
+        refusal_diagnostic(rule or SENSITIVE_PATH_COMPONENT, SENSITIVE_PATH_COMPONENT, shown),
+    )
 
 
 #: The fixed opening of an unverifiable-path refusal. Consumers tell a stall from a
@@ -3555,9 +3577,12 @@ def sensitive_path_refusal(path_str: str, base_dir: str | None = None) -> str | 
     shortly" costs one wait.
     """
     try:
-        matched = _path_in_home_dirs(
-            path_str, _SENSITIVE_HOME_DIRS, base_dir, strict=True
-        ) or _is_keystone_publish_artifact(path_str, base_dir, strict=True)
+        if _path_in_home_dirs(path_str, _SENSITIVE_HOME_DIRS, base_dir, strict=True):
+            rule = SENSITIVE_PATH_RULE_HOME_DIR
+        elif _is_keystone_publish_artifact(path_str, base_dir, strict=True):
+            rule = SENSITIVE_PATH_RULE_KEYSTONE_ARTIFACT
+        else:
+            rule = ""
     except PathResolutionStalled:
         return (
             f"{UNVERIFIABLE_PATH_PREFIX} (symlink resolution did not complete in time), "
@@ -3565,8 +3590,8 @@ def sensitive_path_refusal(path_str: str, base_dir: str | None = None) -> str | 
             "be sensitive. Retry the same call after a short wait; do not re-spell it. "
             f"Path: {path_str!r}"
         )
-    if matched:
-        return f"Blocked: access to sensitive path: {path_str}"
+    if rule:
+        return _sensitive_match_refusal(path_str, rule)
     return None
 
 

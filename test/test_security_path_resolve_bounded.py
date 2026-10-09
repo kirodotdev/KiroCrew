@@ -203,7 +203,7 @@ def test_a_match_and_a_benign_path_keep_their_answers(tmp_path) -> None:
     benign.write_text("x")
     assert security.sensitive_path_refusal(str(benign)) is None
     assert security.is_sensitive_path(str(benign)) is False
-    assert security.sensitive_path_refusal("~/.aws/credentials") == (
+    assert security.sensitive_path_refusal("~/.aws/credentials").split("\n")[0] == (
         "Blocked: access to sensitive path: ~/.aws/credentials"
     )
     assert security.is_sensitive_path("~/.aws/credentials") is True
@@ -229,7 +229,7 @@ def test_a_matched_path_spelled_like_the_stall_wording_is_still_a_match(monkeypa
     forged = f"/home/someone/{security.UNVERIFIABLE_PATH_PREFIX}/x"
     monkeypatch.setattr(security.paths, "_path_in_home_dirs", lambda *a, **k: True)
     reason = security.sensitive_path_refusal(forged)
-    assert reason == f"Blocked: access to sensitive path: {forged}"
+    assert reason.split("\n")[0] == f"Blocked: access to sensitive path: {forged}"
     assert security.is_unverifiable_path_refusal(reason) is False
     # And the genuine stall wording quotes the path LAST, behind the fixed prefix.
     assert security.is_unverifiable_path_refusal(

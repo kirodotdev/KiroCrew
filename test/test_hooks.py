@@ -3133,7 +3133,11 @@ class TestPathTierUnderAResolverStall:
         monkeypatch.setattr(security.paths, "_path_in_home_dirs", lambda *a, **k: True)
         result = HookManager().on_tool_call("~/.aws/credentials", tool_kind="read")
         assert result.action == TOOL_DENY
-        assert result.reason == "Blocked: access to sensitive path: ~/.aws/credentials"
+        head, _, diagnostic = result.reason.partition("\n")
+        assert head == "Blocked: access to sensitive path: ~/.aws/credentials"
+        assert diagnostic.startswith(
+            "Refusal diagnostic: rule=sensitive-path-home-dir component=sensitive-path-tier "
+        )
 
     def test_safe_read_file_keeps_the_repr_quoted_match_wording(self, monkeypatch, tmp_path):
         from kiro_crew import hooks, security
