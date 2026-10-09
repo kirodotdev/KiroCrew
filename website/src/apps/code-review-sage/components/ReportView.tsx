@@ -154,6 +154,22 @@ function DesignChain({ row }: { row: ReportRow }) {
   )
 }
 
+/** A row's blocking / should-fix counts with its dismissed findings taken out.
+ *  A dismissed finding no longer asks for action, so the header chips must not
+ *  count it. Severity is read the way FindingCard reads it: only `red` blocks. */
+export function liveSeverityCounts(
+  row: ReportRow, dismissed?: Record<string, DismissedFinding>,
+): { red: number; yellow: number } {
+  let red = row.red
+  let yellow = row.yellow
+  ;(row.findings ?? []).forEach((f, i) => {
+    if (!dismissed?.[`finding:${i}`]) return
+    if (f.severity === 'red') red -= 1
+    else yellow -= 1
+  })
+  return { red: Math.max(0, red), yellow: Math.max(0, yellow) }
+}
+
 /** One report row: a summary header (expand button + PR link + badges + the
  * band rationale) over a collapsible detail area (design chain + findings). */
 function ReportRowCard({
@@ -175,6 +191,7 @@ function ReportRowCard({
 }) {
   const [open, setOpen] = useState(false)
   const findings = row.findings ?? []
+  const live = liveSeverityCounts(row, dismissed)
   const hasDetail = Boolean(
     row.design_headline || row.problem || row.why_it_matters
     || row.solution_assessment || row.rationale || findings.length,
@@ -222,14 +239,14 @@ function ReportRowCard({
                 { level: row.design_risk })}</Pill>
               <Pill>{i18nT('apps.codeReviewSage.components.reportView.blast_radius',
                 { scope: row.blast })}</Pill>
-              {row.red > 0 && (
+              {live.red > 0 && (
                 <span className="inline-flex items-center rounded-full bg-danger-subtle text-danger px-2 py-0.5 text-[11px] font-medium whitespace-nowrap">
-                  {row.red} {i18nT('apps.codeReviewSage.components.reportView.blocking')}
+                  {live.red} {i18nT('apps.codeReviewSage.components.reportView.blocking')}
                 </span>
               )}
-              {row.yellow > 0 && (
+              {live.yellow > 0 && (
                 <span className="inline-flex items-center rounded-full bg-warn-subtle text-warn px-2 py-0.5 text-[11px] font-medium whitespace-nowrap">
-                  {row.yellow} {i18nT('apps.codeReviewSage.components.reportView.should_fix')}
+                  {live.yellow} {i18nT('apps.codeReviewSage.components.reportView.should_fix')}
                 </span>
               )}
             </span>

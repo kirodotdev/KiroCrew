@@ -630,6 +630,62 @@ class TestDismissFinding(_Base):
         picked = routes._without_dismissed("run-d", run, "CR-1", ["finding:0"])
         self.assertEqual(picked, [])
 
+    async def _post_through_the_real_path(self, body: dict) -> list:
+        """Run `_handle_run_post` and the real `_post_comments_bg` it schedules.
+
+        Only the pool and `post_recorded` are stubbed, so the keys captured here
+        are exactly what the poster would be asked to publish.
+        """
+        dispatched: list = []
+
+        def _record_post(cid, link, *, dispatch, run_id, keys):
+            dispatched.append(keys)
+            return {"post_ok": True, "posted_keys": []}
+
+        class _Pool:
+            async def begin_batch(self):
+                return None
+
+            async def end_batch(self):
+                return None
+
+        with unittest.mock.patch.object(routes.review_pool, "get_pool", lambda: _Pool()), \
+                unittest.mock.patch.object(routes.review_pool, "make_sync_dispatch",
+                                           lambda loop, pool: None), \
+                unittest.mock.patch.object(routes.review_driver, "post_recorded",
+                                           _record_post), \
+                unittest.mock.patch.object(routes, "_record_reviewed", lambda run: None), \
+                unittest.mock.patch.dict(routes._INFLIGHT, clear=True):
+            # Another test in this worker may still hold a claim on CR-1.
+            resp = await routes._handle_run_post(
+                _FakeRequest("run-d", body))  # type: ignore[arg-type]
+            self.assertEqual(resp.status, 200, _body(resp))
+            await asyncio.gather(*list(routes._TASKS))
+        return dispatched
+
+    async def test_the_post_path_never_sends_a_dismissed_finding(self):
+        results.write_result(_record(), None, "run-d")
+        run = self._run()
+        await self._dismiss({"change_id": "CR-1", "key": "finding:0", "reason": "no"})
+
+        # "Post all": the poster gets an explicit list without the dismissed
+        # finding, not None (which would mean "everything recorded").
+        sent = await self._post_through_the_real_path({})
+        self.assertEqual(sent, [["finding:1", "finding:2", "design"]])
+
+        # A hand-picked selection that names the dismissed finding drops it.
+        run["posted_at"] = None
+        sent = await self._post_through_the_real_path(
+            {"change_id": "CR-1", "keys": ["finding:0", "finding:1"]})
+        self.assertEqual(sent, [["finding:1"]])
+
+    async def test_undo_of_a_finding_never_dismissed_keeps_posted_at(self):
+        run = self._run(posted_at="2026-01-01T00:06:00Z")
+        resp = await self._dismiss({"change_id": "CR-1", "key": "finding:1",
+                                    "dismissed": False})
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(run["posted_at"], "2026-01-01T00:06:00Z")
+
     async def test_refuses_what_is_not_a_finding(self):
         self._run()
         resp = await self._dismiss({"change_id": "CR-1", "key": "ship"})

@@ -889,6 +889,7 @@
           "consequence": "परिणाम",
           "dismiss": "खारिज करो",
           "dismiss_failed": "खारिज करना सहेजा नहीं जा सका। फिर से कोशिश करो।",
+          "undo_dismiss_failed": "पूर्ववत नहीं हो सका। यह फ़ाइंडिंग अब भी खारिज है।",
           "dismiss_reason_label": "इस फ़ाइंडिंग को क्यों खारिज कर रहे हो?",
           "dismiss_reason_placeholder": "उदाहरण: गलत चेतावनी, दायरे से बाहर",
           "dismissed_reason": "खारिज किया गया: {{reason}}",

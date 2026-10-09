@@ -889,6 +889,7 @@
           "consequence": "Folge",
           "dismiss": "Verwerfen",
           "dismiss_failed": "Das Verwerfen konnte nicht gespeichert werden. Versuch es erneut.",
+          "undo_dismiss_failed": "Rückgängig machen fehlgeschlagen. Der Befund bleibt verworfen.",
           "dismiss_reason_label": "Warum wird dieser Befund verworfen?",
           "dismiss_reason_placeholder": "Zum Beispiel: Fehlalarm, nicht im Umfang",
           "dismissed_reason": "Verworfen: {{reason}}",

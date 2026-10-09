@@ -901,6 +901,7 @@
           "consequence": "Conséquence",
           "dismiss": "Écarter",
           "dismiss_failed": "Impossible d’enregistrer le rejet. Réessaie.",
+          "undo_dismiss_failed": "Impossible d’annuler. Le constat reste rejeté.",
           "dismiss_reason_label": "Pourquoi écarter ce constat ?",
           "dismiss_reason_placeholder": "Par exemple : faux positif, hors périmètre",
           "dismissed_reason": "Écarté : {{reason}}",

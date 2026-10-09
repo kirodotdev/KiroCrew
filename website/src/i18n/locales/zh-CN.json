@@ -877,6 +877,7 @@
           "consequence": "后果",
           "dismiss": "忽略",
           "dismiss_failed": "无法保存忽略操作，请重试。",
+          "undo_dismiss_failed": "无法撤销，该问题仍处于忽略状态。",
           "dismiss_reason_label": "为什么忽略这条发现？",
           "dismiss_reason_placeholder": "例如：误报、超出范围",
           "dismissed_reason": "已忽略：{{reason}}",

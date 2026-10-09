@@ -889,6 +889,7 @@
           "consequence": "পরিণতি",
           "dismiss": "খারিজ করো",
           "dismiss_failed": "খারিজ সংরক্ষণ করা যায়নি। আবার চেষ্টা করো।",
+          "undo_dismiss_failed": "ফিরিয়ে আনা যায়নি। ফাইন্ডিংটি এখনও খারিজ আছে।",
           "dismiss_reason_label": "এই ফাইন্ডিংটি কেন খারিজ করছো?",
           "dismiss_reason_placeholder": "যেমন: ভুল সতর্কতা, পরিধির বাইরে",
           "dismissed_reason": "খারিজ করা হয়েছে: {{reason}}",

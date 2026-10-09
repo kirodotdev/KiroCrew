@@ -901,6 +901,7 @@
           "consequence": "Conseguenza",
           "dismiss": "Ignora",
           "dismiss_failed": "Impossibile salvare. Riprova.",
+          "undo_dismiss_failed": "Impossibile ripristinare. Il rilievo resta scartato.",
           "dismiss_reason_label": "Perché ignori questo rilievo?",
           "dismiss_reason_placeholder": "Ad esempio: falso positivo, fuori ambito",
           "dismissed_reason": "Ignorato: {{reason}}",

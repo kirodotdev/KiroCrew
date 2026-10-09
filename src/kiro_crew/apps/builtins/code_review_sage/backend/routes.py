@@ -1388,10 +1388,12 @@ async def _handle_run_dismiss(request: web.Request) -> web.Response:
         per_change = dict(dismissed.get(change_id) or {})
         changes: dict[str, Any] = {}
         if undo:
-            per_change.pop(key, None)
             # "Post all" may have counted this run fully posted only because the
             # finding was dismissed; an undone finding is pending, so the run is not.
-            changes["posted_at"] = None
+            # An undo of a key that was never dismissed changes nothing.
+            if key in per_change:
+                per_change.pop(key)
+                changes["posted_at"] = None
         else:
             per_change[key] = {"reason": store.redact_text(reason)}
         if per_change:

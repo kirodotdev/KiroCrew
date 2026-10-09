@@ -901,6 +901,7 @@
           "consequence": "Consequência",
           "dismiss": "Descartar",
           "dismiss_failed": "Não foi possível salvar o descarte. Tente novamente.",
+          "undo_dismiss_failed": "Não foi possível desfazer. O achado continua descartado.",
           "dismiss_reason_label": "Por que descartar esta constatação?",
           "dismiss_reason_placeholder": "Por exemplo: falso positivo, fora do escopo",
           "dismissed_reason": "Descartado: {{reason}}",

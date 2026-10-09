@@ -877,6 +877,7 @@
           "consequence": "影響",
           "dismiss": "却下",
           "dismiss_failed": "却下を保存できませんでした。もう一度お試しください。",
+          "undo_dismiss_failed": "元に戻せませんでした。この指摘は却下されたままです。",
           "dismiss_reason_label": "この指摘を却下する理由は？",
           "dismiss_reason_placeholder": "例：誤検出、対象外",
           "dismissed_reason": "却下済み：{{reason}}",

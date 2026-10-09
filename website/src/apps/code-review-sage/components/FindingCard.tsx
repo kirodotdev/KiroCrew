@@ -222,8 +222,9 @@ export default function FindingCard({
           <div className="min-w-0 flex-1 flex flex-col gap-1 text-[11.5px] text-muted break-words">
             {i18nT('apps.codeReviewSage.components.findingCard.dismissed_reason',
               { reason: asText(dismissed?.reason) })}
+            {/* On this card the failed call was an undo, so say that, not "dismissal". */}
             <ErrorNotice
-              message={failed ? i18nT('apps.codeReviewSage.components.findingCard.dismiss_failed') : null}
+              message={failed ? i18nT('apps.codeReviewSage.components.findingCard.undo_dismiss_failed') : null}
               askAgent
               variant="inline"
             />
@@ -251,6 +252,8 @@ export default function FindingCard({
               aria-label={i18nT('apps.codeReviewSage.components.findingCard.dismiss_reason_label')}
               value={reason}
               onChange={(e) => setReason(e.target.value)}
+              // An edit typed during the save would be cleared unsaved on success.
+              disabled={saving}
               maxLength={500}
               rows={2}
               autoFocus
@@ -268,8 +271,11 @@ export default function FindingCard({
           <div className="flex items-center justify-end gap-2">
             <button
               type="button"
+              // While the save is in flight, cancelling would close the form
+              // before a failure could show in it.
+              disabled={saving}
               onClick={() => { setAsking(false); setReason(''); setFailed(false) }}
-              className="rounded-md bg-transparent px-1.5 py-1 text-[11.5px] text-muted hover:text-text cursor-pointer"
+              className="rounded-md bg-transparent px-1.5 py-1 text-[11.5px] text-muted hover:text-text disabled:opacity-50 cursor-pointer disabled:cursor-default"
             >
               {i18nT('apps.codeReviewSage.components.findingCard.cancel_dismiss')}
             </button>
@@ -304,8 +310,9 @@ export default function FindingCard({
             <button
               type="button"
               onClick={() => setAsking(true)}
-              className="rounded-md bg-transparent px-1.5 py-1 text-[11.5px] text-muted hover:text-text cursor-pointer"
+              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2 py-1 text-[11.5px] text-muted hover:text-text hover:border-border-strong cursor-pointer"
             >
+              <EyeOff size={11} aria-hidden="true" />
               {i18nT('apps.codeReviewSage.components.findingCard.dismiss')}
             </button>
           )}

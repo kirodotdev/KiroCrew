@@ -177,3 +177,38 @@ describe('ReportView', () => {
     expect(screen.queryByRole('button', { name: /Share/ })).not.toBeInTheDocument()
   })
 })
+
+describe('ReportView severity chips with dismissals', () => {
+  it('counts a blocking finding that is not dismissed', () => {
+    render(<ReportView report={makeReport()} />)
+    expect(screen.getByText(/1 blocking/)).toBeInTheDocument()
+  })
+
+  it('hides the blocking chip once its only blocking finding is dismissed', () => {
+    render(
+      <ReportView
+        report={makeReport()}
+        dismissed={{ c1: { 'finding:0': { reason: 'false positive' } } }}
+      />,
+    )
+    expect(screen.queryByText(/blocking/)).not.toBeInTheDocument()
+    // The other row has no dismissals, so its should-fix chip is unchanged.
+    expect(screen.getByText(/2 should-fix/)).toBeInTheDocument()
+  })
+
+  it('subtracts a dismissed should-fix finding from the should-fix chip', () => {
+    const report = makeReport()
+    report.rows[1].findings = [
+      { dimension: 'Style', severity: 'yellow', observation: 'a' },
+      { dimension: 'Style', severity: 'yellow', observation: 'b' },
+    ]
+    render(
+      <ReportView
+        report={report}
+        dismissed={{ c2: { 'finding:1': { reason: 'not worth it' } } }}
+      />,
+    )
+    expect(screen.getByText(/1 should-fix/)).toBeInTheDocument()
+    expect(screen.queryByText(/2 should-fix/)).not.toBeInTheDocument()
+  })
+})

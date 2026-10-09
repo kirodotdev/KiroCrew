@@ -518,6 +518,7 @@
           "consequence": "Consequence",
           "dismiss": "Dismiss",
           "dismiss_failed": "Could not save the dismissal. Try again.",
+          "undo_dismiss_failed": "Could not undo. The finding is still dismissed.",
           "dismiss_reason_label": "Why dismiss this finding?",
           "dismiss_reason_placeholder": "For example: false positive, out of scope",
           "dismissed_reason": "Dismissed: {{reason}}",

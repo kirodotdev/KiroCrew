@@ -290,7 +290,9 @@ describe('FindingCard dismissal', () => {
     const onDismiss = vi.fn(() => Promise.reject(new Error('offline')))
     render(<FindingCard finding={finding()} dismissed={{ reason: 'x' }} onDismiss={onDismiss} />)
     fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
-    expect(await screen.findByText('Could not save the dismissal. Try again.')).toBeTruthy()
+    // The message names the undo, not the dismissal.
+    expect(await screen.findByText('Could not undo. The finding is still dismissed.')).toBeTruthy()
+    expect(screen.queryByText('Could not save the dismissal. Try again.')).toBeNull()
     expect(screen.getByText('Dismissed: x')).toBeTruthy()
   })
 
@@ -304,6 +306,23 @@ describe('FindingCard dismissal', () => {
     expect(await screen.findByText('Could not save the dismissal. Try again.')).toBeTruthy()
     expect((screen.getByLabelText('Why dismiss this finding?') as HTMLTextAreaElement).value)
       .toBe('nope')
+  })
+
+  it('keeps the reason form open while a dismissal is saving', async () => {
+    let reject: (e: Error) => void = () => {}
+    const onDismiss = vi.fn(() => new Promise<void>((_, r) => { reject = r }))
+    render(<FindingCard finding={finding()} onPost={() => {}} onDismiss={onDismiss} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    fireEvent.change(screen.getByLabelText('Why dismiss this finding?'), { target: { value: 'nope' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss finding' }))
+    const cancel = screen.getByRole('button', { name: 'Cancel' })
+    expect(cancel).toBeDisabled()
+    // An edit typed now would be cleared unsaved when the save succeeds.
+    expect(screen.getByLabelText('Why dismiss this finding?')).toBeDisabled()
+    fireEvent.click(cancel)
+    reject(new Error('offline'))
+    // The failure lands in the form the user is still looking at.
+    expect(await screen.findByText('Could not save the dismissal. Try again.')).toBeTruthy()
   })
 
   it('mutes the severity of a dismissed finding', () => {

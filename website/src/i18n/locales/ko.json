@@ -877,6 +877,7 @@
           "consequence": "영향",
           "dismiss": "무시",
           "dismiss_failed": "무시를 저장하지 못했습니다. 다시 시도하세요.",
+          "undo_dismiss_failed": "실행 취소하지 못했습니다. 이 항목은 계속 무시됩니다.",
           "dismiss_reason_label": "이 발견 사항을 무시하는 이유는 무엇인가요?",
           "dismiss_reason_placeholder": "예: 오탐, 범위 밖",
           "dismissed_reason": "무시됨: {{reason}}",
