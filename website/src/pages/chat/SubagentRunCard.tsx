@@ -17,7 +17,7 @@ import { memo } from 'react'
 import { Bot, Loader2, CheckCircle2, AlertCircle, Clock, Square, Hand } from 'lucide-react'
 import { SidePanelGlyph } from '../../components/SidePanelGlyph'
 import { useAppSelector, useAppDispatch } from '../../store'
-import { openActivityToTab, selectSubagent, switchSlot, isAwaitingSpawnApproval } from '../../store/chatSlice'
+import { openActivityToTab, selectSubagent, switchSlot, isActiveSubagent, isAwaitingSpawnApproval, isSpawnApprovalGone, isSpawnApprovalRetired } from '../../store/chatSlice'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import type { ChatMessage, SubagentActivity } from '../../types'
 import { SPAWN_LAUNCH_MARKER } from './types'
@@ -148,13 +148,17 @@ function tally(agents: (SubagentActivity | undefined)[]) {
   let running = 0, awaiting = 0, done = 0, failed = 0, stopped = 0, unknown = 0, neverStarted = 0
   for (const a of agents) {
     if (!a) { unknown++; continue }
+    if (isSpawnApprovalRetired(a)) { unknown++; continue }
     // A run parked on an unanswered spawn approval launched no process, so it
     // is not running — it used to be counted here, which is what made this card
     // claim "1 agent running" for a wave that was in fact blocked on the user
     // (#7318). A `'pending'` entry with no approval_id keeps the old treatment:
     // it is active but not attributable to an approval.
     if (isAwaitingSpawnApproval(a)) awaiting++
-    else if (a.status === 'running' || a.status === 'tool' || a.status === 'pending') running++
+    // Its approval proved gone: decided or expired unseen, so it is not owed to
+    // the user and liveness is not yet known. Outcome unknown, like a dropped id.
+    else if (isSpawnApprovalGone(a)) unknown++
+    else if (isActiveSubagent(a)) running++
     else if (a.status === 'done') done++
     else if (a.status === 'error') {
       failed++

@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect, useMemo, useCallback, memo } from 'react'
 import { useMutation } from '@tanstack/react-query'
-import { Bot, X, AlertTriangle, Loader2, CheckCircle, AlertCircle, Square, RotateCcw, Clock, ChevronRight, Hand } from 'lucide-react'
+import { Bot, X, AlertTriangle, Loader2, CheckCircle, AlertCircle, Square, RotateCcw, Clock, ChevronRight, Hand, CircleDashed } from 'lucide-react'
 import { useAppSelector, useAppDispatch } from '../../store'
-import { openActivityToTab, selectSubagent, sseSubagentDone, isAwaitingSpawnApproval } from '../../store/chatSlice'
+import { openActivityToTab, selectSubagent, sseSubagentDone, isActiveSubagent, isAwaitingSpawnApproval, isSpawnApprovalGone, reconcileSubagentApprovalGone } from '../../store/chatSlice'
 import { api } from '../../api/client'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -95,16 +95,6 @@ function StallText({ tool, idleSecs }: { tool: string; idleSecs?: number }) {
   )
 }
 
-/** Minimal shape of the `/api/spawn` list response consumed for reconciliation. */
-interface SpawnListAgent {
-  id: string
-  done?: boolean
-  parent?: string
-}
-interface SpawnListResponse {
-  agents?: SpawnListAgent[]
-}
-
 /** Active subagent summary above the chat input. */
 const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: string | null }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
@@ -129,7 +119,9 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
   // Exception-first ordering: retrying/stalled agents need eyes; the healthy
   // majority collapses behind the summary row at scale.
   const activeList = useMemo(() => {
-    const act = all.filter(a => a.status === 'running' || a.status === 'tool' || a.status === 'pending')
+    // A gone approval stays in this liveness list until the authoritative
+    // inventory decides running vs retired, but it is tallied separately below.
+    const act = all.filter(isActiveSubagent)
     const rank = (a: SubagentActivity) => (a.retrying ? 0 : a.stalled ? 1 : a.status === 'pending' ? 2 : 3)
     return act.sort((x, y) => rank(x) - rank(y))
   }, [all])
@@ -138,14 +130,19 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
   // they get their own tally instead of inflating the spinning running count
   // that told the user work was in progress (#7318).
   const awaiting = useMemo(() => activeList.filter(isAwaitingSpawnApproval).length, [activeList])
-  const running = activeList.length - awaiting
+  // A terminal refusal says the decision is closed, not whether another
+  // surface launched the process. Keep this distinct from both waiting and
+  // running until the authoritative spawn list answers.
+  const unresolved = useMemo(() => activeList.filter(isSpawnApprovalGone).length, [activeList])
+  const running = activeList.length - awaiting - unresolved
   // Histogram counts across the WHOLE wave (terminal agents included) so a
   // failure mid-wave is visible in the header instead of silently dropping
   // out of the running-only list.
   const counts = useMemo(() => ({
     done: all.filter(a => a.status === 'done').length,
     failed: all.filter(a => a.status === 'error').length,
-    stopped: all.filter(a => a.status === 'stopped').length,
+    // A retired never-launched card was not stopped by anyone.
+    stopped: all.filter(a => a.status === 'stopped' && !a.approvalRetired).length,
     stalled: activeList.filter(a => a.stalled).length,
   }), [all, activeList])
   // `all` already excludes native:* ids, so error entries here are managed.
@@ -160,7 +157,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
   // separately because it is no longer part of `running`: a wave whose only
   // member is parked on an approval has running === 0, and without this term
   // the chip — the one surface naming what is blocking it — would unmount.
-  const hasActive = running > 0 || queued > 0 || awaiting > 0
+  const hasActive = running > 0 || queued > 0 || awaiting > 0 || unresolved > 0
   const visibleList = activeList.slice(0, CHIP_MAX_ROWS)
   const hiddenCount = activeList.length - visibleList.length
   // Per-row stop remains limited to agents with a live run id. The header also
@@ -174,6 +171,15 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
   // below still resyncs the cards, but it can only hide a cancel that never
   // landed — it cannot tell the person it never landed.
   const [actionError, setActionError] = useState<string | null>(null)
+  // A failed liveness read for a gone approval. Unlike a phantom-card sweep,
+  // that read is what unblocks the composer and Reload, so a refusal is
+  // reported rather than swallowed; the next successful read clears it. It
+  // never settles the card: a failed read is not evidence of either outcome.
+  const [livenessFailed, setLivenessFailed] = useState(false)
+  // A spawn frame or a card's own re-read can settle the last gone approval
+  // without this poll succeeding, so the flag would outlive the cards it was
+  // about and greet the next refusal before any read for it had failed.
+  useEffect(() => { if (unresolved === 0) setLivenessFailed(false) }, [unresolved])
   // Cancel a running subagent. A refused spawnDelete used to be swallowed with a
   // console breadcrumb; it now surfaces on the chip.
   const stopAgent = useCallback((id: string, name: string) => {
@@ -234,17 +240,29 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
     let cancelled = false
     const t = setInterval(() => setTick(n => 1 - n), 1000)
     const reconcile = setInterval(() => {
-      api.spawnList().then((d: SpawnListResponse) => {
+      api.spawnList().then(d => {
         if (cancelled) return
-        const backendIds = new Set((d.agents || []).filter((a) => !a.done && a.parent === `dashboard:${slot}`).map((a) => a.id))
+        // Live rows by run id alone, as the gone-approval branch matches them:
+        // ids are unique, and a nested, cron- or channel-born run's `parent` is
+        // not this tab's key. A parent filter here would mark such a live run
+        // failed, and "Dismiss done" would then DELETE (cancel) it.
+        const backendIds = new Set((d.agents || []).filter((a) => !a.done).map((a) => a.id))
         activeListRef.current.forEach(a => {
-          if (!backendIds.has(a.id)) dispatch(sseSubagentDone({ slot, id: a.id, elapsed: Math.round((Date.now() - a.startedAt) / 1000), error: 'reconciliation: agent no longer tracked by backend' }))
+          if (isSpawnApprovalGone(a) && a.approval_id) {
+            const agent = (d.agents || []).find(candidate => candidate.id === a.id) ?? null
+            dispatch(reconcileSubagentApprovalGone({ slot, id: a.id, approval_id: a.approval_id, agent }))
+          } else if (!backendIds.has(a.id)) {
+            dispatch(sseSubagentDone({ slot, id: a.id, elapsed: Math.round((Date.now() - a.startedAt) / 1000), error: 'reconciliation: agent no longer tracked by backend' }))
+          }
         })
+        setLivenessFailed(false)
       }).catch(() => {
-        // Deliberately silent: this is a background poll that only ever REMOVES
-        // phantom cards. A refused poll leaves the cards exactly as they were,
-        // the next tick retries in 30s, and the person asked for none of it —
-        // so there is no failed action to report on the chip.
+        if (cancelled) return
+        // For phantom cards alone this stays silent: the poll only ever
+        // REMOVES them, a refused poll leaves them as they were, and the next
+        // tick retries in 30s. A gone approval is different — its card holds
+        // the composer and Reload until this read answers — so say it failed.
+        if (activeListRef.current.some(isSpawnApprovalGone)) setLivenessFailed(true)
       })
     }, 30_000)
     return () => { cancelled = true; clearInterval(t); clearInterval(reconcile) }
@@ -296,10 +314,11 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
           <span className="text-text-strong font-medium flex items-center gap-2 min-w-0" data-testid="subagent-histogram">
             <span className="inline-flex items-center gap-1" data-testid="subagent-running-count"><Loader2 size={12} className="animate-spin text-accent" /> {running}</span>
             {awaiting > 0 && <span className="inline-flex items-center gap-1 text-warn" data-testid="subagent-awaiting-count" title={i18nT('pages.chat.subagentProgressBar.waiting_for_your_approval_to_start')}><Hand size={12} /> {awaiting}</span>}
+            {unresolved > 0 && <span className="inline-flex items-center gap-1 text-muted" data-testid="subagent-unresolved-count" title={i18nT('pages.chat.subagentProgressBar.checking_whether_it_started')}><CircleDashed size={12} /> {unresolved}</span>}
             {queued > 0 && <span className="inline-flex items-center gap-1 text-muted" data-testid="subagent-queued-count" title={waitText ?? i18nT('pages.chat.subagentProgressBar.waiting_to_start_queued_behind_the_concurrency_l')}><Clock size={12} /> {queued}</span>}
             {counts.done > 0 && <span className="inline-flex items-center gap-1 text-ok"><CheckCircle size={12} /> {counts.done}</span>}
             {counts.failed > 0 && <span className="inline-flex items-center gap-1 text-danger"><AlertCircle size={12} /> {counts.failed}</span>}
-            {counts.stopped > 0 && <span className="inline-flex items-center gap-1 text-muted"><Square size={12} /> {counts.stopped}</span>}
+            {counts.stopped > 0 && <span className="inline-flex items-center gap-1 text-muted" data-testid="subagent-stopped-count"><Square size={12} /> {counts.stopped}</span>}
             {counts.stalled > 0 && <span className="inline-flex items-center gap-1 text-warn" title={i18nT('pages.chat.subagentProgressBar.no_activity_possibly_stalled')}><AlertTriangle size={12} /> {counts.stalled}</span>}
           </span>
           <span className="ml-auto shrink-0 flex items-center gap-1.5">
@@ -331,6 +350,21 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
           // Absent for the ordinary capacity wait, which keeps the chip as it was.
           <div className="px-3 pb-1.5 text-[11px] leading-4 text-warn" data-testid="subagent-wait-reason" role="status">
             {waitText}
+          </div>
+        )}
+        {unresolved > 0 && livenessFailed && (
+          // The refused approval request reports itself once, on the surface
+          // that sent it (the composer or the activity card); this chip states
+          // each unresolved row as neutral status. What it does own is its own
+          // failed read of the inventory, the poll that settles those rows.
+          // Not in the row: each row is a button, and the hand-off is another.
+          <div className="px-3 pb-1.5">
+            <ErrorNotice
+              variant="inline"
+              message={i18nT('pages.chat.subagentProgressBar.liveness_check_failed')}
+              askAgent
+              testId="subagent-liveness-error"
+            />
           </div>
         )}
         {actionError && (
@@ -405,7 +439,12 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
                       <span className="min-w-0 flex-1 truncate text-text">{agentLabel}</span>
                       <span className="shrink-0 font-mono tabular-nums text-muted/50">{elapsedShown ? `${elapsed}${i18nT('pages.chat.subagentProgressBar.s')}` : '--'}{typeof a.toolCount === 'number' && a.toolCount > 0 ? ` · ${i18nT('pages.chat.subagentProgressBar.tool', { count: a.toolCount })}` : ''}</span>
                     </span>
-                    {isAwaitingSpawnApproval(a) ? (
+                    {isSpawnApprovalGone(a) ? (
+                      <span className="text-muted flex items-center gap-1" data-testid="subagent-row-checking">
+                        <CircleDashed size={11} className="shrink-0" />
+                        <span className="truncate">{i18nT('pages.chat.subagentProgressBar.checking_whether_it_started')}</span>
+                      </span>
+                    ) : isAwaitingSpawnApproval(a) ? (
                       /* Checked BEFORE retrying/stalled: a parked run never
                          executed, so the watchdog's silence-based stall verdict
                          (and a retry attributed to a backend hiccup) would both

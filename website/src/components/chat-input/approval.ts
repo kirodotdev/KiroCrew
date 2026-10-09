@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { shallowEqual } from 'react-redux'
 import { useAppSelector, type useAppDispatch } from '../../store'
-import { resolveByApprovalId, openActivityToTool, openActivityToTab, selectSlotPendingApproval, selectSlotPendingSpawnApprovals, markSubagentApproving, sseSubagentDone } from '../../store/chatSlice'
+import { resolveByApprovalId, openActivityToTool, openActivityToTab, selectSlotPendingApproval, selectSlotPendingSpawnApprovals, selectSlotSubagents, isSpawnApprovalGone, markSubagentApproving, markSubagentApprovalGone, reconcileGoneSubagent, sseSubagentDone } from '../../store/chatSlice'
 import { useToolPillVisible } from '../../store/toolPillRegistry'
 import { api, ApiError } from '../../api/client'
+import { isTerminalApprovalRefusal } from '../../api/apiError'
 import { safeSetItem, safeGetItem } from '../../utils/safeStorage'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import { useSimplifiedToolNames } from '../../hooks/useSimplifiedToolNames'
@@ -201,6 +202,12 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
     const t = setTimeout(() => setApprovalNotice(null), 8000)
     return () => clearTimeout(t)
   }, [approvalNotice])
+  // A failed spawn decision from the composer banner reports through this
+  // same error surface, so the tool and spawn paths share one notice.
+  const showApprovalError = useCallback((message: string) => {
+    setApprovalNoticeKind('error')
+    setApprovalNotice(message)
+  }, [])
   const showInChat = useCallback(() => {
     if (approvalToolCallId) dispatch(openActivityToTool(approvalToolCallId))
   }, [approvalToolCallId, dispatch])
@@ -274,17 +281,18 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
   return {
     pendingApproval, hasApproval, approvalId, approvalSubmitting, approvalPickerSignal, setApprovalPickerSignal,
     approvalModeAdjusted, approvalNudgeActive, dismissApprovalNudge, hideApprovalNudge,
-    approvalNotice, setApprovalNotice, approvalNoticeKind,
+    approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError,
     approvalToolInput, approvalIsReadOnly, approvalFullCommand, approvalBaseCommand, approvalIsShell,
     approvalTrustCommandGrantable, approvalTrustBaseGrantable, approvalTrustAllGrantable, approvalIsUnattended, approvalTrustGrantable,
     approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, showGhost, showInChat, handleApprovalAction,
   }
 }
 
-export function useSpawnApprovals({ slotId, slotApprovalChrome, dispatch }: {
+export function useSpawnApprovals({ slotId, slotApprovalChrome, dispatch, showApprovalError }: {
   slotId: string | null
   slotApprovalChrome: boolean
   dispatch: AppDispatch
+  showApprovalError: (message: string) => void
 }) {
   // Pending sub-agent SPAWN approvals for this slot (blocked on user approval).
   // Surfaced as a top-level banner with inline Approve/Reject so the user can
@@ -302,6 +310,30 @@ export function useSpawnApprovals({ slotId, slotApprovalChrome, dispatch }: {
   // for a "Resolving…" note. Cards stay in the pending list (status is still
   // 'pending') until the backend confirms, so the banner remains mounted.
   const spawnApprovalsResolving = pendingSpawnApprovals.length > 0 && pendingSpawnApprovals.every(a => a.approving)
+  // The card whose liveness read, sent from here after a gone refusal, failed.
+  // A notice of its own, not the shared approval notice: the refusal and the
+  // failed read are two facts, and the read fails a microtask after the
+  // refusal is shown, so one slot would wipe the only report of the refusal.
+  // The activity card keeps the same two apart (actionError / livenessError).
+  // Shown only while that card is still gone and unresolved: any reader that
+  // settles it (the chip's poll, a spawn frame) makes the notice false. Same
+  // bounded lifetime as the approval notice; the chip's poll keeps retrying
+  // and reports its own failed read.
+  const [livenessFailedFor, setLivenessFailedFor] = useState<string | null>(null)
+  useEffect(() => {
+    if (!livenessFailedFor) return
+    const t = setTimeout(() => setLivenessFailedFor(null), 8000)
+    return () => clearTimeout(t)
+  }, [livenessFailedFor])
+  const livenessStillOpen = useAppSelector(s => {
+    if (!livenessFailedFor) return false
+    const card = selectSlotSubagents(s, slotId)[livenessFailedFor]
+    return !!card && isSpawnApprovalGone(card)
+  })
+  const spawnLivenessError = slotApprovalChrome && livenessStillOpen
+    ? i18nT('pages.chat.subagentProgressBar.liveness_check_failed')
+    : null
+  const dismissSpawnLivenessError = useCallback(() => setLivenessFailedFor(null), [])
   const resolveOneSpawn = useCallback((a: SubagentActivity, action: 'approve' | 'reject') => {
     if (!a.approval_id || a.approving) return
     dispatch(markSubagentApproving({ id: a.id, approving: true }))
@@ -316,11 +348,43 @@ export function useSpawnApprovals({ slotId, slotApprovalChrome, dispatch }: {
       if (action === 'reject' && slotId) {
         dispatch(sseSubagentDone({ slot: slotId, id: a.id, elapsed: 0, error: i18nT('hooks.useWebSocket.approval_rejected') }))
       }
-    }).catch(() => dispatch(markSubagentApproving({ id: a.id, approving: false })))
-  }, [dispatch, slotId])
+    }).catch((err: unknown) => {
+      // The panel resolves this same id; a refusal that proves the approval
+      // gone is withdrawn through the one owner both surfaces read (#11180),
+      // instead of leaving buttons that can only re-send it.
+      if (isTerminalApprovalRefusal(err) && a.approval_id) {
+        dispatch(markSubagentApprovalGone({ id: a.id, approval_id: a.approval_id }))
+        // A rejected request, so an error surface, and the only one: the
+        // refusal is reported once, by the surface that sent it. The chip and
+        // the activity card show this id's liveness as neutral status.
+        showApprovalError(i18nT('components.approvalCard.approval_no_longer_pending'))
+        // The liveness read that settles the card. A refusal leaves it
+        // unresolved (the chip's poll retries) and is reported, not swallowed,
+        // on its own notice so the refusal above stays on screen: until the
+        // read answers, the composer stays blocked on this card.
+        if (slotId) {
+          dispatch(reconcileGoneSubagent({ slot: slotId, id: a.id, approval_id: a.approval_id })).unwrap()
+            .then(() => setLivenessFailedFor(prev => (prev === a.id ? null : prev)))
+            .catch(() => setLivenessFailedFor(a.id))
+        }
+        return
+      }
+      // Any other failure left the decision unrecorded: the buttons come back
+      // for a retry, and the notice says so through the same error surface and
+      // sentence the panel uses for this id.
+      dispatch(markSubagentApproving({ id: a.id, approving: false }))
+      const reason = err instanceof Error ? err.message : ''
+      showApprovalError(reason
+        ? i18nT('components.approvalCard.decision_not_recorded_error', { error: reason })
+        : i18nT('components.approvalCard.decision_failed'))
+    })
+  }, [dispatch, slotId, showApprovalError])
   const resolveSpawnApprovals = useCallback((action: 'approve' | 'reject') => {
     for (const a of pendingSpawnApprovals) resolveOneSpawn(a, action)
   }, [pendingSpawnApprovals, resolveOneSpawn])
 
-  return { pendingSpawnApprovals, reviewSpawnApprovals, spawnApprovalsResolving, resolveOneSpawn, resolveSpawnApprovals }
+  return {
+    pendingSpawnApprovals, reviewSpawnApprovals, spawnApprovalsResolving, resolveOneSpawn, resolveSpawnApprovals,
+    spawnLivenessError, dismissSpawnLivenessError,
+  }
 }

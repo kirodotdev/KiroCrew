@@ -5,7 +5,7 @@
  *  bucket, so every aggregate skips the active key there. */
 import { createSelector, type PayloadAction } from '@reduxjs/toolkit'
 import type { RootState } from '../index'
-import type { SubagentActivity } from '../../types'
+import type { SubagentActivity, SubagentInfo } from '../../types'
 import { parseSubagentQueuedReason, type SubagentQueuedEvent } from '../../pages/chat/subagentQueuedReason'
 import { i18nT } from '../../i18n/t'
 import type { ChatState } from './state'
@@ -98,28 +98,52 @@ function upsertSlotSub(state: ChatState, slot: string, id: string): SubagentActi
 }
 
 /**
+ * The decision identified by this pending spawn is no longer actionable.
+ * `approvalGone` describes the PENDING phase only: a real `subagent_spawn` or
+ * tool frame moves the card to running/tool without clearing it, and a stale
+ * marker must not keep a live agent classified as unresolved.
+ */
+export const isSpawnApprovalGone = (a: SubagentActivity) =>
+  a.status === 'pending' && !!a.approval_id && a.approvalGone === a.approval_id
+
+/** Reconciliation found no process for a gone approval and retired the card.
+ *  Terminal-only, for the same reason: a later tool frame proves a launch. */
+export const isSpawnApprovalRetired = (a: SubagentActivity) =>
+  a.status === 'stopped' && !!a.approvalRetired
+
+/**
+ * Shared process-liveness semantics for busy state, rail/sidebar counts, and
+ * renderers. A terminal approval refusal settles ACTIONABILITY, not liveness:
+ * another surface may already have approved and launched the agent. Keep that
+ * short unresolved window conservative until the authoritative spawn list
+ * converts the card to running/terminal.
+ */
+export const isActiveSubagent = (a: SubagentActivity) =>
+  a.status === 'running' || a.status === 'tool' || a.status === 'pending'
+
+/**
  * Live "sub-agents running" signal for a slot, derived from the
  * subagent_spawn/tool/done WS events (the only real-time source — see the
  * ChatSidebar countActive note: dashboardSlice fields only refresh on a full
- * slots push). Counts pending/running/tool as active, mirroring ChatSidebar.
+ * slots push). Uses the same active predicate as every aggregate count.
  */
 export const selectSlotSubagentsActive = (state: RootState, slot: string): boolean => {
   const subs = getSlotSubs(state.chat, slot)
   if (!subs) return false
   for (const a of Object.values(subs)) {
-    if (a.status === 'running' || a.status === 'tool' || a.status === 'pending') return true
+    if (isActiveSubagent(a)) return true
   }
   return false
 }
 
 // Shared subagent-counting helpers — single implementations for both sidebar and aggregate selectors.
 
-/** Counts active subagents (running + tool + pending) in a subagent map. */
+/** Counts active subagents in a subagent map. */
 const countActiveSubagents = (m?: Record<string, SubagentActivity>) => {
   if (!m) return 0
   let n = 0
   for (const a of Object.values(m)) {
-    if (a.status === 'running' || a.status === 'tool' || a.status === 'pending') n++
+    if (isActiveSubagent(a)) n++
   }
   return n
 }
@@ -133,9 +157,27 @@ const countActiveSubagents = (m?: Record<string, SubagentActivity>) => {
  * `approval_id` is the load-bearing half — `sseSubagentPending` is the only
  * writer of `'pending'` and always sets it, so its absence means a card built
  * some other way and must not be claimed as blocked on the user.
+ *
+ * A gone approval (`markSubagentApprovalGone`) is excluded: once a resolve has
+ * proved it decided or expired, no surface can take the decision, so none may
+ * say the user owes it. That verdict does not prove whether another surface
+ * launched the run, so liveness readers keep it conservative until the spawn
+ * inventory reconciles it.
  */
 export const isAwaitingSpawnApproval = (a: SubagentActivity) =>
-  a.status === 'pending' && !!a.approval_id
+  a.status === 'pending' && !!a.approval_id && !isSpawnApprovalGone(a)
+
+/**
+ * Canonical terminal classification of a finished run: `outcome` is the single
+ * source (spec: docs/system-specs/modules/subagent.md). The `stopped`/`error`
+ * derivation is kept ONLY as a fallback for records that predate the field
+ * (reconnect replays from a pre-upgrade gateway).
+ */
+const terminalStatus = (r: { outcome?: 'completed' | 'failed' | 'stopped'; stopped?: boolean; error?: string }): 'stopped' | 'error' | 'done' =>
+  r.outcome === 'stopped' ? 'stopped'
+    : r.outcome === 'failed' ? 'error'
+      : r.outcome === 'completed' ? 'done'
+        : r.stopped ? 'stopped' : (r.error ? 'error' : 'done')
 
 /** Counts subagents pending spawn approval in a subagent map. */
 const countPendingApprovals = (m?: Record<string, SubagentActivity>) => {
@@ -365,6 +407,84 @@ export const subagentReducers = {
       if (b) { b.approving = action.payload.approving; return }
     }
   },
+  /** One owner for a terminal refusal, so the side panel and the composer
+   *  banner, which resolve the same id, both withdraw it (#11180). */
+  markSubagentApprovalGone(state: ChatState, action: PayloadAction<{ id: string; approval_id: string }>) {
+    if (isUnsafeKey(action.payload.id)) return
+    const mark = (a: SubagentActivity | undefined) => {
+      if (!a) return false
+      // Only the approval that was refused: a newer one on this card stays live.
+      if (a.approval_id === action.payload.approval_id) {
+        a.approving = false
+        a.approvalGone = action.payload.approval_id
+      }
+      return true
+    }
+    if (mark(state.subagents[action.payload.id])) return
+    for (const sa of Object.values(state.slotActivity)) {
+      if (mark(sa.subagents[action.payload.id])) return
+    }
+  },
+  /**
+   * Apply the authoritative spawn inventory after a terminal approval
+   * refusal. Compare all three identities before mutating: a spawn frame or a
+   * fresh approval id may have arrived while the GET was in flight.
+   */
+  reconcileSubagentApprovalGone(state: ChatState, action: PayloadAction<{
+    slot: string
+    id: string
+    approval_id: string
+    agent: SubagentInfo | null
+  }>) {
+    const { slot, id, approval_id, agent } = action.payload
+    if (isUnsafeKey(slot) || isUnsafeKey(id)) return
+    const current = getSlotSub(state, slot, id)
+    if (current?.status !== 'pending'
+      || current.approval_id !== approval_id
+      || current.approvalGone !== approval_id) return
+
+    // Matched by run id alone: ids are unique, and a row's `parent` is not the
+    // tab key for a nested, cron- or channel-born run.
+    if (agent && agent.id === id) {
+      // The approval future can disappear just before the manager publishes
+      // the terminal outcome. Its inventory row explicitly says it is still
+      // parked and therefore is not proof of a launched process; leave the
+      // conservative unresolved state for the next reconciliation tick.
+      if (agent.awaiting_approval && !agent.done) return
+      current.approving = false
+      current.approvalGone = undefined
+      current.approvalRetired = undefined
+      current.approval_id = undefined
+      if (agent.task) current.task = agent.task
+      if (agent.agent) current.agent = agent.agent
+      if (typeof agent.started === 'number' && agent.started > 0) {
+        current.startedAt = agent.started * 1000
+        current.startedAtAssumed = undefined
+        // A finished row carries no elapsed of its own, and "now - started" is
+        // wall time since registration, not the run's duration.
+        current.elapsed = agent.done ? 0 : Math.max(0, Math.round(Date.now() / 1000 - agent.started))
+      }
+      current.lastTool = agent.last_tool || ''
+      if (agent.done) {
+        current.status = terminalStatus(agent)
+        current.error = agent.error || undefined
+      } else {
+        current.status = agent.last_tool ? 'tool' : 'running'
+        current.error = undefined
+      }
+      return
+    }
+
+    // No backend record with this id: it never launched, or it is no longer
+    // retained, and the card claims only the absent record. Retire the card
+    // instead of preserving a reconnect-proof pending zombie. Keep the scoped
+    // approval verdict so no surface re-offers the dead decision; a later
+    // sseSubagentPending overwrites the whole entry and re-arms a fresh id.
+    current.status = 'stopped'
+    current.approving = false
+    current.approvalRetired = true
+    current.elapsed = 0
+  },
   sseSubagentSpawn(state: ChatState, action: PayloadAction<{ slot: string; id: string; task: string; agent: string; model?: string; requested_model?: string; child_session?: string; batch_id?: string }>) {
     if (isUnsafeKey(action.payload.slot) || isUnsafeKey(action.payload.id)) return
     const subs = action.payload.slot !== state.activeSlot
@@ -411,6 +531,9 @@ export const subagentReducers = {
     const a = upsertSlotSub(state, slot, id)
     if (a) {
       a.lastTool = action.payload.tool; a.status = 'tool'
+      // A tool frame proves the run launched: a retired verdict must not
+      // resurrect when the run later ends `stopped`.
+      a.approvalRetired = undefined
       if (typeof action.payload.tool_count === 'number') a.toolCount = action.payload.tool_count
       a.stalled = false
       a.idleSecs = undefined
@@ -514,15 +637,7 @@ export const subagentReducers = {
     const credits = typeof action.payload.credits === 'number' && Number.isFinite(action.payload.credits)
       ? Math.max(0, action.payload.credits)
       : undefined
-    // Canonical terminal classification: `outcome` is the single source
-    // (spec: docs/system-specs/modules/subagent.md). `stopped`/`error`
-    // derivation is kept ONLY as a fallback for old payloads that predate
-    // the field (reconnect replays from a pre-upgrade gateway).
-    const doneStatus: 'stopped' | 'error' | 'done' =
-      action.payload.outcome === 'stopped' ? 'stopped'
-        : action.payload.outcome === 'failed' ? 'error'
-          : action.payload.outcome === 'completed' ? 'done'
-            : action.payload.stopped ? 'stopped' : (action.payload.error ? 'error' : 'done')
+    const doneStatus = terminalStatus(action.payload)
     if (a) {
       a.status = doneStatus
       a.retrying = false

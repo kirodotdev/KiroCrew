@@ -289,7 +289,7 @@ function ChatInput({
   const {
     pendingApproval, hasApproval, approvalId, approvalSubmitting, approvalPickerSignal, setApprovalPickerSignal,
     approvalModeAdjusted, approvalNudgeActive, dismissApprovalNudge, hideApprovalNudge,
-    approvalNotice, setApprovalNotice, approvalNoticeKind,
+    approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError,
     approvalToolInput, approvalIsReadOnly, approvalFullCommand, approvalBaseCommand, approvalIsShell,
     approvalTrustCommandGrantable, approvalTrustBaseGrantable, approvalTrustAllGrantable, approvalIsUnattended, approvalTrustGrantable,
     approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, showGhost, showInChat, handleApprovalAction,
@@ -314,7 +314,7 @@ function ChatInput({
   // Timed client-side from the frame that carried the decline; see the hook.
   const stopDeclinedArmed = useStopDeclinedHint(stopDeclined)
 
-  const spawnApprovals = useSpawnApprovals({ slotId, slotApprovalChrome, dispatch })
+  const spawnApprovals = useSpawnApprovals({ slotId, slotApprovalChrome, dispatch, showApprovalError })
 
   const {
     inputRef, composerAnchorRef, lexicalControlRef, lexicalLoadFailed, setLexicalLoadFailed,
@@ -858,6 +858,18 @@ function ChatInput({
             testId="approval-decision-error"
             message={approvalNotice}
             onDismiss={() => setApprovalNotice(null)}
+          />
+        </div>
+      )}
+      {spawnApprovals.spawnLivenessError && (
+        <div className="px-4 mb-1">
+          {/* No hand-off: the composer draft below is unsaved. Beside the
+              refusal, never over it: a failed liveness read after a gone
+              verdict is a second fact, not a replacement for the first. */}
+          <ErrorNotice
+            testId="spawn-liveness-error"
+            message={spawnApprovals.spawnLivenessError}
+            onDismiss={spawnApprovals.dismissSpawnLivenessError}
           />
         </div>
       )}

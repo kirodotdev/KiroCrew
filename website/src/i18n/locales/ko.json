@@ -10320,6 +10320,7 @@
         "reject": "거부",
         "rejected": "거부됨",
         "resolved": "해결됨",
+        "no_record": "기록 없음",
         "resolving": "확인 중…",
         "resolving_2": "확인 중…",
         "resource_type_issue": "이슈",
@@ -10715,7 +10716,9 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "시작 대기 중 — 동시 실행 한도로 대기열에 있습니다",
         "stop_failed": "서브에이전트 {{name}}을(를) 중지할 수 없습니다",
         "stop_all_failed": "서브에이전트를 중지할 수 없습니다",
-        "retry_failed_error": "실패한 서브에이전트 중 일부를 다시 시도할 수 없습니다"
+        "retry_failed_error": "실패한 서브에이전트 중 일부를 다시 시도할 수 없습니다",
+        "checking_whether_it_started": "시작되었는지 확인하는 중…",
+        "liveness_check_failed": "시작되었는지 확인하지 못했습니다. 다시 시도하는 중…"
       },
       "subagentQueued": {
         "low_memory": "시작 대기 중 — 여유 메모리 {{required}} 필요, 현재 {{available}} 여유. 계속하려면 메모리를 확보하세요",

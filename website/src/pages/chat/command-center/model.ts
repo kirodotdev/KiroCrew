@@ -1,4 +1,5 @@
 import type { ChatSlot, SubagentActivity } from '../../../types'
+import { isAwaitingSpawnApproval } from '../../../store/chatSlice'
 import { slotApprovalMode } from '../../../utils/slotApprovalMode'
 import type { ApprovalModeKey } from '../../../components/ApprovalModePicker'
 import { i18nT } from '../../../i18n/t'
@@ -212,7 +213,7 @@ export function buildCommandCenter(source: CommandCenterSources) {
       if (agentIds.has(a.id)) continue
       agentIds.add(a.id)
       nodes.push({ id: `subagent:${a.id}`, kind: 'subagent', ref: a.id, slot: s.key, title: a.task !== a.id ? a.task : '', ordinal: nodes.length + 1,
-        state: a.status === 'done' ? 'done' : a.status === 'stopped' ? 'stopped' : a.status === 'error' || a.stalled ? 'blocked' : a.approval_id ? 'needs_input' : a.status === 'pending' ? 'waiting' : 'running',
+        state: a.status === 'done' ? 'done' : a.status === 'stopped' ? 'stopped' : a.status === 'error' || a.stalled ? 'blocked' : isAwaitingSpawnApproval(a) ? 'needs_input' : a.status === 'pending' ? 'waiting' : 'running',
         detail: a.lastTool || undefined, error: a.error || undefined })
     }
   }

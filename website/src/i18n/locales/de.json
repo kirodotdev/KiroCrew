@@ -10464,6 +10464,7 @@
         "reject": "Ablehnen",
         "rejected": "Abgelehnt",
         "resolved": "Aufgelöst",
+        "no_record": "Kein Eintrag",
         "resolving": "Wird aufgelöst…",
         "resolving_2": "wird aufgelöst…",
         "resource_type_issue": "Issue",
@@ -10864,7 +10865,9 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "Warten auf den Start — in der Warteschlange hinter der Parallelitätsgrenze",
         "stop_failed": "Subagent {{name}} konnte nicht gestoppt werden",
         "stop_all_failed": "Die Subagents konnten nicht gestoppt werden",
-        "retry_failed_error": "Einige fehlgeschlagene Subagents konnten nicht wiederholt werden"
+        "retry_failed_error": "Einige fehlgeschlagene Subagents konnten nicht wiederholt werden",
+        "checking_whether_it_started": "Wird geprüft, ob der Start erfolgt ist…",
+        "liveness_check_failed": "Konnte nicht prüfen, ob der Start erfolgt ist. Neuer Versuch…"
       },
       "subagentQueued": {
         "low_memory": "wartet auf den Start — benötigt {{required}} freien Speicher, aktuell {{available}} frei; gib Speicher frei, um fortzufahren",

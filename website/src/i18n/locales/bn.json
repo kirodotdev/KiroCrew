@@ -10464,6 +10464,7 @@
         "reject": "প্রত্যাখ্যান করুন",
         "rejected": "প্রত্যাখ্যাত",
         "resolved": "সমাধান হয়েছে",
+        "no_record": "কোনো রেকর্ড নেই",
         "resolving": "রিজলভ হচ্ছে…",
         "resolving_2": "রিজলভ হচ্ছে...",
         "resource_type_issue": "ইস্যু",
@@ -10864,7 +10865,9 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "শুরুর অপেক্ষায় — কনকারেন্সি সীমার পেছনে সারিতে আছে",
         "stop_failed": "সাবএজেন্ট {{name}} থামানো যায়নি",
         "stop_all_failed": "সাবএজেন্টগুলো থামানো যায়নি",
-        "retry_failed_error": "কিছু ব্যর্থ সাবএজেন্ট আবার চালানো যায়নি"
+        "retry_failed_error": "কিছু ব্যর্থ সাবএজেন্ট আবার চালানো যায়নি",
+        "checking_whether_it_started": "এটি শুরু হয়েছে কি না যাচাই করা হচ্ছে…",
+        "liveness_check_failed": "এটি শুরু হয়েছে কি না যাচাই করা যায়নি। আবার চেষ্টা করা হচ্ছে…"
       },
       "subagentQueued": {
         "low_memory": "শুরু হওয়ার অপেক্ষায় — {{required}} ফাঁকা মেমোরি প্রয়োজন, এখন {{available}} ফাঁকা; চালিয়ে যেতে মেমোরি খালি করো",

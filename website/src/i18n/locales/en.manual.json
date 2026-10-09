@@ -4386,6 +4386,7 @@
         "no_pull_requests_yet": "No pull requests in this session yet",
         "pending_approval": "Pending Approval",
         "resolved": "Resolved",
+        "no_record": "No record",
         "resource_type_issue": "Issue",
         "resource_type_link": "Link",
         "resource_type_pr": "PR",
@@ -4563,7 +4564,9 @@
         "stop_subagent": "Stop subagent {{name}}",
         "stop_failed": "Couldn't stop subagent {{name}}",
         "stop_all_failed": "Couldn't stop the subagents",
-        "retry_failed_error": "Couldn't retry some of the failed subagents"
+        "retry_failed_error": "Couldn't retry some of the failed subagents",
+        "checking_whether_it_started": "Checking whether it started…",
+        "liveness_check_failed": "Couldn't check whether it started. Retrying…"
       },
       "taskProgressBar": {
         "all_tasks_complete": "All tasks complete",
