@@ -226,6 +226,18 @@ cross-process lock** (mirror kiro-cli's `refresh_coordinator`) so concurrent ses
 don't stampede the refresh endpoint; re-read the store inside the lock and skip the
 HTTP call if a peer already refreshed.
 
+Two callers renew a stored identity, both through `auth/refresh.ensure_fresh`, so
+the lock above orders them: the engine's `_kiro/auth/getAccessToken` callback
+(`KasAuthProvider.current`), and a gateway tick
+(`dashboard/sign_in_refresher.run_sign_in_refresher`, started beside the
+stale-asset watchdog) that sleeps until the highest-priority stored identity
+enters the margin and renews it then, so the stored expiry the sign-in card and
+`kirocrew doctor` read does not freeze while no agent turn runs. The
+tick never renews a token outside the margin, does not retry while the
+refresh-rejected marker stands (a new sign-in clears it), backs off from 30s to
+5min on a transient failure, and does not import `kiro_crew.auth` until the vault
+file exists.
+
 ## Storage
 
 Context: kiro-cli does **not** encrypt its tokens — they live plaintext in a SQLite

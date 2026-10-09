@@ -178,6 +178,7 @@ from kiro_crew.dashboard.origin import (
     parse_dashboard_url,
     resolve_dashboard_host,
 )
+from kiro_crew.dashboard.sign_in_refresher import run_sign_in_refresher
 from kiro_crew.dashboard.stale_asset_watchdog import (
     run_stale_asset_watchdog,
     shutdown_exit_code,
@@ -13712,6 +13713,13 @@ class GatewayOrchestrator:
         )
         self._background_tasks.add(_watchdog)
         _watchdog.add_done_callback(self._background_tasks.discard)
+
+        # Renew the stored Kiro sign-in before it expires, not only when an
+        # agent turn asks for a token. Loads the auth subsystem only
+        # once a sign-in vault exists; see dashboard/sign_in_refresher.
+        _sign_in_refresher = asyncio.create_task(run_sign_in_refresher(shutdown_event))
+        self._background_tasks.add(_sign_in_refresher)
+        _sign_in_refresher.add_done_callback(self._background_tasks.discard)
 
         print("👻 Kiro Crew gateway starting…")
 
