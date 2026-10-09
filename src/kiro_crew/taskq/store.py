@@ -865,6 +865,27 @@ class TaskStore:
                 raise TaskStoreUnavailable(f"task event write failed: {exc}") from exc
 
     @_typed_read
+    def lost_owner_recoveries(self, task_id: str) -> int:
+        """How many times the boot reconciler sent *task_id* back to ``recovering``.
+
+        Counted from the row's own ``transition`` events (``reconciled:
+        lost_owner`` into ``recovering``), so the count survives every restart
+        and is not capped by the :meth:`events` window.
+        """
+        with self._lock:
+            row = (
+                self._c()
+                .execute(
+                    "SELECT COUNT(*) AS n FROM task_events WHERE task_id=? AND kind='transition' "
+                    "AND json_extract(data_json, '$.to')=? "
+                    "AND json_extract(data_json, '$.reconciled')='lost_owner'",
+                    (task_id, RECOVERING),
+                )
+                .fetchone()
+            )
+        return int(row["n"]) if row is not None else 0
+
+    @_typed_read
     def events(self, task_id: str, *, limit: int = 200) -> list[TaskEvent]:
         with self._lock:
             rows = (

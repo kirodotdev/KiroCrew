@@ -20,9 +20,18 @@ from kiro_crew.recovery.policy import (
     LayerPolicy,
 )
 
+#: Lost-owner recoveries one row is granted: the boot reconciler sends a row
+#: whose owner died back to ``recovering`` this many times, and the next lost
+#: owner ends it ``failed`` (see :func:`recovery_exhausted`). A run that takes
+#: its gateway down therefore costs a bounded number of restarts, not one per
+#: boot forever.
+RECOVERY_MAX_ATTEMPTS = 3
+
 #: The bare shared schedule (no layer specialisation): the store retries a row,
 #: it does not own a rung of the ladder.
-_RECOVERY_SCHEDULE = LayerPolicy(layer="taskq", trigger="lost owner / retry_wait", max_attempts=1)
+_RECOVERY_SCHEDULE = LayerPolicy(
+    layer="taskq", trigger="lost owner / retry_wait", max_attempts=RECOVERY_MAX_ATTEMPTS
+)
 
 # ── vocabulary ────────────────────────────────────────────────────────────────
 
@@ -189,6 +198,17 @@ def recovery_backoff_secs(attempts: int) -> float:
     by, and the dispatcher applies the jitter when it wakes them.
     """
     return _RECOVERY_SCHEDULE.raw_backoff_secs(int(attempts) + 1)
+
+
+def recovery_exhausted(recoveries: int) -> bool:
+    """True once a row has been granted every lost-owner recovery.
+
+    *recoveries* is how many times the row was already sent back to
+    ``recovering`` after its owner died (``TaskStore.lost_owner_recoveries``),
+    not ``attempts``: that counts every dispatch, including re-dispatches out of
+    ``retry_wait``, which say nothing about a run that kills its owner.
+    """
+    return _RECOVERY_SCHEDULE.should_escalate(recoveries)
 
 
 class InvalidTransition(ValueError):

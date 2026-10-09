@@ -9,8 +9,11 @@ dispatcher takes a single new row, each of those is examined once:
   lost is not run twice;
 * otherwise, by idempotency class: ``none`` and ``idempotent_key`` become
   ``recovering`` with a backoff, which the dispatcher re-claims and rebuilds a
-  runtime for; ``unknown`` becomes ``unknown_side_effect``, because an external
-  operation may have happened and only the entry adapter can query for it.
+  runtime for, at most ``model.RECOVERY_MAX_ATTEMPTS`` times per row; the next
+  lost owner ends the row ``failed`` with the reason, so a run that takes its
+  gateway down cannot restart it on every boot; ``unknown`` becomes
+  ``unknown_side_effect``, because an external operation may have happened and
+  only the entry adapter can query for it.
 * a kind with no registered recovery adapter keeps its state, loses its lease,
   and gets an ``awaiting_adapter`` event -- nothing is invented for it.
 
@@ -32,10 +35,12 @@ from .model import (
     KIND_SUBAGENT,
     QUEUED,
     RECOVERING,
+    RECOVERY_MAX_ATTEMPTS,
     SIDE_EFFECT_UNKNOWN,
     UNKNOWN_SIDE_EFFECT,
     TaskRecord,
     recovery_backoff_secs,
+    recovery_exhausted,
 )
 from .store import TaskStore, TaskStoreUnavailable
 
@@ -59,6 +64,8 @@ class ReconcileReport:
     recovering: int = 0
     unknown_side_effect: int = 0
     awaiting_adapter: int = 0
+    #: rows ended ``failed`` because their lost-owner recoveries were spent.
+    lost_owner_limit: int = 0
     errors: list[str] = field(default_factory=list)
 
     @property
@@ -70,6 +77,7 @@ class ReconcileReport:
             + self.requeued
             + self.recovering
             + self.unknown_side_effect
+            + self.lost_owner_limit
         )
 
 
@@ -168,6 +176,26 @@ def _settle_one(
         # claimable. With no lease it is already waiting for the dispatcher.
         if rec.lease_owner is not None and store.release_lease(rec.id):
             report.recovering += 1
+        return
+    recoveries = store.lost_owner_recoveries(rec.id)
+    if recovery_exhausted(recoveries):
+        # Its owner died during every recovery this row was granted: a run that
+        # takes its gateway down would otherwise restart it on every boot.
+        reason = (
+            f"the gateway stopped during this task {recoveries + 1} times; "
+            f"not re-dispatched after {RECOVERY_MAX_ATTEMPTS} recoveries"
+        )
+        if store.transition(
+            rec.id,
+            FAILED,
+            detail={
+                "reconciled": "lost_owner_limit",
+                "lost_owner_recoveries": recoveries,
+                "error": reason,
+            },
+        ):
+            report.lost_owner_limit += 1
+            logger.warning("taskq reconcile: %s failed: %s", rec.id, reason)
         return
     backoff = recovery_backoff_secs(rec.attempts)
     if store.transition(
