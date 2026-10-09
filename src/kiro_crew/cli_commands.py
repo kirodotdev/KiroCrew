@@ -3827,6 +3827,72 @@ def _settle_created_database(
         )
 
 
+def _require_owner_shell_for_forget() -> None:
+    """Refuse ``memory forget`` when this process runs under an agent session.
+
+    Deleting memory is an owner action: the dashboard route behind the same library
+    call is owner-only. The identity ladder the MCP clients already use answers
+    whether this process belongs to an agent session, from the gateway's own
+    environment and its published pid mappings. A named session refuses, and so does
+    an answer the ladder could not settle, because that is not proof of the owner.
+    """
+    from kiro_crew.mcp_caller import resolve_own_identity
+
+    identity = resolve_own_identity()
+    if identity.session_key or identity.failed:
+        raise ValueError(
+            "`kirocrew memory forget` is owner only and does not run from an agent "
+            "session's shell; nothing was forgotten. Run it in your own terminal, or "
+            "delete the key from the dashboard Memory page."
+        )
+
+
+def _memory_forget(store: VectorMemoryStore, args: argparse.Namespace) -> None:
+    """Tombstone one semantic key, printing what it held. Exits 1 when absent."""
+    key = str(args.key)
+    winner = getattr(args, "superseded_by", None)
+    reason = getattr(args, "reason", None)
+    shown_key = _TERMINAL_CTRL_RE.sub("", key)
+    if reason is not None and winner is None:
+        raise ValueError("--reason is recorded only with --superseded-by; nothing was forgotten.")
+    if winner is not None and winner == key:
+        raise ValueError("--superseded-by names the key being forgotten; nothing was forgotten.")
+    row = store.get_semantic(key)
+    if row is None:
+        print(f"Already absent: {shown_key}", file=sys.stderr)
+        sys.exit(1)
+    if winner is not None and store.get_semantic(winner) is None:
+        raise ValueError(
+            f"--superseded-by {_TERMINAL_CTRL_RE.sub('', winner)!r} is not a live key; "
+            "nothing was forgotten."
+        )
+    try:
+        value = json.loads(row["value_json"])
+    except (TypeError, ValueError):
+        value = row["value_json"]
+    if key.startswith("lesson."):
+        value = _lesson_display_text(value) or value
+    print(f"  {shown_key}: {_TERMINAL_CTRL_RE.sub('', str(value))}")
+    # Compare-and-delete against the value just shown, so a write landing between
+    # the read and the delete is never removed unseen.
+    removed = store.delete_semantic(
+        key,
+        source="user_explicit",
+        expect_value_json=row["value_json"],
+        superseded_by=winner,
+        supersede_reason=reason if winner is not None else None,
+    )
+    if not removed:
+        raise ValueError(
+            f"{shown_key} changed while it was being forgotten; nothing was forgotten. "
+            "Run the command again to review the current value."
+        )
+    if winner is not None:
+        print(f"Forgotten; superseded by {_TERMINAL_CTRL_RE.sub('', winner)}.")
+    else:
+        print("Forgotten.")
+
+
 def _memory_cmd(args: argparse.Namespace) -> None:
     """Manage the memory system (vector store + markdown layer).
 
@@ -3849,6 +3915,9 @@ def _memory_cmd(args: argparse.Namespace) -> None:
 def _memory_verb(args: argparse.Namespace) -> None:
     """Run one ``kirocrew memory`` verb; :func:`_memory_cmd` owns its refusals."""
     action = getattr(args, "mem_action", None)
+    # Checked before ANY store opens, so a refused call touches nothing.
+    if action == "forget":
+        _require_owner_shell_for_forget()
     # "show" reads only the markdown layer — don't open (or create) the
     # vector store for it.
     if action == "show":
@@ -4234,6 +4303,9 @@ def _memory_verb(args: argparse.Namespace) -> None:
                         print(f"  {row['id']}  superseded by {row['superseded_by']}")
                         print(f"    {row['text'][:120]}")
 
+            elif action == "forget":
+                _memory_forget(store, args)
+
             elif action == "import":
                 # Validated and parsed above, before this store was opened, so nothing
                 # here can be the reason an empty database exists.
@@ -4287,7 +4359,10 @@ def _memory_verb(args: argparse.Namespace) -> None:
                     )
 
             else:
-                print("Usage: kirocrew memory {list|search|show|stats|audit|export|migrate|import}")
+                print(
+                    "Usage: kirocrew memory "
+                    "{list|search|show|stats|audit|export|migrate|forget|import}"
+                )
         finally:
             try:
                 store.close()

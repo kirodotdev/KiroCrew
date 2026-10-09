@@ -1015,6 +1015,26 @@ class TestSemanticEndpoints:
         store.delete_semantic.assert_called_once_with("k", source="user_explicit")
 
     @pytest.mark.asyncio
+    async def test_owner_delete_tombstones_a_real_row(self, tmp_path: Path) -> None:
+        """The owner's dashboard route stays the way to forget a key.
+
+        ``kirocrew memory forget`` refuses inside an agent session; the route keeps
+        its own owner gate and must keep removing the row for the owner.
+        """
+        from kiro_crew.vector_memory import VectorMemoryStore
+
+        store = VectorMemoryStore(db_path=tmp_path / "memory.db")
+        store.init()
+        try:
+            store.set_semantic("pref.editor", "vim", 0.9, "test")
+            state = _make_state(vector_store=store)
+            req = _make_request(state, method="DELETE", match_info={"key": "pref.editor"})
+            assert _body(await mem_mod.api_memory_semantic_delete(req)) == {"ok": True}
+            assert store.get_semantic("pref.editor") is None
+        finally:
+            store.close()
+
+    @pytest.mark.asyncio
     async def test_events_caps_limit_at_200(self) -> None:
         store = _store()
         state = _make_state(vector_store=store)

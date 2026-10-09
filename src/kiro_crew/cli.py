@@ -3141,6 +3141,23 @@ Examples:
     )
     mem_retired.add_argument("--restore", dest="restore_id", default=None, help="Restore this id")
     mem_retired.add_argument("--limit", type=int, default=20, help="How many to list")
+    mem_forget = mem_sub.add_parser(
+        "forget",
+        help="Tombstone one semantic memory key (owner only; refused in an agent session)",
+    )
+    mem_forget.add_argument("key", help="Semantic memory key to forget")
+    mem_forget.add_argument(
+        "--superseded-by",
+        dest="superseded_by",
+        default=None,
+        help="Live key that replaces this one; recorded on the tombstone",
+    )
+    mem_forget.add_argument(
+        "--reason", default=None, help="Short tag for why the winner replaced it"
+    )
+    mem_forget.add_argument(
+        "--store", default=None, help="Store to forget in (default: the default store)"
+    )
     mem_import = mem_sub.add_parser("import", help="Import memory from JSON file")
     mem_import.add_argument("file", help="Path to JSON file (export format)")
     mem_import.add_argument(
