@@ -83,6 +83,17 @@ def reserve_quarantine_name(path: Path) -> Path:
     raise FileExistsError(f"no free quarantine name beside {path}")
 
 
+# Sidecars that hold committed or rolled-back pages. One left beside a
+# recreated database is overwritten by the new file's own journal, so those
+# pages would exist nowhere: such a file must move with the database or the
+# database stays where it is. ``-shm`` is only an index SQLite rebuilds.
+_DATA_SIDECAR_SUFFIXES = ("-wal", "-journal")
+
+
+class SidecarNotMovable(OSError):
+    """A ``-wal``/``-journal`` would not move, so the database was kept in place."""
+
+
 @dataclass
 class Quarantine:
     """Where a damaged file went, and any sidecar that could not follow it."""
@@ -92,7 +103,16 @@ class Quarantine:
     left: list[str] = field(default_factory=list)
 
 
-def quarantine_sqlite_file(path: Path) -> Quarantine:
+def _put_back(moves: list[tuple[Path, Path]]) -> None:
+    """Undo sidecar moves, newest first, so a refused quarantine changes nothing."""
+    for src, dst in reversed(moves):
+        try:
+            move_without_overwrite(dst, src)
+        except OSError:
+            pass
+
+
+def quarantine_sqlite_file(path: Path, *, data_sidecars_must_move: bool = False) -> Quarantine:
     """Move *path* and its sidecars aside under a name nothing else holds.
 
     Never overwrites: each copy is recovery evidence. A hot ``-journal`` left
@@ -101,27 +121,47 @@ def quarantine_sqlite_file(path: Path) -> Quarantine:
     processes -- cannot pick the same one. Sidecars move first and the
     database LAST, because the database's absence is what the reopen keys on:
     a sidecar that will not move is reported in ``left``, never a reason to
-    keep the damaged database in place. Raises ``OSError`` only when the
-    database itself cannot move (or no free name exists); the reserved
-    placeholder is removed first.
+    keep the damaged database in place. With ``data_sidecars_must_move`` a
+    ``-wal`` or ``-journal`` that will not move instead raises
+    :class:`SidecarNotMovable` with every file back where it was: left beside
+    a recreated database it would be overwritten, and its pages kept nowhere.
+    Raises ``OSError`` also when the database itself cannot move (or no free
+    name exists); the reserved placeholder is removed first.
     """
     target = reserve_quarantine_name(path)
     result = Quarantine(target=target)
-    for suffix in SQLITE_SIDECAR_SUFFIXES:
+    data_moved: list[tuple[Path, Path]] = []
+    ordered = _DATA_SIDECAR_SUFFIXES + tuple(
+        s for s in SQLITE_SIDECAR_SUFFIXES if s not in _DATA_SIDECAR_SUFFIXES
+    )
+    for suffix in ordered:
         src = path.with_name(path.name + suffix)
         if not src.exists():
             continue
         dst = target.with_name(target.name + suffix)
         try:
             move_without_overwrite(src, dst)
-            result.moved.append(dst.name)
         except OSError as exc:
-            result.left.append(f"{src.name} ({exc})")
+            if not (data_sidecars_must_move and suffix in _DATA_SIDECAR_SUFFIXES):
+                result.left.append(f"{src.name} ({exc})")
+                continue
+            _put_back(data_moved)
+            try:
+                target.unlink()
+            except OSError:
+                pass
+            raise SidecarNotMovable(
+                f"{src.name} could not be moved ({exc}); {path.name} was kept in place"
+            ) from exc
+        if suffix in _DATA_SIDECAR_SUFFIXES:
+            data_moved.append((src, dst))
+        result.moved.append(dst.name)
     try:
         # Onto the placeholder this call created: the one replace that is ours
         # to make.
         os.replace(path, target)
     except OSError:
+        _put_back(data_moved)
         try:
             target.unlink()
         except OSError:

@@ -627,7 +627,7 @@ at warning level and records the fact on `TaskStore.quarantined_to` /
 `warnings`; `kirocrew doctor` reports any quarantined copy beside the live
 file. Work accepted only into the old file is not recovered. Locked, busy,
 disk-full, read-only, `unable to open` and a schema NEWER than this build stay
-refusals (`_is_corruption` matches only those exact phrases), and doctor's
+refusals (`sqlite_quarantine.is_damaged_database_error` matches only those exact phrases), and doctor's
 diagnostic open never moves anything.
 
 **An enabled queue never falls back.** With `agent.task_queue_enabled` on, a

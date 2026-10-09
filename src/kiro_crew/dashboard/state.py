@@ -7356,6 +7356,10 @@ class DashboardState:
             self._knowledge_store = KnowledgeStore.open_recovering(
                 os.path.join(db_dir, "knowledge.db")
             )
+            # The log alone is not enough: an empty library with no word on
+            # screen reads as data loss. The bell feed is where the user looks.
+            for warning in self._knowledge_store.warnings:
+                self.notify("agent", "Knowledge library was reset", warning, url="/knowledge")
         return self._knowledge_store
 
     def enable_yolo(self, *, from_config: bool = False) -> None:
