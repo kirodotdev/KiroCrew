@@ -5778,6 +5778,8 @@
     "crashNotice": {
       "diagnostics_were_saved_locally": "Nouveaux enregistrements de plantage enregistrés sur cet appareil : {{n}}. Joignez-les à votre signalement.",
       "dismiss": "Ignorer",
+      "report_issue": "Signaler un problème",
+      "report_note": "L'application s'est fermée de manière inattendue. Nouveaux rapports de plantage enregistrés sur cet appareil : {{n}}.",
       "reveal_failed": "Impossible d’ouvrir le dossier – recherchez crashes.log dans le répertoire des journaux de l’application.",
       "show_diagnostics": "Afficher les diagnostics",
       "the_app_closed_unexpectedly": "L’application s’est fermée de manière inattendue"

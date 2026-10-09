@@ -5687,6 +5687,8 @@
     "crashNotice": {
       "diagnostics_were_saved_locally": "Neue auf diesem Gerät gespeicherte Absturzberichte: {{n}}. Fügen Sie sie Ihrer Fehlermeldung bei.",
       "dismiss": "Schließen",
+      "report_issue": "Problem melden",
+      "report_note": "Die App wurde unerwartet beendet. Neue auf diesem Gerät gespeicherte Absturzberichte: {{n}}.",
       "reveal_failed": "Ordner konnte nicht geöffnet werden – suchen Sie im Log-Verzeichnis der App nach crashes.log.",
       "show_diagnostics": "Diagnose anzeigen",
       "the_app_closed_unexpectedly": "Die App wurde unerwartet beendet"

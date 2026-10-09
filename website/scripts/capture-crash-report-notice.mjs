@@ -197,6 +197,22 @@ for (const width of [390, 320]) {
   await ctx.close()
 }
 
+// Scene 7 — "Report issue" opens the shared Report a Problem dialog with the
+// crash already in the note. The frame is the whole page: the evidence is the
+// dialog over the shell and the pre-filled "What happened?" text, which a
+// clipped banner frame cannot show.
+{
+  const { ctx, page } = await openScene({ theme: 'dark', newCount: 2 })
+  const el = banner(page)
+  await el.waitFor({ state: 'visible', timeout: 20_000 })
+  await page.waitForTimeout(800)
+  await el.getByRole('button', { name: /report issue/i }).click()
+  await page.getByRole('dialog').waitFor({ state: 'visible', timeout: 20_000 })
+  await page.waitForTimeout(400)
+  await page.screenshot({ path: `${OUT}/crash-notice-report-dialog.png` })
+  await ctx.close()
+}
+
 await browser.close()
 srv.close()
-console.log(`wrote 7 frames to ${OUT}`)
+console.log(`wrote 8 frames to ${OUT}`)

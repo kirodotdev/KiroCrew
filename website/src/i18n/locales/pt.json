@@ -5778,6 +5778,8 @@
     "crashNotice": {
       "diagnostics_were_saved_locally": "Novos registros de falha salvos neste computador: {{n}}. Anexe-os ao relatar o problema.",
       "dismiss": "Dispensar",
+      "report_issue": "Relatar problema",
+      "report_note": "O aplicativo fechou inesperadamente. Novos registros de falha salvos nesta máquina: {{n}}.",
       "reveal_failed": "Não foi possível abrir a pasta — procure crashes.log no diretório de logs do aplicativo.",
       "show_diagnostics": "Mostrar diagnósticos",
       "the_app_closed_unexpectedly": "O aplicativo foi encerrado inesperadamente"

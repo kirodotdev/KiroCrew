@@ -1739,6 +1739,8 @@
     "crashNotice": {
       "diagnostics_were_saved_locally": "New crash records saved on this machine: {{n}}. Attach them when you report the problem.",
       "dismiss": "Dismiss",
+      "report_issue": "Report issue",
+      "report_note": "The app closed unexpectedly. New crash records saved on this machine: {{n}}.",
       "reveal_failed": "Couldn't open the folder — look for crashes.log in the app's log directory.",
       "show_diagnostics": "Show diagnostics",
       "the_app_closed_unexpectedly": "The app closed unexpectedly"

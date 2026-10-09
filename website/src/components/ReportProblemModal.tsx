@@ -19,14 +19,20 @@ type CollectResult = Awaited<ReturnType<typeof api.collectDiagnostics>>
 interface ReportProblemModalProps {
   open: boolean
   onClose: () => void
+  /**
+   * Text the "What happened?" note starts with, and returns to after a close.
+   * A surface that already knows what went wrong (the crash notice) passes it
+   * so the report does not open blank; the user can still edit or clear it.
+   */
+  initialNote?: string
 }
 
 /**
  * The "Report a Problem" flow, shared by every surface that offers it.
  *
- * Two entry points mount this same modal — Settings › About › Support
- * (`ReportProblemCard`) and the nav rail's "Report issue" link
- * (`shell/nav/railChrome.tsx`) —
+ * Three entry points mount this same modal — Settings › About › Support
+ * (`ReportProblemCard`), the nav rail's "Report issue" link
+ * (`shell/nav/railChrome.tsx`) and the crash notice (`CrashReportNotice`) —
  * so a user who reaches for the rail gets the redacted bundle instead of a bare
  * link to the issue tracker. Keeping ONE component means the collect call, the
  * redaction notice, and the deliveries can never drift between surfaces.
@@ -38,8 +44,8 @@ interface ReportProblemModalProps {
  * actions, so a local user can find the bundle on disk without a third button
  * in the row (the two-button-per-row cap).
  */
-export default function ReportProblemModal({ open, onClose }: ReportProblemModalProps) {
-  const [note, setNote] = useState('')
+export default function ReportProblemModal({ open, onClose, initialNote = '' }: ReportProblemModalProps) {
+  const [note, setNote] = useState(initialNote)
   const [includeLogs, setIncludeLogs] = useState(true)
   const [result, setResult] = useState<CollectResult | null>(null)
   const [error, setError] = useState('')
@@ -66,7 +72,7 @@ export default function ReportProblemModal({ open, onClose }: ReportProblemModal
     window.setTimeout(() => {
       setResult(null)
       setError('')
-      setNote('')
+      setNote(initialNote)
     }, 200)
   }
 

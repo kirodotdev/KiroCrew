@@ -5596,6 +5596,8 @@
     "crashNotice": {
       "diagnostics_were_saved_locally": "この端末に新しいクラッシュ記録を {{n}} 件保存しました。問題を報告する際に添付してください。",
       "dismiss": "閉じる",
+      "report_issue": "問題を報告",
+      "report_note": "アプリが予期せず終了しました。このマシンに保存された新しいクラッシュ記録: {{n}} 件。",
       "reveal_failed": "フォルダーを開けませんでした。アプリのログディレクトリにある crashes.log を確認してください。",
       "show_diagnostics": "診断情報を表示",
       "the_app_closed_unexpectedly": "アプリが予期せず終了しました"

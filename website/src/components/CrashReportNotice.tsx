@@ -26,9 +26,10 @@
  * that names no path, so this component never holds one.
  */
 import { useEffect, useState } from 'react'
-import { AlertTriangle, FolderOpen, X } from 'lucide-react'
+import { AlertTriangle, Bug, FolderOpen, X } from 'lucide-react'
 import { Btn } from './ui'
 import ErrorNotice from './ErrorNotice'
+import ReportProblemModal from './ReportProblemModal'
 
 import { i18nT } from '../i18n/t'
 
@@ -43,8 +44,9 @@ export default function CrashReportNotice() {
   const [count, setCount] = useState(0)
   const [dismissed, setDismissed] = useState(false)
   const [revealError, setRevealError] = useState<string | null>(null)
+  const [reportOpen, setReportOpen] = useState(false)
 
-  // The banner's ONE action must not fail into silence. `reveal()` reports its
+  // The reveal action must not fail into silence. `reveal()` reports its
   // outcome two ways — a rejection, and an explicit `{ ok: false }` (the log was
   // removed since the scan, or `shell.showItemInFolder` threw) — and the old
   // `.catch(() => {})` discarded both, leaving a dead button and a user who was
@@ -81,62 +83,65 @@ export default function CrashReportNotice() {
 
   if (dismissed || count < 1) return null
 
-  // Narrow-first, by wrapping rather than by hiding.
-  //
-  // The first shape of this banner was one horizontal row: icon, text, a
-  // `shrink-0` reveal button, a `shrink-0` dismiss. At 320px those three fixed
-  // items leave the text column about 50px wide, and the German and French
-  // strings are the longest of the twelve catalogs — so the sentence carrying
-  // the whole point of the notice is what gets crushed.
-  //
-  // `flex-wrap` -> `md:flex-nowrap` fixes it without a second copy of any
-  // control. Narrow, the icon + text + dismiss share line one and the
-  // full-width reveal button wraps to line two; at `md` everything is back on a
-  // single line, with `order` putting the reveal button ahead of the dismiss
-  // again. Deliberately NOT `md:hidden` + `hidden md:flex` pairs: two DOM nodes
-  // for one action means `getByRole('button', { name })` matches twice, which is
-  // a Playwright strict-mode violation, and it is also what the
-  // `narrow-viewport-required` rule means by "hiding is not collapsing".
+  // Two rows, so each holds at most two controls (the two-buttons-per-row
+  // cap counts the icon-only dismiss too). Row one is the message: icon, text,
+  // and the dismiss top-right, where it is looked for. Row two is the actions:
+  // "Show diagnostics" and "Report issue". Narrow, the actions stack full-width
+  // so the longest catalogs (German, French) never crush the sentence carrying
+  // the point of the notice; from `sm` they sit side by side under the text.
+  // One DOM node per action at every width — no `md:hidden` + `hidden md:flex`
+  // pairs, which would make `getByRole('button', { name })` match twice (a
+  // Playwright strict-mode violation; "hiding is not collapsing").
   return (
     <div
       role="status"
       className="mx-3 md:mx-6 mt-4 mb-2 bg-warn/10 border border-warn/30 rounded-lg p-3 md:p-4 animate-rise"
     >
-      <div className="flex flex-wrap md:flex-nowrap items-start gap-3">
-      <AlertTriangle size={18} className="text-warn shrink-0 mt-0.5 order-1" />
-      <div className="flex-1 basis-0 min-w-0 order-2">
-        <div className="text-[13px] font-medium text-text">
-          {i18nT('components.crashNotice.the_app_closed_unexpectedly')}
+      <div className="flex items-start gap-3">
+        <AlertTriangle size={18} className="text-warn shrink-0 mt-0.5" />
+        <div className="flex-1 basis-0 min-w-0">
+          <div className="text-[13px] font-medium text-text">
+            {i18nT('components.crashNotice.the_app_closed_unexpectedly')}
+          </div>
+          <div className="text-[13px] text-muted mt-1">
+            {/* `n`, not `count`: i18next reads a `count` variable as a plural
+                selector and would look for `_one`/`_other` variants of this key,
+                which only exist for keys registered in i18n/pluralKeys.json. */}
+            {i18nT('components.crashNotice.diagnostics_were_saved_locally', { n: count })}
+          </div>
         </div>
-        <div className="text-[13px] text-muted mt-1">
-          {/* `n`, not `count`: i18next reads a `count` variable as a plural
-              selector and would look for `_one`/`_other` variants of this key,
-              which only exist for keys registered in i18n/pluralKeys.json. */}
-          {i18nT('components.crashNotice.diagnostics_were_saved_locally', { n: count })}
-        </div>
+        <button
+          type="button"
+          onClick={() => setDismissed(true)}
+          aria-label={i18nT('components.crashNotice.dismiss')}
+          className="shrink-0 text-muted hover:text-text p-1 rounded"
+        >
+          <X size={14} />
+        </button>
       </div>
-      {/* Dismiss stays top-right at every width — that is where it is looked
-          for — so narrow it ends line one and `md:order-4` moves it back to the
-          far end once the reveal button rejoins the row. */}
-      <button
-        type="button"
-        onClick={() => setDismissed(true)}
-        aria-label={i18nT('components.crashNotice.dismiss')}
-        className="shrink-0 text-muted hover:text-text p-1 rounded order-3 md:order-4"
-      >
-        <X size={14} />
-      </button>
-      <Btn
-        onClick={() => { void revealCrashFolder() }}
-        className="shrink-0 w-full md:w-auto justify-center order-4 md:order-3"
-      >
-        <FolderOpen size={14} /> {i18nT('components.crashNotice.show_diagnostics')}
-      </Btn>
+      <div className="mt-3 flex flex-col sm:flex-row gap-2 sm:pl-[30px]">
+        <Btn
+          onClick={() => { void revealCrashFolder() }}
+          className="w-full sm:w-auto justify-center"
+        >
+          <FolderOpen size={14} /> {i18nT('components.crashNotice.show_diagnostics')}
+        </Btn>
+        {/* The shared Report a Problem flow (bundle + pre-filled GitHub issue),
+            started with the one crash fact this banner holds — the count — in
+            the note. The renderer is never told more (see the header), so the
+            note names no path, filename or exception code. That bundle is the
+            gateway's: it does not carry the desktop crash ledger, which is why
+            the banner still asks the user to attach what "Show diagnostics"
+            reveals, and why neither action is styled as the primary one. */}
+        <Btn
+          onClick={() => setReportOpen(true)}
+          className="w-full sm:w-auto justify-center"
+        >
+          <Bug size={14} /> {i18nT('components.crashNotice.report_issue')}
+        </Btn>
       </div>
-      {/* Failure of the only action, on its OWN row beneath the controls — a
-          sibling of the flex row, not a child of it, because that row is
-          `md:flex-nowrap` and a full-width child there would not wrap, it would
-          crush the text column instead. `askAgent` is on: the hand-off
+      {/* Failure of the reveal action, on its OWN row beneath the actions.
+          `askAgent` is on: the hand-off
           navigates away, and this banner holds no unsaved input to lose — exactly
           the crash-fallback case ErrorNotice documents for it. */}
       {revealError && (
@@ -148,6 +153,11 @@ export default function CrashReportNotice() {
           testId="crash-notice-reveal-error"
         />
       )}
+      <ReportProblemModal
+        open={reportOpen}
+        onClose={() => setReportOpen(false)}
+        initialNote={i18nT('components.crashNotice.report_note', { n: count })}
+      />
     </div>
   )
 }

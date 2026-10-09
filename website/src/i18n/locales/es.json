@@ -5778,6 +5778,8 @@
     "crashNotice": {
       "diagnostics_were_saved_locally": "Registros de fallo nuevos guardados en este equipo: {{n}}. Adjúntalos al informar del problema.",
       "dismiss": "Descartar",
+      "report_issue": "Reportar problema",
+      "report_note": "La aplicación se cerró inesperadamente. Nuevos registros de fallos guardados en este equipo: {{n}}.",
       "reveal_failed": "No se pudo abrir la carpeta: busca crashes.log en el directorio de registros de la aplicación.",
       "show_diagnostics": "Mostrar diagnósticos",
       "the_app_closed_unexpectedly": "La aplicación se cerró de forma inesperada"
