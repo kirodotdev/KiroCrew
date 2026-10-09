@@ -712,8 +712,21 @@ export default function SidePanel({
         {/* Pinned views (Changes / Files / Artifacts): always present, fixed at
             the front, non-closable, not draggable, compact. The group's 8px gap
             matches the active chip's corner-piece width, so a piece lands in the
-            gap instead of over a neighbour. */}
-        <div className="flex items-end gap-2 shrink-0 -mb-px">
+            gap instead of over a neighbour.
+
+            SCROLLS, same class set as the dynamic tablist below (`min-w-0
+            overflow-x-auto scrollbar-none`), and deliberately NOT `shrink-0`:
+            a host may add leading chips ahead of the three pinned ones, and at
+            a narrow width (a phone, where the Crewmates overlay takes the whole
+            window) an unshrinkable group pushes its own last chip AND the
+            trailing strip controls — + menu, dock toggle, close — past the
+            panel root's `overflow-hidden` edge, where nothing at that width
+            brings them back. The chips inside stay `shrink-0`: they scroll,
+            they never squeeze. */}
+        <div
+          className="flex items-end gap-2 min-w-0 overflow-x-auto scrollbar-none -mb-px"
+          data-testid="side-panel-fixed-tabs"
+        >
           {/* The host's leading tabs, ahead of the pinned views: non-closable
               chips, never Reorder items — they are the strip's identity, not
               documents. ALWAYS labelled (`pinned={false}`): several icon-only
