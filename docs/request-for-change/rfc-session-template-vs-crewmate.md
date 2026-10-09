@@ -23,6 +23,10 @@ superseded-by: []
 - Author: CrysisDeu
 - Implementation: [#18342](https://github.com/kirodotdev/KiroCrew/pull/18342),
   tracking [#18328](https://github.com/kirodotdev/KiroCrew/issues/18328).
+- Amended 2026-10-09 (rule 6): the picker's **Default for new sessions** row
+  follows the template, since a control that enrolled a crewmate there stopped
+  controlling what a new session runs the moment rule 1 landed (the UX lane's
+  blocker on #18342 R6).
 
 ## 1. Summary
 
@@ -94,22 +98,32 @@ Rules that follow:
    browser's last open), else the conversation with the newest message. The
    `default` crewmate takes part like any row; a roster holding only `default`
    still shows the empty-state hero.
-5. `config.default_agent` keeps naming the roster's default crewmate (the badge,
-   the undeletable row). It is not consulted for a session that picked no
-   crewmate. Renaming the knob `agent.default_agent` to say "default custom
-   agent", and retiring the top-level `default_agent` crewmate alias as a
-   concept, are the follow-ups in §4.
+5. `config.default_agent` keeps naming the roster's default crewmate: the
+   **Default** badge on the Crewmates page, the undeletable row, the one
+   `select_crew` keeps for itself. It is not consulted for a session that
+   picked no crewmate. Renaming the knob `agent.default_agent` to say "default
+   custom agent", and retiring the top-level `default_agent` crewmate alias as
+   a concept, are the follow-ups in §4.
+6. A control that says it sets the default for new sessions sets what rule 1
+   makes new sessions run. The chat picker's **Default for new sessions** row
+   writes `agent.default_agent` in the template namespace and enrolls no
+   crewmate; its badge marks the default custom agent's template row and the
+   row names that agent; a crewmate's chat offers no such row, since a crewmate
+   is never the default for a new session. `PUT /api/config/default-agent` with
+   a template-namespace name, or an unqualified name that is no crewmate alias,
+   is that write; a crewmate alias still sets the roster's default crewmate of
+   rule 5. The two are different settings behind one route, told apart by the
+   namespace the picker chose the name in. Enrolling a template into a crewmate
+   alias is no longer a side effect of that route; `/api/agents/sync` is
+   untouched.
 
 ## 4. Non-goals
 
-- Retiring the enrollment of templates into crewmate aliases
-  (`/api/config/default-agent`, `/api/agents/sync`), and a slot that carries
-  template / folder / memory explicitly instead of one `agent` name. Follow-ups
-  on #18328.
-- Moving the chat picker's **default** badge from the `default` alias row to the
-  default custom-agent row, renaming `agent.default_agent` to name the default
-  custom agent, and retiring the top-level `default_agent` crewmate alias as a
-  concept. Same follow-up.
+- Retiring the enrollment of templates into crewmate aliases by
+  `/api/agents/sync`, and a slot that carries template / folder / memory
+  explicitly instead of one `agent` name. Follow-ups on #18328.
+- Renaming `agent.default_agent` to name the default custom agent, and retiring
+  the top-level `default_agent` crewmate alias as a concept. Same follow-up.
 - Any change to how a crewmate's DM thread binds.
 
 ## 5. Backward compatibility
@@ -124,6 +138,10 @@ Rules that follow:
   the crewmate's DM thread and explicit picks.
 - Legacy plain slots stamped `default` run as before and are not credited to
   the `default` crewmate's roster recency.
+- The picker's ★ no longer enrolls a template as a crewmate alias; an alias it
+  enrolled earlier stays in `config.agents` as an ordinary row. The Developer →
+  Config "Default crewmate" select keeps writing `config.default_agent` and
+  says what that setting controls (rule 5).
 
 ## 6. What this amends
 
