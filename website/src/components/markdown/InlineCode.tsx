@@ -10,7 +10,7 @@ import FilePathMenu, { useRevealFailure } from '../FilePathMenu'
 import { i18nT } from '../../i18n/t'
 import { InsideLinkCtx, PathActionCtx, PathProbeCtx, SessionActionCtx, SidebarFolderCtx } from './contexts'
 import { activatePath, basenameOf, usePathResolution } from './pathReferences'
-import { folderSegmentsOf, resolveFolderChip, resolveSessionChip } from './linkTargets'
+import { folderSegmentsOf, resolveFolderChip, useSessionChip } from './linkTargets'
 import { CopyFailedNotice, useCopiedFlash, useTitleCuedCopy } from './copyFeedback'
 import { ELEMENT_OVERRIDES, isElementWithProps } from './elements'
 
@@ -475,6 +475,9 @@ export function InlineCode({ children, ...props }: { children?: React.ReactNode 
   const { directLocal } = useBranding()
   const raw = codeStr.trim()
   const pathResolution = usePathResolution(raw, probeEnabled)
+  // Before the early returns below (rules of hooks): a closed session's chip
+  // waits on a gateway probe. Same text the chip branch below would see.
+  const sessionTarget = useSessionChip(visibleText === null || raw === '' ? null : raw, sessionActions)
   // Failure state for the chip's reveal (Shift+click / no handler wired); rendered
   // beside the chip. Declared before the early returns below (rules of hooks).
   const reveal = useRevealFailure(raw)
@@ -533,7 +536,7 @@ export function InlineCode({ children, ...props }: { children?: React.ReactNode 
     // span, where a button would write '' — clearing the clipboard — and then
     // confirm it). Stay an inert, selectable code span.
     if (visibleText === null || raw === '') return <code className={CHIP_BASE} {...safeProps}>{reserve}{children}</code>
-    const session = resolveSessionChip(raw, sessionActions)
+    const session = sessionTarget
     if (session) {
       return (
         <SessionChip
@@ -541,7 +544,7 @@ export function InlineCode({ children, ...props }: { children?: React.ReactNode 
           sessionTitle={session.title}
           label={raw}
           safeProps={safeProps}
-          onOpen={sessionActions.onSessionOpen!}
+          onOpen={session.open}
         >{children}</SessionChip>
       )
     }

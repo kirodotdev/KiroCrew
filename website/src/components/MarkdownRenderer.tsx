@@ -83,7 +83,7 @@ import {
   type PathActions,
   type SessionActions,
 } from './markdown/contexts'
-import { artifactSlugFromHref, resolveSessionChip, soleLinkInParagraph, useUnfurlHref } from './markdown/linkTargets'
+import { artifactSlugFromHref, soleLinkInParagraph, useSessionChip, useUnfurlHref } from './markdown/linkTargets'
 import { dashboardPreviewRef, dashboardPreviewSlugFromHref } from '../utils/dashboardPreview'
 import { activatePath, usePathResolution } from './markdown/pathReferences'
 import { ELEMENT_OVERRIDES, sp } from './markdown/elements'
@@ -191,7 +191,8 @@ function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAncho
   const sessionRouting = !!(sessionActions.onSessionOpen && sessionActions.sessions)
   // Same gate as the inline chip, so a link and a bare key naming one session
   // cannot disagree about whether it is reachable.
-  const sessionLink = sessionHrefSid ? resolveSessionChip(sessionHrefSid, sessionActions) : null
+  // A closed session the page can resume counts too (`useSessionChip`).
+  const sessionLink = useSessionChip(sessionHrefSid, sessionActions)
   // The attribute carries the canonical key: a modified click goes to the browser,
   // and an authored `dashboard_…` sid would open a session `?sid=` cannot resolve.
   const sessionHref = sessionLink && sessionCandidate ? canonicalChatHref(sessionCandidate, sessionLink.key) : null
@@ -201,10 +202,11 @@ function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAncho
     const plainPrimaryClick = e.button === 0 && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey
     if (!plainPrimaryClick) return
     // A resolvable session opens in place. A chat-session href that does NOT
-    // resolve is swallowed rather than left to the browser. `resolveSessionChip`
+    // resolve is swallowed rather than left to the browser. `useSessionChip`
     // returns null in two cases, both correctly declined here:
-    //   - a closed / unknown key — its raw `?sid=` would navigate to a session
-    //     the controller cannot load, landing on a dead/blank view (#9914);
+    //   - an unknown key, or a closed one whose probe has not answered yet — its
+    //     raw `?sid=` would navigate to a session the controller cannot load,
+    //     landing on a dead/blank view (#9914);
     //   - the ACTIVE session's own key (`resolveSessionChip` rejects
     //     `key === activeSession`) — a plain click is a no-op on the session you
     //     are already in, matching the backtick chip, which renders the active
@@ -217,7 +219,7 @@ function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAncho
     // external link and keeps navigating as before, never a dead no-op.
     if (sessionLink) {
       e.preventDefault()
-      sessionActions.onSessionOpen!(sessionLink.key)
+      sessionLink.open(sessionLink.key)
     } else if (sessionHrefNamesSession && sessionRouting) {
       e.preventDefault()
     }

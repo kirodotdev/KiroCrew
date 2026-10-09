@@ -1,8 +1,8 @@
-import { useContext } from 'react'
+import { useContext, useEffect, useState } from 'react'
 import type { Element as HastElement } from 'hast'
 import { safeHttpUrl } from '../../lib/safeUrl'
 import { sessionKeyFrom, sessionKeyFromShort } from '../../utils/sessionKeys'
-import { LinkUnfurlCtx, type SessionActions, type SidebarFolderActions } from './contexts'
+import { ClosedSessionCtx, LinkUnfurlCtx, type SessionActions, type SidebarFolderActions } from './contexts'
 
 /**
  * Where a rendered link or chip points: an in-app artifact route, whether an
@@ -114,6 +114,66 @@ export function resolveSessionChip(raw: string, actions: SessionActions): { key:
   const title = actions.sessions.get(key)
   if (title === undefined) return null
   return { key, title }
+}
+
+type ClosedRow = { key: string; title: string }
+
+/**
+ * One probe per key per page life. A found row and a definite "no such
+ * session" are both kept; a failed request is not, so a later render retries.
+ * A session resumed from here becomes open and resolves through the roster
+ * first, so a kept row never shadows a live tab.
+ */
+const closedProbes = new Map<string, Promise<ClosedRow | null>>()
+const closedAnswers = new Map<string, ClosedRow | null>()
+
+function probeClosed(key: string, lookup: (key: string) => Promise<ClosedRow | null>): Promise<ClosedRow | null> {
+  let pending = closedProbes.get(key)
+  if (!pending) {
+    pending = lookup(key).then(
+      (row) => { closedAnswers.set(key, row); return row },
+      () => { closedProbes.delete(key); return null },
+    )
+    closedProbes.set(key, pending)
+  }
+  return pending
+}
+
+/** Test seam: forget every probe answer. */
+export function resetClosedSessionProbes(): void {
+  closedProbes.clear()
+  closedAnswers.clear()
+}
+
+/**
+ * `resolveSessionChip`, widened to a CLOSED session the page can resume.
+ *
+ * An open session resolves exactly as before, and opens through
+ * `onSessionOpen`. A miss falls back to `ClosedSessionCtx.lookup` for a FULL key
+ * only (a short name like `chat-7` has no timestamp, so it cannot say which past
+ * session it means), and only when the open roster is wired, so an offline or
+ * no-controller render stays as it was. Until the probe answers there is no chip,
+ * and a key the gateway does not know never gets one. `open` is the activation
+ * the caller must use, since the two kinds of target open differently.
+ */
+export function useSessionChip(raw: string | null, actions: SessionActions): { key: string; title: string; open: (key: string) => void } | null {
+  const closed = useContext(ClosedSessionCtx)
+  const live = raw ? resolveSessionChip(raw, actions) : null
+  const full = !live && raw && closed.lookup && closed.open && actions.onSessionOpen && actions.sessions ? sessionKeyFrom(raw) : null
+  const candidate = full && full !== actions.activeSession && !actions.sessions!.has(full) ? full : null
+  const [answer, setAnswer] = useState<{ for: string; row: ClosedRow | null } | null>(null)
+  useEffect(() => {
+    if (!candidate || !closed.lookup || closedAnswers.has(candidate)) return
+    let current = true
+    void probeClosed(candidate, closed.lookup).then((row) => { if (current) setAnswer({ for: candidate, row }) })
+    return () => { current = false }
+  }, [candidate, closed.lookup])
+  if (live) return { ...live, open: actions.onSessionOpen! }
+  if (!candidate || !closed.open) return null
+  const row = closedAnswers.has(candidate) ? closedAnswers.get(candidate) : answer?.for === candidate ? answer.row : null
+  if (!row) return null
+  const openClosed = closed.open
+  return { key: candidate, title: row.title, open: () => openClosed(row) }
 }
 
 /**

@@ -35,6 +35,7 @@ import {
   requestSlotReveal,
   requestFolderReveal,
   mcpAppKey,
+  resumeFromHistory,
   } from '../store/chatSlice'
 import { confirmedDelivered } from '../utils/sendDelivery'
 import { sendTurn } from '../chat-core/transport/sendTurn'
@@ -262,7 +263,7 @@ import { prevUserTextFor } from './chat/share/shareSupport'
 import { turnHadPolicyBlock } from '../app-sdk/turnPolicyBlock'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import { JiraHostsCtx } from '../lib/jiraHosts'
-import { SidebarFolderCtx, type SidebarFolderActions } from '../components/markdown/contexts'
+import { ClosedSessionCtx, SidebarFolderCtx, type ClosedSessionActions, type SidebarFolderActions } from '../components/markdown/contexts'
 import MessageErrorBoundary from '../components/MessageErrorBoundary'
 import SessionTitleControl from './chat/SessionTitleControl'
 import { useChatNavigation } from '../hooks/useChatNavigation'
@@ -4778,6 +4779,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // the gateway. Provided once here rather than threaded through
   // MarkdownRenderer props, so subagent and workflow cards and system notices
   // offer the same chip as a message body.
+  // A link to a CLOSED session: probe that one key (`GET /api/sessions/{key}/meta`),
+  // and resume it the way the sidebar's Older-sessions row does (#9915). Only
+  // consulted while the open roster is wired, so offline it is off as well.
+  const closedSessionActions = useMemo<ClosedSessionActions>(() => ({
+    lookup: async (key: string) => {
+      const row = await api.sessionMeta(key)
+      return row ? { key: row.key, title: row.title || row.key } : null
+    },
+    open: ({ key, title }) => { void dispatch(resumeFromHistory({ key, title })) },
+  }), [dispatch])
   const sidebarFolderActions = useMemo<SidebarFolderActions>(() => ({
     folders: chatFolders,
     onFolderReveal: embedMode === 'chat' ? undefined : (folderId: string) => {
@@ -5372,6 +5383,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         chips identically wherever it renders. Cloud URLs need no provider. */}
     <JiraHostsCtx.Provider value={jiraSourceHosts}>
     <SidebarFolderCtx.Provider value={sidebarFolderActions}>
+    <ClosedSessionCtx.Provider value={closedSessionActions}>
     <div
       ref={chatContainerRef}
       /* Both sides are this page's own: a rightward drag opens the sessions
@@ -6812,6 +6824,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         activitySlot
       )}
     </div>
+    </ClosedSessionCtx.Provider>
     </SidebarFolderCtx.Provider>
     </JiraHostsCtx.Provider>
     </TagPopoverProvider>
