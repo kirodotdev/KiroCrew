@@ -673,6 +673,12 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # internal-secret call falls through to cookie auth and every publish
         # fails with 403.
         "/api/agent-panel",
+        # MCP-only (the kirocrew-guide tools); no browser caller. Prefix
+        # matching covers every route under it. STRICT:
+        # the caller's slot is derived from the X-Session-Key this secret backs,
+        # so a cookie fall-through would let a browser name any session as the one
+        # calling the tool.
+        "/api/guide/agent",
         # MCP-only (knowledge_add_document tool); no browser caller — the
         # dashboard ingests via its own cookie-authed knowledge routes. Same
         # wiring class as "/api/notifications/agent" above.

@@ -9354,6 +9354,9 @@
       "moreCols": "增加列",
       "fewerRows": "减少行",
       "moreRows": "增加行"
+    },
+    "assistantWelcome": {
+      "default_name": "Mate"
     }
   },
   "hooks": {

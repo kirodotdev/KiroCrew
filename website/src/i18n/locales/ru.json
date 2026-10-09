@@ -9741,6 +9741,9 @@
       "moreCols": "больше столбцов",
       "fewerRows": "меньше строк",
       "moreRows": "больше строк"
+    },
+    "assistantWelcome": {
+      "default_name": "Mate"
     }
   },
   "hooks": {

@@ -1546,6 +1546,56 @@ Managed servers, registered by `agent._MANAGED_MCP_SERVERS` and installed into
 | `kirocrew-crew-log` | `kirocrew mcp-crew-log` (`mcp_crew_log.py`) | `crew_log_list`, `crew_log_read`, `crew_log_projection` |
 | `kirocrew-debug` | `kirocrew mcp-debug` (`mcp_debug.py`) | `debug_gateway`, `debug_refusals`, `debug_threads`, `debug_processes`, `debug_snapshots` |
 | `kirocrew-panel` | `kirocrew mcp-panel` (`mcp_panel.py`) | `panel_publish`, `panel_templates` |
+| `kirocrew-guide` | `kirocrew mcp-guide` (`mcp_guide.py`) | `rename_self` |
+
+`kirocrew-guide` is a platform capability: it is always emitted (not `opt_in`),
+so the default `kirocrew` template, every crewmate built from it, the worker
+derived from it, and every dashboard session on them mount it, deferrable by
+Tool Search like any other MCP server. The conductor and background templates
+(`agent_materialization/conductor_agents.py`, the knowledge, research and
+heartbeat agents) keep their own narrow server sets and do not mount it: they
+are driven by patrols and dispatch, not by a person at the dashboard. It is its
+own server because the server is the unit of assignment, authorization and
+governance: an operator or a policy can withhold the whole set at once. A fresh
+build references it from the shipped defaults; an existing default spec gains
+the `@kirocrew-guide` ref and the grants once
+(`guide_platform.grant_guide_platform_once`, recorded by the
+`guide_platform_granted.json` marker after the spec is written), and keeps
+whatever its owner does with them afterwards. Its entry carries no
+`autoApprove`, and doctor never mints a whole-server `allowedTools` grant for it
+(`cli_doctor._NO_BLANKET_ALLOW_MCPS`). The tools in `agent._GUIDE_AUTO_GRANTS`
+are exact `allowedTools` grants, each through the same
+`auto_approve._apply_allowed_tools_ceiling` path every grant passes, so a
+governance ceiling that denies one keeps it out and the user is asked instead.
+A tool added to the server later is not in the tuple and asks first. KAS
+permissions derive from that final filtered list.
+
+Its tools work only for a turn the user sent from the dashboard. The gateway's
+admission (`dashboard.handlers.guide._resolve_agent_caller`) first requires the
+session key the call names to be attested by the transport
+(`member_memory_auth.session_key_is_attested`: the socket peer, or the shim's signed
+per-session token; else 403 `unattested_caller`), then resolves the
+caller's session key to its slot and then reads the provenance the turn runner
+recorded: the slot must be executing a turn now (`turn_running`), and that turn
+must not have been opened by a messaging channel (`_turn_channel_origin`, set
+from `_run_chat`'s `_directive_channel_origin` at the turn's start and cleared at
+its end) nor have taken a channel steer since (`_turn_channel_narrowed`).
+Renaming the calling crewmate (`rename_self`) also needs the turn to be one the
+person sent (`_turn_user_sent`, set from `_directive_user_origin` the same way):
+a loop wake, a cron or app injection, a `session_send`, a subagent completion and
+a crewmate's hidden first-welcome kickoff are refused with 403 `not_user_turn`. A
+Slack or Discord conversation is mirrored into a dashboard slot, so a live slot
+alone is not enough: a message from the channel is refused, while the user typing
+into that same slot in the dashboard is admitted. Every other caller without a
+dashboard turn (the CLI, a schedule, a subagent, an app, or an identity the shim
+cannot verify strictly) is refused too, and the tool answers one line --
+`Error: <tool> needs the dashboard: <reason>. Nothing changed. ...`
+(`mcp_guide._off_dashboard`, keyed on the gateway's
+`no_live_slot`/`no_dashboard_turn`/`channel_caller`/`subagent_caller`/
+`unattended_caller`/`app_caller`/`app_scoped_caller`/`missing_session_key`/
+`not_user_turn` codes). `rename_self` renames only the calling crewmate: the
+member is the one whose pinned thread the verified caller's slot is, never an
+argument (`POST /api/guide/agent/rename`).
 
 `kirocrew-panel` is opt-in and reaches a crew member's DM session the way
 `kirocrew-dashboard` does: as a session-level `mcpServers` entry carrying that

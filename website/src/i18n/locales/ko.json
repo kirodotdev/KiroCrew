@@ -9354,6 +9354,9 @@
       "moreCols": "열 늘리기",
       "fewerRows": "행 줄이기",
       "moreRows": "행 늘리기"
+    },
+    "assistantWelcome": {
+      "default_name": "Mate"
     }
   },
   "hooks": {

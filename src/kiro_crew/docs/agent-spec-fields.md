@@ -735,6 +735,30 @@ can be read and warns again while it cannot.
 warning saying nothing behind it was carried: that is what puts a loadable spec
 back.)
 
+
+`kirocrew.json`, and every spec derived from it (the worker, every crewmate
+built from it), mounts Crew's platform server `kirocrew-guide`, which today
+carries one tool, `rename_self`: a crewmate takes the name its user just gave
+it. The conductor specs and the background agents (knowledge, research,
+heartbeat) keep their own narrower server sets without it. Its entry carries no
+`autoApprove`; the tools in `agent._GUIDE_AUTO_GRANTS` are added to
+`allowedTools` as exact names, subject to the same governance ceiling as every
+grant. A spec from before the server was a platform capability gains the ref
+and those grants once (`guide_platform_granted.json` marks it), and keeps
+whatever you do with them afterwards. Its tools work only for a turn the user
+sent from the dashboard and refuse with one line anywhere else, a message from
+Slack or another channel included.
+
+`rebuild_agent_config` creates the first crewmate (`mate`, shown as
+Mate) once, bound to the same template a crewmate you create gets, with its
+own private memory store; the reserved `default` member is never changed. The
+`mate_member_created.json` sidecar keeps the creation one-time, so a first
+crewmate you delete is not created again. It is an ordinary crewmate you may
+rename, rebind and delete. The first-crewmate creation lives in
+`src/kiro_crew/agent_materialization/first_crewmate.py`. The one-time guide grant
+lives in `src/kiro_crew/agent_materialization/guide_platform.py`; the grant tuple stays in
+`src/kiro_crew/agent.py`.
+
 What you may safely hand-edit: a spec you authored yourself; a conductor spec's
 `allowedTools`; and in any other owned or app-generated field, nothing — change
 `~/.kiro/crew/agent.json` or the Template pane instead.
@@ -779,6 +803,8 @@ fence requirement, the JSON-twin precedence, and which backends run the form.
 | `allowedTools`, `autoApprove`, `permissions` — the governance ceiling | `src/kiro_crew/agent_materialization/auto_approve.py` |
 | the default spec's locked write | `src/kiro_crew/agent_materialization/default_spec_commit.py` |
 | derived specs — lite, guest, knowledge, research; the conductors; the worker | `src/kiro_crew/agent_materialization/service_agents.py`, `conductor_agents.py`, `worker_agent.py`; their prompts and grant tuples, and the heartbeat installer, stay in `src/kiro_crew/agent.py` |
+| the one-time guide grant on an existing default spec | `src/kiro_crew/agent_materialization/guide_platform.py` |
+| the first crewmate, created once | `src/kiro_crew/agent_materialization/first_crewmate.py` |
 | the fork refresh | `src/kiro_crew/agent_materialization/fork_refresh.py` |
 | owned filenames | `src/kiro_crew/agent_files.py` |
 | `model_managed`, `cc_model`, fork lineage | `src/kiro_crew/agent_state.py` |

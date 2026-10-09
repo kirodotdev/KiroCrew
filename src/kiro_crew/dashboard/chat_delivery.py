@@ -524,6 +524,12 @@ async def steer_into_running_turn(
         # wrong, and a requeued text runs as its own channel-origin turn anyway;
         # ``chat_runner`` resets it at the turn's end and at the next turn's start.
         slot._turn_channel_narrowed = True
+    if not user_origin:
+        # The same narrowing for "the person sent this turn": a peer's or an
+        # app's text steered into it can ask the model for a user-only action
+        # (``rename_self``), so the turn counts as one the user did not send.
+        # Set before the RPC for the reason above; ``chat_runner`` resets it.
+        slot._turn_user_sent = False
     if admission is not None:
         slot._steer_admissions[message] = admission
     if attachments or quote:

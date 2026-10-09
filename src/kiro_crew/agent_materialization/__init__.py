@@ -21,6 +21,10 @@ layout below can change without touching a caller.
 * :mod:`.conductor_agents` -- the four conductor specs.
 * :mod:`.worker_agent` -- the worker's mirror of the default spec and its spawn-time
   freshness gate.
+* :mod:`.guide_platform` -- the one-time ``kirocrew-guide`` grant on an existing
+  default spec.
+* :mod:`.first_crewmate` -- the one-time first crewmate on the ordinary crewmate
+  template.
 
 Importing this package imports the facade first, and the facade imports every owner
 once its own names are bound, so no owner can be observed half-built whichever module

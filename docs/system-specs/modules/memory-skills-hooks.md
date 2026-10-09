@@ -1247,6 +1247,7 @@ raw agent file writes cannot modify managed SQLite state.
 | Scheduled work | `member_id` pins the member separately from its provider template. Creation, firing and resumed chat validate the pinned store |
 | Restart or continuation | The owning record retains the same frozen execution context |
 | Unavailable or corrupt memory | Learned-memory operations report unavailability; manual essentials remain usable. No global fallback or replacement empty database |
+| The first crewmate (`mate`) | An ordinary member, created with its own private V2 store like any explicit creation; never on Global memory ([crew mode](crew-mode.md)) |
 
 The Memory tab has separate global and member views. Member links address
 `/settings/overview?view=memory&store=<store>`; every member data request carries

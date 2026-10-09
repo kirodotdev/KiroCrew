@@ -756,6 +756,40 @@ name into `ResolvedBindings`, in this order:
 An unresolvable workspace falls back to `default_workspace`. Memory identity
 resolves exactly: the reserved `default` assistant uses Global Memory V1;
 existing V1 members keep their declared V1 binding.
+The first crewmate (config key `mate`, `agent_files.ASSISTANT_MEMBER_NAME`,
+shown as Mate while its `display_name` is empty) is an ordinary crewmate. Every
+install, fresh or upgraded, creates it once (`agent_materialization/first_crewmate.create_first_crewmate_once`,
+called from `rebuild_agent_config`) bound to the same template a user-created crewmate
+gets (the configured `agent.default_agent`, else `kirocrew`), with its own private V2
+store from the start: the row is built in memory, given a store by
+`provision_member_memory` (the ordinary, collision-reserving identity: a deleted
+predecessor's retained DM binding or another legacy member's slug is never inherited) and
+published by `persist_member_config(create=True)`, the steps every explicit member
+creation takes. It is never written on Global memory. A creation that fails leaves no
+row, no store and no sidecar, so the next start tries again. It carries no tool, Global-memory access, template or prompt of its own:
+its identity block is the ordinary member identity, and it can be renamed, rebound to
+another template and deleted through every ordinary path (`DELETE /api/agents/{name}`,
+`kirocrew agent delete`), and its key and label are free for another
+crewmate to use. The `mate_member_created.json` sidecar records the attempt and
+whether it created the row (`created`), so a deleted first crewmate is never
+re-created. The creation is skipped when the key already
+exists in `config.json` or the `config.local.json` overlay, or when the overlay supplies the
+whole roster; an empty base roster is seeded with the same `default` row the loader's
+migration writes, so the implicit default member survives. The reserved `default` member
+is never changed.
+
+No row, template or spec file other than
+the one it creates is read or rewritten on its account: a member or a template under any other name is an
+ordinary member or a foreign template.
+
+The only thing that sets the first crewmate apart is its first welcome (see the
+first-welcome paragraph below), and it is the crewmate the Crewmates page opens when there
+is no previously used conversation.
+
+The first crewmate renames itself through the always-mounted `kirocrew-guide` server
+(`rename_self`, [MCP architecture](../../architecture/mcp.md)), which answers only a turn
+the user sent from the dashboard. The conductor and background templates keep their own
+narrow server sets and do not mount it.
 Explicitly created members own unique V2 stores identified by an immutable persisted `member_id`, independent of their editable label.
 Automatically discovered agents start on Global V1 without member allocation.
 Missing, unreadable, shared or mismatched member identity makes memory operations
@@ -858,7 +892,8 @@ component bodies.
 Landing rule (Crewmates page): with no crewmates the page
 shows a single empty-state hero (ghost avatar, "No crewmates yet", one line,
 "New crewmate") in place of a roster call to action and a "pick a member" pane;
-with crewmates and no `?member=`, the crewmate the user last chatted with opens
+a roster containing only the first crewmate (`mate`) is not an empty state.
+With crewmates and no `?member=`, the crewmate the user last chatted with opens
 (greatest `last_chat_ts`, see below; it is server-side, so a gateway restart or a
 new browser keeps it), else the remembered crewmate, else the most recently used
 one (greatest `last_active_ts`, ties keep roster order; never `default`). The
@@ -870,14 +905,74 @@ would win nearly always), and instead outranks the last-chatted crewmate exactly
 while no crewmate's `last_chat_ts` has moved past the mark (#17210). Both sides
 are the server's clock, so a remote dashboard compares the same. The mark is the
 user's own open (click or link): a restore re-reads it but never re-writes it.
-A roster holding only `default` still shows the hero. Below md
-nothing auto-opens — the roster is the page. A `?member=` naming a crewmate that
-is gone falls back the same way, under the existing swap notice. The page's copy
-says crewmate / Crewmates and "Built from"; the crew record, its API and its
-identifiers are unchanged.
+A roster holding only `default` still shows the hero.
+The first crewmate's key, thread and private V2 memory store are its own, and an
+explicitly configured display name takes precedence over the label Mate.
+Explicit member and team links take precedence. Below md nothing auto-opens --
+the roster is the page -- except that a never-chatted Mate opens there too, once
+per page visit, so the thread's Back returns to the roster and stays there. A
+`?member=` naming a crewmate that is gone falls back the same way, under the
+existing swap notice. Loading, a failed roster read and a genuinely empty roster
+remain distinct. The page's copy says crewmate / Crewmates and "Built from"; the
+crew record, its API and its identifiers are unchanged.
+
+With the Crewmates preview off, Mate still exists in the background, but every list
+that offers crew records leaves it out (`hideMateWithoutPreview` in
+`lib/assistantMember.ts`: the agent pickers fed by `useAgents`, Customize and a
+template's crew list), so nothing names it until the preview is on.
+
+Mate's chat has no static welcome card. Mate speaks first instead: once the thread
+endpoint has confirmed Mate's pinned thread, with the Crewmates preview on, the page
+calls `POST /api/members/{slug}/greet` (owner-only; app tokens get 404), once per
+thread per tab (`pages/members/useFirstGreeting.ts`). A failed request shows
+nothing: the chat works without the greeting, and the next open of the thread asks
+again. A crewmate the user creates on
+the dashboard greets through the create flow's own seeded first turn, so each create
+path has one greeting. The server (`dashboard/mate_welcome.py`) starts a welcome only
+when the slug's DM binding names a configured crewmate other than the reserved
+`default` member, the live slot is that member's pinned (`mode="member"`) local
+thread, it holds no rows or queued entries, no turn is running, and the member owes a
+welcome. Only the first-crewmate creation records that debt, at creation, in
+`members/<slug>/welcome_owed.json` (`members.mark_welcome_owed`, naming the member).
+A member that reached the roster any other way (a create form, the CLI, discovery,
+an import, an app, a hand edit) has no record and never greets here (`not_owed`). It
+then claims the once-only marker `members/<slug>/welcome_claimed.json` with
+`O_CREAT|O_EXCL` before dispatch, so two tabs, a reload or a retry after a failed
+turn never greet twice; a declined request leaves the marker unclaimed. The welcome
+is one real turn of that crewmate: `_run_chat` with a hidden kickoff
+(`_synthetic_payload=True`, actor `gateway`) and NO transcript row for it, so the
+user sees only the crewmate's own reply, which stays in its session context. The
+kickoff carries the whole welcome, since no system prompt explains it
+(`mate_welcome.welcome_kickoff`, wording in one place): it introduces itself by its
+label in everyday words with no developer terms; says it is the user's first
+crewmate (`FIRST_WELCOME`) -- or, when the roster already holds a crewmate besides
+Mate and `default`, one more teammate on their crew (`FIRST_WELCOME_WITH_CREW`) -- a
+teammate who remembers what they work on together and keeps at it over days; says it
+can help right now with getting Kiro Crew set up, sorting out anything not working in
+it, or showing the user around (those three only); and finishes by asking what the
+user would like to call it (the name in question is the crewmate's own). The kickoff
+is written as plain principles, and the greeting itself is the model's own words.
+When the user answers with a name, that later turn says plainly that the crewmate now
+goes by it and calls the `kirocrew-guide` tool `rename_self` (`POST /api/guide/agent/rename`), which renames ONLY the calling
+crewmate -- the member is derived from the caller's own pinned thread, never from an
+argument -- and only from a turn the user sent in the dashboard (`_turn_user_sent`,
+so the hidden welcome kickoff, a wake or a cron turn is refused 403
+`not_user_turn`). The name is cleaned (control and format characters dropped, spaces
+collapsed, refused when empty) and checked by `validate_member_name`
+(`MEMBER_NAME_MAX_CHARS`); the reserved `default` member and the configured default
+crew are refused. The rename is a `member/config` event, so the open chat header,
+the roster and the switcher show the new name at once through the roster projection,
+with no reload and no confirm card. The kickoff says the user has typed nothing,
+forbids "welcome back", and allows a user name only when the User Preferences block
+or a memory result states one, never one inferred from a username, home path, email
+or host name. The route answers `{"outcome": ...}` (`started`, `already_greeted`,
+`not_empty`, `busy`, `not_crewmate`, `no_thread`, `not_owed`). A welcome turn that
+fails surfaces through the ordinary turn error path once; the marker is already
+claimed, so it never loops, and the composer stays usable.
 
 The roster lists a row unasked only when the user has chatted with it or
-starred it. "Chatted with" is `last_chat_ts > 0` on `GET /api/members`: the
+starred it, or when it is Mate, the first crewmate the product creates (key
+`mate`), which is listed from the start. "Chatted with" is `last_chat_ts > 0` on `GET /api/members`: the
 epoch of the user's own last message to that crew, in its Crewmates DM or in a
 normal chat, recorded by `kiro_crew.crew_recency` (`crew_recency.json` under
 the data home) when `POST /api/chat` is called by the dashboard user -- no app
@@ -917,6 +1012,15 @@ message (`has_dm_message`), it was created on the dashboard
 default crew; a row carrying neither boolean is listed, and a failed
 default-crew lookup lists every such row. The header count and the filter
 tallies count the listed rows plus any hidden row the search reaches.
+Before any of the landing rules, a bare visit with the Crewmates preview on
+opens Mate while no message has been exchanged with it (`resolveMateLanding`:
+Mate's row has neither `has_dm_message` nor a live `last_message`), ahead of the
+last-chatted, a remembered or a more recently used crewmate, at most once per
+page mount; once Mate's thread holds anything, that rule answers nothing and the
+rules above apply unchanged. While that landing applies, the page does not announce
+the visit (`mc-crewmates-page-entered`), so Meet CrewMates does not also open on top
+of Mate's welcome; a later visit, once Mate has history, announces as before and the
+host decides whether the flow is still due.
 
 Deleting a crewmate is available on this page: the crewmate's edit controls
 open the shared `CrewEditorDialog` in place, and its Danger pane deletes the

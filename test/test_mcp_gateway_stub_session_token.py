@@ -2041,7 +2041,10 @@ def test_control_plane_backends_contain_session_mcp_and_justify_the_difference()
     tools off unenforceable.
 
     The extras are pinned BY NAME to exactly the opt-in managed servers plus the
-    spec-gated ``kirocrew-computer`` and each is also checked BY PROPERTY. The name
+    spec-gated ``kirocrew-computer`` and the platform guide set, and each is also
+    checked BY PROPERTY. The guide set is emitted into every default spec but is
+    still a spec's to withhold (an operator or a policy can take it off), so it
+    is not mounted regardless of the spec the way the control plane is. The name
     pin makes a new recipient an explicit, reviewable change; the property check
     stops a typo'd or third-party name from being handed a token even if someone
     edits the pin. The whole set is also pinned equal to
@@ -2056,18 +2059,31 @@ def test_control_plane_backends_contain_session_mcp_and_justify_the_difference()
     assert frozenset(CONTROL_PLANE_SERVERS) < gw.CONTROL_PLANE_BACKENDS
 
     token_only = gw.CONTROL_PLANE_BACKENDS - frozenset(CONTROL_PLANE_SERVERS)
-    assert token_only == frozenset(OPT_IN_BIN_MCP_SERVERS) | {"kirocrew-computer"}, (
+    assert token_only == frozenset(OPT_IN_BIN_MCP_SERVERS) | {
+        "kirocrew-computer",
+        "kirocrew-guide",
+    }, (
         "a new token recipient must be added to this pin in the same commit that adds it "
         "to mcp_cleanup's managed-server tuples"
     )
+    from kiro_crew.acp.session_mcp import session_mcp_servers
+
     for name in sorted(token_only):
         spec = _MANAGED_MCP_SERVERS.get(name)
         assert isinstance(spec, dict), f"{name!r} is handed a token but is not a managed server"
-        assert spec.get("opt_in") or callable(spec.get("spec_gate")), (
-            f"{name!r} is token-only, which is only justified for a server that is NOT "
-            "unconditionally mounted (opt_in, or behind a spec_gate); one mounted in every "
-            "session belongs in CONTROL_PLANE_SERVERS as well"
+        # Token-only is justified only for a server that is NOT unconditionally
+        # mounted. Checked by behaviour for every recipient: a spec whose `tools`
+        # does not name it withholds it, while a control-plane server would be
+        # mounted regardless of the spec.
+        withheld = {"mcpServers": {name: {"command": "kirocrew", "args": ["x"]}}, "tools": []}
+        named = {**withheld, "tools": [f"@{name}"]}
+        assert name not in [e.get("name") for e in session_mcp_servers("probe", spec=withheld)], (
+            f"{name!r} is token-only but is mounted even when the spec does not name it; "
+            "one mounted in every session belongs in CONTROL_PLANE_SERVERS as well"
         )
+        assert name in [
+            e.get("name") for e in session_mcp_servers("probe", spec=named)
+        ], f"{name!r}: the withholding probe proves nothing if naming it does not mount it"
 
 
 def test_the_control_plane_check_asks_for_an_opt_in_invocation(

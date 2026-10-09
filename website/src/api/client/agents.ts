@@ -215,6 +215,11 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, sessio
     // mode="member"), so this is also the only place a member slot key comes from.
     memberThread: (slug: string) =>
       post('/api/members/' + encodeURIComponent(slug) + '/thread').then(j) as Promise<{ slot_key: string; slug: string; member: string }>,
+    // Mate's once-only first greeting. The server decides: it starts one
+    // Mate turn only for Mate's own empty pinned thread, at most once
+    // ever, and answers every other case with the outcome that declined it.
+    memberGreet: (slug: string) =>
+      post('/api/members/' + encodeURIComponent(slug) + '/greet').then(j) as Promise<{ outcome: string }>,
     // A member's recent activity pointers (real recorded signal only: session
     // participations and routing decisions). `member` is the exact crew name —
     // slugs are lossy, so the backend filters the shared log by exact name.

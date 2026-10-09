@@ -219,6 +219,14 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get(
         "/api/members/{slug}/dashboard", _deferred("member_dashboard", "api_member_dashboard")
     )
+    # The platform guide server (``kirocrew-guide``). The agent half is MCP-only
+    # and sits under the strict "/api/guide/agent" prefix. Deferred: most
+    # requests never load the module. The paths are duplicated from
+    # ``guide.register_guide_routes``, and a test pins the two together.
+    for _method, _path, _name in (
+        ("POST", "/api/guide/agent/rename", "api_guide_agent_rename_self"),
+    ):
+        app.router.add_route(_method, _path, _deferred("guide", _name))
     app.router.add_get("/api/crons", handlers.api_crons)
     app.router.add_post("/api/crons", handlers.api_crons_create)
     app.router.add_delete("/api/crons", handlers.api_cron_batch_delete)

@@ -109,14 +109,37 @@ def _install_knowledge_agent() -> None:
     agent_mod.logger.info("Installed knowledge agent config: %s (model=%s)", path, model)
 
 
+def _without_guide_server(config: dict) -> dict:
+    """*config* with the platform guide server, its ref and its grants removed.
+
+    A background agent is driven by a loop, never by a person at the dashboard,
+    so it has no one to show a guide or a change card to and keeps the narrower
+    server set.
+    """
+    ref = f"@{agent_mod._GUIDE_SERVER}"
+    servers = config.get("mcpServers")
+    if isinstance(servers, dict):
+        servers.pop(agent_mod._GUIDE_SERVER, None)
+    for key in ("tools", "allowedTools"):
+        entries = config.get(key)
+        if isinstance(entries, list):
+            config[key] = [
+                e
+                for e in entries
+                if not (e == ref or (isinstance(e, str) and e.startswith(ref + "/")))
+            ]
+    return config
+
+
 def _install_research_agent() -> None:
     """Generate and install the kirocrew-research agent config.
 
     Derives from the kirocrew agent (MCP servers, security, tools) but swaps in a
-    lean research-worker prompt + identity. Used by the Research Lab app's
+    lean research-worker prompt + identity, and leaves out the platform guide
+    server (:func:`_without_guide_server`). Used by the Research Lab app's
     autonudge loop to run one research cycle per turn.
     """
-    config = agent_mod.build_agent_config()
+    config = _without_guide_server(agent_mod.build_agent_config())
     config["name"] = "kirocrew-research"
     config["description"] = (
         "Autonomous research worker — runs one research cycle per turn "

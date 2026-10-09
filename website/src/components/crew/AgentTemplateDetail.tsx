@@ -34,6 +34,9 @@ import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover'
 import { i18nT } from '../../i18n/t'
 import { parseErrorCode } from '../../utils/errorReport'
 import { templateSourceBadge, type TemplateProvenance } from '../../lib/templateSource'
+import { hideMateWithoutPreview } from '../../lib/assistantMember'
+import { usePreviewFlag } from '../../hooks/usePreviewFlag'
+import { PREVIEW_CREW } from '../../utils/previewFlags'
 
 /** How many chips render before the list collapses behind a "+N more". */
 const CHIP_CAP = 6
@@ -254,6 +257,7 @@ export default function AgentTemplateDetail({
     queryKey: ['agents-installed'],
     queryFn: () => api.agentsInstalled(),
   })
+  const crewPreview = usePreviewFlag(PREVIEW_CREW)
   const { data: crewsData } = useQuery<{ agents?: CrewRow[] }>({
     queryKey: ['kirocrew-agents'],
     queryFn: () => api.kirocrewAgents(),
@@ -458,7 +462,7 @@ export default function AgentTemplateDetail({
     }
   }
 
-  const usedBy = (crewsData?.agents || []).filter(c => c.kiro_agent === template)
+  const usedBy = hideMateWithoutPreview(crewsData?.agents || [], crewPreview).filter(c => c.kiro_agent === template)
   const sourceLabel = templateSourceBadge(listed)
   // Re-add only the value the select DISPLAYS when the catalog lacks it (a
   // legacy/unknown binding). An own-copy header shows the origin, so the

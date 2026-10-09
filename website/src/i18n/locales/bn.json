@@ -9483,6 +9483,9 @@
       "moreCols": "বেশি কলাম",
       "fewerRows": "কম সারি",
       "moreRows": "বেশি সারি"
+    },
+    "assistantWelcome": {
+      "default_name": "Mate"
     }
   },
   "hooks": {

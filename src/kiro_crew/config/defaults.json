@@ -17,7 +17,8 @@
     "tool_search",
     "@kirocrew-cron",
     "@kirocrew-core",
-    "@kirocrew-computer"
+    "@kirocrew-computer",
+    "@kirocrew-guide"
   ],
   "allowedTools": [
     "fs_read",
@@ -35,7 +36,8 @@
     "@kirocrew-cron/cron_trigger",
     "@kirocrew-cron/cron_remove",
     "@kirocrew-cron/cron_remove_all",
-    "@kirocrew-core"
+    "@kirocrew-core",
+    "@kirocrew-guide/rename_self"
   ],
   "resources": [
     "file://.kiro/steering/**/*.md"

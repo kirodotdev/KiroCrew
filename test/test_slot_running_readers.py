@@ -123,6 +123,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
         **{
             site: reservation
             for site in {
+                # A crewmate's first greeting must not land on a slot a send has
+                # already reserved, so it reads the reservation, not the turn.
+                ("mate_welcome.py", "maybe_start_first_greeting"),
                 ("chat_folders.py", "api_chat_slot_mode"),
                 ("chat_handlers.py", "_switch_target_busy"),
                 # The agent route's transaction; the in-turn /agent command shares it.
@@ -178,6 +181,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # The synthesis outage re-check fires only on an idle slot: a
                 # running TURN, not a reservation, is what it must not overlap.
                 ("chat_runner.py", "_arm_synthesis_recheck"),
+                # A kirocrew-guide tool call is admitted only from the turn this
+                # slot is executing; a reservation has no tool call yet.
+                ("handlers/guide.py", "_resolve_agent_caller"),
                 ("slot_projection.py", "SlotProjection.to_dict"),
                 ("slot_registry.py", "SlotRegistry.running_session_keys"),
                 ("state.py", "_ChatSlot.running"),
@@ -196,6 +202,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
     }
     assert actual == expected
     assert publishers == {
+        # A crewmate's first-open greeting: a gateway-authored turn, started the
+        # way api_send_message starts one (spawn_guarded_turn, then slot.task).
+        ("mate_welcome.py", "_dispatch_greeting"),
         ("chat_handlers.py", "api_chat"),
         ("chat_regenerate.py", "api_chat_slot_edit_resend"),
         ("chat_regenerate.py", "api_chat_slot_regenerate"),

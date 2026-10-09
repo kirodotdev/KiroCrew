@@ -265,6 +265,7 @@ from kiro_crew.dashboard.handlers.mcp import (  # noqa: E402, F401
 from kiro_crew.dashboard.handlers.members import (  # noqa: E402, F401
     api_member_activity,
     api_member_briefing,
+    api_member_greet,
     api_member_projections,
     api_member_recap,
     api_member_rules_get,

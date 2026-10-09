@@ -9612,6 +9612,9 @@
       "moreCols": "più colonne",
       "fewerRows": "meno righe",
       "moreRows": "più righe"
+    },
+    "assistantWelcome": {
+      "default_name": "Mate"
     }
   },
   "hooks": {

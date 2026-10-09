@@ -2579,7 +2579,7 @@ ARTIFACT_SAVE_SCHEMA = ToolSchema(
     custom_validator=_validate_artifact_save,
     tool_name="artifact_save",
     fields=[
-        FieldSpec("name", str, required=True, max_len=200),
+        FieldSpec("name", str, required=True, max_len=MAX_SHORT_STRING),
         FieldSpec("content", str, required=True, max_len=ARTIFACT_CONTENT_MAX),
         FieldSpec("slug", str, max_len=80, pattern=_ARTIFACT_SLUG_RE),
         FieldSpec("kind", str, max_len=20, pattern=_ARTIFACT_KIND_RE),
@@ -4791,6 +4791,18 @@ MCP_PANEL_SCHEMAS: dict[str, ToolSchema] = {
     "dashboard_apply": DASHBOARD_APPLY_SCHEMA,
     "dashboard_rollback": DASHBOARD_ROLLBACK_SCHEMA,
 }
+
+
+# ── Tool Schemas (MCP Guide — server ``kirocrew-guide``) ──
+#
+# Its own registry because the guide tools ship in their own server.
+MCP_GUIDE_SCHEMAS: dict[str, ToolSchema] = {
+    "rename_self": ToolSchema(
+        tool_name="rename_self",
+        fields=[FieldSpec("name", str, required=True, max_len=MAX_SHORT_STRING)],
+    ),
+}
+
 
 MCP_COMPUTER_SCHEMAS: dict[str, ToolSchema] = {
     _cu_types.TOOL_LIST_APPS: ToolSchema(tool_name=_cu_types.TOOL_LIST_APPS, fields=[]),

@@ -51,7 +51,7 @@ const ACTION_CREATORS = [
   'sseSubagentBatchUpdate', 'sseSubagentDone', 'sseSubagentPending', 'sseSubagentQueued',
   'sseSubagentRetrying', 'sseSubagentSnapshot', 'sseSubagentSpawn', 'sseSubagentStalled',
   'sseSubagentTool', 'sseThinkingChunk', 'sseToolActivity', 'sseToolResult', 'sseWorkflowEvent',
-  'stageToMainComposer', 'startLocalTurn', 'syncSlotRunningFromServer', 'toggleActivity', 'truncateAfterIndex',
+  'stageToMainComposer', 'startLocalTurn', 'startServerTurn', 'syncSlotRunningFromServer', 'toggleActivity', 'truncateAfterIndex',
   'updateStreamingMessage',
 ]
 

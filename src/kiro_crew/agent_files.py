@@ -60,6 +60,25 @@ DASHBOARD_MANAGER_AGENT_FILENAME = "kirocrew-dashboard-manager.json"
 # package: ``context_assembly.member`` needs the name for the prompt it builds, and
 # reading it off ``agent.py`` would close an import cycle at module scope.
 DASHBOARD_MANAGER_AGENT_NAME = DASHBOARD_MANAGER_AGENT_FILENAME[: -len(".json")]
+# The config key of the first crewmate every install creates once (shown as
+# Mate). An ordinary crewmate on the ordinary crewmate template: renameable,
+# deletable and never re-created. ``display_name`` is the label the user sees and
+# may change.
+ASSISTANT_MEMBER_NAME = "mate"
+#: The label the first crewmate shows while its ``display_name`` is empty.
+ASSISTANT_DEFAULT_DISPLAY_NAME = "Mate"
+
+
+def is_assistant_member(name: object, entry: object) -> bool:
+    """True when *name* is the first crewmate's key. *entry* is not consulted.
+
+    Kept as a predicate over ``(name, entry)`` so callers read the same way they
+    read any member test; the first crewmate is identified by its key alone,
+    whatever template it is bound to.
+    """
+    del entry
+    return name == ASSISTANT_MEMBER_NAME
+
 
 # Collective allowlists — the EXACT filenames KiroCrew owns in each dir. Used by
 # the Playwright convergence sweep (browser/setup.py) so it rewrites only files

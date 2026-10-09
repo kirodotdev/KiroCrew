@@ -27,7 +27,8 @@ hook normalization (``kiro_hooks``), the managed-server policy (``managed_mcp``)
 server keys and tool aliases (``mcp_aliases``), the governance ceiling
 (``auto_approve``), MCP source projection (``mcp_sources``), the locked
 default-spec write (``default_spec_commit``), fork refresh (``fork_refresh``) and
-the derived agents (``service_agents``, ``conductor_agents``, ``worker_agent``).
+the derived agents (``service_agents``, ``conductor_agents``, ``worker_agent``,
+``guide_platform``) and the first crewmate (``first_crewmate``).
 Every moved name is re-exported here, so reading or patching
 ``kiro_crew.agent.<name>`` reaches it.
 """
@@ -142,6 +143,10 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         _apply_operator_oauth_client,
         prune_dangling_tool_refs,
     )
+    from kiro_crew.agent_materialization.first_crewmate import (  # noqa: F401
+        create_first_crewmate_once,
+        first_crewmate_was_created,
+    )
     from kiro_crew.agent_materialization.fork_refresh import (  # noqa: F401
         _FORK_REFRESH_WAIT_SECS,
         _fork_refresh_count_lock,
@@ -151,6 +156,10 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         _fork_refresh_settled,
         _refresh_forked_templates,
         _refresh_forked_templates_locked,
+    )
+    from kiro_crew.agent_materialization.guide_platform import (  # noqa: F401
+        grant_guide_platform_once,
+        mark_guide_platform_granted,
     )
     from kiro_crew.agent_materialization.kiro_hooks import (  # noqa: F401
         _CREW_ONLY_HOOK_EVENTS,
@@ -1431,6 +1440,22 @@ _MANAGED_MCP_SERVERS: dict[str, dict] = {
         "invocation_fn": lambda: _kirocrew_mcp_invocation("mcp-panel"),
         "opt_in": True,
     },
+    # The platform guide server: tools a crewmate uses on the Kiro Crew
+    # dashboard itself (today, taking the name its user gives it). A platform
+    # capability of every crewmate and every dashboard session, so it is always
+    # emitted, like the two servers at the top of this map; its own server so an
+    # operator or a policy can withhold the whole set at once. Its tools need a
+    # dashboard turn and refuse clearly without one (``mcp_guide``). Which of
+    # its tools run without a prompt is :data:`_GUIDE_AUTO_GRANTS`, through
+    # ``allowedTools``.
+    #
+    # No ``autoApprove`` key, and none may ever be added -- the same prohibition
+    # every set above carries, for the same mechanism: an autoApproved MCP tool is
+    # approved inside kiro-cli and never reaches ``hooks.on_tool_call``, so the
+    # deny floor and governance ceiling would be bypassed.
+    "kirocrew-guide": {
+        "invocation_fn": lambda: _kirocrew_mcp_invocation("mcp-guide"),
+    },
 }
 
 
@@ -2216,6 +2241,14 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "rederive_worker_agent",
         "_install_dashboard_author_agent",
         "_WORKER_AGENT_FILENAME",
+    ),
+    "kiro_crew.agent_materialization.guide_platform": (
+        "grant_guide_platform_once",
+        "mark_guide_platform_granted",
+    ),
+    "kiro_crew.agent_materialization.first_crewmate": (
+        "create_first_crewmate_once",
+        "first_crewmate_was_created",
     ),
 }
 
@@ -4016,6 +4049,9 @@ def rebuild_agent_config(
     # be registered regardless of fresh/existing config state.
     mcp_sources.sync_shared_server_refs(config, sources, mounted)
     managed_mcp.register_managed_refs(config, fresh_install=fresh_install, gated_off=gated_off)
+    guide_grant_pending = guide_platform.grant_guide_platform_once(
+        config, fresh_install=fresh_install
+    )
 
     # Final dedup (preserves order).
     for key in ("tools", "allowedTools"):
@@ -4033,6 +4069,8 @@ def rebuild_agent_config(
     )
     logger.info("Installed agent config: %s", path)
     _claim_propagated_model(config, main_name)
+    if guide_grant_pending:
+        guide_platform.mark_guide_platform_granted()
 
     # The guard ADMITTED this rebuild above, and that one decision now covers
     # every derived spec it installs. Re-asking per write would answer a
@@ -4071,6 +4109,13 @@ def rebuild_agent_config(
             service_agents._install_dashboard_manager_agent()
         except Exception:
             logger.debug("kirocrew-dashboard-manager agent install failed", exc_info=True)
+        # Every install, fresh or upgraded, creates its first crewmate once (a
+        # one-time marker, so a deleted one is never re-created). The reserved
+        # ``default`` member is never touched. Boot keeps going either way.
+        try:
+            first_crewmate.create_first_crewmate_once()
+        except Exception:
+            logger.warning("First crewmate creation failed", exc_info=True)
 
         # Install kirocrew-heartbeat agent (used by HeartbeatService for unattended polling)
         try:
@@ -4595,6 +4640,17 @@ automatically. The Research Lab app drives you; the nudge names the campaign and
 - On the final cycle (`cycle == max_cycles - 1`), write an executive summary +
   recommendation at the TOP of `FINDINGS.md` instead of new research.
 """
+
+
+#: The platform guide server (``kiro_crew.mcp_guide``), mounted on every crewmate.
+_GUIDE_SERVER = "kirocrew-guide"
+#: The guide tools that run without a prompt on every agent, through the same
+#: ``allowedTools`` ceiling every grant passes (``_apply_allowed_tools_ceiling``),
+#: so a governance ceiling that denies one still keeps it out. ``rename_self``
+#: changes only the calling crewmate's own display name, and only on a turn the
+#: user sent. A tool added to the server is not in this tuple, so it asks first
+#: until it is reviewed here.
+_GUIDE_AUTO_GRANTS = (f"@{_GUIDE_SERVER}/rename_self",)
 
 
 _CONDUCTOR_SYSTEM_PROMPT = """# Kiro Crew Conductor
@@ -6008,7 +6064,9 @@ from kiro_crew.agent_materialization import (  # noqa: E402, F401 -- the owners 
     auto_approve,
     conductor_agents,
     default_spec_commit,
+    first_crewmate,
     fork_refresh,
+    guide_platform,
     kiro_hooks,
     managed_mcp,
     mcp_aliases,

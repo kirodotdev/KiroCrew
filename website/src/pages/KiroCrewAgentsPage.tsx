@@ -54,6 +54,9 @@ import { errMessage } from '../utils/thunkError'
 import NewCrewmateDialog, { type CreatedCrewmate } from './members/NewCrewmateDialog'
 import { EFFORT_LEVELS, effortLabel, modelSupportsEffort } from '../lib/effort'
 import { templateSourceLabel, type TemplateProvenance } from '../lib/templateSource'
+import { hideMateWithoutPreview, isAssistantMember } from '../lib/assistantMember'
+import { usePreviewFlag } from '../hooks/usePreviewFlag'
+import { PREVIEW_CREW } from '../utils/previewFlags'
 import { DEFAULT_CREWMATE_PATH } from './overview/defaultCrewmateLink'
 
 import { i18nT } from '../i18n/t'
@@ -536,6 +539,13 @@ export function DisplayNameField({ value, onChange, fallback }: { value: string;
   )
 }
 
+/** What an empty display name falls back to: the crew's key, except for the
+ *  built-in Mate, whose empty label reads as its default name everywhere
+ *  else in the dashboard -- so its editor must not offer the internal key. */
+export function displayNameFallback(agent: KiroCrewAgent | null | undefined, key: string): string {
+  return isAssistantMember(agent) ? i18nT('components.assistantWelcome.default_name') : key
+}
+
 /** The routing-keyword input. Rendered by the create form and by the editor's
  *  routing pane, so it is a component rather than two copies. */
 export function TriggersField({ value, onChange, subject }: { value: string; onChange: (v: string) => void; subject: FormSubject }) {
@@ -914,7 +924,8 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   // (`sharedTargets`). React Query's structural sharing keeps `agentsData`
   // identical until the roster actually changes, so this is stable between
   // fetches that return the same rows.
-  const agents = useMemo<KiroCrewAgent[]>(() => agentsData?.agents || [], [agentsData])
+  const crewPreview = usePreviewFlag(PREVIEW_CREW)
+  const agents = useMemo<KiroCrewAgent[]>(() => hideMateWithoutPreview(agentsData?.agents || [], crewPreview), [agentsData, crewPreview])
   const defaultAgent = agentsData?.default_agent || ''
 
   const { data: installedAgents, error: installedError } = useQuery({
@@ -2096,7 +2107,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
              accessible name on its own — it has to say what you are doing to it.
              An explicit aria-label outranks Radix's aria-labelledby, and the
              DialogTitle still has to EXIST or Radix warns. */
-          aria-label={i18nT('pages.kiroCrewAgentsPage.edit_crew_named', { name: displayName.trim() || editing })}
+          aria-label={i18nT('pages.kiroCrewAgentsPage.edit_crew_named', { name: crewDisplayName({ name: editing, display_name: displayName, kiro_agent: editingAgent?.kiro_agent }) })}
           /* Radix closes on an outside pointerdown and on Escape. Dismissing
              mid-write is DELIBERATELY still allowed: the sheetEpoch/settleFor
              machinery below exists to make the abandoned write land harmlessly,
@@ -2138,7 +2149,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
               <DialogTitle className="flex-1 font-mono">
                 {/* The draft label, live: retitling the crew is the one edit
                     whose effect IS this text, so it previews before Save. */}
-                {displayName.trim() || editing}
+                {crewDisplayName({ name: editing, display_name: displayName, kiro_agent: editingAgent?.kiro_agent })}
               </DialogTitle>
               {showsCrewSourceBadge(editingAgent?.source) && <CrewSourceBadge source={editingAgent.source} />}
             </div>
@@ -2201,7 +2212,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                         user opens to answer "who is this crew" — not under
                         routing (the UX lane's finding on this PR). The create
                         form keeps its copy beside Name for the same reason. */}
-                    <DisplayNameField value={displayName} onChange={setDisplayName} fallback={editing} />
+                    <DisplayNameField value={displayName} onChange={setDisplayName} fallback={displayNameFallback(editingAgent, editing)} />
                     <CrewOverviewPane
                       // The largest face in the editor opens the builder too, so
                       // the hub does not teach the opposite lesson from the

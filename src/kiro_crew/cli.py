@@ -2873,6 +2873,9 @@ Examples:
     # mcp-panel (MCP server -- an agent publishes its own dashboard panel).
     # Mounted only for an agent whose spec grants the opt-in set.
     sub.add_parser("mcp-panel")
+    # mcp-guide (MCP server -- the always-on platform guide server; today it
+    # carries ``rename_self``, a crewmate renaming itself in its own chat).
+    sub.add_parser("mcp-guide")
 
     # Builtin app MCP servers (spawned by the agent backend, not user-facing).
     # Only builtins that actually ship an ``mcp_server`` module get a verb —
@@ -3695,6 +3698,10 @@ env var overrides it.
         # Lazily imported like mcp-dashboard above: a default-off optional
         # subsystem must not be imported just to start the gateway.
         importlib.import_module("kiro_crew.mcp_panel").run_mcp_server()
+    elif args.command == "mcp-guide":
+        # Lazily imported for the same reason: an opt-in server must not be
+        # imported just to start the gateway.
+        importlib.import_module("kiro_crew.mcp_guide").run_mcp_server()
     elif args.command.startswith("mcp-") and args.command[4:] in _BUILTIN_NAMES:
         # Registration gates this verb on _builtin_mcp_server_available, and
         # _run_app_mcp_server is the ONE dispatch-time spelling of "import the

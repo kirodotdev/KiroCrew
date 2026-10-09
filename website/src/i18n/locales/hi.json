@@ -9483,6 +9483,9 @@
       "moreCols": "अधिक कॉलम",
       "fewerRows": "कम पंक्तियाँ",
       "moreRows": "अधिक पंक्तियाँ"
+    },
+    "assistantWelcome": {
+      "default_name": "Mate"
     }
   },
   "hooks": {

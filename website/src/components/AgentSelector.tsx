@@ -10,6 +10,7 @@ import { SourceBadge } from './SourceBadge'
 import ErrorNotice from './ErrorNotice'
 
 import { i18nT } from '../i18n/t'
+import { isAssistantMember } from '../lib/assistantMember'
 export interface KiroCrewAgent {
   name: string
   kiro_agent: string
@@ -50,9 +51,10 @@ export interface KiroCrewAgent {
  *  set, otherwise its name. One helper rather than `a.display_name || a.name`
  *  at each site, so every surface applies the same fallback (and the same
  *  trim — a stored label arrives trimmed, but an in-flight edit draft may
- *  not be). */
-export function crewDisplayName(a: Pick<KiroCrewAgent, 'name' | 'display_name'>): string {
-  return a.display_name?.trim() || a.name
+ *  not be). The built-in Assistant (see `isAssistantMember`) with no label of
+ *  its own reads as its localized name rather than its config key. */
+export function crewDisplayName(a: Pick<KiroCrewAgent, 'name' | 'display_name'> & { kiro_agent?: unknown }): string {
+  return a.display_name?.trim() || (isAssistantMember(a) ? i18nT('components.assistantWelcome.default_name') : a.name)
 }
 
 interface Props {

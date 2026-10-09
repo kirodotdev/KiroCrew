@@ -7,6 +7,7 @@
  * data-source-agnostic is what lets the page's state layer move without
  * touching how a filter decides.
  */
+import { isAssistantMember } from '../../lib/assistantMember'
 import { compareText } from '../../i18n/format'
 
 /** Crew origin. `mine` = crews created in the crew manager (source
@@ -128,12 +129,13 @@ function matchesSearch(m: RosterRowLike, needle: string): boolean {
   )
 }
 
-/** Whether the roster lists a row WITHOUT being asked for it: only a crew the
+/** Whether the roster lists a row WITHOUT being asked for it: a crew the
  *  user has actually chatted with (`last_chat_ts`, recorded server-side when
- *  the person sends it a message in its DM or in a normal chat), or one the
- *  user starred. A crew that only ran in the background -- a cron, a wake, a
- *  sub-agent, a dispatched worker -- or that an app drove is hidden until the
- *  search reaches it, the default crew included.
+ *  the person sends it a message in its DM or in a normal chat), one the
+ *  user starred, or Mate, the first crewmate the product creates, which is
+ *  listed from the start. A crew that only ran in the background -- a cron, a
+ *  wake, a sub-agent, a dispatched worker -- or that an app drove is hidden
+ *  until the search reaches it, the default crew included.
  *
  *  A row from an older gateway carries no `last_chat_ts`, and keeps that
  *  gateway's rule (DM thread holds a message, created on the dashboard, the
@@ -142,6 +144,8 @@ function matchesSearch(m: RosterRowLike, needle: string): boolean {
  *  every such row, since that rule cannot tell which row it must never hide. */
 export function listedByDefault(m: RosterRowLike, defaultAgent: string | null): boolean {
   if (m.starred === true) return true
+  // Mate, the first crewmate the product creates, is listed from the start.
+  if (isAssistantMember(m)) return true
   if (typeof m.last_chat_ts === 'number') return m.last_chat_ts > 0
   if (defaultAgent === null) return true
   if (defaultAgent !== '' && m.name === defaultAgent) return true

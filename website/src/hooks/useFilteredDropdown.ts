@@ -3,7 +3,7 @@ import { isTouchDevice } from '../utils/isTouchDevice'
 import { isConsumedPressClick, isPlainMousePress } from './usePressActivation'
 
 /** Shared hook for filtered dropdown behavior (open/close, filter, click-outside, keyboard). */
-export function useFilteredDropdown<T extends { name: string }>(items: T[]) {
+export function useFilteredDropdown<T extends { name: string; display_name?: string }>(items: T[]) {
   const [open, setOpen] = useState(false)
   const [filter, setFilter] = useState('')
   const dropdownRef = useRef<HTMLDivElement>(null)
@@ -51,7 +51,7 @@ export function useFilteredDropdown<T extends { name: string }>(items: T[]) {
   }, [open])
 
   const filtered = filter
-    ? items.filter(item => item.name.toLowerCase().includes(filter.toLowerCase()))
+    ? items.filter(item => [item.name, item.display_name ?? ''].some(text => text.toLowerCase().includes(filter.toLowerCase())))
     : items
 
   return { open, setOpen, filter, setFilter, dropdownRef, inputRef, filtered }

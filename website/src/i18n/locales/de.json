@@ -9483,6 +9483,9 @@
       "moreCols": "mehr Spalten",
       "fewerRows": "weniger Zeilen",
       "moreRows": "mehr Zeilen"
+    },
+    "assistantWelcome": {
+      "default_name": "Mate"
     }
   },
   "hooks": {

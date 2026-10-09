@@ -6,6 +6,8 @@ import { useTheme } from './useTheme'
 import { CREWMATES_PAGE_ENTERED_EVENT, START_MEET_CREWMATES_EVENT } from '../components/MeetCrewmatesFlow'
 import { PREVIEW_CREW } from '../utils/previewFlags'
 import { api } from '../api/client'
+import { useQueryClient } from '@tanstack/react-query'
+import { MEMBERS_ROSTER_QUERY_KEY } from '../api/membersQuery'
 
 // A brand-new workspace: first-run chapters not yet done on the server, only
 // the built-in `default` row on the roster, only the built-in agent installed.
@@ -148,8 +150,8 @@ describe('useMeetCrewmatesGate', () => {
     await waitFor(() => expect(result.current.theme.themeBootReady).toBe(true))
     act(() => result.current.theme.markOnboarded())
     await waitFor(() => expect(result.current.gate.open).toBe(true))
-    // Nothing about the roster or the installed agents is read to decide it.
-    expect(api.members).not.toHaveBeenCalled()
+    // Other crewmates and the installed agents never hold it back; the roster
+    // is read only for whether Mate is still owed its first visit.
     expect(api.agentsInstalled).not.toHaveBeenCalled()
   })
 
@@ -261,6 +263,93 @@ describe('useMeetCrewmatesGate', () => {
       enterPage()
       await new Promise(r => setTimeout(r, 20))
       expect(result.current.gate.open).toBe(false)
+    })
+  })
+
+  describe("Mate's first visit, never both", () => {
+    const enterPage = () => act(() => { window.dispatchEvent(new Event(CREWMATES_PAGE_ENTERED_EVENT)) })
+    const roster = (mate: Record<string, unknown> | null) =>
+      vi.mocked(api.members).mockResolvedValue({
+        members: [{ name: 'default', slug: 'default' }, ...(mate ? [{ name: 'mate', slug: 'mate', ...mate }] : [])],
+      } as never)
+    const rosterRead = async () => {
+      await waitFor(() => expect(api.members).toHaveBeenCalled())
+      // Wait for the roster read itself to settle, then let the hook's state update land.
+      await act(async () => { await vi.mocked(api.members).mock.results.at(-1)?.value })
+    }
+    const returningUser = () =>
+      vi.mocked(api.themeBoot).mockResolvedValueOnce({
+        mode: '', color: '', onboarded: true, import_onboarded: true, privacy_acked: true,
+      })
+
+    it('the tour ending does not open the flow while Mate exists and has never been chatted with', async () => {
+      roster({})
+      const { result } = renderHookWithProviders(() => ({ ...useBoth(), qc: useQueryClient() }))
+      await waitFor(() => expect(result.current.theme.themeBootReady).toBe(true))
+      act(() => result.current.theme.markOnboarded())
+      await rosterRead()
+      expect(result.current.gate.open).toBe(false)
+      // The user's first message to Mate lands: the held flow does not open
+      // over that exchange later in the same session.
+      vi.mocked(api.members).mockClear()
+      roster({ has_dm_message: true })
+      await act(async () => { await result.current.qc.invalidateQueries({ queryKey: MEMBERS_ROSTER_QUERY_KEY }) })
+      await rosterRead()
+      expect(result.current.gate.open).toBe(false)
+    })
+
+    it('the tour ending still opens the flow once Mate has history', async () => {
+      roster({ has_dm_message: true })
+      const { result } = renderHookWithProviders(useBoth)
+      await waitFor(() => expect(result.current.theme.themeBootReady).toBe(true))
+      act(() => result.current.theme.markOnboarded())
+      await waitFor(() => expect(result.current.gate.open).toBe(true))
+    })
+
+    it('the tour ending still opens the flow when Mate was deleted', async () => {
+      roster(null)
+      const { result } = renderHookWithProviders(useBoth)
+      await waitFor(() => expect(result.current.theme.themeBootReady).toBe(true))
+      act(() => result.current.theme.markOnboarded())
+      await waitFor(() => expect(result.current.gate.open).toBe(true))
+    })
+
+    it('a Crewmates page entry does not open the flow while Mate has never been chatted with', async () => {
+      returningUser()
+      roster({})
+      const { result } = renderHookWithProviders(useBoth)
+      await waitFor(() => expect(result.current.theme.themeBootReady).toBe(true))
+      enterPage()
+      await rosterRead()
+      expect(result.current.gate.open).toBe(false)
+    })
+
+    it('a Crewmates page entry still opens the flow once Mate has history', async () => {
+      returningUser()
+      roster({ last_message: 'hi' })
+      const { result } = renderHookWithProviders(useBoth)
+      await waitFor(() => expect(result.current.theme.themeBootReady).toBe(true))
+      enterPage()
+      await waitFor(() => expect(result.current.gate.open).toBe(true))
+    })
+
+    it('with the Crewmates preview off, a never-chatted Mate holds nothing back, even from a warm roster cache', async () => {
+      localStorage.removeItem(PREVIEW_CREW)
+      returningUser()
+      roster({})
+      // A roster an earlier page read already left in the cache.
+      let seeded = false
+      const { result } = renderHookWithProviders(() => {
+        const qc = useQueryClient()
+        if (!seeded) {
+          seeded = true
+          qc.setQueryData(MEMBERS_ROSTER_QUERY_KEY, [{ name: 'default', slug: 'default' }, { name: 'mate', slug: 'mate' }])
+        }
+        return useBoth()
+      })
+      await waitFor(() => expect(result.current.theme.themeBootReady).toBe(true))
+      enterPage()
+      await waitFor(() => expect(result.current.gate.open).toBe(true))
     })
   })
 })

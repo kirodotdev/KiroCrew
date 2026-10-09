@@ -9354,6 +9354,9 @@
       "moreCols": "列を増やす",
       "fewerRows": "行を減らす",
       "moreRows": "行を増やす"
+    },
+    "assistantWelcome": {
+      "default_name": "Mate"
     }
   },
   "hooks": {

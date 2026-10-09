@@ -283,7 +283,9 @@ class TestTheNameAloneIsNotOwnership:
     def test_an_opt_in_name_is_not_in_the_purge_set(self) -> None:
         assert DASH_SERVER not in mcp_cleanup.STALE_MANAGED_MCP_SERVERS
         for name in mcp_cleanup.ALWAYS_ON_BIN_MCP_SERVERS:
-            assert name in mcp_cleanup.STALE_MANAGED_MCP_SERVERS
+            # The guide set became always-on after the last install method that
+            # wrote the global file, so no residue of ours can carry its name.
+            assert (name in mcp_cleanup.STALE_MANAGED_MCP_SERVERS) is (name != "kirocrew-guide")
 
     def test_a_hand_written_grant_survives_cleanup(self, tmp_path: Any, monkeypatch: Any) -> None:
         """Including one whose invocation is byte-for-byte what we would write."""
