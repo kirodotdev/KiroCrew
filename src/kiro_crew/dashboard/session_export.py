@@ -11,8 +11,17 @@ nothing, and two machines that never see each other have no path at all. A file
 needs none of that: it can sit in a download, a bucket or on a USB stick until
 somebody opens it.
 
-**It adds no format, and it writes no file server-side.** The document is the
-tunnel's own bundle at ``bundle_version`` 2 — no version bump, because
+**Two renderings, one bundle.** ``?format=md`` answers
+``<title-slug>-<stamp>.kcsession.md`` instead — the same assembled bundle written
+as a human-readable Markdown transcript by
+:mod:`kiro_crew.dashboard.session_markdown`, for reading, sharing and archiving
+rather than for installing. Every guard in the handler is shared, because the
+format decides only how the bundle is written out; the Markdown rendering never
+carries Layer B, whatever the operator has opted into.
+
+**It adds no WIRE format, and it writes no file server-side.** The transfer
+document is the tunnel's own bundle at ``bundle_version`` 2 — no version bump,
+because
 ``session_transfer._validate_bundle`` refuses an unrecognised version outright
 while dropping unknown keys silently, so bumping would break sending to an
 instance that has not updated while a new optional key costs it nothing. The
@@ -78,6 +87,10 @@ from aiohttp import hdrs, web
 from kiro_crew.config.loader import _raw_config
 from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.session_markdown import (
+    MARKDOWN_FILE_SUFFIX,
+    write_markdown_file,
+)
 from kiro_crew.dashboard.session_transfer import (
     _CHUNK_BYTES,
     SnapshotUnstable,
@@ -108,6 +121,38 @@ _MAX_SLUG_CHARS = 60
 #: Fallback slug for a session whose redacted title has no usable characters —
 #: an untitled tab, or a title that was entirely non-ASCII or entirely redacted.
 _DEFAULT_SLUG = "session"
+
+#: The two renderings this endpoint can answer with. ``json`` is the default and
+#: the transfer document; a caller that names nothing, or names something
+#: unrecognised, gets it. ``md`` is the ONLY spelling that selects Markdown — it
+#: is the extension a person types, and one spelling means there is no second
+#: branch for a caller to exercise unnoticed. These two names are the values the
+#: handler and the audit entry carry, not the query strings it accepts.
+#:
+#: A query parameter rather than a second route: the two formats are the SAME
+#: assembled bundle rendered twice, and every guard in this handler — the
+#: app-scope ownership checks, the restricted-session refusal, the transcript
+#: locking, the publication hold — has to hold identically for both. A second
+#: route is a second place for one of them to be forgotten.
+_FORMAT_MARKDOWN = "markdown"
+_FORMAT_JSON = "json"
+
+
+def _export_format(request: web.Request) -> str:
+    """Which rendering this request asked for: :data:`_FORMAT_JSON` or Markdown.
+
+    ``?format=md`` selects Markdown after surrounding whitespace is stripped and
+    ASCII case is normalised; everything else — absent, empty, or unrecognised —
+    selects JSON, the document every existing caller already receives.
+
+    An unrecognised value falls back rather than erroring. The format is a
+    presentation choice and both renderings pass the same guards, but Markdown
+    is always egress-redacted and excludes Layer B while JSON may include
+    unredacted Layer B after the operator's explicit opt-in, so a typo costs the
+    caller a re-click without weakening either format's privacy contract.
+    """
+    raw = request.query.get("format", "").strip().lower()
+    return _FORMAT_MARKDOWN if raw == "md" else _FORMAT_JSON
 
 
 def export_stamp() -> str:
@@ -140,14 +185,19 @@ def slugify_title(title: str) -> str:
     return slug or _DEFAULT_SLUG
 
 
-def export_filename(redacted_title: str, stamp: str = "") -> str:
-    """``<title-slug>-<stamp>.kcsession.json.gz`` for an already-redacted title.
+def export_filename(redacted_title: str, stamp: str = "", suffix: str = EXPORT_FILE_SUFFIX) -> str:
+    """``<title-slug>-<stamp><suffix>`` for an already-redacted title.
 
     The slug leads, so a directory of exports sorts by conversation; the drive
     key in a later phase reverses that for a different reason (a listing wants
     newest first), which is why the two are built separately rather than shared.
+
+    *suffix* selects the format's extension — :data:`EXPORT_FILE_SUFFIX` for the
+    JSON bundle, ``session_markdown.MARKDOWN_FILE_SUFFIX`` for the Markdown
+    rendering. Both keep the ``.kcsession`` middle so the two sort together in a
+    directory of exports from the same conversation.
     """
-    return f"{slugify_title(redacted_title)}-{stamp or export_stamp()}{EXPORT_FILE_SUFFIX}"
+    return f"{slugify_title(redacted_title)}-{stamp or export_stamp()}{suffix}"
 
 
 def content_disposition(filename: str) -> str:
@@ -310,11 +360,18 @@ def _export_layer_b_requested(request: web.Request) -> bool:
 
 
 async def api_chat_slot_export(request: web.Request) -> web.StreamResponse:
-    """GET /api/chat/slots/{slot}/export — download one session as a file."""
+    """GET /api/chat/slots/{slot}/export — download one session as a file.
+
+    ``?format=md`` renders the Markdown document instead of the gzipped JSON
+    bundle (see :mod:`kiro_crew.dashboard.session_markdown`). Every guard below is
+    shared by both formats, deliberately: the format decides only how the
+    assembled bundle is written out.
+    """
     state: DashboardState = request.app["state"]
     request_app = request.get("app", "")
     caller = request_app or "dashboard"
     slot_key = request.match_info.get("slot", "")
+    export_format = _export_format(request)
 
     def _audit(outcome: str, resources: str = "", error: str = "") -> None:
         sel().log_api_access(
@@ -322,7 +379,10 @@ async def api_chat_slot_export(request: web.Request) -> web.StreamResponse:
             operation="chat.slot_export",
             outcome=outcome,
             source="dashboard",
-            resources=resources or f"slot={slot_key}",
+            # The format is on every line, including the refusals: an operator
+            # auditing what left the host needs to know WHICH document was
+            # produced, because only one of the two can resume a session.
+            resources=resources or f"slot={slot_key},format={export_format}",
             error=error,
         )
 
@@ -420,7 +480,8 @@ async def api_chat_slot_export(request: web.Request) -> web.StreamResponse:
             # a v1 sender, or a session that never opened a context; this caller
             # only supplies the operator's opt-in on top of that.
             include_layer_b=(
-                _export_layer_b_permitted()
+                export_format == _FORMAT_JSON
+                and _export_layer_b_permitted()
                 and _export_layer_b_requested(request)
                 and is_owner_dashboard_request(request)
             ),
@@ -491,9 +552,11 @@ async def api_chat_slot_export(request: web.Request) -> web.StreamResponse:
 
     # Serialised to a temp file a message at a time, with a Layer B log streamed
     # from its snapshot, and sent from that file, so neither the document nor
-    # its compressed form is ever resident.
+    # its compressed form is ever resident. The Markdown writer streams the same
+    # way, for the same reason.
+    markdown = export_format == _FORMAT_MARKDOWN
     try:
-        staged = await asyncio.to_thread(_stage_export, bundle)
+        staged = await asyncio.to_thread(write_markdown_file if markdown else _stage_export, bundle)
     except Exception:
         # A full staging volume, most often. The same audited, coded failure as
         # a build that could not complete; nothing reached the client.
@@ -507,18 +570,27 @@ async def api_chat_slot_export(request: web.Request) -> web.StreamResponse:
         )
     finally:
         release_bundle_files(bundle)
-    filename = export_filename(bundle.get("title") or "")
+    filename = export_filename(
+        bundle.get("title") or "",
+        suffix=MARKDOWN_FILE_SUFFIX if markdown else EXPORT_FILE_SUFFIX,
+    )
 
     publication_key = slot_history_key(slot)
 
     def _commit_response() -> tuple[web.StreamResponse, int]:
         size = staged.stat().st_size
         headers = {
-            "Content-Type": "application/gzip",
+            # ``charset`` is spelled out for the Markdown document and absent for
+            # the gzip: one is text whose encoding a reader must be told, the
+            # other is an opaque stream. Both are still served ``nosniff`` below.
+            "Content-Type": "text/markdown; charset=utf-8" if markdown else "application/gzip",
             "Content-Disposition": content_disposition(filename),
             # The body is a session's own text coming back out of the gateway on
             # the dashboard's own origin. Without this a browser is free to sniff
-            # it and render it as something executable instead of saving it.
+            # it and render it as something executable instead of saving it. It
+            # matters MORE for the Markdown format, not less: that body is text
+            # the session itself produced, so a sniffing browser could be talked
+            # into treating a transcript as HTML on this origin.
             "X-Content-Type-Options": "nosniff",
         }
         log = state.conversation_log
@@ -557,7 +629,7 @@ async def api_chat_slot_export(request: web.Request) -> web.StreamResponse:
     _audit(
         "allowed",
         resources=(
-            f"slot={slot_key},messages={len(bundle['messages'])},"
+            f"slot={slot_key},format={export_format},messages={len(bundle['messages'])},"
             f"bytes={size},layer_b={'yes' if bundle.get('layer_b') else 'no'}"
         ),
     )

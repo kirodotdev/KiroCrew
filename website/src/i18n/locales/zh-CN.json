@@ -6549,7 +6549,8 @@
       "trigger": "触发方式"
     },
     "exportSessionItem": {
-      "export_to_file": "导出为文件",
+      "export_json": "导出用于导入 (JSON)",
+      "export_markdown": "导出为可读的 Markdown",
       "exported": "已导出",
       "failed": "失败",
       "not_saved_to_disk": "会话未保存到磁盘",

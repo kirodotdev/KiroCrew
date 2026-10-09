@@ -6759,7 +6759,8 @@
       "trigger": "Trigger"
     },
     "exportSessionItem": {
-      "export_to_file": "Esporta in un file",
+      "export_json": "Esporta per l'importazione (JSON)",
+      "export_markdown": "Esporta come Markdown leggibile",
       "exported": "Esportato",
       "failed": "Non riuscito",
       "not_saved_to_disk": "sessione non salvata su disco",

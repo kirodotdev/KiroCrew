@@ -186,23 +186,31 @@ export function createInstancesEndpoints({ get, post, del, patch, j, jfetch: fet
       }>,
     // Copies a session to another instance. The local session is left untouched:
     // the peer allocates its own key, so this is a copy and never a move.
-    /** Download one session as a single gzipped file.
+    /** Download one session as a single file.
      *
      *  Fetches rather than navigating, so a refusal (an incognito session, an
      *  empty one) raises here and the menu row can report it, instead of replacing
      *  the dashboard with a raw JSON error body. The saved filename comes from the
      *  endpoint's own Content-Disposition, whose slug is built from the REDACTED
      *  title — the frontend must not reconstruct a name from `slot.title`, which
-     *  is the unredacted copy. */
-    exportSession: async (slot: string) => {
-      const r = await get('/api/chat/slots/' + encodeURIComponent(slot) + '/export')
+     *  is the unredacted copy.
+     *
+     *  `format` picks the rendering: the default gzipped JSON bundle, which is the
+     *  one an Install reads back, or `'md'` for the human-readable Markdown
+     *  transcript. The fallback filename follows it, and is only ever used when a
+     *  proxy strips the header. */
+    exportSession: async (slot: string, format?: 'json' | 'md') => {
+      const markdown = format === 'md'
+      const r = await get(
+        '/api/chat/slots/' + encodeURIComponent(slot) + '/export' + (markdown ? '?format=md' : ''),
+      )
       if (!r.ok) {
         throw await toApiError(r)
       }
       const blob = await r.blob()
       const filename = filenameFromDisposition(
         r.headers.get('Content-Disposition') || '',
-        `${slot}.kcsession.json.gz`,
+        `${slot}.kcsession.${markdown ? 'md' : 'json.gz'}`,
       )
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')

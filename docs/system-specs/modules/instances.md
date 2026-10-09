@@ -1765,7 +1765,7 @@ versions is what lets a v2 instance still receive a copy from a v1 one.
 | Method and path | Purpose |
 |---|---|
 | `POST /api/instances/{id}/send-session` | Sending side. Body `{"slot": "<local slot key>"}`. Bundles the local session and delivers it over that instance's open tunnel. |
-| `GET /api/chat/slots/{slot}/export` | Sending side, file hop. Streams the SAME bundle as a gzipped download instead of over a tunnel — see §14.7. |
+| `GET /api/chat/slots/{slot}/export` | Sending side, file hop. Streams the SAME bundle as a gzipped download instead of over a tunnel — see §14.7. `?format=md` streams it as a human-readable Markdown transcript instead; see §14.7a. |
 | `POST /api/chat/slots/import` | Receiving side, for BOTH arrival routes. Accepts a bundle — gzipped or plain JSON, sniffed from its own bytes — and materialises a new slot. See §14.5a. |
 
 `send-session` goes through the same `_guard()` as every other route in §6
@@ -2353,6 +2353,76 @@ Three properties worth stating because they are easy to lose:
   rather than exporting when that write fails. Reading such a file back is
   `ImportSessionItem` beside this row, which posts the file's bytes unchanged to
   `/api/chat/slots/import` — see §14.5a for what that route accepts.
+
+### 14.7a The Markdown rendering (`?format=md`)
+
+The same endpoint, the same assembled bundle, written as a document for a person
+instead of for the importer. Code:
+`src/kiro_crew/dashboard/session_markdown.py`; `?format=md` answers
+`<title-slug>-<stamp>.kcsession.md` as `text/markdown; charset=utf-8`.
+Both formats are mounted as sibling rows of `ExportSessionItem`, the JSON one
+first, each naming what its file is for rather than sharing a label split by a
+format suffix — the Install row directly below reads one of the two back, and a
+row that only names its file type leaves the reader to work out which.
+
+**Why a query parameter and not a second route.** Every guard on the JSON path
+has to hold identically — the app-scope ownership checks, the
+incognito/temporary refusal, the transcript locking, the empty-transcript
+refusal, the publication hold, the SEL audit. A second route is a second place
+for one of them to be forgotten. The handler normalises surrounding whitespace
+and ASCII case before matching `md`; every other `format` value falls back to the
+JSON bundle rather than erroring. The two formats share those route guards, but
+not an identical payload privacy shape: Markdown is always egress-redacted and
+excludes Layer B, while JSON may carry unredacted Layer B after §14.7's explicit
+twofold opt-in. The audit entry records which format was served.
+
+**It never carries Layer B, whatever the operator opted into.** The format gate
+sits AHEAD of §14.7's twofold opt-in, so `?format=md&include_layer_b=true`
+resolves `include_layer_b=False` and the context window is never even read.
+Markdown installs nowhere, so byte-exact unredacted context has no job in it —
+and a document whose purpose is being pasted into a review, a ticket or a chat
+is the last place it may appear.
+
+**Message content is written verbatim.** Transcript content already IS Markdown —
+that is what the dashboard renders — so escaping it would destroy the fenced code
+blocks, tables and lists this format exists to preserve. The content is also
+already egress-redacted, because it is the same bundle text §14.7 ships. The one
+structural consequence is handled: a message ending inside an unterminated code
+fence, or inside an HTML construct that outlives a blank line (`<pre`, `<script`,
+`<style`, `<textarea`, `<!--`, a `<?` processing instruction, a `<!` declaration,
+`<![CDATA[`, or an element a browser reads as raw text until its own close tag such
+as `<title>`), or one a browser parses but never shows (`<template>`, `<dialog>`,
+`<details>`), would otherwise render or hide every later turn — silent loss at
+read time — so the renderer closes it at the message boundary. Detection matters in
+BOTH directions, because a manufactured closer is itself content and a bare fence
+line is a valid opener: closing a construct that was never open swallows the rest
+of the document just as surely. So the renderer never guesses what is open: it
+parses each message with a CommonMark reference implementation (`markdown-it-py`,
+a runtime dependency for this reason) exactly as it will land in the file, followed
+by the separator and a stand-in for the next heading, and adds a closer only when
+the parser reports that heading swallowed — the closer the swallowing block itself
+names. The rendered HTML is then read by a small HTML tokenizer for what a browser
+would still have open (a comment, an unfinished tag, a raw-text element, or one it
+parses but never shows, such as `<template>` or `<dialog>`), and that
+is closed too. Every closer is re-verified by the same parse before it is accepted.
+A fence inside a list item or block quote therefore draws no closer, and needs
+none: the `---` separator before the next heading ends the container and the fence
+with it, and the parser says so. The title is collapsed
+to one line for the same reason: a heading is one line, so a newline in a
+user-renamed title would otherwise put a second, unescaped block beneath it. The
+provenance table is the only place a value is escaped, since an unescaped `|` there
+shifts every later column.
+
+**Streamed, never assembled.** `write_markdown_file` writes a message at a time
+into a temp file in the same `data_home()/tmp/session-export` staging directory
+the gzip path uses, and the response streams from that file — so a long session's
+rendered text is never resident, and both formats are reclaimed by one sweep.
+
+**What it does not carry.** Tool calls are not in the bundle: `messages` holds
+only `session_transfer._VISIBLE_ROLES` (`user`, `assistant`), and the transcript's
+`tool` rows are filtered out before the bundle exists. Rendering them means
+widening the egress boundary with its own redaction pass over tool inputs, which
+is its own change.
 
 ### 14.8 The `source` provenance record — recorded, never applied
 

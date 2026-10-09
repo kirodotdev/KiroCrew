@@ -6654,7 +6654,8 @@
       "trigger": "Auslöser"
     },
     "exportSessionItem": {
-      "export_to_file": "In eine Datei exportieren",
+      "export_json": "Für den Import exportieren (JSON)",
+      "export_markdown": "Als lesbares Markdown exportieren",
       "exported": "Exportiert",
       "failed": "Fehlgeschlagen",
       "not_saved_to_disk": "Sitzung nicht auf Festplatte gespeichert",

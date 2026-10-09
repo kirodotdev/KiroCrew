@@ -1407,3 +1407,155 @@ async def test_a_staging_failure_is_an_audited_coded_500_and_releases_the_snapsh
     assert json.loads(resp.body)["code"] == "export_failed"
     assert audits == ["error"]
     assert not snap.exists()
+
+
+# ── the Markdown format ──────────────────────────────────────────────────
+#
+# The format decides only how the assembled bundle is WRITTEN OUT, so the cases
+# that matter are the ones where that could stop being true: a guard that only
+# one format passes, and the sensitive payload the human-readable document must
+# never be able to carry.
+
+
+@pytest.mark.asyncio
+async def test_export_streams_a_markdown_document():
+    slot = _slot(MSGS, title="Design chat")
+    state = _state(MSGS, sessions=_FakeSessions({SESSION_KEY: "auto"}), slots={"slot-1": slot})
+
+    resp = await se.api_chat_slot_export(_request(state, query={"format": "md"}))
+
+    assert resp.status == 200
+    assert resp.content_type == "text/markdown"
+    assert resp.charset == "utf-8"
+    # The body is text this session produced, served on the dashboard's own
+    # origin, so a sniffing browser must not be free to treat it as HTML.
+    assert resp.headers["X-Content-Type-Options"] == "nosniff"
+    assert resp.headers["Content-Disposition"].endswith(".kcsession.md")
+    assert "design-chat-" in resp.headers["Content-Disposition"]
+
+    text = _export_bytes(resp).decode("utf-8")
+    assert text.startswith("# Design chat\n")
+    assert "## User — t1" in text
+    assert "how does the tunnel work?" in text
+    assert "it forwards loopback" in text
+    # The provenance the JSON bundle carries as ``source`` is a table here, so a
+    # reader of the file alone still learns what the session ran under.
+    assert "| Approval policy | auto |" in text
+
+
+@pytest.mark.asyncio
+async def test_the_markdown_export_never_reads_layer_b(monkeypatch):
+    """The one asymmetry between the formats, and it fails closed.
+
+    Markdown installs nowhere, so the model's byte-exact unredacted context
+    window has no job in it — and the document's whole purpose is being pasted
+    into a review, a ticket or a chat. The format gate sits AHEAD of the
+    operator's twofold opt-in, so both opt-ins being ON changes nothing here.
+
+    Asserted on the READ and not on the rendered text, because the renderer never
+    emits ``layer_b`` either way: a text assertion would pass with the gate
+    removed and prove nothing. ``include_layer_b=False`` leaves the resolved sid
+    empty, and ``_read_layer_b`` opens nothing for an empty sid — so no snapshot
+    of the unredacted context window is ever staged for a document that cannot
+    carry it.
+
+    REVERSE-VERIFY: drop the ``export_format == _FORMAT_JSON`` conjunct at the
+    call site and this goes red -- the Markdown export starts snapshotting Layer B
+    for an operator who opted in for the JSON one.
+    """
+    import kiro_crew.dashboard.session_transfer as st
+
+    reads: list[str] = []
+
+    def _spy(sid):
+        reads.append(sid)
+        return {"sid": sid, "envelope": {}, "events": "{}"} if sid else None
+
+    monkeypatch.setattr(st, "_resolve_layer_b_sid", lambda *_a, **_k: "a-real-sid")
+    monkeypatch.setattr(st, "_read_layer_b", _spy)
+    monkeypatch.setattr(se, "is_owner_dashboard_request", lambda *_a, **_k: True)
+    monkeypatch.setattr(se, "_export_layer_b_permitted", lambda: True)
+
+    slot = _slot(MSGS)
+    state = _state(MSGS, slots={"slot-1": slot})
+    resp = await se.api_chat_slot_export(
+        _request(state, query={"format": "md", "include_layer_b": "true"})
+    )
+
+    assert resp.status == 200
+    # The builder calls the reader unconditionally; an EMPTY sid is what makes it
+    # open nothing. A real sid reaching it is the leak this gate prevents.
+    assert [
+        sid for sid in reads if sid
+    ] == [], "the Markdown format must not snapshot the context window"
+    text = _export_bytes(resp).decode("utf-8")
+    assert "envelope" not in text
+
+    # The SAME request in the JSON format does read it, so the assertion above is
+    # the format gate and not a broken monkeypatch.
+    reads.clear()
+    slot = _slot(MSGS)
+    state = _state(MSGS, slots={"slot-1": slot})
+    json_resp = await se.api_chat_slot_export(_request(state, query={"include_layer_b": "true"}))
+    assert json_resp.status == 200
+    assert [sid for sid in reads if sid] == ["a-real-sid"]
+
+
+@pytest.mark.asyncio
+async def test_a_restricted_session_is_refused_in_both_formats():
+    """The refusals are the handler's, not the JSON path's.
+
+    An incognito transcript exists under a promise that nothing is produced from
+    it. A Markdown rendering is such a product, so asking for a different format
+    must not be a way around the refusal.
+    """
+    for query in ({}, {"format": "md"}):
+        slot = _slot(MSGS, memory_mode="incognito")
+        state = _state(MSGS, slots={"slot-1": slot})
+        resp = await se.api_chat_slot_export(_request(state, query=query))
+        assert resp.status == 400
+        assert json.loads(resp.body)["code"] == "export_slot_not_persistent"
+
+
+@pytest.mark.asyncio
+async def test_an_empty_session_is_refused_in_both_formats():
+    for query in ({}, {"format": "md"}):
+        slot = _slot([])
+        state = _state([], slots={"slot-1": slot})
+        resp = await se.api_chat_slot_export(_request(state, query=query))
+        assert resp.status == 400
+        assert json.loads(resp.body)["code"] == "export_bundle_empty"
+
+
+def test_the_format_query_accepts_only_md_and_defaults_to_json():
+    def fmt(value):
+        return se._export_format(
+            SimpleNamespace(query={"format": value} if value is not None else {})
+        )
+
+    assert fmt(None) == "json"
+    assert fmt("") == "json"
+    assert fmt("md") == "markdown"
+    assert fmt("MD") == "markdown"
+    assert fmt(" md ") == "markdown"
+    # Only the one spelling the menu sends selects Markdown. A second spelling of
+    # the same rendering is a branch no caller exercises, so it could change
+    # behaviour unnoticed; "markdown" is therefore not an accepted value.
+    assert fmt("markdown") == "json"
+    # An unrecognised value is the existing document rather than an error: the
+    # format is a presentation choice with no privacy dimension, so a typo costs
+    # a re-click and never a failed export.
+    assert fmt("json") == "json"
+    assert fmt("yaml") == "json"
+    assert fmt("html") == "json"
+
+
+def test_the_two_formats_share_the_kcsession_middle():
+    """So a directory of exports from one conversation still sorts together."""
+    from kiro_crew.dashboard.session_markdown import MARKDOWN_FILE_SUFFIX
+
+    json_name = se.export_filename("Design chat", stamp="S")
+    md_name = se.export_filename("Design chat", stamp="S", suffix=MARKDOWN_FILE_SUFFIX)
+    assert json_name == "design-chat-S.kcsession.json.gz"
+    assert md_name == "design-chat-S.kcsession.md"
+    assert md_name.removesuffix(".md") == json_name.removesuffix(".json.gz")

@@ -39,6 +39,7 @@ _DIST_TO_IMPORT: dict[str, str] = {
     "defusedxml": "defusedxml",
     "pdfplumber": "pdfplumber",
     "websockets": "websockets",
+    "markdown-it-py": "markdown_it",
 }
 
 # --- Modules explicitly exempt from the check ---

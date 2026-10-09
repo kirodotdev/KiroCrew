@@ -101,7 +101,10 @@ describe('SessionActionsMenu context-menu error hand-off', () => {
     const user = userEvent.setup()
     mount()
 
-    const exportRow = await screen.findByRole('menuitem', { name: /export to a file/i })
+    // Two export rows now, one per format. This contract is about the row's
+    // activation behaviour, so it pins the JSON one by its own label -- each row
+    // names what its file is for, so neither needs a suffix to be identifiable.
+    const exportRow = await screen.findByRole('menuitem', { name: /export for import/i })
     exportRow.focus()
     await user.keyboard('{Enter}')
     await screen.findByRole('alert')
