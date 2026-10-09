@@ -303,9 +303,9 @@ export default function AgentSelector({ agents, defaultAgent, value, onChange, m
         )}
         {showGroupChrome && kind === 'template' && (
           // What a template pick IS, said where the pick happens: the job runs
-          // the shared template on the default crew's workspace and memory.
+          // the shared template in the default workspace with shared memory.
           <p className="px-3 pb-1 text-[11px] leading-snug text-muted">
-            {i18nT('components.agentDropdownList.group_templates_hint')}
+            {i18nT('components.agentDropdownList.group_templates_hint_default_workspace')}
           </p>
         )}
         <div className="divide-y divide-border">{rows.map(renderRow)}</div>

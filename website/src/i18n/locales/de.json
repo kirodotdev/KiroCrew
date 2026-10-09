@@ -5760,16 +5760,19 @@
     },
     "agentDropdownList": {
       "active_in_this_session": "In dieser Sitzung aktiv",
-      "could_not_change_the_default_agent": "Der Standard-Crew-Kamerad konnte nicht geändert werden",
+      "default_write_failed_not_installed": "Der benutzerdefinierte Standard-Agent konnte nicht geändert werden: {{name}} ist kein installierter benutzerdefinierter Agent. Installiere ihn und versuche es erneut.",
+      "default_write_failed_overlaid": "Der benutzerdefinierte Standard-Agent konnte nicht geändert werden: deine lokale Einstellungsdatei (config.local.json) legt ihn fest. Ändere ihn dort.",
+      "default_write_failed_stale": "Der benutzerdefinierte Standard-Agent konnte nicht geändert werden: {{name}} hat sich gerade geändert. Lade neu und versuche es erneut.",
+      "could_not_change_the_default_custom_agent": "Der benutzerdefinierte Standard-Agent konnte nicht geändert werden",
       "default": "Standard",
-      "default_agent_for_new_sessions": "Standard für neue Sitzungen",
+      "agent_is_the_default_for_new_sessions": "<agent/> ist der Standard für neue Sitzungen",
       "group_members": "Crew-Kameraden",
       "group_templates": "Benutzerdefinierte Agenten",
       "manage_agents": "Crew-Kameraden verwalten…",
       "new_sessions_start_with_this_agent": "Neue Sitzungen starten mit diesem Crew-Kameraden",
       "no_matches": "Keine Treffer",
       "set_default_agent": "<agent/> als Standard für neue Sitzungen festlegen",
-      "group_templates_hint": "Läuft im Arbeitsbereich und Gedächtnis des Standard-Crew-Kameraden – es wird nichts Neues angelegt."
+      "group_templates_hint_default_workspace": "Ein benutzerdefinierter Agent ist eine wiederverwendbare Agent-Konfiguration. Wer einen wählt, nutzt deinen Standard-Arbeitsbereich und das gemeinsame Gedächtnis; es wird kein neuer Crew-Kamerad angelegt."
     },
     "agentImportFlow": {
       "back": "Zurück",
@@ -13590,7 +13593,7 @@
         "change_directory_hint": "Der Workspace liest Gedächtnis, Lektionen, Verlauf und Wissensdatenbank aus dem neuen Ordner. Nichts wird verschoben.",
         "default_crewmate": "Standard-Crew-Kamerad",
         "default_crewmate_failed": "Der Standard-Crew-Kamerad konnte nicht geändert werden",
-        "default_crewmate_hint": "Als welcher Crew-Kamerad eine neue Sitzung startet – dieselbe Einstellung, die der ★ im Chat-Eingabefeld (Standard-Agent für neue Sitzungen) schreibt. Bereits geöffnete Chats behalten den, mit dem sie begonnen haben.",
+        "default_crewmate_hint_badge": "Welcher Crew-Kamerad auf der Crew-Seite das Standard-Abzeichen erhält und nicht gelöscht werden kann. Er legt nicht fest, was ein neuer Chat ausführt; das tut „… als Standard für neue Sitzungen festlegen“ in der Agent-Auswahl.",
         "default_crewmate_refused_because": "{{name}} konnte nicht als Standard-Crew-Kamerad gesetzt werden – {{reason}}. Lade die Seite neu und wähl noch einmal.",
         "default_crewmate_unknown_reason": "{{name}} steht nicht mehr in der Crewmate-Liste"
       },
@@ -17443,7 +17446,6 @@
       "filters_clear": "Filter zurücksetzen",
       "star": "{{name}} markieren",
       "unstar": "Markierung von {{name}} entfernen",
-      "default_agent_failed_title": "Der Standard-Crewmate konnte nicht gelesen werden, daher werden alle Crewmates angezeigt",
       "all_hidden_hint": "Crewmates, die du noch nicht genutzt hast, sind ausgeblendet. Suche, um sie zu finden.",
       "star_failed_title": "Markierung nicht gespeichert",
       "star_failed": "Die Markierung dieses Crewmates konnte nicht aktualisiert werden.",

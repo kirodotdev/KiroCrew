@@ -35,7 +35,7 @@ const MEMBERS = [
 function setup(props: Partial<Parameters<typeof CrewmateSwitcher>[0]> = {}) {
   const onPick = vi.fn()
   const onCreate = vi.fn()
-  render(<CrewmateSwitcher members={MEMBERS} defaultAgent="" activeName="scribe" onPick={onPick} onCreate={onCreate} {...props} />)
+  render(<CrewmateSwitcher members={MEMBERS} activeName="scribe" onPick={onPick} onCreate={onCreate} {...props} />)
   return { onPick, onCreate }
 }
 

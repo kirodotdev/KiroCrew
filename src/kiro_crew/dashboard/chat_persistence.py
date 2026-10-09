@@ -1052,7 +1052,9 @@ def _member_private_selection(
     The selection and prewarm-release paths share this classification. An
     optional captured store limits the choice to the caller's admitted routing.
     """
-    selected = agent or config.default_agent
+    # An empty name is the default TEMPLATE, which owns no member memory; it
+    # is never read as the default crewmate alias.
+    selected = agent
     if not selected or selected == "default":
         return "", ""
     store = getattr(config.agents.get(selected), "memory_store", "")
@@ -1184,7 +1186,7 @@ async def pin_private_agent_store(
     callers may already hold a slot lock, while config writers serialize private
     ownership changes through the namespace lock.
     """
-    selected = agent or config.default_agent
+    selected = agent
     _entry_selected, entry_store = _member_private_selection(selected, config)
     native_context = state.sessions.get_provider(session_key) is not None or bool(
         state.sessions.resumable_sid(session_key)

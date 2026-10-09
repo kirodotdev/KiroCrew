@@ -5852,16 +5852,19 @@
     },
     "agentDropdownList": {
       "active_in_this_session": "Ativo nesta sessão",
-      "could_not_change_the_default_agent": "Não foi possível alterar o colega padrão",
+      "default_write_failed_not_installed": "Não foi possível alterar o agente personalizado padrão: {{name}} não é um agente personalizado instalado. Instale-o e tente de novo.",
+      "default_write_failed_overlaid": "Não foi possível alterar o agente personalizado padrão: seu arquivo de configurações local (config.local.json) o define. Altere-o lá.",
+      "default_write_failed_stale": "Não foi possível alterar o agente personalizado padrão: {{name}} acabou de mudar. Recarregue e tente de novo.",
+      "could_not_change_the_default_custom_agent": "Não foi possível alterar o agente personalizado padrão",
       "default": "Padrão",
-      "default_agent_for_new_sessions": "Padrão para novas sessões",
+      "agent_is_the_default_for_new_sessions": "<agent/> é o padrão para novas sessões",
       "group_members": "Colegas de tripulação",
       "group_templates": "Agentes personalizados",
       "manage_agents": "Gerenciar colegas…",
       "new_sessions_start_with_this_agent": "As novas sessões começam com este colega",
       "no_matches": "Nenhum resultado",
       "set_default_agent": "Definir <agent/> como padrão para novas sessões",
-      "group_templates_hint": "Executa no espaço de trabalho e na memória do colega padrão; nada novo é criado."
+      "group_templates_hint_default_workspace": "Um agente personalizado é uma configuração de agente reutilizável. Escolher um usa seu espaço de trabalho padrão e a memória compartilhada; nenhum colega novo é criado."
     },
     "agentImportFlow": {
       "back": "Voltar",
@@ -13791,7 +13794,7 @@
         "change_directory_hint": "O Workspace lerá sua memória, lições, histórico e base de conhecimento da nova pasta. Nada é movido.",
         "default_crewmate": "Colega padrão",
         "default_crewmate_failed": "Não foi possível alterar o colega padrão",
-        "default_crewmate_hint": "Com qual colega uma nova sessão começa: a mesma configuração que a ★ da caixa de chat (Agente padrão para novas sessões) grava. Os chats já abertos mantêm o colega com que começaram.",
+        "default_crewmate_hint_badge": "Qual colega recebe o selo Padrão na página de colegas e não pode ser excluído. Não decide o que um chat novo executa; isso é feito por “Definir … como padrão para novas sessões” no seletor de agente.",
         "default_crewmate_refused_because": "Não foi possível definir {{name}} como colega padrão: {{reason}}. Recarregue a página e escolha de novo.",
         "default_crewmate_unknown_reason": "{{name}} já não está na lista de companheiros"
       },
@@ -17697,7 +17700,6 @@
       "filters_clear": "Limpar filtros",
       "star": "Favoritar {{name}}",
       "unstar": "Desfavoritar {{name}}",
-      "default_agent_failed_title": "Não foi possível ler o crewmate padrão, então todos os crewmates são exibidos",
       "all_hidden_hint": "Os crewmates que você ainda não usou estão ocultos. Pesquise para encontrá-los.",
       "star_failed_title": "Favorito não salvo",
       "star_failed": "Não foi possível atualizar o favorito deste colega.",

@@ -40,16 +40,19 @@ KillProvider = Callable[[LLMProvider], None]
 def pool_kiro_agent(cfg: Any) -> str:
     """The kiro agent the warm pool prewarms and claims for, as a session names it.
 
-    ``session.pool_agent`` (else ``agent.default_agent``) may be blank, a config
-    alias such as ``default``, or a kiro agent name, while a session asks the pool
-    for the RESOLVED kiro agent (``kirocrew`` for the default). A blank name or a
-    config alias is resolved here, through the same in-memory resolver a session's
-    bindings use, so the pool spawns that agent and matches that name. Any other
-    name is already a kiro agent and is kept as written: the resolver would map
-    one it cannot see (a project-scoped agent) to the default. A config the
-    resolver cannot read keeps the configured name too.
+    ``session.pool_agent`` may be blank, a config alias such as ``default``, or a
+    kiro agent name, while a session asks the pool for the RESOLVED kiro agent. A
+    blank name is what a plain session is: the default custom agent (a template),
+    resolved through the same in-memory resolver a session's bindings use with no
+    name at all -- never through the alias table, since ``agent.default_agent``
+    may spell the same name as a crewmate alias that binds a different template,
+    and the pool must prewarm what the session will run. A config alias is
+    resolved the same way a crewmate pick is. Any other name is already a kiro
+    agent and is kept as written: the resolver would map one it cannot see (a
+    project-scoped agent) to the default. A config the resolver cannot read keeps
+    the configured name too.
     """
-    name = cfg.session.pool_agent or getattr(cfg.agent, "default_agent", "")
+    name = cfg.session.pool_agent
     if name and name not in cfg.agents:
         return name
     try:

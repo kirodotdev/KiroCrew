@@ -180,7 +180,9 @@ describe('create-button caret menu: ephemeral chats', () => {
     const call = mocks.createChatSlot.mock.calls[0]
     expect(call[ARG_MEMORY_MODE]).toBe('incognito')
     expect(call[ARG_MODE]).toBe('')
-    expect(call[ARG_AGENT]).toBe(DEFAULT_AGENT)
+    // Agent-less: the roster's default crewmate is not the default for a new
+    // session; the server stamps the default custom agent (a template).
+    expect(call[ARG_AGENT]).toBeUndefined()
   })
 
   it('Temporary creates with memory_mode "temporary"', async () => {
@@ -192,7 +194,9 @@ describe('create-button caret menu: ephemeral chats', () => {
     const call = mocks.createChatSlot.mock.calls[0]
     expect(call[ARG_MEMORY_MODE]).toBe('temporary')
     expect(call[ARG_MODE]).toBe('')
-    expect(call[ARG_AGENT]).toBe(DEFAULT_AGENT)
+    // Agent-less: the roster's default crewmate is not the default for a new
+    // session; the server stamps the default custom agent (a template).
+    expect(call[ARG_AGENT]).toBeUndefined()
   })
 
   it('applies the configured fallback to the plain "New chat" entry', async () => {
@@ -239,6 +243,8 @@ describe('create-button caret menu: ephemeral chats', () => {
     const call = mocks.createChatSlot.mock.calls[0]
     expect(call[ARG_MEMORY_MODE]).toBe('temporary')
     expect(call[ARG_MODE]).toBe('')
-    expect(call[ARG_AGENT]).toBe(DEFAULT_AGENT)
+    // Agent-less: the roster's default crewmate is not the default for a new
+    // session; the server stamps the default custom agent (a template).
+    expect(call[ARG_AGENT]).toBeUndefined()
   })
 })

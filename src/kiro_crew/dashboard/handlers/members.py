@@ -26,7 +26,6 @@ from typing import Any
 from aiohttp import web
 
 import kiro_crew.dashboard.handlers as _h
-from kiro_crew import crew_recency
 from kiro_crew import members as members_mod
 from kiro_crew.config.loader import (
     KiroCrewConfig,
@@ -854,102 +853,12 @@ async def api_members(request: web.Request) -> web.Response:
         row["projections"] = _redact_projection_value(_roster_only(block))
         row["last_active_ts"] = _recency_for_row(block, row.get("last_active_ts"))
 
-    # When the PERSON last messaged each crew, in its DM or in a normal chat
-    # (`crew_recency`). `last_active_ts` above also moves for background work (a
-    # patrol turn, a reply), so the Crewmates list filters and orders by this one
-    # instead. 0 = never chatted. The default crew also owns a chat that picked
-    # no crew (recorded under "").
-    default_name = cfg.default_agent or "default"
-
-    def _chat_recency() -> dict[str, float]:
-        if not crew_recency.needs_seed():
-            return crew_recency.read_recency()
-        found = _seed_from_dm_threads(state, rows, bindings, has_message)
-        if found is None:
-            # A thread could not be read this time: serve what is recorded and
-            # leave the seed for a later read, never mark it done half-read.
-            return crew_recency.read_recency()
-        return crew_recency.seed(found)
-
-    recency = await asyncio.to_thread(_chat_recency)
-    for row in rows:
-        ts = recency.get(row["name"], 0.0)
-        if row["name"] == default_name:
-            ts = max(ts, recency.get("", 0.0))
-        row["last_chat_ts"] = ts
+    # The Recent order and the landing read `last_active_ts`: the last message
+    # in the crewmate's DM thread, whoever sent it (the user, the crewmate, a
+    # scheduled run), as a messages app orders its conversations. Being listed
+    # is `has_dm_message`: the thread holds a message.
 
     return web.json_response({"members": rows})
-
-
-def _seed_from_dm_threads(
-    state: DashboardState | None,
-    rows: list[dict],
-    bindings: dict[str, dict | None],
-    has_message: set[str],
-) -> dict[str, float] | None:
-    """One-time backfill for `crew_recency`: the newest row the user typed in
-    each crew's DM thread, from before that record existed. ``None`` when a
-    thread could not be read (no log, a busy or unreadable transcript), so the
-    seed runs again on a later read; a withheld (restricted) thread is skipped.
-
-    Typed = a user-role speech row carrying `history.HUMAN_TURN_META_KEY`, the
-    allowlist marker the human send paths set; in a thread with any marked row,
-    an unmarked row (a peer's delivery, a wake, a heartbeat) never counts. A
-    thread with no marked row predates the marker and falls back to "does not
-    open with `[`". Runs once per data home (`crew_recency.needs_seed`).
-    """
-    from kiro_crew.dashboard.system_notices import is_speech_row
-    from kiro_crew.eventlog.members_projections import _parse_ts
-    from kiro_crew.history import HUMAN_TURN_META_KEY, TranscriptBusy, TranscriptWithheld
-
-    log = getattr(state, "conversation_log", None)
-    found: dict[str, float] = {}
-    if log is None:
-        return None
-    for row in rows:
-        if not row["slot_key"] or row["slot_key"] not in has_message:
-            continue
-        binding = bindings.get(row["slug"])
-        generation = binding.get("memory_store", "") if binding is not None else ""
-        key = members_mod.member_thread_session_alias(row["slug"], generation)
-        try:
-            messages = log.derive_messages(key)  # the derivation seam: a withheld log raises
-        except TranscriptBusy:  # a TranscriptWithheld subclass, but retryable
-            return None
-        except TranscriptWithheld:
-            continue
-        except Exception:
-            logger.debug("crew recency seed could not read %r", key, exc_info=True)
-            return None
-        # A thread written before the marker existed carries it on no row: there
-        # the old rule (a user speech row not opening with `[`, the shape every
-        # gateway-injected user row takes) is the only reading available.
-        marked = any(_is_human_row(msg, HUMAN_TURN_META_KEY) for msg in messages)
-        for msg in reversed(messages):
-            content = msg.get("content")
-            if msg.get("role") != "user" or not isinstance(content, str):
-                continue
-            meta = msg.get("meta")
-            if marked and not _is_human_row(msg, HUMAN_TURN_META_KEY):
-                continue
-            if not marked and content.lstrip().startswith("["):
-                continue
-            if not is_speech_row("user", content, meta):
-                continue
-            raw_ts = msg.get("ts")
-            try:
-                ts = float(raw_ts)  # the live row's epoch (a number or its string)
-            except (TypeError, ValueError):
-                ts = _parse_ts(raw_ts) or 0.0  # an ISO stamp
-            if 0 < ts < float("inf"):
-                found[row["name"]] = max(found.get(row["name"], 0.0), ts)
-            break
-    return found
-
-
-def _is_human_row(msg: dict, marker: str) -> bool:
-    meta = msg.get("meta")
-    return isinstance(meta, dict) and bool(meta.get(marker))
 
 
 def _recency_for_row(block: dict, transcript_ts: Any) -> float:

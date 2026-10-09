@@ -7489,7 +7489,6 @@
       "filters_clear": "Clear filters",
       "star": "Star {{name}}",
       "unstar": "Unstar {{name}}",
-      "default_agent_failed_title": "Couldn't read the default crewmate, so every crewmate is shown",
       "all_hidden_hint": "Crewmates you haven't used yet are hidden. Search to find them.",
       "star_failed_title": "Star not saved",
       "star_failed": "Could not update this crewmate's star.",

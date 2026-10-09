@@ -29,21 +29,16 @@
  * contrast against.
  *
  * Which crewmate is open rides the URL (`?member=<name>`). A visit that names
- * no one lands on the crewmate the user last CHATTED with (`last_chat_ts`, a
- * server record, so it survives a gateway restart), else on the one last
- * opened in this browser if it is still on the roster, else on the most
- * recently USED chat (greatest `last_active_ts`), else on the first crewmate
- * (key `mate`, see lib/assistantMember), which is a crewmate like any other: a
- * first visit with no usage lands on its welcome. The reserved `default` member
- * is never landed on or remembered. That is the conversation the user
- * most plausibly came back for, and it is a property of the user's own
- * history, not of the list order: #11763 rejected priming the user on
- * whichever row the SORT floated to the top, and that still holds — the
- * default follows use, never the sort. Only a roster with no crewmate beyond
- * `default` opens nothing;
- * it shows the New crewmate hero instead. Below md nothing auto-opens (the
- * phone's two-level list rule) -- except Mate's first-visit landing (see
- * `resolveMateLanding`), which applies at every width.
+ * no one lands like a messages app: on Mate (key `mate`, see
+ * lib/assistantMember) while no message has been exchanged with it, so a first
+ * visit lands on its welcome; else on the conversation last opened in this
+ * browser if it is still on the roster; else on the conversation holding the
+ * newest message (greatest `last_active_ts`, whoever sent it). The built-in
+ * `default` crewmate is a row like any other here. Only a roster with no
+ * crewmate beyond `default` opens nothing; it shows the New crewmate hero
+ * instead. Below md nothing auto-opens (the phone's two-level list rule) --
+ * except Mate's first-visit landing (see `resolveMateLanding`), which applies
+ * at every width.
  *
  * Creating a crewmate happens in place of the chat: the guided flow (the
  * embedded Meet CrewMates flow) or the full form (Advanced), one at a time,
@@ -158,7 +153,6 @@ import {
   SORT_OPTIONS, SOURCE_FILTERS, STATUS_FILTERS,
   type MemberSignals, type MemberSort, type MemberSourceFilter, type MemberStatusFilter, type RosterQuery,
 } from './rosterFilter'
-import { defaultAgentQuery } from '../../api/defaultAgentQuery'
 import { AnimatePresence, animate, motion, useReducedMotion } from 'framer-motion'
 import { isSidePanelHidden, shouldMountSidePanel, sidePanelDockMotion } from '../chat/sidePanelMount'
 import SidePanel, { SIDE_PANEL_MIN_W, SIDE_PANEL_RESERVED_W, type SidePanelLeadingTab, type SidePanelWithholdable } from '../chat/SidePanel'
@@ -216,95 +210,47 @@ const MEMBER_PARAM = 'member'
  *  the right scope: the roster is the gateway's global crew list, and
  *  localStorage is already per-gateway. */
 const LAST_MEMBER_KEY = 'mc-members-last-member'
-/** The greatest crewmate `last_chat_ts` on the roster WHEN the remembered
- *  row was opened — the server's clock, so it compares with later rosters on
- *  a remote dashboard too. Read only for a remembered built-in `default`: the
- *  server cannot say when the user last talked to it (see
- *  `rememberedDefaultPick`), so "no crewmate has been chatted with since this
- *  open" stands in. */
-const LAST_MEMBER_CHAT_MARK_KEY = 'mc-members-last-member-chat-mark'
 
 /** Which crewmate to RESTORE when the URL names none, or to fall back to when
  *  it names one that is gone (deleted or renamed since the link/memory was
  *  written): the remembered crewmate if it is still on the roster, else the
- *  most recently USED one — the greatest `last_active_ts`, strict `>` so a tie
- *  keeps the first in `ordered`. Product decision (CrewMates launch review):
- *  when crewmates exist and none is selected, the most recently used chat
- *  opens by default; the "pick one" landing is gone. This deliberately keys on
- *  use, not on `ordered`'s position — #11763 rejected priming the user on
- *  whichever row the SORT floated to the top, and a recency the user produced
- *  themselves is a different thing from a sort they may not have chosen.
- *  The built-in `default` assistant is not a crewmate: it is never a
- *  remembered hit here and the most-recently-used fallback never picks it, so
- *  a roster holding only `default` resolves to `undefined` and shows the
- *  empty-state hero. A remembered `default` is the restore effect's own case
- *  (`rememberedDefaultPick`, ranked above this). Pure, so the cases —
- *  restore, most-recently-used, tie, stale, empty — are tested directly.
+ *  conversation with the newest message -- the greatest `last_active_ts`,
+ *  strict `>` so a tie keeps the first in `ordered`. Like a messages app: the
+ *  thread you last had open, else the newest one. Product decision (CrewMates
+ *  launch review): when crewmates exist and none is selected, a conversation
+ *  opens by default; the "pick one" landing is gone. The built-in `default`
+ *  crewmate is a row like any other here; a roster holding only `default`
+ *  lands on the empty-state hero (`hasNoCrewmates`, guarded by the restore
+ *  effect) before this is asked. Pure, so the cases -- restore, newest, tie,
+ *  stale, empty -- are tested directly.
  *  Mate's first visit is decided before this, by {@link resolveMateLanding}. */
 export function resolveDefaultMember(
   remembered: string | null,
   ordered: readonly MemberRosterRow[],
 ): MemberRosterRow | undefined {
-  const chatted = lastChattedMember(ordered)
-  if (chatted) return chatted
-  if (remembered && remembered !== 'default') {
+  if (remembered) {
     const hit = ordered.find((m) => m.name === remembered)
     if (hit) return hit
   }
+  return newestConversation(ordered)
+}
+
+/** The crewmate whose DM thread holds the newest message, whoever sent it
+ *  (`last_active_ts`, the crew log's fold, so it survives a gateway restart
+ *  and a new browser alike). Strict `>` so a tie keeps the first in `rows`,
+ *  which is also the answer when no row carries a stamp; `undefined` only for
+ *  an empty `rows`. */
+export function newestConversation(rows: readonly MemberRosterRow[]): MemberRosterRow | undefined {
   let best: MemberRosterRow | undefined
-  for (const m of ordered) {
-    if (m.name === 'default') continue
+  for (const m of rows) {
     if (!best || (m.last_active_ts ?? 0) > (best.last_active_ts ?? 0)) best = m
   }
   return best
 }
 
-/** The crewmate the user last sent a message to (`last_chat_ts`, recorded by
- *  the server, so it survives a gateway restart and a new browser alike), in
- *  its DM or in a normal chat. It outranks this browser's remembered pick: the
- *  page reopens the conversation the user last HAD, not the row they last
- *  clicked. The built-in `default` assistant is not a crewmate. Strict `>` so
- *  a tie keeps the first in `rows`. */
-export function lastChattedMember(rows: readonly MemberRosterRow[]): MemberRosterRow | undefined {
-  let best: MemberRosterRow | undefined
-  for (const m of rows) {
-    if (m.name === 'default' || !((m.last_chat_ts ?? 0) > 0)) continue
-    if (!best || (m.last_chat_ts ?? 0) > (best.last_chat_ts ?? 0)) best = m
-  }
-  return best
-}
-
-/** The greatest crewmate `last_chat_ts` on `rows` (the built-in `default`
- *  excluded, 0 when nobody chatted): what `chatMark` records at an open. */
-export function chatMarkOf(rows: readonly MemberRosterRow[]): number {
-  return lastChattedMember(rows)?.last_chat_ts ?? 0
-}
-
-/** The built-in `default` row, when the user's last open of it (#17210) is
- *  the conversation to reopen. `lastChattedMember` cannot rank `default`: its
- *  `last_chat_ts` also moves for every plain chat that picked no crew, so it
- *  would win nearly always and bury the crewmate the user actually talked to.
- *  The signal is `chatMark`, the greatest crewmate `last_chat_ts` seen when
- *  `default` was opened (written beside the memory): while no crewmate's
- *  `last_chat_ts` has moved past it, nobody has been talked to since that
- *  open, and `default` is the conversation the user left; once one has, that
- *  crewmate is. Both sides are the server's clock, so a remote dashboard whose
- *  own clock drifts compares the same. Never on a roster holding only
- *  `default` — that roster lands on the empty-state hero. */
-export function rememberedDefaultPick(
-  remembered: string | null,
-  chatMark: number,
-  rows: readonly MemberRosterRow[],
-): MemberRosterRow | undefined {
-  if (remembered !== 'default' || hasNoCrewmates(rows)) return undefined
-  const hit = rows.find((m) => m.name === 'default')
-  if (!hit) return undefined
-  return chatMarkOf(rows) > chatMark ? undefined : hit
-}
-
 /** Mate (`isAssistantMember`) while no message has been exchanged with it:
- *  the Crewmates page lands there first, ahead of a remembered or more recently
- *  used crewmate, so its welcome is the user's first look at the page. Once
+ *  the Crewmates page lands there first, ahead of a remembered or newer
+ *  conversation, so its welcome is the user's first look at the page. Once
  *  its thread holds anything this answers `undefined` and the page's usual
  *  landing rules apply unchanged. A separate, early rule on purpose, so the
  *  usual rules ({@link resolveDefaultMember}) carry no Mate special case. */
@@ -1522,12 +1468,6 @@ export default function MembersPage() {
   // ref, not state: it is a note between two runs of one effect, and must
   // not re-arm it.
   const goneStandInRef = useRef('')
-  // The member the fallback is about to RESTORE on a bare `/members` (the
-  // remembered or last-chatted one). Same note-between-two-runs shape as
-  // `goneStandInRef`: the open it triggers keeps the memory but must not
-  // re-write the chat mark — the mark means the USER's open, and a restore
-  // is the page reopening it, not a new one.
-  const restoredRef = useRef('')
   // The open member's thread, as the thread endpoint last answered it. The
   // roster's `bound`/`slot_key` are never trusted as mountable: dm.json
   // outlives the live slot (a restart drops an unmessaged slot while the
@@ -2020,28 +1960,11 @@ export default function MembersPage() {
     committedOrderRef.current = { sort, names, openName: activeName, openTs }
     return names.map((n) => byName.get(n)).filter((m): m is MemberRosterRow => !!m)
   }, [members, sort, activeName])
-  // The default crew, through the shared ['default-agent'] query (the crew
-  // manager's promotion write and every `refresh` frame invalidate it). The
-  // hide rule lists the default crew whatever its record says. `''` while
-  // unknown: the hide rule then treats an uncreated default row like any other
-  // until the answer lands. A FAILED read is `null`, even when an older value
-  // is still cached (that value may name a crew that is no longer the
-  // default): the hide rule then lists every row and the roster says why
-  // through ErrorNotice below.
-  const defaultAgentRead = useQuery(defaultAgentQuery)
-  const defaultAgentFailed = defaultAgentRead.isError
-  // Dismissed per failure, like the teams notice above.
-  const [defaultAgentDismissedAt, setDefaultAgentDismissedAt] = useState(0)
-  const defaultAgentNoticeShown = defaultAgentFailed && defaultAgentDismissedAt <= defaultAgentRead.dataUpdatedAt
-  const dismissDefaultAgentNotice = useCallback(() => setDefaultAgentDismissedAt(defaultAgentRead.errorUpdatedAt), [defaultAgentRead.errorUpdatedAt])
-  // Settled = an answer or a terminal failure (retries keep it pending).
-  const defaultAgentSettled = defaultAgentRead.data !== undefined || defaultAgentRead.isError
-  const defaultAgent: string | null = defaultAgentFailed ? null : defaultAgentRead.data ?? ''
   // Named apart from `rosterQuery` above: that one is the React Query READ of
   // the roster, this one is the user's filter/sort question asked of it.
   const rosterFilterQuery = useMemo<RosterQuery>(
-    () => ({ search: filter, starredOnly, source: sourceFilter, status: statusFilter, sort, defaultAgent, chosen: activeName }),
-    [filter, starredOnly, sourceFilter, statusFilter, sort, defaultAgent, activeName],
+    () => ({ search: filter, starredOnly, source: sourceFilter, status: statusFilter, sort, chosen: activeName }),
+    [filter, starredOnly, sourceFilter, statusFilter, sort, activeName],
   )
   // The rows the roster is about right now: crewmates the user chatted with
   // (or starred), or -- with a search typed -- whatever the search reaches, hidden rows
@@ -2053,8 +1976,8 @@ export default function MembersPage() {
   // what the page opens on its own -- a thread standing over a roster that does
   // not show its row reads as a misroute.
   const listedMembers = useMemo(
-    () => orderedMembers.filter((m) => listedByDefault(m, defaultAgent)),
-    [orderedMembers, defaultAgent],
+    () => orderedMembers.filter((m) => listedByDefault(m)),
+    [orderedMembers],
   )
   const activeSlot = active ? threadOutcome?.slot_key ?? '' : ''
   // The Crewmates preview. Mate is created in the background whatever it says,
@@ -3083,18 +3006,13 @@ export default function MembersPage() {
   // on return — runs one code path. `remember` is false only for the member
   // opened IN PLACE OF one a link named that is gone: that open is the page's
   // choice, not the user's, so one stale link must not overwrite the member
-  // they had actually chosen. The built-in `default` is remembered like any
-  // other row, with the roster's chat mark beside it (`rememberedDefaultPick`);
-  // `stamp` is false for a restore (`restoredRef`), which is the page
-  // reopening the user's last open, not a new one.
-  const membersRef = useRef(members)
-  membersRef.current = members
+  // they had actually chosen. The built-in `default` crewmate is remembered
+  // like any other row (#17210).
   const activate = useCallback(
-    (m: MemberRosterRow, remember = true, stamp = remember) => {
+    (m: MemberRosterRow, remember = true) => {
       activeNameRef.current = m.name
       setActiveName(m.name)
       if (remember) safeSetItem(LAST_MEMBER_KEY, m.name)
-      if (stamp) safeSetItem(LAST_MEMBER_CHAT_MARK_KEY, String(chatMarkOf(membersRef.current)))
       // A Side Chat belongs to the member it was asked about; nothing to reset
       // here — the panel's strip is bucketed per member slot, so switching
       // members swaps the whole strip and a Side tab stays with its member.
@@ -3276,9 +3194,8 @@ export default function MembersPage() {
   // opens it; a URL that names none (a fresh visit, the sidebar entry, a
   // reload) is REPLACED with the remembered crewmate if one is still on the
   // roster, so returning users land back on the conversation they left, else
-  // with the most recently USED one, else the built-in Assistant
-  // (`resolveDefaultMember`) — the default follows the user's own history,
-  // never the sort order (#11763). "Nothing
+  // with the conversation holding the newest message
+  // (`resolveDefaultMember`), like a messages app. "Nothing
   // to open" therefore means an EMPTY roster, and only that. A URL naming a
   // crewmate that is gone (deleted or renamed) falls back the same way, with
   // a one-line notice above the chat naming the swap — the user asked for
@@ -3298,9 +3215,7 @@ export default function MembersPage() {
         // user's choice and must not become the memory (see `activate`).
         const standIn = goneStandInRef.current === hit.name
         goneStandInRef.current = ''
-        const restored = restoredRef.current === hit.name
-        restoredRef.current = ''
-        if (hit.name !== activeNameRef.current) activate(hit, !standIn, !standIn && !restored)
+        if (hit.name !== activeNameRef.current) activate(hit, !standIn)
         // The notice belongs to the member shown in place of the gone one;
         // opening anyone else retires it. Functional updates throughout, and
         // `gone` is NOT a dependency: the URL write below is a router
@@ -3363,11 +3278,6 @@ export default function MembersPage() {
     // used listed one. `undefined` here means nothing is listed — the chat
     // column shows the New crewmate hero instead (or, with only hidden rows,
     // stays empty until a search or a link names one).
-    // The fallback reads the LISTED rows, and the listing rule exempts the
-    // default crew by name: until the default-crew read has settled (data or
-    // a terminal error) the remembered crewmate may be that unlisted default,
-    // and resolving now would open a substitute and overwrite the memory.
-    if (!defaultAgentSettled) return
     // A remembered crewmate the user opened themselves is restored even when the
     // listing rule hides it (it was reached through the search): it is listed
     // again while open (`chosen`), and resolving among listed rows only would
@@ -3376,21 +3286,23 @@ export default function MembersPage() {
     // default crew is listed while hidden crewmates exist, it opens the most
     // recently used of those (listed while open), so the page never lands on an
     // empty pane or claims there are no crewmates.
+    // A create is opening the crewmate it just made (`openCreated` ->
+    // `openMember`): the fallback must not land on the newest conversation
+    // first, which on a roster whose other threads hold messages is not the
+    // new, still-empty one. The follow-up's own open writes the URL.
+    if (followUp) return
     const remembered = safeGetItem(LAST_MEMBER_KEY)
-    const chatMark = Number(safeGetItem(LAST_MEMBER_CHAT_MARK_KEY)) || 0
-    const rememberedRow =
-      remembered && remembered !== 'default' ? members.find((m) => m.name === remembered) : undefined
-    // The last crewmate the user CHATTED with outranks the memory (it is the
-    // server's record, so a restart or a new browser keeps it). A remembered
-    // built-in `default` outranks even that while no crewmate has been
-    // chatted with since it was opened (`rememberedDefaultPick`); a
-    // default-only roster still lands on the hero.
-    const target =
-      rememberedDefaultPick(remembered, chatMark, members) ??
-      lastChattedMember(orderedMembers) ??
-      rememberedRow ??
-      resolveDefaultMember(null, listedMembers) ??
-      resolveDefaultMember(null, orderedMembers)
+    const rememberedRow = remembered ? members.find((m) => m.name === remembered) : undefined
+    // Like a messages app: the conversation the user last had open (the
+    // memory), else the one with the newest message, whoever sent it. The
+    // built-in `default` crewmate takes part like any row. A roster holding
+    // ONLY `default` still shows the empty-state hero (`hasNoCrewmates`), so it
+    // is never auto-opened there.
+    const target = hasNoCrewmates(members)
+      ? undefined
+      : rememberedRow ??
+        resolveDefaultMember(null, listedMembers) ??
+        resolveDefaultMember(null, orderedMembers)
     if (!target) {
       // Named a gone crewmate on an empty roster: say where they went above
       // the roster (shown: '' marks the roster variant of the notice, as
@@ -3421,9 +3333,8 @@ export default function MembersPage() {
       )
       goneStandInRef.current = target.name
     }
-    restoredRef.current = target.name
     setSearchParams({ [MEMBER_PARAM]: target.name }, { replace: true })
-  }, [loaded, loadError, urlMember, urlTeam, teamsQ.data, members, listedMembers, activeName, isMobile, activate, setSearchParams, rosterQuery.isFetching, defaultAgentSettled, orderedMembers, crewPreview])
+  }, [loaded, loadError, urlMember, urlTeam, teamsQ.data, members, listedMembers, activeName, isMobile, activate, setSearchParams, rosterQuery.isFetching, orderedMembers, followUp, crewPreview])
 
   // Team open: the header row's click. Same history rule as openMember -- one
   // entry above md or while something is already open, a PUSHED step from the
@@ -3898,21 +3809,6 @@ export default function MembersPage() {
         {/* Mounted only while there IS an error: the wrapper sits on the dock's
             shelf, and an empty wrapper would keep the shelf (and its 4px scrim)
             open under a bare field. */}
-        {/* Default-crew lookup failed: the hide rule is off (every row listed),
-            and this says why in localized copy, never the raw server text.
-            Mounted only while failing, like the star error. */}
-        {defaultAgentNoticeShown && (
-          <div className="px-2">
-            <ErrorNotice
-              message={t('pages.membersPage.default_agent_failed_title')}
-              report={findReport(defaultAgentRead.error instanceof Error ? defaultAgentRead.error.message : undefined)}
-              askAgent
-              actionPlacement="below"
-              onDismiss={dismissDefaultAgentNotice}
-              testId="member-default-agent-error"
-            />
-          </div>
-        )}
         {starError && (
           <div className="px-2">
             <ErrorNotice
@@ -4208,7 +4104,6 @@ export default function MembersPage() {
                 <CrewmateSwitcher
                   className="hidden md:flex"
                   members={orderedMembers}
-                  defaultAgent={defaultAgent}
                   activeName={active.name}
                   signals={signalsOf}
                   onPick={(name) => {
@@ -4407,7 +4302,7 @@ export default function MembersPage() {
                 is visible and this wrapper steps aside; below md the roster is
                 hidden regardless of the pin. No hand-off: the Profile card may
                 hold an unsaved schedule draft, and Ask the agent navigates away. */}
-            {(patrol.failed || teamsNoticeShown || defaultAgentNoticeShown || starError) && (
+            {(patrol.failed || teamsNoticeShown || starError) && (
               <div
                 className={`${rosterPinned ? 'md:hidden' : ''} flex flex-col gap-2 px-4 pb-2`}
                 data-testid="member-main-roster-errors"
@@ -4427,16 +4322,6 @@ export default function MembersPage() {
                     askAgent={false}
                     onDismiss={dismissTeamsNotice}
                     testId="member-main-teams-error"
-                  />
-                )}
-                {defaultAgentNoticeShown && (
-                  <ErrorNotice
-                    message={t('pages.membersPage.default_agent_failed_title')}
-                    report={findReport(defaultAgentRead.error instanceof Error ? defaultAgentRead.error.message : undefined)}
-                    askAgent={false}
-                    actionPlacement="below"
-                    onDismiss={dismissDefaultAgentNotice}
-                    testId="member-main-default-agent-error"
                   />
                 )}
                 {starError && (

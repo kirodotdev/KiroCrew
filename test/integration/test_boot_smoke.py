@@ -465,6 +465,10 @@ _KNOWN_SECOND_BOOT_CHANGES: dict[tuple[str, str], str] = {
     ("kiro_crew.dashboard.handlers.mcp", "_mcp_probe_ts"): "keyed cache",
     ("kiro_crew.mcp_discovery", "_probe_cache"): "keyed cache",
     ("kiro_crew.agent_discovery", "_PARSED_SPECS_CACHE"): "keyed cache",
+    # The process umask, probed on the first mode-less write and cached: a host
+    # fact, not home state. Whether the FIRST boot or an earlier test in the
+    # worker made that write decides which boot the witness sees it on.
+    ("kiro_crew.atomic_write", "_default_mode"): "lazy umask probe",
     # Process-wide thread pools created on first use, home-independent.
     ("kiro_crew.executors", "_pool"): "lazy thread pool",
     ("kiro_crew.executors", "_subprocess_pool"): "lazy thread pool",

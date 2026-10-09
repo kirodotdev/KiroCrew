@@ -80,9 +80,7 @@ def _default_session_model(
     if slot.model or agent_model or cfg is None:
         return ""
     try:
-        kind = session_agent_selection_kind(
-            effective_session_key(slot), slot.agent or cfg.default_agent
-        )
+        kind = session_agent_selection_kind(effective_session_key(slot), slot.agent)
         if kind == "template":
             return resolve_effective_model(cfg, slot.agent or None, selection_kind=kind)
         return resolve_effective_model(cfg, slot.agent or None)

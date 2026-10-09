@@ -22,7 +22,6 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 
-from kiro_crew import crew_recency
 from kiro_crew import members as members_mod
 from kiro_crew import model_registry
 from kiro_crew.acp.client import AcpModelUnavailable
@@ -38,6 +37,7 @@ from kiro_crew.config.loader import (
     _workspace_name_for_dir,
     config_dir,
     default_project_dir,
+    default_template,
     published_autocompact_pct,
     resolve_agent_bindings,
 )
@@ -1040,6 +1040,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                 effective_session_key(slot),
                 slot.workspace,
                 slot._app,
+                slot.agent_kind,
             )
             try:
                 # Config load is file IO (stat + read + jsonschema validate on a
@@ -1065,6 +1066,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                             compared_binding[3],
                             compared_binding[0],
                             compared_binding[1] or None,
+                            agent_kind=compared_binding[6],
                         ),
                         resolve_agent_bindings(_cfg, agent, compared_binding[1] or None),
                     )
@@ -1091,6 +1093,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                 effective_session_key(slot),
                 slot.workspace,
                 slot._app,
+                slot.agent_kind,
             ):
                 return web.json_response(
                     {"error": "slot changed during agent resolution", "code": "session_rebound"},
@@ -1150,13 +1153,6 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         return web.json_response(
             {"error": "message is required", "code": "message_required"}, status=400
         )
-
-    if not request_app and not cron_creator:
-        # The person typed this (no app token, no cron attestation; a peer's
-        # `relay=1` was refused above): the one signal the Crewmates list orders
-        # and filters by (crew_recency). An empty slot agent is the default crew,
-        # recorded under "" and resolved by the roster read. Best-effort, off-loop.
-        await asyncio.to_thread(crew_recency.record_user_chat, slot.agent or "")
 
     if slot.turn_running or slot._turn_admission_reserved:
         # Mid-turn steer: inject into the RUNNING turn instead of queueing for
@@ -2049,15 +2045,19 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         # Infra failure loading config must not block slot creation outright, so
         # validation below is skipped rather than failing closed.
         logger.warning("Failed to load config for slot create", exc_info=True)
-    # An agent-less create means "use the default agent": stamp the RESOLVED
-    # default alias into the slot instead of storing "", so the slot's
-    # metadata records what will actually answer — otherwise the dashboard
-    # footer chip renders its literal 'default' fallback while dispatch
-    # quietly resolves the real default. Placed BEFORE the normalization
-    # below so the stamped alias also gets its workspace resolved by the
-    # existing binding path.
+    # An agent-less create means "the default TEMPLATE": stamp it into the slot
+    # in the template namespace instead of storing "", so the slot's metadata
+    # records what will actually answer — otherwise the dashboard footer chip
+    # renders its literal 'default' fallback while dispatch quietly resolves
+    # the real default. The default template, never the `default` crewmate
+    # alias: a plain session is a template on the default folder and
+    # memory store, and stamping the alias made every plain chat that
+    # crewmate's — its workspace, its model pin, its roster recency. Placed
+    # BEFORE the normalization below so the stamped template also gets its
+    # workspace resolved by the existing binding path.
     if cfg is not None and not agent:
-        agent = cfg.default_agent or ""
+        agent = default_template(cfg)
+        agent_kind = "template"
     # Normalize an agent nothing will dispatch to the one that WILL answer.
     # Otherwise the name is stored verbatim and resolve_agent_bindings silently
     # falls back to the default agent: the sidebar advertises the requested agent
@@ -2240,6 +2240,12 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                     exc,
                 )
             return web.json_response({"error": str(exc)}, status=409)
+        if is_new_slot and agent_kind and not slot.agent_kind:
+            # The namespace the name was stated (or stamped) in travels with the
+            # slot from birth, for every caller: the owner branch below re-records
+            # it from the committed resolution, and a non-owner create would
+            # otherwise leave a template-stamped slot reading as a bare name.
+            slot.agent_kind = agent_kind
         if reopening_persisted_cron:
             # The creator fence already loaded and authorized this metadata
             # snapshot. Reuse it so a closed-session reopen restores the user's
@@ -4879,6 +4885,10 @@ async def _record_explicit_agent_selection(
     )
 
     selected = agent_name or bindings.resolved_alias
+    if not selected and bindings.selection_kind == "template":
+        # A plain session selected its template (the default one): record it,
+        # so the conversation stays on it whatever is discovered later.
+        selected = bindings.kiro_agent
     if bindings.selection_kind == "member":
         bindings.execution_context = resolve_member_execution(
             config, selected, memory_mode=memory_mode, app=app, validate_memory_files=False
@@ -5288,6 +5298,18 @@ async def switch_slot_agent(
         return web.json_response(
             {"error": "invalid agent kind", "code": "invalid_agent_kind"}, status=400
         )
+    stamped_default = not agent_name
+    if stamped_default:
+        # "Use the default" is the default TEMPLATE, stamped in its namespace
+        # exactly as the create route stamps an agent-less slot -- so
+        # the switch records a selection, and the slot never reads as the
+        # `default` crewmate.
+        try:
+            agent_name = default_template(await asyncio.to_thread(KiroCrewConfig.load))
+        except Exception:
+            logger.warning("Failed to load config for the default template", exc_info=True)
+            agent_name = default_template(KiroCrewConfig())
+        agent_kind = "template"
     if slot.mode == "member" and (agent_name != slot.agent or agent_kind == "template"):
         # Member DM threads are pinned to their crew: refuse the switch before
         # any state is touched. A same-name "switch" stays allowed — it is a
@@ -5379,7 +5401,13 @@ async def switch_slot_agent(
                 denied = await caller.require_owner("chat.slot_agent")
                 if denied is not None:
                     return denied
-        if agent_name != slot.agent:
+        # A name change, or the stamped default landing on the slot's own name:
+        # the default template may carry a private member's name, and "use the
+        # default" on that member's conversation is a namespace change that
+        # would rebind it to Global memory, so the durable pin is checked
+        # before anything is touched. An explicit same-name template pick is
+        # the owner's stated choice and keeps its existing path.
+        if agent_name != slot.agent or stamped_default:
             from kiro_crew.execution_context import read_session_execution
 
             try:

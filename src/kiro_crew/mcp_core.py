@@ -2448,7 +2448,12 @@ def _do_route_crew(task: str) -> str:
     Shares ``trigger_match`` with the skills loader rather than scoring its own
     way, so "this phrasing matches" cannot mean two things in one product. A
     crew with no triggers is not a candidate — that is the operator's opt-out,
-    and it is the same rule the roster applies.
+    and it is the same rule the roster applies. The roster's default crewmate
+    (``config.default_agent``) is left out by RFC rule 5
+    (``docs/request-for-change/rfc-session-template-vs-crewmate.md``): it is the
+    one ``select_crew`` keeps for itself, the standing fallback the guidance
+    names, not a hand-off target -- a routing rule, since the calling session is
+    a template session rather than that crewmate.
 
     Reports rather than binds. Binding happens where a run is created
     (``spawn_run(crew=...)``), because that is the only place the decision can be
@@ -2512,9 +2517,12 @@ def _do_select_crew(crew: str) -> str:
 
     Empty ``crew`` → JSON roster of *selectable* crews: those with a non-empty
     ``triggers`` (a crew with no triggers is not a routing candidate at all),
-    excluding the default crew (the caller itself). The response also carries
-    ``default_agent`` and explicit guidance so the model selects only on a
-    high-confidence match and otherwise falls back to the default crew. A named
+    excluding the roster's default crewmate: RFC rule 5 keeps it as the one
+    ``select_crew`` holds for itself, the standing fallback the guidance names.
+    That is a routing rule, not an identity -- the calling session is a template
+    session (the default custom agent), not that crewmate. The response also
+    carries ``default_agent`` and explicit guidance so the model selects only on
+    a high-confidence match and otherwise falls back to the default crew. A named
     crew → validate it exists, resolve its bindings, and return the bound
     {workspace, memory_store, kiro_agent, model}. An unknown name returns a JSON
     ``error`` with the available names.

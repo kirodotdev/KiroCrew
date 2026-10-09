@@ -134,8 +134,8 @@ export function useAgents(refreshTrigger: number, sessionKey?: string, projectDi
   // Filtered AFTER the fold, so hiding a member from the pop-up never changes
   // which row a bare name resolves to for the name-only consumers.
   const pickerChoices = useMemo(
-    () => (memberChoices ? shown : withoutCoveredCrewmates(shown, defaultAgent)),
-    [shown, memberChoices, defaultAgent],
+    () => (memberChoices ? shown : withoutCoveredCrewmates(shown)),
+    [shown, memberChoices],
   )
 
   return { agents, displayAgents, choices: pickerChoices, defaultAgent, error, reload, reloading }
@@ -155,24 +155,20 @@ export function useAgents(refreshTrigger: number, sessionKey?: string, projectDi
  * private copy as a template). Withholding those left no way to pick them from a
  * chat at all.
  *
- * The member named as `defaultAgent` stays even when covered, unless a listed
- * template shares its name. New chats start on the default, and the composer's
- * chip and the default badge show its MEMBER name, so a user who switched away
- * searches for that name and the pop-up has to answer with a row. A same-named
- * template is that row (the identical binding under the name searched for, so
- * listing the member too would show one agent twice: the alias "set as default"
- * enrols for a template is this case). A template of another name is not: the
- * built-in `default` crew runs the listed `kirocrew` template, and a search for
- * `default` found nothing (#18239).
+ * No crewmate is exempt for being "the default": a session created without a
+ * crewmate runs the default TEMPLATE, which the catalog lists as its own row and
+ * the badge marks, so the way back from any switch is that template row. The
+ * stock `default` crewmate (shared memory, the `kirocrew` template) is therefore
+ * withheld like any covered crewmate; the search reaches a crewmate only on the
+ * Crewmates page.
  */
-export function withoutCoveredCrewmates(choices: KiroCrewAgent[], defaultAgent: string): KiroCrewAgent[] {
+export function withoutCoveredCrewmates(choices: KiroCrewAgent[]): KiroCrewAgent[] {
   const templates = new Set(
     choices.filter(c => c.selection_kind === 'template').map(c => c.name),
   )
   const covered = (c: KiroCrewAgent) =>
     templates.has(c.name) || (c.memory_store === 'default' && templates.has(c.kiro_agent))
-  const namesTheDefault = (c: KiroCrewAgent) => c.name === defaultAgent && !templates.has(c.name)
-  return choices.filter(c => c.selection_kind !== 'member' || namesTheDefault(c) || !covered(c))
+  return choices.filter(c => c.selection_kind !== 'member' || !covered(c))
 }
 
 /** One row per name, member first — see `agents` in the hook's docs. */

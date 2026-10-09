@@ -1,6 +1,8 @@
 import { useCallback, useState } from 'react'
 
 import { api } from '../../../api/client'
+import { defaultWriteFailureOf } from '../../../components/AgentDropdownList'
+import type { DefaultWriteFailure } from '../../../components/AgentDropdownList'
 import { useAgents } from '../../../hooks/useAgents'
 import { useAvailableModels } from '../../../hooks/useAvailableModels'
 import { useFilteredDropdown } from '../../../hooks/useFilteredDropdown'
@@ -30,7 +32,7 @@ export function useSessionRosters({ activeSlot, activeSlotProject, refreshTrigge
   // are two rows). A roster source that exposes only the folded list -- one
   // row per name -- is still a complete, if namespace-blind, catalog.
   const effectiveAgents = catalogChoices ?? installedAgents
-  const [defaultAgentFailed, setDefaultAgentFailed] = useState(false)
+  const [defaultAgentFailed, setDefaultAgentFailed] = useState<DefaultWriteFailure | false>(false)
   // Promotes an agent to the global default. Set-only: clearing the default lives on
   // the Agent Templates page, where the control is labelled and the outcome is visible.
   // Refresh goes through the store's global trigger rather than local state, because
@@ -38,11 +40,11 @@ export function useSessionRosters({ activeSlot, activeSlotProject, refreshTrigge
   // setting — a per-hook refresh would leave sibling pickers showing the old default.
   // api.setDefaultAgent is called defensively: component tests mock the api module
   // partially, so the method can be absent under test.
-  const toggleDefaultAgent = useCallback((name: string) => {
+  const toggleDefaultAgent = useCallback((name: string, kind?: 'member' | 'template') => {
     setDefaultAgentFailed(false)
-    Promise.resolve(api.setDefaultAgent?.(name))
+    Promise.resolve(api.setDefaultAgent?.(name, kind))
       .then(() => dispatch(triggerRefresh()))
-      .catch(() => setDefaultAgentFailed(true))
+      .catch((err: unknown) => setDefaultAgentFailed(defaultWriteFailureOf(err, name)))
   }, [dispatch])
   const { open: agentDropdown, setOpen: setAgentDropdown, filter: agentFilter, setFilter: setAgentFilter, dropdownRef: agentDropdownRef, inputRef: agentInputRef, filtered: filteredAgentsByName } = useFilteredDropdown(effectiveAgents)
   const filteredAgents = filteredAgentsByName

@@ -134,7 +134,8 @@ export async function sendTurn(opts: SendTurnOptions): Promise<SendReceipt> {
     }
     // Only an IMMEDIATE dispatch is a delivery receipt for an optimistic
     // bubble: the busy branch sets BOTH flags, so `ok` alone proves nothing.
-    // Accepted either way: the Crewmates list orders by the user's own sends.
+    // Accepted either way: the send is the DM's newest message, which the
+    // Crewmates list orders by.
     noteUserChat(queryClient, opts.slot)
     if (confirmedDelivered(body)) return { status: 'dispatched', body }
     return { status: 'queued', body }

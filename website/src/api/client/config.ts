@@ -165,7 +165,11 @@ export function createConfigEndpoints({ post, put, j, jfetch: fetch }: ClientTra
     agentConfig: () => fetch('/api/agent/config').then(j),
     saveAgentConfig: (config: object) => put('/api/agent/config', { config }).then(j),
     defaultAgent: () => fetch('/api/config/default-agent').then(j),
-    setDefaultAgent: (agent: string) => put('/api/config/default-agent', { agent }).then(j),
+    /** The default for NEW SESSIONS is a template (`agent.default_agent`); a
+     *  crewmate alias sets the roster's default crewmate instead. `agent_kind`
+     *  names which the caller means when a template and a crewmate share a name. */
+    setDefaultAgent: (agent: string, agent_kind?: 'member' | 'template') =>
+      put('/api/config/default-agent', { agent, ...(agent_kind ? { agent_kind } : {}) }).then(j),
     kirocrewConfig: () => fetch('/api/config/kirocrew').then(j),
     saveKirocrewConfig: (agent: object) => put('/api/config/kirocrew', { agent }).then(j) as Promise<{ ok?: boolean; restart_required?: boolean; error?: string }>,
     patchConfig: (path: string, value: unknown) => fetch('/api/config/kirocrew', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, value }) }).then(j),

@@ -48,7 +48,8 @@ def test_roster_mode_lists_only_crews_with_triggers(tmp_path):
         out = json.loads(mcp_core._do_select_crew(""))
     assert out["default_agent"] == "default"
     crews = {c["name"]: c for c in out["crews"]}
-    # The default crew is the caller — never in the roster.
+    # The roster's default crewmate is never in the roster (RFC rule 5: the one
+    # select_crew keeps for itself), triggers or not -- see the case below.
     assert "default" not in crews
     # A crew WITH triggers is selectable, listed by its raw triggers.
     assert crews["oncall"]["triggers"] == "incident, prod outage"
@@ -142,3 +143,19 @@ def test_unknown_crew_error_lists_labels_beside_keys(tmp_path):
     assert "error" in out
     assert "launch-notes (Release Notes)" in out["available"]
     assert "oncall (oncall)" not in out["available"]
+
+
+def test_the_default_crewmate_stays_out_of_routing_even_with_triggers(tmp_path):
+    """RFC rule 5: the roster's default crewmate is the one ``select_crew`` keeps
+    for itself. A plain session is a template session, not that crewmate, so this
+    is a routing rule rather than "the caller itself" -- and it holds whether or
+    not the operator gave that row triggers."""
+    p = _write_cfg(tmp_path)
+    data = json.loads(p.read_text(encoding="utf-8"))
+    data["agents"]["default"]["triggers"] = "billing, invoices"
+    p.write_text(json.dumps(data), encoding="utf-8")
+    with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=p):
+        roster = json.loads(mcp_core._do_select_crew(""))
+        ranked = json.loads(mcp_core._do_route_crew("an invoices question"))
+    assert {c["name"] for c in roster["crews"]} == {"oncall"}
+    assert [m["crew"] for m in ranked["matches"]] == []

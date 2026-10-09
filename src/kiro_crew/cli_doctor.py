@@ -380,12 +380,14 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
     # beside its verdict is how a report starts contradicting itself.
     agents_dir = kiro_agents_dir()
 
-    # The DEFAULT alias may bind a kiro agent other than the built-in one, and
-    # the resolver treats those two differently: a non-default bound agent's own
-    # pin is consulted ABOVE the global (tier 2), while the built-in spec is read
-    # only after the global defers (tier 4). Reading kirocrew.json in both cases
+    # A plain session is the default TEMPLATE (`agent.default_agent`), which
+    # may be a kiro agent other than the built-in one, and the resolver
+    # treats those two differently: a non-default template's own pin is
+    # consulted ABOVE the global (tier 2), while the built-in spec is read only
+    # after the global defers (tier 4). Reading kirocrew.json in both cases
     # would attribute a custom agent's pin to the wrong file and print a reset
-    # command for the wrong agent.
+    # command for the wrong agent. The `default` crewmate's own binding is not
+    # what a plain session runs; its memory is checked in the bindings section.
     try:
         bindings = resolve_agent_bindings(cfg)
         override = normalize_agent_model(bindings.model)
@@ -396,11 +398,18 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
         issues.append("default agent binding unavailable")
         override = ""
         bound = "kirocrew"
-    # kiro_agent is free text in config.json and this name reaches a path join.
-    # An ABSOLUTE value would make pathlib discard the directory on the left
-    # (`base / "/etc/passwd.json"` is `/etc/passwd.json`), so anything outside
-    # the registered agent grammar is reported and treated as unbound.
-    if not is_registered_agent_name(bound):
+    # `agent.default_agent` is free text in config.json and this name reaches a
+    # path join. An ABSOLUTE value would make pathlib discard the directory on
+    # the left (`base / "/etc/passwd.json"` is `/etc/passwd.json`), so anything
+    # outside the registered agent grammar is reported and treated as unbound.
+    # The resolver already degrades a NON-STRING to the built-in template
+    # (`default_template`) so the gateway keeps running; the report must still
+    # say so, since a hand-edited config is why the operator runs doctor.
+    raw_default = getattr(cfg.agent, "default_agent", "")
+    default_is_text = raw_default is None or isinstance(raw_default, str)
+    if not default_is_text:
+        bound = str(raw_default)
+    if not default_is_text or not is_registered_agent_name(bound):
         print(f"  bound agent: ⚠️  {render._safe_display(bound)} is not a valid agent name")
         issues.append("configured kiro_agent is not a valid agent name")
         bound = "kirocrew"
@@ -414,6 +423,7 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
     bound_model = ""
     bound_spec: Path | None = None
     bound_spec_missing = False
+    bound_spec_ambiguous = False
     if bound != "kirocrew":
         # Display only, through the same resolver the writers use, so the path
         # shown is the file that holds the agent -- whichever form (``.json``
@@ -424,9 +434,11 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
         except ValueError:
             # Two safe specs declare the name, so no single file IS the bound
             # spec; the model resolver below refuses for the same reason and
-            # its tier shows as deferring.
+            # its tier shows as deferring. Reported as that, not as missing:
+            # kiro-cli still starts the agent, so no session is refused.
             bound_spec = None
-        bound_spec_missing = bound_spec is None
+            bound_spec_ambiguous = True
+        bound_spec_missing = bound_spec is None and not bound_spec_ambiguous
         # Read through the resolver's own accessor: it matches on the spec's
         # ``name`` field as well as the filename, which a bare path join misses.
         try:
@@ -465,9 +477,28 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
     if bound_spec is not None:
         print(f"  bound spec:  {render._safe_display(str(bound_spec))}")
     elif bound_spec_missing:
+        # The resolver falls back to the built-in template only on removal
+        # evidence it saw in THIS process; after a restart a name whose file is
+        # simply gone still resolves by name, and every agent-less session --
+        # a plain chat, a cron, a channel message, a subagent -- inherits it.
         print(
             f"  bound spec:  ⚠️  no spec for {render._safe_display(bound)} under {render._safe_display(str(agents_dir))}"
         )
+        print("               Every new session that picks no crewmate -- plain chats, crons,")
+        print(
+            "               channel messages, subagents -- starts from this agent and is refused."
+        )
+        print("               Pick another default in the chat agent picker (Default for new")
+        print("               sessions), or: kirocrew config set agent.default_agent kirocrew")
+        issues.append("default custom agent has no installed spec")
+    elif bound_spec_ambiguous:
+        print(
+            f"  bound spec:  ⚠  two specs under {render._safe_display(str(agents_dir))} declare {render._safe_display(bound)}"
+        )
+        print(
+            "               Sessions still start, but the model tier above cannot tell which file"
+        )
+        print("               pins the model. Rename or remove one of the two files.")
 
     # Self-check: the marked tier must be what the resolver actually returned.
     if decided_value != effective:

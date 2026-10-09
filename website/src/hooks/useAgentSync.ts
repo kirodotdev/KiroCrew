@@ -34,15 +34,15 @@ function shortName(s: string, max = 45): string {
 export function useAgentSync() {
   const slots = useSelector((s: RootState) => s.dashboard.slots)
   const [extras, setExtras] = useState<AgentSource[]>([])
-  // Slots created before the default agent was stamped into metadata at
-  // creation carry agent:'' — label them with the alias that actually answers,
-  // falling back to the literal 'default' until the fetch lands. Deliberately
-  // NOT useAgents(0): that hook reads the whole execution-choice catalog
-  // (see its docstring), and this view-only surface needs only the default
-  // alias. The shared ['default-agent'] query (same key + shape as AgentsPage)
-  // reads GET /api/config/default-agent — no lock, no write — and
-  // useWebSocket's refresh invalidation keeps a long-lived Worlds/popout
-  // surface from pinning a stale alias after the default changes.
+  // Slots created before the default was stamped into metadata at creation
+  // carry agent:'' — label them with the default custom agent (a template),
+  // the agent such a slot actually runs, falling back to the literal 'default'
+  // until the fetch lands. Deliberately NOT useAgents(0): that hook reads the
+  // whole execution-choice catalog (see its docstring), and this view-only
+  // surface needs only the one name. The shared ['default-agent'] query reads
+  // GET /api/config/default-agent — no lock, no write — and useWebSocket's
+  // refresh invalidation keeps a long-lived Worlds/popout surface from pinning
+  // a stale name after the default changes.
   const { data: defaultAgentData } = useQuery(defaultAgentQuery)
   const defaultAgent = defaultAgentData ?? ''
 

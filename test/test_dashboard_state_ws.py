@@ -150,9 +150,7 @@ class TestSlotsBroadcastCarriesFolders:
         def get(self, key, default=None):
             return self._flags.get(key, default)
 
-    def test_frame_carries_folder_tree_without_counts(
-        self, state: DashboardState
-    ) -> None:
+    def test_frame_carries_folder_tree_without_counts(self, state: DashboardState) -> None:
         state.serialize_slots = MagicMock(return_value=[{"key": "chat-1", "folder_id": "f1"}])  # type: ignore[method-assign]
         # In-memory folder tree as loaded from folders.json — no history_count.
         state._folders = [
@@ -180,9 +178,9 @@ class TestSlotsBroadcastCarriesFolders:
         state.serialize_slots = MagicMock(return_value=[])  # type: ignore[method-assign]
         state._folders = [
             {"id": "ok", "name": "Keep", "order": 0},
-            {"name": "no id", "order": 1},   # missing id -> dropped
-            "not a dict",                     # non-dict -> dropped
-            {"id": 42, "name": "int id"},     # non-string id -> dropped
+            {"name": "no id", "order": 1},  # missing id -> dropped
+            "not a dict",  # non-dict -> dropped
+            {"id": 42, "name": "int id"},  # non-string id -> dropped
         ]
         ws = self._DashboardWS()
         state.register_ws(ws)  # type: ignore[arg-type]
@@ -192,9 +190,7 @@ class TestSlotsBroadcastCarriesFolders:
         frame = json.loads(ws.send_str.call_args[0][0])
         assert frame["folders"] == [{"id": "ok", "name": "Keep", "order": 0}]
 
-    def test_non_list_folder_store_yields_empty_tree(
-        self, state: DashboardState
-    ) -> None:
+    def test_non_list_folder_store_yields_empty_tree(self, state: DashboardState) -> None:
         # A scalar/dict where a list is expected would make list() raise; the
         # coercion must yield [] instead of crashing the slot push.
         state.serialize_slots = MagicMock(return_value=[])  # type: ignore[method-assign]
@@ -246,9 +242,7 @@ class TestSlotsBroadcastCarriesFolders:
         assert generations[0] == generations[1]
 
     @pytest.mark.asyncio
-    async def test_folder_mutation_advances_the_generation(
-        self, state: DashboardState
-    ) -> None:
+    async def test_folder_mutation_advances_the_generation(self, state: DashboardState) -> None:
         # Bumped in the mutate_folders funnel rather than at each call site, so a
         # new folder-writing endpoint cannot forget to do it.
         before = state.folders_generation()
@@ -605,15 +599,15 @@ class TestSlotEffectiveAgent:
         """`load()` is the publisher, so the resolver never reads config.json."""
         import kiro_crew.config.loader as loader
 
-        monkeypatch.setattr(
-            loader, "_CONFIG_AGENT_ALIAS_SNAPSHOT", (frozenset(), "", False)
-        )
+        monkeypatch.setattr(loader, "_CONFIG_AGENT_ALIAS_SNAPSHOT", (frozenset(), "", False))
 
         cfg = loader.KiroCrewConfig.load()
-        aliases, default_alias, ready = loader.agent_alias_snapshot()
+        aliases, fallback_template, ready = loader.agent_alias_snapshot()
         assert ready is True
         assert aliases == frozenset(cfg.agents)
-        assert default_alias in cfg.agents
+        # The fallback is the default TEMPLATE, as the runtime resolver binds an
+        # unhonored name; never a crewmate alias.
+        assert fallback_template == loader.default_template(cfg)
 
     def test_publish_overwrites_a_richer_previous_snapshot(self, monkeypatch) -> None:
         """The degraded-defaults path must SHRINK the snapshot, not union into it.
@@ -638,10 +632,46 @@ class TestSlotEffectiveAgent:
             default_agent="default",
         )
         loader.publish_agent_alias_snapshot(cfg)
-        aliases, default_alias, _ = loader.agent_alias_snapshot()
+        aliases, fallback_template, _ = loader.agent_alias_snapshot()
         assert aliases == frozenset({"default"})
-        assert default_alias == "default"
-        assert loader.resolve_effective_agent("researcher") == "default"
+        assert fallback_template == loader.DEFAULT_KIRO_TEMPLATE
+        assert loader.resolve_effective_agent("researcher") == loader.DEFAULT_KIRO_TEMPLATE
+
+    def test_the_fallback_named_is_the_default_template_not_the_default_crewmate(
+        self, monkeypatch
+    ) -> None:
+        """The display resolver and the runtime resolver must agree: an
+        unhonored name runs `agent.default_agent` (a template) on the default
+        workspace and Global memory, so the marker names that template, not the
+        `default` crewmate, whose row may bind another template and a private
+        store the session does not use."""
+        import dataclasses
+
+        import kiro_crew.config.loader as loader
+
+        self._pin(
+            monkeypatch,
+            aliases=set(),
+            default_alias="",
+            materialized=set(),
+        )
+        cfg = dataclasses.replace(
+            loader.KiroCrewConfig(),
+            agents={
+                "default": loader.KiroCrewAgentConfig(kiro_agent="worker"),
+                "scribe": loader.KiroCrewAgentConfig(kiro_agent="scribe"),
+            },
+            default_agent="scribe",
+            agent=dataclasses.replace(loader.KiroCrewConfig().agent, default_agent="atlas"),
+        )
+        loader.publish_agent_alias_snapshot(cfg)
+        _aliases, fallback_template, _ = loader.agent_alias_snapshot()
+        assert fallback_template == "atlas"
+        assert loader.resolve_effective_agent("deleted-app") == "atlas"
+        # The template itself, and both crewmate aliases, report no divergence.
+        assert loader.resolve_effective_agent("atlas") == ""
+        assert loader.resolve_effective_agent("default") == ""
+        assert loader.resolve_effective_agent("scribe") == ""
 
     def test_snapshot_is_published_as_one_immutable_triple(self, monkeypatch) -> None:
         """Why the read path needs no lock, as a gate rather than a comment.
@@ -653,9 +683,7 @@ class TestSlotEffectiveAgent:
         """
         import kiro_crew.config.loader as loader
 
-        monkeypatch.setattr(
-            loader, "_CONFIG_AGENT_ALIAS_SNAPSHOT", (frozenset(), "", False)
-        )
+        monkeypatch.setattr(loader, "_CONFIG_AGENT_ALIAS_SNAPSHOT", (frozenset(), "", False))
         before = loader.agent_alias_snapshot()
         loader.publish_agent_alias_snapshot(loader.KiroCrewConfig.load())
         after = loader.agent_alias_snapshot()
@@ -850,9 +878,7 @@ class TestCompactCallbackWiring:
         assert len(slot.messages) == baseline
 
     @pytest.mark.asyncio
-    async def test_channel_notice_failure_does_not_propagate(
-        self, state: DashboardState
-    ) -> None:
+    async def test_channel_notice_failure_does_not_propagate(self, state: DashboardState) -> None:
         """The compaction already succeeded; a broken channel must not raise."""
         cb = self._captured_callback(state)
 
@@ -1013,8 +1039,12 @@ class TestOwnerSourceStatusTransport:
             lambda url: {"ci": "passed", "state": "OPEN"} if url == source_url else None,
         )
         monkeypatch.setattr("kiro_crew.dashboard.state._repo_is_public", lambda url: True)
-        monkeypatch.setattr("kiro_crew.dashboard.state._audit_public_status_grant", lambda url: None)
-        monkeypatch.setattr("kiro_crew.dashboard.state._audit_public_status_denied", lambda url: None)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.state._audit_public_status_grant", lambda url: None
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.state._audit_public_status_denied", lambda url: None
+        )
         monkeypatch.setattr(state, "is_yolo_active", lambda: False)
         sent: list[tuple[object, dict]] = []
         monkeypatch.setattr(
@@ -1072,14 +1102,10 @@ class TestOwnerSourceStatusTransport:
         assert set(owner_messages[0]) == set(dash_messages[0])
         assert owner_messages[0]["folders"] == dash_messages[0]["folders"]
         assert (
-            owner_messages[0]["gitlabHostsGeneration"]
-            == dash_messages[0]["gitlabHostsGeneration"]
+            owner_messages[0]["gitlabHostsGeneration"] == dash_messages[0]["gitlabHostsGeneration"]
         )
         assert isinstance(owner_messages[0]["governanceGeneration"], int)
-        assert (
-            owner_messages[0]["governanceGeneration"]
-            == dash_messages[0]["governanceGeneration"]
-        )
+        assert owner_messages[0]["governanceGeneration"] == dash_messages[0]["governanceGeneration"]
 
     def test_broadcast_serializes_each_slot_once_and_views_match_full_passes(
         self, state: DashboardState, monkeypatch
@@ -1114,8 +1140,12 @@ class TestOwnerSourceStatusTransport:
         monkeypatch.setattr(
             "kiro_crew.dashboard.state._repo_is_public", lambda url: url == public_url
         )
-        monkeypatch.setattr("kiro_crew.dashboard.state._audit_public_status_grant", lambda url: None)
-        monkeypatch.setattr("kiro_crew.dashboard.state._audit_public_status_denied", lambda url: None)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.state._audit_public_status_grant", lambda url: None
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.state._audit_public_status_denied", lambda url: None
+        )
         monkeypatch.setattr(state, "is_yolo_active", lambda: False)
         monkeypatch.setattr(state, "_spawn_ws_send", lambda client, message: None)
 
@@ -1380,9 +1410,7 @@ class TestOwnerSourceStatusTransport:
         state.unregister_ws.assert_called_once_with(fake_ws)
 
     @pytest.mark.asyncio
-    async def test_non_owner_status_refresh_only_for_confirmed_public(
-        self, monkeypatch
-    ) -> None:
+    async def test_non_owner_status_refresh_only_for_confirmed_public(self, monkeypatch) -> None:
         """A non-owner dashboard connection drives NEITHER a status refresh NOR
         a visibility probe, even when a confirmed-public repo is present — both
         run the operator's credentials, so only the owner's connection may
@@ -1494,7 +1522,9 @@ class TestPeriodicCheckStatusRefresh:
     ) -> None:
         slot_a = state.get_or_create_slot("chat-a")
         for n in (1, 2, 3, 4):
-            slot_a.append("assistant", f"see https://github.com/acme/repo/pull/{n}", broadcast=False)
+            slot_a.append(
+                "assistant", f"see https://github.com/acme/repo/pull/{n}", broadcast=False
+            )
         slot_b = state.get_or_create_slot("chat-b")
         slot_b.append("assistant", "and https://github.com/acme/other/pull/9", broadcast=False)
 
@@ -1615,7 +1645,9 @@ class TestPeriodicCheckStatusRefresh:
             calls["n"] += 1
             # Change the generation only on the periodic round, not the warm-up.
             if calls["n"] == 2:
-                source_providers._publish_provider_hosts(frozenset({"gitlab.acme.internal"}), frozenset())
+                source_providers._publish_provider_hosts(
+                    frozenset({"gitlab.acme.internal"}), frozenset()
+                )
             return frozenset()
 
         class Request(dict):
@@ -1665,9 +1697,7 @@ class TestPeriodicCheckStatusRefresh:
         monkeypatch.setattr(source_providers, "_gitlab_hosts_loaded_at", 0.0)
         monkeypatch.setattr(source_providers, "_gitlab_hosts_generation", 0)
         monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
-        monkeypatch.setattr(
-            dashboard_ws.web, "WebSocketResponse", lambda **kwargs: FakeWebSocket()
-        )
+        monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: FakeWebSocket())
         monkeypatch.setattr(source_providers, "ensure_gitlab_hosts_loaded", fake_ensure)
         monkeypatch.setattr(source_providers, "CHECK_STATUS_TTL_SECS", 0.01)
 
@@ -1713,9 +1743,7 @@ class TestPeriodicCheckStatusRefresh:
         assert payload["gitlabHostsGeneration"] == 7
 
     @pytest.mark.asyncio
-    async def test_ws_warms_gitlab_allowlist_before_first_serialization(
-        self, monkeypatch
-    ) -> None:
+    async def test_ws_warms_gitlab_allowlist_before_first_serialization(self, monkeypatch) -> None:
         """Slot source-link extraction is synchronous and cannot load the
         allowlist, so a self-hosted MR chip would be missing from the very first
         sidebar push unless the snapshot is warmed first."""
@@ -2104,9 +2132,7 @@ class TestTurnBoundarySourceStatus:
     def test_per_slot_urls_are_scoped_and_capped(self, state: DashboardState) -> None:
         slot = state.get_or_create_slot("chat-a")
         for n in (1, 2, 3, 4):
-            slot.append(
-                "assistant", f"see https://github.com/acme/repo/pull/{n}", broadcast=False
-            )
+            slot.append("assistant", f"see https://github.com/acme/repo/pull/{n}", broadcast=False)
         other = state.get_or_create_slot("chat-b")
         other.append("assistant", "and https://github.com/acme/other/pull/9", broadcast=False)
 
@@ -2119,7 +2145,9 @@ class TestTurnBoundarySourceStatus:
         ]
         assert state.source_link_urls_for_slot("nope") == []
 
-    def test_turn_boundary_forces_refresh_for_owner(self, state: DashboardState, monkeypatch) -> None:
+    def test_turn_boundary_forces_refresh_for_owner(
+        self, state: DashboardState, monkeypatch
+    ) -> None:
         from kiro_crew.dashboard.handlers import source_providers
 
         slot = state.get_or_create_slot("chat-a")

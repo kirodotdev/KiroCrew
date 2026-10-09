@@ -90,6 +90,7 @@ from kiro_crew.config.migration import (  # noqa: F401
     MIGRATE_AGENTS,
     MIGRATE_CONNECTIONS_UI,
     MIGRATE_DEFAULT_AGENT,
+    MIGRATE_STAR_DEFAULT_TEMPLATE,
     MIGRATE_SUPERSEDED_DEFAULTS,
     MIGRATE_WORKSPACES,
     _adopt_in_memory,
@@ -2294,6 +2295,7 @@ def _apply_document_migrations(
         adopt_keys=adopt_keys,
         recorded_adoptions=recorded_adoptions,
         record_adoptions=record_adoptions,
+        dispatch=dispatch_kiro_agent,
     )
 
 
@@ -5266,7 +5268,7 @@ def build_config(
             )
             is True
         )
-        kiro = cfg.agent.default_agent or "kirocrew"
+        kiro = default_template(cfg)
         cfg.agents["default"] = KiroCrewAgentConfig(
             kiro_agent=kiro,
             workspace="default",
@@ -5712,7 +5714,7 @@ def persist_write_back(cfg: KiroCrewConfig, doc: ConfigDocument) -> None:
 
         # One-time migration: create default agent when none exists
         if not cfg.agents:
-            kiro = cfg.agent.default_agent or "kirocrew"
+            kiro = default_template(cfg)
             cfg.agents["default"] = KiroCrewAgentConfig(
                 kiro_agent=kiro,
                 workspace="default",
@@ -5728,6 +5730,26 @@ def persist_write_back(cfg: KiroCrewConfig, doc: ConfigDocument) -> None:
             else:
                 cfg.default_agent = "default"
             pending.add(MIGRATE_DEFAULT_AGENT)
+
+        # A "Default for new sessions" pick made when the star enrolled a crewmate
+        # alias (see MIGRATE_STAR_DEFAULT_TEMPLATE). Decided on the MERGED view
+        # and applied in memory at once, so this very load's plain sessions keep
+        # running the chosen template; skipped where the overlay supplies the
+        # field, since that value is the operator's own and already wins, and
+        # skipped when this load SEEDED the roster default itself (the
+        # first-alias fallback above): that alias is nobody's pick, so carrying
+        # its template would invent a default no user chose.
+        if MIGRATE_DEFAULT_AGENT not in pending and not _overlay_supplies(
+            local_data, "agent.default_agent"
+        ):
+            carried = _migration.star_default_template_due(
+                cfg.agent.default_agent,
+                cfg.default_agent,
+                {name: asdict(row) for name, row in cfg.agents.items()},
+            )
+            if carried is not None:
+                cfg.agent.default_agent = dispatch_kiro_agent(carried)
+                pending.add(MIGRATE_STAR_DEFAULT_TEMPLATE)
 
         # One-shot launch migration for ``connections_ui`` (see the marker
         # constant's docstring). Decided on the BASE document, not the
@@ -5775,7 +5797,7 @@ def persist_write_back(cfg: KiroCrewConfig, doc: ConfigDocument) -> None:
             persisted = _persist_config_migration(
                 path,
                 frozenset(pending),
-                default_kiro_agent=cfg.agent.default_agent or "kirocrew",
+                default_kiro_agent=default_template(cfg),
                 adopt_keys=frozenset(adopt_keys),
                 confirmed_adoptions=confirmed_adoptions,
             )
@@ -6662,14 +6684,16 @@ def _materialized_kiro_agent(agent_name: str | None, project_dir: str | None = N
 
 
 # Snapshot of the Kiro Crew agent ALIAS table as ONE immutable
-# ``(aliases, default_alias, ready)`` triple — the keys of ``config.agents``, the
-# alias a request falls back to, and whether a load has published yet. Refreshed
-# by every successful :meth:`KiroCrewConfig.load`, exactly like
-# ``_MATERIALIZED_AGENTS`` is refreshed by every scan, and for the same reason:
-# the read path (:func:`resolve_effective_agent`, reached from
-# ``_ChatSlot.to_dict`` for every slot of every slots frame) must do ZERO
-# filesystem work, and ``config.agents`` is otherwise only reachable by
-# re-reading and re-validating ``config.json``.
+# ``(aliases, default_template, ready)`` triple — the keys of ``config.agents``,
+# the TEMPLATE an unhonored request falls back to (:func:`default_template`, the
+# same answer :func:`resolve_agent_bindings` gives: a session whose name is no
+# alias and no materialized template runs the default custom agent, never a
+# crewmate), and whether a load has published yet. Refreshed by every successful
+# :meth:`KiroCrewConfig.load`, exactly like ``_MATERIALIZED_AGENTS`` is refreshed
+# by every scan, and for the same reason: the read path
+# (:func:`resolve_effective_agent`, reached from ``_ChatSlot.to_dict`` for every
+# slot of every slots frame) must do ZERO filesystem work, and ``config.agents``
+# is otherwise only reachable by re-reading and re-validating ``config.json``.
 #
 # One tuple rather than three globals, and no lock, deliberately: publishing is a
 # single rebind of a single name, so a reader either sees the whole previous
@@ -6691,19 +6715,19 @@ def publish_agent_alias_snapshot(config: "KiroCrewConfig") -> None:
     from :meth:`KiroCrewConfig.load` so every successful load refreshes it,
     including the degraded-defaults path (which must OVERWRITE a richer previous
     snapshot rather than leave a resolver claiming aliases that do not load).
+
+    The fallback published is :func:`default_template` read at publish time, so
+    the display resolver names the template the runtime resolver would bind,
+    including the managed fallback for a configured template the landed
+    snapshot shows removed.
     """
     global _CONFIG_AGENT_ALIAS_SNAPSHOT
     aliases = frozenset(str(n) for n in config.agents if isinstance(n, str) and n)
-    default_alias = config.default_agent if config.default_agent in config.agents else ""
-    if not default_alias and aliases:
-        # Mirrors resolve_agent_bindings' defensive branch: an unusable
-        # ``default_agent`` is answered by the first configured alias.
-        default_alias = next(iter(config.agents))
-    _CONFIG_AGENT_ALIAS_SNAPSHOT = (aliases, default_alias, True)
+    _CONFIG_AGENT_ALIAS_SNAPSHOT = (aliases, default_template(config), True)
 
 
 def agent_alias_snapshot() -> tuple[frozenset[str], str, bool]:
-    """The published alias table as ``(aliases, default_alias, ready)``."""
+    """The published alias table as ``(aliases, default_template, ready)``."""
     return _CONFIG_AGENT_ALIAS_SNAPSHOT
 
 
@@ -6912,7 +6936,8 @@ def resolve_effective_agent(agent_name: str | None, project_dir: str | None = No
     narrower than it. The empty string means **"nothing to report"** — either the
     requested name is honored, or resolution cannot be settled without touching
     the filesystem. A non-empty return is a positive claim that a DIFFERENT agent
-    answers this session, which is what the UI renders as a divergence marker.
+    answers this session -- the default template, as :func:`resolve_agent_bindings`
+    binds an unhonored name -- which is what the UI renders as a divergence marker.
 
     Three properties make it safe to call from ``_ChatSlot.to_dict``, which runs
     on the event loop for every slots frame:
@@ -6938,8 +6963,8 @@ def resolve_effective_agent(agent_name: str | None, project_dir: str | None = No
     """
     if not agent_name:
         return ""
-    aliases, default_alias, ready = agent_alias_snapshot()
-    if not ready or not default_alias:
+    aliases, fallback_template, ready = agent_alias_snapshot()
+    if not ready or not fallback_template:
         return ""
     if agent_name in aliases:
         # A Kiro Crew alias resolves to itself (step 1 of resolve_agent_bindings).
@@ -6952,9 +6977,12 @@ def resolve_effective_agent(agent_name: str | None, project_dir: str | None = No
         return ""
     if project_dir and not _project_scope_excludes(agent_name, project_dir):
         return ""
-    if default_alias == agent_name:
+    if fallback_template == agent_name:
         return ""
-    return default_alias
+    # What answers is the default TEMPLATE (a template session on the default
+    # workspace and Global memory), as resolve_agent_bindings binds it; never a
+    # crewmate alias, which would name a store and pin the session does not use.
+    return fallback_template
 
 
 def _project_scope_excludes(agent_name: str, project_dir: str) -> bool:
@@ -7086,25 +7114,76 @@ def resolve_crew_identity(
     return ""
 
 
+#: The template kiro-cli runs when ``agent.default_agent`` names none; owned by
+#: ``sections`` so the migration module (which must not import this one) reads
+#: the same name. Bound here by module attribute, not through the frozen
+#: pre-split import list.
+DEFAULT_KIRO_TEMPLATE = _sections.DEFAULT_KIRO_TEMPLATE
+
+
+def default_template(config) -> str:
+    """The template a session with no crewmate runs.
+
+    ``agent.default_agent``, else :data:`DEFAULT_KIRO_TEMPLATE`. Deliberately NOT
+    the ``default`` crewmate's ``kiro_agent``: a plain session is a template on
+    the default folder and memory store, never a crewmate. The
+    ``default`` crewmate is one row of ``config.agents`` like any other, talked
+    to in its DM thread, and may bind a different template.
+
+    A configured template whose spec is GONE falls back to the managed one, so a
+    package uninstall or a hand delete never leaves every new plain session
+    refused with "Agent mode ... is not available". "Gone" is a REMOVED name in
+    the warm, complete materialized snapshot (:func:`_removal_evidence`), the
+    evidence :func:`reset_dangling_default_agent` acts on: absence alone is not
+    evidence (a project checkout or the edition can supply a name this directory
+    never declared), and a name the edition still supplies is kept. A pure
+    in-memory check, so it is safe on the event loop.
+    """
+    name = getattr(getattr(config, "agent", None), "default_agent", "")
+    if not isinstance(name, str) or not name or name == DEFAULT_KIRO_TEMPLATE:
+        return DEFAULT_KIRO_TEMPLATE
+    names, removed, complete = _removal_evidence()
+    if names is not None and complete and name in removed and name not in _edition_agent_names():
+        return DEFAULT_KIRO_TEMPLATE
+    return name
+
+
 def _resolve_agent_selection(config, agent_name=None, project_dir=None, *, selection_kind=""):
-    """Select a config record/template without accessing any memory files."""
+    """Select a crewmate record or a template without accessing any memory files.
+
+    Returns ``(record, alias, template, requested_resolved)``. A crewmate pick
+    (``agent_name`` is a ``config.agents`` key and the stated namespace is not
+    ``template``) returns its record and alias, with ``template`` empty. Every
+    other selection is a TEMPLATE session: the materialized template the name
+    declares (an app's, a project's, one in ``~/.kiro/agents``), else
+    :func:`default_template`, with ``record`` None and ``alias`` empty. A plain
+    session -- no name at all -- is therefore the default template, never the
+    ``default`` crewmate. ``requested_resolved`` is False when a
+    non-empty name matched neither, so callers never advertise a name that
+    is not running.
+    """
     alias_hit = selection_kind != "template" and bool(agent_name) and agent_name in config.agents
-    passthrough = (
-        ""
-        if alias_hit or selection_kind == "member"
-        else _materialized_kiro_agent(agent_name, project_dir)
-    )
-    requested_resolved = (not agent_name) or alias_hit or bool(passthrough)
     if alias_hit:
-        alias = agent_name
-    elif config.default_agent in config.agents:
-        alias = config.default_agent
-    elif config.agents:
-        alias = next(iter(config.agents))
-        logger.warning("default_agent %r not found; using %r", config.default_agent, alias)
-    else:
-        alias = ""
-    return config.agents.get(alias), alias, passthrough, requested_resolved
+        return config.agents[agent_name], agent_name, "", True
+    fallback = default_template(config)
+    passthrough = (
+        "" if selection_kind == "member" else _materialized_kiro_agent(agent_name, project_dir)
+    )
+    # The default template is the floor every session can stand on, so naming
+    # it resolves whether or not the materialized snapshot lists it (a cold
+    # snapshot, a bare data home): an agent-less session resolved to it before
+    # the name was ever stamped, and stamping must not make it refusable.
+    requested_resolved = (
+        (not agent_name)
+        or bool(passthrough)
+        or (selection_kind != "member" and agent_name == fallback)
+    )
+    # The default template goes through the same stem-to-declared-name mapping a
+    # crewmate's ``kiro_agent`` does below: a hand-edited or legacy
+    # ``agent.default_agent`` can spell the spec's FILE stem (``KiroPkg-captain``)
+    # while the file declares ``captain``, and kiro-cli starts agents by declared
+    # name only. A materialized passthrough is already a declared name.
+    return None, "", passthrough or dispatch_kiro_agent(fallback), requested_resolved
 
 
 def resolve_agent_identity(config, agent_name=None, *, selection_kind="") -> tuple[str, str, str]:
@@ -7113,13 +7192,12 @@ def resolve_agent_identity(config, agent_name=None, *, selection_kind="") -> tup
     This does not authorize memory access. Runtime callers must resolve the full
     bindings; a model chip remains inspectable while learned memory is unavailable.
     """
-    record, alias, passthrough, _ = _resolve_agent_selection(
+    record, alias, template, _ = _resolve_agent_selection(
         config, agent_name, selection_kind=selection_kind
     )
     return (
         alias,
-        passthrough
-        or (dispatch_kiro_agent(record.kiro_agent) if record else config.agent.default_agent),
+        template or dispatch_kiro_agent(record.kiro_agent),
         normalize_agent_model(record.model) if record else "",
     )
 
@@ -7135,14 +7213,17 @@ def resolve_agent_bindings(
 ) -> ResolvedBindings:
     """Resolve workspace, memory store, and kiro agent for a session.
 
-    Resolution:
-    1. If agent_name is given and exists in config.agents → use its bindings
-    2. Otherwise use config.default_agent (guaranteed to exist by load()), but
-       keep dispatching *agent_name* itself when a materialized kiro agent
-       declares it (see :func:`_materialized_kiro_agent`) — an app's agents are
-       registered in ``~/.kiro/agents/`` and never added to ``config.agents``, so
-       this is the only thing that stops an app-bound session from silently
-       running the default agent.
+    Resolution (see :func:`_resolve_agent_selection`):
+    1. If agent_name is given and exists in config.agents → that crewmate's
+       bindings: its template, workspace, memory store and model pin.
+    2. Otherwise a TEMPLATE session on the default workspace and the default
+       memory store, with no crewmate model pin: the template *agent_name*
+       itself when a materialized kiro agent declares it (see
+       :func:`_materialized_kiro_agent` — an app's agents are registered in
+       ``~/.kiro/agents/`` and never added to ``config.agents``, so this is
+       what stops an app-bound session from silently running something else),
+       else :func:`default_template`. A plain session with no name is this
+       case: it is never the ``default`` crewmate.
 
     *project_dir* is the session's active project directory, which widens step 2 to
     that project's own ``.kiro`` scope. It must be the same directory Kiro Crew
@@ -7152,18 +7233,37 @@ def resolve_agent_bindings(
     """
     import dataclasses as _dc
 
-    agent_cfg, resolved_alias, passthrough, requested_resolved = _resolve_agent_selection(
+    agent_cfg, resolved_alias, template, requested_resolved = _resolve_agent_selection(
         config, agent_name, project_dir, selection_kind=selection_kind
     )
+
+    def _effective_memory(store_name: str) -> dict:
+        store_cfg = config.memory_stores.get(store_name)
+        store_dict = _dc.asdict(store_cfg) if store_cfg else {}
+        return resolve_memory_store_config(_dc.asdict(config.memory), store_dict)
+
     if agent_cfg is None:
-        logger.warning("No agents configured, using bare defaults")
+        # A template session: the template on the default folder and the
+        # default memory store. Nothing of any crewmate -- not the ``default``
+        # row's workspace, store or model pin -- reaches it.
+        default_ws = config.workspaces.get(config.default_workspace)
+        ws_dir = Path(default_ws.dir) if default_ws else Path("workspace")
+        if execution_context is not None:
+            store_name = execution_context.store.store_id
+            kiro_agent = execution_context.template_id
+            if execution_context.selection_kind == "member":
+                kiro_agent = dispatch_kiro_agent(kiro_agent)
+        else:
+            store_name = DEFAULT_MEMORY_STORE
+            kiro_agent = template
         return ResolvedBindings(
-            workspace_dir=Path("workspace"),
-            memory_store_name=DEFAULT_MEMORY_STORE,
-            effective_memory_config=_dc.asdict(config.memory),
-            kiro_agent=passthrough or config.agent.default_agent,
+            execution_context=execution_context,
+            workspace_dir=ws_dir,
+            memory_store_name=store_name,
+            effective_memory_config=_effective_memory(store_name),
+            kiro_agent=kiro_agent,
             requested_resolved=requested_resolved,
-            selection_kind="template" if passthrough else "",
+            selection_kind="template",
         )
 
     # Resolve workspace
@@ -7188,36 +7288,25 @@ def resolve_agent_bindings(
     # Canonical member/store mismatches are rejected before legacy use.
     if execution_context is not None:
         store_name = execution_context.store.store_id
-    elif passthrough:
-        store_name = DEFAULT_MEMORY_STORE
-    else:
-        store_name = require_member_memory_store(
-            config, resolved_alias, require_directory=validate_memory_files
-        )
-
-    if execution_context is not None:
         kiro_agent = execution_context.template_id
         if execution_context.selection_kind == "member":
             kiro_agent = dispatch_kiro_agent(kiro_agent)
     else:
-        kiro_agent = passthrough or dispatch_kiro_agent(agent_cfg.kiro_agent)
-
-    # Build effective memory config via dict-level merge
-    store_cfg = config.memory_stores.get(store_name)
-    store_dict = _dc.asdict(store_cfg) if store_cfg else {}
-    top_level_memory = _dc.asdict(config.memory)
-    effective_memory = resolve_memory_store_config(top_level_memory, store_dict)
+        store_name = require_member_memory_store(
+            config, resolved_alias, require_directory=validate_memory_files
+        )
+        kiro_agent = dispatch_kiro_agent(agent_cfg.kiro_agent)
 
     return ResolvedBindings(
         execution_context=execution_context,
         workspace_dir=ws_dir,
         memory_store_name=store_name,
-        effective_memory_config=effective_memory,
+        effective_memory_config=_effective_memory(store_name),
         kiro_agent=kiro_agent,
         model=normalize_agent_model(agent_cfg.model),
         requested_resolved=requested_resolved,
         resolved_alias=resolved_alias,
-        selection_kind="template" if passthrough else "member",
+        selection_kind="member",
     )
 
 

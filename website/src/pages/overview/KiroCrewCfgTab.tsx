@@ -376,12 +376,11 @@ export default function KiroCrewCfgTab() {
             </tbody>
           </table>
         )}
-        {/* The Settings-side writer of the default crewmate. The Crewmates tab
-            only marks it with a badge; the chat composer's ★ writes the same
-            setting but only for the agent a session is bound to, and the picker
-            withholds covered crewmates unless dashboard.crewmates_in_agent_picker is on — so without
-            this row a user with several crewmates could not pick which one new
-            sessions start as.
+        {/* The Settings-side writer of the ROSTER's default crewmate: the badge
+            on the Crewmates page, the undeletable row, the one `select_crew`
+            keeps for itself. It is not what a new session runs — that is the
+            default custom agent, which the chat composer's ★ (Default for new
+            sessions) writes to `agent.default_agent` — and the hint says so.
             Rendered whenever any crewmate exists — the roster badge deep-links
             here even with one, so the anchor must be on the page for the ring
             to land (a one-option select is a true statement, not a trap). */}
@@ -402,7 +401,7 @@ export default function KiroCrewCfgTab() {
               path="agent.default_agent"
               value={cfg.default_agent}
               options={agents.map(([name]) => name)}
-              hint={i18nT('pages.overview.kiroCrewCfgTab.default_crewmate_hint')}
+              hint={i18nT('pages.overview.kiroCrewCfgTab.default_crewmate_hint_badge')}
               onSave={(_path, name) => { setDefaultErr(''); defaultMut.mutate(name) }}
             />
             {/* No hand-off: it navigates to the chat and unmounts this page, and

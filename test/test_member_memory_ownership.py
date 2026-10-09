@@ -244,7 +244,10 @@ class TestPrivateOwnership:
     def test_selecting_member_as_default_does_not_grant_global_memory(self):
         cfg, store = _new_member()
         cfg.default_agent = "reviewer"
-        assert resolve_agent_bindings(cfg).memory_store_name == store
+        # The default crewmate keeps its private store when picked; a plain
+        # session is the default TEMPLATE on Global and never inherits it.
+        assert resolve_agent_bindings(cfg, "reviewer").memory_store_name == store
+        assert resolve_agent_bindings(cfg).memory_store_name == "default"
         assert resolve_agent_bindings(cfg, "default").memory_store_name == "default"
 
     def test_store_listing_follows_exact_member_avatar_and_updates_without_rebinding(self):
@@ -354,7 +357,9 @@ class TestPrivateOwnership:
             connection.close()
         before = database.read_bytes()
         assert resolve_agent_bindings(cfg, "reviewer").memory_store_name == binding
-        assert resolve_agent_bindings(cfg).memory_store_name == binding
+        # A plain session is the default template on Global, whoever the
+        # default crewmate is.
+        assert resolve_agent_bindings(cfg).memory_store_name == "default"
         assert require_member_memory_store(cfg, "reviewer") == binding
         assert database.read_bytes() == before
         assert not (root / "member-memory.json").exists()

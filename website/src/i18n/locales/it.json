@@ -5852,16 +5852,19 @@
     },
     "agentDropdownList": {
       "active_in_this_session": "Attivo in questa sessione",
-      "could_not_change_the_default_agent": "Non è stato possibile cambiare il compagno predefinito",
+      "default_write_failed_not_installed": "Non è stato possibile cambiare l’agente personalizzato predefinito: {{name}} non è un agente personalizzato installato. Installalo e riprova.",
+      "default_write_failed_overlaid": "Non è stato possibile cambiare l’agente personalizzato predefinito: lo imposta il tuo file di impostazioni locale (config.local.json). Modificalo lì.",
+      "default_write_failed_stale": "Non è stato possibile cambiare l’agente personalizzato predefinito: {{name}} è appena cambiato. Ricarica e riprova.",
+      "could_not_change_the_default_custom_agent": "Non è stato possibile cambiare l’agente personalizzato predefinito",
       "default": "Predefinito",
-      "default_agent_for_new_sessions": "Predefinito per le nuove sessioni",
+      "agent_is_the_default_for_new_sessions": "<agent/> è il predefinito per le nuove sessioni",
       "group_members": "Compagni di equipaggio",
       "group_templates": "Agenti personalizzati",
       "manage_agents": "Gestisci i compagni…",
       "new_sessions_start_with_this_agent": "Le nuove sessioni iniziano con questo compagno",
       "no_matches": "Nessuna corrispondenza",
       "set_default_agent": "Imposta <agent/> come predefinito per le nuove sessioni",
-      "group_templates_hint": "Viene eseguito nello spazio di lavoro e nella memoria del compagno predefinito; non viene creato nulla di nuovo."
+      "group_templates_hint_default_workspace": "Un agente personalizzato è una configurazione di agente riutilizzabile. Sceglierne uno usa il tuo spazio di lavoro predefinito e la memoria condivisa; non viene creato nessun nuovo compagno."
     },
     "agentImportFlow": {
       "back": "Indietro",
@@ -13791,7 +13794,7 @@
         "change_directory_hint": "Il workspace leggerà memoria, lezioni, cronologia e knowledge base dalla nuova cartella. Non viene spostato nulla.",
         "default_crewmate": "Compagno predefinito",
         "default_crewmate_failed": "Impossibile cambiare il compagno predefinito",
-        "default_crewmate_hint": "Con quale compagno parte una nuova sessione: la stessa impostazione che scrive la ★ della casella di chat (Agente predefinito per le nuove sessioni). Le chat già aperte mantengono quello con cui sono iniziate.",
+        "default_crewmate_hint_badge": "Quale compagno riceve il badge Predefinito nella pagina dei compagni e non può essere eliminato. Non decide cosa esegue una nuova chat; lo fa «Imposta … come predefinito per le nuove sessioni» nel selettore dell’agente.",
         "default_crewmate_refused_because": "Impossibile impostare {{name}} come compagno predefinito: {{reason}}. Ricarica la pagina e scegli di nuovo.",
         "default_crewmate_unknown_reason": "{{name}} non è più nell’elenco dei compagni"
       },
@@ -17697,7 +17700,6 @@
       "filters_clear": "Cancella filtri",
       "star": "Aggiungi {{name}} ai preferiti",
       "unstar": "Rimuovi {{name}} dai preferiti",
-      "default_agent_failed_title": "Impossibile leggere il crewmate predefinito, quindi vengono mostrati tutti i crewmate",
       "all_hidden_hint": "I crewmate che non hai ancora usato sono nascosti. Cercali per trovarli.",
       "star_failed_title": "Preferito non salvato",
       "star_failed": "Impossibile aggiornare il preferito di questo compagno.",

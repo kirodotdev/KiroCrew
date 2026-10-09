@@ -5638,16 +5638,19 @@
     },
     "agentDropdownList": {
       "active_in_this_session": "이 세션에서 활성",
-      "could_not_change_the_default_agent": "기본 크루메이트를 변경할 수 없습니다",
+      "default_write_failed_not_installed": "기본 커스텀 에이전트를 변경할 수 없습니다. {{name}}은(는) 설치된 커스텀 에이전트가 아닙니다. 설치한 뒤 다시 시도하세요.",
+      "default_write_failed_overlaid": "기본 커스텀 에이전트를 변경할 수 없습니다. 로컬 설정 파일(config.local.json)이 이 값을 정하고 있습니다. 그 파일에서 바꾸세요.",
+      "default_write_failed_stale": "기본 커스텀 에이전트를 변경할 수 없습니다. {{name}}이(가) 방금 바뀌었습니다. 새로 고친 뒤 다시 시도하세요.",
+      "could_not_change_the_default_custom_agent": "기본 커스텀 에이전트를 변경할 수 없습니다",
       "default": "기본",
-      "default_agent_for_new_sessions": "새 세션의 기본값",
+      "agent_is_the_default_for_new_sessions": "<agent/>이(가) 새 세션의 기본값입니다",
       "group_members": "크루메이트",
       "group_templates": "커스텀 에이전트",
       "manage_agents": "크루메이트 관리…",
       "new_sessions_start_with_this_agent": "새 세션은 이 크루메이트로 시작합니다",
       "no_matches": "일치하는 항목 없음",
       "set_default_agent": "<agent/>을(를) 새 세션의 기본값으로 설정",
-      "group_templates_hint": "기본 크루메이트의 워크스페이스와 메모리에서 실행되며, 새로 만들어지는 것은 없습니다."
+      "group_templates_hint_default_workspace": "커스텀 에이전트는 다시 쓸 수 있는 에이전트 설정입니다. 선택하면 기본 워크스페이스와 공유 메모리를 사용하며, 새 크루메이트는 만들어지지 않습니다."
     },
     "agentImportFlow": {
       "back": "뒤로",
@@ -13389,7 +13392,7 @@
         "change_directory_hint": "워크스페이스는 새 폴더에서 메모리, 레슨, 기록, 지식 베이스를 읽습니다. 아무것도 옮기지 않습니다.",
         "default_crewmate": "기본 크루메이트",
         "default_crewmate_failed": "기본 크루메이트를 변경할 수 없습니다",
-        "default_crewmate_hint": "새 세션이 어떤 크루메이트로 시작할지 정합니다 — 채팅 입력창의 ★(새 세션의 기본 에이전트)가 쓰는 것과 같은 설정입니다. 이미 열린 채팅은 시작할 때의 크루메이트를 유지합니다.",
+        "default_crewmate_hint_badge": "크루메이트 페이지에서 기본 배지를 받고 삭제할 수 없는 크루메이트입니다. 새 채팅이 무엇을 실행할지는 정하지 않습니다. 그것은 에이전트 선택의 “…을(를) 새 세션의 기본값으로 설정”이 정합니다.",
         "default_crewmate_refused_because": "{{name}}을(를) 기본 크루메이트로 설정할 수 없습니다 — {{reason}}. 페이지를 새로 고친 뒤 다시 선택하세요.",
         "default_crewmate_unknown_reason": "크루메이트 목록에 {{name}}이(가) 더 이상 없습니다"
       },
@@ -17189,7 +17192,6 @@
       "filters_clear": "필터 지우기",
       "star": "{{name}} 즐겨찾기",
       "unstar": "{{name}} 즐겨찾기 해제",
-      "default_agent_failed_title": "기본 크루메이트를 읽지 못해 모든 크루메이트를 표시합니다",
       "all_hidden_hint": "아직 사용하지 않은 크루메이트는 숨겨져 있습니다. 검색하여 찾으세요.",
       "star_failed_title": "즐겨찾기가 저장되지 않음",
       "star_failed": "이 크루메이트의 즐겨찾기를 업데이트할 수 없습니다.",

@@ -140,6 +140,18 @@ def _doctor_member_memory_bindings(cfg: KiroCrewConfig, issues: list[str]) -> No
                 print(f"               To fix: {render._safe_display(remedy)}.")
         else:
             print(f"  {binding}: valid binding")
+            if name == cfg.default_agent and isinstance(store, str) and store != "default":
+                # The default crewmate alias may carry a store of its own. A
+                # plain session (no crewmate picked) runs the default TEMPLATE on
+                # Global and does not read this store; it is reached in the
+                # crewmate's DM thread or by picking the crewmate for a chat.
+                # Said here, beside the binding, so the operator who moved the
+                # default crewmate onto its own memory knows where it applies.
+                print(
+                    "               plain sessions use the default template on Global "
+                    "memory; this store is used only in this crewmate's DM and in "
+                    "chats where you pick it"
+                )
     for store, reason in legacy.items():
         if not reason:
             # Dispatchable owners report pending stores above. Unsafe owners are
