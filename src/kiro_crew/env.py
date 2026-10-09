@@ -1035,10 +1035,11 @@ def resolved_command_casing(path: str | None) -> str:
     agent-config resolver, the dashboard probe and gatewayd's rewriter -- route
     their ``shutil.which`` result through this one helper, next to
     :func:`mcp_search_path`, so they agree on WHAT they emit as well as on where
-    they look. Resolvers of Kiro Crew's own binaries are not MCP server
-    commands and stay outside it: the ``kirocrew`` lookup in
-    ``agent._resolve_kirocrew_bin``, and the kiro-cli launch path in
-    ``acp.client``, which keeps its own ``_normalize_exe_casing``.
+    they look. ``kirocrew restart`` also routes its respawn lookup in
+    ``cli_server`` through it. Other resolvers of Kiro Crew's own binaries stay
+    outside it: the ``kirocrew`` lookup in ``agent._resolve_kirocrew_bin``, and
+    the kiro-cli launch path in ``acp.client``, which keeps its own
+    ``_normalize_exe_casing``.
 
     Looking up the matching parent-directory entry repairs the spelling while
     retaining the lexical parent route and a file symlink's own name;

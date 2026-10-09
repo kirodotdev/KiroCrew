@@ -1122,7 +1122,9 @@ canonicalizing the full path.
 
 The three MCP server command resolvers share it, next to the `mcp_search_path`
 they already share: the agent-config resolver (`agent._resolve_command`), the
-dashboard probe (`mcp_discovery`) and the rewriter. Resolvers of Kiro Crew's own
+dashboard probe (`mcp_discovery`) and the rewriter. The respawn lookup of a
+gateway restart in `cli_server` (`_own_console_script` and the PATH fallback in
+`_spawn_detached_gateway`) uses it too. Other resolvers of Kiro Crew's own
 binaries stay outside it: the `kirocrew` lookup in
 `agent._resolve_kirocrew_bin`, and the kiro-cli resolver, whose discovery
 in `kiro_cli.py` does its own Windows `realpath`. So do the ACP adapter

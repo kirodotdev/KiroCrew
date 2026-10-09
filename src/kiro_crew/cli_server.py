@@ -49,7 +49,7 @@ from kiro_crew.embeddings import (
     model_file_present,
     store_embedding_space_is_stale,
 )
-from kiro_crew.env import activate_mise
+from kiro_crew.env import activate_mise, resolved_command_casing
 from kiro_crew.frontend import build_frontend_sync, ensure_dev_dist_symlink
 from kiro_crew.gateway_lock import LockProbeError, lock_holder
 from kiro_crew.git_divergence import (
@@ -1114,7 +1114,10 @@ def _own_console_script() -> str | None:
     if not path.is_absolute():
         # argv[0] may be a bare name found on PATH ("kirocrew") or a relative
         # path; resolve it the way the shell did.
-        resolved = shutil.which(argv0)
+        # ``resolved_command_casing``: on Windows ``which`` spells the appended
+        # extension as PATHEXT does (``kirocrew.EXE``), and a launcher shim that
+        # dispatches on its own basename refuses that spelling.
+        resolved = resolved_command_casing(shutil.which(argv0))
         if not resolved:
             return None
         # MUST be absolutized. ``shutil.which`` returns an argument that already
@@ -1177,7 +1180,10 @@ def _spawn_detached_gateway(port: int | None = None) -> subprocess.Popen[bytes]:
     # Created 0600, like every file in the data home (owner_only_files).
     log_fh = open(log_path, "a", encoding="utf-8", opener=owner_only_opener)  # noqa: SIM115
 
-    bin_path = _own_console_script() or shutil.which("kirocrew")
+    # The PATH fallback goes through ``resolved_command_casing`` for the same
+    # reason as in ``_own_console_script``: a ``kirocrew.EXE`` spelling makes a
+    # Windows launcher shim exit at once, after the old gateway was stopped.
+    bin_path = _own_console_script() or resolved_command_casing(shutil.which("kirocrew"))
     if bin_path:
         argv: list[str] = [bin_path, "gateway"]
     else:
