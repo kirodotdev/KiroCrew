@@ -100,6 +100,8 @@ export interface ThemeOverlayDecl {
   position: ThemeOverlayPosition
   zIndex: number
   pointerEvents: boolean
+  /** `behind` paints under the nav/content (always click-through); `above` is the default. */
+  layer: 'above' | 'behind'
   animation: ThemeOverlayAnimation
   trigger: string
 }

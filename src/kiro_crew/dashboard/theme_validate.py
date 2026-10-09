@@ -424,6 +424,10 @@ _THEME_OVERLAY_DEFAULT_ZINDEX = 40
 _THEME_OVERLAY_MAX_ZINDEX = 9999
 _THEME_OVERLAY_DEFAULT_ANIMATION = "continuous"
 _THEME_OVERLAY_DEFAULT_TRIGGER = "continuous"
+# "behind" paints under the nav/chat/panels; it must be click-through because
+# the content above covers it everywhere, so its clicks could never arrive.
+_THEME_OVERLAY_LAYERS = frozenset({"above", "behind"})
+_THEME_OVERLAY_DEFAULT_LAYER = "above"
 # A pack HTML ``src`` names a single ``.html`` file, optionally prefixed with its
 # subdir (``overlays/foo.html`` or ``foo.html``); resolved under that subdir.
 _THEME_PACK_HTML_SRC_RE = re.compile(r"^(?:(overlays|topbar)/)?([a-z0-9_-]{1,64})\.html$")
@@ -1025,6 +1029,11 @@ def _validate_overlay_decls(manifest: dict[str, Any], theme_dir: Path) -> str | 
         pe = entry.get("pointerEvents", False)
         if not isinstance(pe, bool):
             return f"overlay '{oid}' pointerEvents must be a boolean"
+        layer = entry.get("layer", _THEME_OVERLAY_DEFAULT_LAYER)
+        if not isinstance(layer, str) or layer not in _THEME_OVERLAY_LAYERS:
+            return f"overlay '{oid}' has invalid layer: {layer!r}"
+        if layer == "behind" and pe:
+            return f"overlay '{oid}' on the behind layer must not set pointerEvents"
         anim = entry.get("animation", _THEME_OVERLAY_DEFAULT_ANIMATION)
         if anim not in _THEME_OVERLAY_ANIMATIONS:
             return f"overlay '{oid}' has invalid animation: {anim!r}"
@@ -1592,6 +1601,11 @@ def _theme_asset_descriptor(
                             else _THEME_OVERLAY_DEFAULT_ZINDEX
                         ),
                         "pointerEvents": bool(entry.get("pointerEvents", False)),
+                        "layer": (
+                            "behind" if entry.get("layer") == "behind"
+                            and not entry.get("pointerEvents", False)
+                            else _THEME_OVERLAY_DEFAULT_LAYER
+                        ),
                         "animation": (
                             anim if anim in _THEME_OVERLAY_ANIMATIONS
                             else _THEME_OVERLAY_DEFAULT_ANIMATION
@@ -1618,6 +1632,7 @@ def _theme_asset_descriptor(
                         "position": _THEME_OVERLAY_DEFAULT_POSITION,
                         "zIndex": _THEME_OVERLAY_DEFAULT_ZINDEX,
                         "pointerEvents": False,
+                        "layer": _THEME_OVERLAY_DEFAULT_LAYER,
                         "animation": _THEME_OVERLAY_DEFAULT_ANIMATION,
                         "trigger": _THEME_OVERLAY_DEFAULT_TRIGGER,
                     }

@@ -14,7 +14,7 @@ vi.mock('../hooks/useTheme', () => ({
 }))
 
 import ThemeExperienceLayer from '../components/ThemeExperienceLayer'
-import { OVERLAY_Z_MAX, THEME_DECOR_SLOT_ID, registerThemeDecorSlot, __resetThemeDecorSlot } from '../lib/themeDecorLayer'
+import { OVERLAY_Z_MAX, THEME_DECOR_SLOT_ID, registerThemeDecorBehindSlot, registerThemeDecorSlot, __resetThemeDecorSlot } from '../lib/themeDecorLayer'
 
 // The layer reads `instances.activeId` (it unmounts when a remote Crew is active),
 // so every mount needs a Redux Provider. Shim `render` through RTL's `wrapper`
@@ -371,6 +371,39 @@ describe('ThemeExperienceLayer', () => {
       expect(inline[0].style.zIndex).toBe('45')
     } finally {
       slot.remove()
+    }
+  })
+
+  it('portals behind-layer overlays into the behind slot and keeps them click-through', () => {
+    const slot = document.createElement('div')
+    const behind = document.createElement('div')
+    document.body.append(slot, behind)
+    try {
+      registerThemeDecorSlot(slot)
+      registerThemeDecorBehindSlot(behind)
+      setTheme({
+        assets: {
+          overlays: [
+            { id: 'web', position: 'fullscreen', zIndex: 1, pointerEvents: true, layer: 'behind', trigger: 'continuous' },
+            { id: 'sign', position: 'top-right', zIndex: 2, pointerEvents: true, trigger: 'continuous' },
+          ],
+          hasAudio: false,
+          hasPersona: false,
+        },
+      })
+      render(<ThemeExperienceLayer />)
+      const under = frames(behind)
+      expect(under).toHaveLength(1)
+      expect(under[0].getAttribute('src')).toMatch(/\/overlay\/web$/)
+      // A stale descriptor asking for clicks on the behind layer is ignored.
+      expect(under[0].style.pointerEvents).toBe('none')
+      const above = frames(slot)
+      expect(above).toHaveLength(1)
+      expect(above[0].getAttribute('src')).toMatch(/\/overlay\/sign$/)
+      expect(above[0].style.pointerEvents).toBe('auto')
+    } finally {
+      slot.remove()
+      behind.remove()
     }
   })
 

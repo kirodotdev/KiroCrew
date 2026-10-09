@@ -1508,6 +1508,25 @@ class TestValidateOverlayDecls:
         )
         assert err is not None and "invalid trigger" in err
 
+    def test_behind_layer_passes(self, tmp_path: Path) -> None:
+        decl = dict(_FULL_OVERLAY, layer="behind")
+        assert _validate_overlay_decls({"overlays": [decl]}, self._pack(tmp_path)) is None
+
+    @pytest.mark.parametrize("layer", ["under", [], {}, 1])
+    def test_bad_layer_rejected(self, tmp_path: Path, layer: object) -> None:
+        # Unhashable values must be a validation error, not a TypeError (HTTP 500).
+        err = _validate_overlay_decls(
+            {"overlays": [dict(_FULL_OVERLAY, layer=layer)]}, self._pack(tmp_path)
+        )
+        assert err is not None and "invalid layer" in err
+
+    def test_clickable_behind_layer_rejected(self, tmp_path: Path) -> None:
+        err = _validate_overlay_decls(
+            {"overlays": [dict(_FULL_OVERLAY, layer="behind", pointerEvents=True)]},
+            self._pack(tmp_path),
+        )
+        assert err is not None and "behind layer must not set pointerEvents" in err
+
     def test_missing_src_file_rejected(self, tmp_path: Path) -> None:
         err = _validate_overlay_decls(
             {"overlays": [{"id": "ghost", "src": "overlays/ghost.html"}]}, self._pack(tmp_path)
@@ -1735,6 +1754,13 @@ class TestThemeAssetDescriptor:
         desc = _theme_asset_descriptor(d, {"level": 2, "name": "U"}, 2)
         assert desc["overlays"][0]["position"] == _THEME_OVERLAY_DEFAULT_POSITION
         assert desc["overlays"][0]["zIndex"] == _THEME_OVERLAY_DEFAULT_ZINDEX
+        assert desc["overlays"][0]["layer"] == "above"
+
+    def test_behind_layer_reaches_descriptor(self, tmp_path: Path) -> None:
+        d = _decl_pack(tmp_path, {"overlays/web.html": "<div>w</div>"})
+        manifest = {"level": 2, "name": "W", "overlays": [{"id": "web", "src": "overlays/web.html", "layer": "behind"}]}
+        desc = _theme_asset_descriptor(d, manifest, 2)
+        assert desc["overlays"][0]["layer"] == "behind"
 
 
 _TTF = b"\x00\x01\x00\x00" + b"\x00" * 16

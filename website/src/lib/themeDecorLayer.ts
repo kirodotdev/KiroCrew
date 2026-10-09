@@ -23,6 +23,13 @@ import { useSyncExternalStore } from 'react'
 /** DOM id of the in-shell slot theme overlays portal into. */
 export const THEME_DECOR_SLOT_ID = 'theme-decor-slot'
 
+/**
+ * DOM id of the in-shell slot for `layer: "behind"` overlays. It sits at
+ * z-index -1 inside the shell's stacking context, so it paints over the shell's
+ * own background but under the nav, content and panels.
+ */
+export const THEME_DECOR_BEHIND_SLOT_ID = 'theme-decor-slot-behind'
+
 /** The top bar's z-index while it is a grid row of the shell (App.tsx header). */
 export const TOPBAR_Z = 45
 
@@ -46,6 +53,7 @@ export const OVERLAY_Z_MAX = Math.min(TOPBAR_Z, TOPBAR_FOCUS_Z) - 1
 // module-level store, same shape as `useFocusMode`, so there is exactly one
 // slot per document and no DOM polling.
 let slot: HTMLElement | null = null
+let behindSlot: HTMLElement | null = null
 const listeners = new Set<() => void>()
 
 /** Ref callback for the shell's slot element. */
@@ -55,20 +63,34 @@ export function registerThemeDecorSlot(el: HTMLElement | null): void {
   listeners.forEach(l => l())
 }
 
+/** Ref callback for the shell's behind-content slot (overlays with `layer: "behind"`). */
+export function registerThemeDecorBehindSlot(el: HTMLElement | null): void {
+  if (behindSlot === el) return
+  behindSlot = el
+  listeners.forEach(l => l())
+}
+
 function subscribe(cb: () => void) {
   listeners.add(cb)
   return () => { listeners.delete(cb) }
 }
 
 const getSnapshot = () => slot
+const getBehindSnapshot = () => behindSlot
 
 /** The in-shell slot, or null while no shell is mounted (render inline then). */
 export function useThemeDecorSlot(): HTMLElement | null {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 }
 
+/** The in-shell behind-content slot, or null while no shell is mounted. */
+export function useThemeDecorBehindSlot(): HTMLElement | null {
+  return useSyncExternalStore(subscribe, getBehindSnapshot, getBehindSnapshot)
+}
+
 /** Test seam: restore the module default between cases. */
 export function __resetThemeDecorSlot(): void {
   slot = null
+  behindSlot = null
   listeners.clear()
 }

@@ -38,7 +38,7 @@ import { MC_THEME_SOUND_EVENT, type ThemeSoundDetail } from '../hooks/themeSound
 import { MC_NOTIFICATION_EVENT } from '../hooks/notificationEvent'
 import { useIsNarrowViewport } from '../hooks/useIsMobile'
 import { useReducedMotion } from '../hooks/useReducedMotion'
-import { OVERLAY_Z_MAX, useThemeDecorSlot } from '../lib/themeDecorLayer'
+import { OVERLAY_Z_MAX, useThemeDecorBehindSlot, useThemeDecorSlot } from '../lib/themeDecorLayer'
 import { useAppSelector } from '../store'
 
 import { i18nT } from '../i18n/t'
@@ -99,6 +99,7 @@ function normalizeOverlay(raw: unknown): ThemeOverlayDecl | null {
       position: 'fullscreen',
       zIndex: 40,
       pointerEvents: false,
+      layer: 'above',
       animation: 'continuous',
       trigger: 'continuous',
     }
@@ -118,7 +119,9 @@ function normalizeOverlay(raw: unknown): ThemeOverlayDecl | null {
   const trigger = typeof o.trigger === 'string' && OVERLAY_TRIGGER_RE.test(o.trigger)
     ? o.trigger
     : 'continuous'
-  return { id, position, zIndex, pointerEvents: o.pointerEvents === true, animation, trigger }
+  const layer = o.layer === 'behind' ? 'behind' : 'above'
+  // Content covers a behind overlay everywhere, so it is click-through even if a stale descriptor says otherwise.
+  return { id, position, zIndex, pointerEvents: layer === 'above' && o.pointerEvents === true, layer, animation, trigger }
 }
 
 /** Map a `position` enum value to a fixed-position CSS box. theme:resize may
@@ -184,6 +187,7 @@ export default function ThemeExperienceLayer() {
   // (onboarding, bootstrap), in which case they render inline at the root —
   // there is no chrome to sit under yet.
   const decorSlot = useThemeDecorSlot()
+  const behindSlot = useThemeDecorBehindSlot()
 
   const active = colorTheme.startsWith('custom-')
     ? customThemeDataMap.get(colorTheme.slice('custom-'.length))
@@ -765,35 +769,34 @@ export default function ThemeExperienceLayer() {
 
   // Decorative overlays — manifest-driven placement/behaviour. mountedOverlays
   // is already [] under reduced-motion, so motion overlays stay suppressed.
-  // Built once here because they render in one of two places (see below).
-  const overlays = (
-    <>
-      {mountedOverlays.map((decl) => (
-        // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
-        <iframe
-          key={decl.id}
-          data-theme-frame="1"
-          data-theme-pointer={decl.pointerEvents ? '1' : '0'}
-          title={i18nT('components.themeExperienceLayer.theme_overlay', { id: decl.id })}
-          src={overlayUrl(slug, decl.id)}
-          sandbox="allow-scripts"
-          onLoad={(e) => postThemeState((e.currentTarget as HTMLIFrameElement).contentWindow)}
-          style={{
-            position: 'fixed',
-            border: 'none',
-            background: 'transparent',
-            // See topbar note: opt out of the parent's dark color-scheme so a
-            // full-viewport transparent overlay (e.g. Bikini's `bubbles`) does
-            // not composite an opaque backdrop that hides the entire dashboard.
-            colorScheme: 'normal',
-            pointerEvents: decl.pointerEvents ? 'auto' : 'none',
-            zIndex: decl.zIndex,
-            ...overlayPlacement(decl.position),
-          }}
-        />
-      ))}
-    </>
+  // Built here because they render in one of two places per layer (see below).
+  const overlayFrame = (decl: ThemeOverlayDecl) => (
+    // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
+    <iframe
+      key={decl.id}
+      data-theme-frame="1"
+      data-theme-pointer={decl.pointerEvents ? '1' : '0'}
+      data-theme-layer={decl.layer}
+      title={i18nT('components.themeExperienceLayer.theme_overlay', { id: decl.id })}
+      src={overlayUrl(slug, decl.id)}
+      sandbox="allow-scripts"
+      onLoad={(e) => postThemeState((e.currentTarget as HTMLIFrameElement).contentWindow)}
+      style={{
+        position: 'fixed',
+        border: 'none',
+        background: 'transparent',
+        // See topbar note: opt out of the parent's dark color-scheme so a
+        // full-viewport transparent overlay (e.g. Bikini's `bubbles`) does
+        // not composite an opaque backdrop that hides the entire dashboard.
+        colorScheme: 'normal',
+        pointerEvents: decl.pointerEvents ? 'auto' : 'none',
+        zIndex: decl.zIndex,
+        ...overlayPlacement(decl.position),
+      }}
+    />
   )
+  const overlays = <>{mountedOverlays.filter((d) => d.layer !== 'behind').map(overlayFrame)}</>
+  const behindOverlays = <>{mountedOverlays.filter((d) => d.layer === 'behind').map(overlayFrame)}</>
 
   return (
     <>
@@ -841,6 +844,8 @@ export default function ThemeExperienceLayer() {
       {/* Decorative overlays portal into the shell's decor slot so the header
           outranks them (#7377); inline at the root only while no shell exists. */}
       {decorSlot ? createPortal(overlays, decorSlot) : overlays}
+      {/* `layer: "behind"` overlays go under the nav and content; inline only while no shell exists. */}
+      {behindSlot ? createPortal(behindOverlays, behindSlot) : behindOverlays}
 
       {/* Mute toggle — only when the active theme actually ships audio. */}
       {hasAudio && (
