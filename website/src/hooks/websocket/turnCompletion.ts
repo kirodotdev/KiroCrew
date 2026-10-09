@@ -10,6 +10,7 @@ import { setSlotStatusDetail, refreshSlot, warmSlotCache, selectSidebarSubagentC
 import { dispatchMcNotification, TURN_DONE_KIND, shouldChimeOnTurnDone } from '../notificationEvent'
 import { shouldNotifyOnChatComplete } from '../chatCompleteNotify'
 import { isSlotMutedByCreator } from '../sessionMute'
+import { isMemberThreadSlot, takeMemberThreadSpoke } from '../unreadOnAttention'
 import { postNativeNotification } from '../../lib/nativeNotify'
 import { normalizeRunSessionKey } from '../../apps/workflows/runModel'
 import { dashboardAutomationSlotKey } from '../../monitoring/automation'
@@ -110,12 +111,20 @@ export function useTurnCompletion({ dispatch, queryClient, reconnectingRef }: Tu
       // it renders the finished answer instantly (no on-switch fetch). In
       // this window's visible active slot: relay the read, like an arriving
       // message (a hidden window relays on reveal instead).
+      // A member DM thread's finished turn badges only if the turn said
+      // something to the user (an assistant or permission row, recorded by
+      // chatStream) or paused for input. A patrol that only ran tools and
+      // ended quietly has nothing to show, so it must not light the
+      // Crewmates rail. The record is taken for EVERY member chat_done, on
+      // screen or not, so a turn watched to its end leaves no stale flag.
+      const memberThread = !!data.slot && isMemberThreadSlot(data.slot, store.getState().dashboard.slots)
+      const memberSpoke = memberThread && (takeMemberThreadSpoke(data.slot as string) || completionNeedsInput)
       attendArrival(data.slot, (data as { ts?: string }).ts, reconnectingRef.current, slot => {
         // Criterion 7: a muted session never becomes unread from its own
         // activity -- no row dot, no folder rollup, nothing in the nav/tab/relay
         // counts. Cache is still warmed so switching to the row renders the
         // finished answer instantly (criterion 5: rows stay readable).
-        if (!muted) dispatch(markSlotUnread({ slot, ts: (data as { ts?: string }).ts || undefined }))
+        if (!muted && (!memberThread || memberSpoke)) dispatch(markSlotUnread({ slot, ts: (data as { ts?: string }).ts || undefined }))
         dispatch(warmSlotCache(slot))
       })
       if (data.slot) {

@@ -6,6 +6,11 @@
  * signals badge: the finished turn, a permission row, a question card, and a
  * coordinator approval. The Settings toggle persists through the helper.
  *
+ * A member DM thread (`slot.mode === 'member'`) is narrower in both modes:
+ * only a row the crewmate wrote to the user (`assistant`, `permission`)
+ * badges it; its tool calls never do, and its finished turn badges only
+ * when the turn delivered such a row or paused for input.
+ *
  * The hook reads pending question cards off the singleton store, so the
  * socket specs mount the Provider ON the singleton, as the app does.
  */
@@ -20,7 +25,10 @@ import { store as globalStore } from '../store'
 import { setActiveSlot, clearMessages, resolveQuestionCard } from '../store/chatSlice'
 import { markSlotRead, remoteSlotRead, sseSlots } from '../store/dashboardSlice'
 import { _resetSlotReadRelayForTest, emitSlotRead } from '../lib/slotReadRelay'
-import { UNREAD_ON_ATTENTION_KEY, chatMessageMarksUnread, loadUnreadOnAttention, unreadWatermarkTs } from '../hooks/unreadOnAttention'
+import {
+  UNREAD_ON_ATTENTION_KEY, _resetMemberThreadTurnsForTest, chatMessageMarksUnread, isMemberThreadSlot,
+  loadUnreadOnAttention, memberThreadRowMarksUnread, noteMemberThreadRow, takeMemberThreadSpoke, unreadWatermarkTs,
+} from '../hooks/unreadOnAttention'
 import { NotificationsPanel } from '../pages/settings/NotificationsPanel'
 import en from '../i18n/locales/en.manual.json'
 
@@ -41,6 +49,8 @@ vi.mock('../api/client', () => ({
 
 const ACTIVE = 'slot-active'
 const BACKGROUND = 'slot-background'
+/** A crewmate's DM thread, off screen. The server reserves this key prefix. */
+const MEMBER = 'member-ada'
 const WS_INSTANCES: MockWebSocket[] = []
 
 class MockWebSocket {
@@ -78,6 +88,55 @@ describe('chatMessageMarksUnread', () => {
   })
 })
 
+describe('memberThreadRowMarksUnread', () => {
+  beforeEach(() => localStorage.clear())
+
+  it('off: badges only a row the crewmate wrote to the user', () => {
+    expect(memberThreadRowMarksUnread('assistant')).toBe(true)
+    expect(memberThreadRowMarksUnread('permission')).toBe(true)
+    for (const role of ['tool_call', 'tool_result', 'inject', 'subagent', 'user', 'chunk', 'streaming', undefined]) {
+      expect(memberThreadRowMarksUnread(role)).toBe(false)
+    }
+  })
+
+  it('on: narrows further to the permission row, never wider than the opt-in', () => {
+    localStorage.setItem(UNREAD_ON_ATTENTION_KEY, '1')
+    expect(memberThreadRowMarksUnread('assistant')).toBe(false)
+    expect(memberThreadRowMarksUnread('tool_call')).toBe(false)
+    expect(memberThreadRowMarksUnread('permission')).toBe(true)
+  })
+})
+
+describe('member turn record', () => {
+  beforeEach(() => _resetMemberThreadTurnsForTest())
+
+  it('remembers a row to the user until the turn takes it, once', () => {
+    noteMemberThreadRow('member-ada', 'tool_call')
+    expect(takeMemberThreadSpoke('member-ada')).toBe(false)
+    noteMemberThreadRow('member-ada', 'assistant')
+    expect(takeMemberThreadSpoke('member-ada')).toBe(true)
+    expect(takeMemberThreadSpoke('member-ada')).toBe(false)
+    noteMemberThreadRow('member-ada', 'permission')
+    expect(takeMemberThreadSpoke('member-ada')).toBe(true)
+    expect(takeMemberThreadSpoke('member-bob')).toBe(false)
+  })
+})
+
+describe('isMemberThreadSlot', () => {
+  it('reads the slot mode when the list has the slot', () => {
+    const slots = [{ key: 'member-ada', mode: 'member' }, { key: 'chat-1', mode: '' }, { key: 'chat-2' }]
+    expect(isMemberThreadSlot('member-ada', slots)).toBe(true)
+    expect(isMemberThreadSlot('chat-1', slots)).toBe(false)
+    expect(isMemberThreadSlot('chat-2', slots)).toBe(false)
+  })
+
+  it('falls back to the reserved key prefix for a slot the list has not caught up to', () => {
+    expect(isMemberThreadSlot('member-ada', [])).toBe(true)
+    expect(isMemberThreadSlot('member-ada', undefined)).toBe(true)
+    expect(isMemberThreadSlot('chat-9', undefined)).toBe(false)
+  })
+})
+
 describe('unread badge over the dashboard socket', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -85,14 +144,20 @@ describe('unread badge over the dashboard socket', () => {
     _resetSlotReadRelayForTest()
     WS_INSTANCES.length = 0
     vi.stubGlobal('WebSocket', MockWebSocket)
+    _resetMemberThreadTurnsForTest()
     globalStore.dispatch(setActiveSlot(ACTIVE))
   })
 
   afterEach(() => {
     _resetSlotReadRelayForTest()
+    _resetMemberThreadTurnsForTest()
     vi.unstubAllGlobals()
     for (const id of ['a1', 'a2']) globalStore.dispatch(resolveQuestionCard({ ask_id: id }))
     globalStore.dispatch(markSlotRead(BACKGROUND))
+    globalStore.dispatch(markSlotRead(MEMBER))
+    // A spec that seeds the slots list must not hand its rows to the next one:
+    // a known slot's last_ts moves on arrival and would change the watermark.
+    globalStore.dispatch(sseSlots([]))
     globalStore.dispatch(clearMessages())
     globalStore.dispatch(setActiveSlot(null))
   })
@@ -110,7 +175,7 @@ describe('unread badge over the dashboard socket', () => {
   }
   const unread = () => globalStore.getState().dashboard.unreadSlots
   const send = (ws: MockWebSocket, frame: unknown) => act(() => { ws.simulateMessage(frame) })
-  const row = (role: string) => ({ type: 'chat_message', data: { slot: BACKGROUND, role, content: 'x', ts: '2026-09-28T00:00:00Z' } })
+  const row = (role: string, slot: string = BACKGROUND) => ({ type: 'chat_message', data: { slot, role, content: 'x', ts: '2026-09-28T00:00:00Z' } })
 
   it('off: a routine agent row badges a background session, as before', () => {
     const ws = mount()
@@ -162,6 +227,109 @@ describe('unread badge over the dashboard socket', () => {
     const ws = mount()
     send(ws, { type: 'question_card', data: { slot: ACTIVE, ask_id: 'a2', questions: [{ question: 'Ship?', options: [{ label: 'Yes' }] }] } })
     expect(unread()).not.toContain(ACTIVE)
+  })
+
+  // A crewmate's DM thread: the Crewmates rail dot means "they said something
+  // to you". Its tool calls are its own work and never light it.
+  it("member thread: a crewmate's tool call and tool result badge nothing", () => {
+    const ws = mount()
+    globalStore.dispatch(sseSlots([{ key: MEMBER, messages: 1, running: true, mode: 'member', agent: 'ada' }]))
+    send(ws, row('tool_call', MEMBER))
+    send(ws, row('tool_result', MEMBER))
+    send(ws, row('inject', MEMBER))
+    expect(unread()).not.toContain(MEMBER)
+  })
+
+  it("member thread: a crewmate's message badges", () => {
+    const ws = mount()
+    globalStore.dispatch(sseSlots([{ key: MEMBER, messages: 1, running: true, mode: 'member', agent: 'ada' }]))
+    send(ws, row('assistant', MEMBER))
+    expect(unread()).toContain(MEMBER)
+  })
+
+  it('member thread: a permission row badges', () => {
+    const ws = mount()
+    globalStore.dispatch(sseSlots([{ key: MEMBER, messages: 1, running: true, mode: 'member', agent: 'ada' }]))
+    send(ws, row('permission', MEMBER))
+    expect(unread()).toContain(MEMBER)
+  })
+
+  it('member thread: the key prefix alone decides before the slots list has the thread', () => {
+    const ws = mount()
+    globalStore.dispatch(sseSlots([]))
+    send(ws, row('tool_call', MEMBER))
+    expect(unread()).not.toContain(MEMBER)
+    send(ws, row('assistant', MEMBER))
+    expect(unread()).toContain(MEMBER)
+  })
+
+  it('member thread, on: an assistant row stays quiet, the permission row badges', () => {
+    localStorage.setItem(UNREAD_ON_ATTENTION_KEY, '1')
+    const ws = mount()
+    globalStore.dispatch(sseSlots([{ key: MEMBER, messages: 1, running: true, mode: 'member', agent: 'ada' }]))
+    send(ws, row('assistant', MEMBER))
+    expect(unread()).not.toContain(MEMBER)
+    send(ws, row('permission', MEMBER))
+    expect(unread()).toContain(MEMBER)
+  })
+
+  const memberDone = { type: 'chat_done', data: { slot: MEMBER, ts: '2026-09-28T00:00:05Z' } }
+
+  it('member thread: a tool-only turn ending quietly badges nothing', () => {
+    const ws = mount()
+    globalStore.dispatch(sseSlots([{ key: MEMBER, messages: 1, running: true, mode: 'member', agent: 'ada' }]))
+    send(ws, row('tool_call', MEMBER))
+    send(ws, row('tool_result', MEMBER))
+    send(ws, memberDone)
+    expect(unread()).not.toContain(MEMBER)
+  })
+
+  it('member thread: a turn that spoke badges on its chat_done, and only that turn', () => {
+    localStorage.setItem(UNREAD_ON_ATTENTION_KEY, '1')  // the row itself stays quiet; the done carries it
+    const ws = mount()
+    globalStore.dispatch(sseSlots([{ key: MEMBER, messages: 1, running: true, mode: 'member', agent: 'ada' }]))
+    send(ws, row('assistant', MEMBER))
+    expect(unread()).not.toContain(MEMBER)
+    send(ws, memberDone)
+    expect(unread()).toContain(MEMBER)
+    globalStore.dispatch(markSlotRead(MEMBER))
+    send(ws, row('tool_call', MEMBER))
+    send(ws, memberDone)
+    expect(unread()).not.toContain(MEMBER)
+  })
+
+  it('member thread: a quiet turn that pauses for input badges', () => {
+    const ws = mount()
+    globalStore.dispatch(sseSlots([{ key: MEMBER, messages: 1, running: true, mode: 'member', agent: 'ada' }]))
+    send(ws, row('tool_call', MEMBER))
+    send(ws, { ...memberDone, data: { ...memberDone.data, needs_input: true } })
+    expect(unread()).toContain(MEMBER)
+  })
+
+  it('member thread: a row the user watched arrive still counts for the chat_done', () => {
+    const ws = mount()
+    globalStore.dispatch(sseSlots([{ key: MEMBER, messages: 1, running: true, mode: 'member', agent: 'ada' }]))
+    globalStore.dispatch(setActiveSlot(MEMBER))
+    send(ws, row('assistant', MEMBER))
+    globalStore.dispatch(setActiveSlot(ACTIVE))
+    send(ws, memberDone)
+    expect(unread()).toContain(MEMBER)
+  })
+
+  it('a non-member slot still badges on a quiet chat_done', () => {
+    const ws = mount()
+    globalStore.dispatch(sseSlots([{ key: BACKGROUND, messages: 1, running: true, mode: '' }]))
+    send(ws, row('tool_call'))
+    globalStore.dispatch(markSlotRead(BACKGROUND))
+    send(ws, { type: 'chat_done', data: { slot: BACKGROUND, ts: '2026-09-28T00:00:05Z' } })
+    expect(unread()).toContain(BACKGROUND)
+  })
+
+  it('a non-member slot the list knows keeps the ordinary rule on a tool call', () => {
+    const ws = mount()
+    globalStore.dispatch(sseSlots([{ key: BACKGROUND, messages: 1, running: true, mode: '' }]))
+    send(ws, row('tool_call'))
+    expect(unread()).toContain(BACKGROUND)
   })
 
   // The gateway never saves a permission row, so after a restart no slot
