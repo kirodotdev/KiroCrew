@@ -2,7 +2,7 @@
 
 All notable changes to KiroCrew are documented in this file.
 
-## [0.8.0] - 2026-09-27
+## [0.8.0] - 2026-10-08
 
 Kiro Crew spends less of your attention. A monitoring loop now screens what it
 finds and wakes you only for a tick that needs a decision, a removed credential
