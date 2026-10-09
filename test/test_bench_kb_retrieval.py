@@ -149,9 +149,11 @@ def _gold_label_digest(gs: KBGoldenSet) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-#: The gold labels of v2 at ``label_revision`` 1. Changing any gold label under
-#: this revision fails ``test_v2_declares_the_label_revision_its_corrections_make``.
-V2_LABEL_DIGEST_AT_REVISION_1 = "f43387ab3152a16ad3de3168a6616456787747d3bae8be369ad9d8a18f4fe864"
+#: The gold labels of v2 at ``label_revision`` 2. Revision 2 rewrites questions
+#: and one document but no gold label, so the digest equals revision 1's.
+#: Changing any gold label under this revision fails
+#: ``test_v2_declares_the_label_revision_its_corrections_make``.
+V2_LABEL_DIGEST_AT_REVISION_2 = "f43387ab3152a16ad3de3168a6616456787747d3bae8be369ad9d8a18f4fe864"
 
 
 class TestGoldenSetV2:
@@ -234,10 +236,10 @@ class TestGoldenSetV2:
         moved; the bump-on-edit rule is checked in one direction only.
         """
         gs = self._v2()
-        assert gs.label_revision == 1
+        assert gs.label_revision == 2
         digest = _gold_label_digest(gs)
-        assert digest == V2_LABEL_DIGEST_AT_REVISION_1, (
-            f"v2's gold labels differ from the set pinned at label_revision 1 "
+        assert digest == V2_LABEL_DIGEST_AT_REVISION_2, (
+            f"v2's gold labels differ from the set pinned at label_revision 2 "
             f"(digest {digest}). If a gold label changed on purpose, bump "
             f"'label_revision' in the golden JSON and re-pin the digest constant "
             f"for the new revision to {digest!r}; if no label was meant to "
@@ -248,7 +250,7 @@ class TestGoldenSetV2:
         """The guard above is only a guard if an unbumped label edit trips it.
 
         Swap one gold doc id on a query that is NOT one of the two id-pinned
-        corrections, leave ``label_revision`` at 1, and the digest must differ;
+        corrections, leave ``label_revision`` as it is, and the digest must differ;
         reordering queries or rewording a question must leave it unchanged.
         """
         gs = self._v2()
@@ -263,7 +265,7 @@ class TestGoldenSetV2:
         relabelled = dataclasses.replace(
             gs, queries=tuple(edited if q.id == target.id else q for q in gs.queries)
         )
-        assert relabelled.label_revision == 1
+        assert relabelled.label_revision == gs.label_revision
         assert _gold_label_digest(relabelled) != base
         reordered = dataclasses.replace(gs, queries=tuple(reversed(gs.queries)))
         assert _gold_label_digest(reordered) == base
@@ -274,6 +276,49 @@ class TestGoldenSetV2:
             ),
         )
         assert _gold_label_digest(reworded) == base
+
+    def test_audit_documents_report_only_their_own_quarter(self) -> None:
+        """A two-audit gold set is only right if neither audit answers alone.
+
+        ``q-reinforcement-2`` asks whether more than one quarter confirmed MFA and
+        ``q-reinforcement-4`` whether either quarter found an exception; both are
+        labelled with both audits. An audit that cites another quarter's result
+        ("second consecutive", "again", "re-verified") answers the cross-quarter
+        question on its own, and annotators then split on whether the partner is
+        needed. Pinned on the document text, since that is where the split starts.
+        """
+        gs = self._v2()
+        by_doc = {d.id: d for d in gs.docs}
+        by_query = {q.id: q for q in gs.queries}
+        both = ("d-mfa-audit-q3", "d-mfa-audit-q4")
+        for qid in ("q-reinforcement-2", "q-reinforcement-4"):
+            assert sorted(by_query[qid].gold_doc_ids) == sorted(both)
+        for doc_id in both:
+            text = by_doc[doc_id].content.lower()
+            for cross_ref in ("consecutive", "again", "re-verified", "second"):
+                assert cross_ref not in text, f"{doc_id} cites another audit: {cross_ref!r}"
+
+    def test_rewritten_queries_ask_what_the_competing_document_cannot_answer(self) -> None:
+        """The other three split queries, pinned on the fact that settles each.
+
+        ``q-contradiction-4`` asks for an ADR, which ``d-doc-precedence`` (a
+        general rule naming no ADR) cannot supply. The two abstention queries
+        ask for an approver, and no budget or retention document names who
+        approved an overrun or a retention change.
+        """
+        gs = self._v2()
+        by_doc = {d.id: d for d in gs.docs}
+        by_query = {q.id: q for q in gs.queries}
+        assert "ADR" in by_query["q-contradiction-4"].question
+        assert by_query["q-contradiction-4"].gold_doc_ids == ("d-region-adr",)
+        assert "ADR-" not in by_doc["d-doc-precedence"].content
+        for qid in ("q-abstention-4", "q-abstention-5"):
+            assert "approved" in by_query[qid].question
+            assert by_query[qid].gold_doc_ids == ()
+        topic = [d for d in gs.docs if d.id.startswith(("d-cost-", "d-retention-"))]
+        assert len(topic) >= 5
+        for d in topic:
+            assert "approved" not in d.content.lower(), f"{d.id} names an approver"
 
     def test_multi_hop_queries_all_require_more_than_one_document(self) -> None:
         """A single-gold query in ``multi_hop`` inflates the class it sits in.
@@ -729,9 +774,9 @@ class TestRunKbRetrieval:
         print that shows only the name cannot say which labels it scored."""
         gs = KBGoldenSet.from_json(default_golden_set_path())
         report = run_kb_retrieval(gs, use_embeddings=False)
-        assert report.label_revision == 1
+        assert report.label_revision == 2
         text = format_kb_report(report, k=3)
-        assert text.splitlines()[0] == "KB retrieval eval: kb_golden_v2 (label revision 1)"
+        assert text.splitlines()[0] == "KB retrieval eval: kb_golden_v2 (label revision 2)"
 
     def test_report_header_marks_unrevised_labels_explicitly(self) -> None:
         """A set without the field prints an explicit marker, not the bare name,
