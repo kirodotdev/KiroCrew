@@ -60,6 +60,7 @@ import tempfile  # noqa: F401 -- historical module export
 from urllib.parse import quote, unquote, urlparse
 
 from kiro_crew.apps.registry import minimal_env
+from kiro_crew.github_runner import apply_session_bus_address
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -281,12 +282,15 @@ _resolve_host = _transport._resolve_host
 
 def _az_env(host: str) -> dict[str, str]:
     """Build the minimal ``az`` environment through the transport helper."""
-    return _transport._az_env(
+    env = _transport._az_env(
         host,
         source_env=os.environ,
         passthrough_keys=_AZ_ENV_PASSTHROUGH,
         minimal_env=minimal_env,
     )
+    # az's encrypted token cache reaches the keyring through libsecret; hand it
+    # an explicit bus or an inert address (see github_runner.session_bus_address).
+    return apply_session_bus_address(env)
 
 
 def _audit(op: str, target: str, outcome: str, *, error: str = "") -> None:

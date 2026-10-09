@@ -174,6 +174,122 @@ GH_ENV_PASSTHROUGH = (
     "CURL_CA_BUNDLE",
 )
 
+# A session-bus address no D-Bus client library can open: ``disabled`` is not a
+# transport libdbus, godbus or GDBus registers, so each rejects the entry at
+# parse or dispatch time ("Unknown address type", "invalid or unsupported
+# transport", "Unknown or unsupported transport") without a connect and without
+# spawning anything. It is the value :func:`session_bus_address` hands a provider
+# CLI child when the user bus does not exist, and the spelling Chromium uses for
+# the same purpose. It must stay non-empty: every one of those libraries, and
+# ``sandbox.cgroup_scope_bus_env``, reads an EMPTY value as unset.
+INERT_SESSION_BUS_ADDRESS = "disabled:"
+
+#: The user bus's conventional location. GDBus looks at ``$XDG_RUNTIME_DIR/bus``;
+#: godbus hard-codes ``/run/user/<uid>/bus`` whatever the variable says; both
+#: coincide on an ordinary login, and the resolver checks both so a provider child
+#: keeps whichever socket its own library would have found.
+_USER_BUS_SOCKET_NAME = "bus"
+
+
+def _user_bus_socket_candidates() -> tuple[str, ...]:
+    """The paths the D-Bus client libraries look at for the user bus, most specific first.
+
+    ``$XDG_RUNTIME_DIR/bus`` when the gateway has the variable (what GDBus and
+    sd-bus derive), then ``/run/user/<uid>/bus`` (what godbus derives from the uid
+    alone). Empty where there is no uid to derive a path from (Windows).
+    """
+    candidates: list[str] = []
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime_dir:
+        candidates.append(os.path.join(runtime_dir, _USER_BUS_SOCKET_NAME))
+    uid = platform_compat.effective_uid()
+    if uid is not None:
+        candidates.append(f"/run/user/{uid}/{_USER_BUS_SOCKET_NAME}")
+    return tuple(dict.fromkeys(candidates))
+
+
+def session_bus_address() -> str | None:
+    """The explicit ``DBUS_SESSION_BUS_ADDRESS`` an allowlist-built provider CLI child gets.
+
+    Applied by the five builders that assemble a provider-CLI environment from an
+    allowlist (:func:`gh_env`, ``monitoring.provider_cli.provider_cli_env``, the
+    dashboard source-provider runner, Issue Radar's glab and az clients). A spawn
+    that inherits the scrubbed gateway environment instead keeps the gateway's own
+    bus locators and is not in this class.
+
+    gh and glab ask the Secret Service for a stored token through go-keyring over
+    godbus, and az (with ``core.encrypt_token_cache``) through MSAL's libsecret
+    over GDBus. Every one of those libraries, handed an unset or EMPTY
+    ``DBUS_SESSION_BUS_ADDRESS``, first looks for the user bus at its standard
+    path and, failing that, execs ``dbus-launch``: a private ``dbus-daemon`` that
+    activates ``gnome-keyring-daemon``, neither of which exits with the CLI, so a
+    timer-driven poller leaks one pair per probe until the user's D-Bus and
+    process limits run out. The strict allowlists never carry the variable, and
+    the cgroup scope's ``env -u`` shim drops the one it forwards to the wrapper,
+    so without this pin every child starts that search from nothing.
+
+    This resolves the search ONCE, in the parent, to an explicit answer the child
+    cannot widen: the first :func:`_user_bus_socket_candidates` path that is a
+    socket, else :data:`INERT_SESSION_BUS_ADDRESS`. An explicit ``unix:path=``
+    entry that cannot connect is a failed connect in all three libraries, never a
+    fallback to autolaunch (autolaunch is its own address method, taken only when
+    the address names it, or, in godbus and GDBus, only when discovery returned
+    nothing, which an explicit value pre-empts). The parent's own
+    ``DBUS_SESSION_BUS_ADDRESS`` value is deliberately not consulted: nothing
+    ambient is forwarded, only the standard paths for this uid, which the child
+    would have reached by itself. The result is a fixed value placed on the
+    child environment the way ``NO_COLOR`` and ``PATH`` already are, not an
+    allowlist key. ``None`` only where there is no uid to derive a path from
+    (Windows), and the caller leaves the variable unset there. A stat per
+    candidate on a runtime directory is the only filesystem work, the same
+    stat-only budget the cgroup-scope probe already spends on the loop.
+    """
+    candidates = _user_bus_socket_candidates()
+    if not candidates:
+        return None
+    for path in candidates:
+        try:
+            if stat.S_ISSOCK(os.stat(path).st_mode):
+                return f"unix:path={_escape_bus_address_value(path)}"
+        except OSError:
+            continue
+    return INERT_SESSION_BUS_ADDRESS
+
+
+def _escape_bus_address_value(value: str) -> str:
+    """Percent-escape *value* as the D-Bus address spec requires.
+
+    The spec's optionally-escaped set (``[A-Za-z0-9_/.\\-]``) passes unchanged;
+    every other byte becomes ``%XX``. The bytes are the path's own
+    (``os.fsencode``, so a surrogate-escaped undecodable name round-trips rather
+    than raising), and every library unescapes before use, so a runtime directory
+    with a space or a comma in it still names the right socket.
+    """
+    out: list[str] = []
+    for byte in os.fsencode(value):
+        char = chr(byte)
+        if char.isascii() and (char.isalnum() or char in "_/.-"):
+            out.append(char)
+        else:
+            out.append(f"%{byte:02X}")
+    return "".join(out)
+
+
+def apply_session_bus_address(env: dict[str, str]) -> dict[str, str]:
+    """Pin :func:`session_bus_address` on *env* in place and return it.
+
+    Applied by every provider-CLI environment builder before the spawn, and
+    unconditionally rather than with ``setdefault``: the allowlists never admit
+    the key, so any value already there could only be an inherited ambient one.
+    """
+    address = session_bus_address()
+    if address is None:
+        env.pop("DBUS_SESSION_BUS_ADDRESS", None)
+    else:
+        env["DBUS_SESSION_BUS_ADDRESS"] = address
+    return env
+
+
 # Ambient identity a gh child must never inherit: `gh api` authenticates with
 # its own token/config over HTTPS, so the gateway's ssh agent socket and git
 # ssh overrides are pure surplus credential surface. Compared upper-cased for
@@ -1026,6 +1142,7 @@ def gh_env(pin_host: str = "") -> dict[str, str]:
         del env[env_key]
     env["GH_PAGER"] = "cat"
     env["NO_COLOR"] = "1"
+    apply_session_bus_address(env)
     if pin_host:
         env["GH_HOST"] = pin_host
     return env

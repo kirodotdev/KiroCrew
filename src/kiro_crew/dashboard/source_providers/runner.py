@@ -34,6 +34,7 @@ from kiro_crew.github_runner import (
 )
 from kiro_crew.github_runner import STRICT_PROVIDER_BIN_ENV as _STRICT_PROVIDER_BIN_ENV
 from kiro_crew.github_runner import (
+    apply_session_bus_address,
     gitlab_ambient_token_allowed,
     provider_executable_candidates,
 )
@@ -487,6 +488,12 @@ async def _run_provider(
             "PATH": _PROVIDER_SYSTEM_PATH,
         }
     )
+    # The chip refresh runs one probe per open PR/MR on a timer; a child left to
+    # find the session bus by itself autolaunches a private dbus-daemon and
+    # keyring daemon per call where no user bus exists. The parent resolves the
+    # bus once, explicitly (see github_runner.session_bus_address). A pinned
+    # value, not an allowlist key.
+    apply_session_bus_address(base_env)
     if executable == "gh":
         # All accepted GitHub URLs normalize to github.com. Pin bare API paths
         # to the same host instead of honoring a configured enterprise default.

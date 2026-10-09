@@ -19,6 +19,7 @@ from kiro_crew.github_runner import (
     PROVIDER_CLI_OVERRIDE_ENV,
     SetupError,
     agent_writable_roots,
+    apply_session_bus_address,
     provider_executable_candidates,
     validate_provider_executable,
 )
@@ -114,6 +115,7 @@ def provider_cli_env(
     for key in tuple(env):
         if key.upper() in _AMBIENT_IDENTITY_KEYS | _INJECTION_ENV_KEYS:
             del env[key]
+    apply_session_bus_address(env)
     system_path = platform_compat.trusted_system_path()
     if system_path is None:
         env.pop("PATH", None)

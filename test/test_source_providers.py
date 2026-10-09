@@ -5079,6 +5079,44 @@ async def test_glab_does_not_forward_ambient_token_to_a_self_managed_host(monkey
 
 
 @pytest.mark.asyncio
+async def test_glab_chip_refresh_hands_the_cli_an_explicit_session_bus_address(monkeypatch) -> None:
+    """The sidebar PR/MR chip refresh runs one ``glab api`` per open MR on a timer.
+
+    glab asks the keyring over D-Bus, and a child left with no ``DBUS_SESSION_BUS_ADDRESS``
+    searches for the bus itself and, where none exists, autolaunches a private
+    ``dbus-daemon`` plus ``gnome-keyring-daemon`` that outlive the call, one pair per
+    probe. The strict allowlist never carries the key, so the runner pins the value the
+    parent resolved once: the user bus by its standard path when it exists, an inert
+    address otherwise, and never the gateway's own ambient value.
+    """
+
+    class FakeProcess:
+        returncode = 0
+
+    sandbox = MagicMock(
+        return_value=(["/usr/bin/sandbox-launcher", "/usr/bin/glab"], {"SAFE": "1"}, None)
+    )
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/ambient/forwarded/bus")
+    monkeypatch.setenv("GITLAB_TOKEN", "glpat-" + "a" * 20)
+    monkeypatch.setattr(source, "_resolve_provider_executable", lambda _name: "/usr/bin/glab")
+    monkeypatch.setattr(source, "sandboxed_spawn_argv", sandbox)
+    monkeypatch.setattr(
+        source.asyncio, "create_subprocess_exec", AsyncMock(return_value=FakeProcess())
+    )
+    monkeypatch.setattr(source, "_collect_process_output", AsyncMock(return_value=(b"{}", b"")))
+
+    for resolved in (github_runner.INERT_SESSION_BUS_ADDRESS, "unix:path=/run/user/4242/bus"):
+        monkeypatch.setattr(
+            github_runner, "session_bus_address", lambda resolved=resolved: resolved
+        )
+        sandbox.reset_mock()
+        await source._run_json("glab", "api", "projects/1", host="gitlab.com")
+        env = sandbox.call_args.kwargs["env"]
+        assert env["DBUS_SESSION_BUS_ADDRESS"] == resolved
+        assert env["DBUS_SESSION_BUS_ADDRESS"] != os.environ["DBUS_SESSION_BUS_ADDRESS"]
+
+
+@pytest.mark.asyncio
 async def test_gitlab_mutations_forward_host_to_the_run_json_guard(monkeypatch) -> None:
     """Regression: the auto-merge and mark-ready mutation call sites must thread
     ``host=ref.host`` into :func:`_run_json`.

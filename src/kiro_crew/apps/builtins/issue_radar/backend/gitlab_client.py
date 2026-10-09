@@ -55,6 +55,7 @@ from urllib.parse import quote, urlparse  # noqa: F401 -- historical module expo
 
 from kiro_crew.apps.registry import minimal_env
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.github_runner import apply_session_bus_address
 from kiro_crew.sel import sel
 
 from . import gitlab_normalization as _normalization
@@ -225,12 +226,15 @@ def _glab_env(host: str) -> dict[str, str]:
     ``GITLAB_TOKEN`` is withheld for non-gitlab.com hosts (see the module
     docstring, rule 3).
     """
-    return _transport.glab_env(
+    env = _transport.glab_env(
         host,
         source_env=os.environ,
         passthrough_keys=_GLAB_ENV_PASSTHROUGH,
         minimal_env=minimal_env,
     )
+    # Explicit session bus or an inert address, never a child-side search that
+    # autolaunches a dbus-daemon per poll (see github_runner.session_bus_address).
+    return apply_session_bus_address(env)
 
 
 def _audit(op: str, target: str, outcome: str, *, error: str = "") -> None:

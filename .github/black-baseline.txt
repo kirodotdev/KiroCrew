@@ -547,7 +547,6 @@ test/test_frontmatter.py
 test/test_gateway_appkit_endpoints.py
 test/test_gatewayd_more_coverage.py
 test/test_gatewayd_self_exit.py
-test/test_github_runner.py
 test/test_gitlab_client_coverage.py
 test/test_governance_policy.py
 test/test_governance_policy_viewer.py

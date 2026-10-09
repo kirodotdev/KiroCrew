@@ -6189,6 +6189,18 @@ def process_owner_uid(pid: int) -> int | None:
     return None
 
 
+def effective_uid() -> int | None:
+    """Return this process's effective uid, or ``None`` where there is no uid concept.
+
+    Windows has no ``os.geteuid``; a caller that formats a per-user path from the
+    uid (``/run/user/<uid>``) must treat ``None`` as "no such path on this
+    platform" rather than guess a number.
+    """
+    if not IS_POSIX:
+        return None
+    return os.geteuid()
+
+
 # Tri-state liveness results for pid_liveness().
 PID_DEAD = "dead"  # confirmed not running -> safe to prune
 PID_ALIVE = "alive"  # confirmed running

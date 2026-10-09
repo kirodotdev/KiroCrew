@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import subprocess
 import sys
+import urllib.parse
 from contextlib import contextmanager
 from io import BytesIO
 from types import SimpleNamespace
@@ -1649,6 +1651,131 @@ def test_provider_cli_environments_are_scoped_and_disable_dynamic_install(monkey
     assert "VIRTUAL_ENV" not in azure
     assert "CONDA_PREFIX" not in azure
     assert "GITLAB_TOKEN" not in self_managed_gitlab
+
+
+def test_provider_cli_env_hands_the_cli_an_explicit_session_bus_address(monkeypatch, tmp_path):
+    """A provider CLI child never searches for the session bus itself.
+
+    glab (go-keyring over godbus) and az (MSAL over libsecret, with the encrypted
+    cache on) ask the Secret Service for a token. Left with no ``DBUS_SESSION_BUS_ADDRESS``
+    the client library looks for the user bus and, failing that, execs ``dbus-launch``: a
+    private ``dbus-daemon`` that activates ``gnome-keyring-daemon``, neither of which exits
+    with the CLI, so every probe leaks one pair. The parent resolves the bus once instead:
+    the user bus by its standard path when that socket exists, an inert address otherwise.
+    The builder pins whichever value the resolver produced, for both CLIs, and the
+    gateway's own ambient value is never what gets forwarded. The resolver itself is
+    exercised against a real socket in ``test_github_runner.py`` and in the POSIX-only
+    sibling below.
+    """
+    monkeypatch.setenv("HOME", os.fspath(tmp_path / "home"))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", os.fspath(tmp_path / "run"))
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/ambient/forwarded/bus")
+    monkeypatch.setenv("GITLAB_TOKEN", "glpat-ambient")
+
+    for resolved in (github_runner.INERT_SESSION_BUS_ADDRESS, "unix:path=/run/user/4242/bus"):
+        monkeypatch.setattr(
+            github_runner, "session_bus_address", lambda resolved=resolved: resolved
+        )
+        gitlab = provider_cli_env("glab")
+        azure = provider_cli_env("az")
+        assert gitlab.get("DBUS_SESSION_BUS_ADDRESS"), "glab must not start with no bus address"
+        assert gitlab["DBUS_SESSION_BUS_ADDRESS"] == resolved
+        assert azure["DBUS_SESSION_BUS_ADDRESS"] == resolved
+        assert "/ambient/forwarded/bus" not in gitlab["DBUS_SESSION_BUS_ADDRESS"]
+
+    # The allowlist is otherwise unchanged: under a known gateway environment the
+    # child carries exactly the keys it carried before, plus this one.
+    monkeypatch.setattr(
+        os,
+        "environ",
+        {
+            "HOME": os.fspath(tmp_path / "home"),
+            "LANG": "C.UTF-8",
+            "PATH": "/opt/agent/bin:/usr/bin",
+            "XDG_RUNTIME_DIR": os.fspath(tmp_path / "run"),
+            "DBUS_SESSION_BUS_ADDRESS": "unix:path=/ambient/forwarded/bus",
+            "GITLAB_TOKEN": "glpat-ambient",
+            "AWS_SECRET_ACCESS_KEY": "not-for-providers",
+        },
+    )
+    # PATH is pinned to the trusted system directories where the platform has
+    # them and dropped where it does not (Windows), so it is expected exactly
+    # when ``trusted_system_path`` returns one; the set stays an equality.
+    expected = {
+        "DBUS_SESSION_BUS_ADDRESS",
+        "GITLAB_TOKEN",
+        "GLAMOUR_STYLE",
+        "HOME",
+        "LANG",
+        "NO_COLOR",
+        "XDG_RUNTIME_DIR",
+    }
+    if provider_cli_module.platform_compat.trusted_system_path() is not None:
+        expected.add("PATH")
+    assert set(provider_cli_env("glab")) == expected
+
+
+@pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="AF_UNIX sockets only")
+def test_provider_cli_env_resolves_a_real_user_bus_socket(monkeypatch, tmp_path, short_sock_dir):
+    """End to end through the real resolver: no socket at the standard paths yields the
+    inert address; a listening socket there yields its ``unix:path=``, for both CLIs."""
+    monkeypatch.setenv("HOME", os.fspath(tmp_path / "home"))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", os.fspath(short_sock_dir))
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/ambient/forwarded/bus")
+    # The uid-derived candidate must not reach the host's own /run/user.
+    monkeypatch.setattr(
+        github_runner,
+        "_user_bus_socket_candidates",
+        lambda: (os.fspath(short_sock_dir / "bus"), os.fspath(tmp_path / "uid-run" / "bus")),
+    )
+
+    assert provider_cli_env("glab")["DBUS_SESSION_BUS_ADDRESS"] == (
+        github_runner.INERT_SESSION_BUS_ADDRESS
+    )
+
+    bus = short_sock_dir / "bus"
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.bind(os.fspath(bus))
+        sock.listen(1)
+        gitlab = provider_cli_env("glab")
+        azure = provider_cli_env("az")
+    finally:
+        sock.close()
+    for env in (gitlab, azure):
+        address = env["DBUS_SESSION_BUS_ADDRESS"]
+        assert address.startswith("unix:path=")
+        assert urllib.parse.unquote(address[len("unix:path=") :]) == os.fspath(bus)
+
+
+def test_explicit_session_bus_address_survives_both_spawn_paths(monkeypatch, tmp_path):
+    """The spawn chokepoint carries the caller's bus address into the child on both paths.
+
+    Plain path: ``scrub_env`` drops credential prefixes only. Scope path:
+    ``cgroup_scope_bus_env`` fills only keys the caller left unset and reports only those
+    as injected, so the ``env -u`` shim inside the scope never names a key the caller set.
+    Checked for both values the builder can produce.
+    """
+    monkeypatch.setenv("HOME", os.fspath(tmp_path / "home"))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", os.fspath(tmp_path / "run"))
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/ambient/forwarded/bus")
+    monkeypatch.setattr(sandbox_module, "_probe_cgroup_scope", lambda: (True, "ok"))
+
+    for address in (
+        github_runner.INERT_SESSION_BUS_ADDRESS,
+        f"unix:path={tmp_path / 'run' / 'bus'}",
+    ):
+        monkeypatch.setattr(github_runner, "session_bus_address", lambda address=address: address)
+        env = provider_cli_env("glab")
+        assert env["DBUS_SESSION_BUS_ADDRESS"] == address
+
+        plain = sandbox_module.scrub_env(env, extra_prefixes=sandbox_module._PYTHON_ENV_PREFIXES)
+        assert plain["DBUS_SESSION_BUS_ADDRESS"] == address
+
+        patched, injected = sandbox_module.cgroup_scope_bus_env(plain)
+        assert patched["DBUS_SESSION_BUS_ADDRESS"] == address
+        assert "DBUS_SESSION_BUS_ADDRESS" not in injected
+        assert sandbox_module._unset_env_argv(injected) in (None, ["/usr/bin/env"], ["/bin/env"])
 
 
 def test_provider_cli_rejects_output_over_the_transport_bound(monkeypatch, tmp_path):

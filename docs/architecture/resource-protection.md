@@ -458,6 +458,19 @@ resolved from an absolute path, never a caller-influenced `PATH`, and when no `e
 exists the layer **fails closed**: the locators are not forwarded at all, so the wrapper
 fails loudly rather than handing the child a reachable bus.
 
+"Left alone" is load-bearing for the provider CLIs. A child with NO bus address is not
+inert: `gh`, `glab` and `az` probe the keyring over D-Bus, and every client library involved
+first looks for the user bus at its standard path and, failing that, autolaunches a private
+`dbus-daemon` (which then activates `gnome-keyring-daemon`), leaking both per call. So every
+allowlist-based provider-CLI environment builder applies `github_runner.apply_session_bus_address`, which
+resolves that search once in the parent: `unix:path=<path>` for the first of
+`$XDG_RUNTIME_DIR/bus` and `/run/user/<uid>/bus` that is a socket, else `INERT_SESSION_BUS_ADDRESS` (`disabled:`, a transport libdbus, godbus and GDBus
+all reject without connecting or spawning). Because the caller set it, this layer neither
+replaces it with the gateway's bus nor strips it inside the scope; and because it is never
+empty, `cgroup_scope_bus_env` (which reads an empty value as unset) never forwards the real
+locator in its place. The full rationale lives in `security.md` under the scoped user-bus
+locator forward.
+
 ## Memory-aware cap for pytest-xdist `-n auto`
 
 > **Two compositions of one Mach struct, on purpose.** `subagent._macos_vm_reclaimable_pages`

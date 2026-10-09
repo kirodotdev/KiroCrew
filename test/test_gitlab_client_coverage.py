@@ -24,6 +24,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from kiro_crew import github_runner
 from kiro_crew.apps.builtins.issue_radar.backend import gitlab_client as gl
 
 # The autouse isolation fixture stubs ``allowed_hosts``, so the two tests that
@@ -266,6 +267,22 @@ def test_glab_env_pins_the_host_and_drops_the_token_off_gitlab_com(monkeypatch):
 def test_glab_env_keeps_the_token_for_gitlab_com(monkeypatch):
     monkeypatch.setenv("GITLAB_TOKEN", "glpat-xyz")
     assert gl._glab_env("gitlab.com")["GITLAB_TOKEN"] == "glpat-xyz"
+
+
+def test_glab_env_hands_the_cli_an_explicit_session_bus_address(monkeypatch):
+    """Issue Radar polls glab too. The child never searches for the bus itself (that
+    autolaunches a private dbus-daemon and keyring daemon per poll where no user bus
+    exists): it gets the value the parent resolved once, and never the ambient one."""
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/ambient/forwarded/bus")
+
+    for resolved in (github_runner.INERT_SESSION_BUS_ADDRESS, "unix:path=/run/user/4242/bus"):
+        monkeypatch.setattr(
+            github_runner, "session_bus_address", lambda resolved=resolved: resolved
+        )
+        env = gl._glab_env("gitlab.com")
+        assert env.get("DBUS_SESSION_BUS_ADDRESS"), "glab must not start with no bus address"
+        assert env["DBUS_SESSION_BUS_ADDRESS"] == resolved
+        assert env["DBUS_SESSION_BUS_ADDRESS"] != "unix:path=/ambient/forwarded/bus"
 
 
 # ── the spawn chokepoint ─────────────────────────────────────────────────────
