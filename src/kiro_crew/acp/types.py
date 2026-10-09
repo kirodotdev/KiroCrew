@@ -438,6 +438,9 @@ STOP_REASON_CONTENT_FILTERED_WIRE = "CONTENT_FILTERED"
 # a done-but-missing-frame turn (which acks and completes normally). The
 # dashboard routes this to reset+resume+continue-nudge auto-recovery.
 STOP_REASON_STALE_RECOVER = "stale_recover"
+# Signalled by the session handle when the backend never finished the turn within
+# the turn ceiling: no complete frame arrived, so the turn's text is cut off.
+STOP_REASON_TIMEOUT = "timeout"
 # Signalled by the per-session watchdog when an in-flight tool was judged dead
 # / stuck / UNKNOWN-past-budget and the session was cancelled. Kept in the
 # "error:" family so callers without a dedicated branch fall back to the

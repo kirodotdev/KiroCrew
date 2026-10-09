@@ -52,6 +52,10 @@ logger = logging.getLogger(__name__)
 # Role used to pick the model. Summarization is unattended background work, so
 # it must not ride the interactive chat flagship on every turn.
 _SUMMARY_ROLE = "background"
+#: Bound on one summary call. Longer than the 30 s of the title and link-label
+#: calls because the prompt carries the bounded transcript; the same 60 s as the
+#: suggestions and cron contradiction one-liners.
+_SUMMARY_TIMEOUT_SECS = 60.0
 
 _PROMPT = """\
 Summarize this chat session by INTENT, for a panel whose only job is to make \
@@ -415,6 +419,7 @@ async def _generate_locked(
         prompt,
         model=model,
         sel_source="session_summary",
+        timeout=_SUMMARY_TIMEOUT_SECS,
         # Charged to the session being summarized, not to the shared background
         # session that ran the call. ``effective_session_key`` rather than the
         # transcript key above: this addresses the SESSION, and a channel-born

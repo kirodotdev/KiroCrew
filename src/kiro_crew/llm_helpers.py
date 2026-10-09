@@ -1708,6 +1708,31 @@ def _orphan_reject_done(task: asyncio.Task[Any]) -> None:
 # ── Stream and Collect ──
 
 
+def _raise_if_unfinished(event: object, text: str) -> None:
+    """Raise when the backend never finished the turn, so its text is cut off.
+
+    The session handle ends a turn its backend did not finish within the turn
+    ceiling with ``STOP_REASON_TIMEOUT``, and one its stale watchdog gave up on with
+    ``STOP_REASON_STALE_RECOVER``. Both arrive as an ordinary ``EVENT_COMPLETE``, so
+    a one-liner would return the partial text as its answer. Raising runs the
+    caller's failure path instead. The error is the prompt-timeout error, carrying
+    the partial text, and it is not transient: a retry would wait out the same
+    stalled backend again.
+    """
+    from kiro_crew.acp.client import AcpTimeoutError
+    from kiro_crew.acp.types import STOP_REASON_STALE_RECOVER, STOP_REASON_TIMEOUT
+
+    stop_reason = str(getattr(event, "stop_reason", "") or "")
+    if stop_reason not in (STOP_REASON_TIMEOUT, STOP_REASON_STALE_RECOVER):
+        return
+    error = AcpTimeoutError(
+        text,
+        message=f"background one-liner: the backend did not finish the turn ({stop_reason})",
+    )
+    error.transient = False
+    raise error
+
+
 async def run_bg_oneliner(
     sessions: Any,
     prompt: str,
@@ -1887,6 +1912,7 @@ async def run_bg_oneliner(
                     source=sel_source or "bg_oneliner",
                 )
             elif event.kind == EVENT_COMPLETE:
+                _raise_if_unfinished(event, text)
                 break
         return text
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import unicodedata
@@ -12,6 +13,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from kiro_crew.acp.transport_errors import AcpTimeoutError
+from kiro_crew.acp.types import STOP_REASON_END_TURN, STOP_REASON_STALE_RECOVER
 from kiro_crew.dashboard import chat_title
 from kiro_crew.dashboard.chat_title import (
     _TITLE_LINE_BUDGET,
@@ -30,6 +33,7 @@ from kiro_crew.dashboard.chat_title import (
     _validate_title_reply,
 )
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
+from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
 
 
 def test_prompt_isolates_and_delimits_transcript():
@@ -1025,3 +1029,75 @@ def test_korean_refusal_yields_no_title(reply):
 )
 def test_legitimate_titles_survive_the_new_checks(reply, expected):
     assert _validate_title_reply(reply) == expected
+
+
+class _StubBgSessions:
+    """Background sessions answering ``_PARTIAL_TITLE``, then ending the turn as asked."""
+
+    def __init__(self, end: str) -> None:
+        self.end = end
+        self.acquired = 0
+        self.destroyed = 0
+
+    async def get_bg_session(self, start_priority=None):
+        self.acquired += 1
+        owner = self
+
+        class _Session:
+            served_model = "fake-model"
+
+            async def set_model(self, model):
+                return None
+
+            async def prompt(self, text, allow_image=False):
+                yield SimpleNamespace(kind=EVENT_TEXT_CHUNK, text=_PARTIAL_TITLE)
+                if owner.end == "silent":
+                    await asyncio.Event().wait()
+                yield SimpleNamespace(kind=EVENT_COMPLETE, stop_reason=owner.end)
+
+            async def destroy(self):
+                owner.destroyed += 1
+
+        return _Session()
+
+
+_PARTIAL_TITLE = "Fix the cron history leak in remove"
+
+
+@pytest.fixture
+def _title_inputs(monkeypatch):
+    monkeypatch.setattr(chat_title, "_ui_language", lambda: "en")
+    monkeypatch.setattr(chat_title, "_build_title_prompt", lambda m, ui_language=None: "Title it.")
+
+
+class TestTitleCallBounds:
+    @pytest.mark.asyncio
+    async def test_a_silent_backend_ends_the_title_call_at_its_timeout(
+        self, monkeypatch, _title_inputs
+    ):
+        monkeypatch.setattr(chat_title, "_TITLE_TIMEOUT_SECS", 0.2, raising=False)
+        sessions = _StubBgSessions("silent")
+        task = asyncio.ensure_future(
+            chat_title._generate_title_via_kiro(SimpleNamespace(sessions=sessions), [{}])
+        )
+        await asyncio.wait({task}, timeout=3.0)
+        try:
+            assert task.done(), "the title call was still waiting on a silent backend after 3 s"
+            assert isinstance(task.exception(), TimeoutError)
+            assert sessions.acquired == sessions.destroyed == 1
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_a_turn_the_stale_watchdog_ended_gives_no_title(self, _title_inputs):
+        sessions = _StubBgSessions(STOP_REASON_STALE_RECOVER)
+        with pytest.raises(AcpTimeoutError):
+            await chat_title._generate_title_via_kiro(SimpleNamespace(sessions=sessions), [{}])
+        assert sessions.acquired == sessions.destroyed == 1
+
+    @pytest.mark.asyncio
+    async def test_a_finished_turn_is_still_the_title(self, _title_inputs):
+        sessions = _StubBgSessions(STOP_REASON_END_TURN)
+        title = await chat_title._generate_title_via_kiro(SimpleNamespace(sessions=sessions), [{}])
+        assert title == _PARTIAL_TITLE
