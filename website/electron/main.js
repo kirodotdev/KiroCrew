@@ -38,6 +38,7 @@ const { describeSingletonLock } = require("./singleton-lock");
 const { initNativeLogging } = require("./native-logging");
 const { armCrashCollector, collectCrashReports } = require("./crash-collector");
 const { initGpuPolicy } = require("./disable-gpu");
+const { applyAuthServerAllowlist } = require("./auth-allowlist");
 const { initGpuCrashFallback } = require("./gpu-crash-fallback");
 const { cancelPendingTrayHide } = require("./hide-to-tray");
 const { exitImmersiveModes } = require("./blocking-prompt");
@@ -345,6 +346,14 @@ if (!app.requestSingleInstanceLock()) {
     appendSwitch: (name) => app.commandLine.appendSwitch(name),
     env: process.env,
     argv: process.argv,
+    log: glog,
+  });
+
+  // Chromium reads the integrated-auth allowlist at network-service start, so
+  // an edition's baked allowlist must reach the command line before app ready.
+  // The public build bakes none and this appends nothing.
+  applyAuthServerAllowlist({
+    appendSwitch: (name, value) => app.commandLine.appendSwitch(name, value),
     log: glog,
   });
 

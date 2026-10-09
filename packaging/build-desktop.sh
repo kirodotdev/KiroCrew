@@ -908,11 +908,12 @@ else
   fi
 fi
 
-# A leftover staged marker from an earlier interrupted build is removed on
-# EVERY run, before any early exit: step 3b re-stages it when asked. This sits
+# A leftover staged marker (or baked auth allowlist) from an earlier
+# interrupted build is removed on EVERY run, before any early exit: steps 3b
+# and 3b2 re-stage them when asked. This sits
 # ahead of the SKIP_ELECTRON return so a backend-only build cannot leave a
 # stale declaration behind for a hand-run electron-builder to pack.
-rm -f "$ELECTRON_DIR/EXTERNALLY-MANAGED"
+rm -f "$ELECTRON_DIR/EXTERNALLY-MANAGED" "$ELECTRON_DIR/AUTH-SERVER-ALLOWLIST"
 
 if [ "${SKIP_ELECTRON:-0}" = "1" ]; then
   log "SKIP_ELECTRON=1 — backend(s) ready under $ELECTRON_DIR/backend-dist/"
@@ -972,9 +973,33 @@ if [ -n "${KIROCREW_MANAGED_INSTALL_MARKER:-}" ]; then
   # BEFORE the copy so there is no instant at which the file exists without
   # its cleanup -- an interrupt between the two would leave a stale marker for
   # a hand-run `npm run dist` to pack.
-  trap 'rm -f "$ELECTRON_DIR/EXTERNALLY-MANAGED"' EXIT
+  trap 'rm -f "$ELECTRON_DIR/EXTERNALLY-MANAGED" "$ELECTRON_DIR/AUTH-SERVER-ALLOWLIST"' EXIT
   cp "$MARKER_SRC" "$ELECTRON_DIR/EXTERNALLY-MANAGED"
   log "Baking EXTERNALLY-MANAGED marker into the app from $MARKER_SRC"
+fi
+
+# --- 3b2. Baked integrated-auth allowlist (optional) -------------------------
+# An edition that ships to a Kerberos-gated intranet names the hosts whose
+# Negotiate challenge the app's web contents may answer, as a comma-separated
+# list (`*.example.com,intranet.example.org`). It is validated by the same
+# parser the app runs (website/electron/auth-allowlist.js) and the build FAILS
+# on anything else: the reader ignores a malformed list, so a typo would
+# silently ship an app whose embedded pages get 401s. It is staged as
+# $ELECTRON_DIR/AUTH-SERVER-ALLOWLIST, packed into app.asar by package.json's
+# `files` list, and removed again on exit by the same trap as the marker (one
+# EXIT trap string names both files, so arming it twice loses neither). Unset,
+# nothing is staged and the app appends no switch.
+if [ -n "${KIROCREW_AUTH_SERVER_ALLOWLIST:-}" ]; then
+  AUTH_ALLOWLIST="$(node -e '
+    const { parseAuthServerAllowlist } = require(process.argv[1]);
+    const v = parseAuthServerAllowlist(process.argv[2]);
+    if (v === null) { console.error("not a comma-separated list of host or *.suffix patterns"); process.exit(1); }
+    process.stdout.write(v);
+  ' "$ELECTRON_DIR/auth-allowlist.js" "$KIROCREW_AUTH_SERVER_ALLOWLIST")" \
+    || { echo "❌ KIROCREW_AUTH_SERVER_ALLOWLIST rejected: $KIROCREW_AUTH_SERVER_ALLOWLIST" >&2; exit 1; }
+  trap 'rm -f "$ELECTRON_DIR/EXTERNALLY-MANAGED" "$ELECTRON_DIR/AUTH-SERVER-ALLOWLIST"' EXIT
+  printf '%s\n' "$AUTH_ALLOWLIST" > "$ELECTRON_DIR/AUTH-SERVER-ALLOWLIST"
+  log "Baking AUTH-SERVER-ALLOWLIST into the app: $AUTH_ALLOWLIST"
 fi
 
 # --- 3c. Bundle kiro-cli into the app resources -------------------------------

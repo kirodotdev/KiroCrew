@@ -163,6 +163,7 @@
       "bundle-integrity.js",
       "data-home.js",
       "auto-update.js",
+      "auth-allowlist.js",
       "runtime/update/state-reporter.js",
       "runtime/update/managed-lane.js",
       "runtime/update/feed-lane.js",
@@ -254,7 +255,8 @@
       "icon-nightly.png",
       "trayTemplate.png",
       "trayTemplate@2x.png",
-      "EXTERNALLY-MANAGED"
+      "EXTERNALLY-MANAGED",
+      "AUTH-SERVER-ALLOWLIST"
     ],
     "extraResources": [
       {

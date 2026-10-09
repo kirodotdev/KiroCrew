@@ -501,6 +501,7 @@ The script honors these environment flags:
 | `BUNDLE_KIRO_CLI=0` | Ship without the bundled kiro-cli (default `1` stages it; see [Bundled kiro-cli](#bundled-kiro-cli--the-app-carries-its-own-agent-runtime)) |
 | `KIRO_CLI_VERSION=<version>` / `latest` | Override the `packaging/kiro-cli-version` pin; `latest` resolves the upstream manifest instead (still sha256-verified) |
 | `KIROCREW_MANAGED_INSTALL_MARKER=<file>` | Bake that JSON file into the app as the externally-managed marker; a missing or malformed file fails the build (see [Baking the marker into the app](#baking-the-marker-into-the-app-editions)) |
+| `KIROCREW_AUTH_SERVER_ALLOWLIST=<list>` | Bake a comma-separated host list (`*.example.com,intranet.example.org`) into the app so its web contents, the Browser panel included, answer Kerberos/Negotiate challenges from those hosts; Electron gets it as `--auth-server-whitelist` before app ready. Credential delegation is never enabled. A malformed list fails the build; unset, the app enables integrated auth for no host |
 
 ## The bundled backend (python-build-standalone)
 
