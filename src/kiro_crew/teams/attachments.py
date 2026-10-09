@@ -77,6 +77,7 @@ __all__ = [
     "REASON_INLINE_UNSUPPORTED",
     "REASON_INLINE_UNDELIVERED",
     "append_attachment_context",
+    "file_attachments",
     "inline_image_attachment",
     "inline_image_name",
     "quoted_reply_text",
@@ -135,6 +136,46 @@ _MAX_REPLY_HTML_CHARS = 64 * 1024
 #: a file, and one can legitimately ride an inbound activity (a submit echo), so
 #: it is skipped rather than reported as an unsupported file.
 _CARD_CONTENT_PREFIX = "application/vnd.microsoft.card."
+
+
+def _file_content_type(raw: Any) -> str:
+    """The normalized content type of a file-bearing attachment, or ``""``.
+
+    ``""`` is the ONE skip decision the ingest makes in silence: a non-dict entry,
+    an entry without a content type, Teams' ``text/html`` / ``text/plain`` echo of
+    the message body, and a card riding the activity. Everything else is a file as
+    far as this channel is concerned, whether it is fetched (an upload, an inline
+    image) or reported by type and left alone.
+
+    Both :func:`map_inbound_attachments` and :func:`file_attachments` read this,
+    which is what keeps "is this message carrying a file?" one question with one
+    answer: no gate may count an attachment the ingest would ignore.
+    """
+    if not isinstance(raw, dict):
+        return ""
+    content_type = raw.get("contentType")
+    content_type = content_type.lower().strip() if isinstance(content_type, str) else ""
+    if not content_type:
+        return ""
+    if content_type in _BODY_CONTENT_TYPES or content_type.startswith(_CARD_CONTENT_PREFIX):
+        return ""
+    return content_type
+
+
+def file_attachments(raw_attachments: list[Any]) -> list[Any]:
+    """The entries of an activity's raw ``attachments`` the ingest acts on.
+
+    Teams attaches a ``text/html`` copy of the body to EVERY rich-text message, so
+    ``bool(activity.attachments)`` is true for an ordinary typed ``/help`` and a
+    dispatcher that reads the raw list never sees a command in a 1:1 chat, never
+    steers a mid-turn message, and counts an "attachment" on every spooled or
+    queued message. Every such decision reads this list instead: the body echo
+    and a card are not in it, a real upload or an inline image is, and so is an
+    attachment of an unrecognized type (it is reported to the user, not dropped,
+    and its caption is still a caption). Empty means "no file"; the queue carries
+    this list rather than the raw one, so a drained turn re-ingests files only.
+    """
+    return [raw for raw in raw_attachments if _file_content_type(raw)]
 
 
 def quoted_reply_text(raw_attachments: list[Any]) -> str:
@@ -223,13 +264,8 @@ def map_inbound_attachments(
     mapped: list[tuple[Attachment, bool]] = []
     unsupported: list[str] = []
     for raw in raw_attachments:
-        if not isinstance(raw, dict):
-            continue
-        content_type = raw.get("contentType")
-        content_type = content_type.lower().strip() if isinstance(content_type, str) else ""
+        content_type = _file_content_type(raw)
         if not content_type:
-            continue
-        if content_type in _BODY_CONTENT_TYPES or content_type.startswith(_CARD_CONTENT_PREFIX):
             continue
         entry: tuple[Attachment, bool] | None
         if content_type == TEAMS_FILE_DOWNLOAD_INFO:

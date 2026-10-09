@@ -181,6 +181,13 @@ Right-click → **Reply** works: Teams prepends the quoted message to what it se
 so the quoted text is stripped and only your own words reach the agent — which is
 also why a quote-replied `/stop` still stops the reply.
 
+A message that carries a file is never a command: its text is the caption, so
+"/stop here is the log" goes to the agent with the file instead of stopping the
+reply and dropping it. For the same reason a message with a file sent mid-turn is
+queued rather than folded into the running reply. Only a real file counts — the copy
+of your message that the Teams client attaches as rich text does not, so a typed
+`/help` is always a command and a plain mid-turn message can still be folded in.
+
 While a reply is running, prefix a message to control it: `/queue <message>`
 answers it after the current reply, `/steer <message>` folds it into the reply in
 progress. A message sent mid-turn is never lost — if it cannot be folded in, it is

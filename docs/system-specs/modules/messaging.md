@@ -5526,8 +5526,21 @@ received a bare `/tmp` path and answered about nothing, silently. Two rules foll
 from the same place: an attachment-bearing message is never STEERED (a steer carries
 text only, so the files would be dropped while the user is told they were folded in)
 and never read as a COMMAND (Teams puts the caption in `text`, so "/stop here is the
-log" would cancel the turn AND discard the file). The queue entry carries the RAW
-descriptors and the drained turn re-ingests them, bounded by
+log" would cancel the turn AND discard the file). Everywhere the dispatcher asks
+whether a message carries a file (the command parse and intercept, the steer-or-queue
+choice, the `has_attachments` flag handed to a busy resumed session, the dropped
+count a spooled message reports, and the descriptors a queue entry carries)
+"attachment-bearing" means FILE-bearing by the ingest's own classification
+(`attachments.file_attachments`, the entries the ingest acts on), not
+`bool(activity.attachments)`: Teams attaches a `text/html` echo of the body to every
+rich-text message, so a gate reading the raw list saw an upload on every typed
+`/help` and no slash command was ever recognized in a 1:1 chat, and every mid-turn
+message was queued rather than steered (#18467). The helper and the ingest's skip
+set are one function, so whatever the ingest ignores in silence (the body echo, a
+card, an entry without a content type) cannot turn a command into a caption or a
+plain message into an upload, while a real upload, an inline image or an attachment
+of an unrecognized type still does. The queue entry
+carries those file descriptors and the drained turn re-ingests them, bounded by
 `IngestLimits().max_attachments` so a burst is answered across turns instead of
 having its surplus refused. Discord and Telegram draw every one of these lines in
 the same place.
@@ -5594,7 +5607,9 @@ that awaits the turn and unlinked in a worker once it returns.
   worker thread.
 - **What is not a file.** Teams echoes rich text as a `text/html` attachment on
   ordinary messages, and a card can ride an activity; both are skipped without a
-  note, because a per-message line would be pure noise. Any other unrecognized
+  note, because a per-message line would be pure noise, and neither counts as a file
+  anywhere the dispatcher asks (`file_attachments` reads the same skip decision).
+  Any other unrecognized
   content type is reported by TYPE — not by file name — and never fetched.
 
 `test/test_teams_attachments.py` pins the policy half (envelope mapping, the auth

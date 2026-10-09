@@ -97,7 +97,11 @@ from kiro_crew.safety_override import safety_override
 from kiro_crew.sel import sel
 from kiro_crew.start_priority import person_priority
 from kiro_crew.teams.approvals import TeamsApprovalDecider
-from kiro_crew.teams.attachments import append_attachment_context, process_teams_attachments
+from kiro_crew.teams.attachments import (
+    append_attachment_context,
+    file_attachments,
+    process_teams_attachments,
+)
 from kiro_crew.teams.cards import (
     DECISION_APPROVE,
     DECISION_DENY,
@@ -470,6 +474,11 @@ class TeamsDispatcher:
         email = self._identity(inbound)
         text = inbound.text
         native_session_key = self._session_key(email)
+        # The files this message carries, by the ingest's own classification. Every
+        # "does it carry a file?" decision below reads this, never the raw list:
+        # Teams attaches a ``text/html`` echo of the body to every rich-text
+        # message, so the raw list is non-empty for an ordinary typed ``/help``.
+        files = file_attachments(inbound.attachments)
 
         async def _refused_turn_restricted() -> bool:
             return await refused_resume_is_restricted(
@@ -483,7 +492,7 @@ class TeamsDispatcher:
             text=inbound.text,
             user_id=email,
             message_id=inbound.activity_id,
-            attachments_dropped=len(inbound.attachments),
+            attachments_dropped=len(files),
         )
         if not await admit_inbound_callback(
             self.sessions,
@@ -506,12 +515,12 @@ class TeamsDispatcher:
             return
 
         override_mode: str | None = None
-        # An attachment-bearing message is never a command. Teams puts the caption
-        # in ``text``, so "/stop here is the log" would otherwise cancel the turn AND
+        # A FILE-bearing message is never a command. Teams puts the caption in
+        # ``text``, so "/stop here is the log" would otherwise cancel the turn AND
         # discard the file; and a caption is prose the user wrote about the upload,
         # not an instruction to this dispatcher. Discord and Telegram draw the line
-        # in the same place.
-        cmd = parse_command(text) if (interpret_commands and not inbound.attachments) else None
+        # in the same place. The body echo is not a file (see ``files`` above).
+        cmd = parse_command(text) if (interpret_commands and not files) else None
         # Resume routing runs BEFORE the intercept, and its answer is used by the
         # commands below. `/compact` and `/stop` act on the RESOLVED session, so after a
         # binding was destroyed they would compact or cancel the native Teams session
@@ -528,7 +537,7 @@ class TeamsDispatcher:
                 if await self._reply(inbound, route.refusal):
                     await self._session_resume.settle(inbound.conversation_id, route)
                 return
-        if interpret_commands and not inbound.attachments:
+        if interpret_commands and not files:
             # ── Command intercept (no LLM session needed) ──
             if cmd == "sessions":
                 await self._session_resume.show_picker(
@@ -844,7 +853,9 @@ class TeamsDispatcher:
             session_key,
             text,
             mode=mode,
-            has_attachments=bool(inbound.attachments),
+            # Files only: the body echo must not refuse a plain message as one whose
+            # attachments cannot wait in a dashboard queue.
+            has_attachments=bool(file_attachments(inbound.attachments)),
             # Where a drop notice goes if the drain later refuses a queued entry,
             # and the principal the outbound recipient check needs: this user was
             # authorized against the allow-list on inbound, and a dashboard slot's
@@ -920,11 +931,12 @@ class TeamsDispatcher:
             await (rerun() if rerun is not None else self.handle_message(inbound))
             return
         mode = override_mode or self._live_cfg().messaging.queue_mode
-        # An attachment-bearing message is never steered: a steer carries TEXT into
-        # the running turn, so the files would be dropped on the floor while the
-        # user is told their message was folded in. Queue it instead -- the drained
-        # turn ingests the descriptors and the picture actually arrives.
-        if mode != "queue" and not inbound.attachments:
+        # A FILE-bearing message is never steered: a steer carries TEXT into the
+        # running turn, so the files would be dropped on the floor while the user
+        # is told their message was folded in. Queue it instead -- the drained turn
+        # ingests the descriptors and the picture actually arrives. Same
+        # classification as the command gate: the body echo is not a file.
+        if mode != "queue" and not file_attachments(inbound.attachments):
             provider = self.sessions.get_provider(session_key)
             steer = getattr(provider, "steer", None)
             # Only steer a GENUINELY live turn. ``is_busy`` stays true through
@@ -1149,13 +1161,14 @@ class TeamsDispatcher:
         async with self._queue.lock:
             # The RAW attachment descriptors ride with the entry, not downloaded
             # bytes: the drained turn re-ingests them, so a queued picture is fetched
-            # once, when there is finally a turn to read it.
+            # once, when there is finally a turn to read it. Files only: the body echo
+            # is not re-ingested and does not count against the collapse cap.
             if not self.sessions.enqueue(
                 session_key,
                 str(time.time()),
                 text,
                 force=False,
-                attachments=list(inbound.attachments or []),
+                attachments=file_attachments(inbound.attachments),
                 # The sender and their chat ride with the entry too, because the
                 # drain replays it and the reply reaches whoever the replayed
                 # envelope names. Under ``dm_scope = "unified"`` two allow-listed
