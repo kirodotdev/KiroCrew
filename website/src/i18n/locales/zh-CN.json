@@ -5762,7 +5762,7 @@
       "approval_no_longer_pending": "这条审批已过期或已被处理 — 代理不再等待它。",
       "approve": "批准",
       "approved": "已批准",
-      "decision_failed": "这次决定可能未被记录 — 请求失败。",
+      "decision_failed": "这次决定可能未被记录 — 请求失败。请重试。",
       "decision_not_recorded_error": "这次决定未被记录：{{error}}",
       "reject": "拒绝",
       "rejected": "已拒绝",
@@ -7524,6 +7524,8 @@
         "open_notification": "打开通知：{{title}}",
         "reject": "拒绝",
         "search": "搜索…",
+        "decided_dismiss_failed": "你的决定已记录，但无法关闭此通知。请重试。",
+        "dismiss_failed": "无法关闭此通知。请重试。",
         "show_less": "收起",
         "show_muted_count": "显示已静音（{{count}}）",
         "try_a_different_search": "换个搜索词试试"

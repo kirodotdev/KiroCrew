@@ -5946,7 +5946,7 @@
       "approval_no_longer_pending": "Cette approbation a expiré ou a déjà été décidée — l’agent ne l’attend plus.",
       "approve": "Approuver",
       "approved": "Approuvé",
-      "decision_failed": "Cette décision n’a peut-être pas été enregistrée — la requête a échoué.",
+      "decision_failed": "Cette décision n’a peut-être pas été enregistrée — la requête a échoué. Réessaie.",
       "decision_not_recorded_error": "Cette décision n’a pas été enregistrée : {{error}}",
       "reject": "Refuser",
       "rejected": "Refusé",
@@ -7748,6 +7748,8 @@
         "open_notification": "Ouvrir la notification : {{title}}",
         "reject": "Refuser",
         "search": "Rechercher…",
+        "decided_dismiss_failed": "Ta décision a été enregistrée, mais cette notification n’a pas pu être ignorée. Réessaie.",
+        "dismiss_failed": "Impossible d’ignorer cette notification. Réessaie.",
         "show_less": "Afficher moins",
         "show_muted_count": "Afficher en sourdine ({{count}})",
         "try_a_different_search": "Essaie une autre recherche"

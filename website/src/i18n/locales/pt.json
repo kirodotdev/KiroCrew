@@ -5946,7 +5946,7 @@
       "approval_no_longer_pending": "Esta aprovação expirou ou já foi decidida — o agente não está mais aguardando por ela.",
       "approve": "Aprovar",
       "approved": "Aprovado",
-      "decision_failed": "Esta decisão pode não ter sido registrada — a solicitação falhou.",
+      "decision_failed": "Esta decisão pode não ter sido registrada — a solicitação falhou. Tente novamente.",
       "decision_not_recorded_error": "Esta decisão não foi registrada: {{error}}",
       "reject": "Rejeitar",
       "rejected": "Rejeitado",
@@ -7748,6 +7748,8 @@
         "open_notification": "Abrir notificação: {{title}}",
         "reject": "Rejeitar",
         "search": "Pesquisar…",
+        "decided_dismiss_failed": "Sua decisão foi registrada, mas não foi possível dispensar esta notificação. Tente novamente.",
+        "dismiss_failed": "Não foi possível dispensar esta notificação. Tente novamente.",
         "show_less": "Mostrar menos",
         "show_muted_count": "Mostrar silenciadas ({{count}})",
         "try_a_different_search": "Tente outra busca"

@@ -119,3 +119,10 @@ export function disintegrate(el: HTMLElement | null, opts: DisintegrateOptions =
     })
   })
 }
+
+/** Undo what `disintegrate` left on *el*, for a removal that failed after the
+ *  effect ran: the element shows again exactly as it was. */
+export function restoreDisintegrated(el: HTMLElement | null): void {
+  if (!el) return
+  for (const prop of ['opacity', 'filter', 'mask-image', '-webkit-mask-image', 'will-change']) el.style.removeProperty(prop)
+}

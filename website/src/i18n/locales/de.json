@@ -5854,7 +5854,7 @@
       "approval_no_longer_pending": "Diese Genehmigung ist abgelaufen oder wurde bereits entschieden — der Agent wartet nicht mehr darauf.",
       "approve": "Genehmigen",
       "approved": "Genehmigt",
-      "decision_failed": "Diese Entscheidung wurde möglicherweise nicht gespeichert — die Anfrage ist fehlgeschlagen.",
+      "decision_failed": "Diese Entscheidung wurde möglicherweise nicht gespeichert — die Anfrage ist fehlgeschlagen. Versuche es noch einmal.",
       "decision_not_recorded_error": "Diese Entscheidung wurde nicht gespeichert: {{error}}",
       "reject": "Ablehnen",
       "rejected": "Abgelehnt",
@@ -7636,6 +7636,8 @@
         "open_notification": "Benachrichtigung öffnen: {{title}}",
         "reject": "Ablehnen",
         "search": "Suchen…",
+        "decided_dismiss_failed": "Deine Entscheidung wurde gespeichert, aber diese Benachrichtigung konnte nicht verworfen werden. Versuche es noch einmal.",
+        "dismiss_failed": "Diese Benachrichtigung konnte nicht verworfen werden. Versuche es noch einmal.",
         "show_less": "Weniger anzeigen",
         "show_muted_count": "Stummgeschaltete anzeigen ({{count}})",
         "try_a_different_search": "Versuche eine andere Suche"

@@ -5732,7 +5732,7 @@
       "approval_no_longer_pending": "この承認は期限切れか、すでに決定済みです — エージェントはもう待機していません。",
       "approve": "承認",
       "approved": "承認済み",
-      "decision_failed": "この決定は記録されていない可能性があります — リクエストが失敗しました。",
+      "decision_failed": "この決定は記録されていない可能性があります — リクエストが失敗しました。もう一度お試しください。",
       "decision_not_recorded_error": "この決定は記録されませんでした: {{error}}",
       "reject": "却下",
       "rejected": "却下済み",
@@ -7524,6 +7524,8 @@
         "open_notification": "通知を開く：{{title}}",
         "reject": "却下",
         "search": "検索…",
+        "decided_dismiss_failed": "決定は記録されましたが、この通知を閉じられませんでした。もう一度お試しください。",
+        "dismiss_failed": "この通知を閉じられませんでした。もう一度お試しください。",
         "show_less": "少なく表示",
         "show_muted_count": "ミュート済みを表示（{{count}}）",
         "try_a_different_search": "別の検索を試す"

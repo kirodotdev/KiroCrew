@@ -44,7 +44,7 @@ import { useMessageQuote } from '../chat-core/composer/useMessageQuote'
 import { stripQuoteBlock, type MessageQuote } from '../chat-core/composer/messageQuote'
 import { buildOutgoingTurn, isEmptyTurn } from '../chat-core/composer/outgoingTurn'
 import { storeSentPastes } from '../chat-core/composer/composerPastes'
-import { addNotification, removeNotificationByTs } from '../store/notificationsSlice'
+import { addNotification, endApprovalRow, liveApprovalRows } from '../store/notificationsSlice'
 import { useDeleteTerminalSession } from '../components/CliPanel'
 import { interceptSlashCommand, isInterceptedSlashCommand } from './chat/ChatInput'
 import { updateSlot, slotIsRemoteBound } from '../store/dashboardSlice'
@@ -2605,8 +2605,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // a standing grant the backend never records (#5400, #5434).
   const dismissApproval = useCallback((aid: string, decision?: string) => {
     dispatch(resolveByApprovalId({ id: aid, slot: activeSlot || undefined, decision }))
-    const n = store.getState().notifications.items.find(x => x.approval_id === aid)
-    if (n) dispatch(removeNotificationByTs(n.ts))
+    // The id recurs and the feed keeps a refused press's retired row, so only
+    // a live row under the id is this decision's.
+    const n = liveApprovalRows(store.getState().notifications, aid).at(-1)
+    if (n) dispatch(endApprovalRow(n.ts))
   }, [activeSlot, dispatch])
   const switchAgent = useCallback(async (agentName: string, kind?: 'member' | 'template') => {
     if (!activeSlot) {

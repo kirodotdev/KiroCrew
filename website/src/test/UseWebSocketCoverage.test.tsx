@@ -13,7 +13,7 @@
  * explicitly and reset it afterwards, matching useWebSocket.approvalRouting.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { renderHook, act } from '@testing-library/react'
+import { renderHook, act, waitFor } from '@testing-library/react'
 import { createElement } from 'react'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -29,7 +29,7 @@ import { api } from '../api/client'
 import { store as globalStore } from '../store'
 import chatReducer, { PANE_HYDRATE_LIMIT, setActiveSlot, clearMessages, sseChatMessage, sseActivityEvent, setQuestionCard, resolveQuestionCard, sseAutomation, resolveByApprovalId } from '../store/chatSlice'
 import { sseSlots, addSlotOptimistic, armConfirmedCloseHold, removeSlotOptimistic } from '../store/dashboardSlice'
-import { addNotification, removeNotificationByTs } from '../store/notificationsSlice'
+import { addNotification, deleteNotification, approvalDecisionSettled } from '../store/notificationsSlice'
 import type { ChatSlot } from '../types'
 import { recentErrors } from '../utils/errorReport'
 import { structuredMonitorLoop } from './monitorFixtures'
@@ -226,6 +226,9 @@ describe('useWebSocket frame router', () => {
   })
 
   afterEach(() => {
+    // A test that throws between its own useFakeTimers/useRealTimers pair
+    // must not hand fake timers to the next test.
+    vi.useRealTimers()
     vi.unstubAllGlobals()
     URL.createObjectURL = originalCreateObjectUrl
     URL.revokeObjectURL = originalRevokeObjectUrl
@@ -251,6 +254,9 @@ describe('useWebSocket frame router', () => {
   }
 
   const chat = () => testStore.getState().chat
+  // An approval_resolved frame removes the request's feed row.
+  const listed = (approvalId: string) =>
+    testStore.getState().notifications.items.some(n => n.approval_id === approvalId)
   const dash = () => testStore.getState().dashboard
 
   it('subscribes to subagent events over the freshly-opened socket', () => {
@@ -541,7 +547,7 @@ describe('useWebSocket frame router', () => {
       expect(testStore.getState().notifications.items).toHaveLength(0)
       expect(chat().toolLog.some(e => e.approval_id === 'ap-2' && e.type === 'approval_resolved')).toBe(true)
     } finally {
-      globalStore.dispatch(removeNotificationByTs('8'))
+      globalStore.dispatch(deleteNotification.fulfilled('8', '', '8'))
     }
   })
 
@@ -630,8 +636,26 @@ describe('useWebSocket frame router', () => {
       expect(testStore.getState().notifications.items.some(n => n.approval_id === id)).toBe(false)
     } finally {
       vi.useRealTimers()
-      globalStore.dispatch(removeNotificationByTs('17'))
+      globalStore.dispatch(deleteNotification.fulfilled('17', '', '17'))
     }
+  })
+
+  it('a reload shows no row for an approval that expired before it, and one row for a live one', async () => {
+    // Approval rows are this tab's copies: the notification store holds none,
+    // so after a reload the only source is the reconcile, which adds what
+    // /api/approvals still lists as pending. An approval that expired while
+    // the page was closed is not listed there, so no live Approve/Reject
+    // can come back for it.
+    const live = { id: 'ap-live-after-reload', slot: '', source: 'cron', tool: 'live_tool', ts: 31 }
+    ;(api.notifications as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ notifications: [], unread: 0 })
+    ;(api.approvals as ReturnType<typeof vi.fn>).mockResolvedValueOnce([live])
+    mount()
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    const approvals = testStore.getState().notifications.items.filter(n => n.kind === 'approval')
+    expect(approvals.map(n => n.approval_id)).toEqual([live.id])
   })
 
   it('does not duplicate a surviving coordinator row after its notification is cleared', async () => {
@@ -768,7 +792,7 @@ describe('useWebSocket frame router', () => {
       expect(testStore.getState().notifications.items.some(n => n.approval_id === 'ap-collision')).toBe(false)
     } finally {
       vi.useRealTimers()
-      globalStore.dispatch(removeNotificationByTs('18'))
+      globalStore.dispatch(deleteNotification.fulfilled('18', '', '18'))
     }
   })
 
@@ -831,7 +855,7 @@ describe('useWebSocket frame router', () => {
       expect(retirementCount()).toBe(2)
     } finally {
       vi.useRealTimers()
-      globalStore.dispatch(removeNotificationByTs('20'))
+      globalStore.dispatch(deleteNotification.fulfilled('20', '', '20'))
     }
   })
 
@@ -856,7 +880,400 @@ describe('useWebSocket frame router', () => {
       expect(testStore.getState().notifications.items.find(n => n.approval_id === 'ap-state')).toBeUndefined()
       expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['global-approvals'] })
     } finally {
-      globalStore.dispatch(removeNotificationByTs('11'))
+      globalStore.dispatch(deleteNotification.fulfilled('11', '', '11'))
+    }
+  })
+
+  it('removes the live row named by the instance, never an earlier retired row sharing its id', () => {
+    const id = 'ap-recurring'
+    const rowA = {
+      kind: 'approval', title: 'First', body: '', ts: '30', approval_id: id, approval_instance: 'inst-a', slot: ACTIVE,
+    } as Parameters<typeof addNotification>[0]
+    const rowB = { ...rowA, title: 'Second', ts: '31', approval_instance: 'inst-b' }
+    const { ws } = mount()
+    // A press already retired request A's row; the caller then reuses its id.
+    for (const s of [testStore, globalStore]) {
+      s.dispatch(addNotification(rowA))
+      s.dispatch(approvalDecisionSettled({ ts: '30', outcome: 'refused' }))
+    }
+    try {
+      act(() => {
+        ws.simulateMessage({
+          type: 'approval',
+          data: { id, instance: 'inst-b', slot: ACTIVE, source: 'agent', tool: 'second_tool', ts: 31 },
+        })
+      })
+      globalStore.dispatch(addNotification(rowB))
+      expect(testStore.getState().notifications.items.find(n => n.ts === '31')?.approval_instance).toBe('inst-b')
+      act(() => {
+        // A coordinator decision is broadcast slotless, naming its instance.
+        ws.simulateMessage({ type: 'approval_resolved', data: { id, approved: true, instance: 'inst-b' } })
+      })
+      const left = testStore.getState().notifications
+      expect(left.items.map(n => n.ts)).toEqual(['30'])
+      expect(left.retiredApprovals?.['30']).toBe(true)
+    } finally {
+      for (const ts of ['30', '31']) {
+        globalStore.dispatch(deleteNotification.fulfilled(ts, '', ts))
+      }
+    }
+  })
+
+  it('a replacement raised under the id drops the replaced request\'s live feed row', () => {
+    // A same-id request ends the one it replaced, which gets no frame of its
+    // own: the replacement's `approval` frame names a new instance.
+    const id = 'ap-taken-over'
+    const note = (ts: string, instance: string) => ({
+      kind: 'approval', title: 'Approval', body: '', ts, approval_id: id, approval_instance: instance, slot: ACTIVE,
+    } as Parameters<typeof addNotification>[0])
+    const { ws } = mount()
+    try {
+      act(() => {
+        ws.simulateMessage({
+          type: 'approval',
+          data: { id, instance: 'inst-a', slot: ACTIVE, source: 'agent', tool: 'first_tool', ts: 60 },
+        })
+      })
+      globalStore.dispatch(addNotification(note('60', 'inst-a')))
+      act(() => {
+        ws.simulateMessage({
+          type: 'approval',
+          data: { id, instance: 'inst-b', slot: ACTIVE, source: 'agent', tool: 'second_tool', ts: 61 },
+        })
+      })
+      const rows = testStore.getState().notifications.items.filter(n => n.approval_id === id)
+      expect(rows.map(n => [n.ts, n.approval_instance])).toEqual([['61', 'inst-b']])
+      expect(testStore.getState().notifications.retiredApprovals?.['60']).toBeUndefined()
+    } finally {
+      for (const ts of ['60', '61']) globalStore.dispatch(deleteNotification.fulfilled(ts, '', ts))
+    }
+  })
+
+  it('a reconnect listing a new instance under the id drops the ended request\'s feed row', async () => {
+    type ApprovalSnapshot = Awaited<ReturnType<typeof api.approvals>>
+    const id = 'ap-taken-over-while-away'
+    ;(api.approvals as ReturnType<typeof vi.fn>).mockResolvedValueOnce([])
+    const { ws } = mount()
+    await act(async () => { await Promise.resolve() })
+    try {
+      act(() => {
+        ws.simulateMessage({
+          type: 'approval',
+          data: { id, instance: 'inst-a', slot: ACTIVE, source: 'agent', tool: 'first_tool', ts: 80 },
+        })
+      })
+      const noteA = {
+        kind: 'approval', title: 'First', body: '', ts: '80', approval_id: id, approval_instance: 'inst-a', slot: ACTIVE,
+      } as Parameters<typeof addNotification>[0]
+      globalStore.dispatch(addNotification(noteA))
+      // The socket drops; the server replaces A with B under the same id and
+      // B's frame is lost. The reconnect read lists only B, while the
+      // feed refetch still holds A's row.
+      ;(api.notifications as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ notifications: [noteA], unread: 1 })
+      ;(api.approvals as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+        { id, instance: 'inst-b', slot: ACTIVE, source: 'agent', tool: 'second_tool', ts: 81 },
+      ] as ApprovalSnapshot)
+      vi.useFakeTimers()
+      act(() => { ws.onclose?.(new CloseEvent('close')) })
+      act(() => { vi.advanceTimersByTime(1000) })
+      vi.useRealTimers()
+      const reconnected = WS_INSTANCES[1]
+      await act(async () => { reconnected.simulateOpen(); await Promise.resolve(); await Promise.resolve() })
+      // A's feed row goes: the server holds a different request under the id.
+      await waitFor(() => expect(testStore.getState().notifications.items.some(n => n.ts === '80')).toBe(false))
+    } finally {
+      vi.useRealTimers()
+      for (const ts of ['80', '81']) globalStore.dispatch(deleteNotification.fulfilled(ts, '', ts))
+    }
+  })
+
+  it('a reconnect listing of the same instance keeps its live row and adds no second one', async () => {
+    const id = 'ap-same-instance'
+    ;(api.approvals as ReturnType<typeof vi.fn>).mockResolvedValueOnce([])
+    const { ws } = mount()
+    await act(async () => { await Promise.resolve() })
+    try {
+      act(() => {
+        ws.simulateMessage({
+          type: 'approval',
+          data: { id, instance: 'inst-same', slot: ACTIVE, source: 'agent', tool: 'same_tool', ts: 82 },
+        })
+      })
+      const same = {
+        kind: 'approval', title: 'Same', body: '', ts: '82', approval_id: id, approval_instance: 'inst-same', slot: ACTIVE,
+      } as Parameters<typeof addNotification>[0]
+      globalStore.dispatch(addNotification(same))
+      ;(api.notifications as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ notifications: [same], unread: 1 })
+      ;(api.approvals as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+        { id, instance: 'inst-same', slot: ACTIVE, source: 'agent', tool: 'same_tool', ts: 82 },
+      ])
+      vi.useFakeTimers()
+      act(() => { ws.onclose?.(new CloseEvent('close')) })
+      act(() => { vi.advanceTimersByTime(1000) })
+      vi.useRealTimers()
+      await act(async () => { WS_INSTANCES[1].simulateOpen(); await Promise.resolve(); await Promise.resolve() })
+      await act(async () => { await Promise.resolve() })
+      const rows = testStore.getState().notifications.items.filter(n => n.approval_id === id)
+      expect(rows.map(n => [n.ts, n.approval_instance])).toEqual([['82', 'inst-same']])
+      const chatRows = chat().messages.filter(m => m.role === 'permission' && m.meta?.approval_id === id)
+      expect(chatRows.map(m => m.meta?.resolved)).toEqual([undefined])
+    } finally {
+      vi.useRealTimers()
+      globalStore.dispatch(deleteNotification.fulfilled('82', '', '82'))
+    }
+  })
+
+  it('a resolution naming one instance leaves a live row bound to another under the same id', () => {
+    const id = 'ap-two-instances'
+    const row = (ts: string, instance: string) => ({
+      kind: 'approval', title: 'Approval', body: '', ts, approval_id: id, approval_instance: instance, slot: ACTIVE,
+    } as Parameters<typeof addNotification>[0])
+    const { ws } = mount()
+    for (const s of [testStore, globalStore]) {
+      s.dispatch(addNotification(row('62', 'inst-1')))
+      s.dispatch(addNotification(row('63', 'inst-2')))
+    }
+    try {
+      act(() => {
+        ws.simulateMessage({ type: 'approval_resolved', data: { id, approved: false, decision: 'expired', instance: 'inst-1' } })
+      })
+      const rows = testStore.getState().notifications.items.filter(n => n.approval_id === id)
+      expect(rows.map(n => n.approval_instance)).toEqual(['inst-2'])
+    } finally {
+      for (const ts of ['62', '63']) globalStore.dispatch(deleteNotification.fulfilled(ts, '', ts))
+    }
+  })
+
+  it('the reconnect listing removes a live row whose request another instance replaced', async () => {
+    const id = 'ap-replaced-while-away'
+    const rowA = {
+      kind: 'approval', title: 'First', body: '', ts: '64', approval_id: id, approval_instance: 'inst-a', slot: ACTIVE,
+    } as Parameters<typeof addNotification>[0]
+    for (const s of [testStore, globalStore]) s.dispatch(addNotification(rowA))
+    ;(api.approvals as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      { id, instance: 'inst-b', slot: ACTIVE, source: 'agent', tool: 'second_tool', ts: 65 },
+    ])
+    // The boot snapshot still lists request A's row.
+    ;(api.notifications as ReturnType<typeof vi.fn>).mockResolvedValue({ notifications: [rowA], unread: 1 })
+    mount()
+    try {
+      await act(async () => { await Promise.resolve(); await Promise.resolve() })
+      await waitFor(() => {
+        const rows = testStore.getState().notifications.items.filter(n => n.approval_id === id)
+        expect(rows.map(n => n.approval_instance)).toEqual(['inst-b'])
+      })
+    } finally {
+      ;(api.notifications as ReturnType<typeof vi.fn>).mockResolvedValue({ notifications: [], unread: 0 })
+      for (const ts of ['64', '65']) globalStore.dispatch(deleteNotification.fulfilled(ts, '', ts))
+    }
+  })
+
+  it('a snapshot fetched before a live frame neither replaces nor drops the row that frame raised', async () => {
+    type ApprovalSnapshot = Awaited<ReturnType<typeof api.approvals>>
+    const id = 'ap-raised-during-read'
+    let release: (value: ApprovalSnapshot) => void = () => {}
+    const pending = new Promise<ApprovalSnapshot>((resolve) => { release = resolve })
+    ;(api.approvals as ReturnType<typeof vi.fn>).mockReturnValueOnce(pending)
+    const { ws } = mount()
+    try {
+      await act(async () => { await Promise.resolve(); await Promise.resolve() })
+      expect(api.approvals).toHaveBeenCalledTimes(1)
+      // Request B arrives live while the read is in flight.
+      act(() => {
+        ws.simulateMessage({
+          type: 'approval',
+          data: { id, instance: 'inst-b', slot: ACTIVE, source: 'agent', tool: 'live_tool', ts: 67 },
+        })
+        // The registry reads the app store; mirror the frame's feed row there.
+        globalStore.dispatch(addNotification({
+          kind: 'approval', title: 'Live', body: '', ts: '67', approval_id: id, approval_instance: 'inst-b', slot: ACTIVE,
+        } as Parameters<typeof addNotification>[0]))
+      })
+      // The read answers with request A, which B replaced under the same id.
+      await act(async () => {
+        release([{ id, instance: 'inst-a', slot: ACTIVE, source: 'agent', tool: 'stale_tool', ts: 66 }])
+        await pending
+        await Promise.resolve()
+      })
+      const rows = testStore.getState().notifications.items.filter(n => n.approval_id === id)
+      expect(rows.map(n => [n.ts, n.approval_instance])).toEqual([['67', 'inst-b']])
+    } finally {
+      for (const ts of ['66', '67']) globalStore.dispatch(deleteNotification.fulfilled(ts, '', ts))
+    }
+  })
+
+  it('a snapshot that omits an id re-raised live during the read does not retire it', async () => {
+    type ApprovalSnapshot = Awaited<ReturnType<typeof api.approvals>>
+    const id = 'ap-reraised-during-read'
+    const note = {
+      kind: 'approval', title: 'Live', body: '', ts: '68', approval_id: id, slot: ACTIVE,
+    } as Parameters<typeof addNotification>[0]
+    const { ws } = mount()
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    act(() => {
+      ws.simulateMessage({ type: 'approval', data: { id, slot: ACTIVE, source: 'agent', tool: 'first_tool', ts: 68 } })
+      globalStore.dispatch(addNotification(note))
+    })
+    let release: (value: ApprovalSnapshot) => void = () => {}
+    const pending = new Promise<ApprovalSnapshot>((resolve) => { release = resolve })
+    ;(api.approvals as ReturnType<typeof vi.fn>).mockReturnValueOnce(pending)
+    try {
+      // A reconnect read begins while the id is held, then the id is raised
+      // again live; the answer predates that frame and omits the id.
+      vi.useFakeTimers()
+      act(() => { ws.onclose?.(new CloseEvent('close')) })
+      act(() => { vi.advanceTimersByTime(1000) })
+      vi.useRealTimers()
+      const reconnected = WS_INSTANCES[1]
+      await act(async () => { reconnected.simulateOpen(); await Promise.resolve() })
+      act(() => {
+        reconnected.simulateMessage({ type: 'approval', data: { id, slot: ACTIVE, source: 'agent', tool: 'first_tool', ts: 68 } })
+      })
+      await act(async () => { release([]); await pending; await Promise.resolve() })
+      expect(testStore.getState().notifications.items.some(n => n.approval_id === id)).toBe(true)
+      expect(chat().messages.find(m => m.meta?.approval_id === id)?.meta?.resolved).toBeUndefined()
+    } finally {
+      globalStore.dispatch(deleteNotification.fulfilled('68', '', '68'))
+    }
+  })
+
+  it('removes a slotless cron approval on its expiry, which has no chat row to match', () => {
+    const { ws } = mount()
+    try {
+      act(() => {
+        ws.simulateMessage({
+          type: 'approval',
+          data: { id: 'ap-cron', instance: 'inst-cron', source: 'cron', tool: 'cron_tool', ts: 41 },
+        })
+      })
+      globalStore.dispatch(addNotification({
+        kind: 'approval', title: 'Cron approval', body: '', ts: '41', approval_id: 'ap-cron', approval_instance: 'inst-cron',
+      } as Parameters<typeof addNotification>[0]))
+      act(() => {
+        ws.simulateMessage({
+          type: 'approval_resolved',
+          data: { id: 'ap-cron', approved: false, decision: 'expired', instance: 'inst-cron' },
+        })
+      })
+      expect(listed('ap-cron')).toBe(false)
+    } finally {
+      globalStore.dispatch(deleteNotification.fulfilled('41', '', '41'))
+    }
+  })
+
+  it('an instance-bearing resolution settles the coordinator row, never a colliding chat-runner row', () => {
+    const id = 'ap-same-slot-collision'
+    // A chat-runner permission row under the same id, in the same slot, first.
+    testStore.dispatch(sseChatMessage({
+      slot: ACTIVE, role: 'permission', content: '[agent] native_tool', ts: '70',
+      meta: { approval_id: id, tool_input: '' },
+    }))
+    const { ws } = mount()
+    try {
+      act(() => {
+        ws.simulateMessage({
+          type: 'approval',
+          data: { id, instance: 'inst-coord', slot: ACTIVE, source: 'agent', tool: 'coord_tool', ts: 71 },
+        })
+      })
+      globalStore.dispatch(addNotification({
+        kind: 'approval', title: 'Coordinator approval', body: '', ts: '71', approval_id: id, approval_instance: 'inst-coord', slot: ACTIVE,
+      } as Parameters<typeof addNotification>[0]))
+      act(() => {
+        ws.simulateMessage({ type: 'approval_resolved', data: { id, slot: ACTIVE, approved: true, instance: 'inst-coord' } })
+      })
+      const rows = chat().messages.filter(m => m.role === 'permission' && m.meta?.approval_id === id)
+      expect(rows).toHaveLength(2)
+      expect(rows.find(m => m.meta?.registry == null)?.meta?.resolved).toBeUndefined()
+      expect(rows.find(m => m.meta?.registry === 'coordinator')?.meta?.resolved).toBe('approved')
+      expect(listed(id)).toBe(false)
+    } finally {
+      globalStore.dispatch(deleteNotification.fulfilled('71', '', '71'))
+    }
+  })
+
+  it('a tracked resolution with only a chat-runner row in its slot leaves that row pending', () => {
+    const id = 'ap-slotless-vs-native'
+    testStore.dispatch(sseChatMessage({
+      slot: ACTIVE, role: 'permission', content: '[agent] native_tool', ts: '72',
+      meta: { approval_id: id, tool_input: '' },
+    }))
+    const { ws } = mount()
+    try {
+      act(() => {
+        ws.simulateMessage({
+          type: 'approval',
+          data: { id, instance: 'inst-cron2', source: 'cron', tool: 'cron_tool', ts: 73 },
+        })
+      })
+      act(() => {
+        ws.simulateMessage({ type: 'approval_resolved', data: { id, slot: ACTIVE, approved: true, instance: 'inst-cron2' } })
+      })
+      expect(chat().messages.find(m => m.meta?.approval_id === id)?.meta?.resolved).toBeUndefined()
+    } finally {
+      globalStore.dispatch(deleteNotification.fulfilled('73', '', '73'))
+    }
+  })
+
+  it('keeps a request that reused an id during the reconcile read, removing only the earlier one', async () => {
+    type ApprovalSnapshot = Awaited<ReturnType<typeof api.approvals>>
+    const id = 'ap-replaced-mid-read'
+    const note = (ts: string, instance: string) => ({
+      kind: 'approval', title: 'Approval', body: '', ts, approval_id: id, approval_instance: instance, slot: ACTIVE,
+    } as Parameters<typeof addNotification>[0])
+    ;(api.approvals as ReturnType<typeof vi.fn>).mockResolvedValueOnce([])
+    const { ws } = mount()
+    await act(async () => { await Promise.resolve() })
+    try {
+      act(() => {
+        ws.simulateMessage({
+          type: 'approval',
+          data: { id, instance: 'inst-a', slot: ACTIVE, source: 'agent', tool: 'first_tool', ts: 50 },
+        })
+      })
+      globalStore.dispatch(addNotification(note('50', 'inst-a')))
+
+      // The reconnect read is answered from a listing taken before request B.
+      let release: (value: ApprovalSnapshot) => void = () => {}
+      ;(api.approvals as ReturnType<typeof vi.fn>).mockReturnValueOnce(
+        new Promise<ApprovalSnapshot>((resolve) => { release = resolve }))
+      ;(api.notifications as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        notifications: [note('50', 'inst-a')], unread: 1,
+      })
+      vi.useFakeTimers()
+      act(() => { ws.onclose?.(new CloseEvent('close')) })
+      act(() => { vi.advanceTimersByTime(1000) })
+      vi.useRealTimers()
+      const reconnected = WS_INSTANCES[1]
+      await act(async () => {
+        reconnected.simulateOpen()
+        await Promise.resolve()
+      })
+      // Request B reuses A's id while that read is in flight.
+      act(() => {
+        reconnected.simulateMessage({
+          type: 'approval',
+          data: { id, instance: 'inst-b', slot: ACTIVE, source: 'agent', tool: 'second_tool', ts: 51 },
+        })
+      })
+      globalStore.dispatch(addNotification(note('51', 'inst-b')))
+      await act(async () => {
+        release([])
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      const rows = () => testStore.getState().notifications.items.filter(n => n.approval_id === id).map(n => n.ts)
+      expect(rows()).toEqual(['51'])
+      expect(testStore.getState().notifications.retiredApprovals?.['51']).toBeUndefined()
+      // B's provenance survived, so its own decision still removes its row.
+      act(() => {
+        reconnected.simulateMessage({ type: 'approval_resolved', data: { id, approved: true, instance: 'inst-b' } })
+      })
+      expect(rows()).toEqual([])
+    } finally {
+      vi.useRealTimers()
+      for (const ts of ['50', '51']) globalStore.dispatch(deleteNotification.fulfilled(ts, '', ts))
     }
   })
 
@@ -913,7 +1330,7 @@ describe('useWebSocket frame router', () => {
       expect(chat().messages.find(m => m.meta?.approval_id === 'ap-gap')?.meta?.resolved).toBeUndefined()
     } finally {
       vi.useRealTimers()
-      globalStore.dispatch(removeNotificationByTs('12'))
+      globalStore.dispatch(deleteNotification.fulfilled('12', '', '12'))
     }
   })
 
@@ -982,7 +1399,7 @@ describe('useWebSocket frame router', () => {
           type: 'approval_resolved',
           data: { id: 'ap-resolved-during-sync', slot: ACTIVE, approved: true },
         })
-        globalStore.dispatch(removeNotificationByTs('14'))
+        globalStore.dispatch(deleteNotification.fulfilled('14', '', '14'))
       })
       expect(testStore.getState().notifications.items.some(n => n.approval_id === 'ap-resolved-during-sync')).toBe(false)
 
@@ -1005,7 +1422,7 @@ describe('useWebSocket frame router', () => {
       expect(chat().messages.find(m => m.meta?.approval_id === 'ap-still-pending')?.meta?.resolved).toBeUndefined()
       expect(approvalRowDispatches('ap-still-pending')).toBe(1)
     } finally {
-      globalStore.dispatch(removeNotificationByTs('14'))
+      globalStore.dispatch(deleteNotification.fulfilled('14', '', '14'))
     }
   })
 
@@ -1035,7 +1452,7 @@ describe('useWebSocket frame router', () => {
         type: 'approval_resolved',
         data: { id: 'ap-injected-during-sync', slot: ACTIVE, approved: false },
       })
-      globalStore.dispatch(removeNotificationByTs('16'))
+      globalStore.dispatch(deleteNotification.fulfilled('16', '', '16'))
     })
 
     try {
@@ -1053,7 +1470,7 @@ describe('useWebSocket frame router', () => {
       expect(chat().messages.find(m => m.meta?.approval_id === 'ap-injected-during-sync')?.meta?.resolved).toBe('rejected')
       expect(approvalRowDispatches).toBe(1)
     } finally {
-      globalStore.dispatch(removeNotificationByTs('16'))
+      globalStore.dispatch(deleteNotification.fulfilled('16', '', '16'))
     }
   })
 
@@ -2465,7 +2882,7 @@ describe('useWebSocket connection lifecycle', () => {
     vi.stubGlobal('WebSocket', MockWebSocket)
   })
 
-  afterEach(() => { vi.unstubAllGlobals() })
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
 
   function wrapper({ children }: { children: React.ReactNode }) {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -2654,7 +3071,7 @@ describe('useWebSocket connection lifecycle', () => {
       expect(testStore.getState().chat.pendingQuestions[ACTIVE]?.ask_id).toBe('ask-missed')
       expect(result.current.forceReconnect).toBeTypeOf('function')
     } finally {
-      globalStore.dispatch(removeNotificationByTs('4'))
+      globalStore.dispatch(deleteNotification.fulfilled('4', '', '4'))
     }
   })
 

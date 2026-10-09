@@ -4113,10 +4113,12 @@ async def api_approval_resolve(request: web.Request) -> web.Response:
         # record expires. The instance binds the decision to the request the card
         # showed: the request id is minted by the caller and can recur in the same
         # slot, so a card left up from an expired record would otherwise resolve
-        # the request that replaced it.
+        # the request that replaced it. An approval with no owning slot (a cron,
+        # autonudge or task-runner request) names its slot as empty, which only
+        # a record whose own slot is empty matches.
         slot = request.query.get("slot", "")
         instance = request.query.get("instance", "")
-        if request.query["origin"] != "coordinator" or not slot or not instance:
+        if request.query["origin"] != "coordinator" or "slot" not in request.query or not instance:
             return web.json_response(
                 {"error": "invalid approval target", "code": "invalid_approval_target"}, status=400
             )
@@ -4124,7 +4126,7 @@ async def api_approval_resolve(request: web.Request) -> web.Response:
         # No await between checking the record and resolving its state-only future.
         ok = bool(
             pending
-            and pending.get("slot") == slot
+            and (pending.get("slot") or "") == slot
             and pending.get("instance") == instance
             and state.resolve_state_approval(approval_id, action == "approve")
         )

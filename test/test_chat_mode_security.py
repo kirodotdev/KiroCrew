@@ -1560,6 +1560,107 @@ async def test_dashboard_coordinator_target_without_an_instance_is_refused(state
     assert not coordinator.done()
 
 
+@pytest.mark.parametrize("action", ["approve", "reject"])
+@pytest.mark.asyncio
+async def test_a_slotless_coordinator_target_settles_only_the_instance_it_names(state, action):
+    """An approval with no owning slot (a cron, autonudge or task-runner request)
+    decides with an empty slot and its instance. A card left up from an earlier
+    request under the recurring id names that request's instance and settles
+    nothing; the card for the live request settles it; a target that omits the
+    slot key altogether is malformed. Negative control: an empty slot never
+    matches a record that has one."""
+    coordinator = asyncio.get_running_loop().create_future()
+    state._approval_futures["cron-id"] = coordinator
+    state._pending_approvals["cron-id"] = {"id": "cron-id", "slot": "", "instance": "live"}
+    slotted = asyncio.get_running_loop().create_future()
+    state._approval_futures["slotted-id"] = slotted
+    state._pending_approvals["slotted-id"] = {
+        "id": "slotted-id",
+        "slot": "dashboard:selected",
+        "instance": "shown",
+    }
+    app = _make_mode_app(state)
+    app.router.add_post("/api/approvals/{id}/{action}", api_approval_resolve)
+    async with TestClient(TestServer(app)) as client:
+        stale = {"origin": "coordinator", "slot": "", "instance": "earlier"}
+        response = await client.post(f"/api/approvals/cron-id/{action}", params=stale, json={})
+        assert response.status == 404
+        assert not coordinator.done()
+
+        no_slot_key = {"origin": "coordinator", "instance": "live"}
+        response = await client.post(
+            f"/api/approvals/cron-id/{action}", params=no_slot_key, json={}
+        )
+        assert response.status == 400
+        assert not coordinator.done()
+
+        unslotted = {"origin": "coordinator", "slot": "", "instance": "shown"}
+        response = await client.post(
+            f"/api/approvals/slotted-id/{action}", params=unslotted, json={}
+        )
+        assert response.status == 404
+        assert not slotted.done()
+
+        live = {"origin": "coordinator", "slot": "", "instance": "live"}
+        response = await client.post(f"/api/approvals/cron-id/{action}", params=live, json={})
+        assert response.status == 200
+        assert coordinator.result() is (action == "approve")
+
+
+def test_a_coordinator_resolution_names_the_instance_it_resolved():
+    """Both coordinator exits -- a decision and an expiry -- broadcast the
+    instance of the record they resolved, so a client can tell it from an
+    earlier request's row under the same recurring id."""
+    from kiro_crew.dashboard.interaction_coordinator import ApprovalCoordinator
+
+    class _State:
+        _log = MagicMock()
+
+        def __init__(self) -> None:
+            self.frames: list[dict] = []
+            self._approval_futures: dict = {}
+            self._pending_approvals = {
+                "id": {"id": "id", "slot": "", "instance": "live"},
+                "exp": {"id": "exp", "slot": "cron:job", "instance": "gone"},
+            }
+
+        def broadcast_ws(self, kind: str, payload: dict) -> None:
+            self.frames.append({"kind": kind, **payload})
+
+        def _audit_and_broadcast_approval(
+            self, session_key, approval_id, approved, decision="", *, instance=""
+        ):
+            ApprovalCoordinator.audit_and_broadcast(
+                self,
+                session_key,
+                approval_id,
+                approved,
+                decision,
+                audit_provider=MagicMock(),
+                instance=instance,
+            )
+
+    fake = _State()
+    loop = asyncio.new_event_loop()
+    try:
+        fake._approval_futures["id"] = loop.create_future()
+        assert ApprovalCoordinator.resolve_state(fake, "id", True)
+    finally:
+        loop.close()
+    ApprovalCoordinator._retire_unresolved(fake, "exp", "cron:job")
+    assert fake.frames == [
+        {"kind": "approval_resolved", "id": "id", "approved": True, "instance": "live"},
+        {
+            "kind": "approval_resolved",
+            "id": "exp",
+            "approved": False,
+            "slot": "cron:job",
+            "decision": "expired",
+            "instance": "gone",
+        },
+    ]
+
+
 def test_coordinator_records_carry_a_distinct_instance_per_request():
     """The request id is the caller's and can recur; the instance is minted here,
     once per request, so two requests sharing an id are told apart."""

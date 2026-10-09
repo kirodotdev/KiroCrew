@@ -5946,7 +5946,7 @@
       "approval_no_longer_pending": "Questa approvazione è scaduta o è già stata decisa — l’agente non la sta più aspettando.",
       "approve": "Approva",
       "approved": "Approvato",
-      "decision_failed": "Questa decisione potrebbe non essere stata registrata — la richiesta non è riuscita.",
+      "decision_failed": "Questa decisione potrebbe non essere stata registrata — la richiesta non è riuscita. Riprova.",
       "decision_not_recorded_error": "Questa decisione non è stata registrata: {{error}}",
       "reject": "Rifiuta",
       "rejected": "Rifiutato",
@@ -7748,6 +7748,8 @@
         "open_notification": "Apri la notifica: {{title}}",
         "reject": "Rifiuta",
         "search": "Cerca…",
+        "decided_dismiss_failed": "La tua decisione è stata registrata, ma non è stato possibile ignorare questa notifica. Riprova.",
+        "dismiss_failed": "Impossibile ignorare questa notifica. Riprova.",
         "show_less": "Mostra meno",
         "show_muted_count": "Mostra silenziate ({{count}})",
         "try_a_different_search": "Prova una ricerca diversa"
