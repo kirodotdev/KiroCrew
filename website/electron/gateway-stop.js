@@ -33,6 +33,100 @@ const KIROCREW_MODULE_RE = /^(?:kiro_crew|kirocrew_[a-z0-9][a-z0-9_]*)$/;
 // `test/test_cli.py::TestDesktopGatewayIdentityParity`; change them together.
 const KIROCREW_SERVER_SUBCOMMANDS = new Set(["gateway", "dashboard", "start"]);
 
+// The entry-point group a composed edition's companion registers. Its module
+// roots are gateway modules too, exactly as `port_resolution._gateway_module_roots()`
+// derives them on the Python side, so a companion that does not follow the
+// `kirocrew_<edition>` naming convention is still recognised.
+const PLUGIN_ENTRY_POINT_GROUP = "kirocrew.plugins";
+const MODULE_ROOT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * Top-level module roots named by the `kirocrew.plugins` section of an
+ * `entry_points.txt`: `enterprise = acme.compose:build` yields `acme`. Parsed
+ * like `_gateway_module_roots()` parses `ep.value`; anything that is not a
+ * plain identifier is dropped, since this only ever widens a match.
+ *
+ * @param {string} text  contents of a `*.dist-info/entry_points.txt`
+ * @returns {string[]}
+ */
+function pluginModuleRoots(text) {
+  const roots = [];
+  let inGroup = false;
+  for (const raw of String(text || "").split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#") || line.startsWith(";")) continue;
+    const section = /^\[(.+)\]$/.exec(line);
+    if (section) {
+      inGroup = section[1].trim() === PLUGIN_ENTRY_POINT_GROUP;
+      continue;
+    }
+    if (!inGroup) continue;
+    const eq = line.indexOf("=");
+    if (eq < 0) continue;
+    const root = line.slice(eq + 1).split(":", 1)[0].split(".", 1)[0].trim();
+    if (MODULE_ROOT_RE.test(root)) roots.push(root);
+  }
+  return roots;
+}
+
+/**
+ * The `kirocrew.plugins` module roots installed in a bundled backend.
+ *
+ * This process has no importlib view of the backend, but the backend ships
+ * inside this app: its `site-packages` is on disk in the read-only bundle, so
+ * the entry points `_gateway_module_roots()` reads at runtime can be read here
+ * from their `dist-info` metadata. Only the app's own bundle is consulted, so
+ * the set names exactly the editions this build was composed with, and the
+ * core still never learns any edition's name.
+ *
+ * Best effort: any I/O failure yields the roots found so far (usually none),
+ * which leaves the convention-based match unchanged.
+ *
+ * @param {string} backendRoot  the `…/backend-dist/kirocrew-backend` directory
+ * @param {{readdirSync: Function, readFileSync: Function}} [fsImpl]
+ * @returns {Set<string>}
+ */
+function readGatewayModuleRoots(backendRoot, fsImpl = fs) {
+  const roots = new Set();
+  if (!backendRoot) return roots;
+  const siteDirs = [path.join(backendRoot, "Lib", "site-packages")];
+  try {
+    for (const entry of fsImpl.readdirSync(path.join(backendRoot, "lib"))) {
+      if (/^python3\.\d+$/.test(entry)) siteDirs.push(path.join(backendRoot, "lib", entry, "site-packages"));
+    }
+  } catch { /* no POSIX lib directory */ }
+  for (const siteDir of siteDirs) {
+    let entries;
+    try { entries = fsImpl.readdirSync(siteDir); } catch { continue; }
+    for (const entry of entries) {
+      if (!entry.endsWith(".dist-info")) continue;
+      let text;
+      try { text = fsImpl.readFileSync(path.join(siteDir, entry, "entry_points.txt"), "utf8"); } catch { continue; }
+      for (const root of pluginModuleRoots(text)) roots.add(root);
+    }
+  }
+  return roots;
+}
+
+const bundledRootsCache = new Map();
+
+/**
+ * {@link readGatewayModuleRoots} for this app's own bundled backend, read once
+ * per resources path. Outside a packaged app (`process.resourcesPath` unset,
+ * as in unit tests) the set is empty.
+ *
+ * @param {string} [resourcesPath]
+ * @returns {Set<string>}
+ */
+function bundledGatewayModuleRoots(resourcesPath = process.resourcesPath) {
+  if (!resourcesPath) return new Set();
+  if (!bundledRootsCache.has(resourcesPath)) {
+    const backendRoot = path.join(resourcesPath, "backend-dist", "kirocrew-backend");
+    bundledRootsCache.set(resourcesPath, readGatewayModuleRoots(backendRoot));
+  }
+  return bundledRootsCache.get(resourcesPath);
+}
+
 function commandLineTokens(commandLine) {
   const tokens = [];
   const input = String(commandLine || "").replace(/^\s*CommandLine=/i, "").trim();
@@ -88,8 +182,10 @@ function executableSelector(tokens) {
 
 /**
  * Match only a Kiro Crew executable, or a Python process whose first execution
- * selector invokes a Kiro Crew gateway module (`kiro_crew`, or a composed
- * edition's `kirocrew_<edition>` companion — `KIROCREW_MODULE_RE`) followed by
+ * selector invokes a Kiro Crew gateway module (`kiro_crew`, a composed
+ * edition's `kirocrew_<edition>` companion — `KIROCREW_MODULE_RE` — or a
+ * `kirocrew.plugins` module root of this app's own bundled backend,
+ * `bundledGatewayModuleRoots`) followed by
  * a server subcommand (`KIROCREW_SERVER_SUBCOMMANDS`), or a Kiro Crew script.
  * Later process arguments never establish ownership, so SSH aliases and
  * unrelated script arguments cannot authorize a kill.
@@ -128,7 +224,11 @@ function isKirocrewGatewayCommand(commandLine, options) {
  */
 function kirocrewCommandShape(
   commandLine,
-  { trustedExecutablePaths = [], canonicalizePath = () => "" } = {}
+  {
+    trustedExecutablePaths = [],
+    canonicalizePath = () => "",
+    gatewayModuleRoots = bundledGatewayModuleRoots(),
+  } = {}
 ) {
   const tokens = commandLineTokens(commandLine);
   if (!tokens.length) return null;
@@ -174,7 +274,8 @@ function kirocrewCommandShape(
       // Module AND server subcommand, both in their fixed argparse slots. The
       // subcommand is the first positional after the module, so only that slot
       // is read: a later argument (`-m kiro_crew run gateway`) never qualifies.
-      const isGatewayModule = KIROCREW_MODULE_RE.test(tokens[index + 1] || "")
+      const moduleName = tokens[index + 1] || "";
+      const isGatewayModule = (KIROCREW_MODULE_RE.test(moduleName) || gatewayModuleRoots.has(moduleName))
         && KIROCREW_SERVER_SUBCOMMANDS.has(tokens[index + 2]);
       return isGatewayModule ? { serverSubcommand: true } : null;
     }
@@ -814,5 +915,8 @@ module.exports = {
   isServiceManaged,
   isKirocrewCommand,
   isKirocrewGatewayCommand,
+  pluginModuleRoots,
+  readGatewayModuleRoots,
+  bundledGatewayModuleRoots,
   INIT_PPID,
 };

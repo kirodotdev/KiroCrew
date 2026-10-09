@@ -11,6 +11,9 @@ const {
   forceStopPort,
   classifyPortOwner,
   isKirocrewCommand,
+  pluginModuleRoots,
+  readGatewayModuleRoots,
+  bundledGatewayModuleRoots,
 } = require("../gateway-stop");
 
 // Helper: temp KIROCREW_HOME containing a .local_secret file.
@@ -756,6 +759,62 @@ test("classifyPortOwner: a composed edition's gateway classifies as ours, not fo
     getCommand: async () => "/opt/edition/bin/python3.12 -s -P -m kirocrew_enterprise gateway --port 5476",
   });
   assert.strictEqual(owner, "kirocrew");
+});
+
+test("pluginModuleRoots reads only the kirocrew.plugins section's module roots", () => {
+  const text = [
+    "[console_scripts]",
+    "acme = acme.cli:main",
+    "",
+    "[kirocrew.plugins]",
+    "enterprise = acme.compose:build_enterprise_context",
+    "second = other_pkg:build",
+    "# comment = ignored.module:x",
+    "bad = not-an-identifier.x:y",
+    "",
+    "[other.group]",
+    "x = stranger.mod:y",
+  ].join("\n");
+  assert.deepStrictEqual(pluginModuleRoots(text), ["acme", "other_pkg"]);
+  assert.deepStrictEqual(pluginModuleRoots(""), []);
+});
+
+test("readGatewayModuleRoots collects plugin roots from the bundled site-packages", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "kc-bundle-"));
+  try {
+    const site = path.join(root, "lib", "python3.12", "site-packages");
+    fs.mkdirSync(path.join(site, "acme-1.0.dist-info"), { recursive: true });
+    fs.writeFileSync(
+      path.join(site, "acme-1.0.dist-info", "entry_points.txt"),
+      "[kirocrew.plugins]\nenterprise = acme.compose:build\n",
+    );
+    // A dist-info without entry points, and one with other groups only.
+    fs.mkdirSync(path.join(site, "plain-1.0.dist-info"));
+    fs.mkdirSync(path.join(site, "tool-1.0.dist-info"));
+    fs.writeFileSync(path.join(site, "tool-1.0.dist-info", "entry_points.txt"), "[console_scripts]\ntool = tool:main\n");
+    assert.deepStrictEqual([...readGatewayModuleRoots(root)], ["acme"]);
+    assert.deepStrictEqual([...readGatewayModuleRoots(path.join(root, "missing"))], []);
+    assert.deepStrictEqual([...readGatewayModuleRoots("")], []);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an edition module the bundle registers is ours even without the kirocrew_ prefix", async () => {
+  // The Python twin derives gateway modules from the installed kirocrew.plugins
+  // entry points, so `kirocrew stop` already recognises this gateway; the
+  // desktop app must too, or it refuses the user's own service-managed gateway
+  // as a foreign port holder.
+  const roots = new Set(["acme"]);
+  const ps = "/opt/Acme Crew/resources/backend-dist/kirocrew-backend/bin/python3.12 -s -m acme gateway --no-open";
+  assert.ok(isKirocrewCommand(ps, { gatewayModuleRoots: roots }));
+  assert.ok(!isKirocrewCommand(ps, { gatewayModuleRoots: new Set() }));
+  // Still module AND server subcommand, in their fixed slots.
+  assert.ok(!isKirocrewCommand("python3 -m acme doctor", { gatewayModuleRoots: roots }));
+  assert.ok(!isKirocrewCommand("python3 -m acme.cli gateway", { gatewayModuleRoots: roots }));
+  assert.ok(!isKirocrewCommand("python3 app.py -m acme gateway", { gatewayModuleRoots: roots }));
+  // Outside a packaged app there is no bundle, so nothing is widened.
+  assert.deepStrictEqual([...bundledGatewayModuleRoots(undefined)], []);
 });
 
 test("classifyPortOwner and forceStopPort share one KiroCrew matcher", async () => {
