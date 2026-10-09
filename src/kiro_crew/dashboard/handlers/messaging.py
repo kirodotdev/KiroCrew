@@ -2383,7 +2383,7 @@ async def api_slack_manifest(request: web.Request) -> web.Response:
 
     # Default to a non-identifying alias: $USER is a host account name and
     # should not be volunteered to every authenticated client.
-    alias = request.query.get("alias", "").strip() or "kirocrew"
+    alias = request.query.get("alias", "").strip() or slack_manifest.DEFAULT_ALIAS
     if not slack_manifest.valid_alias(alias):
         return web.json_response({"error": "invalid alias"}, status=400)
     try:

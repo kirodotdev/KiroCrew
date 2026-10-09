@@ -801,9 +801,9 @@ def _slack_manifest_payload_re() -> re.Pattern[str] | None:
 
     Derived from ``slack_manifest.stripped_template()`` — the SAME procedure both
     emitters use to build the payload — so the accepted payload cannot drift from
-    the emitted one. Every ``{{ALIAS}}`` after the first must be the same alias
-    (backreference), so a payload that varies them is rejected. Returns None when
-    the template cannot be read, which fails closed (no exemption).
+    the emitted one. Every ``{{ALIAS}}`` after the first is a backreference, and
+    ``{{COMMAND}}`` a group the caller pins to ``slash_command(alias)``, so neither
+    can vary. Returns None when the template cannot be read (fails closed).
     """
     if _slack_manifest_re_slot:
         return _slack_manifest_re_slot[0]
@@ -814,17 +814,16 @@ def _slack_manifest_payload_re() -> re.Pattern[str] | None:
         rendered = slack_manifest.stripped_template()
         placeholder_token = slack_manifest.ALIAS_PLACEHOLDER
         alias_body = slack_manifest.ALIAS_PATTERN
+        command_slot = (re.escape(slack_manifest.COMMAND_PLACEHOLDER), "(?P<command>[a-z0-9_-]+)")
     except Exception:
-        rendered = ""
-        placeholder_token = ""
-        alias_body = ""
+        rendered = placeholder_token = alias_body = ""
     if rendered and placeholder_token in rendered:
         parts = rendered.split(placeholder_token)
-        pattern = re.escape(parts[0])
+        pattern = re.escape(parts[0]).replace(*command_slot)
         for index, part in enumerate(parts[1:]):
             slot = f"(?P<alias>{alias_body})" if index == 0 else "(?P=alias)"
-            pattern += slot + re.escape(part)
-        compiled = re.compile(pattern)
+            pattern += slot + re.escape(part).replace(*command_slot)
+        compiled = re.compile(pattern) if command_slot[1] in pattern else None
     _slack_manifest_re_slot.append(compiled)
     return compiled
 
@@ -868,7 +867,7 @@ def _kirocrew_slack_app_link_alias(
     if pattern is None:
         return None
     match = pattern.fullmatch(payloads[0])
-    if match is None:
+    if match is None or match["command"] != slack_manifest.slash_command(match["alias"]):
         return None
     return match.group("alias")
 
