@@ -1012,9 +1012,38 @@ def _doctor_mcp_tools(
         issues.append(f"{ref} probe")
 
 
-# Non-secret rows kiro-cli writes when the signed-in identity came from IAM
-# Identity Center. Presence is the signal; the values (a start URL and a region)
-# are never read into a message, and no token key is touched.
+def _doctor_whoami_governance() -> bool | None:
+    """Ask kiro-cli itself whether governance can reach the signed-in identity.
+
+    The store probe behind ``mcp_governance_may_apply`` counts the
+    ``auth.idc.*`` rows in ``state``, and some kiro-cli builds sign an Identity
+    Center user in without writing them: the sign-in then lives only in
+    ``auth_kv``, under the same ``kirocli:odic:`` key names a Builder ID sign-in
+    uses, so no key-name check can tell the two apart. ``kiro-cli whoami``
+    names the account type directly and no store value is read here.
+
+    ``True`` for Identity Center or an API key, ``False`` for Builder ID, a
+    social sign-in or no sign-in at all, and ``None`` when nothing is known
+    (whoami would not run or answer, or named a type this code does not know).
+    """
+    from kiro_crew.cloud.login_target import (
+        ACCOUNT_TYPE_API_KEY,
+        ACCOUNT_TYPE_IDENTITY_CENTER,
+        discover_local_identity,
+        is_personal_account_type,
+    )
+
+    identity = discover_local_identity()
+    if identity is None:
+        return None
+    account_type = str(identity.get("account_type") or "")
+    if account_type in (ACCOUNT_TYPE_IDENTITY_CENTER, ACCOUNT_TYPE_API_KEY):
+        return True
+    if not account_type or is_personal_account_type(account_type):
+        return False
+    return None
+
+
 def _doctor_mcp_governance(
     agent_path: Path, issues: list[str], *, gated_off: "frozenset[str] | None" = None
 ) -> None:
@@ -1084,6 +1113,31 @@ def _doctor_mcp_governance(
     # declaration and no leftover markers, is the ordinary case.
     if not governed_capable and not declared and not marked:
         return
+
+    if not governed_capable:
+        # The store probe found no Identity Center rows and no API key is set.
+        # That is not proof of a personal account, so confirm with kiro-cli
+        # before advising the declaration off: only reached when a declaration
+        # or markers exist, so an ordinary personal install never pays for it.
+        via_whoami = _doctor_whoami_governance()
+        if via_whoami is None:
+            print("\nMCP Governance (enterprise):")
+            print(
+                "  identity: unknown — no Identity Center rows in kiro-cli's store, "
+                "and `kiro-cli whoami` did not say which account this is"
+            )
+            if declared:
+                print("  ⚠️  registry mode is declared")
+            else:
+                print("  ⚠️  registry markers are present on the spec without the declaration")
+            print(
+                "      run `kiro-cli whoami`. On a Builder ID or social sign-in kiro-cli "
+                "drops these servers; fix:  kirocrew config set agent.mcp_registry_mode false"
+            )
+            print(f"      affected: {', '.join(marked) if marked else names}")
+            issues.append("MCP governance identity unknown")
+            return
+        governed_capable = via_whoami
 
     print("\nMCP Governance (enterprise):")
 

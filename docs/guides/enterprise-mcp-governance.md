@@ -75,7 +75,13 @@ are the ones dropped.
 Verify with `kirocrew doctor`, which grows an `MCP Governance (enterprise)`
 section when the local identity is one an administrator's registry can govern
 (an IAM Identity Center or API-key sign-in), when `agent.mcp_registry_mode` is
-set, or when registry-marked entries are present.
+set, or when registry-marked entries are present. The identity comes from the
+`auth.idc.*` rows in kiro-cli's local store or a `KIRO_API_KEY`. Some kiro-cli
+builds sign an Identity Center user in without writing those rows, so before
+telling you to turn registry mode off, doctor asks `kiro-cli whoami` for the
+account type. If whoami cannot answer either, the section says the identity is
+unknown and asks you to check with `kiro-cli whoami`, rather than assuming a
+personal account.
 
 ### 2. Have the administrator allow-list the servers
 

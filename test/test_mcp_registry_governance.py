@@ -306,6 +306,11 @@ class TestGovernanceCapableIdentity:
 
 
 class TestDoctorGovernanceSection:
+    @pytest.fixture(autouse=True)
+    def _whoami_says_builder_id(self, _floor_monkeypatch):
+        """The fallback spawns kiro-cli; pin it so no test reaches a real binary."""
+        _floor_monkeypatch.setattr(cli_doctor, "_doctor_whoami_governance", lambda: False)
+
     def _spec(self, tmp_path: Path, *, marked: bool) -> Path:
         entry: dict[str, object] = {"command": "kirocrew", "args": ["mcp-core"]}
         if marked:
@@ -403,6 +408,111 @@ class TestDoctorGovernanceSection:
         assert "mcp_registry_mode false" in out
 
 
+def _make_auth_kv_layout_db(path: Path) -> None:
+    """A store in the newer layout: the sign-in lives in ``auth_kv`` only.
+
+    The key names are the ones an Identity Center AND a Builder ID sign-in both
+    write, so this one fixture stands for either account type.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT)")
+    con.execute("INSERT INTO state VALUES ('telemetryClientId', 'v')")
+    con.execute("CREATE TABLE auth_kv (key TEXT PRIMARY KEY, value TEXT)")
+    con.executemany(
+        "INSERT INTO auth_kv VALUES (?, ?)",
+        [("kirocli:odic:token", "v"), ("kirocli:odic:device-registration", "v")],
+    )
+    con.commit()
+    con.close()
+
+
+class TestAuthKvLayout:
+    """Identity Center signed in without the ``auth.idc.*`` state rows."""
+
+    def _spec(self, tmp_path: Path) -> Path:
+        entry = {"command": "kirocrew", "args": ["mcp-core"], "type": "registry"}
+        path = tmp_path / "kirocrew.json"
+        path.write_text(
+            json.dumps({"mcpServers": {name: dict(entry) for name in MANAGED}}), encoding="utf-8"
+        )
+        return path
+
+    def test_store_probe_cannot_tell_from_key_names(self, tmp_path):
+        """Pins the residual: key names alone do not identify Identity Center in
+        this layout, so the store probe still answers False and the doctor has
+        to ask kiro-cli."""
+        _make_auth_kv_layout_db(kiro_cli_state_dbs("linux", tmp_path, {})[0])
+        assert signed_in_via_idc("linux", tmp_path, {}) is False
+        assert mcp_governance_may_apply("linux", tmp_path, {}) is False
+
+    def test_whoami_identity_center_is_not_told_to_turn_registry_off(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(cli_doctor, "mcp_governance_may_apply", lambda: False)
+        monkeypatch.setattr(cli_doctor, "_doctor_whoami_governance", lambda: True)
+        monkeypatch.setattr(
+            cli_doctor.KiroCrewConfig, "load", staticmethod(lambda: _cfg(registry_mode=True))
+        )
+        issues: list[str] = []
+        cli_doctor._doctor_mcp_governance(self._spec(tmp_path), issues)
+        out = capsys.readouterr().out
+        assert issues == []
+        assert "identity: Identity Center or API key" in out
+        assert "not Identity Center" not in out
+
+    def test_unknown_identity_is_not_asserted_personal(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(cli_doctor, "mcp_governance_may_apply", lambda: False)
+        monkeypatch.setattr(cli_doctor, "_doctor_whoami_governance", lambda: None)
+        monkeypatch.setattr(
+            cli_doctor.KiroCrewConfig, "load", staticmethod(lambda: _cfg(registry_mode=True))
+        )
+        issues: list[str] = []
+        cli_doctor._doctor_mcp_governance(self._spec(tmp_path), issues)
+        out = capsys.readouterr().out
+        assert issues == ["MCP governance identity unknown"]
+        assert "identity: unknown" in out
+        assert "not Identity Center" not in out
+        assert "kiro-cli whoami" in out
+
+    def test_personal_install_never_spawns_whoami(self, tmp_path, monkeypatch, capsys):
+        """Nothing declared and nothing marked returns before the fallback runs."""
+        calls: list[int] = []
+        monkeypatch.setattr(cli_doctor, "mcp_governance_may_apply", lambda: False)
+        monkeypatch.setattr(
+            cli_doctor, "_doctor_whoami_governance", lambda: calls.append(1) or False
+        )
+        monkeypatch.setattr(
+            cli_doctor.KiroCrewConfig, "load", staticmethod(lambda: _cfg(registry_mode=False))
+        )
+        path = tmp_path / "kirocrew.json"
+        path.write_text(
+            json.dumps({"mcpServers": {n: {"command": "kirocrew"} for n in MANAGED}}),
+            encoding="utf-8",
+        )
+        cli_doctor._doctor_mcp_governance(path, [])
+        assert capsys.readouterr().out == ""
+        assert calls == []
+
+    @pytest.mark.parametrize(
+        ("identity", "expected"),
+        [
+            ({"account_type": "IamIdentityCenter"}, True),
+            ({"account_type": "ApiKey"}, True),
+            ({"account_type": "BuilderId"}, False),
+            ({"account_type": "SocialGoogle"}, False),
+            ({}, False),
+            (None, None),
+            ({"account_type": "SomethingNew"}, None),
+        ],
+    )
+    def test_whoami_account_type_mapping(self, monkeypatch, identity, expected):
+        from kiro_crew.cloud import login_target
+
+        monkeypatch.setattr(login_target, "discover_local_identity", lambda: identity)
+        assert cli_doctor._doctor_whoami_governance() is expected
+
+
 class TestDoctorSurvivesAMalformedSpec:
     """Doctor must not crash on the spec shapes it exists to diagnose.
 
@@ -410,6 +520,11 @@ class TestDoctorSurvivesAMalformedSpec:
     list survives and the membership walk raises AttributeError, aborting the
     whole doctor run.
     """
+
+    @pytest.fixture(autouse=True)
+    def _whoami_says_builder_id(self, _floor_monkeypatch):
+        """The fallback spawns kiro-cli; pin it so no test reaches a real binary."""
+        _floor_monkeypatch.setattr(cli_doctor, "_doctor_whoami_governance", lambda: False)
 
     @pytest.mark.parametrize(
         "servers", ["not-a-dict", ["kirocrew-core"], 7, True, "", [], {}]
