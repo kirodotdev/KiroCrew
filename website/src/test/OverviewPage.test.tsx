@@ -21,6 +21,11 @@ vi.mock('../hooks/useUptime', () => ({
 vi.mock('../api/client', () => ({
   api: {
     memorySettings: vi.fn().mockResolvedValue({ history_idle_hours: 3, history_max_days: 90, migrated: false }),
+    wakatimeStats: vi.fn().mockResolvedValue({
+      configured: true,
+      range: 'last_7_days',
+      stats: { total_seconds: 1800, total_seconds_including_other_language: 7200 },
+    }),
     // Present only to be asserted NEVER called: the landing page must not read
     // the Kiro sign-in status, let alone render its chooser.
     kasLoginStatus: vi.fn().mockResolvedValue({ authenticated: false }),
@@ -121,6 +126,14 @@ describe('OverviewPage — mission control', () => {
     expect(screen.getByTestId('usage-tab')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /Overview/ }))
     expect(screen.queryByTestId('usage-tab')).not.toBeInTheDocument()
+  })
+
+  it('shows the WakaTime summary total from the include-other field, not the classified-only total', async () => {
+    renderWithProviders(<OverviewPage />, { store: statusStore() })
+    // Fixture: classified total_seconds=1800 (30m), include-other=7200 (2h).
+    // The card must read the include-other total so it matches the drill-in.
+    expect(await screen.findByText('2h')).toBeInTheDocument()
+    expect(screen.queryByText('30m')).not.toBeInTheDocument()
   })
 
   it('drills into WakaTime and back', () => {
