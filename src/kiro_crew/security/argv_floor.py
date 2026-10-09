@@ -416,7 +416,9 @@ def _self_floor_can_fire(text_lower: str) -> bool:
     return bool(_INLINE_DYNAMIC_EXEC_RE.search(stripped))
 
 
-def _is_credential_mint(text_lower: str, *, raw_text: "str | None" = None) -> bool:
+def _is_credential_mint(
+    text_lower: str, *, raw_text: "str | None" = None, _allow_blank: bool = True
+) -> bool:
     """True if *text_lower* invokes the ``kirocrew token`` credential mint.
 
     The mint prints a signed dashboard access URL, so it is the escalation path
@@ -521,6 +523,22 @@ def _is_credential_mint(text_lower: str, *, raw_text: "str | None" = None) -> bo
                 if depth <= 0 and _ends_argv(later):
                     break
                 depth = max(depth, 0)
+    # Quote-aware re-derivation of the SAME verb window.  The forward scan above
+    # bounds the argv with ``_substitution_depth_delta``, a paren count over
+    # de-quoted tokens, so a QUOTED ``)`` inside a decoy ``$(true ')' ; true)``
+    # reads as a real closer and the scan stops at the decoy ``;`` before the
+    # verb -- missing ``kirocrew $(true ')' ; true) token``, which bash runs as
+    # ``kirocrew token``.  Re-run the SAME adjudication over a copy with each
+    # top-level substitution span blanked to a word boundary, so the window
+    # reaches the verb the decoy hid.  ``_allow_blank`` stops the recursion.
+    if _allow_blank:
+        submitted = raw_text if raw_text is not None else text_lower
+        for _src in _shell_payload_sources(submitted):
+            blanked = _shell_normalizer._blank_substitution_spans(_src)
+            if blanked != _src and _is_credential_mint(
+                blanked.lower(), raw_text=blanked, _allow_blank=False
+            ):
+                return True
     return False
 
 
@@ -842,7 +860,7 @@ def _bare_kill_raw_bodies(source: str) -> "list[str]":
     return bodies
 
 
-def _is_self_kill(text_lower: str) -> bool:
+def _is_self_kill(text_lower: str, _allow_blank: bool = True) -> bool:
     """True if *text_lower* terminates a Kiro Crew process.
 
     Two shapes, matched separately because the two kill families take different
@@ -973,6 +991,18 @@ def _is_self_kill(text_lower: str) -> bool:
                     _shell_normalizer._resolved_word_view(word)
                 ):
                     return True
+    # Quote-aware re-derivation of the by-name kill window (same rationale as
+    # ``_is_credential_mint``): its ``_substitution_depth_delta`` bound miscounts
+    # a QUOTED ``)`` in a decoy ``$(true ')' ; true)`` and stops before the
+    # target name, missing ``pkill -f $(true ')' ; true) kirocrew`` (bash runs
+    # ``pkill -f kirocrew``).  Re-run the SAME adjudication over a copy with each
+    # top-level substitution span blanked to a word boundary.  ``_allow_blank``
+    # stops the recursion.
+    if _allow_blank:
+        for _src in _shell_payload_sources(text_lower):
+            blanked = _shell_normalizer._blank_substitution_spans(_src)
+            if blanked != _src and _is_self_kill(blanked, _allow_blank=False):
+                return True
     return False
 
 

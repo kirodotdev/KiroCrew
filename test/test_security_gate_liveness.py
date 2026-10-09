@@ -217,7 +217,23 @@ def _url_payload_command(n: int) -> str:
 #: subcommand. It is a security-deciding predicate, so it cannot leave the package,
 #: and no dead code remains to offset it. Its first word is split on space and tab
 #: only, the way bash splits, so a Unicode space cannot pose as a word break.
-_PACKAGE_LINE_BUDGET = 28_665
+#:
+#: Raised again, from 28,665, for the quote-aware re-derivation of the mint-verb
+#: and self-kill-by-name argv windows: a ``_blank_substitution_spans`` helper
+#: blanks each top-level command-substitution span to a word boundary so a quoted
+#: ``)`` in a decoy stays inside the span rather than ending the window early, and
+#: each floor re-runs its own scan over that copy, and over each nested shell
+#: payload, recognising process-substitution openers too, and only a STANDALONE
+#: span is blanked so a glued span is not invented into a hit. No target,
+#: matching rule or threshold moved.
+#:
+#: Raised again, from 28,776, for a fail-closed guard on that helper: a
+#: substitution body containing ``#``, a newline, or an unbalanced quote is left
+#: VERBATIM rather than blanked, because such a body re-derives the outer
+#: quote/word state in a way the minimal pass does not model. Leaving it verbatim
+#: is exactly main's behaviour (main has no blanking pass), so the branch is never
+#: worse than main on those inputs. No target, matching rule or threshold moved.
+_PACKAGE_LINE_BUDGET = 28_804
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

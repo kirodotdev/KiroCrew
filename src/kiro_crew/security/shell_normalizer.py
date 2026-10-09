@@ -2518,6 +2518,115 @@ def _backtick_closer(source: str, start: int) -> int:
     return -1
 
 
+def _blank_substitution_spans(source: str) -> str:
+    """*source* with each TOP-LEVEL ``$( … )`` / `` ` … ` `` / ``<( … )`` / ``>( … )``
+    command or process substitution span replaced by a single space, read
+    QUOTE-AWARELY.
+
+    Minimal companion to the mint-verb and self-kill-by-name argv windows, whose
+    forward scan is bounded with :func:`_substitution_depth_delta` -- a paren
+    count over tokens the normalizer has already DE-QUOTED, so a QUOTED ``)``
+    inside ``$(true ')' ; true)`` reads as a real closer and the window ends at
+    the decoy ``;`` before the verb/target, while bash (whose substitution scan
+    is quote-aware) expands the empty-output span to nothing and runs the verb or
+    kill that follows.  Blanking the whole span to a word boundary -- found with
+    the same quote-aware span scanners the rest of the module uses
+    (:func:`_matching_close_paren`, :func:`_backtick_closer`) -- lets the window
+    reach the verb/target the decoy hid.  A space (not the empty string) is used
+    deliberately: this re-derivation only closes the REPORTED SPACE-SEPARATED
+    decoy (``<cli> $(…) <verb>``), and a glued span is a separate case left to the
+    de-quoted scan's own empty-substitution handling.  Only an OUTSIDE-quotes
+    opener is a span; a quoted ``$(`` is literal.  An unterminated span blanks to
+    the end of the text, which only widens the window (never hides a trailing
+    verb).  All other text is copied verbatim.
+    """
+    if "$(" not in source and "`" not in source and "<(" not in source and ">(" not in source:
+        return source
+    out: list[str] = []
+    i = 0
+    n = len(source)
+    for step in _iter_shell_chars(source):
+        if step.offset < i:
+            continue
+        off = step.offset
+        ch = step.char
+        escaped = len(step.text) == 2
+        in_quote = step.state != 0
+        if not escaped and not in_quote and ch == "$" and source.startswith("$(", off):
+            rel, proven = _matching_close_paren(source[off + 2 :], 0)
+            end = (off + 2 + rel) if proven else n
+            if _span_is_standalone(source, off, end) and _span_body_is_simple(source, off + 2, end):
+                out.append(source[i:off])
+                out.append(" ")
+                i = end
+        elif not escaped and not in_quote and ch in "<>" and source.startswith("(", off + 1):
+            # ``<( … )`` / ``>( … )`` process substitution -- a real operator
+            # outside quotes.  Its decoy ``)`` ends the de-quoted window the same
+            # way ``$( … )`` does, so blank it too.
+            rel, proven = _matching_close_paren(source[off + 2 :], 0)
+            end = (off + 2 + rel) if proven else n
+            if _span_is_standalone(source, off, end) and _span_body_is_simple(source, off + 2, end):
+                out.append(source[i:off])
+                out.append(" ")
+                i = end
+        elif not escaped and not in_quote and ch == "`":
+            closer = _backtick_closer(source, off + 1)
+            end = (closer + 1) if closer != -1 else n
+            if _span_is_standalone(source, off, end) and _span_body_is_simple(source, off + 1, end):
+                out.append(source[i:off])
+                out.append(" ")
+                i = end
+    out.append(source[i:])
+    return "".join(out)
+
+
+def _span_is_standalone(source: str, off: int, end: int) -> bool:
+    """True if the substitution span ``source[off:end]`` is a STANDALONE word --
+    a word boundary (start of string, whitespace, or a shell operator) on BOTH
+    sides -- rather than GLUED to adjacent word characters.
+
+    Only a standalone span is blanked to a word boundary: that is the reported
+    space-separated decoy (``<cli> $(…) <verb>``), where the span IS a word of its
+    own and bash's empty-output expansion leaves a word boundary.  A GLUED span
+    (``$(printf 'echo ')pkill``) is left verbatim, because blanking it to a space
+    would SPLIT the fused word bash actually forms and could invent a command the
+    original never ran -- the over-refusal direction.  Those glued cases are out
+    of this window's scope and keep their existing handling.
+    """
+    _BOUNDARY = " \t\n|&;()<>"
+    left_ok = off == 0 or source[off - 1] in _BOUNDARY
+    right_ok = end >= len(source) or source[end] in _BOUNDARY
+    return left_ok and right_ok
+
+
+def _span_body_is_simple(source: str, body_start: int, end: int) -> bool:
+    """True when the substitution body ``source[body_start:end-1]`` is safe to
+    blank -- it contains no ``#``, no newline, and no unbalanced quote.
+
+    A body with any of those re-derives the OUTER quote/word state in a way this
+    minimal pass does not model: a ``#`` begins a comment that swallows a quote
+    char, a newline ends such a comment, and an unbalanced quote flips the quote
+    state for the rest of the line.  Blanking such a span to a space would hand
+    the following scan a quote state the real shell never had, which is exactly
+    the F1 nested-span bypass (``$(: # '\\n) $(…) kirocrew``).  Leaving the span
+    VERBATIM is precisely main's behaviour (main has no blanking pass at all), so
+    the branch is never worse than main on these inputs while still closing the
+    reported space-separated decoys whose bodies ARE simple.
+
+    ``end`` includes the span's closing character (``)`` or `` ` ``); the body is
+    everything between the opener and that closer.  An unterminated span (``end``
+    at string length, no closer) is treated as not-simple -- left verbatim.
+    """
+    if end > len(source) or end <= body_start:
+        return False
+    body = source[body_start : end - 1]
+    if "#" in body or "\n" in body:
+        return False
+    single = body.count("'") - body.count("\\'")
+    double = body.count('"') - body.count('\\"')
+    return single % 2 == 0 and double % 2 == 0
+
+
 def _resolved_word_view(word: str) -> str:
     """*word* with parameter defaults resolved, empty substitutions collapsed,
     then one-character bracket classes removed -- the composed per-word
