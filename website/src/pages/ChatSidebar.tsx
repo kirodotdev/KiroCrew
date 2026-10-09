@@ -788,6 +788,16 @@ export const FOLDER_BODY_CLS = `relative border-l border-border mb-1 ml-1 pl-[3p
  *  nesting level costs 2 + 8 + 1 + 5 = 16px. */
 export const BOARD_FOLDER_BODY_CLS = `relative border-l border-border ml-2 pl-[5px] ${FOLDER_ROW_PAD_CLS}`
 
+/** The look shared by the sidebar's in-list text controls: the per-folder dormant
+ *  toggle and the "Show all older sessions" row. Both are buttons that read as
+ *  plain text, so they get one size and one hover fill; at a smaller size with a
+ *  fainter fill the dormant toggle read as a caption, not a control. Padding and
+ *  margins stay per row: the toggle sits on the session rows' content column
+ *  (`FOLDER_ROW_PAD_CLS` overrides its left pad inside a folder). */
+export const SIDEBAR_TEXT_CONTROL_CLS = 'text-left text-[12px] text-muted hover:text-accent hover:bg-accent-subtle rounded-md cursor-pointer bg-transparent border-none transition-colors'
+/** The dormant toggle: the shared look plus a full-width flex row for the chevron. */
+export const STALE_TOGGLE_CLS = `w-full flex items-center gap-1.5 pl-2.5 pr-3 py-0.5 leading-4 ${SIDEBAR_TEXT_CONTROL_CLS}`
+
 /** What a session row can DO: every callback and ref it needs, built ONCE in the
  *  shell and handed to every row, so the row's memo compares one stable reference
  *  here and its data through `sameRowView`. */
@@ -2707,8 +2717,8 @@ function ChatSidebar({
             if (next.has(containerId)) next.delete(containerId); else next.add(containerId)
             return next
           })}
-          data-stale-toggle="" className="w-full flex items-center gap-1.5 pl-2.5 pr-3 py-0.5 rounded-md text-[11px] leading-4 text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none cursor-pointer text-left">
-          <DisclosureChevron open={open} size={11} />
+          data-stale-toggle="" className={STALE_TOGGLE_CLS}>
+          <DisclosureChevron open={open} size={12} />
           <span id={lblId} className="tabular-nums">{label}</span>
           <span id={ctxId} className="sr-only">{containerName
             ? i18nT('pages.chatSidebar.stale_collapse_ctx_in_name', { name: containerName })
@@ -2739,7 +2749,7 @@ function ChatSidebar({
         type="button"
         data-testid={`older-sessions-hint-${lane}`}
         onClick={openHistoryPane}
-        className="mt-1 mx-1 px-2 py-1.5 text-left text-[12px] text-muted hover:text-accent hover:bg-accent-subtle rounded-md cursor-pointer bg-transparent border-none transition-colors"
+        className={`mt-1 mx-1 px-2 py-1.5 ${SIDEBAR_TEXT_CONTROL_CLS}`}
       >
         {i18nT('pages.chatSidebar.show_all_older_sessions')}
       </button>
