@@ -316,6 +316,54 @@ class TestLinkedThreadIntercept:
             assert len(slot._queue) == 1
             mock_run_chat.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_mid_turn_link_then_next_turn_delivered_via_existing_path(self):
+        """A mid-turn "Link to Dashboard" click links the thread through the
+        existing import path; the NEXT turn is then delivered into that slot.
+
+        This is the shrunk design: the turn-start button only makes the link
+        available earlier. There is no in-flight marker, no import-time
+        filtering, and no turn-end re-resolve — a click links the thread (via
+        ``_import_thread_to_slot``) and the subsequent turn rides the ordinary
+        linked-thread path.
+        """
+        from kiro_crew.slack import handler, interactions
+
+        # 1. The click imports the thread and links it (existing command path).
+        slot = MagicMock()
+        slot.key = "chat-7"
+        ds = MagicMock()
+        ds.get_linked_slot = MagicMock(return_value=None)
+        ds.get_or_create_slot = MagicMock(return_value=slot)
+        ds._self_bot_id = "B1"
+        import_slack = MagicMock()
+        import_slack.fetch_thread_replies = AsyncMock(
+            return_value=[{"user": "U1", "ts": "1.0", "text": "hi"}]
+        )
+        with patch("kiro_crew.dashboard.chat._save_slot_to_history"):
+            linked = await interactions._import_thread_to_slot(import_slack, ds, "C1", "t1")
+        assert linked is slot
+        ds.link_slack.assert_called_once_with("chat-7", "t1", "C1")
+
+        # 2. The next turn on the now-linked thread rides the ordinary
+        #    linked-thread intercept into the slot — no marker involved.
+        slot.append.reset_mock()
+        type(slot).running = PropertyMock(return_value=False)
+        slot._queue = []
+        ds.get_linked_slot = MagicMock(return_value=slot)
+        ds._background_tasks = set()
+        ds.broadcast_ws = MagicMock()
+        ds.push_slots_update = MagicMock()
+        next_slack = _make_slack()
+        with (
+            patch.object(handler, "_dashboard_state", ds),
+            patch.object(handler, "is_allowed_user", return_value=True),
+            patch("kiro_crew.dashboard.chat._run_chat", new_callable=AsyncMock) as mock_run_chat,
+        ):
+            await handler.handle_message(next_slack, MagicMock(), "C1", "next", "t1", "msg2", "U1")
+            slot.append.assert_called_once()
+            mock_run_chat.assert_called_once()
+
 
 # ── Linked thread intercept on the messaging-transport path ──
 

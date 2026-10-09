@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 
+from kiro_crew.slack.format import build_link_dashboard_button
+
 _MAX_MSG_CHARS = 4000
 _MAX_MESSAGES = 5
 
@@ -89,14 +91,16 @@ def session_task_card(
                     "action_id": f"mc_session_end_{key}",
                     "value": key,
                     "style": "danger",
-                }
+                },
             ],
         },
     ]
     return blocks
 
 
-def confirmation_dialog(title: str, text: str, confirm_text: str, deny_text: str, action_prefix: str = "mc_stop") -> list[dict]:
+def confirmation_dialog(
+    title: str, text: str, confirm_text: str, deny_text: str, action_prefix: str = "mc_stop"
+) -> list[dict]:
     """Section with confirm/deny action buttons."""
     return [
         {
@@ -394,33 +398,37 @@ def channels_modal(
     agents = agent_names or []
 
     if not channels:
-        blocks.append({
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": "_No tracked channels yet._"},
-        })
+        blocks.append(
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": "_No tracked channels yet._"},
+            }
+        )
     else:
         for ch in channels:
             cid = ch["channel_id"]
             cur = ch.get("activation", "mention")
             cur_agent = ch.get("agent", "")
             # Row 1: channel name + remove button
-            blocks.append({
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": f"<#{cid}>"},
-                "accessory": {
-                    "type": "button",
-                    "action_id": f"mc_ch_remove_{cid}",
-                    "text": {"type": "plain_text", "text": "✕ Remove"},
-                    "style": "danger",
-                    "value": cid,
-                    "confirm": {
-                        "title": {"type": "plain_text", "text": "Remove channel?"},
-                        "text": {"type": "mrkdwn", "text": f"Stop tracking <#{cid}>?"},
-                        "confirm": {"type": "plain_text", "text": "Remove"},
-                        "deny": {"type": "plain_text", "text": "Cancel"},
+            blocks.append(
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": f"<#{cid}>"},
+                    "accessory": {
+                        "type": "button",
+                        "action_id": f"mc_ch_remove_{cid}",
+                        "text": {"type": "plain_text", "text": "✕ Remove"},
+                        "style": "danger",
+                        "value": cid,
+                        "confirm": {
+                            "title": {"type": "plain_text", "text": "Remove channel?"},
+                            "text": {"type": "mrkdwn", "text": f"Stop tracking <#{cid}>?"},
+                            "confirm": {"type": "plain_text", "text": "Remove"},
+                            "deny": {"type": "plain_text", "text": "Cancel"},
+                        },
                     },
-                },
-            })
+                }
+            )
             # Row 2: activation mode + agent selector
             opts = [
                 {
@@ -431,51 +439,58 @@ def channels_modal(
                 for val, label, desc in _ACTIVATION_OPTIONS
             ]
             initial = next((o for o in opts if o["value"] == cur), opts[1])
-            elements: list[dict] = [{
-                "type": "static_select",
-                "action_id": f"mc_ch_activation_{cid}",
-                "initial_option": initial,
-                "options": opts,
-            }]
+            elements: list[dict] = [
+                {
+                    "type": "static_select",
+                    "action_id": f"mc_ch_activation_{cid}",
+                    "initial_option": initial,
+                    "options": opts,
+                }
+            ]
             if agents:
                 agent_opts = [
                     {"text": {"type": "plain_text", "text": "🤖 default"}, "value": "__default__"},
-                ] + [
-                    {"text": {"type": "plain_text", "text": n[:75]}, "value": n}
-                    for n in agents
-                ]
+                ] + [{"text": {"type": "plain_text", "text": n[:75]}, "value": n} for n in agents]
                 agent_initial = next(
                     (o for o in agent_opts if o["value"] == (cur_agent or "__default__")),
                     agent_opts[0],
                 )
-                elements.append({
-                    "type": "static_select",
-                    "action_id": f"mc_ch_agent_{cid}",
-                    "initial_option": agent_initial,
-                    "options": agent_opts,
-                })
-            blocks.append({
-                "type": "actions",
-                "block_id": f"mc_ch_actions_{cid}",
-                "elements": elements,
-            })
+                elements.append(
+                    {
+                        "type": "static_select",
+                        "action_id": f"mc_ch_agent_{cid}",
+                        "initial_option": agent_initial,
+                        "options": agent_opts,
+                    }
+                )
+            blocks.append(
+                {
+                    "type": "actions",
+                    "block_id": f"mc_ch_actions_{cid}",
+                    "elements": elements,
+                }
+            )
             blocks.append({"type": "divider"})
 
     # Add channel picker at the bottom (conversations_select includes private channels)
-    blocks.append({
-        "type": "actions",
-        "block_id": "mc_ch_add_block",
-        "elements": [{
-            "type": "conversations_select",
-            "action_id": "mc_ch_add",
-            "placeholder": {"type": "plain_text", "text": "➕ Add a channel…"},
-            "filter": {
-                "include": ["public", "private"],
-                "exclude_bot_users": True,
-                "exclude_external_shared_channels": True,
-            },
-        }],
-    })
+    blocks.append(
+        {
+            "type": "actions",
+            "block_id": "mc_ch_add_block",
+            "elements": [
+                {
+                    "type": "conversations_select",
+                    "action_id": "mc_ch_add",
+                    "placeholder": {"type": "plain_text", "text": "➕ Add a channel…"},
+                    "filter": {
+                        "include": ["public", "private"],
+                        "exclude_bot_users": True,
+                        "exclude_external_shared_channels": True,
+                    },
+                }
+            ],
+        }
+    )
 
     return {
         "type": "modal",
@@ -534,8 +549,26 @@ def build_stop_failed_blocks() -> list[dict]:
     ]
 
 
-def build_working_blocks(session_key: str) -> list[dict]:
-    """Inline 'working' message with a Stop button shown during execution."""
+def build_working_blocks(session_key: str, *, include_dashboard_link: bool = False) -> list[dict]:
+    """Inline 'working' message with a Stop button shown during execution.
+
+    ``include_dashboard_link`` also adds the "Link to Dashboard" button, so a
+    long turn can be linked to a dashboard session the moment it starts instead
+    of only from the timing footer at turn end. The caller applies the same gate
+    the footer uses (threaded, not already linked, dashboard present); this
+    builder just renders what it is told.
+    """
+    elements: list[dict] = [
+        {
+            "type": "button",
+            "action_id": f"mc_inline_stop_{session_key}",
+            "text": {"type": "plain_text", "text": "⏹ Stop"},
+            "value": session_key,
+            "style": "danger",
+        }
+    ]
+    if include_dashboard_link:
+        elements.append(build_link_dashboard_button())
     return [
         {
             "type": "context",
@@ -543,15 +576,7 @@ def build_working_blocks(session_key: str) -> list[dict]:
         },
         {
             "type": "actions",
-            "elements": [
-                {
-                    "type": "button",
-                    "action_id": f"mc_inline_stop_{session_key}",
-                    "text": {"type": "plain_text", "text": "⏹ Stop"},
-                    "value": session_key,
-                    "style": "danger",
-                }
-            ],
+            "elements": elements,
         },
     ]
 

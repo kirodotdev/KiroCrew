@@ -1426,10 +1426,23 @@ async def handle_message(
     # Post inline stop button (only in threaded conversations to avoid breaking tests)
     _working_ts: str | None = None
     if thread_ts:
+        # Same gate the timing footer applies at turn end (threaded, thread not
+        # already linked, dashboard present), evaluated NOW so the "Link to
+        # Dashboard" control exists for the whole turn rather than appearing
+        # only once the turn completes — on a long turn the footer arrives far
+        # too late to be the first chance to link. A click imports and links the
+        # thread via the existing command path; the next turn then mirrors
+        # through the normal pre-committed-link mirror below.
+        _early_link = (
+            not sessions.get_session_for_thread(reply_ts) and get_dashboard_state() is not None
+        )
         # Best-effort: a failed stop-button post must not drop the user's message.
         try:
             _working_ts = await slack.post_blocks(
-                channel, build_working_blocks(session_key), "Working…", reply_ts
+                channel,
+                build_working_blocks(session_key, include_dashboard_link=_early_link),
+                "Working…",
+                reply_ts,
             )
         except Exception:
             logger.warning("Failed to post inline stop button", exc_info=True)
@@ -3049,11 +3062,20 @@ async def handle_message(
             if options and _turn_row_ts
             else None
         )
+        # Re-read the DASHBOARD link for the footer button only: a mid-turn
+        # click on the turn-start button may have linked the thread to a slot
+        # since turn start, and a second Link button would be redundant. (Not
+        # the session map: the turn's own self-link lands there mid-turn too.)
+        _ds_now = cast("DashboardState | None", _dashboard_state)
+        _footer_link_key = linked_session_key
+        if not _footer_link_key and thread_ts and _ds_now is not None:
+            _slot_now = _ds_now.get_linked_slot(reply_ts)
+            _footer_link_key = _slot_now.key if _slot_now is not None else None
         footer_blocks = _append_footer_actions(
             footer_blocks,
             options,
             thread_ts,
-            linked_session_key,
+            _footer_link_key,
             _dashboard_state,
             _options_token,
         )

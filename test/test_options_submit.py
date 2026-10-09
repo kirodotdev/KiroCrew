@@ -371,6 +371,162 @@ class TestImportThreadToSlot:
         ds.push_slots_update.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_mid_turn_import_skips_working_placeholder_and_partial_stream(self):
+        """A click while a turn runs must not store the "Working…" placeholder or
+        the half-streamed answer as assistant rows; earlier turns stay."""
+        from kiro_crew.slack import interactions
+        from kiro_crew.slack.blocks import build_working_blocks
+
+        slack = MagicMock()
+        slack.fetch_thread_replies = AsyncMock(
+            return_value=[
+                {"user": "U1", "text": "first"},
+                {"bot_id": "B1", "text": "first answer"},
+                {"user": "U1", "text": "second"},
+                {
+                    "bot_id": "B1",
+                    "text": "Working…",
+                    "blocks": build_working_blocks("k", include_dashboard_link=True),
+                },
+                {"bot_id": "B1", "text": "half an ans"},
+            ]
+        )
+        slot = MagicMock()
+        slot.key = "s1"
+        ds = MagicMock()
+        ds.get_linked_slot = MagicMock(return_value=None)
+        ds.get_or_create_slot = MagicMock(return_value=slot)
+        ds._self_bot_id = "B1"
+        orch = MagicMock()
+        orch.sessions.is_busy = MagicMock(return_value=True)
+
+        with (
+            patch.object(interactions, "_orch", orch),
+            patch("kiro_crew.dashboard.chat._save_slot_to_history"),
+        ):
+            result = await interactions._import_thread_to_slot(slack, ds, "C1", "100.0")
+
+        assert result is slot
+        rows = [(c.args[0], c.args[1]) for c in slot.append.call_args_list]
+        assert rows == [
+            ("user", "first"),
+            ("assistant", "first answer"),
+            ("user", "second"),
+        ]
+        orch.sessions.is_busy.assert_called_with("k")
+
+    @pytest.mark.asyncio
+    async def test_stale_placeholder_does_not_drop_completed_answers(self):
+        """A Working block left behind by a turn that ended without deleting it
+        (failed delete, restart) is dropped alone: answers after it are kept."""
+        from kiro_crew.slack import interactions
+        from kiro_crew.slack.blocks import build_working_blocks
+
+        slack = MagicMock()
+        slack.fetch_thread_replies = AsyncMock(
+            return_value=[
+                {"user": "U1", "text": "first"},
+                {"bot_id": "B1", "text": "Working…", "blocks": build_working_blocks("k")},
+                {"bot_id": "B1", "text": "first answer"},
+                {"user": "U1", "text": "second"},
+                {"bot_id": "B1", "text": "second answer"},
+            ]
+        )
+        slot = MagicMock()
+        slot.key = "s1"
+        ds = MagicMock()
+        ds.get_linked_slot = MagicMock(return_value=None)
+        ds.get_or_create_slot = MagicMock(return_value=slot)
+        ds._self_bot_id = "B1"
+        orch = MagicMock()
+        orch.sessions.is_busy = MagicMock(return_value=False)
+
+        with (
+            patch.object(interactions, "_orch", orch),
+            patch("kiro_crew.dashboard.chat._save_slot_to_history"),
+        ):
+            await interactions._import_thread_to_slot(slack, ds, "C1", "100.0")
+
+        rows = [(c.args[0], c.args[1]) for c in slot.append.call_args_list]
+        assert rows == [
+            ("user", "first"),
+            ("assistant", "first answer"),
+            ("user", "second"),
+            ("assistant", "second answer"),
+        ]
+
+    @staticmethod
+    async def _import(replies, busy):
+        """Import a thread whose reads return *replies* in turn; return rows."""
+        from kiro_crew.slack import interactions
+
+        slack = MagicMock()
+        slack.fetch_thread_replies = AsyncMock(side_effect=replies)
+        slot = MagicMock()
+        slot.key = "s1"
+        ds = MagicMock()
+        ds.get_linked_slot = MagicMock(return_value=None)
+        ds.get_or_create_slot = MagicMock(return_value=slot)
+        ds._self_bot_id = "B1"
+        orch = MagicMock()
+        orch.sessions.is_busy = MagicMock(return_value=busy)
+        with (
+            patch.object(interactions, "_orch", orch),
+            patch("kiro_crew.dashboard.chat._save_slot_to_history"),
+        ):
+            await interactions._import_thread_to_slot(slack, ds, "C1", "100.0")
+        return [(c.args[0], c.args[1]) for c in slot.append.call_args_list]
+
+    @pytest.mark.asyncio
+    async def test_follow_up_during_running_turn_keeps_partial_out(self):
+        """A user follow-up posted mid-turn is kept, but the running turn's
+        partial answer after it is still not stored."""
+        from kiro_crew.slack.blocks import build_working_blocks
+
+        thread = [
+            {"user": "U1", "ts": "1", "text": "first"},
+            {"bot_id": "B1", "ts": "2", "text": "Working…", "blocks": build_working_blocks("k")},
+            {"user": "U1", "ts": "3", "text": "also this"},
+            {"bot_id": "B1", "ts": "4", "text": "half an ans"},
+        ]
+        rows = await self._import([thread], busy=True)
+        assert rows == [("user", "first"), ("user", "also this")]
+
+    @pytest.mark.asyncio
+    async def test_turn_ending_during_read_imports_the_finished_answer(self):
+        """The turn ends while the thread is read: the snapshot held the
+        placeholder and a partial answer, but the lease is already released.
+        The import reads again and stores the finished answer, not the cut-off one."""
+        from kiro_crew.slack.blocks import build_working_blocks
+
+        mid_turn = [
+            {"user": "U1", "ts": "1", "text": "q"},
+            {"bot_id": "B1", "ts": "2", "text": "Working…", "blocks": build_working_blocks("k")},
+            {"bot_id": "B1", "ts": "3", "text": "half an ans"},
+        ]
+        finished = [
+            {"user": "U1", "ts": "1", "text": "q"},
+            {"bot_id": "B1", "ts": "3", "text": "the full answer"},
+        ]
+        rows = await self._import([mid_turn, finished], busy=False)
+        assert rows == [("user", "q"), ("assistant", "the full answer")]
+
+    @pytest.mark.asyncio
+    async def test_unsettled_thread_is_treated_as_in_flight(self):
+        """Each read shows a new idle placeholder: leave the bot output out."""
+        from kiro_crew.slack.blocks import build_working_blocks
+
+        def read(n):
+            return [
+                {"user": "U1", "ts": "1", "text": "q"},
+                {"bot_id": "B1", "ts": f"p{n}", "text": "Working…", "blocks": build_working_blocks("k")},
+                {"bot_id": "B1", "ts": f"a{n}", "text": "partial"},
+            ]
+
+        rows = await self._import([read(n) for n in range(4)], busy=False)
+        assert rows == [("user", "q")]
+
+    @pytest.mark.asyncio
     async def test_returns_none_when_no_messages(self, monkeypatch):
         from kiro_crew.slack import interactions
 

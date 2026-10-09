@@ -1517,6 +1517,104 @@ async def _route_action_to_session(
     t.add_done_callback(_orch._handler_tasks.discard)
 
 
+_INLINE_STOP_PREFIX = "mc_inline_stop_"
+
+
+def _working_placeholder_key(m: dict) -> str | None:
+    """The session key on the bot's "Working…" message (its inline Stop button).
+
+    ``None`` when *m* is not a Working placeholder.
+    """
+    for block in m.get("blocks") or []:
+        if not isinstance(block, dict) or block.get("type") != "actions":
+            continue
+        for el in block.get("elements") or []:
+            action_id = el.get("action_id") if isinstance(el, dict) else None
+            if isinstance(action_id, str) and action_id.startswith(_INLINE_STOP_PREFIX):
+                return action_id[len(_INLINE_STOP_PREFIX) :]
+    return None
+
+
+def _session_running(session_key: str) -> bool:
+    """Whether *session_key* holds its turn lease right now (best-effort)."""
+    sessions = getattr(_orch, "sessions", None) if _orch else None
+    if sessions is None or not session_key:
+        return False
+    try:
+        return bool(sessions.is_busy(session_key))
+    except Exception:
+        logger.debug("is_busy check failed for %s", session_key, exc_info=True)
+        return False
+
+
+def _last_placeholder(msgs: list[dict]) -> tuple[str, str] | None:
+    """``(ts, session_key)`` of the last Working placeholder in *msgs*, if any."""
+    for m in reversed(msgs):
+        key = _working_placeholder_key(m)
+        if key is not None:
+            return str(m.get("ts") or ""), key
+    return None
+
+
+# How many reads a link import may take to see the thread settle.
+_SETTLE_READS = 3
+
+
+async def _fetch_settled_thread(
+    slack: Any, channel: str, thread_ts: str, is_running: Callable[[str], bool]
+) -> tuple[list[dict], bool]:
+    """Read a thread for import; return ``(msgs, in_flight)``.
+
+    ``in_flight`` is True when the last Working placeholder belongs to a turn
+    that is still running. A placeholder whose session is idle may be from a
+    turn that ended DURING the read, so the thread is read again: a turn that
+    completes delivers its answer and deletes its placeholder before it
+    releases its lease, so a read that starts after the lease was seen released
+    holds the finished turn (a failed turn's partial output is its final
+    thread content). The same placeholder seen idle twice is a leftover (a failed
+    delete, a restart). If the thread never settles, treat it as in flight:
+    leaving out an answer is better than storing a cut-off one.
+    """
+    msgs = await slack.fetch_thread_replies(channel, thread_ts)
+    seen_idle: str | None = None
+    for _ in range(_SETTLE_READS):
+        ph = _last_placeholder(msgs)
+        if ph is None:
+            return msgs, False
+        if is_running(ph[1]):
+            return msgs, True
+        if ph[0] == seen_idle:
+            return msgs, False
+        seen_idle = ph[0]
+        msgs = await slack.fetch_thread_replies(channel, thread_ts)
+        if not msgs:
+            return msgs, False
+    ph = _last_placeholder(msgs)
+    return msgs, ph is not None and not (ph[0] == seen_idle and not is_running(ph[1]))
+
+
+def _drop_in_flight_turn(msgs: list[dict], bot_id: str, in_flight: bool) -> list[dict]:
+    """Keep a still-running turn's unfinished bot output out of an import.
+
+    A "Working…" placeholder is never history, so every one is dropped. When
+    the last one belongs to a running turn (*in_flight*), every bot message
+    after it (thinking, partial stream) is that unfinished turn and is dropped
+    too, so no fake or cut-off assistant reply is stored. User messages are
+    always kept, including a follow-up posted while the turn runs. A leftover
+    placeholder from a finished turn is dropped alone.
+    """
+    idx = [i for i, m in enumerate(msgs) if _working_placeholder_key(m) is not None]
+    if not idx:
+        return msgs
+    drop = set(idx)
+    if in_flight:
+        for i in range(idx[-1] + 1, len(msgs)):
+            m = msgs[i]
+            if bool(m.get("bot_id")) or (bot_id and m.get("user") == bot_id):
+                drop.add(i)
+    return [m for i, m in enumerate(msgs) if i not in drop]
+
+
 async def _import_thread_to_slot(slack: Any, ds: Any, channel: str, thread_ts: str) -> Any:
     """Fetch a Slack thread, redact messages, and import into a new dashboard slot."""
     from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
@@ -1526,9 +1624,11 @@ async def _import_thread_to_slot(slack: Any, ds: Any, channel: str, thread_ts: s
     if existing:
         return existing
 
-    msgs = await slack.fetch_thread_replies(channel, thread_ts)
+    msgs, in_flight = await _fetch_settled_thread(slack, channel, thread_ts, _session_running)
     if not msgs:
         return None
+    bot_id = getattr(ds, "_self_bot_id", None) or ""
+    msgs = _drop_in_flight_turn(msgs, bot_id, in_flight)
     # Pre-filter: drop empty text and !link-to-dashboard messages
     msgs = [
         m
@@ -1543,7 +1643,6 @@ async def _import_thread_to_slot(slack: Any, ds: Any, channel: str, thread_ts: s
         msgs = msgs[-50:]
     slot = ds.get_or_create_slot()
     slot.title = f"Slack thread {thread_ts[:10]}" + (" (truncated)" if truncated else "")
-    bot_id = getattr(ds, "_self_bot_id", None) or ""
     for m in msgs:
         is_bot = bool(m.get("bot_id")) or m.get("user") == bot_id
         role = "assistant" if is_bot else "user"
