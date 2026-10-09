@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import { LexicalComposer } from '@lexical/react/LexicalComposer'
 import { ContentEditable } from '@lexical/react/LexicalContentEditable'
 import { HistoryPlugin } from '@lexical/react/LexicalHistoryPlugin'
@@ -378,7 +378,8 @@ function HostHistoryPlugin({ onHistoryStep }: { onHistoryStep: (direction: 'undo
   const [editor] = useLexicalComposerContext()
   const stepRef = useRef(onHistoryStep)
   stepRef.current = onHistoryStep
-  useEffect(() => {
+  // Layout effect, like Lexical's own plugins: see InteractionPlugin.
+  useLayoutEffect(() => {
     const offUndo = editor.registerCommand(UNDO_COMMAND, () => { stepRef.current('undo'); return true }, COMMAND_PRIORITY_CRITICAL)
     const offRedo = editor.registerCommand(REDO_COMMAND, () => { stepRef.current('redo'); return true }, COMMAND_PRIORITY_CRITICAL)
     return () => { offUndo(); offRedo() }
@@ -434,7 +435,14 @@ function InteractionPlugin({
   if (!imeLatchRef.current) imeLatchRef.current = createImeLatch()
   blocksRef.current = blocks
 
-  useEffect(() => {
+  // A layout effect, not a passive one, for the same reason Lexical registers
+  // its own plain-text handlers in one (usePlainTextSetup): the editor root
+  // takes keydown from the moment ContentEditable's ref sets it, during this
+  // same commit, while a passive effect waits for the scheduler's next task.
+  // On the lazy first mount that task is a separate macrotask, so between the
+  // two an Enter chord reaches only Lexical's default handler and inserts a
+  // line break instead of sending or optimizing (#18193).
+  useLayoutEffect(() => {
     const latch = imeLatchRef.current!
     // Track composition on the editor root itself, with the same stranded-latch
     // recovery the textarea binding carries: a composition abandoned without
