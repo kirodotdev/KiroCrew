@@ -1,5 +1,6 @@
 import { Fragment, type ReactNode } from 'react'
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from '../../components/ui/context-menu'
+import { useIsTouchDevice } from '../../hooks/useIsTouchDevice'
 
 export interface MessageMenuItem {
   id: string
@@ -11,24 +12,29 @@ export interface MessageMenuItem {
 }
 
 /**
- * Right-click / long-press menu on a message bubble.
+ * Right-click menu on a message bubble.
  *
  * The bubble is the trigger, so the gesture works on the whole message: no
- * hover row to find, no text to select first. Radix supplies the coarse-pointer
- * form (a ~700 ms press) and the keyboard form (Shift+F10 / the Menu key on a
- * focused bubble). Capability by omission: a host that offers no items renders
- * the children bare, so surfaces without the actions keep their bubbles exactly
- * as they were.
+ * hover row to find, no text to select first. Radix also supplies the keyboard
+ * form (Shift+F10 / the Menu key on a focused bubble). Capability by omission: a
+ * host that offers no items renders the children bare, so surfaces without the
+ * actions keep their bubbles exactly as they were.
+ *
+ * Not on touch: a long-press there is the platform's text-selection gesture.
+ * Radix's ~700 ms press opened this modal menu over the selection the reader
+ * had just started, and dragging the handles then extended it across the
+ * page. The same actions stay on the bubble's action row.
  *
  * Deliberately does NOT own any action: the host lists the same handlers its
  * action row already has (quote, copy, copy link, pin, edit), so the two entry
  * points can never disagree about what a message can do.
  */
 export default function MessageContextMenu({ items, children, onOpenChange }: { items: MessageMenuItem[]; children: ReactNode; onOpenChange?: (open: boolean) => void }) {
+  const isTouch = useIsTouchDevice()
   if (!items.length) return <>{children}</>
   return (
     <ContextMenu onOpenChange={onOpenChange}>
-      <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
+      <ContextMenuTrigger asChild disabled={isTouch}>{children}</ContextMenuTrigger>
       <ContextMenuContent className="min-w-[220px]" data-testid="message-context-menu">
         {items.map(item => (
           <Fragment key={item.id}>

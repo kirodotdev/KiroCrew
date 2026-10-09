@@ -159,3 +159,19 @@ describe('AssistantMessage context menu', () => {
     expect(copyToClipboard).toHaveBeenCalledWith(LONG)
   })
 })
+
+describe('AssistantMessage context menu on touch', () => {
+  // A long-press on touch is the platform's text-selection gesture, so the
+  // bubble menu must not open over a selection the reader just started.
+  const realMatchMedia = window.matchMedia
+  beforeEach(() => {
+    window.matchMedia = ((q: string) => ({ matches: q === '(pointer: coarse)' || q === '(hover: none)', media: q, addEventListener: () => {}, removeEventListener: () => {}, onchange: null, addListener: () => {}, removeListener: () => {}, dispatchEvent: () => false })) as typeof window.matchMedia
+  })
+  afterEach(() => { window.matchMedia = realMatchMedia })
+
+  it('does not open from the bubble, leaving native selection alone', () => {
+    render(<AssistantMessage content={LONG} isStreaming={false} slotRunning={false} messageTs="t1" slotKey="chat-1" onQuoteMessage={() => {}} />)
+    fireEvent.contextMenu(screen.getByTestId('message-bubble'))
+    expect(screen.queryByTestId('message-context-menu')).not.toBeInTheDocument()
+  })
+})

@@ -52,7 +52,7 @@ describe('composer dock clearance', () => {
   })
 
   it('measures the dock root from a callback ref through a ResizeObserver', () => {
-    expect(CHAT_PAGE).toMatch(/<div ref=\{dockRef\} className="[^"]*\babsolute\b[^"]*\bbottom-0\b[^"]*" style=\{\{ right: dockGutter \}\} data-testid="composer-dock-root">/)
+    expect(CHAT_PAGE).toMatch(/<div ref=\{dockRef\} className="[^"]*\babsolute\b[^"]*\bbottom-0\b[^"]*" style=\{\{ right: dockGutter \}\} data-testid="composer-dock-root"[^>]*>/)
     // A callback ref, not a `[]` layout effect: the dock sits inside the pane's
     // conditional branch, so a mount-once effect can run before it exists and
     // never measure. The ref fires on every mount/unmount of the box.
@@ -62,7 +62,7 @@ describe('composer dock clearance', () => {
     const hook = /const dockRef = useCallback\(\(el: HTMLDivElement \| null\) => \{[\s\S]*?if \(!el\) \{ setDockH\(0\); setDockGutter\(0\); return \}[\s\S]*?setDockH\(el\.offsetHeight\)[\s\S]*?setDockGutter\(sc \? Math\.max\(0, sc\.offsetWidth - sc\.clientWidth\) : 0\)[\s\S]*?new ResizeObserver\(measure\)[\s\S]*?ro\.observe\(el\)[\s\S]*?\}, \[scrollerRef\]\)/
     expect(DOCK).toMatch(hook)
     expect(CHAT_PAGE, 'the page takes dockRef from the dock owner').toMatch(/const \{ inputAreaRef, dockH, dockGutter, dockRef \} = useComposerDockMetrics\(scrollerRef\)/)
-    expect(CHAT_PAGE).toMatch(/<div ref=\{dockRef\} className="[^"]*" style=\{\{ right: dockGutter \}\} data-testid="composer-dock-root">/)
+    expect(CHAT_PAGE).toMatch(/<div ref=\{dockRef\} className="[^"]*" style=\{\{ right: dockGutter \}\} data-testid="composer-dock-root"[^>]*>/)
     for (const src of [CHAT_PAGE, DOCK]) expect(src).not.toMatch(/useLayoutEffect\(\(\) => \{\s*const el = dockRef\.current/)
   })
 

@@ -66,6 +66,7 @@ import { useTopbarCollapse } from './lib/useTopbarCollapse'
 import { setNativeBadgeCount, subscribeNativeNavigate, useMacFullscreen } from './shell/platform/electronBridge'
 import { DndContext, closestCenter, DragOverlay } from '@dnd-kit/core'
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
+import { SELECTION_INERT_ATTR } from './pages/chat/useSelectionInertOverlays'
 import ChatPage from './pages/ChatPage'
 import PopoutFrame from './pages/PopoutFrame'
 import ArtifactPopoutFrame from './pages/ArtifactPopoutFrame'
@@ -1797,6 +1798,10 @@ export default function App() {
         // (useTopbarCollapse above). Desktop only, on purpose: below 768px the
         // phone header's icon-only search and container rungs already fit.
         className={`topbar topbar-glass relative pl-2 pr-3${mobileSingle ? ' topbar-single' : ''}${isMobile ? '' : ' tb-measured'}`}
+        // On a phone the chat title is portaled into this bar, above the
+        // transcript: inert while a transcript selection is held, so a dragged
+        // handle cannot land on the title (useSelectionInertOverlays).
+        {...{ [SELECTION_INERT_ATTR]: '' }}
         // Both z-indexes come from lib/themeDecorLayer.ts, which derives the
         // theme-overlay ceiling from them — the header must outrank pack
         // decoration in both layouts (#7377), and a literal here could drift.

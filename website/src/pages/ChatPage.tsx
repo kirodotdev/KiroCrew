@@ -105,6 +105,8 @@ import EarlierMessagesBar from './chat/EarlierMessagesBar'
 import TranscriptScrollShell, { useTranscriptWidth } from './chat/TranscriptScrollShell'
 import { devLog, devWatchMessages, inspectorOn } from '../dev/scrollInspector'
 import TurnNavigationMinimap from './chat/TurnNavigationMinimap'
+import { SELECTION_INERT_ATTR, useSelectionInertOverlays } from './chat/useSelectionInertOverlays'
+import { nextRetainedRange, restoreEndpointToTranscript, rowEndpoints, type SelectionEndpoints } from '../utils/selectionRetention'
 import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
 import { carryPastes, expandAll as expandPasteTokens, mergeCarriedDraft } from '../utils/pasteTokens'
 import { extractPromptFromToken, extractSlackContextFromToken } from '../utils/tokenPrompt'
@@ -3227,6 +3229,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
 
   // The floating composer dock's measured clearance (see composerDock).
   const { inputAreaRef, dockH, dockGutter, dockRef } = useComposerDockMetrics(scrollerRef)
+  useSelectionInertOverlays(scrollerRef)
 
   // Quote / Ask on selected assistant text — the shared chat-core seam
   // (chat-core/composer/selectionActions): Quote lands in this composer with
@@ -3688,6 +3691,32 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     runActive: !!slotRunning,
     onTopReached: handleTopReached,
   })
+  const { retainRange } = virt
+
+  // Keep the rows under a transcript selection mounted while a touch handle
+  // scrolls, so an off-screen start is not unmounted and re-rooted, and put a
+  // handle that lands on the title or composer back on the transcript.
+  useEffect(() => {
+    const scroller = scrollerRef.current
+    if (!scroller) return
+    // Where this selection last sat on rows; cleared when it collapses.
+    let lastOnRows: SelectionEndpoints | null = null
+    const syncSelectionRetention = () => {
+      const selection = window.getSelection()
+      // The restore fires its own selectionchange, which retains the result.
+      if (selection && restoreEndpointToTranscript(scroller, selection, lastOnRows)) return
+      if (!selection || selection.isCollapsed) lastOnRows = null
+      else lastOnRows = rowEndpoints(scroller, selection) ?? lastOnRows
+      const next = nextRetainedRange(scroller, selection)
+      if (next !== 'keep') retainRange(next)
+    }
+    document.addEventListener('selectionchange', syncSelectionRetention)
+    syncSelectionRetention()
+    return () => {
+      document.removeEventListener('selectionchange', syncSelectionRetention)
+      retainRange(null)
+    }
+  }, [activeSlot, scrollerRef, retainRange])
 
   // Single scroll controller wiring: expose the virtualizer's follow API to
   // the early effects/handlers (declared above) via refs, and derive the
@@ -5776,7 +5805,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 what a phone keyboard does — where they painted over the caret.
                 Scoping the lift to the edit is safe because opening the drawer
                 blurs the input, which commits and closes the editor. */}
-            <div className={`absolute top-0 left-0 right-1.5 ${editingTitle ? 'z-[47]' : 'z-[45]'} pointer-events-none`} style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+            <div className={`absolute top-0 left-0 right-1.5 ${editingTitle ? 'z-[47]' : 'z-[45]'} pointer-events-none`} style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties} {...{ [SELECTION_INERT_ATTR]: '' }}>
               {/* The row's left padding GLIDES between its open (20px) and
                   collapsed (60px, clearing the stationary toggle + divider)
                   values on the same 320ms curve as the panel — an instant
@@ -6181,7 +6210,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 width either side of the column lets wheel and touch reach the
                 transcript underneath, as the strip beside an iOS toolbar does.
                 `right: dockGutter` keeps the scrollbar column clear (above). */}
-            <div ref={dockRef} className="absolute left-0 bottom-0 pointer-events-none" style={{ right: dockGutter }} data-testid="composer-dock-root">
+            <div ref={dockRef} className="absolute left-0 bottom-0 pointer-events-none" style={{ right: dockGutter }} data-testid="composer-dock-root" {...{ [SELECTION_INERT_ATTR]: '' }}>
               <JumpToBottomButton visible={!isAtBottom && messages.length > 0} onClick={() => scrollBottom(true)} />
               {/* Status chrome never claims more than half the pane. The dock
                   is anchored to the pane's bottom edge and grows upward, so an

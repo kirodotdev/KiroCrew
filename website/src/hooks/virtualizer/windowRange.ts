@@ -15,6 +15,7 @@
 
 import { useCallback, useEffect, useRef, useState, type MutableRefObject, type RefObject } from 'react'
 import type { HeightIndex } from './HeightIndex'
+import type { RetainedVirtualRange } from './types'
 import {
   computeJumpWindow,
   computeWindow,
@@ -89,6 +90,7 @@ const OLDER_PREFETCH_START_ROWS = 8
 export interface WindowState {
   windowRange: WindowRange
   setWindowRange: SetWindowRange
+  retainRange: (range: RetainedVirtualRange | null) => void
   /** Live mirror of the COMMITTED window. The facade advances it in a layout
    *  effect, right after the shift capture's own baseline mirror. */
   windowRangeRef: Ref<WindowRange>
@@ -98,17 +100,54 @@ export function useWindowState(
   itemCount: number,
   overscan: number,
   initialPlacement: 'top' | 'bottom',
+  sessionId?: string,
 ): WindowState {
+  const countRef = useRef(itemCount)
+  countRef.current = itemCount
+  const retainedRangeRef = useRef<RetainedVirtualRange | null>(null)
+  const sessionRef = useRef(sessionId)
+  if (sessionRef.current !== sessionId) {
+    sessionRef.current = sessionId
+    retainedRangeRef.current = null
+  }
   // Window range for what is currently mounted. Initial state is the TAIL of
   // the list (last ~overscan+1 items) — chat sessions always open at the
   // bottom, and starting here avoids a commit-timing race where the slot-entry
   // pin runs before the tail items have rendered.
-  const [windowRange, setWindowRange] = useState<{ start: number; end: number }>(() =>
+  const [windowRange, setWindowRangeState] = useState<WindowRange>(() =>
     initialWindow(itemCount, overscan, initialPlacement),
   )
+  // Every window write goes through here, so a retained range (a native
+  // selection's rows) stays mounted whichever owner moved the window:
+  // unmounting a selection endpoint lets the browser re-root the selection.
+  const setWindowRange: SetWindowRange = useCallback((update) => {
+    setWindowRangeState((previous) => {
+      const next = typeof update === 'function' ? update(previous) : update
+      const retained = retainedRangeRef.current
+      if (!retained) return next
+      const count = countRef.current
+      const start = Math.max(0, Math.min(retained.start, count))
+      const end = Math.max(start, Math.min(retained.end, count))
+      return end > start
+        ? { start: Math.min(next.start, start), end: Math.max(next.end, end) }
+        : next
+    })
+  }, [])
+  const retainRange = useCallback((range: RetainedVirtualRange | null) => {
+    const count = countRef.current
+    const next = range ? {
+      start: Math.max(0, Math.min(Math.floor(range.start), count)),
+      end: Math.max(0, Math.min(Math.floor(range.end), count)),
+    } : null
+    const normalized = next && next.end > next.start ? next : null
+    const previous = retainedRangeRef.current
+    if (previous?.start === normalized?.start && previous?.end === normalized?.end) return
+    retainedRangeRef.current = normalized
+    if (normalized) setWindowRange((current) => current)
+  }, [setWindowRange])
   // Live mirror of windowRange for imperative reads (debug probe).
   const windowRangeRef = useRef(windowRange)
-  return { windowRange, setWindowRange, windowRangeRef }
+  return { windowRange, setWindowRange, windowRangeRef, retainRange }
 }
 
 export interface WindowOperations {

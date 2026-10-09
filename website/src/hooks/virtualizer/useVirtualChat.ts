@@ -249,7 +249,7 @@ export function useVirtualChat<T>(
     resizeObserverRef,
   } = useScrollerElement(externalScrollerRef)
   const follow = useFollowState(followOutput)
-  const view = useWindowState(itemCount, overscan, initialPlacement)
+  const view = useWindowState(itemCount, overscan, initialPlacement, sessionId)
   const { windowRange, setWindowRange, windowRangeRef } = view
   // Render phase: TRIGGERS 1-7 capture the reader's row against the PREVIOUS
   // commit's DOM, and plan this commit's height retirements. The height scope
@@ -515,6 +515,7 @@ export function useVirtualChat<T>(
     scrollToIndex: pinning.scrollToIndex,
     scrollToBottom: pinning.scrollToBottom,
     mountIndex: ops.mountIndex,
+    retainRange: view.retainRange,
     estimateRowTop: ops.estimateRowTop,
     measureRef: measurement.measureRef,
     /** True while an anchored entry is still waiting for its row to hydrate.

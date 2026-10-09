@@ -179,6 +179,13 @@ export interface ScrollToIndexOptions {
   behavior?: ScrollBehavior
 }
 
+/** Inclusive-start, exclusive-end item range retained while native selection
+ * handles cross a virtualized transcript. */
+export interface RetainedVirtualRange {
+  start: number
+  end: number
+}
+
 export interface UseVirtualChatReturn<T> {
   /** True when row `index` has a real (render-based) measurement cached. */
   farmIsMeasured: (index: number) => boolean
@@ -237,6 +244,10 @@ export interface UseVirtualChatReturn<T> {
    * frame while steering toward an unmounted row. `null` with no scroller or
    * no items. */
   estimateRowTop: (index: number) => number | null
+  /** Keep every item in `range` mounted until the caller clears it. This is
+   * for a native text selection whose endpoints would otherwise be unmounted
+   * while the user scrolls a selection handle. */
+  retainRange: (range: RetainedVirtualRange | null) => void
   /** Ref callback used per-item to register ResizeObserver measurement. */
   measureRef: (index: number) => (el: HTMLElement | null) => void
   /** True while an anchored entry is still waiting for its row to hydrate, so a

@@ -28,7 +28,7 @@ const SRC = (p: string) => readFileSync(resolve(__dirname, '..', p), 'utf8')
 const CHAT_PAGE = SRC('pages/ChatPage.tsx')
 
 /** The dock root: the one positioned box that floats over the scroller. */
-const DOCK = /<div ref=\{dockRef\} className="([^"]*)" style=\{\{ right: dockGutter \}\} data-testid="composer-dock-root">/.exec(CHAT_PAGE)
+const DOCK = /<div ref=\{dockRef\} className="([^"]*)" style=\{\{ right: dockGutter \}\} data-testid="composer-dock-root"[^>]*>/.exec(CHAT_PAGE)
 /** The composer's own layer. A bar at or above it would paint over the input box,
  *  and QueueStack's -OVERLAP fuse would surface ON TOP of the composer. */
 const COMPOSER_Z = /<div ref=\{inputAreaRef\} className="relative z-(\d+) dock-inert">/.exec(CHAT_PAGE)
