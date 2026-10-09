@@ -28,9 +28,9 @@ from kiro_crew.workflows.store import WorkflowRunStore
 
 
 @pytest.fixture(autouse=True)
-def _windows_without_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
-    monkeypatch.setattr(aw, "_REPLACE_BACKOFF_SECONDS", 0)
+def _windows_without_backoff(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    _floor_monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    _floor_monkeypatch.setattr(aw, "_REPLACE_BACKOFF_SECONDS", 0)
 
 
 def _leftover_temps(directory: Path) -> list[str]:

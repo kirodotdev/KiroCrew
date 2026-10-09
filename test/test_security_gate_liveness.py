@@ -226,7 +226,11 @@ def _url_payload_command(n: int) -> str:
 #: text inflated per link and per call is capped so the extra scan stays that of
 #: a 16 KiB plain text. One route, the decode helpers, their comment. No pass
 #: widened and no threshold moved.
-_PACKAGE_LINE_BUDGET = 28_740
+#:
+#: Raised again, from 28,740, for the one import ``redaction_allow`` needs to publish
+#: its hosts file through ``atomic_write.replace_with_retry``, which retries the
+#: Windows sharing violation a bare ``os.replace`` lost the write on. No pattern moved.
+_PACKAGE_LINE_BUDGET = 28_741
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
