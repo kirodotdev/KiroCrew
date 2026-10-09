@@ -153,12 +153,13 @@ async def _spawn_scope_refusal(
 ) -> web.Response | None:
     """Keep run controls with their originating session, regardless of target member.
 
-    Every INTERNAL caller (kiro-cli's MCP servers, the CLI) takes the ownership
+    Every INTERNAL caller (kiro-cli's MCP servers, scripts) takes the ownership
     check, whatever memory store its identity resolved to and whether it resolved
     one at all: a verified Global-memory session is still only the owner of its
-    own runs, and a caller that presented no ``X-Session-Key`` owns no run a
-    session started. Only the dashboard owner (cookie auth, no ``internal_auth``)
-    is admitted without it, because that surface IS the owner. Refusals answer
+    own runs, and a caller that presented no ``X-Session-Key`` owns no run. Only
+    the dashboard owner (an owner token, from the browser or ``kirocrew spawn``;
+    no ``internal_auth``) is admitted without it, because that principal IS the
+    owner. Refusals answer
     404 ``task_scope_denied`` so a run id is never confirmed to a caller that may
     not see it; the identity-less refusal says why, since a wrong run id and a
     missing identity are indistinguishable from the caller's side otherwise.

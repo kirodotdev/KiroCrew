@@ -184,6 +184,7 @@ def make_request(
     match_info: dict[str, str] | None = None,
     attested: bool = True,
     session_token: str = "",
+    extra_headers: dict[str, str] | None = None,
 ) -> web.Request:
     """A mocked dashboard request against *state* in one of the authenticated shapes.
 
@@ -191,20 +192,22 @@ def make_request(
     is JSON-encoded onto a readable stream with the matching content headers.
     ``owner`` publishes the cookie-path claims (the *owner_subject* identity plus
     an EMPTY app claim); ``internal`` marks the ``X-Internal-Secret`` branch;
-    *session* is sent as ``X-Session-Key``.
+    *session* is sent as ``X-Session-Key``; ``""`` sends no such header, the shape
+    of a caller with no session.
 
     ``attested`` stands in for the kernel peer attestation the unix-socket
     middleware sets, which is what an internal caller declaring a session key
     arrives with in production; ``attested=False`` is the bare-header shape a
     process that merely holds the internal secret can produce. *session_token*
     sends ``X-Session-Token``, the other attestation an internal caller can
-    carry.
+    carry. *extra_headers* adds further headers (``X-Internal-Caller``, say).
     """
     method = method or ("POST" if body is not None else "GET")
     target = f"{path}?{urlencode(query)}" if query else path
     app = web.Application()
     app["state"] = state
-    headers = {"X-Session-Key": session}
+    headers = {"X-Session-Key": session} if session else {}
+    headers.update(extra_headers or {})
     if session_token:
         headers["X-Session-Token"] = session_token
     kwargs: dict[str, Any] = {}
@@ -248,6 +251,26 @@ def request(
         session=session,
         attested=attested,
         session_token=session_token,
+    )
+
+
+def spawn_row(run_id: str, parent: str) -> SimpleNamespace:
+    """A finished run as the spawn routes read it, started by session *parent*."""
+    return SimpleNamespace(
+        id=run_id,
+        memory_store="",
+        task=run_id,
+        done=True,
+        parent_session_key=parent,
+        agent="kirocrew",
+        started=1,
+        result="result-" + run_id,
+        error="",
+        user_stopped=False,
+        outcome="success",
+        include_memory=True,
+        include_lessons=True,
+        include_project=True,
     )
 
 

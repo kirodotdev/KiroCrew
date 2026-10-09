@@ -7,6 +7,7 @@ hand-off to the subagent manager that keeps the task store off the event loop.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import inspect
 from typing import TYPE_CHECKING, Any
 
@@ -15,6 +16,7 @@ from aiohttp import web
 if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.messaging import (
         _SPAWN_REJECTED_CODE,
+        CLI_ORIGIN,
         DEFERRED_QUEUED_REASONS,
         NATIVE_CHILD_NOT_RESUMABLE,
         SPAWN_RUN_SCHEMA,
@@ -31,6 +33,7 @@ if TYPE_CHECKING:
         parent_spawn_allowlists,
         parent_work_supported,
         validate_tool_args,
+        validated_token_origin,
         warm_project_agents_for_spawn,
     )
 
@@ -80,7 +83,8 @@ async def api_spawn(request: web.Request) -> web.Response:
     # ``X-Internal-Secret`` loopback process is admitted by the constant-time
     # secret match and reaches here with ``app`` ABSENT, and an app token is
     # confined to its manifest's declared paths by ``_enforce_app_scope``.
-    if request.get("internal_auth") is not True and request.get("app") == "":
+    owner = request.get("internal_auth") is not True and request.get("app") == ""
+    if owner:
         # Body-scope import, like the sibling gates in this package
         # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
         # reaches back into sibling handler modules, so importing the helper at
@@ -130,6 +134,16 @@ async def api_spawn(request: web.Request) -> web.Response:
             {"error": "parent_session must be a string", "code": "invalid_parent_session"},
             status=400,
         )
+    # ``kirocrew spawn run`` authenticates with an owner token whose signed
+    # ``origin`` claim says it came from the terminal (``/api/token/local
+    # ?origin=cli``); no body field and no other credential can claim it. It
+    # decides the run's governance surface; the run faces the ordinary prompt.
+    origin = CLI_ORIGIN if owner and validated_token_origin(request) == CLI_ORIGIN else ""
+    if origin and parent_session:
+        return web.json_response(
+            {"error": "a spawn from the CLI has no parent session", "code": "invalid_origin"},
+            status=400,
+        )
     _, refusal = await internal_memory_scope(
         request, "spawn.create", claimed_session=parent_session
     )
@@ -152,8 +166,9 @@ async def api_spawn(request: web.Request) -> web.Response:
     # rather than in SPAWN_RUN_SCHEMA because they are transport-layer
     # params, not tool-schema params.
     #
-    # Security: this endpoint requires X-Internal-Secret (internal_paths
-    # in server.py), so only local MCP server processes can call it.
+    # Security: this path is mixed (``_MIXED_INTERNAL_API_PATHS`` in server.py):
+    # it takes the internal secret OR a dashboard credential (an owner token, or
+    # an app token confined to its manifest).
     approval_mode = body.get("approval_mode", "")
     if approval_mode not in ("", "auto"):
         return web.json_response({"error": "approval_mode must be '' or 'auto'"}, status=400)
@@ -218,6 +233,8 @@ async def api_spawn(request: web.Request) -> web.Response:
             config=config,
             requested_mode=admitted_mode,
         )
+        if origin:
+            admitted_execution = dataclasses.replace(admitted_execution, origin=origin)
         child_memory_store = admitted_execution.store.legacy_name
     except (OSError, ValueError) as exc:
         return web.json_response(

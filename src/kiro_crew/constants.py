@@ -8,6 +8,15 @@ import platform
 import re
 from collections.abc import Iterator
 
+#: The session key of an attended terminal surface: the interactive ``kirocrew
+#: chat``, and the governance key of the owner's ``kirocrew spawn run``.
+#: ``sel._infer_source`` maps it to surface ``cli``.
+CLI_SESSION_KEY = "cli_chat"
+
+#: The ACP runtime's default agent: the name a provider given no agent runs, so
+#: the name governance checks for a chat or a spawn that names none.
+DEFAULT_AGENT_NAME = "kirocrew"
+
 # Positive-identity marker injected into the environment of every subprocess
 # tree KiroCrew spawns (the ACP provider, MCP probes, gateway pool backends).
 # Children inherit the environment, so marking the provider process

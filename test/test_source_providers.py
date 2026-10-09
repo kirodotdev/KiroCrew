@@ -5957,7 +5957,9 @@ async def test_local_token_uses_configured_owner_subject(monkeypatch) -> None:
         payload = await response.json()
 
     assert payload == {"token": "owner-token", "expires_in": 900}
-    generate.assert_called_once_with("U_OWNER", ttl_seconds=900, extra=None)
+    generate.assert_called_once_with(
+        "U_OWNER", ttl_seconds=900, extra=None, register_nonce=True
+    )
 
 
 @pytest.mark.asyncio
@@ -5984,7 +5986,7 @@ async def test_local_token_carries_embed_parent_port_claim(monkeypatch) -> None:
         assert response.status == 200
 
     generate.assert_called_once_with(
-        "U_OWNER", ttl_seconds=900, extra={"embed_parent_port": "5476"}
+        "U_OWNER", ttl_seconds=900, extra={"embed_parent_port": "5476"}, register_nonce=True
     )
 
 
@@ -6011,7 +6013,9 @@ async def test_local_token_uses_local_owner_subject_without_configured_owner(mon
         payload = await response.json()
 
     assert payload == {"token": "local-token", "expires_in": 900}
-    generate.assert_called_once_with("local-app", ttl_seconds=900, extra=None)
+    generate.assert_called_once_with(
+        "local-app", ttl_seconds=900, extra=None, register_nonce=True
+    )
 
 
 @pytest.mark.parametrize("subject", ["local-app", "local-startup"])

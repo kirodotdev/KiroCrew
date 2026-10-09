@@ -54,6 +54,7 @@ from typing import IO, Literal, NamedTuple, overload
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
+from kiro_crew.constants import CLI_SESSION_KEY
 from kiro_crew.credential_patterns import AWS_KEY_ID_PREFIXES
 
 logger = logging.getLogger(__name__)
@@ -3557,7 +3558,7 @@ def _infer_source(session_key: str) -> str:
         return "background"
     if session_key == "_hb":
         return "heartbeat"
-    if session_key == "cli_chat":
+    if session_key == CLI_SESSION_KEY:
         return "cli"
     # Namespaced messaging channels carry their transport as the first key
     # segment (``{channel}:{agent}:...`` per messaging/link.build_dm_session_key,

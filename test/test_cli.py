@@ -6116,13 +6116,12 @@ class TestSetupChannelGating:
 
 
 class TestSpawnCliAuth:
-    """``kirocrew spawn`` attaches X-Internal-Secret on every gateway call.
+    """``kirocrew spawn`` authenticates as the dashboard owner on every call.
 
-    The CLI helpers in ``cli_commands.py`` attach the per-session IPC secret
-    on every ``/api/spawn`` call. Without it the call gets a 403, which
-    reads ``"gateway not running"`` when ``dashboard.url`` is
-    a non-loopback host (token_auth_middleware then requires either
-    a session cookie or the secret header on every request).
+    It reads the per-session local secret, mints a short-lived owner token from
+    ``/api/token/local`` with it, and sends the token on each ``/api/spawn`` call,
+    all over the dashboard unix socket. ``_internal_secret`` serves the CLI's other
+    internal-API commands.
     """
 
     def test_internal_secret_reads_local_secret_file(self, tmp_path, monkeypatch):
@@ -6141,84 +6140,46 @@ class TestSpawnCliAuth:
 
         assert _internal_secret(5476) == ""
 
-    def test_spawn_list_sends_internal_secret_header(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.setattr(
-            "kiro_crew.cli_commands.read_local_secret", lambda _port, **_kw: "test-secret-xyz"
-        )
-
-        captured: list[urllib.request.Request] = []
-        mock_resp = MagicMock()
-        mock_resp.read.return_value = b'{"agents": []}'
-        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
-        mock_resp.__exit__ = MagicMock(return_value=False)
-
-        def fake_urlopen(req: urllib.request.Request, timeout: int = 0) -> MagicMock:
-            captured.append(req)
-            return mock_resp
-
-        monkeypatch.setattr("kiro_crew.cli_commands.loopback_urlopen", fake_urlopen)
+    def test_spawn_list_authenticates_as_the_owner(self, tmp_path, monkeypatch, capsys):
+        from spawn_cli_fakes import MINTED, install
 
         from kiro_crew.cli_commands import _spawn
 
-        args = argparse.Namespace(spawn_action="list", port=5476)
-        _spawn(args)
+        gateway = install(monkeypatch, MINTED, {"agents": []}, secret="test-secret-xyz")
+        _spawn(argparse.Namespace(spawn_action="list", port=5476))
 
-        assert len(captured) == 1
-        req = captured[0]
-        assert req.full_url == "http://127.0.0.1:5476/api/spawn?queued=1"
-        headers_lower = {k.lower(): v for k, v in dict(req.headers).items()}
-        assert headers_lower["x-internal-secret"] == "test-secret-xyz"
-
-    def test_spawn_run_sends_internal_secret_header(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.setattr(
-            "kiro_crew.cli_commands.read_local_secret", lambda _port, **_kw: "run-secret-abc"
+        mint, listing = (call.req for call in gateway.calls)
+        assert mint.full_url == "http://127.0.0.1:5476/api/token/local?ttl=2m&origin=cli"
+        assert {k.lower(): v for k, v in mint.header_items()}["x-local-secret"] == (
+            "test-secret-xyz"
         )
+        assert listing.full_url == "http://127.0.0.1:5476/api/spawn?queued=1&token=owner-tok"
+        assert not listing.has_header("X-internal-secret")
 
-        captured: list[urllib.request.Request] = []
-        mock_resp = MagicMock()
-        mock_resp.read.return_value = b'{"id": "agent-1", "task": "hi"}'
-        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
-        mock_resp.__exit__ = MagicMock(return_value=False)
-
-        def fake_urlopen(req: urllib.request.Request, timeout: int = 0) -> MagicMock:
-            captured.append(req)
-            return mock_resp
-
-        monkeypatch.setattr("kiro_crew.cli_commands.loopback_urlopen", fake_urlopen)
+    def test_spawn_run_posts_the_task(self, tmp_path, monkeypatch, capsys):
+        from spawn_cli_fakes import MINTED, install
 
         from kiro_crew.cli_commands import _spawn_run
 
-        args = argparse.Namespace(task="do thing", fire_and_forget=True, port=5476)
-        _spawn_run(args, "http://localhost:5476")
+        gateway = install(monkeypatch, MINTED, {"id": "agent-1", "task": "hi"})
+        _spawn_run(argparse.Namespace(task="do thing", fire_and_forget=True, port=5476))
 
-        assert len(captured) == 1
-        req = captured[0]
-        assert req.full_url == "http://localhost:5476/api/spawn"
-        assert req.data == b'{"task": "do thing"}'
-        headers_lower = {k.lower(): v for k, v in dict(req.headers).items()}
-        assert headers_lower["x-internal-secret"] == "run-secret-abc"
-        assert headers_lower["content-type"] == "application/json"
+        post = gateway.calls[1].req
+        assert post.full_url == "http://127.0.0.1:5476/api/spawn?token=owner-tok"
+        assert json.loads(post.data) == {"task": "do thing"}
+        assert {k.lower(): v for k, v in post.header_items()}["content-type"] == (
+            "application/json"
+        )
 
-    def test_spawn_list_403_prints_token_required(self, tmp_path, monkeypatch, capsys):
-        """A bare 403 from the gateway is reported, not masked as 'not running'."""
-        monkeypatch.setattr("kiro_crew.cli_commands.read_local_secret", lambda _port, **_kw: "")
-
-        def fake_urlopen(*_args: object, **_kwargs: object) -> None:
-            raise urllib.error.HTTPError(
-                "http://localhost:5476/api/spawn",
-                403,
-                "Forbidden",
-                hdrs=None,  # type: ignore[arg-type]
-                fp=None,
-            )
-
-        monkeypatch.setattr("kiro_crew.cli_commands.loopback_urlopen", fake_urlopen)
+    def test_spawn_list_403_prints_the_refusal(self, tmp_path, monkeypatch, capsys):
+        """A 403 from the gateway is reported, not masked as 'not running'."""
+        from spawn_cli_fakes import MINTED, http_error, install
 
         from kiro_crew.cli_commands import _spawn
 
-        args = argparse.Namespace(spawn_action="list", port=5476)
+        install(monkeypatch, MINTED, http_error(403), MINTED, http_error(403))
         with pytest.raises(SystemExit) as excinfo:
-            _spawn(args)
+            _spawn(argparse.Namespace(spawn_action="list", port=5476))
         assert excinfo.value.code == 1
         out = capsys.readouterr().out
         assert "Error" in out

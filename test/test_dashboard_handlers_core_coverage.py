@@ -2577,7 +2577,7 @@ class TestLocalToken:
         monkeypatch.setattr("kiro_crew.dashboard.handlers.is_loopback", lambda _r: True)
         minted: dict = {}
 
-        def _generate(owner, ttl_seconds=0, extra=None):
+        def _generate(owner, ttl_seconds=0, extra=None, register_nonce=True):
             minted.update({"owner": owner, "ttl": ttl_seconds, "extra": extra})
             return "issued-value"
 
@@ -2593,6 +2593,49 @@ class TestLocalToken:
         assert json.loads(resp.body)["expires_in"] == 7200
         assert minted["owner"] == "owner-1"
         assert minted["extra"] == {"embed_parent_port": "5476"}
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_origin_is_refused_and_mints_nothing(
+        self, monkeypatch, fake_sel, verified_owner_process
+    ) -> None:
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.is_loopback", lambda _r: True)
+        generate = MagicMock(return_value="issued-value")
+        monkeypatch.setattr(core_mod, "generate_token", generate)
+        resp = await core_mod.api_token_local(
+            _req(
+                app={"local_secret": "right"},
+                headers={"X-Local-Secret": "right"},
+                query={"origin": "bogus"},
+            )
+        )
+        assert resp.status == 400
+        assert json.loads(resp.body)["code"] == "invalid_origin"
+        generate.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("origin, nonces", [("cli", 0), ("", 1)], ids=["cli", "no-origin"])
+    async def test_only_a_mint_without_origin_takes_a_link_nonce(
+        self, monkeypatch, fake_sel, verified_owner_process, origin, nonces
+    ) -> None:
+        """A ``kirocrew spawn`` mint (``origin=cli``) is only ever presented on the
+        API, so it must not evict a pending one-time link from the nonce set."""
+        from kiro_crew.dashboard import token_auth
+
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.is_loopback", lambda _r: True)
+        registered: list = []
+        monkeypatch.setattr(token_auth._state, "register_nonce", lambda *a: registered.append(a))
+        resp = await core_mod.api_token_local(
+            _req(
+                app={"local_secret": "right"},
+                headers={"X-Local-Secret": "right"},
+                query={"origin": origin} if origin else {},
+            )
+        )
+        assert resp.status == 200
+        token = json.loads(resp.body)["token"]
+        claims = json.loads(token_auth._b64url_decode(token.split(".", 1)[0]))
+        assert claims.get("origin", "") == origin
+        assert len(registered) == nonces
 
     @pytest.mark.asyncio
     async def test_unix_peer_match_with_valid_secret_issues_a_token(
@@ -2844,7 +2887,7 @@ class TestLocalToken:
         monkeypatch.setattr("kiro_crew.dashboard.handlers.is_loopback", lambda _r: True)
         minted: dict = {}
 
-        def _generate(owner, ttl_seconds=0, extra=None):
+        def _generate(owner, ttl_seconds=0, extra=None, register_nonce=True):
             minted["extra"] = extra
             return "issued-value"
 
