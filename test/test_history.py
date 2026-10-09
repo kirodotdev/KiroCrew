@@ -25,6 +25,16 @@ from kiro_crew.history import (
 )
 
 
+def _initialize_skills_authority(loader) -> None:
+    """Model the gateway's startup-only private-authority initializer."""
+    from kiro_crew.skills import initialize_auto_skill_private_authority
+
+    initialize_auto_skill_private_authority(
+        skills_root=loader._dir,
+        data_home=loader._private_root().parents[1],
+    )
+
+
 class TestConversationLog:
     def test_append_creates_file(self, tmp_path):
         log = ConversationLog(base_dir=tmp_path)
@@ -3472,6 +3482,7 @@ class TestProcessAutoSkillsIntegration:
         mem = MemoryStore(workspace=tmp_path / "memory")
         mem.init()
         skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        _initialize_skills_authority(skills)
 
         consolidator = HistoryConsolidator(
             log=conv_log,
@@ -3511,6 +3522,7 @@ class TestProcessAutoSkillsIntegration:
         mem = MemoryStore(workspace=tmp_path / "memory")
         mem.init()
         skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        _initialize_skills_authority(skills)
 
         consolidator = HistoryConsolidator(
             log=conv_log,
@@ -3561,6 +3573,7 @@ class TestProcessAutoSkillsIntegration:
         mem = MemoryStore(workspace=tmp_path / "memory")
         mem.init()
         skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        _initialize_skills_authority(skills)
 
         consolidator = HistoryConsolidator(
             log=conv_log,
@@ -3606,6 +3619,7 @@ class TestProcessAutoSkillsIntegration:
         mem = MemoryStore(workspace=tmp_path / "memory")
         mem.init()
         skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        _initialize_skills_authority(skills)
 
         consolidator = HistoryConsolidator(
             log=conv_log,
@@ -3659,6 +3673,7 @@ class TestProcessAutoSkillsIntegration:
             "---\nname: existing\ndescription: Search timber logs via ssh chained patterns\n---\n"
         )
         skills = SkillsLoader(skills_path=skills_dir, install_builtins=False)
+        _initialize_skills_authority(skills)
 
         consolidator = HistoryConsolidator(
             log=conv_log,
@@ -3705,6 +3720,7 @@ class TestProcessAutoSkillsIntegration:
         mem = MemoryStore(workspace=tmp_path / "memory")
         mem.init()
         skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        _initialize_skills_authority(skills)
 
         consolidator = HistoryConsolidator(
             log=conv_log,
@@ -3757,6 +3773,7 @@ class TestProcessAutoSkillsIntegration:
         mem = MemoryStore(workspace=tmp_path / "memory")
         mem.init()
         skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        _initialize_skills_authority(skills)
 
         consolidator = HistoryConsolidator(
             log=conv_log,
@@ -3802,6 +3819,7 @@ class TestProcessAutoSkillsIntegration:
         mem = MemoryStore(workspace=tmp_path / "memory")
         mem.init()
         skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        _initialize_skills_authority(skills)
         consolidator = HistoryConsolidator(
             log=conv_log, memory=mem, skills_loader=skills,
             auto_skills_enabled=True, auto_min_tool_calls=2,
@@ -3832,8 +3850,12 @@ class TestProcessAutoSkillsIntegration:
         assert [s["filename"] for s in detail["scripts"]] == ["run.py"]
 
     @pytest.mark.asyncio
-    async def test_dangerous_script_dropped_but_skill_staged(self, tmp_path):
-        """A script failing the static validator is dropped; the skill still stages."""
+    async def test_all_scripts_invalid_stages_for_attended_review(self, tmp_path):
+        """With review enabled, rejected scripts leave the prose reviewable.
+
+        Script-bearing candidates never auto-publish as prose, while the existing
+        attended-review path keeps the candidate pending with no executable helper.
+        """
         from kiro_crew.memory import MemoryStore
         from kiro_crew.skills import SkillsLoader
 
@@ -3842,6 +3864,7 @@ class TestProcessAutoSkillsIntegration:
         mem = MemoryStore(workspace=tmp_path / "memory")
         mem.init()
         skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        _initialize_skills_authority(skills)
         consolidator = HistoryConsolidator(
             log=conv_log, memory=mem, skills_loader=skills,
             auto_skills_enabled=True, auto_min_tool_calls=2, generate_scripts=True,
@@ -3866,8 +3889,9 @@ class TestProcessAutoSkillsIntegration:
             await consolidator._consolidate("dashboard:chat-bad", include_history=True)
 
         detail = skills.get_pending_skill("dangerous-skill")
-        assert detail is not None  # approval is enabled, so the prose still stages
-        assert detail["scripts"] == []  # dangerous script dropped by validator
+        assert detail is not None
+        assert detail["scripts"] == []
+        assert skills.list_auto_skills() == []  # never published live
 
 
 class TestAutoSkillSELAudit:
@@ -3890,6 +3914,7 @@ class TestAutoSkillSELAudit:
             "---\nname: manual-skill\ndescription: hand-crafted\n---\n"
         )
         skills = SkillsLoader(skills_path=skills_dir, install_builtins=False)
+        _initialize_skills_authority(skills)
 
         consolidator = HistoryConsolidator(
             log=conv_log,
@@ -3951,6 +3976,7 @@ class TestAutoSkillSELAudit:
         mem = MemoryStore(workspace=tmp_path / "memory")
         mem.init()
         skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        _initialize_skills_authority(skills)
 
         consolidator = HistoryConsolidator(
             log=conv_log,
@@ -4015,6 +4041,7 @@ class TestAutoSkillSELAuditCompleteness:
         mem = MemoryStore(workspace=tmp_path / "memory")
         mem.init()
         skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        _initialize_skills_authority(skills)
 
         consolidator = HistoryConsolidator(
             log=conv_log,
@@ -4069,6 +4096,7 @@ class TestAutoSkillSELAuditCompleteness:
         mem = MemoryStore(workspace=tmp_path / "memory")
         mem.init()
         skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        _initialize_skills_authority(skills)
         # Plant a valid auto/ skill to refine
         skills.create_auto_skill(
             "existing-auto",
@@ -4139,6 +4167,7 @@ class TestAutoSkillSELAuditCompleteness:
         mem = MemoryStore(workspace=tmp_path / "memory")
         mem.init()
         skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        _initialize_skills_authority(skills)
         skills.create_auto_skill(
             "too-big-refine",
             description="original",
@@ -4250,6 +4279,7 @@ class TestConsolidationPromptJsonShape:
         mem = MemoryStore(workspace=tmp_path / "memory")
         mem.init()
         skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        _initialize_skills_authority(skills)
         c = HistoryConsolidator(
             log=conv_log,
             memory=mem,
@@ -4333,6 +4363,7 @@ class TestSkillDetectionFullWindow:
         mem = MemoryStore(workspace=tmp_path / "memory")
         mem.init()
         skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        _initialize_skills_authority(skills)
         c = HistoryConsolidator(
             log=conv_log,
             memory=mem,
@@ -4378,6 +4409,7 @@ class TestSkillDetectionFullWindow:
         mem = MemoryStore(workspace=tmp_path / "memory")
         mem.init()
         skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        _initialize_skills_authority(skills)
         c = HistoryConsolidator(
             log=conv_log,
             memory=mem,
@@ -4419,6 +4451,7 @@ class TestSkillDetectionFullWindow:
         mem = MemoryStore(workspace=tmp_path / "memory")
         mem.init()
         skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        _initialize_skills_authority(skills)
         c = HistoryConsolidator(
             log=conv_log,
             memory=mem,
@@ -4625,6 +4658,7 @@ class TestConsolidateSession:
         mem = MemoryStore(workspace=tmp_path / "memory")
         mem.init()
         skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        _initialize_skills_authority(skills)
 
         consolidator = HistoryConsolidator(
             log=conv_log,
@@ -5534,6 +5568,7 @@ async def test_dedupe_candidate_falls_back_to_lexical_without_judge_model(tmp_pa
     from kiro_crew.skills import AutoSkillProvenance, SkillsLoader
 
     skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+    _initialize_skills_authority(skills)
     skills.create_auto_skill(
         "deploy-thing",
         description="deploy the service to prod",
@@ -5562,6 +5597,7 @@ async def test_dedupe_candidate_uses_judge_when_configured(tmp_path):
     from kiro_crew.skills import AutoSkillProvenance, SkillsLoader
 
     skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+    _initialize_skills_authority(skills)
     skills.create_auto_skill(
         "existing-one",
         description="alpha workflow",
@@ -5598,6 +5634,7 @@ async def test_all_invalid_scripts_are_rejected_when_approval_disabled(tmp_path)
     mem = MemoryStore(workspace=tmp_path / "memory")
     mem.init()
     skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+    _initialize_skills_authority(skills)
     consolidator = HistoryConsolidator(
         log=conv_log, memory=mem, skills_loader=skills,
         auto_skills_enabled=True, approval_required=False, auto_min_tool_calls=5,

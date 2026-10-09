@@ -3482,9 +3482,88 @@ class TestRunGateway:
             # The aggregate-cgroup-ceiling apply shells out to systemctl —
             # a host-service mutation the rootdir guard refuses; stub it.
             with patch("kiro_crew.slack.gateway.ensure_agents_slice_limits", return_value=True):
-                with patch.object(GatewayOrchestrator, "run", new_callable=AsyncMock) as mock_run:
-                    await run_gateway(cfg, no_dashboard=True, no_crons=True)
+                with patch(
+                    "kiro_crew.slack.gateway.initialize_gateway_auto_skill_private_authority"
+                ) as initialize_authority:
+                    with patch.object(
+                        GatewayOrchestrator, "run", new_callable=AsyncMock
+                    ) as mock_run:
+                        await run_gateway(cfg, no_dashboard=True, no_crons=True)
+        initialize_authority.assert_called_once_with()
         mock_run.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
+    async def test_authority_initializes_before_orchestrator_on_every_platform(
+        self,
+        monkeypatch,
+        platform,
+    ):
+        order: list[str] = []
+
+        monkeypatch.setattr(gw.sys, "platform", platform)
+        monkeypatch.setattr(gw, "configure_default_executor", lambda: None)
+        monkeypatch.setattr(gw, "set_publish_disabled", lambda _disabled: None)
+        monkeypatch.setattr(gw, "boot_platform", lambda _cfg: order.append("platform"))
+
+        def initialize():
+            order.append("authority")
+            raise OSError("authority refused")
+
+        class _StopGateway(Exception):
+            pass
+
+        def orchestrator(*_args, **_kwargs):
+            order.append("orchestrator")
+            raise _StopGateway
+
+        monkeypatch.setattr(gw, "initialize_gateway_auto_skill_private_authority", initialize)
+        monkeypatch.setattr(gw, "GatewayOrchestrator", orchestrator)
+        # The aggregate cgroup apply shells out to systemctl; stub it as above.
+        monkeypatch.setattr(gw, "ensure_agents_slice_limits", lambda *_a, **_k: True)
+
+        # A refused authority disables auto-skill staging and promotion; it
+        # never stops the gateway, which goes on to build the orchestrator.
+        with pytest.raises(_StopGateway):
+            await gw.run_gateway(KiroCrewConfig(), no_dashboard=True, no_crons=True)
+
+        assert order == ["platform", "authority", "orchestrator"]
+
+    @pytest.mark.asyncio
+    async def test_maskless_existing_authority_logs_one_retire_hint(self, monkeypatch, caplog):
+        from kiro_crew import skills as skills_mod
+
+        monkeypatch.setattr(gw, "configure_default_executor", lambda: None)
+        monkeypatch.setattr(gw, "set_publish_disabled", lambda _disabled: None)
+        monkeypatch.setattr(gw, "boot_platform", lambda _cfg: None)
+
+        def initialize():
+            raise OSError(
+                "sandbox_off; an auto-skill authority still exists. "
+                f"Run `{skills_mod._AUTHORITY_RETIRE_COMMAND}`"
+            )
+
+        class _StopGateway(Exception):
+            pass
+
+        monkeypatch.setattr(gw, "initialize_gateway_auto_skill_private_authority", initialize)
+        monkeypatch.setattr(
+            gw,
+            "GatewayOrchestrator",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(_StopGateway()),
+        )
+        monkeypatch.setattr(gw, "ensure_agents_slice_limits", lambda *_a, **_k: True)
+        caplog.set_level(logging.WARNING, logger="kiro_crew.slack.gateway")
+
+        with pytest.raises(_StopGateway):
+            await gw.run_gateway(KiroCrewConfig(), no_dashboard=True, no_crons=True)
+
+        notices = [
+            record
+            for record in caplog.records
+            if skills_mod._AUTHORITY_RETIRE_COMMAND in record.getMessage()
+        ]
+        assert len(notices) == 1
 
 
 # ═══════════════════════════════════════════════════════════════════════════

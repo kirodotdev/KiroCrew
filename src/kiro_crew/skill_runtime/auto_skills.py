@@ -12,12 +12,12 @@ the registered redaction sink for pending candidate content.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
 import shutil
 import time
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -110,7 +110,8 @@ def create_auto_skill(
     of that slug is awaiting review in the pending queue (publishing over a
     queued candidate's promotion destination would strand it). A pending
     UPDATE candidate does not hold the slug, since it is promoted over the
-    live target named in its metadata.
+    live target named in its metadata. Also ``None`` wherever auto-skill
+    staging and promotion are off (``skills.auto_skill_promotion_disabled_reason``).
 
     Caller is responsible for:
     - Running ``find_similar()`` first to avoid near-duplicates.
@@ -132,6 +133,14 @@ def create_auto_skill(
         )
         return None
     name = f"{sk.AUTO_SKILL_NAMESPACE}/{slug}"
+    # Unreviewed live publication sits behind the same gate as staging and
+    # promotion. Where the authority is unavailable (a delegated agent sandbox,
+    # a refused startup, a revoked mask) staging is off, so publishing here would
+    # leave the UNREVIEWED configuration with a feature the reviewed one lost.
+    disabled = sk.auto_skill_promotion_disabled_reason()
+    if disabled is not None:
+        logger.info("Auto skill %s not created: %s", name, disabled)
+        return None
     skill_dir = loader._dir / name
     content = sk._build_auto_skill_content(
         slug=slug,
@@ -142,12 +151,16 @@ def create_auto_skill(
     )
     # Test and claim under ONE lock, shared with ``stage_skill_candidate``:
     # the two paths allocate in different directories, so nothing an atomic
-    # mkdir can do makes the cross-namespace pair safe on its own.
-    with loader._auto_slug_claim_lock() as locked:
-        if not locked:
+    # mkdir can do makes the cross-namespace pair safe on its own. The target's
+    # promotion lock is taken INSIDE it (``skills.AUTO_SKILL_LOCK_ORDER``) and
+    # held through the write, so the new skill cannot interleave with a
+    # promotion publishing the same name.
+    with loader._auto_slug_claim_lock() as locked, _held_target(loader, name, locked) as owned:
+        if not locked or not owned:
             if refusal is not None:
                 refusal.retryable = True
-            logger.info("Auto skill %s not created: the slug claim lock is unavailable", name)
+                refusal.reason = "claim_lock_unavailable"
+            logger.info("Auto skill %s not created: a claim lock is unavailable", name)
             return None
         if skill_dir.exists():
             logger.info("Auto skill %s already exists, skipping", name)
@@ -177,7 +190,7 @@ def create_auto_skill(
             # the safe side: overwriting destroys their content.
             logger.info("Auto skill %s claimed concurrently, skipping", name)
             return None
-    (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
+        (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
     loader._invalidate_iter_cache()  # new skill visible to trigger matching now
     logger.info("Created auto skill: %s", name)
     return name
@@ -384,6 +397,111 @@ def archive_auto_skill(loader: SkillsLoader, name: str) -> bool:
     return True
 
 
+def _recovery_pending_lifecycle_state(loader: SkillsLoader, target_slug: str) -> bool | None:
+    """Whether an active claim durably exempts ``target_slug`` from lifecycle.
+
+    Called only while the target lock is held. A promoter cannot prepare a new
+    journal for this target until that lock is released. Existing prepared or
+    evidence journals remain under ``claims/`` until restart recovery retires
+    them, so the exemption survives process failure and a failed lifecycle pass.
+    ``None`` is indeterminate and therefore also fail-closed for archival.
+
+    The exemption mirrors what restart recovery can do to a live target: it
+    reconciles a live generation only for an authenticated prepared or evidence
+    journal, and only for a ``<slug>--<token>`` claim name. A rename probe or any
+    other name in ``claims/`` is never reconciled, and a journal that reads in any
+    other authenticated state is requeued or retired without touching a live tree,
+    so neither exempts anything. Until a valid claim journal can be authenticated,
+    its update target is unknowable: the candidate slug is untrusted and need not
+    resemble the target recorded in the journal. One unreadable journal therefore
+    makes lifecycle indeterminate for every target. Directory overflow and private
+    state failures retain the same globally indeterminate outcome.
+    """
+    from kiro_crew import skills as sk  # circular import: the facade imports this module
+
+    if sk._auto_skill_promotion_ruled_out():
+        return False
+    indeterminate = False
+    try:
+        with loader._pin_private_state(create=False, require_sensitive=True) as state:
+            listing: int | Path = state.claims.fd if sk._DIR_FD_SUPPORTED else state.claims.path
+            claim_names = sk._bounded_stale_claim_names(
+                listing,
+                label="active lifecycle claims",
+            )
+            for claim_name in claim_names:
+                if claim_name.startswith(sk._RENAME_PROBE_PREFIX) or "--" not in claim_name:
+                    continue
+                claim_slug = claim_name.rsplit("--", 1)[0]
+                if not loader._is_pending_slug_safe(claim_slug):
+                    continue
+                lock_path = loader._claim_lock_path(claim_name)
+                try:
+                    loader._stat_pinned_child(state.claim_locks, lock_path.name)
+                    fd = loader._open_skill_lock(state.claim_locks, lock_path.name)
+                except (FileNotFoundError, OSError, RuntimeError, ValueError):
+                    logger.warning(
+                        "Auto-skill lifecycle is preserving every live target because claim "
+                        "journal %s is unreadable; stop every Kiro Crew gateway and agent "
+                        "using this data home, preserve the journal for inspection, then "
+                        "restart the gateway to recover it",
+                        lock_path,
+                    )
+                    indeterminate = True
+                    continue
+                try:
+                    if (
+                        loader._read_authenticated_claim_lock_payload(
+                            fd,
+                            lock_path,
+                            claim_name,
+                        )
+                        is None
+                    ):
+                        logger.warning(
+                            "Auto-skill lifecycle is preserving every live target because "
+                            "claim journal %s could not be authenticated; stop every Kiro Crew "
+                            "gateway and agent using this data home, preserve the journal for "
+                            "inspection, then restart the gateway to recover it",
+                            lock_path,
+                        )
+                        indeterminate = True
+                        continue
+                    record = loader._authenticated_claim_publication(
+                        fd,
+                        lock_path,
+                        claim_name,
+                    ) or loader._authenticated_claim_evidence_state(
+                        fd,
+                        lock_path,
+                        claim_name,
+                    )
+                    if record is not None and record.get("target") == target_slug:
+                        return True
+                finally:
+                    os.close(fd)
+    except (FileNotFoundError, OSError, RuntimeError, ValueError):
+        return None
+    return None if indeterminate else False
+
+
+def _archive_lifecycle_candidate(loader: SkillsLoader, name: str) -> bool:
+    """Archive ``name`` only when no persisted recovery state exempts it."""
+    with loader._live_auto_mutation_lock(name) as acquired:
+        if not acquired:
+            return False
+        target_slug = loader._auto_slug_from_name(name)
+        recovery_pending = _recovery_pending_lifecycle_state(loader, target_slug)
+        if recovery_pending is not False:
+            logger.info(
+                "Keeping %s live: claim recovery is %s",
+                name,
+                "pending" if recovery_pending else "indeterminate",
+            )
+            return False
+        return loader._archive_auto_skill_lifecycle_locked(name)
+
+
 def restore_auto_skill(loader: SkillsLoader, slug: str) -> str | None:
     """Restore an archived auto-skill back to ``auto/<slug>``.
 
@@ -404,9 +522,9 @@ def restore_auto_skill(loader: SkillsLoader, slug: str) -> str | None:
         return None
     name = f"{sk.AUTO_SKILL_NAMESPACE}/{slug}"
     dest = loader._dir / name
-    with loader._auto_slug_claim_lock() as locked:
-        if not locked:
-            logger.warning("Cannot restore %s: the slug claim lock is unavailable", name)
+    with loader._auto_slug_claim_lock() as locked, _held_target(loader, name, locked) as owned:
+        if not locked or not owned:
+            logger.warning("Cannot restore %s: a claim lock is unavailable", name)
             return None
         if dest.exists():
             logger.warning("Cannot restore %s: a live skill already exists", name)
@@ -495,7 +613,7 @@ def run_skill_lifecycle(
             continue
         never_used_grace = r["hits"] == 0 and r["anchor"] > stale_cutoff
         if not never_used_grace and r["anchor"] <= archive_cutoff:
-            if loader.archive_auto_skill(r["key"]):
+            if _archive_lifecycle_candidate(loader, r["key"]):
                 counts["archived"] += 1
                 continue
         if r["hits"] == 0 and r["anchor"] <= stale_cutoff:
@@ -510,10 +628,25 @@ def run_skill_lifecycle(
     if overflow > 0 and evictable:
         evictable.sort(key=lambda r: (r["hits"], r["anchor"]))
         for r in evictable[:overflow]:
-            if loader.archive_auto_skill(r["key"]):
+            if _archive_lifecycle_candidate(loader, r["key"]):
                 counts["archived"] += 1
                 counts["capped"] += 1
     return counts
+
+
+@contextmanager
+def _held_target(loader: SkillsLoader, name: str, outer_locked: bool) -> Iterator[bool]:
+    """The target's promotion lock, taken only once the slug claim lock is held.
+
+    ``skills.AUTO_SKILL_LOCK_ORDER`` puts the slug claim lock first, so a live
+    publish or restore takes its target lock inside it. When the outer lock was
+    refused, nothing is taken: the caller refuses on that alone.
+    """
+    if not outer_locked:
+        yield False
+        return
+    with loader._live_auto_mutation_lock(name) as acquired:
+        yield acquired
 
 
 def _pending_root(loader: SkillsLoader) -> Path:
@@ -673,6 +806,9 @@ def stage_skill_candidate(
     target: str | None = None,
     base_version: int | None = None,
     refusal: ClaimRefusal | None = None,
+    notify: bool = True,
+    base_content_hash: str | None = None,
+    unattended_binding_out: list[str] | None = None,
 ) -> str | None:
     """Write a skill candidate to the pending queue (not live).
 
@@ -681,9 +817,10 @@ def stage_skill_candidate(
     on approval. Returns the queued name on success, which is ``auto/<slug>``
     or a sibling ``auto/<slug>-N`` when the natural slug is taken. Returns
     ``None`` when nothing is queued: an invalid slug, an oversized procedure,
-    or no free name across the live and pending namespaces. A ``None`` means
-    the candidate is NOT staged and the caller must take its rejection
-    branch. Caller passes already-redacted content.
+    no free name across the live and pending namespaces, or a host where the
+    auto-skill authority is unavailable. A ``None`` means the candidate is NOT
+    staged and the caller must take its rejection branch. Caller passes
+    already-redacted content.
 
     ``kind`` distinguishes a brand-new candidate (``"new"``, the default,
     approved via ``approve_pending_skill``) from an UPDATE proposal against
@@ -693,6 +830,17 @@ def stage_skill_candidate(
     version the merge was based on. These are written into ``.meta.json``
     (``kind`` always; ``target`` / ``base_version`` only when provided) so
     existing new-candidate callers are unaffected.
+
+    The whole candidate is created beneath the pending directory the
+    namespace lock pins, with exclusive no-follow creates, and is durably
+    synced before the name is reported staged. ``notify=False`` suppresses the
+    staged notification for the unattended update path, which emits its own
+    outcome; ``base_content_hash`` records the canonical live text the update
+    was merged against, and ``unattended_binding_out`` receives the binding
+    the unattended path must present to apply exactly these bytes.
+
+    Lock order (``skills.AUTO_SKILL_LOCK_ORDER``): the slug claim lock, then
+    the pending namespace lock, both held until the candidate is complete.
     """
     from kiro_crew import skills as sk  # circular import: the facade imports this module
 
@@ -702,31 +850,27 @@ def stage_skill_candidate(
     if len(procedure_md) > sk.AUTO_SKILL_MAX_PROCEDURE_CHARS:
         logger.warning("Rejected pending skill %s: procedure too long", slug)
         return None
-    name = f"{sk.AUTO_SKILL_NAMESPACE}/{slug}"
-    root = loader._pending_root()
-    root.mkdir(parents=True, exist_ok=True)
-    # Atomically CLAIM a pending dir. mkdir(exist_ok=False) closes the TOCTOU
-    # between the availability test and the create. If the natural slug is
-    # already awaiting review we must NOT overwrite it (the queued candidate is
-    # immutable until approved/dismissed) — but we also must NOT silently drop
-    # THIS candidate: consolidation advances its message offset regardless of
-    # per-candidate outcome, so a distinct skill that merely slugifies the
-    # same as a pending one would be lost forever. Allocate a unique sibling
-    # slug (<slug>-2, -3, …) so it still gets queued. Genuine re-detections of
-    # the SAME skill are suppressed upstream by the metadata dedupe before
-    # staging, so this does not flood the queue with duplicates.
+    # If the natural slug is already awaiting review we must NOT overwrite it
+    # (the queued candidate is immutable until approved/dismissed) — but we also
+    # must NOT silently drop THIS candidate: consolidation advances its message
+    # offset regardless of per-candidate outcome, so a distinct skill that merely
+    # slugifies the same as a pending one would be lost forever. Allocate a
+    # unique sibling slug (<slug>-2, -3, …) so it still gets queued. Genuine
+    # re-detections of the SAME skill are suppressed upstream by the metadata
+    # dedupe before staging, so this does not flood the queue with duplicates.
     #
     # Every name on the walk is tested against BOTH namespaces and the slug
     # pattern, so the queue only ever accepts a claim it can serve: a NEW
     # candidate whose live name is occupied is unapprovable, and an over-long
     # suffixed name is dropped from ``list_pending_skills`` and with it from
-    # the dashboard and from pruning.
+    # the dashboard and from pruning. A name an in-flight claim still holds is
+    # skipped too: that claim's refusal restore needs its slot back.
     _claim: Literal["pending-new", "pending-update"] = (
         "pending-update" if (kind or "new") == "update" else "pending-new"
     )
-    pdir: Path | None = None
+    staged: tuple[str, bytes, list[str]] | None = None
     # Same lock the live publish takes, for the same reason: the pending
-    # mkdir is atomic within this namespace, but only a shared lock keeps a
+    # create is atomic within this namespace, but only a shared lock keeps a
     # live create from claiming the name this walk just accepted. The lock is
     # held until ``.meta.json`` is committed, because ``kind`` is the field a
     # live publish reads to decide whether this claim reserves its name: a
@@ -736,80 +880,105 @@ def stage_skill_candidate(
         if not locked:
             if refusal is not None:
                 refusal.retryable = True
+                refusal.reason = "claim_lock_unavailable"
             logger.warning("Pending skill %s not staged: the slug claim lock is unavailable", slug)
             return None
-        for _cand in (slug, *(f"{slug}-{_n}" for _n in range(2, 51))):
-            if not loader._auto_slug_available(_cand, claim=_claim):
-                continue
-            _cand_dir = root / _cand
-            try:
-                _cand_dir.mkdir(exist_ok=False)
-            except FileExistsError:
-                continue
-            pdir = _cand_dir
-            break
-        if pdir is None:
-            # Nothing is written, so the caller MUST take its rejection branch: a
-            # name returned from here is recorded as a staged candidate that does
-            # not exist, and consolidation's offset advance makes that loss
-            # permanent and invisible.
-            logger.warning("No free pending slug for %s; candidate not staged", slug)
-            return None
-        if pdir.name != slug:
-            slug = pdir.name
-            name = f"{sk.AUTO_SKILL_NAMESPACE}/{slug}"
-            logger.info("Slug in use; staging distinct candidate as %s", name)
-        try:
-            content = sk._build_auto_skill_content(
-                slug=slug,
-                description=description,
-                triggers=triggers,
-                procedure_md=procedure_md,
-                provenance=provenance,
+        lock_state: list = []
+        with loader._file_lock("pending.lock", state_out=lock_state) as acquired:
+            if not acquired or not lock_state:
+                disabled = sk.auto_skill_promotion_disabled_reason()
+                if disabled is None and refusal is not None:
+                    # Authority is fine, so the namespace lock was only busy.
+                    refusal.retryable = True
+                    refusal.reason = "claim_lock_unavailable"
+                logger.warning(
+                    "Pending skill %s not staged: %s",
+                    slug,
+                    disabled or "the pending namespace lock is unavailable",
+                )
+                return None
+            pending_parent = lock_state[0].pending
+            for _cand in (slug, *(f"{slug}-{_n}" for _n in range(2, 51))):
+                if not loader._auto_slug_available(_cand, claim=_claim):
+                    continue
+                claimed = loader._pending_slug_claimed(
+                    _cand,
+                    private_state=lock_state[0],
+                )
+                if claimed is None:
+                    if refusal is not None:
+                        refusal.retryable = True
+                        refusal.reason = "active_claim_indeterminate"
+                    try:
+                        sk.sel().log_tool_invocation(
+                            session_key="skills",
+                            tool_name="auto_skill_stage",
+                            tool_kind="skills",
+                            outcome="rejected",
+                            metadata={
+                                "slug": _cand,
+                                "reason": "active_claim_indeterminate",
+                            },
+                        )
+                    except Exception:  # noqa: BLE001 - audit failure cannot free the slug
+                        logger.warning(
+                            "Could not audit indeterminate active-claim inspection",
+                            exc_info=True,
+                        )
+                    logger.warning(
+                        "Pending skill %s not staged: active-claim inspection was indeterminate",
+                        slug,
+                    )
+                    return None
+                if claimed:
+                    continue
+                try:
+                    staged = loader._stage_candidate_under_pending_parent(
+                        pending_parent,
+                        _cand,
+                        description=description,
+                        triggers=triggers,
+                        procedure_md=procedure_md,
+                        provenance=provenance,
+                        scripts=scripts,
+                        source=source,
+                        kind=kind,
+                        target=target,
+                        base_version=base_version,
+                        notify=notify,
+                        base_content_hash=base_content_hash,
+                    )
+                except FileExistsError:
+                    continue
+                break
+    if staged is None:
+        # Nothing is written, so the caller MUST take its rejection branch: a
+        # name returned from here is recorded as a staged candidate that does
+        # not exist, and consolidation's offset advance makes that loss
+        # permanent and invisible.
+        logger.warning("No free pending slug for %s; candidate not staged", slug)
+        return None
+    name, content_bytes, script_names = staged
+    staged_slug = name.split("/", 1)[-1]
+    if staged_slug != slug:
+        logger.info("Slug in use; staging distinct candidate as %s", name)
+    if unattended_binding_out is not None:
+        unattended_binding_out[:] = [
+            loader._auto_apply_candidate_binding(
+                content_bytes,
+                target=target,
+                base_version=base_version,
+                base_content_hash=base_content_hash,
             )
-            (pdir / "SKILL.md").write_text(content, encoding="utf-8")
-            script_names: list[str] = []
-            clean_scripts = [s for s in (scripts or []) if isinstance(s, dict)]
-            if clean_scripts:
-                sdir = pdir / "scripts"
-                sdir.mkdir(exist_ok=True)
-                for s in clean_scripts:
-                    fn = str(s.get("filename", "")).strip()
-                    # Guard the script filename against traversal / nesting.
-                    if not fn or "/" in fn or "\\" in fn or ".." in fn:
-                        continue
-                    (sdir / fn).write_text(str(s.get("content", "")), encoding="utf-8")
-                    script_names.append(fn)
-            meta = {
-                "slug": slug,
-                "name": name,
-                "source": source,
-                "created_at": provenance.created_at or sk.AutoSkillProvenance.now_iso(),
-                "description": description,
-                "triggers": triggers,
-                "has_scripts": bool(script_names),
-                "scripts": script_names,
-                "kind": kind or "new",
-            }
-            if target is not None:
-                meta["target"] = target
-            if base_version is not None:
-                meta["base_version"] = base_version
-            (pdir / ".meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
-        except Exception:
-            # A partial write (e.g. disk full) must not leave a CLAIMED but empty
-            # dir behind: a later stage would see it exists and report the slug as
-            # "already awaiting review" while no reviewable candidate exists.
-            # Roll back the atomic claim so the slug can be re-staged cleanly.
-            shutil.rmtree(pdir, ignore_errors=True)
-            raise
+        ]
     logger.info("Staged pending skill candidate: %s (scripts=%d)", name, len(script_names))
     # Notify any registered observer (the gateway wires a bell-feed
     # notification + a ``skills.pending_changed`` WS event) so a candidate
     # awaiting review surfaces instead of sitting unseen in the queue. Fired
     # for BOTH new and update candidates, from every producer that stages
     # through this choke point. Best-effort: an observer failure must never
-    # fail the staging that already succeeded on disk.
+    # fail the staging that already succeeded on disk. The unattended update
+    # path passes ``notify=False`` and reports its own outcome instead.
     #
     # ``description``/``triggers`` ride along because the observer's only
     # other option is to re-read ``.meta.json`` off disk (a second read of
@@ -817,18 +986,19 @@ def stage_skill_candidate(
     # notification can only say THAT a skill was generated, never what it
     # does, which is the one fact a reviewer needs to decide whether to open
     # the queue at all.
-    sk._emit_pending_staged(
-        {
-            "name": name,
-            "slug": slug,
-            "kind": kind or "new",
-            "target": target,
-            "source": source,
-            "has_scripts": bool(script_names),
-            "description": description,
-            "triggers": triggers,
-        }
-    )
+    if notify:
+        sk._emit_pending_staged(
+            {
+                "name": name,
+                "slug": staged_slug,
+                "kind": kind or "new",
+                "target": target,
+                "source": source,
+                "has_scripts": bool(script_names),
+                "description": description,
+                "triggers": triggers,
+            }
+        )
     return name
 
 
@@ -852,7 +1022,13 @@ def pending_candidate_is_staged(loader: SkillsLoader, slug: str) -> bool:
 
 
 def dismiss_pending_skill(loader: SkillsLoader, slug: str) -> bool:
-    """Delete a pending candidate. Returns True if it existed."""
+    """Delete a pending candidate by name. Returns True if it existed.
+
+    The pre-claim dismissal, reached only where auto-skill promotion is ruled out
+    on this host (``skills._auto_skill_promotion_ruled_out``): with no promotion
+    able to run, no claim can hold the candidate, so the by-name removal cannot
+    race one. Everywhere else the facade dismisses through a claim instead.
+    """
     from kiro_crew import skills as sk  # circular import: the facade imports this module
 
     if not loader._is_pending_slug_safe(slug):

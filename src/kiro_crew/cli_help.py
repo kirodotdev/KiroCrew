@@ -74,6 +74,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("knowledge", "Knowledge Base maintenance"),
             ("learn", "Save or manage learned corrections"),
             ("consolidate", "Force history consolidation (triggers skill extraction)"),
+            ("skills", "Repair auto-skill authority state"),
             ("artifact", "Manage saved artifacts (LLM-generated UI)"),
         ),
     ),

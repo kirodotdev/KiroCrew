@@ -184,7 +184,13 @@ def _prune_versions(loader: SkillsLoader, versions_dir: Path) -> None:
             pass
 
 
-def _resolve_snapshot_version(loader: SkillsLoader, versions_dir: Path, fm_version: int) -> int:
+def _resolve_snapshot_version(
+    loader: SkillsLoader,
+    versions_dir: Path,
+    fm_version: int,
+    *,
+    live_snapshot: object | None = None,
+) -> int:
     """Return the version number to snapshot the CURRENT live body under.
 
     Normally the live frontmatter's ``version`` is authoritative. But if a
@@ -193,7 +199,32 @@ def _resolve_snapshot_version(loader: SkillsLoader, versions_dir: Path, fm_versi
     again) — writing there would DESTROY the earlier snapshot. In that case
     continue above the highest snapshot on disk instead, so history is only
     ever appended to.
+
+    ``live_snapshot`` is the authenticated live generation an update promotion
+    captured (its ``files`` maps relative paths to bytes). When given, the
+    existing snapshot numbers are read from that capture rather than from the
+    live directory, which a writer can change after the capture was taken.
     """
+    from kiro_crew import skills as sk  # circular import: the facade imports this module
+
+    if live_snapshot is not None:
+        versions: set[int] = set()
+        for relative in getattr(live_snapshot, "files"):
+            if len(relative.parts) != 2 or relative.parts[0] != sk.VERSIONS_DIRNAME:
+                continue
+            match = re.match(r"^v(\d+)-SKILL\.md$", relative.name)
+            if match:
+                versions.add(int(match.group(1)))
+        if fm_version not in versions:
+            return fm_version
+        next_version = max(versions | {fm_version}) + 1
+        logger.warning(
+            "Version numbering drifted for %s: snapshot v%d exists; continuing at v%d",
+            versions_dir.parent.name,
+            fm_version,
+            next_version,
+        )
+        return next_version
     if not (versions_dir / f"v{fm_version}-SKILL.md").exists():
         return fm_version
     highest = fm_version

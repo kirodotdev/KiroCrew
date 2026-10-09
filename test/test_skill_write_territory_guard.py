@@ -73,8 +73,8 @@ class _RecordingSkills:
         self.calls.append(("update_skill", (name, content)))
         return True
 
-    def delete_skill(self, name: str) -> bool:
-        self.calls.append(("delete_skill", (name,)))
+    def delete_skill_checked(self, name: str) -> bool:
+        self.calls.append(("delete_skill_checked", (name,)))
         return True
 
     def load_skill(self, name: str):
@@ -126,7 +126,7 @@ class TestReadOnlySkillWriteGuard:
         assert resp.status == 405
         assert resp.headers.get("Allow") == "GET"
         assert json.loads(resp.body)["code"] == "readonly_skill_prefix"
-        assert not recorder.called("delete_skill")
+        assert not recorder.called("delete_skill_checked")
 
     @pytest.mark.asyncio
     async def test_delete_kiro_user_returns_405_and_does_not_delete(self, recorder):
@@ -134,7 +134,7 @@ class TestReadOnlySkillWriteGuard:
         assert resp.status == 405
         assert resp.headers.get("Allow") == "GET"
         assert json.loads(resp.body)["code"] == "readonly_skill_prefix"
-        assert not recorder.called("delete_skill")
+        assert not recorder.called("delete_skill_checked")
 
     # ── create is refused, including for a name that only sanitises into the territory ──
 
@@ -172,7 +172,7 @@ class TestReadOnlySkillWriteGuard:
     async def test_delete_plain_name_still_deletes(self, recorder):
         resp = await prompts_mod.api_skill_detail(_FakeRequest("DELETE", name="my-skill"))
         assert resp.status == 200
-        assert recorder.called("delete_skill")
+        assert recorder.called("delete_skill_checked")
 
     @pytest.mark.asyncio
     async def test_create_plain_name_still_creates(self, recorder):
@@ -202,4 +202,4 @@ class TestReadOnlySkillWriteGuard:
         assert resp.status == 404
         # No mutating call was made on the read path.
         assert not recorder.called("update_skill")
-        assert not recorder.called("delete_skill")
+        assert not recorder.called("delete_skill_checked")

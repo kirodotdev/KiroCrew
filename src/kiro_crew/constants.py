@@ -83,6 +83,16 @@ MIN_NODE_VERSION: tuple[int, int, int] = (22, 12, 0)
 
 _NODE_VERSION_RE = re.compile(r"^\s*v?(\d+)\.(\d+)\.(\d+)")
 
+# Auto-skill publication authority lives beneath ``tag-grants``, a crew-home
+# directory every Kiro Crew OS sandbox already masked before this child existed,
+# so an agent sandbox that outlives a gateway upgrade cannot observe the
+# late-created authority. The two obsolete spellings are stopped-installation
+# refusal inputs only: they carry no deny entry or mask, and no authority is
+# ever created at either.
+AUTO_SKILL_AUTHORITY_PARENT_DIRNAME = "tag-grants"
+AUTO_SKILL_PRIVATE_STATE_DIRNAME = "auto-skill-private"
+AUTO_SKILL_LEGACY_PRIVATE_STATE_LEAF = "skills/auto/.private"
+
 
 def parse_node_version(text: str | None) -> tuple[int, int, int] | None:
     """Parse ``node -v`` output (``v22.12.0``) into a tuple; None if unreadable."""

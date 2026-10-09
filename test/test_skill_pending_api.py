@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import json
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,7 +13,12 @@ import pytest
 from kiro_crew import pinned_fs
 from kiro_crew import skills as skills_mod
 from kiro_crew.dashboard.handlers import prompts as H
-from kiro_crew.skills import AutoSkillProvenance, PendingApprovalRefused, SkillsLoader
+from kiro_crew.skills import (
+    AutoSkillProvenance,
+    PendingApprovalRefused,
+    SkillsLoader,
+    initialize_auto_skill_private_authority,
+)
 
 _OMITTED = object()
 
@@ -20,10 +26,11 @@ _OMITTED = object()
 class _Req:
     """Minimal aiohttp-request stand-in for handler unit tests."""
 
-    def __init__(self, loader, *, match=None, body=_OMITTED, query=None):
+    def __init__(self, loader, *, match=None, body=_OMITTED, query=None, method="GET"):
         state = SimpleNamespace(context_builder=SimpleNamespace(skills=loader))
         self.app = {"state": state}
         self.match_info = match or {}
+        self.method = method
         # `body or {}` would have turned a falsy-but-valid JSON body (`[]`, `0`,
         # `null`) into a dict inside the double — hiding exactly the non-object
         # bodies a handler has to survive. Only an OMITTED body defaults.
@@ -50,8 +57,12 @@ def _owner(monkeypatch):
 
 
 @pytest.fixture()
-def loader(tmp_path):
-    ld = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+def loader():
+    ld = SkillsLoader(install_builtins=False)
+    initialize_auto_skill_private_authority(
+        skills_root=ld._dir,
+        data_home=ld._private_root().parents[1],
+    )
     ld.stage_skill_candidate(
         "deploy-helper",
         description="deploy helper",
@@ -75,6 +86,46 @@ async def test_detail(loader):
     data = _payload(resp)
     assert data["name"] == "auto/deploy-helper"
     assert "go" in data["content"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "attribute", "body"),
+    [("PUT", "update_skill", {"content": "updated"}), ("DELETE", "delete_skill", {})],
+)
+async def test_skill_detail_mutations_run_off_event_loop(
+    loader, monkeypatch, method, attribute, body
+):
+    event_loop_thread = threading.get_ident()
+    mutation_threads: list[int] = []
+
+    def mutate(*args):
+        mutation_threads.append(threading.get_ident())
+        return True
+
+    monkeypatch.setattr(loader, attribute, mutate)
+    resp = await H.api_skill_detail(
+        _Req(loader, match={"name": "auto/deploy-helper"}, body=body, method=method)
+    )
+
+    assert resp.status == 200
+    assert mutation_threads and mutation_threads[0] != event_loop_thread
+
+
+@pytest.mark.asyncio
+async def test_skill_create_runs_off_event_loop(loader, monkeypatch):
+    event_loop_thread = threading.get_ident()
+    mutation_threads: list[int] = []
+
+    def create(*args):
+        mutation_threads.append(threading.get_ident())
+        return True
+
+    monkeypatch.setattr(loader, "create_skill", create)
+    resp = await H.api_skills_create(_Req(loader, body={"name": "new-skill", "content": "content"}))
+
+    assert resp.status == 200
+    assert mutation_threads and mutation_threads[0] != event_loop_thread
 
 
 @pytest.mark.asyncio
@@ -150,6 +201,142 @@ async def test_dismiss(loader):
     # Coded, like the approve path: the dashboard keys its recovery
     # (refetch + catalog message) on this code.
     assert _payload(resp2)["code"] == "pending_skill_not_found"
+
+
+@pytest.mark.asyncio
+async def test_dismiss_refused_by_the_authority_rule_is_a_coded_409_not_a_404(
+    no_auto_skill_authority_startup,
+    monkeypatch,
+):
+    """A candidate the root-present rule keeps staged is not reported as gone."""
+    from kiro_crew import sandbox
+
+    monkeypatch.delenv("KIROCREW_SANDBOX_ACTIVE", raising=False)
+    monkeypatch.setattr(sandbox, "_macos_sandbox_state", lambda: None)
+    monkeypatch.setattr(skills_mod, "_agent_sandbox_is_delegated", lambda: False)
+    monkeypatch.setattr(skills_mod, "_auto_skill_authority_sandbox_refusal", lambda: None)
+    ld = SkillsLoader(install_builtins=False)
+    initialize_auto_skill_private_authority(
+        skills_root=ld._dir,
+        data_home=ld._private_root().parents[1],
+    )
+    ld.stage_skill_candidate(
+        "kept-candidate",
+        description="kept",
+        triggers="kept",
+        procedure_md="## Steps\n1. go\n",
+        provenance=AutoSkillProvenance(session_key="s", created_at=AutoSkillProvenance.now_iso()),
+    )
+    # The operator turns the sandbox off: the root stays, and no process can
+    # certify it any more.
+    skills_mod._reset_auto_skill_private_authority_for_tests()
+    monkeypatch.setattr(
+        skills_mod,
+        "_auto_skill_authority_sandbox_refusal",
+        lambda: skills_mod._SANDBOX_OFF_REFUSAL,
+    )
+    monkeypatch.setattr(skills_mod, "_auto_skill_sandbox_excludes_every_promoter", lambda: True)
+    events: list[dict] = []
+    monkeypatch.setattr(
+        H,
+        "_sel",
+        lambda: SimpleNamespace(log_tool_invocation=lambda **kw: events.append(kw)),
+    )
+
+    assert ld.dismiss_pending_skill("kept-candidate") is False
+    resp = await H.api_skill_pending_dismiss(_Req(ld, match={"slug": "kept-candidate"}))
+
+    assert resp.status == 409
+    data = _payload(resp)
+    assert data["code"] == "pending_dismissal_refused"
+    assert data["reason"] == "promotion_disabled"
+    assert data["detail"] == skills_mod.auto_skill_promotion_disabled_reason()
+    assert data["detail"] == skills_mod._SANDBOX_OFF_REFUSAL
+    assert skills_mod._AUTHORITY_RETIRE_COMMAND in data["hint"]
+    assert events[-1]["outcome"] == "rejected"
+    assert events[-1]["metadata"] == {"slug": "kept-candidate", "reason": "promotion_disabled"}
+    assert [p["slug"] for p in ld.list_pending_skills()] == ["kept-candidate"]
+
+    missing = await H.api_skill_pending_dismiss(_Req(ld, match={"slug": "never-staged"}))
+    assert missing.status == 404
+    assert _payload(missing)["code"] == "pending_skill_not_found"
+    assert events[-1]["outcome"] == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_delete_and_pin_refused_by_the_authority_rule_are_coded_409s(
+    no_auto_skill_authority_startup,
+    monkeypatch,
+):
+    """A live auto-skill the root-present rule keeps is not reported as gone."""
+    from kiro_crew import sandbox
+
+    monkeypatch.delenv("KIROCREW_SANDBOX_ACTIVE", raising=False)
+    monkeypatch.setattr(sandbox, "_macos_sandbox_state", lambda: None)
+    monkeypatch.setattr(skills_mod, "_agent_sandbox_is_delegated", lambda: False)
+    monkeypatch.setattr(skills_mod, "_auto_skill_authority_sandbox_refusal", lambda: None)
+    ld = SkillsLoader(install_builtins=False)
+    initialize_auto_skill_private_authority(
+        skills_root=ld._dir,
+        data_home=ld._private_root().parents[1],
+    )
+    live = ld._dir / skills_mod.AUTO_SKILL_NAMESPACE / "kept-live"
+    live.mkdir(parents=True)
+    (live / "SKILL.md").write_text(
+        "---\nname: auto/kept-live\ndescription: kept\ntriggers: kept\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    # The operator turns the sandbox off: the root stays, and no process can
+    # certify it any more.
+    skills_mod._reset_auto_skill_private_authority_for_tests()
+    monkeypatch.setattr(
+        skills_mod,
+        "_auto_skill_authority_sandbox_refusal",
+        lambda: skills_mod._SANDBOX_OFF_REFUSAL,
+    )
+    monkeypatch.setattr(skills_mod, "_auto_skill_sandbox_excludes_every_promoter", lambda: True)
+    events: list[dict] = []
+    monkeypatch.setattr(
+        H,
+        "_sel",
+        lambda: SimpleNamespace(log_tool_invocation=lambda **kw: events.append(kw)),
+    )
+
+    assert ld.delete_skill("auto/kept-live") is False
+    assert ld.set_pinned("auto/kept-live", True) is False
+    deleted = await H.api_skill_detail(_Req(ld, match={"name": "auto/kept-live"}, method="DELETE"))
+    delete_event = events[-1]
+    pinned = await H.api_skill_pin(_Req(ld, body={"name": "auto/kept-live", "pinned": True}))
+    pin_event = events[-1]
+
+    for resp in (deleted, pinned):
+        assert resp.status == 409
+        data = _payload(resp)
+        assert data["code"] == "skill_mutation_refused"
+        assert data["reason"] == "promotion_disabled"
+        assert data["detail"] == skills_mod.auto_skill_promotion_disabled_reason()
+        assert data["detail"] == skills_mod._SANDBOX_OFF_REFUSAL
+        assert skills_mod._AUTHORITY_RETIRE_COMMAND in data["hint"]
+    assert delete_event["tool_name"] == "api_skill_delete"
+    assert delete_event["outcome"] == "rejected"
+    assert delete_event["metadata"] == {"name": "auto/kept-live", "reason": "promotion_disabled"}
+    assert pin_event["tool_name"] == "api_skill_pin"
+    assert pin_event["outcome"] == "rejected"
+    assert pin_event["metadata"] == {
+        "name": "auto/kept-live",
+        "pinned": True,
+        "reason": "promotion_disabled",
+    }
+    assert (live / "SKILL.md").is_file()
+
+    missing = await H.api_skill_detail(
+        _Req(ld, match={"name": "auto/never-written"}, method="DELETE")
+    )
+    assert missing.status == 404
+    missing_pin = await H.api_skill_pin(
+        _Req(ld, body={"name": "auto/never-written", "pinned": True})
+    )
+    assert missing_pin.status == 400
 
 
 @pytest.mark.asyncio
@@ -890,11 +1077,16 @@ _UNPREDICTABLE_APPROVE_REFUSALS: dict[str, str] = {
         "made at click time, not a candidate scripts finding."
     ),
     "redaction_failed": (
-        "the in-place redaction of SKILL.md / a script could not read or write "
-        "the file. The write half is click-time I/O a read-only poll cannot "
-        "observe; the unreadable-script half IS already surfaced by the verdict "
-        "as a finding, and SKILL.md content is outside the scripts verdict's "
-        "remit."
+        "redacting SKILL.md / a script failed: the captured snapshot could not "
+        "be decoded as text. The unreadable-script half IS already surfaced by "
+        "the verdict as a finding, and SKILL.md content is outside the scripts "
+        "verdict's remit."
+    ),
+    "promotion_disabled": (
+        "this host cannot stage or promote auto-skills (the auto-skill authority "
+        "was not certified at gateway startup, or agents here run in a delegated "
+        "sandbox). A property of the host, identical for every candidate, not "
+        "something the candidate's layout or scripts can predict."
     ),
     "promotion_failed": (
         "an OS-level read/write/move failure AFTER every check passed. "
@@ -1317,3 +1509,14 @@ def test_verdict_resolves_the_candidate_root_exactly_once(loader, monkeypatch):
         f"expected exactly one pinned resolution of the candidate root, got {calls} — "
         "anything below the root must be opened dir_fd-relative to the retained descriptor"
     )
+
+
+@pytest.mark.asyncio
+async def test_approve_api_refuses_success_without_durable_consumption(loader, monkeypatch):
+    monkeypatch.setattr(loader, "_commit_claim_consumption", lambda *_args: False)
+
+    resp = await H.api_skill_pending_approve(_Req(loader, match={"slug": "deploy-helper"}))
+
+    assert resp.status == 409
+    assert _payload(resp)["reason"] == "promotion_failed"
+    assert (loader._dir / "auto" / "deploy-helper" / "SKILL.md").is_file()

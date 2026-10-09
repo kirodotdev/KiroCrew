@@ -106,7 +106,7 @@ from kiro_crew.service.common import (
 )
 from kiro_crew.session import SessionManager
 from kiro_crew.skill_usage import register_skill_read_observer
-from kiro_crew.skills import SkillsLoader
+from kiro_crew.skills import SkillsLoader, initialize_gateway_auto_skill_private_authority
 from kiro_crew.slack.gateway import run_gateway
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 from kiro_crew.taskrunner import TaskRunner
@@ -2964,6 +2964,21 @@ async def _run_task(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     cfg = KiroCrewConfig.load()
+
+    # This standalone process skips gateway startup but can stage, publish,
+    # refine, archive, and prune through its consolidator and lifecycle pass.
+    # Attempt the gateway's certification once, before those owners exist. As on
+    # the gateway, a refusal never stops the task: the initializer records the
+    # reason, every staging and promotion path refuses, and the consolidator
+    # skips skill detection for this run.
+    try:
+        await asyncio.to_thread(initialize_gateway_auto_skill_private_authority)
+    except Exception as exc:  # noqa: BLE001 -- auto-skills fail closed, the task does not
+        if cfg.skills.auto_create_from_sessions:
+            print(f"Auto-skill creation is off for this run: {exc}", file=sys.stderr)
+        else:
+            logging.getLogger(__name__).debug("Auto-skill authority unavailable: %s", exc)
+
     factory = build_provider_factory(cfg)
     sessions = SessionManager(cfg, provider_factory=factory)  # type: ignore[arg-type]
 
@@ -3040,6 +3055,7 @@ async def _run_task(args: argparse.Namespace) -> None:
         auto_min_tool_calls=cfg.skills.auto_min_tool_calls,
         auto_similarity_threshold=cfg.skills.auto_similarity_threshold,
         approval_required=cfg.skills.approval_required,
+        auto_apply_updates=cfg.skills.auto_apply_updates,
         max_auto_skills=cfg.skills.max_auto_skills,
         stale_after_days=cfg.skills.stale_after_days,
         archive_after_days=cfg.skills.archive_after_days,

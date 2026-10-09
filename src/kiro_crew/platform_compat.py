@@ -670,6 +670,30 @@ def rename_noreplace(
     raise OSError(error, os.strerror(error), os.fspath(dst))
 
 
+def rename_no_replace(src: str | os.PathLike, dst: str | os.PathLike) -> None:
+    """Atomically rename *src* to *dst*, refusing an existing destination.
+
+    ``os.rename`` replaces an empty destination directory on POSIX, while
+    ``shutil.move`` nests inside an existing directory. Neither behavior is
+    safe for publish/restore paths whose destination may be occupied by a
+    concurrent writer. Path-taking adapter over :func:`rename_noreplace` for
+    callers that hold plain paths rather than pinned directory descriptors
+    (``AT_FDCWD`` gives the same cwd-relative semantics as ``os.rename``).
+    Fails closed with ``ENOTSUP`` when the host provides no native no-replace
+    primitive, so callers handle one exception family (``OSError``) for both
+    destination contention and platform unavailability.
+    """
+    if IS_WINDOWS:
+        # MoveFileW, which backs os.rename, fails when the destination exists.
+        os.rename(src, dst)
+        return
+    at_fdcwd = getattr(os, "AT_FDCWD", -100)
+    try:
+        rename_noreplace(src, dst, src_dir_fd=at_fdcwd, dst_dir_fd=at_fdcwd)
+    except NotImplementedError as exc:
+        raise OSError(errno.ENOTSUP, str(exc), os.fspath(dst)) from exc
+
+
 def publish_dir_noreplace(src: str | os.PathLike, dst: str | os.PathLike) -> None:
     """Atomically rename directory *src* to an ABSENT *dst*, never replacing.
 
@@ -922,6 +946,50 @@ else:
 # ``wintypes`` supplies type aliases only, so these definitions import cleanly
 # on POSIX; the functions below still resolve the DLLs lazily, which is what
 # keeps them patchable from the non-Windows test fleet.
+
+
+class _FileBasicInfo(ctypes.Structure):
+    """Win32 ``FILE_BASIC_INFO`` for handle-bound attribute updates."""
+
+    _fields_ = [
+        ("CreationTime", ctypes.c_longlong),
+        ("LastAccessTime", ctypes.c_longlong),
+        ("LastWriteTime", ctypes.c_longlong),
+        ("ChangeTime", ctypes.c_longlong),
+        ("FileAttributes", wintypes.DWORD),
+    ]
+
+
+class _FileId128(ctypes.Structure):
+    """Win32 ``FILE_ID_128`` — a filesystem object's stable 128-bit id."""
+
+    _fields_ = [("Identifier", ctypes.c_ubyte * 16)]
+
+
+class _FileIdInfo(ctypes.Structure):
+    """Win32 ``FILE_ID_INFO`` returned by ``GetFileInformationByHandleEx``."""
+
+    _fields_ = [
+        ("VolumeSerialNumber", ctypes.c_ulonglong),
+        ("FileId", _FileId128),
+    ]
+
+
+class _ByHandleFileInformation(ctypes.Structure):
+    """Win32 ``BY_HANDLE_FILE_INFORMATION`` native file-index fallback."""
+
+    _fields_ = [
+        ("dwFileAttributes", wintypes.DWORD),
+        ("ftCreationTime", wintypes.FILETIME),
+        ("ftLastAccessTime", wintypes.FILETIME),
+        ("ftLastWriteTime", wintypes.FILETIME),
+        ("dwVolumeSerialNumber", wintypes.DWORD),
+        ("nFileSizeHigh", wintypes.DWORD),
+        ("nFileSizeLow", wintypes.DWORD),
+        ("nNumberOfLinks", wintypes.DWORD),
+        ("nFileIndexHigh", wintypes.DWORD),
+        ("nFileIndexLow", wintypes.DWORD),
+    ]
 
 
 class _ProcessEntry32(ctypes.Structure):
@@ -7659,6 +7727,131 @@ def unlink_link_or_junction(path: str | os.PathLike) -> None:
     os.unlink(path)
 
 
+def _windows_handle_identity(handle: int, *, legacy_only: bool = False) -> tuple[int, bytes] | None:
+    """Return one native Windows identity from an already-open kernel handle.
+
+    ``FileIdInfo`` supplies the filesystem's full 128-bit identifier where the
+    volume supports it. Some Windows filesystems and hosted-runner volumes reject
+    that information class with ``ERROR_INVALID_PARAMETER``; the older
+    ``BY_HANDLE_FILE_INFORMATION`` API still supplies the volume serial and
+    native 64-bit file index. Both are handle-derived identities, never path
+    spellings. A prefix keeps the two formats disjoint. Callers comparing two
+    handles request ``legacy_only`` for both when their initial formats differ.
+    """
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    native_handle = wintypes.HANDLE(handle)
+    if not native_handle.value:
+        return None
+
+    if not legacy_only:
+        kernel32.GetFileInformationByHandleEx.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+        ]
+        kernel32.GetFileInformationByHandleEx.restype = wintypes.BOOL
+        extended = _FileIdInfo()
+        if kernel32.GetFileInformationByHandleEx(
+            native_handle,
+            18,  # FILE_INFO_BY_HANDLE_CLASS.FileIdInfo
+            ctypes.byref(extended),
+            ctypes.sizeof(extended),
+        ):
+            return int(extended.VolumeSerialNumber), b"F128" + bytes(extended.FileId.Identifier)
+
+    kernel32.GetFileInformationByHandle.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(_ByHandleFileInformation),
+    ]
+    kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
+    legacy = _ByHandleFileInformation()
+    if not kernel32.GetFileInformationByHandle(native_handle, ctypes.byref(legacy)):
+        return None
+    file_index = (int(legacy.nFileIndexHigh) << 32) | int(legacy.nFileIndexLow)
+    return int(legacy.dwVolumeSerialNumber), b"F064" + file_index.to_bytes(8, "big")
+
+
+def _windows_file_identity(fd: int, *, legacy_only: bool = False) -> tuple[int, bytes] | None:
+    """Return the native identity of one open Windows CRT descriptor.
+
+    ``os.stat``/``os.path.samefile`` re-open path spellings and compare the
+    CRT's projected ``st_dev``/``st_ino`` values. Native handle identity makes
+    8.3 and long spellings equal without weakening reparse, hardlink, or opened
+    inode defenses.
+    """
+    if not IS_WINDOWS:
+        return None
+    try:
+        get_osfhandle = getattr(msvcrt, "get_osfhandle", None)  # type: ignore[name-defined]
+        if not callable(get_osfhandle):
+            return None
+        return _windows_handle_identity(get_osfhandle(fd), legacy_only=legacy_only)
+    except (AttributeError, OSError, OverflowError, ValueError):
+        return None
+
+
+def opened_file_identity(fd: int) -> tuple[int, int | bytes] | None:
+    """Return a stable identity for an already-open file or directory.
+
+    POSIX uses the descriptor's device and inode. Windows uses native volume and
+    file IDs rather than the CRT projection, so the identity remains comparable
+    across a rename and across 8.3/long path aliases. ``None`` means the opened
+    object cannot be authenticated and callers must fail closed.
+    """
+    if IS_WINDOWS:
+        return _windows_file_identity(fd)
+    try:
+        opened = os.fstat(fd)
+    except OSError:
+        return None
+    return int(opened.st_dev), int(opened.st_ino)
+
+
+def opened_path_identity_matches(fd: int, path: str | os.PathLike) -> bool:
+    """Whether open *fd* and the current *path* name the same Windows object.
+
+    The path side is opened with the same ``OPEN_REPARSE_POINT`` and
+    non-delete-sharing contract as :func:`pin_directory` and
+    :func:`open_file_no_reparse`.  A junction/symlink is therefore compared as
+    the reparse object itself and refused, never followed.  Comparing native
+    file IDs makes 8.3 and long spellings equal without weakening the caller's
+    regular-file, single-link, or before/after ``fstat`` checks.
+    """
+    if not IS_WINDOWS:
+        return False
+    probe_fd: int | None = None
+    try:
+        probe_fd = _win_open_without_following(path)
+        opened_attrs = getattr(os.fstat(fd), "st_file_attributes", 0)
+        probe_attrs = getattr(os.fstat(probe_fd), "st_file_attributes", 0)
+        if (opened_attrs | probe_attrs) & _WIN_FILE_ATTRIBUTE_REPARSE_POINT:
+            return False
+        opened_identity = _windows_file_identity(fd)
+        probe_identity = _windows_file_identity(probe_fd)
+        if opened_identity is None or probe_identity is None:
+            return False
+        if opened_identity == probe_identity:
+            return True
+        # A filesystem can support FileIdInfo for the descriptor we already
+        # hold but reject it for this probe handle (notably under a different
+        # share mode). F128 and F064 are not comparable representations, so
+        # re-read BOTH handles through BY_HANDLE_FILE_INFORMATION. Every other
+        # mismatch remains a refusal; this never turns a different object into
+        # a match.
+        if {opened_identity[1][:4], probe_identity[1][:4]} != {b"F128", b"F064"}:
+            return False
+        opened_legacy = _windows_file_identity(fd, legacy_only=True)
+        probe_legacy = _windows_file_identity(probe_fd, legacy_only=True)
+        return opened_legacy is not None and opened_legacy == probe_legacy
+    except (OSError, ValueError):
+        return False
+    finally:
+        if probe_fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(probe_fd)
+
+
 #: ``CreateFileW`` arguments for :func:`pin_directory`. ``BACKUP_SEMANTICS`` is
 #: what lets a directory be opened at all; ``OPEN_REPARSE_POINT`` opens the
 #: reparse point ITSELF instead of following it, so a junction planted at the
@@ -7666,6 +7859,7 @@ def unlink_link_or_junction(path: str | os.PathLike) -> None:
 #: deliberately omits ``FILE_SHARE_DELETE``: that omission is the pin.
 _WIN_GENERIC_READ = 0x80000000
 _WIN_GENERIC_WRITE = 0x40000000
+_WIN_DELETE = 0x00010000
 _WIN_FILE_SHARE_READ_WRITE = 0x00000001 | 0x00000002
 #: ``FILE_SHARE_READ`` alone. Omitting ``FILE_SHARE_WRITE`` as well makes Windows
 #: refuse any OTHER process's attempt to open the object for writing while this
@@ -7679,7 +7873,9 @@ _WIN_FILE_SHARE_READ = 0x00000001
 _WIN_OPEN_EXISTING = 3
 _WIN_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
 _WIN_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+_WIN_FILE_ATTRIBUTE_READONLY = 0x00000001
 _WIN_FILE_ATTRIBUTE_DIRECTORY = 0x00000010
+_WIN_FILE_ATTRIBUTE_NORMAL = 0x00000080
 _WIN_FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
 
 
@@ -8042,8 +8238,13 @@ def pinned_directory(path: str | os.PathLike) -> PinnedDirectory:
     return PinnedDirectory(pin_directory(target), target)
 
 
-def _win_open_without_following(path: str | os.PathLike, *, deny_write: bool = False) -> int:
-    """``CreateFileW`` *path* for reading, opening a reparse point INSTEAD of following it.
+def _win_open_without_following(
+    path: str | os.PathLike,
+    *,
+    access: int = _WIN_GENERIC_READ,
+    deny_write: bool = False,
+) -> int:
+    """``CreateFileW`` *path*, opening a reparse point INSTEAD of following it.
 
     Shared by :func:`pin_directory` and :func:`open_file_no_reparse` so the two do
     not carry separate copies of the same security-critical flags. What each of
@@ -8092,7 +8293,7 @@ def _win_open_without_following(path: str | os.PathLike, *, deny_write: bool = F
     kernel32.CreateFileW.restype = wintypes.HANDLE
     handle = kernel32.CreateFileW(
         os.fspath(path),
-        _WIN_GENERIC_READ,
+        access,
         _WIN_FILE_SHARE_READ if deny_write else _WIN_FILE_SHARE_READ_WRITE,
         None,
         _WIN_OPEN_EXISTING,
@@ -8104,6 +8305,119 @@ def _win_open_without_following(path: str | os.PathLike, *, deny_write: bool = F
     return msvcrt.open_osfhandle(  # type: ignore[attr-defined]
         handle, os.O_RDONLY | getattr(os, "O_BINARY", 0)
     )
+
+
+def open_path_no_reparse(path: str | os.PathLike) -> int:
+    """Open one Windows path entry itself and pin it against rename/delete.
+
+    Unlike :func:`open_file_no_reparse`, this accepts files, directories, and
+    reparse points. It exists for identity capture before delete-by-handle;
+    callers must inspect the opened attributes and close the descriptor.
+    """
+    if not IS_WINDOWS:
+        raise OSError(errno.ENOTSUP, "native no-reparse entry handles require Windows")
+    if os.name != "nt":
+        flags = getattr(os, "O_PATH", os.O_RDONLY) | getattr(os, "O_NOFOLLOW", 0)
+        return os.open(path, flags)
+    return _win_open_without_following(path)
+
+
+def unlink_path_if_identity(
+    path: str | os.PathLike,
+    expected_identity: tuple[int, bytes],
+    *,
+    directory: bool,
+) -> bool:
+    """Delete exactly one opened Windows entry with a matching native identity.
+
+    The retained handle requests DELETE access, opens the reparse point itself,
+    and omits delete sharing. No competing rename can replace the name between
+    identity validation and ``FileDispositionInfo`` because the mutation is
+    issued against that same kernel handle. Any unavailable full ``FileIdInfo``,
+    type drift, or Win32 failure leaves the current path untouched.
+    """
+    if not IS_WINDOWS:
+        return False
+    if (
+        not isinstance(expected_identity, tuple)
+        or len(expected_identity) != 2
+        or not isinstance(expected_identity[0], int)
+        or not isinstance(expected_identity[1], bytes)
+        or not expected_identity[1].startswith(b"F128")
+        or len(expected_identity[1]) != 20
+    ):
+        return False
+    if os.name != "nt":
+        probe_fd: int | None = None
+        try:
+            probe_fd = open_path_no_reparse(path)
+            if opened_file_identity(probe_fd) != expected_identity:
+                return False
+        except OSError:
+            return False
+        finally:
+            if probe_fd is not None:
+                with contextlib.suppress(OSError):
+                    os.close(probe_fd)
+        try:
+            if is_link_or_junction(path):
+                unlink_link_or_junction(path)
+            elif directory:
+                os.rmdir(path)
+            else:
+                os.unlink(path)
+            return True
+        except OSError:
+            return False
+    fd: int | None = None
+    try:
+        fd = _win_open_without_following(path, access=_WIN_GENERIC_READ | _WIN_DELETE)
+        opened = os.fstat(fd)
+        attrs = getattr(opened, "st_file_attributes", 0) or 0
+        is_reparse = bool(attrs & _WIN_FILE_ATTRIBUTE_REPARSE_POINT)
+        is_directory = bool(attrs & _WIN_FILE_ATTRIBUTE_DIRECTORY)
+        if not is_reparse and is_directory != directory:
+            return False
+        if _windows_file_identity(fd) != expected_identity:
+            return False
+        get_osfhandle = getattr(msvcrt, "get_osfhandle", None)  # type: ignore[name-defined]
+        if not callable(get_osfhandle):
+            return False
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+        kernel32.SetFileInformationByHandle.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+        ]
+        kernel32.SetFileInformationByHandle.restype = wintypes.BOOL
+        if attrs & _WIN_FILE_ATTRIBUTE_READONLY:
+            writable_attrs = attrs & ~_WIN_FILE_ATTRIBUTE_READONLY
+            if writable_attrs == 0:
+                writable_attrs = _WIN_FILE_ATTRIBUTE_NORMAL
+            basic = _FileBasicInfo(0, 0, 0, 0, writable_attrs)
+            if not kernel32.SetFileInformationByHandle(
+                wintypes.HANDLE(get_osfhandle(fd)),
+                0,  # FILE_INFO_BY_HANDLE_CLASS.FileBasicInfo
+                ctypes.byref(basic),
+                ctypes.sizeof(basic),
+            ):
+                return False
+        disposition = wintypes.BOOL(True)
+        if not kernel32.SetFileInformationByHandle(
+            wintypes.HANDLE(get_osfhandle(fd)),
+            4,  # FILE_INFO_BY_HANDLE_CLASS.FileDispositionInfo
+            ctypes.byref(disposition),
+            ctypes.sizeof(disposition),
+        ):
+            return False
+        return True
+    except (AttributeError, OSError, OverflowError, ValueError):
+        return False
+    finally:
+        if fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(fd)
 
 
 def open_file_no_reparse(
@@ -8159,7 +8473,7 @@ def open_file_no_reparse(
 
     fd = _win_open_without_following(path, deny_write=deny_write)
     try:
-        attrs = getattr(os.fstat(fd), "st_file_attributes", 0)
+        attrs = getattr(os.fstat(fd), "st_file_attributes", 0) or 0
         if _win_reparse_refused(fd, attrs, links_only=links_only):
             raise OSError(errno.ELOOP, "reparse point at the final component", os.fspath(path))
         if attrs & _WIN_FILE_ATTRIBUTE_DIRECTORY:
@@ -10807,6 +11121,7 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "try_acquire_lock",
         "try_acquire_lock_or_raise",
         "probe_file_persistence",
+        "prepare_lock_file",
         "tempfile",
     ),
     "kiro_crew.platform_owner_compat": (
@@ -10935,6 +11250,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         flock_exclusive,
         open_create_or_existing,
         open_lock_file,
+        prepare_lock_file,
         probe_file_persistence,
         release_lock,
         tempfile,

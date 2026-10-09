@@ -1400,7 +1400,8 @@ _API_HOOKS = {
 #: they make count. A boot step added on purpose updates these with it.
 _DASHBOARD_BOOT = tuple("""
     consume_managed_service_launch_environment set_pending_staged_hook
-    set_pending_consumed_hook set_global_hook_store register_skill_read_observer
+    set_pending_consumed_hook set_update_auto_applied_hook set_global_hook_store
+    register_skill_read_observer
     wire_session_subagent_probe _wire_tunnel_shutdown _wire_status_delta_sink
     register_status_delta_sink _precompute_telemetry current_context
     _register_mcp_routes _deferred _deferred setup_spawn_resume_routes
@@ -1928,6 +1929,7 @@ def _skill_settings() -> types.SimpleNamespace:
         auto_min_tool_calls=3,
         auto_similarity_threshold=0.8,
         approval_required=True,
+        auto_apply_updates=False,
         max_auto_skills=7,
         stale_after_days=30,
         archive_after_days=90,
@@ -1971,6 +1973,7 @@ def test_a_dashboard_only_launch_builds_its_own_consolidator(
         "auto_min_tool_calls": 3,
         "auto_similarity_threshold": 0.8,
         "approval_required": True,
+        "auto_apply_updates": False,
         "max_auto_skills": 7,
         "stale_after_days": 30,
         "archive_after_days": 90,

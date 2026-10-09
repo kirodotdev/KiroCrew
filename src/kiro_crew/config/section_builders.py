@@ -290,6 +290,7 @@ def _build_skills_config(skills_data: dict) -> SkillsConfig:
         auto_min_tool_calls=section.read("auto_min_tool_calls", _safe_int),
         auto_similarity_threshold=section.read("auto_similarity_threshold", _safe_float),
         approval_required=section.read("approval_required", _safe_bool),
+        auto_apply_updates=section.read("auto_apply_updates", _safe_bool),
         max_auto_skills=section.read("max_auto_skills", _safe_int),
         stale_after_days=section.read("stale_after_days", _safe_int),
         archive_after_days=section.read("archive_after_days", _safe_int),
