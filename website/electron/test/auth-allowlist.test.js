@@ -81,7 +81,7 @@ test("apply appends Electron's integrated-auth switch with the baked allowlist",
   const calls = [];
   const value = applyAuthServerAllowlist({ appendSwitch: (n, v) => calls.push([n, v]), bakedPath: p });
   assert.equal(value, "*.example.com");
-  assert.deepEqual(calls, [["auth-server-whitelist", "*.example.com"]]);
+  assert.deepEqual(calls, [["auth-server-whitelist", "*.example.com"]]); // wokeignore:rule=whitelist
 });
 
 test("apply appends nothing when no allowlist is baked", () => {

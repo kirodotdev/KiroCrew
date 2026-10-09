@@ -908,11 +908,11 @@ else
   fi
 fi
 
-# A leftover staged marker (or baked auth allowlist) from an earlier
-# interrupted build is removed on EVERY run, before any early exit: steps 3b
-# and 3b2 re-stage them when asked. This sits
+# A leftover staged marker from an earlier interrupted build is removed on
+# EVERY run, before any early exit: step 3b re-stages it when asked. This sits
 # ahead of the SKIP_ELECTRON return so a backend-only build cannot leave a
-# stale declaration behind for a hand-run electron-builder to pack.
+# stale declaration behind for a hand-run electron-builder to pack. The baked
+# auth allowlist (step 3b2) is cleared the same way.
 rm -f "$ELECTRON_DIR/EXTERNALLY-MANAGED" "$ELECTRON_DIR/AUTH-SERVER-ALLOWLIST"
 
 if [ "${SKIP_ELECTRON:-0}" = "1" ]; then
@@ -973,7 +973,7 @@ if [ -n "${KIROCREW_MANAGED_INSTALL_MARKER:-}" ]; then
   # BEFORE the copy so there is no instant at which the file exists without
   # its cleanup -- an interrupt between the two would leave a stale marker for
   # a hand-run `npm run dist` to pack.
-  trap 'rm -f "$ELECTRON_DIR/EXTERNALLY-MANAGED" "$ELECTRON_DIR/AUTH-SERVER-ALLOWLIST"' EXIT
+  trap 'rm -f "$ELECTRON_DIR/EXTERNALLY-MANAGED"' EXIT
   cp "$MARKER_SRC" "$ELECTRON_DIR/EXTERNALLY-MANAGED"
   log "Baking EXTERNALLY-MANAGED marker into the app from $MARKER_SRC"
 fi
@@ -986,8 +986,8 @@ fi
 # on anything else: the reader ignores a malformed list, so a typo would
 # silently ship an app whose embedded pages get 401s. It is staged as
 # $ELECTRON_DIR/AUTH-SERVER-ALLOWLIST, packed into app.asar by package.json's
-# `files` list, and removed again on exit by the same trap as the marker (one
-# EXIT trap string names both files, so arming it twice loses neither). Unset,
+# `files` list, and removed again on exit. Bash keeps one EXIT trap, so this
+# one names the marker too: arming it after step 3b replaces that trap. Unset,
 # nothing is staged and the app appends no switch.
 if [ -n "${KIROCREW_AUTH_SERVER_ALLOWLIST:-}" ]; then
   AUTH_ALLOWLIST="$(node -e '

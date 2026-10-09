@@ -6,9 +6,9 @@
 // Chromium answers a server's `WWW-Authenticate: Negotiate` challenge only for
 // hosts on an allowlist; with none set, an embedded page on a Kerberos-gated
 // intranet gets a 401 even when the OS holds a valid ticket. Electron takes that
-// list as the `auth-server-whitelist` switch (the name Electron documents, and
-// the one verified to fix a Browser panel 401), which must be on the command
-// line before app ready, so a Dock or Start-menu launch -- which passes
+// list as a command-line switch (ELECTRON_SWITCH below, the name Electron
+// documents and the one verified to fix a Browser panel 401), which must be set
+// before app ready, so a Dock or Start-menu launch -- which passes
 // no arguments -- can only get it from code inside the app.
 //
 // The public build bakes nothing and appends nothing. An edition that ships to a
@@ -18,10 +18,17 @@
 // `files` packs it into app.asar, so it is trusted as code is trusted (the same
 // shape as the baked EXTERNALLY-MANAGED marker in auto-update.js).
 //
-// Credential DELEGATION (`auth-negotiate-delegate-whitelist`, forwarding the
-// user's ticket to the server) is deliberately never set here: answering the
+// Credential DELEGATION (Electron's separate negotiate-delegate switch,
+// forwarding the user's ticket to the server) is deliberately never set here: answering the
 // challenge is all an intranet page needs, and delegation would let every
 // allowlisted server act as the user elsewhere.
+//
+// The switch is process-wide: every web contents answers for these hosts,
+// including a Browser panel page the AGENT drives. An agent (or untrusted
+// content steering it) that navigates the panel to an allowlisted host gets a
+// page authenticated as the user, with no cookie or prior sign-in. That is the
+// point for an intranet edition, and it is why the list belongs to the edition
+// that knows which hosts are acceptable, never to core.
 
 const fs = require("fs");
 const path = require("path");
@@ -29,7 +36,7 @@ const path = require("path");
 const BAKED_ALLOWLIST_NAME = "AUTH-SERVER-ALLOWLIST";
 const ALLOWLIST_MAX_BYTES = 2048;
 const ALLOWLIST_MAX_ENTRIES = 64;
-const ELECTRON_SWITCH = "auth-server-whitelist";
+const ELECTRON_SWITCH = "auth-server-whitelist"; // wokeignore:rule=whitelist
 
 // One entry: an exact host (`intranet.example.org`) or a suffix pattern
 // (`*.example.com`). Labels are DNS-shaped; a lone `*`, a scheme, a path, a port
