@@ -38,7 +38,7 @@ export default function AskAnswersCard({ pairs, toolCallId }: { pairs: AskAnswer
     <div className="ml-3" role="presentation" onClick={e => e.stopPropagation()} data-testid="ask-answers">
       <button
         type="button"
-        className={`mt-1 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border text-[12px] leading-5 hover:text-text hover:border-border-strong cursor-pointer transition-colors focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-hidden ${open ? 'text-text border-border-strong bg-bg-hover' : 'text-muted border-border bg-bg-elevated'}`}
+        className={`mt-1 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border text-[12px] leading-5 hover:text-text hover:border-border-strong cursor-pointer transition-colors focus-ring-accent ${open ? 'text-text border-border-strong bg-bg-hover' : 'text-muted border-border bg-bg-elevated'}`}
         aria-expanded={open}
         data-testid="ask-answers-chip"
         onClick={toggle}
