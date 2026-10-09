@@ -61,7 +61,14 @@ Push (new): gateway rekey() ─────────────────�
    start token (`platform_compat.get_process_start_id`; `None` where
    unavailable). The session token is omitted for legacy/tokenless runtimes.
    Fire-and-forget (`schedule_claim`), bounded at 5 s, no-ops cleanly when
-   preconditions are missing.
+   preconditions are missing. The ack is one of three: `claimed` (connections
+   retargeted) and `claim-noop` (accepted, binding recorded, no connection
+   indexed under the PID yet, which is the usual first answer because the
+   claim is pushed before the session's stubs register) both count as
+   acknowledged and log at INFO; `claim-rejected`, an empty reply or a
+   malformed one return `False` and log at WARNING. A pid-index wedge is not
+   a per-claim signal but an aggregate one: every claim on the host answering
+   `claim-noop` with no `claimed` ever following.
 4. **gatewayd applies the claim** (`_apply_claim`). It records the token binding
    even when no stub has registered yet. Among connections indexed under P, a
    token-bearing claim retargets only a connection with the same token or no
