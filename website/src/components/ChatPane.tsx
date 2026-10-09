@@ -61,7 +61,7 @@ import { useKirocrewConfigReader } from '../hooks/useKirocrewConfigReader'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { useScrollEdgesY } from '../hooks/useScrollEdges'
 import { useAppSelector, useAppDispatch, store } from '../store'
-import { PANE_HYDRATE_LIMIT, capturePendingAskId, confirmOptimisticSend, resolveOptimisticSteer, selectSlotMessages, selectSendConfirmed, selectSlotStreamState, selectSlotRunEpoch, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, loadOlderMessages, loadOlderSlotMessages, syncSlotRunningFromServer, setAgentSwitchNotice, stageToMainComposer, pendingQuestionFor } from '../store/chatSlice'
+import { PANE_HYDRATE_LIMIT, capturePendingAskId, confirmOptimisticSend, markSendUnconfirmed, resolveOptimisticSteer, selectSlotMessages, selectSendConfirmed, selectSlotStreamState, selectSlotRunEpoch, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, loadOlderMessages, loadOlderSlotMessages, syncSlotRunningFromServer, setAgentSwitchNotice, stageToMainComposer, pendingQuestionFor } from '../store/chatSlice'
 import { handleStopPress, isEscalationState } from '../utils/stopDebounce'
 import { deriveFollowUpOptions } from '../app-sdk/protocol'
 import { appendFollowUpOption, removeFollowUpOption, selectSingleFollowUpOption, type OwnedSuffix } from '../lib/followUpToggle'
@@ -1216,10 +1216,19 @@ export default function ChatPane({
         // Report ONLY -- the error row. The restore is `restore`'s job above;
         // handing the payload back here too would restore a `refused` twice.
         reportFailure: (reason, status) => reportSendFailure(reason, status, !optionText),
-        // Only the no-bubble composer send that actually restored gets the
-        // notice; a bubble that stayed pending needs no "check the transcript"
-        // warning, and an option send restored nothing to warn about.
-        warnUnconfirmed: () => { if (!bubbleMinted && !optionText) dispatch(appendSlotMessage({ slot: slotKey, message: { role: 'notice', content: '\u26A0\uFE0F ' + i18nT('pages.chatPage.delivery_unconfirmed'), cls: '' } })) },
+        // A bubble that stayed pending is marked (the mark draws its pending
+        // line) and gets the pending notice under it, as ChatPage does. A
+        // no-bubble composer send that restored gets the "text is back"
+        // notice; an option send restored nothing to warn about. Both rows
+        // are addressed to the SENDING slot.
+        warnUnconfirmed: () => {
+          if (bubbleMinted) {
+            dispatch(markSendUnconfirmed({ slot: slotKey, sendId }))
+            dispatch(appendSlotMessage({ slot: slotKey, message: { role: 'notice', content: '\u26A0\uFE0F ' + i18nT('pages.chatPage.delivery_unconfirmed_pending'), cls: '' } }))
+          } else if (!optionText) {
+            dispatch(appendSlotMessage({ slot: slotKey, message: { role: 'notice', content: '\u26A0\uFE0F ' + i18nT('pages.chatPage.delivery_unconfirmed'), cls: '' } }))
+          }
+        },
         // doSend mints no optimistic STEER bubble to drop, so the 'drop' arm
         // (refused/response-late/queued demotion) is a no-op here -- a non-busy
         // send's plain bubble and a busy send's absent bubble are both
