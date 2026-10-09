@@ -1144,21 +1144,23 @@ def test_closed_items_stay_on_disk_listed_and_readable_past_the_cap():
     assert brief is not None and brief["item_id"] == ids[0]
 
 
-def test_the_stored_bound_refuses_a_create_on_a_board_of_closed_items(monkeypatch):
-    """The second bound counts EVERY create, so closed history cannot grow past it.
+def test_a_full_board_of_closed_items_auto_retires_on_the_next_create(monkeypatch):
+    """A GOAL-FREE board that has run its course is retired in place, not refused.
 
-    A board that has created ``MAX_STORED_ITEMS_PER_CONDUCTOR`` items, every one of
-    them closed, has zero open items and is refused anyway -- with the store's own
-    code, not the open cap's -- and the refusal changes no bytes. The message names
-    the create count, the bound and the remedy (the ledger sweep's purge), and the
-    header's counter stands at the bound. The bound is patched small the way the
-    projection tests patch the fold's ceiling: filling a board to the real number
-    takes seconds, and the number itself is pinned by
-    ``test_caps_hold_their_rfc_values`` and
-    ``test_the_stored_bound_is_the_folds_item_ceiling``.
+    A queue board (no goal recorded -- the pipeline and security conductors) that has
+    created ``MAX_STORED_ITEMS_PER_CONDUCTOR`` items, every one of them terminal, has
+    nothing live on it: the next create retires this generation (its item records
+    dropped, its create counter reset) and opens a fresh board in the SAME slot, so
+    the create proceeds. The remedy the old refusal named -- run
+    ``kirocrew ledger-sweep --purge`` by hand -- is gone, because the sweep declined
+    exactly this board anyway (it keeps any board the operator still creates against)
+    and the retire does the sweep's job inline. The ``generation`` changes, which is
+    what lets the crew-log fold tell the new board from the old one; the goal does
+    NOT carry (a goal board is refused, not rotated -- see the companion test). The
+    bound is patched small the way the projection tests patch the fold's ceiling.
     """
     monkeypatch.setattr(wl, "MAX_STORED_ITEMS_PER_CONDUCTOR", 4)
-    wl.ensure_conductor(CONDUCTOR, goal="g")
+    wl.ensure_conductor(CONDUCTOR)  # a goal-free queue board
     ids: list[str] = []
     for index in range(wl.MAX_STORED_ITEMS_PER_CONDUCTOR):
         ids.append(
@@ -1171,30 +1173,45 @@ def test_the_stored_bound_refuses_a_create_on_a_board_of_closed_items(monkeypatc
     listed = wl.list_work_items(CONDUCTOR)
     assert len(listed) == wl.MAX_STORED_ITEMS_PER_CONDUCTOR
     assert not any(item.state == "open" for item in listed)
-    before = sorted(p.name for p in wl.items_dir(CONDUCTOR).iterdir())
+    old_header = wl.read_conductor(CONDUCTOR)
+    assert old_header is not None and old_header.generation
+    old_generation = old_header.generation
 
-    with pytest.raises(wl.WorkLedgerError) as caught:
-        wl.apply_conductor_action(CONDUCTOR, "create", title="one too many", acceptance={})
+    result = wl.apply_conductor_action(CONDUCTOR, "create", title="fresh start", acceptance={})
 
-    assert caught.value.code == wl.CODE_ITEM_STORE_FULL
-    assert caught.value.field == "items"
-    message = str(caught.value)
-    assert f"has created {wl.MAX_STORED_ITEMS_PER_CONDUCTOR} items" in message
-    assert f"stored bound is {wl.MAX_STORED_ITEMS_PER_CONDUCTOR}" in message
-    assert "kirocrew ledger-sweep --purge" in message
-    assert sorted(p.name for p in wl.items_dir(CONDUCTOR).iterdir()) == before
-    # Closing frees nothing here: the bound is on creates, and a close keeps its
-    # record. Every closed item is still on the board, listed and readable.
-    assert wl.read_work_item(CONDUCTOR, ids[0]) is not None
-    assert len(wl.list_work_items(CONDUCTOR)) == wl.MAX_STORED_ITEMS_PER_CONDUCTOR
-    header = wl.read_conductor(CONDUCTOR)
-    assert header is not None and header.created_total == wl.MAX_STORED_ITEMS_PER_CONDUCTOR
+    # The create went through on a freshly-retired board.
+    new_item = result["item"].item_id
+    new_header = wl.read_conductor(CONDUCTOR)
+    assert new_header is not None
+    assert new_header.created_total == 1, "the counter was reset, then this create bumped it"
+    assert new_header.generation and new_header.generation != old_generation, "new board id"
+    assert new_header.goal == "", "a retired queue board carries no goal"
+    assert new_header.goal_version == 0 and new_header.goal_items_base == 0
+    assert new_header.item_cap == wl.DEFAULT_GOAL_ITEM_CAP
+    # The old generation's items are gone; only the new create remains.
+    survivors = wl.list_work_items(CONDUCTOR)
+    assert [item.item_id for item in survivors] == [new_item]
+    for old_id in ids:
+        assert wl.read_work_item(CONDUCTOR, old_id) is None
+        assert not wl.item_path(CONDUCTOR, old_id).exists()
+        assert not wl.item_events_path(CONDUCTOR, old_id).exists()
 
 
-def _closed_board_at_the_stored_bound() -> list[str]:
-    """Fill the board to ``MAX_STORED_ITEMS_PER_CONDUCTOR`` creates, closing each as
-    it lands so the open cap never bites and only the stored bound can."""
-    wl.ensure_conductor(CONDUCTOR, goal="g")
+def test_a_full_board_running_a_goal_is_refused_not_retired(monkeypatch):
+    """A spent GOAL board is a human decision point, never a silent rotation.
+
+    Retiring a goal board would reset ``goal_items_used`` to zero and bypass the
+    goal's ``item_cap`` spend ceiling -- a ceiling a person set -- and the create
+    baseline carries the goal text but not ``goal_version``, so a rotated goal board
+    would lose the cap on a later rebuild too. So a board with a goal recorded on it,
+    even every item terminal, is REFUSED at the stored bound (store code, ``items``
+    field), pointing at starting the next goal in a fresh conductor, and the refusal
+    changes no bytes. The goal cap is lifted here so the STORED bound is what bites,
+    not the goal's own cap.
+    """
+    monkeypatch.setattr(wl, "MAX_STORED_ITEMS_PER_CONDUCTOR", 4)
+    wl.ensure_conductor(CONDUCTOR, goal="ship it")
+    _lift_goal_cap()
     ids: list[str] = []
     for index in range(wl.MAX_STORED_ITEMS_PER_CONDUCTOR):
         ids.append(
@@ -1203,6 +1220,84 @@ def _closed_board_at_the_stored_bound() -> list[str]:
             ].item_id
         )
         wl.apply_conductor_action(CONDUCTOR, "close", item_id=ids[-1], state="accepted")
+    assert not any(item.state == "open" for item in wl.list_work_items(CONDUCTOR))
+    before = sorted(p.name for p in wl.items_dir(CONDUCTOR).iterdir())
+    header_bytes = (wl.conductor_dir(CONDUCTOR) / "conductor.json").read_bytes()
+
+    with pytest.raises(wl.WorkLedgerError) as caught:
+        wl.apply_conductor_action(CONDUCTOR, "create", title="one too many", acceptance={})
+
+    assert caught.value.code == wl.CODE_ITEM_STORE_FULL
+    assert caught.value.field == "items"
+    message = str(caught.value)
+    assert "goal" in message
+    assert "fresh conductor" in message
+    assert "ledger-sweep" not in message
+    # Nothing was retired: every record and the header are byte-identical.
+    assert sorted(p.name for p in wl.items_dir(CONDUCTOR).iterdir()) == before
+    assert (wl.conductor_dir(CONDUCTOR) / "conductor.json").read_bytes() == header_bytes
+    for old_id in ids:
+        assert wl.item_path(CONDUCTOR, old_id).exists()
+
+
+def test_a_full_board_with_an_open_item_is_refused_with_a_close_hint(monkeypatch):
+    """A full board that still holds live work cannot be retired.
+
+    Retiring drops every item record, so it is only safe when nothing is still open.
+    A board at the stored bound with one open item is refused -- with the store's own
+    code -- and the message points at closing the open items (that is what makes the
+    board retireable), NOT at the sweep, which would decline a board holding an open
+    item. The refusal changes no bytes.
+    """
+    monkeypatch.setattr(wl, "MAX_STORED_ITEMS_PER_CONDUCTOR", 4)
+    monkeypatch.setattr(wl, "MAX_ITEMS_PER_CONDUCTOR", 99)  # keep the open cap out of the way
+    wl.ensure_conductor(CONDUCTOR)  # goal-free, so the OPEN-item branch is what fires
+    ids: list[str] = []
+    for index in range(wl.MAX_STORED_ITEMS_PER_CONDUCTOR):
+        ids.append(
+            wl.apply_conductor_action(CONDUCTOR, "create", title=f"t{index}", acceptance={})[
+                "item"
+            ].item_id
+        )
+        # Close all but the last, so the board is at the bound with ONE open item.
+        if index < wl.MAX_STORED_ITEMS_PER_CONDUCTOR - 1:
+            wl.apply_conductor_action(CONDUCTOR, "close", item_id=ids[-1], state="accepted")
+    assert sum(1 for item in wl.list_work_items(CONDUCTOR) if item.state == "open") == 1
+    before = sorted(p.name for p in wl.items_dir(CONDUCTOR).iterdir())
+    header_bytes = (wl.conductor_dir(CONDUCTOR) / "conductor.json").read_bytes()
+
+    with pytest.raises(wl.WorkLedgerError) as caught:
+        wl.apply_conductor_action(CONDUCTOR, "create", title="one too many", acceptance={})
+
+    assert caught.value.code == wl.CODE_ITEM_STORE_FULL
+    assert caught.value.field == "items"
+    message = str(caught.value)
+    assert "still open" in message
+    assert "ledger-sweep" not in message, "the sweep would decline this board; do not suggest it"
+    assert sorted(p.name for p in wl.items_dir(CONDUCTOR).iterdir()) == before
+    assert (wl.conductor_dir(CONDUCTOR) / "conductor.json").read_bytes() == header_bytes
+
+
+def _closed_board_at_the_stored_bound() -> list[str]:
+    """Fill the board to ``MAX_STORED_ITEMS_PER_CONDUCTOR`` creates, closing all but
+    the LAST so the open cap never bites and only the stored bound can.
+
+    The last item is left OPEN on purpose: a board whose every item is terminal is
+    retired-and-recreated on the next create rather than refused, so a test that
+    means to exercise the stored bound's REFUSAL (the counter outranks the file
+    count) must keep one item live, which keeps the board un-retireable and the
+    refusal in play. The board is GOAL-FREE so the open-item branch is what refuses
+    -- a goal board is refused by the goal rule first, with a different message."""
+    wl.ensure_conductor(CONDUCTOR)
+    ids: list[str] = []
+    for index in range(wl.MAX_STORED_ITEMS_PER_CONDUCTOR):
+        ids.append(
+            wl.apply_conductor_action(CONDUCTOR, "create", title=f"t{index}", acceptance={})[
+                "item"
+            ].item_id
+        )
+        if index < wl.MAX_STORED_ITEMS_PER_CONDUCTOR - 1:
+            wl.apply_conductor_action(CONDUCTOR, "close", item_id=ids[-1], state="accepted")
     return ids
 
 
@@ -1223,7 +1318,9 @@ def test_the_stored_bound_counts_a_record_the_listing_cannot_read(monkeypatch):
     listed = wl.list_work_items(CONDUCTOR)
     assert len(listed) == wl.MAX_STORED_ITEMS_PER_CONDUCTOR - 1
     assert torn not in {item.item_id for item in listed}
-    assert not any(item.state == "open" for item in listed)
+    # One item is left open by the helper so the board is not auto-retired; the
+    # torn record is a closed one, so the stored bound is what refuses the create.
+    assert sum(1 for item in listed if item.state == "open") == 1
     before = {p.name: p.read_bytes() for p in wl.items_dir(CONDUCTOR).iterdir()}
 
     with pytest.raises(wl.WorkLedgerError) as caught:
@@ -1231,7 +1328,6 @@ def test_the_stored_bound_counts_a_record_the_listing_cannot_read(monkeypatch):
 
     assert caught.value.code == wl.CODE_ITEM_STORE_FULL
     assert caught.value.field == "items"
-    assert f"has created {wl.MAX_STORED_ITEMS_PER_CONDUCTOR} items" in str(caught.value)
     assert {p.name: p.read_bytes() for p in wl.items_dir(CONDUCTOR).iterdir()} == before
 
 
@@ -1265,7 +1361,11 @@ def test_removing_a_record_does_not_reclaim_stored_capacity(monkeypatch):
 
     assert caught.value.code == wl.CODE_ITEM_STORE_FULL
     assert caught.value.field == "items"
-    assert "removing one reclaims nothing" in str(caught.value)
+    # The create is refused because an open item keeps the board un-retireable, and
+    # the counter -- not the file count -- is what holds it at the bound: the deleted
+    # record reclaimed nothing. (The message now points at the open item; the
+    # counter invariant is what the assertions below pin.)
+    assert "still open" in str(caught.value)
     assert {p.name: p.read_bytes() for p in wl.items_dir(CONDUCTOR).iterdir()} == before
     assert (wl.conductor_dir(CONDUCTOR) / "conductor.json").read_bytes() == header_bytes
     header_after = wl.read_conductor(CONDUCTOR)

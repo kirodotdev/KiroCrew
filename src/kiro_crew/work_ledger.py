@@ -190,10 +190,17 @@ MAX_ITEMS_PER_CONDUCTOR = 32
 #: append-only log, so a record removed from ``items/`` -- torn, hand-deleted, lost
 #: -- still has its create there, and a count of what the directory holds would
 #: admit one create more than the fold retains for every record it lost. Removing
-#: a record reclaims nothing. Enforced by :func:`_create_item`, which refuses rather
-#: than evicts -- nothing in this module deletes a record. A board at this bound has
-#: run its course: once every item is closed, ``kirocrew ledger-sweep --purge``
-#: removes the finished ledger whole.
+#: a record reclaims nothing. Enforced by :func:`_create_item`, which never evicts a
+#: record -- nothing in this module deletes one in place. A board at this bound has
+#: run its course: when the next create arrives, every item is terminal AND no goal
+#: is recorded on it, :func:`_retire_and_recreate_locked` retires the board IN PLACE
+#: (its item records dropped under the item locks, a fresh ``generation``,
+#: ``created_total`` reset) and the create proceeds on the new board, so a spent
+#: queue board unblocks itself without an operator running
+#: ``kirocrew ledger-sweep --purge`` by hand. A board still holding an OPEN item is
+#: refused instead (retiring would drop that live item), pointing at closing it; and
+#: a board running a GOAL is refused too (its ``item_cap`` spend ceiling must not be
+#: reset silently), pointing at starting the next goal in a fresh conductor.
 MAX_STORED_ITEMS_PER_CONDUCTOR = WORK_STORED_ITEM_LIMIT
 #: How many items one GOAL may create, every round and re-plan together, when the
 #: user set no budget of their own. A spend bound, where the two above bound the
@@ -1964,6 +1971,127 @@ def _write_goal(
         return current
 
 
+def _retire_and_recreate_locked(slot_key: str, live: ConductorRecord) -> ConductorRecord:
+    """A new board generation under the same slot, IN PLACE, under the conductor lock.
+
+    Called by :func:`_create_item` when the board has created its last admissible
+    item (:data:`MAX_STORED_ITEMS_PER_CONDUCTOR`), every item on it is terminal AND
+    no goal is recorded on it: the board has run its course, so instead of refusing
+    the create and leaving the operator to run ``kirocrew ledger-sweep --purge`` by
+    hand, the board is retired and a fresh one opened in the SAME directory so the
+    create can proceed.
+
+    IN PLACE, not purge-and-recreate: the directory name IS the slot key and the
+    conductor lock is a file inside it, so removing the directory and calling
+    :func:`ensure_conductor` again would race the lock's own inode (the complexity
+    :func:`purge_conductor` carries a page of comments for). Here the directory and
+    the lock file are untouched; only the item records and the header's board-scoped
+    fields are rewritten.
+
+    THE DESTRUCTIVE HALF REUSES THE PURGE'S OWN MACHINERY, not a hand-rolled unlink
+    loop, so retirement is as safe as a purge:
+
+    * The census is :func:`census_items`, which reads the item FILES, not
+      :func:`list_work_items`, which SKIPS an unreadable record. A torn or misnamed
+      record is invisible to the listing, so a listing-based "every item terminal"
+      check would retire a board whose unfinished item it could not read and delete
+      that item's event log. The census counts a torn record as neither open nor
+      closed, so this function refuses (``CODE_LEDGER_NOT_FINISHED``) when the census
+      reports ANY open item, ANY unreadable record, or directory damage -- the same
+      bar the purge sets.
+    * The census and the removal both run under EVERY item lock
+      (:func:`_hold_every_item_lock`, taken non-blocking in the documented
+      conductor -> item order), so an item a worker is writing this instant reads as
+      a live writer and refuses the retirement rather than being misclassified as a
+      terminal record and deleted.
+    * The removal is :func:`_remove_contents_locked`, which COUNTS the entries it
+      could not remove instead of swallowing them, and the fresh header is written
+      only AFTER a clean removal. A removal that partly fails leaves the OLD, full
+      header in place (``created_total`` still at the bound) over whatever records
+      survived -- a board that still refuses creates, which the operator or the next
+      attempt can retry -- never a zeroed header pointing at half-deleted records.
+
+    Why this does NOT create the stuck ``crew_log_incomplete`` state a purge can.
+    That state arises when the cache and the crew-log fold carry DIFFERENT
+    generations: a purge removes the cached board but cannot take its entries back
+    out of the append-only log, so the fold still answers with the dead board while
+    the cache holds the live one, and a rebuild is refused to protect the live one
+    (see the generation guard in :func:`_refuse_fold_behind_cache`). A rotation does not
+    leave that gap: the new generation is minted HERE, under the lock, and the very
+    next write -- the create that triggered this -- is a conductor entry stamped
+    with it (``dashboard/handlers/work_ledger.py`` reads ``header.generation`` onto
+    every entry), which the fold's ``_work_step`` sees and resets the board on. Cache
+    and fold cross to the new generation together. A rebuild cannot slip into the
+    gap either: it takes this same conductor lock, which is held across the rotation
+    AND the create.
+
+    NO GOAL CROSSES THE ROTATION. The caller only reaches this function for a board
+    with NO goal recorded -- no goal text and ``goal_version == 0``, a plain queue
+    board. A board that recorded a goal is refused upstream, not rotated: its
+    ``item_cap`` is a spend ceiling a human set, and silently minting a fresh board
+    would reset ``goal_items_used`` to zero and bypass that ceiling for good (and the
+    create baseline carries the goal TEXT but not ``goal_version``, so a later rebuild
+    of a rotated goal board would read ``goal_version == 0`` and drop the cap too). So the
+    only board identity that survives is ``depth`` and ``parent_item`` -- lineage, not
+    a goal. Everything the old generation accumulated is dropped: ``created_total``
+    back to zero (the whole point -- the stored bound is measured against it), a fresh
+    ``generation``, ``round`` reset, ``goal``/``goal_version``/``item_cap``/
+    ``goal_items_base`` back to their defaults (there was no goal to carry), and
+    ``recorded_at`` cleared because nothing of the NEW board is in the crew log yet.
+    The caller has established, under this lock, that no goal is recorded; this
+    function re-establishes under the item locks that every item is terminal and
+    readable before it deletes anything.
+    """
+    directory = conductor_dir(slot_key)
+    with _hold_every_item_lock(directory):
+        census = census_items(directory)
+        if census.damage:
+            raise WorkLedgerError(
+                f"conductor ledger's {census.damage}; refusing to retire it",
+                code=CODE_LEDGER_NOT_FINISHED,
+                field="state",
+            )
+        if census.open_items:
+            raise WorkLedgerError(
+                f"conductor ledger has {census.open_items} open item(s); refusing to retire it",
+                code=CODE_LEDGER_NOT_FINISHED,
+                field="state",
+            )
+        if census.unreadable:
+            raise WorkLedgerError(
+                f"conductor ledger has {census.unreadable} unreadable item record(s); "
+                "refusing to retire it",
+                code=CODE_LEDGER_NOT_FINISHED,
+                field="state",
+            )
+        failures = _remove_contents_locked(directory)
+        if failures:
+            # A partial removal must not be followed by a zeroed header: the full
+            # header stays, the board keeps refusing, and the next attempt (or an
+            # operator) retries. Raising here leaves exactly that state, since the
+            # header write below never runs.
+            raise WorkLedgerError(
+                f"conductor ledger retirement could not remove {failures} entr(y/ies); "
+                "the board is unchanged and still full, retry once the files are free",
+                code=CODE_LEDGER_NOT_FINISHED,
+                field="state",
+            )
+        rotated = dataclasses.replace(
+            live,
+            goal="",
+            generation=secrets.token_hex(8),
+            created_total=0,
+            round=0,
+            goal_version=0,
+            recorded_at="",
+            item_cap=DEFAULT_GOAL_ITEM_CAP,
+            goal_items_base=0,
+            created_at=_now_iso(),
+        )
+        _write_record(directory / _CONDUCTOR_FILE, rotated.to_dict())
+        return rotated
+
+
 def _create_item(
     slot_key: str,
     record: ConductorRecord,
@@ -2047,15 +2175,63 @@ def _create_item(
         # ever admit is refused whatever its open count, so closed history cannot
         # carry the board past the fold's ceiling.
         if live.created_total >= MAX_STORED_ITEMS_PER_CONDUCTOR:
-            raise WorkLedgerError(
-                f"conductor has created {live.created_total} items over its life, open "
-                f"and closed together; the stored bound is {MAX_STORED_ITEMS_PER_CONDUCTOR}. "
-                "Nothing evicts a record and removing one reclaims nothing: once every "
-                "item is closed, `kirocrew ledger-sweep --purge` removes the finished "
-                "ledger whole",
-                code=CODE_ITEM_STORE_FULL,
-                field="items",
-            )
+            # The board has run its course. What happens next is decided by whether
+            # a goal is recorded on it and whether any work is still live:
+            #   * a GOAL is present (goal text set, or ``goal_version > 0``) -> never
+            #     auto-retire. The goal's ``item_cap`` is a spend ceiling a person
+            #     set, and a fresh board would reset ``goal_items_used`` and bypass
+            #     it; the create baseline carries the goal text but not its version,
+            #     so a rotated goal board would also lose the cap on a later rebuild.
+            #     A goal board at the stored bound is a human decision point, so
+            #     refuse and point at starting a new goal explicitly (which the
+            #     person authorises). In practice the goal's own cap (checked just
+            #     below, default 20) stops a goal board long before the stored bound,
+            #     so this is the rare board whose cap was raised near the stored
+            #     bound and burned. Keyed on goal TEXT, not only ``goal_version``: a
+            #     board whose goal was set at ``ensure_conductor`` but never recorded
+            #     via a ``goal`` action still identifies a workstream whose goal must
+            #     not vanish in a silent rotation.
+            #   * no goal, every item terminal -> retire this generation IN PLACE
+            #     and open a fresh board under the same slot, so this create proceeds
+            #     without an operator running ``kirocrew ledger-sweep --purge`` by
+            #     hand. The sweep could not help here anyway: a board with any open
+            #     item is kept, not purged, so a FULL board the operator still
+            #     creates against is exactly the case the sweep declines (see
+            #     ``ledger_sweep``). The terminal check is the FULL census, under the
+            #     item locks, inside ``_retire_and_recreate_locked`` -- not the
+            #     listing here, which cannot see a torn record.
+            #   * no goal, any item still open -> refuse, as before, but point at
+            #     closing those items (which is what makes the board retireable),
+            #     NOT at the sweep, which would decline a board that still holds an
+            #     open item.
+            if live.goal or live.goal_version > 0:
+                raise WorkLedgerError(
+                    f"conductor has created {live.created_total} items over its life, "
+                    f"the stored bound of {MAX_STORED_ITEMS_PER_CONDUCTOR}, and it is "
+                    "running a goal whose spend ceiling must not be reset silently. "
+                    "Decide with the user whether this goal is done: if so, start the "
+                    "next workstream in a fresh conductor; the board is not retired "
+                    "automatically while a goal is recorded on it",
+                    code=CODE_ITEM_STORE_FULL,
+                    field="items",
+                )
+            open_now = [
+                item for item in list_work_items(slot_key) if item.state not in TERMINAL_ITEM_STATES
+            ]
+            if open_now:
+                raise WorkLedgerError(
+                    f"conductor has created {live.created_total} items over its life, "
+                    f"the stored bound of {MAX_STORED_ITEMS_PER_CONDUCTOR}, and "
+                    f"{len(open_now)} item(s) are still open, so the board cannot be "
+                    "retired to make room. Close those items (accept/reject, or "
+                    "abandon one whose worker is gone) and the next create retires "
+                    "this board and opens a fresh one automatically",
+                    code=CODE_ITEM_STORE_FULL,
+                    field="items",
+                )
+            live = _retire_and_recreate_locked(slot_key, live)
+            if checked_round is None:
+                checked_round = live.round
         # The goal's own spend bound: every item this goal created, closed ones
         # and every round's re-plans included. A person decides past it. Only a
         # board that recorded a goal has one: a queue board never writes ``goal``.

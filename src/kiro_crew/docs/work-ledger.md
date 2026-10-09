@@ -107,8 +107,16 @@ its life: each create bumps it under the conductor lock, deleting or losing an i
 record does not reclaim capacity, and a create is refused rather than counted when
 the header cannot be read. A rebuild from the crew log sets the counter to the
 records the rebuilt board holds. Closed items stay on the board until that stored
-bound; a board at it refuses further creates (`item_store_full`) until the finished
-ledger is purged (see "Cleaning up finished ledgers"). A conductor may dispatch a
+bound; when a board reaches it and the next create arrives, the board is retired in
+place only if every item on it is terminal AND no goal is recorded on it — its
+records are dropped and a fresh board opens in the same slot (a new generation), so
+the create proceeds and the board unblocks itself without a manual purge. A board
+still holding an open item cannot be retired (that would drop live work), so the
+create is refused (`item_store_full`) and the message points at closing the open
+items. A board running a goal is refused too (`item_store_full`): its item cap is a
+spend ceiling a person set, so a fresh board would reset it silently — the message
+points at starting the next goal in a fresh conductor instead. A conductor may
+dispatch a
 conductor only once — depth is capped at 2, so a second-level conductor's own
 children are workers. A worker holds one open item at a time.
 
