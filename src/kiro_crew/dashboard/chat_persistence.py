@@ -1474,6 +1474,7 @@ def _rehydrate_slot_from_history(
             # message the append just created. Without this the window loses where
             # each turn came from and the next flush restamps it "dashboard".
             carry_provenance(slot.messages[-1], m)
+            remember_unknown_row_fields(slot.messages[-1], m)
             _attach_variants(slot, m)
         slot.drain()
         slot._resumed_count = len(slot.messages)
@@ -1821,6 +1822,7 @@ def _apply_recent_session(
         )
         # See the equivalent call in _rehydrate_slot_from_history.
         carry_provenance(slot.messages[-1], m)
+        remember_unknown_row_fields(slot.messages[-1], m)
         _attach_variants(slot, m)
     slot.drain()
     slot._resumed_count = len(slot.messages)
@@ -2980,6 +2982,7 @@ from kiro_crew.dashboard.slot_persistence.message_entries import (  # noqa: E402
     _approx_window_payload_bytes,
     _attach_variants,
     _build_message_entry_uncached,
+    remember_unknown_row_fields,
 )
 from kiro_crew.dashboard.slot_persistence.metadata_codec import (  # noqa: E402,F401
     _RETIRED_MODES,

@@ -68,6 +68,7 @@ from kiro_crew.dashboard.channel_folders import (
 )
 from kiro_crew.dashboard.chat_title import _persist_title
 from kiro_crew.dashboard.chat_utils import _sync_dashboard_slots, effective_session_key
+from kiro_crew.dashboard.slot_persistence.message_entries import remember_unknown_row_fields
 from kiro_crew.dashboard.state import (
     _normalize_slot_key,
     durable_row_count,
@@ -757,6 +758,8 @@ def _rebuild_window(slot: "_ChatSlot", messages: list[dict[str, Any]]) -> None:
         # created — the save path re-serializes this window and would otherwise
         # restamp every line "dashboard".
         carry_provenance(slot.messages[-1], msg)
+        # The same save would drop the fields a newer build wrote on the line.
+        remember_unknown_row_fields(slot.messages[-1], msg)
     slot.drain()
     slot._resumed_count = len(slot.messages)
     slot._disk_window_len = len(slot.messages)
@@ -860,6 +863,7 @@ def refresh_channel_window(slot: "_ChatSlot", messages: list[dict[str, Any]], mt
         )
         # See the equivalent call in _rebuild_window.
         carry_provenance(slot.messages[-1], msg)
+        remember_unknown_row_fields(slot.messages[-1], msg)
     slot.drain()
     slot._resumed_count = len(slot.messages)
     slot._disk_window_len = len(slot.messages)

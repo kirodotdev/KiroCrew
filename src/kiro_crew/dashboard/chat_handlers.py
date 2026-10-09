@@ -143,6 +143,7 @@ from kiro_crew.dashboard.chat_persistence import (  # noqa: F401
     pin_private_agent_store,
     register_reasoning_effort_values,
     release_prewarmed_session,
+    remember_unknown_row_fields,
     save_slot_off_loop,
 )
 from kiro_crew.dashboard.chat_runner import (

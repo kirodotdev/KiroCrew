@@ -39,6 +39,7 @@ if TYPE_CHECKING:
         queue_entry_view,
         redact_credentials,
         redact_exfiltration_urls,
+        remember_unknown_row_fields,
         slot_history_key,
         slot_not_found,
     )
@@ -847,6 +848,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
                                 mint_mid=False,
                             )
                             carry_provenance(slot.messages[-1], msg)
+                            remember_unknown_row_fields(slot.messages[-1], msg)
                             _attach_variants(slot, msg)
                         # Replayed rows came from disk — drain the replay
                         # frames and mark the window persisted (not dirty) so a

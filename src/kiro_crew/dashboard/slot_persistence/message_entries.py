@@ -20,15 +20,39 @@ from typing import TYPE_CHECKING
 
 from kiro_crew.chat_attachments import ImageBudget
 from kiro_crew.dashboard.chat_utils import (
+    UNKNOWN_ROW_FIELDS_KEY,
     _redact_meta_for_role,
     drop_records_without_placeholders,
     redact_display_content,
     with_bounded_redaction_records,
 )
-from kiro_crew.history import carry_provenance
+from kiro_crew.history import PROVENANCE_FIELDS, carry_provenance
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import _ChatSlot
+
+
+#: Every top-level key this build writes on a persisted transcript row: the keys
+#: ``_build_message_entry_uncached`` writes, and ``tools``, which
+#: ``ConversationLog.append`` writes. A row key outside this set came from a newer
+#: build. ``test_slot_save_newer_row_fields`` pins that the builder writes nothing
+#: outside it.
+_KNOWN_ROW_KEYS = frozenset(
+    {"role", "content", "ts", "cls", "meta", "variants", "variant_idx", "tools", *PROVENANCE_FIELDS}
+)
+
+
+def remember_unknown_row_fields(msg: dict, row: dict) -> None:
+    """Keep the fields a newer build wrote on *row* under the private key of *msg*.
+
+    *msg* is the in-memory slot message restore built from the persisted *row*. Only
+    keys outside :data:`_KNOWN_ROW_KEYS` are kept, as read, so the save can write them
+    back (:func:`_build_message_entry_uncached`). The key never leaves the server:
+    every path that sends a message out removes it (``chat_utils.without_unknown_row_fields``).
+    """
+    unknown = {key: value for key, value in row.items() if key not in _KNOWN_ROW_KEYS}
+    if unknown:
+        msg[UNKNOWN_ROW_FIELDS_KEY] = unknown
 
 
 def _attach_variants(slot: _ChatSlot, m: dict) -> None:
@@ -199,4 +223,14 @@ def _build_message_entry_uncached(
         # keep them; `_redact_meta_for_role` re-validates whatever survives.
         drop_records_without_placeholders(meta_in, content)
         entry["meta"] = _redact_meta_for_role(role, meta_in)
+    # Fields a newer build wrote on this row, kept by restore
+    # (``remember_unknown_row_fields``): written back exactly as read, fill-only, so a
+    # key this build writes is never overwritten -- the rule ``crons.json`` and the
+    # config file apply to unknown keys. They were on disk already; writing them back
+    # unchanged adds no exposure, and redaction keeps applying to the fields above.
+    unknown = m.get(UNKNOWN_ROW_FIELDS_KEY)
+    if isinstance(unknown, dict):
+        for key, value in unknown.items():
+            if key not in _KNOWN_ROW_KEYS:
+                entry.setdefault(key, value)
     return entry
