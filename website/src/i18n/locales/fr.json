@@ -7619,7 +7619,7 @@
       "server_name_2": "Nom du serveur",
       "server_spec_json": "JSON de spécification du serveur",
       "servers_json": "JSON des serveurs",
-      "stored_header_values_are_hidden_and_read_only": "Les valeurs d'en-tête stockées sont masquées et en lecture seule ici. Pour les modifier, supprimez puis rajoutez le serveur — il redémarre désactivé et vos restrictions d'outils ne sont pas conservées : réappliquez-les ensuite.",
+      "stored_header_values_are_hidden": "Les en-têtes qui affichent encore <marker>{{marker}}</marker> gardent leur valeur enregistrée. Remplace-en un pour ne changer que cet en-tête. L'URL et les noms d'en-tête ne peuvent pas être modifiés ici. Pour les changer, supprime puis rajoute le serveur. Il revient désactivé et sans tes restrictions d'outils, alors réapplique-les ensuite.",
       "stdio_or": "(stdio) ou",
       "that_looks_like_a_single_server_spec_give_it_a_n": "Cela ressemble à une spécification de serveur unique — donnez-lui un nom :",
       "url": "url",

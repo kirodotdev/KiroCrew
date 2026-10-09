@@ -15,6 +15,7 @@
  */
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Trans } from 'react-i18next'
 import { AlertTriangle, Check, Loader2 } from 'lucide-react'
 import { api, ApiError } from '../api/client'
 import Modal from './Modal'
@@ -231,7 +232,13 @@ export default function McpCustomServerModal({ open, onClose, editName }: Props)
         )}
         {editing && !!specQuery.data && Object.keys(specQuery.data.spec.headers ?? {}).length > 0 && (
           <p className="text-xs text-text m-0" role="note">
-            {i18nT('components.mcpCustomServerModal.stored_header_values_are_hidden_and_read_only')}
+            <Trans
+              i18nKey="components.mcpCustomServerModal.stored_header_values_are_hidden"
+              // The value the read put in place of every stored header value:
+              // a save that sends it back unchanged keeps the stored value.
+              values={{ marker: Object.values(specQuery.data.spec.headers ?? {})[0] }}
+              components={{ marker: <code className="font-mono" /> }}
+            />
           </p>
         )}
 

@@ -7619,7 +7619,7 @@
       "server_name_2": "Nome del server",
       "server_spec_json": "JSON della specifica del server",
       "servers_json": "JSON dei server",
-      "stored_header_values_are_hidden_and_read_only": "I valori header memorizzati sono nascosti e di sola lettura qui. Per modificarli, rimuovi e aggiungi di nuovo il server: parte disabilitato e le tue restrizioni degli strumenti non vengono conservate, quindi riapplicale dopo.",
+      "stored_header_values_are_hidden": "Gli header che mostrano ancora <marker>{{marker}}</marker> mantengono il valore salvato. Sostituiscine uno per cambiare solo quell'header. L'URL e i nomi degli header non si possono cambiare qui. Per cambiarli, rimuovi e aggiungi di nuovo il server. Torna disabilitato e senza le tue restrizioni degli strumenti, quindi riapplicale dopo.",
       "stdio_or": "(stdio) o",
       "that_looks_like_a_single_server_spec_give_it_a_n": "Sembra la specifica di un singolo server — assegnagli un nome:",
       "url": "url",

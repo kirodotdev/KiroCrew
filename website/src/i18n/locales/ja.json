@@ -7397,7 +7397,7 @@
       "server_name_2": "サーバー名",
       "server_spec_json": "サーバースペック JSON",
       "servers_json": "サーバーズ JSON",
-      "stored_header_values_are_hidden_and_read_only": "保存済みの header 値はここでは非表示かつ読み取り専用です。変更するにはサーバーを削除して再追加してください。再追加後は無効状態で始まり、ツール制限は引き継がれないため、再設定してください。",
+      "stored_header_values_are_hidden": "<marker>{{marker}}</marker> と表示されたままの header は、保存済みの値を保持します。その header だけを変更するには、値を置き換えてください。URL と header 名はここでは変更できません。変更するには、サーバーを削除して再追加してください。再追加後は無効状態で始まり、ツール制限は引き継がれないため、再設定してください。",
       "stdio_or": "（stdio）またはネットワーク",
       "that_looks_like_a_single_server_spec_give_it_a_n": "それは単一のサーバースペックのようです。名前を付けてください：",
       "url": "url",

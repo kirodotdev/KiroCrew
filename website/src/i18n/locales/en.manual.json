@@ -2840,7 +2840,8 @@
       "name_already_in_use_pick_a_different_server_name": "Name already in use — pick a different server name or edit the existing one.",
       "save": "Save",
       "server_spec_json": "Server spec JSON",
-      "servers_json": "Servers JSON"
+      "servers_json": "Servers JSON",
+      "stored_header_values_are_hidden": "Headers that still show <marker>{{marker}}</marker> keep their saved value. Replace one to change only that header. The URL and header names can't change here. To change them, remove and re-add the server. It comes back disabled and without its tool restrictions, so re-apply them after re-adding."
     },
     "messageErrorBoundary": {
       "hide_raw": "hide raw",

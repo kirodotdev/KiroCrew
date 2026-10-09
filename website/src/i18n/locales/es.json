@@ -7619,7 +7619,7 @@
       "server_name_2": "Nombre del servidor",
       "server_spec_json": "JSON de la especificación del servidor",
       "servers_json": "JSON de servidores",
-      "stored_header_values_are_hidden_and_read_only": "Los valores de header almacenados están ocultos y son de solo lectura aquí. Para cambiarlos, elimina y vuelve a añadir el servidor: empieza deshabilitado y tus restricciones de herramientas no se conservan, así que vuelve a aplicarlas después.",
+      "stored_header_values_are_hidden": "Los headers que siguen mostrando <marker>{{marker}}</marker> conservan su valor guardado. Reemplaza uno para cambiar solo ese header. La URL y los nombres de header no se pueden cambiar aquí. Para cambiarlos, elimina y vuelve a añadir el servidor. Vuelve deshabilitado y sin tus restricciones de herramientas, así que vuelve a aplicarlas después.",
       "stdio_or": "(stdio) o",
       "that_looks_like_a_single_server_spec_give_it_a_n": "Eso parece la especificación de un solo servidor: ponle un nombre:",
       "url": "url",

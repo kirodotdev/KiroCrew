@@ -7397,7 +7397,7 @@
       "server_name_2": "服务器名称",
       "server_spec_json": "服务器配置 JSON",
       "servers_json": "服务器 JSON",
-      "stored_header_values_are_hidden_and_read_only": "已存储的 header 值在此处隐藏且只读。如需更改，请删除并重新添加该服务器——重新添加后服务器初始为禁用状态，且你的工具限制不会保留，请在重新添加后重新设置。",
+      "stored_header_values_are_hidden": "仍显示 <marker>{{marker}}</marker> 的 header 会保留已存储的值。替换其中一个即可只更改该 header。URL 和 header 名称无法在此更改。如需更改，请删除并重新添加该服务器——重新添加后服务器初始为禁用状态，且你的工具限制不会保留，请在重新添加后重新设置。",
       "stdio_or": "（stdio）或",
       "that_looks_like_a_single_server_spec_give_it_a_n": "这看起来是单个服务器配置 — 请为它命名：",
       "url": "url",
