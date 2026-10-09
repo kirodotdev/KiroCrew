@@ -331,6 +331,7 @@ class TestSelfProtectionFlagInterposition:
         "self-protection-restart": "kirocrew {flags} restart",
         "self-protection-update": "kirocrew {flags} update",
         "self-protection-file-delivery": "kirocrew {flags} file-delivery approve",
+        "self-protection-ssh-agent": "kirocrew {flags} ssh-agent approve",
         "self-protection-gateway-restart": "kirocrew {flags} gateway restart",
         "self-protection-cloud": "kirocrew {flags} cloud destroy",
     }
@@ -480,6 +481,7 @@ class TestSelfProtectionFlagInterposition:
         "self-protection-restart": ["restart"],
         "self-protection-update": ["update"],
         "self-protection-file-delivery": ["file-delivery", "approve"],
+        "self-protection-ssh-agent": ["ssh-agent", "approve"],
         "self-protection-gateway-restart": ["gateway", "restart"],
         "self-protection-cloud": ["cloud", "destroy"],
     }
@@ -551,6 +553,83 @@ class TestSelfProtectionFlagInterposition:
                 "the read-only help form of the new verb is a golden path and must not "
                 f"be refused: {cmd!r}"
             )
+
+    # ``ssh-agent`` has the same REQUIRED ``action`` positional, so the same
+    # non-dispatching forms must stay reachable for the same reason.
+    _SSH_AGENT_NON_DISPATCHING = (
+        "kirocrew ssh-agent",
+        "kirocrew ssh-agent --help",
+        "kirocrew ssh-agent -h",
+        "kirocrew -v ssh-agent --help",
+        "python -m kiro_crew ssh-agent --help",
+    )
+
+    def test_the_ssh_agent_floor_allows_the_forms_that_dispatch_nothing(self):
+        from kiro_crew import security
+
+        effective = self._effective()
+        for cmd in self._SSH_AGENT_NON_DISPATCHING:
+            assert not security.is_denied(cmd, denied_regexes=effective), (
+                "the read-only help form of the ssh-agent verb is a golden path and must "
+                f"not be refused: {cmd!r}"
+            )
+
+    def test_the_ssh_agent_floor_covers_every_dispatchable_verb(self):
+        """Same derivation as the file-delivery test below, for the sibling parser."""
+        from kiro_crew.security import argv_floor
+
+        choices, required = self._parser_action_choices("ssh_agent_parser")
+        assert choices, "the ssh-agent action positional was not found in cli.py"
+        assert argv_floor._SELF_SSH_AGENT_VERBS == frozenset(choices), (
+            "the ssh-agent floor's verb set must equal the CLI's own choices; a new "
+            "verb needs a deliberate decision here, not a silent pass"
+        )
+        assert required, (
+            "the action positional must stay REQUIRED -- an optional one would make a "
+            "bare 'kirocrew ssh-agent' dispatch, and this floor allows that form"
+        )
+
+    @staticmethod
+    def _parser_action_choices(parser_name: str) -> "tuple[list[str] | None, bool | None]":
+        """``(choices, required)`` of ``<parser_name>.add_argument("action", ...)`` in cli.py.
+
+        Read by AST rather than by calling a builder, because ``cli.py`` builds its
+        parser inline in ``main()``; and by AST rather than by grepping the source,
+        because a substring assertion stays green when the construct it names moves
+        or is wrapped.
+        """
+        import ast
+        import inspect
+
+        from kiro_crew import cli
+
+        tree = ast.parse(inspect.getsource(cli))
+        choices: "list[str] | None" = None
+        required = None
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            if not (
+                isinstance(fn, ast.Attribute)
+                and fn.attr == "add_argument"
+                and isinstance(fn.value, ast.Name)
+                and fn.value.id == parser_name
+            ):
+                continue
+            if not (node.args and isinstance(node.args[0], ast.Constant)):
+                continue
+            if node.args[0].value != "action":
+                continue
+            kwargs = {kw.arg: kw.value for kw in node.keywords}
+            listed = kwargs.get("choices")
+            assert isinstance(listed, (ast.List, ast.Tuple, ast.Set)), (
+                f"the {parser_name} action's choices must stay a literal this test can "
+                "read; a computed value would make the floor's set unverifiable here"
+            )
+            choices = [e.value for e in listed.elts if isinstance(e, ast.Constant)]
+            required = "nargs" not in kwargs
+        return choices, required
 
     def test_the_file_delivery_floor_covers_every_dispatchable_verb(self):
         """The floor's verb set IS the parser's ``choices``, derived not restated.

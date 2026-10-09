@@ -2,7 +2,7 @@
  * Settings > Security and the credential vault: posture and stats, denied
  * commands, redaction allowed hosts, third-party app trust, registry git-identity
  * trust, the read-only governance policy, vault secrets, and the paid-AWS,
- * flagged-file-delivery and credential-redaction consents.
+ * flagged-file-delivery, ssh-agent-forwarding and credential-redaction consents.
  */
 
 import type { ClientTransport } from './transport'
@@ -106,6 +106,28 @@ export interface ArmedFileDeliveryConsent {
   request_id?: string
   destination_class?: string
   expires_in?: number
+  approve_command?: string
+}
+
+/** The owner's consent to forward the host's ssh-agent socket into sessions
+ *  (Settings > Security > SSH agent). `granted` is the position as RECORDED by
+ *  the backend, read fail-closed (a missing or unparseable record is `false`).
+ *  `socket_present` reports whether the GATEWAY process itself has an
+ *  `SSH_AUTH_SOCK`, so the panel can say "no ssh-agent detected" rather than
+ *  offering a grant that would forward nothing. */
+export interface SshAgentConsentStatus {
+  granted: boolean
+  granted_at: string | null
+  socket_present: boolean
+}
+
+/** The SPA-safe view of an armed ssh-agent grant request. Same contract as
+ *  `ArmedFileDeliveryConsent`: the approval NONCE never reaches the browser, and
+ *  finishing the grant needs `approve_command` run on the host. */
+export interface ArmedSshAgentConsent {
+  armed: boolean
+  request_id?: string | null
+  expires_in?: number | null
   approve_command?: string
 }
 
@@ -537,6 +559,21 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch:
     revokeFileDeliveryConsent: (destinationClass: string) =>
       del('/api/file-delivery/consent?destination_class=' + encodeURIComponent(destinationClass))
         .then(j) as Promise<{ ok?: boolean; removed?: boolean }>,
+    // SSH agent forwarding consent (Settings > Security > SSH agent). The same
+    // four explicit verbs as flagged-file delivery above, for the same reasons:
+    // the handler applies the owner gate per verb, and recording the grant is a
+    // two-step STEP-UP -- POST /arm only ARMS a request (the nonce lives in a
+    // sandbox-hidden leaf the browser never sees) and `kirocrew ssh-agent
+    // approve` on the host records it. Revoke is a single owner-gated DELETE,
+    // no step-up, because withdrawing is the fail-safe direction.
+    sshAgentConsent: () =>
+      fetch('/api/ssh-agent/consent').then(j) as Promise<SshAgentConsentStatus>,
+    armSshAgentConsent: () =>
+      post('/api/ssh-agent/consent/arm').then(j) as Promise<ArmedSshAgentConsent>,
+    sshAgentConsentArmStatus: () =>
+      fetch('/api/ssh-agent/consent/arm').then(j) as Promise<ArmedSshAgentConsent>,
+    revokeSshAgentConsent: () =>
+      del('/api/ssh-agent/consent').then(j) as Promise<{ granted: boolean }>,
     // Credential-redaction switch (Settings > Security > Credential redaction).
     // Two explicit verbs for the same reason the consent helpers above keep
     // theirs: the handler applies the owner gate to the read and the write

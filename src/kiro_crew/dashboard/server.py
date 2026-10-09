@@ -586,6 +586,13 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # a local_only=False deployment that reclassifies strict paths as mixed is
         # still caught by the handler's own check.
         "/api/file-delivery/consent/approve",
+        # SSH_AUTH_SOCK forward approval step-up: the third copy of the same
+        # posture, STRICT for the identical reason. Its only legitimate caller is
+        # `kirocrew ssh-agent approve` on the gateway host presenting the
+        # sandbox-masked nonce; the SPA can only ARM. The handler
+        # (api_ssh_agent_consent_approve -> _approve_is_local) re-asserts
+        # host-locality itself as the inner fence.
+        "/api/ssh-agent/consent/approve",
         # Dev Fleet pod lifecycle — the agent surface behind the ``pod_up`` /
         # ``pod_down`` / ``pod_status`` / ``pod_ls`` MCP tools. An agent session
         # runs behind a sandbox with its own user namespace, so its shells cannot

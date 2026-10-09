@@ -676,8 +676,15 @@ _CREW_SECRET_LEAVES: list[str] = [
     # it should not get for free from the shared gate. The authenticated,
     # owner-gated dashboard ``/api/file-delivery/consent`` handler is the ONLY
     # writer and opens the path directly, not through this gate, so it keeps
-    # working; there is deliberately no CLI verb to fence.
+    # working. The ``kirocrew file-delivery approve`` verb is a step-up that
+    # consumes an owner-armed nonce from the masked leaf below; it never writes
+    # this file, so there is no CLI write path to fence here either.
     "file_delivery_consent.json",
+    # The SSH_AUTH_SOCK forward consent: the same class of control (a record
+    # that AUTHORIZES session-long USE of the operator's ssh-agent keys), the
+    # same owner-gated-handler-is-the-only-writer shape (``/api/ssh-agent/consent``),
+    # and the same host step-up verb (``kirocrew ssh-agent approve``) consuming a
+    # nonce from its own masked leaf below.
     "ssh_auth_sock_consent.json",
     # The owner's credential-redaction switch. Same class of control as the
     # consent records above: the record is what AUTHORIZES the credential scrubber
@@ -703,6 +710,11 @@ _CREW_SECRET_LEAVES: list[str] = [
     # closes the forge path, since the text/argv file gate alone does not stop a
     # runtime-constructed shell write.
     "file-delivery-consent-pending",
+    # The SSH_AUTH_SOCK forward grant's step-up nonce: identical shape, identical
+    # reasoning, identical pair of out-of-sandbox readers (gateway on arm, host
+    # ``kirocrew ssh-agent approve``), and likewise bind-masked in
+    # ``sandbox._CREW_HIDDEN_LEAVES``.
+    "ssh-auth-sock-consent-pending",
     "token_signing.key",
     "refresh_chains.json",
     # The staging directory the two leaves above publish through. Both are masked as

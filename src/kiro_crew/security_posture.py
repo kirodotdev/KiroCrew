@@ -1790,6 +1790,14 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # consent card and the tool's own error string are the surfaces that
         # show a refusal, and those are owned by their registered sinks.
         "file_delivery_consent.py",
+        # The ssh-agent forward consent, same shape as file_delivery_consent:
+        # audit_decision scrubs the caller-supplied detail (a refusal reason)
+        # before the 200-char clip and before writing the
+        # ssh_auth_sock_forward_consent SEL row. A gate-side audit record, not an
+        # output bound for a human or a third party; the Settings card and the
+        # approve verb's own error string are the surfaces that show a refusal,
+        # and those are owned by their registered sinks.
+        "ssh_auth_sock_consent.py",
         # Detector, not redactor: the decision seam runs redact_credentials
         # AND redact_exfiltration_urls over the state it is about to send to a
         # third-party judge, then DISCARDS both cleaned strings and refuses the

@@ -99,6 +99,8 @@ export type {
   FileDeliveryConsentStatus,
   CredentialRedactionState,
   ArmedFileDeliveryConsent,
+  SshAgentConsentStatus,
+  ArmedSshAgentConsent,
   DeniedCommandsData,
   GovernanceScopeDetail,
   GovernanceScope,

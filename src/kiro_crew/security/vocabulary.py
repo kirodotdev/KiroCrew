@@ -38,3 +38,7 @@ _KILL_BY_NAME_PROGRAMS = frozenset({"pkill", "killall"})
 # subcommand word because ``action`` is required, so the bare and ``--help`` forms
 # dispatch nothing and refusing them would refuse a read-only golden path.
 _SELF_FILE_DELIVERY_VERBS = frozenset({"approve"})
+# ``kirocrew ssh-agent``'s dispatchable verbs, by the same rule and pinned by the
+# same parser-derived test: the verb completes an owner-armed SSH_AUTH_SOCK
+# forward consent, so the agent must not be able to type it.
+_SELF_SSH_AGENT_VERBS = frozenset({"approve"})
