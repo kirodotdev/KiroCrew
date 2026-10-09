@@ -29,10 +29,7 @@ Three rules follow from that and are enforced here rather than at each caller:
   reverting takes layout from the target version and keeps the LIVE binding, so
   a rollback can never hand a crewmate's page to a different crewmate.
 
-:func:`read_dashboard_model` is the one function the data line calls: given a
-``bound_to``, it returns the Model of the package currently stored for it.
-Nothing here reads or writes the filesystem except through the store it is
-handed; the validators raise
+Nothing here reads or writes the filesystem; the validators raise
 :class:`~kiro_crew.artifact_store.model.ArtifactValidationError`, which every
 artifact write path already renders as a 400 rather than a 500.
 """
@@ -45,12 +42,9 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from dataclasses import field as _dc_field
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from kiro_crew.artifact_store.model import ArtifactValidationError
-
-if TYPE_CHECKING:  # pragma: no cover -- import cycle: artifacts imports this module
-    from kiro_crew.artifacts import ArtifactStore
 
 #: The artifact kind this module owns. Added to
 #: :data:`kiro_crew.artifact_store.rules.ALLOWED_KINDS`, and deliberately NOT to
@@ -68,10 +62,6 @@ MAX_THEME_TOKENS = 64
 MAX_THEME_CSS_BYTES = 32 * 1024
 #: Cap on a human-readable string inside the package (a label, a title, a unit).
 MAX_LABEL_LEN = 120
-#: Cap on how many dashboard artifacts :func:`read_dashboard_model` will open
-#: while looking for a binding. There is one package per crewmate or slot, so a
-#: scan past this is a library problem, not a lookup that deserves more reads.
-MAX_BINDING_SCAN = 256
 
 #: ``crewmate:<slug>`` or ``session:<slot key>`` -- one string, so the data line
 #: passes a single value and two bindings can never be confused for each other.
@@ -110,8 +100,13 @@ _DATA_KEYS = frozenset(
     }
 )
 
+#: A fold path: dotted keys walking the rendered fold value. The SAME grammar as
+#: ``dashboard_templates.manifest._PATH``, because the translated manifest hands
+#: this exact string to the same walker.
+_PATH_RE = re.compile(r"\A[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)*\Z")
+
 #: The keys every model field carries, whatever its type.
-_UNIVERSAL_FIELD_KEYS = ("type", "label", "description")
+_UNIVERSAL_FIELD_KEYS = ("type", "source", "label", "description")
 #: The keys every view block carries, whatever its type.
 _UNIVERSAL_BLOCK_KEYS = ("id", "type", "fields", "title")
 
@@ -271,142 +266,58 @@ def view_block_catalog() -> Mapping[str, BlockType]:
 
 
 # --------------------------------------------------------------------------- #
-# The JSON schema. A DOCUMENT for consumers (the skill, the tool description,
-# a frontend type generator) built from the same catalogs the validator reads,
-# so the two cannot drift -- test_dashboard_package pins that equality.
-# --------------------------------------------------------------------------- #
-
-
-def package_json_schema() -> dict[str, Any]:
-    """The JSON Schema (draft 2020-12) of a dashboard package.
-
-    Derived from the live catalogs rather than written out beside them: the
-    enums here ARE :func:`data_type_catalog` and :func:`view_block_catalog`, so
-    a type added to a catalog appears in the schema with no second edit. Callers
-    use it to document and to pre-check; the authority is still
-    :func:`validate_package`, which checks the cross-references a schema cannot
-    (a block naming a field the model does not declare).
-    """
-    types = data_type_catalog()
-    blocks = view_block_catalog()
-    return {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "$id": "https://kirocrew.dev/schemas/artifact-dashboard-package.json",
-        "title": "Dashboard artifact package",
-        "description": (
-            'The content of a kind="dashboard" artifact: layout only. Values are '
-            "never stored here -- they stay in the crew log and reach the page "
-            "through the fold / bus / controller path."
-        ),
-        "type": "object",
-        "required": ["kind", "bound_to", "model", "view", "theme"],
-        "additionalProperties": False,
-        "properties": {
-            "kind": {"const": DASHBOARD_KIND},
-            "bound_to": {
-                "type": "string",
-                "pattern": _BOUND_TO_RE.pattern.replace("\\A", "^").replace("\\Z", "$"),
-                "description": (
-                    "crewmate:<slug> for a crewmate's page, session:<slot key> for a "
-                    "root session slot's. Outside the layout fingerprint: a rebind is "
-                    "not a layout change and does not create a version."
-                ),
-            },
-            "model": {
-                "type": "object",
-                "required": ["types"],
-                "additionalProperties": False,
-                "properties": {
-                    "types": {
-                        "type": "object",
-                        "description": "Field name -> field shape. The page may render these and nothing else.",
-                        "maxProperties": MAX_MODEL_FIELDS,
-                        "propertyNames": {
-                            "pattern": _FIELD_NAME_RE.pattern.replace("\\A", "^").replace(
-                                "\\Z", "$"
-                            )
-                        },
-                        "additionalProperties": {
-                            "type": "object",
-                            "required": ["type"],
-                            "properties": {
-                                "type": {
-                                    "enum": sorted(types),
-                                    "description": "A type name from data_type_catalog().",
-                                },
-                                "label": {"type": "string", "maxLength": MAX_LABEL_LEN},
-                                "description": {"type": "string", "maxLength": MAX_LABEL_LEN},
-                            },
-                        },
-                    }
-                },
-            },
-            "view": {
-                "type": "object",
-                "required": ["blocks"],
-                "additionalProperties": False,
-                "properties": {
-                    "blocks": {
-                        "type": "array",
-                        "maxItems": MAX_VIEW_BLOCKS,
-                        "items": {
-                            "type": "object",
-                            "required": ["id", "type", "fields"],
-                            "properties": {
-                                "id": {
-                                    "type": "string",
-                                    "pattern": _BLOCK_ID_RE.pattern.replace("\\A", "^").replace(
-                                        "\\Z", "$"
-                                    ),
-                                },
-                                "type": {
-                                    "enum": sorted(blocks),
-                                    "description": "A block type from view_block_catalog().",
-                                },
-                                "fields": {
-                                    "type": "array",
-                                    "items": {"type": "string"},
-                                    "description": (
-                                        "Model field names this block renders. Every name "
-                                        "must be declared in model.types; this is also the "
-                                        "block's subscription set for the bus."
-                                    ),
-                                },
-                                "title": {"type": "string", "maxLength": MAX_LABEL_LEN},
-                            },
-                        },
-                    }
-                },
-            },
-            "theme": {
-                "type": "object",
-                "required": ["tokens"],
-                "additionalProperties": False,
-                "properties": {
-                    "tokens": {
-                        "type": "object",
-                        "maxProperties": MAX_THEME_TOKENS,
-                        "propertyNames": {
-                            "pattern": _THEME_TOKEN_RE.pattern.replace("\\A", "^").replace(
-                                "\\Z", "$"
-                            )
-                        },
-                        "additionalProperties": {"type": "string", "maxLength": 120},
-                    },
-                    "css": {"type": "string", "maxLength": MAX_THEME_CSS_BYTES},
-                },
-            },
-        },
-    }
-
-
-# --------------------------------------------------------------------------- #
 # Validation
 # --------------------------------------------------------------------------- #
 
 
 def _refuse(path: str, reason: str) -> ArtifactValidationError:
     return ArtifactValidationError(f"dashboard package: {path}: {reason}")
+
+
+#: An unpaired UTF-16 surrogate. ``"\ud800"`` is a well-formed JSON escape, so
+#: the decoder keeps it as a lone code point that no UTF-8 encoder accepts.
+_LONE_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
+
+
+def _refuse_lone_surrogates(raw: Any, path: str = "package") -> None:
+    """Refuse a package holding an unpaired surrogate in ANY string, at any depth.
+
+    The invariant this establishes is what makes every ``.encode("utf-8")``
+    further down safe by construction: once parsing has rejected unpaired
+    surrogates everywhere, no validator, no size check and no file write can
+    meet one. Enforcing it per encode site instead means each site is its own
+    chance to raise ``UnicodeEncodeError`` -- which no caller handles, so it
+    surfaces as a 500 rather than the 400 a bad package deserves.
+
+    The walk is iterative. A package's depth is bounded only AFTER validation,
+    and this runs before it, so recursion here would add a second stack limit
+    to the one :func:`parse_package` already handles.
+    """
+    stack: list[tuple[Any, str]] = [(raw, path)]
+    while stack:
+        node, where = stack.pop()
+        if isinstance(node, str):
+            found = _LONE_SURROGATE_RE.search(node)
+            if found:
+                raise _refuse(
+                    where,
+                    f"holds an unpaired surrogate code point ({found.group()!r} at "
+                    f"index {found.start()}) that UTF-8 cannot encode; write a "
+                    "paired character or drop it",
+                )
+        elif isinstance(node, Mapping):
+            # Children are pushed in reverse so the LIFO visits them in document
+            # order, which makes "the first one found" the same on every run.
+            for key, value in reversed(list(node.items())):
+                child = f"{where}.{key}" if isinstance(key, str) else where
+                stack.append((value, child))
+                if isinstance(key, str):
+                    # A key is a string the serializer encodes too, and it is
+                    # named separately because the path cannot point inside it.
+                    stack.append((key, f"{where}: key {key!r}"))
+        elif isinstance(node, (list, tuple)):
+            for index, value in reversed(list(enumerate(node))):
+                stack.append((value, f"{where}[{index}]"))
 
 
 def _an_object(raw: Any, path: str) -> dict[str, Any]:
@@ -458,6 +369,64 @@ def _apply(
             raise _refuse(f"{path}.{key}", str(exc)) from None
 
 
+def fold_names() -> frozenset[str]:
+    """The crew-log folds a field may read, as the template manifest defines them.
+
+    Imported lazily and read through this one function rather than copied: a fold
+    added to ``crew_log.projection`` has to be readable from a package without a
+    second edit here, and the reader's translation into a ``TemplateManifest``
+    hands the name straight back to the same consumer. The import is deferred
+    because ``dashboard_templates.manifest`` reaches the projection and the
+    template parity checker, and the artifact store should not carry that graph
+    just to validate a string.
+    """
+    from kiro_crew.dashboard_templates.manifest import FOLD_NAMES
+
+    return frozenset(FOLD_NAMES)
+
+
+def _validate_source(raw: Any, path: str) -> dict[str, Any]:
+    """Where a field's value comes from: a crew-log fold, or the agent itself.
+
+    Exactly the two cases ``dashboard_templates.manifest`` already has, spelled
+    the same way, because the reader translates this straight into a
+    ``FieldSpec``. Without it a package would declare a field's shape and not
+    say who fills it, and a translation could only guess -- and the only guess
+    available, ``agentic``, would make every field on the page agent-writable
+    and lose the fold-backed half entirely.
+    """
+    source = _an_object(raw, path)
+    if source.get("agentic") is True:
+        _check_keys(source, path, ("agentic",))
+        return {"agentic": True}
+    if "agentic" in source:
+        # Not "unknown key": the author reached for the right key and wrote the
+        # wrong value, and there is no third kind of source to fall back to.
+        raise _refuse(
+            f"{path}.agentic",
+            f"is {source['agentic']!r}: an agentic source is written exactly "
+            "{'agentic': true}, and a field the agent does not write declares "
+            "{'fold': <name>, 'path': <dotted keys>} instead",
+        )
+    _check_keys(source, path, ("fold", "path"))
+    fold = source.get("fold")
+    known = fold_names()
+    if not isinstance(fold, str) or fold not in known:
+        raise _refuse(
+            f"{path}.fold",
+            f"{fold!r} is not a crew-log fold: the folds are {sorted(known)}. "
+            "A field the agent writes itself declares {'agentic': true} instead",
+        )
+    walk = source.get("path")
+    if not isinstance(walk, str) or _PATH_RE.fullmatch(walk) is None:
+        raise _refuse(
+            f"{path}.path",
+            f"{walk!r} is required and must be dotted keys walking the fold value, "
+            "e.g. 'summary.open_prs'",
+        )
+    return {"fold": fold, "path": walk}
+
+
 def validate_bound_to(raw: Any) -> str:
     """Return a well-formed ``bound_to``, or raise saying why it is not one."""
     if not isinstance(raw, str):
@@ -505,7 +474,16 @@ def _validate_model(raw: Any) -> dict[str, Any]:
             )
         allowed = (*_UNIVERSAL_FIELD_KEYS, *entry.required, *entry.optional)
         _check_keys(spec, path, allowed)
-        out: dict[str, Any] = {"type": type_name}
+        if "source" not in spec:
+            raise _refuse(
+                f"{path}.source",
+                "is required: a field must say where its value comes from -- "
+                "{'fold': <name>, 'path': <dotted keys>} or {'agentic': true}",
+            )
+        out: dict[str, Any] = {
+            "type": type_name,
+            "source": _validate_source(spec["source"], f"{path}.source"),
+        }
         for key in ("label", "description"):
             if key in spec:
                 try:
@@ -687,6 +665,12 @@ def parse_package(content: str) -> dict[str, Any]:
     """Parse stored dashboard content into a canonical package, or raise."""
     if not isinstance(content, str) or not content.strip():
         raise _refuse("package", "is empty: a dashboard artifact stores a JSON package")
+    # The submitted text is scanned before it is MEASURED, because measuring it
+    # encodes it. A surrogate reaches a package two ways and each is caught at
+    # the point it becomes a code point: written literally by a Python caller it
+    # is already one here, and written as the escape ``\\ud800`` it is six ASCII
+    # characters until the decoder below turns it into one.
+    _refuse_lone_surrogates(content)
     if len(content.encode("utf-8")) > MAX_PACKAGE_BYTES:
         raise _refuse(
             "package",
@@ -697,12 +681,52 @@ def parse_package(content: str) -> dict[str, Any]:
         raw = json.loads(content)
     except ValueError as exc:
         raise _refuse("package", f"is not valid JSON: {exc}") from None
+    except RecursionError:
+        # The byte cap above bounds a package's SIZE, not its DEPTH, and the two
+        # come apart: a quarter-megabyte of ``[`` is small enough to pass the cap
+        # and deep enough that the decoder runs out of stack. ``RecursionError``
+        # is a ``RuntimeError``, so the ``ValueError`` arm does not see it, and
+        # letting it escape turns a refusable package into a 500 at every caller
+        # that answers an ``ArtifactValidationError`` with a 400.
+        raise _refuse(
+            "package",
+            "nests deeper than the JSON decoder can follow: a layout is a few "
+            "levels of objects and arrays, so this is not one",
+        ) from None
+    # Before any validator touches a string: a validator that measures a string
+    # in bytes, and the serializer that writes one, both encode, and an encode
+    # that meets an unpaired surrogate raises where nothing catches it.
+    _refuse_lone_surrogates(raw)
     return validate_package(raw)
 
 
 def dump_package(package: Mapping[str, Any]) -> str:
-    """Serialize an already-canonical package to its stored bytes."""
-    return json.dumps(package, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+    """Serialize an already-canonical package to its stored bytes, or raise.
+
+    The package cap lives HERE rather than in the callers, because this is the
+    only place that holds the bytes the store actually writes, and
+    :func:`canonical_package_content` and :func:`revert_package` both end in it.
+    A cap measured anywhere upstream is measured on a different string: the
+    stored form is indented, which costs roughly 12% on a package of nested
+    objects, so text that arrives under :data:`MAX_PACKAGE_BYTES` can leave it
+    over -- and an oversized package is one its own reader refuses, which shows
+    up as a page that silently loses its layout.
+
+    The encode below cannot raise: every string in a package has passed
+    :func:`_refuse_lone_surrogates`, which is the one place that invariant is
+    enforced.
+    """
+    text = json.dumps(package, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+    written = text.encode("utf-8")
+    if len(written) > MAX_PACKAGE_BYTES:
+        raise _refuse(
+            "package",
+            f"is {len(written)} bytes once stored, over the {MAX_PACKAGE_BYTES}-byte "
+            "limit. The stored form is indented, so the limit applies to that form "
+            "and not to the text submitted -- shrink the layout, or check whether "
+            "values leaked into it",
+        )
+    return text
 
 
 def canonical_package_content(content: str) -> str:
@@ -723,7 +747,7 @@ def canonical_package_content(content: str) -> str:
 # --------------------------------------------------------------------------- #
 
 
-def layout_fingerprint(package: Mapping[str, Any]) -> str:
+def _layout_fingerprint(package: Mapping[str, Any]) -> str:
     """sha256 over the canonical ``model`` + ``view`` + ``theme`` of a package.
 
     ``bound_to`` is NOT in it, on purpose: a rebind moves the dashboard, it does
@@ -751,7 +775,7 @@ def layout_changed(stored_content: str, new_content: str) -> bool:
         stored = parse_package(stored_content)
     except ArtifactValidationError:
         return True
-    return layout_fingerprint(stored) != layout_fingerprint(parse_package(new_content))
+    return _layout_fingerprint(stored) != _layout_fingerprint(parse_package(new_content))
 
 
 def revert_package(stored_content: str, target_content: str) -> str:
@@ -761,8 +785,8 @@ def revert_package(stored_content: str, target_content: str) -> str:
     they were never in the package, so a rollback cannot touch them. The
     binding is the half that needs saying -- ``bound_to`` lives in the package,
     and a version from before a rebind carries the OLD binding, so a plain
-    content restore would quietly hand this crewmate's page to whoever the
-    dashboard used to belong to. The live binding therefore wins, and only
+    content restore would quietly hand this crewmate's page to whoever that
+    stale binding names. The live binding therefore wins, and only
     ``model`` / ``view`` / ``theme`` come back from the target.
 
     Unparseable live content (nothing valid stored yet) falls back to the
@@ -775,95 +799,3 @@ def revert_package(stored_content: str, target_content: str) -> str:
         return dump_package(target)
     target["bound_to"] = live["bound_to"]
     return dump_package(target)
-
-
-# --------------------------------------------------------------------------- #
-# The function the data line calls
-# --------------------------------------------------------------------------- #
-
-
-@dataclass(frozen=True)
-class DashboardModel:
-    """The Model of the package currently stored for one ``bound_to``.
-
-    What the data line needs in order to decide whether a value it is about to
-    write has a home, and which blocks should hear about it:
-
-    * ``fields`` -- field name -> its canonical shape (``type`` plus that
-      type's own keys). A value whose field name is absent here has no home on
-      this page and must not be written.
-    * ``subscriptions`` -- block id -> the field names that block renders. The
-      bus pushes a fold only to the blocks that subscribe to a field it moved.
-    * ``layout_fingerprint`` -- the layout this Model came from, so a caller
-      holding one can tell whether the page has been recomposed under it
-      without re-reading the whole package.
-    """
-
-    slug: str
-    version: int
-    bound_to: str
-    layout_fingerprint: str
-    fields: Mapping[str, Mapping[str, Any]]
-    subscriptions: Mapping[str, tuple[str, ...]]
-
-    def declares(self, field_name: str) -> bool:
-        """True when this page has a home for ``field_name``."""
-        return field_name in self.fields
-
-    def subscribers(self, field_name: str) -> tuple[str, ...]:
-        """The block ids that render ``field_name``, in view order."""
-        return tuple(
-            block_id for block_id, names in self.subscriptions.items() if field_name in names
-        )
-
-
-def model_of(package: Mapping[str, Any], *, slug: str = "", version: int = 0) -> DashboardModel:
-    """Project a canonical package into the :class:`DashboardModel` view of it."""
-    fields = dict(package["model"]["types"])
-    subscriptions = {block["id"]: tuple(block["fields"]) for block in package["view"]["blocks"]}
-    return DashboardModel(
-        slug=slug,
-        version=version,
-        bound_to=package["bound_to"],
-        layout_fingerprint=layout_fingerprint(package),
-        fields=fields,
-        subscriptions=subscriptions,
-    )
-
-
-def read_dashboard_model(
-    bound_to: str, *, store: "ArtifactStore | None" = None
-) -> DashboardModel | None:
-    """The Model of the dashboard package bound to ``bound_to``, or ``None``.
-
-    ``None`` is the empty state and is not an error: v3 has no default page, so
-    nothing is stored until the agent composes a layout. A caller writing a
-    value treats ``None`` as "this page cannot hold anything yet".
-
-    ``bound_to`` is ``crewmate:<slug>`` or ``session:<slot key>``; a value that
-    is not a binding raises rather than quietly matching nothing. ``store``
-    defaults to the process-wide artifact store.
-
-    The binding is resolved by reading the ``kind="dashboard"`` artifacts
-    newest-first and returning the first whose package is bound here, capped at
-    :data:`MAX_BINDING_SCAN` records. There is one package per crewmate or
-    slot, so the scan ends on its first or second read in practice; a record
-    whose content no longer parses is skipped rather than raising, because one
-    corrupt package must not make every other page unreadable.
-    """
-    bound_to = validate_bound_to(bound_to)
-    if store is None:
-        from kiro_crew.artifacts import get_default_store
-
-        store = get_default_store()
-    from kiro_crew.artifacts import ArtifactError
-
-    for art in store.list(kind=DASHBOARD_KIND)[:MAX_BINDING_SCAN]:
-        try:
-            loaded = store.get(art.slug)
-            package = parse_package(loaded.content or "")
-        except (ArtifactError, OSError):
-            continue
-        if package["bound_to"] == bound_to:
-            return model_of(package, slug=loaded.slug, version=loaded.version)
-    return None
