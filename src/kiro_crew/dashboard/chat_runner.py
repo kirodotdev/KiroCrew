@@ -11585,6 +11585,21 @@ async def _run_chat(
         # refusal card below, which renders the same shape for every harness.
         _turn_refusal: RefusalInfo | None = None
 
+        def _record_refused_cycle() -> None:
+            """Mark this slot's last turn as a refused cycle of the loop that fired it.
+
+            Only a loop's own delivered cycle counts (``_directive_self_wake``
+            with the fired loop's id), so a refusal on a person's turn never stops
+            a loop sharing the slot. The fire guard reads the pair before the next
+            cycle and stops that loop with ``model_refused``: the refusal card is
+            terminal for an unattended cycle, and the next one would send the same
+            prompt to the same model.
+            """
+            if not (_directive_self_wake and _directive_loop_id):
+                return
+            slot._last_turn_model_refused_loop_id = _directive_loop_id
+            slot._last_turn_model_refused_loop_gen = _directive_loop_gen
+
         async def _refusal_fallback_retry() -> bool:
             """One single-message retry on the configured refusal fallback.
 
@@ -16227,6 +16242,7 @@ async def _run_chat(
                 if await _refusal_fallback_retry():
                     pass
                 else:
+                    _record_refused_cycle()
                     logger.warning(
                         "Model refusal for slot %s (category=%s) after "
                         "streamed explanation — not retrying",
@@ -16276,6 +16292,7 @@ async def _run_chat(
             if await _refusal_fallback_retry():
                 pass
             else:
+                _record_refused_cycle()
                 logger.warning(
                     "Model refusal for slot %s (category=%s) — not retrying "
                     "[is_new=%s resumed=%s tool_calls=%d visible_output=%s "

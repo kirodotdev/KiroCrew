@@ -2972,6 +2972,8 @@ class _ChatSlot:
         "_last_turn_structural_terminal",
         "_last_turn_structural_terminal_loop_id",
         "_last_turn_structural_terminal_loop_gen",
+        "_last_turn_model_refused_loop_id",
+        "_last_turn_model_refused_loop_gen",
         "_prestream_exhausted_cycles",
         "_poisoned_reset_used",
         "_session_not_found_retry_used",
@@ -3816,6 +3818,15 @@ class _ChatSlot:
         # guard passes it to AutoNudgeService.update(expected_generation=...) so
         # the stop is applied under an atomic (id, generation) fence.
         self._last_turn_structural_terminal_loop_gen: int = 0
+        # The loop whose own delivered cycle ended on a content refusal that
+        # nothing retried, and the config generation it fired under. Empty when
+        # the last turn was not such a cycle. The auto-nudge fire guard reads the
+        # pair and stops that loop with ``model_refused`` instead of firing the
+        # same prompt into the same model again; cleared at the start of every
+        # genuine new turn, like the structural verdict above. Not persisted, for
+        # the same reason as that verdict.
+        self._last_turn_model_refused_loop_id: str = ""
+        self._last_turn_model_refused_loop_gen: int = 0
         # Poisoned-conversation escalation (cross-cycle). A cycle that EXHAUSTS
         # the transient-5xx ladder with ZERO output counts one pre-stream
         # exhaustion; consecutive exhausted cycles indicate the backend is

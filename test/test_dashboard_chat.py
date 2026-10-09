@@ -11551,6 +11551,78 @@ class TestRunChatRefusalFallback:
         assert not any("retrying once on" in m.get("content", "") for m in slot.messages)
 
     @pytest.mark.asyncio
+    async def test_a_loops_refused_cycle_records_the_loop_on_the_slot(self, tmp_path, monkeypatch):
+        """A loop's own cycle that ends refused names that loop on the slot.
+
+        The fire guard reads the pair before the next cycle and stops the loop
+        rather than sending the same prompt to the same model again. Recorded
+        with a fallback configured too, because the fallback never runs for an
+        unattended cycle, so the card is terminal either way.
+        """
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_runner._configured_refusal_fallback",
+            lambda: "opus-test",
+        )
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        client = self._make_refusing_client(self._refusal_events(category="CYBER"))
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(
+            state,
+            slot,
+            "patrol wake",
+            _directive_self_wake=True,
+            _directive_loop_id="loop-42",
+            _directive_loop_gen=7,
+        )
+
+        client.set_model.assert_not_awaited()
+        assert slot._last_turn_model_refused_loop_id == "loop-42"
+        assert slot._last_turn_model_refused_loop_gen == 7
+
+    @pytest.mark.asyncio
+    async def test_a_refused_person_turn_names_no_loop(self, tmp_path, monkeypatch):
+        """A person's refused turn must not stop a loop that shares the slot."""
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        client = self._make_refusing_client(self._refusal_events(category="CYBER"))
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "hello")
+
+        assert slot._last_turn_model_refused_loop_id == ""
+        assert slot._last_turn_model_refused_loop_gen == 0
+
+    @pytest.mark.asyncio
+    async def test_a_genuine_new_turn_clears_the_refused_cycle(self, tmp_path, monkeypatch):
+        """A person's next message is a new context, so the loop may fire again."""
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        slot._last_turn_model_refused_loop_id = "loop-42"
+        slot._last_turn_model_refused_loop_gen = 7
+        client = self._make_refusing_client(
+            [
+                LLMEvent(kind=EVENT_TEXT_CHUNK, text="ok"),
+                LLMEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "try a different angle")
+
+        assert slot._last_turn_model_refused_loop_id == ""
+        assert slot._last_turn_model_refused_loop_gen == 0
+
+    @pytest.mark.asyncio
     async def test_throttle_walk_divergence_redirects_walk_restore_target(
         self, tmp_path, monkeypatch
     ):

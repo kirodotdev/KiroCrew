@@ -724,6 +724,137 @@ class TestStructuralTerminalGuard:
         assert isinstance(result, gw.MonitorDispatchResult)
 
 
+class TestModelRefusedGuard:
+    """A message loop must STOP once its own cycle is declined by the model.
+
+    A content refusal is deterministic for one model, and the refusal fallback
+    never runs for an unattended cycle, so the next cycle would send the same
+    prompt to the same model and be declined again. The slot names the loop
+    whose cycle was refused; the fire path stops that loop with
+    ``model_refused`` and notifies the owner once instead of firing.
+    """
+
+    @staticmethod
+    def _refused_slot(loop: NudgeLoop, *, gen: int | None = None) -> MagicMock:
+        slot = _slot()
+        slot._last_turn_model_refused_loop_id = loop.id
+        slot._last_turn_model_refused_loop_gen = loop.config_generation if gen is None else gen
+        return slot
+
+    @pytest.mark.asyncio
+    async def test_a_refused_cycle_stops_the_loop_and_notifies_once(self) -> None:
+        orch = _orchestrator()
+        loop = _loop()
+        before = loop.cycle_count
+        stopped = _loop()
+        stopped.active = False
+        stopped.stopped_reason = gw.MODEL_REFUSED_REASON
+        orch.autonudge_svc.update = AsyncMock(return_value=stopped)
+        orch.dashboard_state.get_slot = MagicMock(return_value=self._refused_slot(loop))
+        spawn = _fake_spawn()
+        with (
+            patch.object(gw, "spawn_guarded_turn", spawn),
+            patch("kiro_crew.dashboard.chat._run_chat", new=AsyncMock()),
+            patch.object(orch, "_notify_nudge_expired") as notify,
+        ):
+            assert await orch._fire_dashboard_nudge(loop) is False
+        orch.autonudge_svc.update.assert_awaited_once_with(
+            loop.id,
+            active=False,
+            stopped_reason=gw.MODEL_REFUSED_REASON,
+            expected_generation=loop.config_generation,
+        )
+        notify.assert_called_once_with(stopped)
+        orch.autonudge_svc.remove.assert_not_awaited()
+        assert spawn.calls == [], "a refused prompt was fired into the same model again"
+        assert loop.cycle_count == before
+
+    @pytest.mark.asyncio
+    async def test_a_kept_manual_pause_is_not_announced_as_a_refusal(self) -> None:
+        """A pause the user landed first keeps its reason, so no refusal notice."""
+        orch = _orchestrator()
+        loop = _loop()
+        paused = _loop()
+        paused.active = False
+        paused.stopped_reason = "manual"
+        orch.autonudge_svc.update = AsyncMock(return_value=paused)
+        orch.dashboard_state.get_slot = MagicMock(return_value=self._refused_slot(loop))
+        spawn = _fake_spawn()
+        with (
+            patch.object(gw, "spawn_guarded_turn", spawn),
+            patch("kiro_crew.dashboard.chat._run_chat", new=AsyncMock()),
+            patch.object(orch, "_notify_nudge_expired") as notify,
+        ):
+            assert await orch._fire_dashboard_nudge(loop) is False
+        notify.assert_not_called()
+        assert spawn.calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_naming_another_loop_does_not_stop_this_one(self) -> None:
+        orch = _orchestrator()
+        orch.autonudge_svc.update = AsyncMock()
+        slot = _slot()
+        slot._last_turn_model_refused_loop_id = "old-loop"
+        slot._last_turn_model_refused_loop_gen = 0
+        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
+        spawn = _fake_spawn()
+        with (
+            patch.object(gw, "spawn_guarded_turn", spawn),
+            patch("kiro_crew.dashboard.chat._run_chat", new=AsyncMock()),
+        ):
+            assert await orch._fire_dashboard_nudge(_loop()) is True
+        orch.autonudge_svc.update.assert_not_awaited()
+        assert spawn.calls == [slot]
+
+    @pytest.mark.asyncio
+    async def test_a_revised_instruction_is_not_stopped_by_a_stale_refusal(self) -> None:
+        orch = _orchestrator()
+        loop = _loop()
+        loop.config_generation = 3
+        # The fence refuses the stale verdict and returns the loop still active.
+        orch.autonudge_svc.update = AsyncMock(return_value=loop)
+        slot = self._refused_slot(loop, gen=1)
+        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
+        spawn = _fake_spawn()
+        with (
+            patch.object(gw, "spawn_guarded_turn", spawn),
+            patch("kiro_crew.dashboard.chat._run_chat", new=AsyncMock()),
+            patch.object(orch, "_notify_nudge_expired") as notify,
+        ):
+            assert await orch._fire_dashboard_nudge(loop) is True
+        orch.autonudge_svc.update.assert_awaited_once_with(
+            loop.id,
+            active=False,
+            stopped_reason=gw.MODEL_REFUSED_REASON,
+            expected_generation=1,
+        )
+        notify.assert_not_called()
+        assert spawn.calls == [slot]
+
+    def test_the_stop_is_system_imposed_and_re_armable(self) -> None:
+        """Kept over nothing the user did, and displaceable by a later arm."""
+        from kiro_crew.autonudge_service import model
+
+        assert gw.MODEL_REFUSED_REASON in model._KEPT_STOP_REASONS
+        assert gw.MODEL_REFUSED_REASON in model._REPLACEABLE_LOOP_STOP_REASONS
+
+    @pytest.mark.asyncio
+    async def test_a_slot_with_no_refusal_fires_normally(self) -> None:
+        """A bare mock slot's auto-attribute is not a loop id."""
+        orch = _orchestrator()
+        orch.autonudge_svc.update = AsyncMock()
+        slot = _slot()
+        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
+        spawn = _fake_spawn()
+        with (
+            patch.object(gw, "spawn_guarded_turn", spawn),
+            patch("kiro_crew.dashboard.chat._run_chat", new=AsyncMock()),
+        ):
+            assert await orch._fire_dashboard_nudge(_loop()) is True
+        orch.autonudge_svc.update.assert_not_awaited()
+        assert spawn.calls == [slot]
+
+
 class TestChannelStructuralTerminalHelper:
     """The channel-adapter counterpart: a channel loop runs its turn inline and
     holds the exception, so it stops the loop directly off the exception's

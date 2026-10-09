@@ -45,7 +45,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_crew.autonudge import APPROVAL_STALL_REASON, CONSECUTIVE_FAILURE_REASON, NudgeLoop
+from kiro_crew.autonudge import (
+    APPROVAL_STALL_REASON,
+    CONSECUTIVE_FAILURE_REASON,
+    MODEL_REFUSED_REASON,
+    NudgeLoop,
+)
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.monitoring.models import (
     DEFAULT_MONITOR_CADENCE_SECS,
@@ -1366,6 +1371,32 @@ class TestNotifyNudgeExpired:
         body = ds.notify.call_args.args[2]
         assert title == "Monitoring loop stopped — its cycles kept failing"
         assert "cycle cap" not in body
+        assert "restart the loop" in body
+
+    def test_model_refused_names_its_own_remedy(self):
+        """A refused cycle is reported as a refusal, with the refusal's remedies.
+
+        Falling through to the final ``else`` would tell the operator to raise a
+        cap the loop never hit. The cause is the model declining the prompt, so
+        the remedy is to reword, switch model or configure a fallback.
+        """
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        loop = NudgeLoop(
+            id="loop-mr",
+            slot_key="chat-5",
+            message="patrol the ledger",
+            max_cycles=24,
+            cycle_count=3,
+            stopped_reason=MODEL_REFUSED_REASON,
+        )
+        orch._notify_nudge_expired(loop)
+        title = ds.notify.call_args.args[1]
+        body = ds.notify.call_args.args[2]
+        assert title == "Monitoring loop stopped — the model declined its last cycle"
+        assert "cycle cap" not in body
+        assert "agent.refusal_fallback_model" in body
         assert "restart the loop" in body
 
     def test_cycle_cap_outranks_a_stall(self):

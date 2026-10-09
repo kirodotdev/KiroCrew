@@ -74,6 +74,7 @@ from kiro_crew.autonudge import (
     APPROVAL_STALL_REASON,
     CONSECUTIVE_FAILURE_REASON,
     FINISHED_LOOP_REASONS,
+    MODEL_REFUSED_REASON,
     MONITOR_TERMINAL_REASON,
     STRUCTURAL_TERMINAL_REASON,
     AutoNudgeService,
@@ -7367,6 +7368,52 @@ class GatewayOrchestrator:
                 "advanced under the fired turn, so the verdict is stale",
                 loop.id,
             )
+        # MODEL-REFUSED GUARD (message loops only). If this loop's own last
+        # delivered cycle ended on a content refusal that nothing retried, the
+        # next cycle would send the same prompt to the same model and be declined
+        # the same way, cycle after cycle, with nobody told. Stop the loop with
+        # ``model_refused`` and notify the owner once instead. Same scoping as the
+        # structural guard above: the verdict names the loop id, and the stop is
+        # applied under the (id, generation) fence, so a revised instruction is
+        # not stopped by a refusal of the old one. The slot's verdict is cleared at
+        # the start of every genuine new turn (a person's message), which lets the
+        # loop fire again once the context changes. Compared as a ``str`` so a
+        # bare MagicMock slot's attribute cannot match.
+        _refused_loop_id = getattr(slot, "_last_turn_model_refused_loop_id", "")
+        if (
+            wake_message is None
+            and isinstance(_refused_loop_id, str)
+            and _refused_loop_id
+            and _refused_loop_id == loop.id
+            and self.autonudge_svc is not None
+        ):
+            _refused_gen = getattr(slot, "_last_turn_model_refused_loop_gen", 0)
+            stopped_loop = await self.autonudge_svc.update(  # type: ignore[union-attr]
+                loop.id,
+                active=False,
+                stopped_reason=MODEL_REFUSED_REASON,
+                expected_generation=_refused_gen if isinstance(_refused_gen, int) else 0,
+            )
+            # Same three answers as the structural fence: inactive means stopped,
+            # None means not a live target, and an active loop means the
+            # generation moved under the refused turn (a stale verdict).
+            if stopped_loop is None or not stopped_loop.active:
+                if stopped_loop is not None and stopped_loop.stopped_reason == MODEL_REFUSED_REASON:
+                    logger.warning(
+                        "AutoNudge: loop %s on slot %s stopped -- its last cycle "
+                        "was declined by the model's content filter and no "
+                        "fallback retried it, so the next cycle would be declined "
+                        "the same way",
+                        loop.id,
+                        loop.slot_key,
+                    )
+                    self._notify_nudge_expired(stopped_loop)
+                return _delivery_result(wake_message, MonitorDispatchResult.UNAVAILABLE)
+            logger.info(
+                "AutoNudge: loop %s refusal stop skipped -- config generation "
+                "advanced under the refused turn, so the verdict is stale",
+                loop.id,
+            )
         if wake_message is None:
             # Snapshot message, sentinel AND config generation TOGETHER, before
             # the compose_nudge_body() await: a concurrent PATCH during that
@@ -8555,6 +8602,18 @@ class GatewayOrchestrator:
                     "runs meant to go unattended overnight, Settings → "
                     "agent.yolo_duration has an 'until_shutdown' option that "
                     "has no timed expiry."
+                )
+            elif not terminal and not capped_out and loop.stopped_reason == MODEL_REFUSED_REASON:
+                title = "Monitoring loop stopped — the model declined its last cycle"
+                body = (
+                    f"The loop stopped after {loop.cycle_count} cycles because "
+                    "the model's content filter declined its last cycle and "
+                    "nothing retried it on another model, so further cycles "
+                    "would send the same prompt to the same model and be "
+                    "declined the same way. Open the session to see the "
+                    "refusal, then reword the goal, switch the session's model "
+                    "or set agent.refusal_fallback_model, and restart the loop "
+                    "from the goal popover."
                 )
             elif (
                 not terminal

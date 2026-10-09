@@ -524,6 +524,10 @@ async def _refresh_genuine_turn_allowances(
         slot._last_turn_structural_terminal = False
         slot._last_turn_structural_terminal_loop_id = ""
         slot._last_turn_structural_terminal_loop_gen = 0
+        # The refused-cycle verdict follows the same rule: a genuine new turn is
+        # a different context, so the loop it named may fire again.
+        slot._last_turn_model_refused_loop_id = ""
+        slot._last_turn_model_refused_loop_gen = 0
         # Same one-shot discipline for the reactive model-access swap. Its
         # recovery replays the user's ORIGINAL message (their words, so it is
         # NOT a synthetic marker and would reset the flag here like any fresh

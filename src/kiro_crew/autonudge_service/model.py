@@ -132,6 +132,20 @@ _CONSECUTIVE_FAILURE_STANDDOWN_AFTER = 5
 STRUCTURAL_TERMINAL_REASON = "structural_terminal"
 
 
+# Persisted reason for a loop stopped because its LAST delivered cycle ended on a
+# model-side content refusal that nothing retried. A refusal is deterministic for
+# one model: the next cycle fires the same prompt into the same model and is
+# declined again, so an unattended loop would spend every remaining cycle on
+# refusal cards while the goal it drives waits for a person who is never told.
+# The refusal fallback (``agent.refusal_fallback_model``) is attended-only, so for
+# a loop's own cycle the refusal card is terminal. System-imposed like the
+# structural stop and re-armable for the same reason: the remedy (a person
+# rewording the goal, switching the model, or configuring a fallback) is not
+# something the loop can arrange, and any genuine new turn in the session clears
+# the slot's verdict so a corrected context is not stopped by a stale one.
+MODEL_REFUSED_REASON = "model_refused"
+
+
 def new_goal_token() -> str:
     """A fresh opaque identity for a goal write.
 
@@ -184,6 +198,7 @@ _TERMINAL_BOUND_REASONS = _BUDGET_EXHAUSTED_REASONS | {
     STRUCTURAL_TERMINAL_REASON,
     SESSION_START_FAILURE_REASON,
     CONSECUTIVE_FAILURE_REASON,
+    MODEL_REFUSED_REASON,
 }
 
 

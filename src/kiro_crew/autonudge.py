@@ -102,6 +102,7 @@ from kiro_crew.autonudge_service.model import (  # noqa: F401 -- re-exported
     CYCLE_CAP_REASON,
     FINISHED_LOOP_REASONS,
     MANUAL_STOP_REASON,
+    MODEL_REFUSED_REASON,
     MONITOR_TERMINAL_REASON,
     NUDGE_RENEW_DUE_SHARE,
     RUNTIME_BUDGET_REASON,
