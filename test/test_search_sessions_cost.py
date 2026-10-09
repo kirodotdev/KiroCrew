@@ -518,7 +518,7 @@ class TestSearchResultsUnchangedByMemoization:
         assert "DEPLOYMENT" in hits[0]["snippet"]
 
     def test_match_does_not_span_two_messages(self, tmp_path):
-        """The ``\\x00`` join must keep a match from bridging two messages."""
+        """The message join must keep a match from bridging two messages."""
         log = ConversationLog(base_dir=tmp_path)
         log.append("alpha", "user", "foo")
         log.append("alpha", "user", "bar")

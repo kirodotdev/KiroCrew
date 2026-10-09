@@ -21,7 +21,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, NamedTuple
 
 from kiro_crew._sqlite_compat import is_cjk_char, script_runs
-from kiro_crew.history_index import INDEX_FILENAME, SessionSearchIndex
+from kiro_crew.history_index import INDEX_FILENAME, SessionSearchIndex, fold_texts
 from kiro_crew.jsonl_util import bounded_records
 
 if TYPE_CHECKING:
@@ -1654,9 +1654,11 @@ class SessionCatalogProjection:
         change a string's length (``ß`` -> ``ss``).
 
         The folded blob joins the messages' string ``content`` fields in file
-        order with ``\\x00``. That separator cannot appear in a user query, so
-        it prevents a match spanning two messages while still allowing one
-        ``count`` call over the whole session instead of one per message.
+        order with ``FOLD_SEPARATOR``. A user cannot type that character, so it
+        prevents a match spanning two messages while still allowing one
+        ``count`` call over the whole session instead of one per message. It is
+        deliberately not ``\\x00``, which additionally ends the string for
+        SQLite's tokenizers — see the constant for what that cost.
 
         Returns ``(0, "")`` for a missing/unreadable file or a session with no
         textual content. A read failure is deliberately NOT cached — see below.
@@ -1805,7 +1807,7 @@ class SessionCatalogProjection:
         self._log._publish_if_current(
             self._log._snippet_cache, key, (identity, gen, texts), key=key, gen=gen
         )
-        return (sum(len(t) for t in texts), "\x00".join(texts).casefold())
+        return (sum(len(t) for t in texts), fold_texts(texts))
 
     def _iter_message_texts(self, key: str) -> Iterator[str]:
         """Yield each message's non-empty string ``content`` from *key*'s file.
@@ -1909,7 +1911,8 @@ class SessionCatalogProjection:
 
         The window is confined to the matching message, which keeps a snippet from
         reading as one sentence when it actually spans two — consistent with
-        :meth:`_folded_content`, where the ``\\x00`` join stops a match from
+        :meth:`_folded_content`, where the
+        :data:`~kiro_crew.history_index.FOLD_SEPARATOR` join stops a match from
         bridging messages in the first place.
 
         Display-only and best effort: ``casefold`` is used for the search so it

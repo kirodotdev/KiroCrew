@@ -113,10 +113,47 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 #: scoring pass (which still applies them in full) rather than used as filters.
 _MIN_TRIGRAM_CHARS = 3
 
+#: Separator joining one session's message texts into the single folded blob
+#: that both the FTS column and the scoring pass read.
+#:
+#: It must satisfy two constraints at once, and the obvious choice fails the
+#: second. A user cannot type it, so it keeps a match from spanning two
+#: messages; and it must not END the text for SQLite. ``\x00`` does: FTS5's
+#: tokenizers walk the blob as a NUL-terminated C string, so everything after
+#: the first separator went UNTOKENIZED while the column still stored it in
+#: full. Every session was therefore searchable by its FIRST MESSAGE only, and
+#: because ``_index_shortlist`` reads a vouched-for session's empty postings as
+#: proof it cannot match, the scan that would have found the hit was skipped
+#: too — the session became unfindable rather than merely slow to find.
+#: This depends on the SQLite build: the trigram tokenizer stops at a NUL on
+#: 3.40.0 and 3.45.1, but tokenizes past it on 3.53.1.
+#:
+#: ``\x1f`` (ASCII UNIT SEPARATOR) keeps the first property and drops the
+#: terminator behaviour. Both producers below MUST use this constant: the
+#: scorer reads whichever blob is cheaper to obtain and must not be able to
+#: tell which one it got.
+FOLD_SEPARATOR = "\x1f"
+
+
+def fold_texts(texts: Sequence[str]) -> str:
+    """Return the folded blob for one session's message *texts*.
+
+    A NUL inside a message's own content would end the text for SQLite exactly
+    as the old separator did, so it is replaced with ``FOLD_SEPARATOR`` first;
+    the length is unchanged, so ``doc_chars`` still counts original characters.
+    Both producers call this so their blobs cannot drift apart.
+    """
+    return FOLD_SEPARATOR.join(t.replace("\x00", FOLD_SEPARATOR) for t in texts).casefold()
+
+
 #: Version of the stored term representation. A bump makes existing rows
 #: unreadable rather than subtly mismatched: the store drops and rebuilds
 #: instead of serving rows indexed under different tokenization rules.
-_INDEX_VERSION = 2
+#:
+#: 3: ``FOLD_SEPARATOR`` replaced ``\x00``, and a NUL inside a message is
+#: replaced too (see :func:`fold_texts`). Rows written under 2 hold a blob
+#: whose postings stop at the first message, so they must be rebuilt, not read.
+_INDEX_VERSION = 3
 
 _BUSY_TIMEOUT_MS = 10_000
 _CONNECT_TIMEOUT_SECS = 30
@@ -339,7 +376,7 @@ class SessionSearchIndex:
 
         Both projections the search path needs are derived here rather than by
         the caller, so the folded document can never drift from the raw texts it
-        came from: the fold is ``"\\x00".join(texts).casefold()`` and
+        came from: the fold is :func:`fold_texts` and
         ``doc_chars`` counts the ORIGINAL characters, matching
         ``SessionCatalogProjection._build_folded`` exactly. The scorer must not be
         able to tell which source its text came from.
@@ -353,7 +390,7 @@ class SessionSearchIndex:
         """
         if not self.available:
             return
-        folded = "\x00".join(texts).casefold()
+        folded = fold_texts(texts)
         doc_chars = sum(len(t) for t in texts)
         blob = zlib.compress(json.dumps(list(texts), ensure_ascii=False).encode("utf-8"), 6)
         stored_dev = _sqlite_stat_identity(dev)

@@ -15,7 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 from kiro_crew._sqlite_compat import fts5_available
-from kiro_crew.history_index import SessionSearchIndex, cjk_inventory
+from kiro_crew.history_index import _INDEX_VERSION, SessionSearchIndex, cjk_inventory
 from kiro_crew.history_search import parse_search_query
 
 pytestmark = pytest.mark.skipif(not fts5_available(), reason="SQLite built without FTS5")
@@ -213,7 +213,13 @@ def test_wide_stat_identities_round_trip_without_aliasing(tmp_path, dev, ino, op
 
 
 def test_existing_signed_integer_identity_rows_stay_compatible(tmp_path, opened):
-    """Opening an existing version-2 row must not require a schema migration."""
+    """Reopening a row this build wrote must not trigger a schema migration.
+
+    The version is read from ``_INDEX_VERSION`` rather than written out as a
+    literal: the subject here is the dev/ino storage class and the round-trip,
+    and a hardcoded number turns every legitimate version bump into a failure
+    in this test instead of in one that is about versioning.
+    """
     index = _index(tmp_path, opened=opened)
     index.sync(
         "legacy",
@@ -236,7 +242,9 @@ def test_existing_signed_integer_identity_rows_stay_compatible(tmp_path, opened)
         st = _synthetic_stat(dev=23, ino=29)
         assert set(reopened.fresh_keys({"legacy": st})) == {"legacy"}
         assert reopened.raw_texts("legacy", st) == ["legacy row"]
-        assert reopened._ensure_open().execute("PRAGMA user_version").fetchone()[0] == 2
+        assert (
+            reopened._ensure_open().execute("PRAGMA user_version").fetchone()[0] == _INDEX_VERSION
+        )
     finally:
         reopened.close()
 

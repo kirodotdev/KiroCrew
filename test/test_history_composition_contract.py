@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from kiro_crew import executors, frontmatter, history, llm_helpers, skills, skills_script_validator
+from kiro_crew.history_index import FOLD_SEPARATOR
 
 
 class _FrozenDateTime(datetime):
@@ -141,7 +142,10 @@ def test_search_projection_calls_patchable_owner_text_seams(tmp_path: Path, monk
         lambda key: iter(("Straße", "second message")),
     )
 
-    assert log._build_folded("session", (12, 12, 0), 0) == (20, "strasse\x00second message")
+    assert log._build_folded("session", (12, 12, 0), 0) == (
+        20,
+        f"strasse{FOLD_SEPARATOR}second message",
+    )
     assert list(log._snippet_cache.get("session")[2]) == ["Straße", "second message"]
 
     monkeypatch.setattr(log, "_snippet_texts", lambda key: iter(("before NEEDLE after",)))
