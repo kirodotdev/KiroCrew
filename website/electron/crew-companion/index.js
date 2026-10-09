@@ -183,8 +183,7 @@ let getDashboardWindow = null;
  * @returns {Promise<"enabled"|"disabled"|"unauthorized"|"unknown">}
  */
 function probeEnabled(auth) {
-  // Accept a bare string too, so a caller holding a plain link token keeps working.
-  const { value, viaCookie } = typeof auth === "string" ? { value: auth, viaCookie: false } : auth || NO_AUTH;
+  const { value, viaCookie } = auth || NO_AUTH;
   return new Promise((resolve) => {
     let url = `${backendUrl}/api/apps`;
     const headers = {};
@@ -435,19 +434,14 @@ async function reconcileOnce() {
  *
  * @param {{backendUrl: string,
  *   fetchGatewayAuth?: () => Promise<{value: string, viaCookie?: boolean}>,
- *   mintLocalToken?: () => Promise<string>,
  *   glog: (m: string) => void,
  *   getDashboardWindow?: () => (object | null)}} deps
- *   `fetchGatewayAuth` is the full credential chain and is what main.js passes;
- *   a bare `mintLocalToken` is still accepted and treated as a link-token source.
+ *   `fetchGatewayAuth` is the full credential chain main.js passes.
  */
 function initCrewCompanion(deps) {
   backendUrl = (deps && deps.backendUrl) || "";
   if (deps && typeof deps.fetchGatewayAuth === "function") {
     fetchGatewayAuth = deps.fetchGatewayAuth;
-  } else if (deps && typeof deps.mintLocalToken === "function") {
-    const mint = deps.mintLocalToken;
-    fetchGatewayAuth = async () => ({ value: (await mint()) || "", viaCookie: false });
   } else {
     fetchGatewayAuth = null;
   }

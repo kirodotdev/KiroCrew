@@ -670,7 +670,7 @@ test("a successful reconcile re-arms failed companion windows with the accepted 
 
     index.initCrewCompanion({
       backendUrl: origin,
-      mintLocalToken: async () => "fresh",
+      fetchGatewayAuth: async () => ({ value: "fresh" }),
       glog: () => {},
     });
     await settle();
@@ -697,7 +697,7 @@ test("an inconclusive probe leaves the windows exactly as they are", async () =>
     // reappear every few seconds during an ordinary restart.
     index.initCrewCompanion({
       backendUrl: "http://127.0.0.1:9",
-      mintLocalToken: async () => "cred",
+      fetchGatewayAuth: async () => ({ value: "cred" }),
       glog: () => {},
     });
     await settle();
@@ -719,7 +719,7 @@ test("an inconclusive probe does not OPEN a companion either", async () => {
 
     index.initCrewCompanion({
       backendUrl: "http://127.0.0.1:9",
-      mintLocalToken: async () => "cred",
+      fetchGatewayAuth: async () => ({ value: "cred" }),
       glog: () => {},
     });
     await settle();
@@ -749,7 +749,7 @@ test("no credential is unknown, not disabled", async () => {
 
     index.initCrewCompanion({
       backendUrl: "http://localhost:5476",
-      mintLocalToken: async () => "", // cannot ask
+      fetchGatewayAuth: async () => ({ value: "" }), // cannot ask
       glog: () => {},
     });
     await settle();
@@ -768,7 +768,7 @@ test("shutdown closes every overlay", async () => {
     overlay.openPetWindow();
     index.initCrewCompanion({
       backendUrl: "http://127.0.0.1:9",
-      mintLocalToken: async () => "cred",
+      fetchGatewayAuth: async () => ({ value: "cred" }),
       glog: () => {},
     });
     index.shutdownCrewCompanion();
@@ -878,7 +878,7 @@ test("open-session surfaces the dashboard and routes it to that session", () => 
     const win = fakeDashboard({ minimized: true });
     index.initCrewCompanion({
       backendUrl: "http://127.0.0.1:9",
-      mintLocalToken: async () => "",
+      fetchGatewayAuth: async () => ({ value: "" }),
       glog: () => {},
       getDashboardWindow: () => win,
     });
@@ -900,7 +900,7 @@ test("open-session encodes the slot key rather than splicing it into the query",
     const win = fakeDashboard();
     index.initCrewCompanion({
       backendUrl: "http://127.0.0.1:9",
-      mintLocalToken: async () => "",
+      fetchGatewayAuth: async () => ({ value: "" }),
       glog: () => {},
       getDashboardWindow: () => win,
     });
@@ -922,7 +922,7 @@ test("an approval with no owning session raises the dashboard but routes nowhere
     const win = fakeDashboard();
     index.initCrewCompanion({
       backendUrl: "http://127.0.0.1:9",
-      mintLocalToken: async () => "",
+      fetchGatewayAuth: async () => ({ value: "" }),
       glog: () => {},
       getDashboardWindow: () => win,
     });
@@ -945,7 +945,7 @@ test("open-session refuses when there is no dashboard window to surface", () => 
     const { index } = loadModules();
     index.initCrewCompanion({
       backendUrl: "http://127.0.0.1:9",
-      mintLocalToken: async () => "",
+      fetchGatewayAuth: async () => ({ value: "" }),
       glog: () => {},
       getDashboardWindow: () => null,
     });
@@ -966,7 +966,7 @@ test("a routing request that cannot be delivered fails whole, without raising", 
     const win = fakeDashboard({ viewGone: true });
     index.initCrewCompanion({
       backendUrl: "http://127.0.0.1:9",
-      mintLocalToken: async () => "",
+      fetchGatewayAuth: async () => ({ value: "" }),
       glog: () => {},
       getDashboardWindow: () => win,
     });
@@ -990,7 +990,7 @@ test("the renderer's open-session channel answers rather than fires and forgets"
     const win = fakeDashboard();
     index.initCrewCompanion({
       backendUrl: "http://127.0.0.1:9",
-      mintLocalToken: async () => "",
+      fetchGatewayAuth: async () => ({ value: "" }),
       glog: () => {},
       getDashboardWindow: () => win,
     });
@@ -1018,7 +1018,7 @@ test("re-initialising does not throw on the already-registered channel", () => {
     const { index } = loadModules();
     const deps = {
       backendUrl: "http://127.0.0.1:9",
-      mintLocalToken: async () => "",
+      fetchGatewayAuth: async () => ({ value: "" }),
       glog: () => {},
       getDashboardWindow: () => null,
     };
@@ -1041,7 +1041,7 @@ test("open-session refuses while the view shows the boot/recovery splash", () =>
     const win = fakeDashboard({ url: "file:///C:/app/electron/loading.html" });
     index.initCrewCompanion({
       backendUrl: "http://127.0.0.1:9",
-      mintLocalToken: async () => "",
+      fetchGatewayAuth: async () => ({ value: "" }),
       glog: () => {},
       getDashboardWindow: () => win,
     });
@@ -1067,7 +1067,7 @@ test("open-session refuses while the view is still blank", () => {
     const win = fakeDashboard({ url: "" });
     index.initCrewCompanion({
       backendUrl: "http://127.0.0.1:9",
-      mintLocalToken: async () => "",
+      fetchGatewayAuth: async () => ({ value: "" }),
       glog: () => {},
       getDashboardWindow: () => win,
     });
@@ -1087,7 +1087,7 @@ test("open-session refuses when the view holds a foreign origin", () => {
     const win = fakeDashboard({ url: "https://example.com/chat?sid=chat-7" });
     index.initCrewCompanion({
       backendUrl: "http://127.0.0.1:9",
-      mintLocalToken: async () => "",
+      fetchGatewayAuth: async () => ({ value: "" }),
       glog: () => {},
       getDashboardWindow: () => win,
     });
@@ -1113,7 +1113,7 @@ test("open-session still routes when the dashboard is on an in-app route", () =>
     const win = fakeDashboard({ url: "http://127.0.0.1:9/system?token=abc123" });
     index.initCrewCompanion({
       backendUrl: "http://127.0.0.1:9",
-      mintLocalToken: async () => "",
+      fetchGatewayAuth: async () => ({ value: "" }),
       glog: () => {},
       getDashboardWindow: () => win,
     });
@@ -1141,7 +1141,7 @@ test("open-session with no session key surfaces a splash window but does NOT ack
     const win = fakeDashboard({ url: "file:///C:/app/electron/loading.html" });
     index.initCrewCompanion({
       backendUrl: "http://127.0.0.1:9",
-      mintLocalToken: async () => "",
+      fetchGatewayAuth: async () => ({ value: "" }),
       glog: () => {},
       getDashboardWindow: () => win,
     });
@@ -1170,7 +1170,7 @@ test("a slot-less approval is refused when the window shows a foreign origin", (
     const win = fakeDashboard({ url: "https://example.invalid/other" });
     index.initCrewCompanion({
       backendUrl: "http://127.0.0.1:9",
-      mintLocalToken: async () => "",
+      fetchGatewayAuth: async () => ({ value: "" }),
       glog: () => {},
       getDashboardWindow: () => win,
     });
@@ -1199,7 +1199,7 @@ test("a slot-less approval is refused when the view is gone", () => {
     const win = fakeDashboard({ viewGone: true });
     index.initCrewCompanion({
       backendUrl: "http://127.0.0.1:9",
-      mintLocalToken: async () => "",
+      fetchGatewayAuth: async () => ({ value: "" }),
       glog: () => {},
       getDashboardWindow: () => win,
     });
@@ -1226,7 +1226,7 @@ test("a ROUTED approval is still refused on the splash it cannot deliver to", ()
     const win = fakeDashboard({ url: "file:///C:/app/electron/loading.html" });
     index.initCrewCompanion({
       backendUrl: "http://127.0.0.1:9",
-      mintLocalToken: async () => "",
+      fetchGatewayAuth: async () => ({ value: "" }),
       glog: () => {},
       getDashboardWindow: () => win,
     });
@@ -1249,7 +1249,7 @@ test("the turn-off IPC closes every overlay immediately", () => {
     assert.ok(overlay.petWindowCount() > 0, "overlays are open first");
     index.initCrewCompanion({
       backendUrl: "http://127.0.0.1:9",
-      mintLocalToken: async () => "cred",
+      fetchGatewayAuth: async () => ({ value: "cred" }),
       glog: () => {},
     });
     // The renderer sends this after its disable POST succeeds. It must close the

@@ -113,7 +113,7 @@ test("every token-bearing URL is addressed at the configured backend URL", async
   const { mod, probes, targets } = loadCompanion({ status: [200] });
   mod.initCrewCompanion({
     backendUrl: "http://localhost:5476",
-    mintLocalToken: async () => "tok",
+    fetchGatewayAuth: async () => ({ value: "tok" }),
   });
   await settle();
 
@@ -140,7 +140,7 @@ test("a refused mint addresses nothing at all", async () => {
   const { mod, probes, targets } = loadCompanion({ status: [] });
   mod.initCrewCompanion({
     backendUrl: "http://localhost:5476",
-    mintLocalToken: async () => "",
+    fetchGatewayAuth: async () => ({ value: "" }),
   });
   await settle();
 
@@ -156,9 +156,9 @@ test("the re-mint after a refusal re-addresses the targets too", async () => {
   const { mod, probes, targets } = loadCompanion({ status: [401, 200] });
   mod.initCrewCompanion({
     backendUrl: "http://localhost:5476",
-    mintLocalToken: async () => {
+    fetchGatewayAuth: async () => {
       mints.n += 1;
-      return `tok${mints.n}`;
+      return { value: `tok${mints.n}` };
     },
   });
   await settle();
