@@ -25,7 +25,15 @@ import pytest
 
 from kiro_crew import taskrunner as tr
 from kiro_crew.safety_override import safety_override
-from kiro_crew.task_models import Project, Task, TaskStatus
+from kiro_crew.task_models import (
+    Project,
+    ReviewFixMetadata,
+    ReviewFixModelResolution,
+    ReviewFixState,
+    ReviewFixTargetSnapshot,
+    Task,
+    TaskStatus,
+)
 from kiro_crew.taskrunner import TaskRunner, _auto_approve_scope, _resolve_workspace_dir
 
 # ── Fixtures / helpers ──
@@ -1528,6 +1536,30 @@ class TestStartBackground:
         assert "old00" not in runner._runs and "old01" not in runner._runs
         assert "old11" in runner._runs
         assert len(runner._runs) == 11
+
+    @pytest.mark.asyncio
+    async def test_undone_review_fix_survives_completed_run_pruning(self, tmp_path: Path) -> None:
+        """A completed generic status does not mean the fix lifecycle is done."""
+        spec = tmp_path / "spec.md"
+        spec.write_text("# do it\n", encoding="utf-8", newline="\n")
+        runner = _runner(tmp_path)
+        fix_run = _seed_run(runner, tmp_path, task_id="fix-active", name="fix", status="completed")
+        fix_run.execution_mode = "review_fix"
+        fix_run.commit_policy = "manual_group"
+        fix_run.review_fix = ReviewFixMetadata(
+            state=ReviewFixState.AWAITING_VALIDATION,
+            target=ReviewFixTargetSnapshot(repo_root=str(tmp_path), target_path=str(tmp_path)),
+            model=ReviewFixModelResolution(requested_model="served", resolved_model_id="served"),
+        )
+        for i in range(11):
+            _seed_run(runner, tmp_path, task_id=f"old{i:02d}", name=f"o{i}", status="completed")
+
+        with patch.object(TaskRunner, "run", AsyncMock()):
+            task_id = await runner.start_background(str(spec))
+            await runner._tasks[task_id]
+
+        assert "fix-active" in runner._runs
+        assert runner._runs["fix-active"].review_fix is not None
 
 
 # ── Lessons ──

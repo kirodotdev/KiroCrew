@@ -141,14 +141,12 @@ describe('RunDetail header', () => {
     expect(screen.queryByRole('button', { name: /delete/i })).not.toBeInTheDocument()
   })
 
-  it('offers the retry from the failure notice, which restarts the same changes', async () => {
-    render(<RunDetail run={makeRun({ status: 'error', error: 'zzz worker died' })} />)
-    const retry = screen.queryByRole('button', { name: /retry/i })
-    if (retry) {
-      await userEvent.click(retry)
-      expect((sage.startReview as { mutate: ReturnType<typeof vi.fn> }).mutate)
-        .toHaveBeenCalledWith(makeRun().changes)
-    }
+  it('offers the retry from the failure notice, preserving the run model', async () => {
+    const failedRun = makeRun({ status: 'error', error: 'zzz worker died', model: 'model-concrete' })
+    render(<RunDetail run={failedRun} />)
+    await userEvent.click(screen.getByRole('button', { name: /run it again/i }))
+    expect((sage.startReview as { mutate: ReturnType<typeof vi.fn> }).mutate)
+      .toHaveBeenCalledWith({ changes: failedRun.changes, model: 'model-concrete' })
   })
 })
 

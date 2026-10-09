@@ -34,6 +34,7 @@ if str(_APP_ROOT) not in sys.path:
 _BASE = "/api/apps/code-review-sage"
 _OWNER = "sage-owner"
 _UNKNOWN_RUN = "unknownrun01"
+_TASKRUNNER_ACTIONS = f"/api/taskrunner/{_UNKNOWN_RUN}/review-fix/actions"
 
 # (method, path, handler name, JSON body). Every mutating route and method pair.
 _MUTATING = [
@@ -50,6 +51,13 @@ _MUTATING = [
     ("DELETE", "/repos", "_handle_repos", {}),
     ("POST", "/learnings/consolidate", "_handle_consolidate", {"namespace": "../x"}),
     ("POST", "/followup", "_handle_followup_start", {}),
+    ("POST", "/fix-tasks", "_handle_create_fix_task", {}),
+    ("POST", f"/fix-tasks/{_UNKNOWN_RUN}/actions", "_handle_fix_action", {}),
+    ("POST", _TASKRUNNER_ACTIONS, "_handle_fix_action", {}),
+    ("POST", f"/fix-tasks/{_UNKNOWN_RUN}/review-again", "_handle_review_again", {}),
+    ("GET", "/local-diff", "_handle_local_diff", {}),
+    ("POST", "/local/review", "_handle_local_review", {}),
+    ("POST", f"/local/{_UNKNOWN_RUN}/disposition", "_handle_local_disposition", {}),
 ]
 _IDS = [f"{m} {p}" for m, p, _h, _b in _MUTATING]
 
@@ -73,6 +81,21 @@ def _load_routes() -> Any:
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    from kiro_crew.apps.builtins.code_review_sage.backend import fix_tasks
+
+    # Match the existing harness: enablement is not the owner-gate contract.
+    fix_tasks.is_app_enabled = lambda name: True
+
+    # The fix-task service owns three of the app's mutating handlers. Attach
+    # them to this route-module fixture so every mutating Sage URL is covered
+    # by one owner-gate contract instead of two divergent test harnesses.
+    for handler_name in (
+        "handle_create_fix_task",
+        "handle_fix_action",
+        "handle_review_again",
+    ):
+        public_name = f"_handle_{handler_name.removeprefix('handle_')}"
+        setattr(mod, public_name, getattr(fix_tasks, handler_name))
     return mod
 
 
@@ -110,11 +133,12 @@ async def _call(
     try:
         app = web.Application(middlewares=[_identity])
         app["state"] = SimpleNamespace(owner_id=_OWNER)
-        app.router.add_route(method, f"{_BASE}{path}", getattr(routes, handler))
+        route = path if path.startswith("/api/") else f"{_BASE}{path}"
+        app.router.add_route(method, route, getattr(routes, handler))
         client = TestClient(TestServer(app))
         await client.start_server()
         try:
-            resp = await client.request(method, f"{_BASE}{path}", json=body, headers=headers)
+            resp = await client.request(method, route, json=body, headers=headers)
             try:
                 payload = await resp.json()
             except Exception:

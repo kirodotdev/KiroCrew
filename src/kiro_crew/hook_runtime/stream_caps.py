@@ -17,18 +17,16 @@ if TYPE_CHECKING:
 
 
 async def _read_capped_stream(
-    reader: "asyncio.StreamReader | None", cap: int
+    reader: "asyncio.StreamReader | None", cap: int, *, keep_tail: int = 0
 ) -> tuple[bytes, bool]:
     """Drain *reader* fully, retaining at most *cap* bytes.
 
-    Returns ``(retained_bytes, truncated)``. Bytes beyond *cap* are read and
-    discarded so the child never blocks on a full OS pipe buffer (the deadlock
-    ``communicate`` avoided by buffering everything — we avoid it by consuming
-    everything, but only *keeping* a bounded prefix). Chunked reads keep peak
-    memory at roughly ``cap`` regardless of how much the child writes.
+    Returns ``(retained_bytes, truncated)``. Drain all output; *keep_tail*
+    retains the last bytes past *cap*.
     """
     if reader is None:
         return b"", False
+    tail = bytearray() if keep_tail else None
     retained = bytearray()
     truncated = False
     while True:
@@ -36,6 +34,9 @@ async def _read_capped_stream(
         chunk = await reader.read(65536)
         if not chunk:
             break
+        if tail is not None:
+            tail.extend(chunk)
+            del tail[:-keep_tail]
         if len(retained) < cap:
             room = cap - len(retained)
             retained.extend(chunk[:room])
@@ -44,6 +45,8 @@ async def _read_capped_stream(
         else:
             # Already at cap — keep draining so the pipe drains, drop the bytes.
             truncated = True
+    if tail:
+        retained.extend(tail[-keep_tail:])
     return bytes(retained), truncated
 
 

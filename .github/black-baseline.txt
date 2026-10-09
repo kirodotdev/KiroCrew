@@ -36,7 +36,6 @@ src/kiro_crew/apps/builtins/code_review_sage/sage_lib/learning.py
 src/kiro_crew/apps/builtins/code_review_sage/sage_lib/pipeline.py
 src/kiro_crew/apps/builtins/code_review_sage/sage_lib/report.py
 src/kiro_crew/apps/builtins/code_review_sage/sage_lib/results.py
-src/kiro_crew/apps/builtins/code_review_sage/sage_lib/review_pool.py
 src/kiro_crew/apps/builtins/code_review_sage/sage_lib/store.py
 src/kiro_crew/apps/builtins/code_review_sage/tests/fixtures.py
 src/kiro_crew/apps/builtins/code_review_sage/tests/test_activity_progress.py
@@ -525,7 +524,6 @@ test/test_env.py
 test/test_eval_harness.py
 test/test_events_forward.py
 test/test_external_registry.py
-test/test_fake_acp_backend.py
 test/test_fetch_thread_replies.py
 test/test_file_download.py
 test/test_file_raw.py

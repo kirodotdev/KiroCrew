@@ -139,6 +139,7 @@ const API_KEY_ORDER = [
   'dismissQuestionCard', 'logLevel', 'setLogLevel', 'taskRunnerStatus',
   'startTaskRunner', 'cancelTaskRunner', 'pauseTaskRun', 'deleteTaskRun',
   'retryTaskRun', 'renameTaskRun', 'updateTask', 'taskRunToChat',
+  'reviewFixStatus', 'reviewFixAction',
   'revealPath', 'collectDiagnostics', 'workflowRuns', 'workflowDefinitions',
   'authorWorkflow', 'saveWorkflowDefinition', 'promoteWorkflowRun', 'updateWorkflowDefinition',
   'runWorkflowDefinition', 'refineTaskInput', 'refineStatus', 'refineCancel',

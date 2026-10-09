@@ -59,7 +59,7 @@ agent loads only the one it needs.
 | [agent-interrupt-controller.md](agent-interrupt-controller.md) | `kiro_crew.irq`: masking, coalescing, epoch resets and an error backstop, so a cheap probe interrupts an expensive agent turn instead of the turn polling. Also the app-facing probe SDK. |
 | [babysit-pr-watch.md](babysit-pr-watch.md) | In-gateway PR watch for babysit loops: `monitor_watch` or a finite `monitor_start` loop; `PrWatchProbe` fetches the pull request each tick and the wake judge decides whether to wake the owning session. No script-cron driver. |
 | [task.md](task.md) | Task models and state. |
-| [taskrunner.md](taskrunner.md) | The execution engine that runs a task spec to completion. |
+| [taskrunner.md](taskrunner.md) | The execution engine that runs a task spec to completion, plus the governed review-fix lifecycle for Code Review Sage findings. |
 | [workflows.md](workflows.md) | The dynamic-workflow engine: the frozen `ctx` contract, the event stream, budgets, and the named conformance gates with the test pinning each. |
 | [decisions.md](decisions.md) | The Jev decision seam: `decisions.enabled` as the only opt-in, session-key sampling through `decisions.bucket`, the scrub-before-send refusal, `skills.select` as the one integration that consumes an answer (with the word-overlap result as its fallback), and the basic call-metadata log. |
 | [crew-mode.md](crew-mode.md) | Crews: the config record, `select_crew` roster and binding, model and workspace resolution, the Crews UI, and the record of the retired `"crew"` slot mode (Crew Mode). |

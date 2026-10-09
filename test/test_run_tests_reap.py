@@ -128,3 +128,58 @@ async def test_run_tests_timeout_returns_and_reaps(monkeypatch, tmp_path) -> Non
 
     assert success is False
     assert "timed out" in output
+
+
+def _bypass_sandbox(monkeypatch) -> None:
+    """Stub the sandbox wrapper so ``run_tests`` exercises only its own
+    spawn/drain/reap logic, independent of whether THIS host has a usable OS
+    sandbox backend (unshare, cgroup delegation, etc. -- see the skip
+    rationale on ``test_run_tests_timeout_returns_and_reaps`` above, which
+    genuinely needs the real sandbox to exercise its runtime failure path).
+
+    ``run_tests`` always calls ``sandboxed_spawn_argv_async(..., _prepare=
+    sandboxed_spawn_argv)``, and ``sandboxed_spawn_argv`` is looked up on
+    ``task_executor`` at call time, so replacing it here is enough to skip
+    the real OS-level wrap without touching the output-capture/reap
+    assertions these tests exist to cover.
+    """
+
+    def _fake_prepare(argv, *_args, **_kwargs) -> tuple[list[str], dict[str, str], None]:
+        return list(argv), dict(os.environ), None
+
+    monkeypatch.setattr(task_executor, "sandboxed_spawn_argv", _fake_prepare)
+
+
+@pytest.mark.asyncio
+async def test_run_tests_caps_buffered_output(monkeypatch, tmp_path) -> None:
+    """A noisily-looping test must not buffer unbounded in the parent.
+
+    communicate() read the WHOLE stream before the failure-tail truncation, so
+    a runaway test OOM'd the gateway first. The cap now applies during the
+    drain: output beyond it is discarded with an explicit marker, and the
+    child's real exit code still decides success.
+    """
+    monkeypatch.setattr(task_executor, "_TEST_OUTPUT_CAP_BYTES", 4096)
+    _bypass_sandbox(monkeypatch)
+    success, output = await asyncio.wait_for(
+        task_executor.run_tests(["python3", "-c", "print('x' * (256 * 1024))"], tmp_path),
+        timeout=60,
+    )
+
+    assert success is True
+    assert "output truncated at 4 KiB" in output
+    assert len(output) < 8192
+
+
+@pytest.mark.asyncio
+async def test_run_tests_small_output_unmarked_under_cap(monkeypatch, tmp_path) -> None:
+    """Output inside the cap carries no truncation marker and keeps its tail."""
+    _bypass_sandbox(monkeypatch)
+    success, output = await asyncio.wait_for(
+        task_executor.run_tests(["python3", "-c", "print('BOOM'); raise SystemExit(3)"], tmp_path),
+        timeout=60,
+    )
+
+    assert success is False
+    assert "BOOM" in output
+    assert "truncated" not in output

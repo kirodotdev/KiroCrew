@@ -191,7 +191,7 @@ _NEW_OWNER_DEFS: dict[str, tuple[str, ...]] = {
 #: captured from the one-module file before the split: each keeps the kind and the
 #: signature it had there. ``safe_read_file_bytes_nolink``'s keyword-only
 #: ``admit_hardlinked`` and ``ScriptHookStore``'s callers all read these shapes.
-_BASE_SHAPE_DIGEST = "87cd6c619f0192c4acc0c630754c810d5d25c5dbdc6f433aab885428f78bc563"
+_BASE_SHAPE_DIGEST = "6045a6ad65d5e0bfc50e25984f2973736b4e5209a41e2d49fe66ca397fb2f91c"
 
 #: Definitions that stay in the facade file, each because a guard, a contract or the
 #: ``compose`` ordering reads it there. The reason per entry is in

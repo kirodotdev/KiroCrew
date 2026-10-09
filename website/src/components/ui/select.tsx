@@ -16,10 +16,19 @@ const Select = SelectPrimitive.Root
 const SelectGroup = SelectPrimitive.Group
 const SelectValue = SelectPrimitive.Value
 
+interface SelectTriggerProps extends React.ComponentPropsWithoutRef<typeof SelectPrimitive.Trigger> {
+  /** Denser control for rows tighter than the default `px-3 py-2 text-sm` —
+   *  mirrors `ui/native-select.tsx`'s `size` so the two paths stay the same
+   *  control to look at regardless of which one touch renders. */
+  density?: 'default' | 'sm'
+  /** Monospace text, for values that are identifiers (model ids) rather than prose. */
+  mono?: boolean
+}
+
 const SelectTrigger = React.forwardRef<
   React.ComponentRef<typeof SelectPrimitive.Trigger>,
-  React.ComponentPropsWithoutRef<typeof SelectPrimitive.Trigger>
->(({ className, children, ...props }, ref) => (
+  SelectTriggerProps
+>(({ className, density = 'default', mono, children, ...props }, ref) => (
   <SelectPrimitive.Trigger
     ref={ref}
     className={cn(
@@ -31,6 +40,8 @@ const SelectTrigger = React.forwardRef<
       'focus-visible:border-accent data-[disabled]:opacity-40 data-[disabled]:pointer-events-none',
       'disabled:opacity-40 disabled:pointer-events-none',
       '[&>span]:truncate [&>span]:text-left [&>span]:min-w-0',
+      density === 'sm' && 'px-2 py-1 text-[12px]',
+      mono && 'font-mono',
       className
     )}
     {...props}

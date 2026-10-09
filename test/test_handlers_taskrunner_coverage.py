@@ -182,6 +182,7 @@ class TestStatus:
             "running": True,
             "runs": [
                 {"source": "dashboard", "running": False},
+                {"source": "code_review_sage", "execution_mode": "review_fix", "running": False},
                 {"source": "cron", "running": True},
             ],
         }
@@ -189,7 +190,7 @@ class TestStatus:
         resp = await api_taskrunner_status(_request(_state(runner), "GET"))
 
         data = _body(resp)
-        assert data["runs"] == [{"source": "dashboard", "running": False}]
+        assert [r["source"] for r in data["runs"]] == ["dashboard"]
         assert data["running"] is False
 
     @pytest.mark.asyncio
@@ -658,6 +659,16 @@ class TestRetry:
         )
         assert resp.status == 400
         assert _body(resp)["error"] == "no such step"
+
+    @pytest.mark.asyncio
+    async def test_review_fix_refusal_is_400(self, tmp_path: Path) -> None:
+        runner = _runner(tmp_path)
+        runner.retry_from_task = AsyncMock(
+            side_effect=ValueError("Review-fix runs must execute through execute_review_fix")
+        )
+        resp = await api_taskrunner_retry(_request(_state(runner), match_info={"task_id": "rf"}))
+        assert resp.status == 400
+        assert "execute_review_fix" in _body(resp)["error"]
 
 
 # ── plan-context / export ──
@@ -1150,6 +1161,22 @@ class TestExecutePlan:
         )
         assert resp.status == 400
         assert _body(resp)["error"] == "nothing to execute"
+
+    @pytest.mark.asyncio
+    async def test_review_fix_refusal_is_400(self, tmp_path: Path) -> None:
+        runner = _runner(tmp_path)
+        runner.execute_plan = AsyncMock(
+            side_effect=ValueError("Review-fix runs must execute through execute_review_fix")
+        )
+        resp = await api_taskrunner_execute_plan(
+            _request(
+                _state(runner),
+                match_info={"task_id": "rf"},
+                json_body={"workspace_dir": "/real/checkout"},
+            )
+        )
+        assert resp.status == 400
+        assert "execute_review_fix" in _body(resp)["error"]
 
     @pytest.mark.asyncio
     async def test_success_forwards_options(self, tmp_path: Path) -> None:

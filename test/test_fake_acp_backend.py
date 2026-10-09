@@ -8,6 +8,7 @@ gateway subprocess; this file locks the JSON-RPC frame shapes fast, in-process.
 
 from __future__ import annotations
 
+import base64
 import io
 import json
 import os
@@ -50,9 +51,7 @@ def test_session_new_returns_session_id(monkeypatch):
 
 def test_unknown_request_gets_empty_result(monkeypatch):
     buf = _capture(monkeypatch)
-    fake._handle(
-        {"jsonrpc": "2.0", "id": 3, "method": "session/set_mode", "params": {}}
-    )
+    fake._handle({"jsonrpc": "2.0", "id": 3, "method": "session/set_mode", "params": {}})
     (msg,) = _messages(buf)
     assert msg == {"jsonrpc": "2.0", "id": 3, "result": {}}
 
@@ -60,9 +59,7 @@ def test_unknown_request_gets_empty_result(monkeypatch):
 def test_response_and_notification_are_ignored(monkeypatch):
     buf = _capture(monkeypatch)
     # A response to one of our requests (has id, no method) -> ignored.
-    fake._handle(
-        {"jsonrpc": "2.0", "id": fake._PERMISSION_REQ_ID, "result": {"outcome": {}}}
-    )
+    fake._handle({"jsonrpc": "2.0", "id": fake._PERMISSION_REQ_ID, "result": {"outcome": {}}})
     # A notification (has method, no id) -> nothing to answer.
     fake._handle({"jsonrpc": "2.0", "method": "session/cancel", "params": {}})
     assert _messages(buf) == []
@@ -99,15 +96,13 @@ def test_tool_prompt_emits_tool_call_without_permission(monkeypatch):
             "method": "session/prompt",
             "params": {
                 "sessionId": "s1",
-                "prompt": [{"type": "text", "text": f"go {fake.TOOL_TRIGGER} now"}]
+                "prompt": [{"type": "text", "text": f"go {fake.TOOL_TRIGGER} now"}],
             },
         }
     )
     msgs = _messages(buf)
     updates = [
-        m["params"]["update"]["sessionUpdate"]
-        for m in msgs
-        if m.get("method") == "session/update"
+        m["params"]["update"]["sessionUpdate"] for m in msgs if m.get("method") == "session/update"
     ]
     assert updates == ["tool_call", "tool_call_update", "agent_message_chunk"]
     assert not any(m.get("method") == "session/request_permission" for m in msgs)
@@ -294,19 +289,13 @@ def test_slow_prompt_streams_many_chunks_then_end_turn(monkeypatch, fast_slow_st
     msgs = _messages(buf)
     chunks = [m for m in msgs if m.get("method") == "session/update"]
     assert len(chunks) == 3
-    assert chunks[0]["params"]["update"]["content"]["text"].startswith(
-        fake.SLOW_CHUNK_TEXT
-    )
+    assert chunks[0]["params"]["update"]["content"]["text"].startswith(fake.SLOW_CHUNK_TEXT)
     assert msgs[-1]["result"]["stopReason"] == "end_turn"
 
 
-def test_slow_prompt_honours_cancel_with_cancelled_stop_reason(
-    monkeypatch, fast_slow_stream
-):
+def test_slow_prompt_honours_cancel_with_cancelled_stop_reason(monkeypatch, fast_slow_stream):
     buf = _capture(monkeypatch)
-    fake._INBOX.put(
-        {"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": "s1"}}
-    )
+    fake._INBOX.put({"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": "s1"}})
     fake._handle(_prompt(fake.SLOW_TRIGGER))
     msgs = _messages(buf)
     assert msgs[-1]["result"]["stopReason"] == "cancelled"
@@ -324,9 +313,7 @@ def test_cancel_for_a_different_session_is_not_honoured(monkeypatch, fast_slow_s
 def test_slow_noack_ignores_cancel(monkeypatch, fast_slow_stream):
     """The soft-stop-budget-expiry path: a queued cancel must NOT be acked."""
     buf = _capture(monkeypatch)
-    fake._INBOX.put(
-        {"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": "s1"}}
-    )
+    fake._INBOX.put({"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": "s1"}})
     fake._handle(_prompt(fake.SLOW_NOACK_TRIGGER))
     assert _messages(buf)[-1]["result"]["stopReason"] == "end_turn"
 
@@ -343,9 +330,7 @@ def test_slow_lateack_winds_down_then_acks(monkeypatch):
     monkeypatch.setattr(fake, "SLOW_CHUNK_DELAY_SECS", 0)
     monkeypatch.setattr(fake, "SLOW_LATEACK_CHUNKS", 4)
     buf = _capture(monkeypatch)
-    fake._INBOX.put(
-        {"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": "s1"}}
-    )
+    fake._INBOX.put({"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": "s1"}})
     fake._handle(_prompt(fake.SLOW_LATEACK_TRIGGER))
     msgs = _messages(buf)
     chunks = [m for m in msgs if m.get("method") == "session/update"]
@@ -364,18 +349,14 @@ def test_slow_acks_immediately_unlike_lateack(monkeypatch):
     monkeypatch.setattr(fake, "SLOW_CHUNKS", 10)
     monkeypatch.setattr(fake, "SLOW_CHUNK_DELAY_SECS", 0)
     buf = _capture(monkeypatch)
-    fake._INBOX.put(
-        {"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": "s1"}}
-    )
+    fake._INBOX.put({"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": "s1"}})
     fake._handle(_prompt(fake.SLOW_TRIGGER))
     msgs = _messages(buf)
     assert [m for m in msgs if m.get("method") == "session/update"] == []
     assert msgs[-1]["result"]["stopReason"] == "cancelled"
 
 
-def test_slow_lateack_without_a_cancel_ends_the_turn_normally(
-    monkeypatch, fast_slow_stream
-):
+def test_slow_lateack_without_a_cancel_ends_the_turn_normally(monkeypatch, fast_slow_stream):
     """No cancel means no wind-down: the stream runs to completion."""
     buf = _capture(monkeypatch)
     fake._handle(_prompt(fake.SLOW_LATEACK_TRIGGER))
@@ -397,9 +378,7 @@ def test_slow_lateack_acks_even_if_the_stream_ends_first(monkeypatch):
     monkeypatch.setattr(fake, "SLOW_CHUNK_DELAY_SECS", 0)
     monkeypatch.setattr(fake, "SLOW_LATEACK_CHUNKS", 5)
     buf = _capture(monkeypatch)
-    fake._INBOX.put(
-        {"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": "s1"}}
-    )
+    fake._INBOX.put({"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": "s1"}})
     fake._handle(_prompt(fake.SLOW_LATEACK_TRIGGER))
     # Inbox drained by the single consuming poll, yet the ack still lands.
     assert fake._INBOX.empty()
@@ -513,6 +492,72 @@ def test_slow_hold_trigger_refuses_a_token_the_marker_cannot_carry(token):
         fake.slow_hold_trigger(token)
 
 
+def _review_fix_marker(path: str, content: bytes) -> str:
+    encoded = base64.b64encode(content).decode("ascii")
+    return f"{fake.REVIEW_FIX_EDIT_PREFIX}{path}|{encoded}{fake.REVIEW_FIX_EDIT_SUFFIX}"
+
+
+def test_review_fix_edit_writes_exact_bytes_in_candidate_cwd(monkeypatch, tmp_path):
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    target = candidate / "src" / "example.py"
+    target.parent.mkdir()
+    target.write_bytes(b"before\n")
+    monkeypatch.chdir(candidate)
+    content = "line 1\nภาษาไทย — café\n".encode("utf-8")
+    buf = _capture(monkeypatch)
+
+    fake._handle(_prompt(_review_fix_marker("src/example.py", content)))
+
+    assert target.read_bytes() == content
+    updates = [m["params"]["update"] for m in _messages(buf) if m.get("method") == "session/update"]
+    assert [update["sessionUpdate"] for update in updates] == [
+        "tool_call",
+        "tool_call_update",
+        "agent_message_chunk",
+    ]
+    assert updates[1]["status"] == "completed"
+
+
+@pytest.mark.parametrize(
+    "make_path",
+    [lambda outside: str(outside), lambda _outside: "../outside.py"],
+    ids=["absolute-path", "parent-traversal"],
+)
+def test_review_fix_edit_rejects_paths_outside_the_candidate(monkeypatch, tmp_path, make_path):
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    outside = tmp_path / "outside.py"
+    monkeypatch.chdir(candidate)
+    buf = _capture(monkeypatch)
+
+    fake._handle(_prompt(_review_fix_marker(make_path(outside), b"must not write")))
+
+    assert not outside.exists()
+    msgs = _messages(buf)
+    update = next(
+        m["params"]["update"]
+        for m in msgs
+        if m.get("method") == "session/update"
+        and m["params"]["update"]["sessionUpdate"] == "tool_call_update"
+    )
+    assert update["status"] == "failed"
+    assert msgs[-1]["result"]["stopReason"] == "end_turn"
+
+
+def test_malformed_review_fix_edit_marker_finishes_without_hanging(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    buf = _capture(monkeypatch)
+    marker = f"{fake.REVIEW_FIX_EDIT_PREFIX}src/example.py|not-base64{fake.REVIEW_FIX_EDIT_SUFFIX}"
+
+    fake._handle(_prompt(marker))
+
+    msgs = _messages(buf)
+    updates = [m["params"]["update"] for m in msgs if m.get("method") == "session/update"]
+    assert updates[1]["status"] == "failed"
+    assert msgs[-1]["result"]["stopReason"] == "end_turn"
+
+
 def _permission_answer(option_id: str) -> dict[str, Any]:
     return {
         "jsonrpc": "2.0",
@@ -525,9 +570,7 @@ def _permission_answer(option_id: str) -> dict[str, Any]:
     ("option_id", "expected_status"),
     [("allow_once", "completed"), ("reject_once", "failed")],
 )
-def test_gated_permission_reflects_the_hosts_answer(
-    monkeypatch, option_id, expected_status
-):
+def test_gated_permission_reflects_the_hosts_answer(monkeypatch, option_id, expected_status):
     buf = _capture(monkeypatch)
     fake._INBOX.put(_permission_answer(option_id))
     fake._handle(_prompt(fake.GATED_PERMISSION_TRIGGER))
@@ -535,9 +578,7 @@ def test_gated_permission_reflects_the_hosts_answer(
     assert any(m.get("method") == "session/request_permission" for m in msgs)
     updates = [m for m in msgs if m.get("method") == "session/update"]
     tool_update = next(
-        u
-        for u in updates
-        if u["params"]["update"]["sessionUpdate"] == "tool_call_update"
+        u for u in updates if u["params"]["update"]["sessionUpdate"] == "tool_call_update"
     )
     assert tool_update["params"]["update"]["status"] == expected_status
 
@@ -601,7 +642,9 @@ def test_pump_stdin_forwards_messages_then_the_eof_sentinel(monkeypatch):
         io.StringIO('{"jsonrpc":"2.0","id":1,"method":"initialize"}\n'),
     )
     fake._pump_stdin()
-    assert fake._INBOX.get_nowait()["id"] == 1
+    message = fake._INBOX.get_nowait()
+    assert message is not None
+    assert message["id"] == 1
     assert fake._INBOX.get_nowait() is None
 
 

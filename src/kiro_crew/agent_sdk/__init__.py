@@ -60,7 +60,8 @@ Design of record, including what each later phase moves in here:
 
 from __future__ import annotations
 
-from typing import Protocol
+import importlib
+from typing import TYPE_CHECKING, Protocol
 
 # One name, because one name has a consumer: the dashboard handler that serves
 # ``GET /api/acp-backends``. The record types and the per-id projection stay inside
@@ -138,6 +139,25 @@ class AgentTurnUsage(Protocol):
     output_tokens: int
 
 
+if TYPE_CHECKING:
+    # Model-selection vocabulary, re-exported from the ACP client so application
+    # code can run the shared entitlement check without importing ``kiro_crew.acp``
+    # itself. This is the boundary's whole point: consumers above the SDK name
+    # capabilities, the SDK resolves them against the driver (see the layering
+    # diagram above, AGENTS.md → Model selection, and
+    # docs/request-for-change/rfc-crew-agent-sdk-boundary.md §5.5 -- model-id
+    # vocabulary is driver-owned).
+    #
+    # Resolved lazily through module ``__getattr__`` below rather than at module
+    # scope: the boot path imports this package on the way to the route table,
+    # and ``kiro_crew.acp.__init__`` drags in both the client and the runtime --
+    # see test_the_boot_path_does_not_import_acp_at_module_scope.
+    from kiro_crew.acp.client import (
+        AcpModelUnavailable,
+        advertised_model_ids,
+        model_is_unusable,
+    )
+
 __all__ = [
     "tool_row_text",
     "ContextPromptProvider",
@@ -169,15 +189,38 @@ __all__ = [
     "INSTALLED",
     "MISSING",
     "UNKNOWN",
+    "AcpModelUnavailable",
     "BackendInstallState",
     "NativeCommandBatch",
+    "advertised_model_ids",
     "clear_probe_cache",
     "finish_suspended_spawn",
     "fits_tool_result",
     "forget_for_recheck",
+    "model_is_unusable",
     "probe_backend",
     "probe_backends",
     "run_kiro_native_commands",
     "TURN_STOP_REASON_CANCELLED",
     "TURN_STOP_REASON_END_TURN",
 ]
+
+_LAZY_ACP_OWNERS: dict[str, str] = {
+    name: "kiro_crew.acp.client"
+    for name in ("AcpModelUnavailable", "advertised_model_ids", "model_is_unusable")
+}
+
+
+def __getattr__(name: str):
+    """Resolve the model-selection vocabulary on first attribute access.
+
+    Keeps ``import kiro_crew.acp`` off the boot path while application code
+    still reads the names straight off ``kiro_crew.agent_sdk``. The owner is kept
+    as a dotted name and resolved per use with ``importlib.import_module`` (which
+    answers from ``sys.modules``), not cached as a module object here.
+    """
+    owner_name = _LAZY_ACP_OWNERS.get(name)
+    if owner_name is not None:
+        owner = importlib.import_module(owner_name)
+        return getattr(owner, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

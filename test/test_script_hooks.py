@@ -977,3 +977,14 @@ class TestLastError:
         # and must default to "".
         hook = ScriptHook.from_dict({"id": "bad", "name": "x", "last_error": 12345})
         assert hook.last_error == ""
+
+
+@pytest.mark.asyncio
+async def test_reader_keep_tail():
+    from kiro_crew.hooks import _read_capped_stream
+
+    reader = asyncio.StreamReader()
+    reader.feed_data(b"x" * 700_000 + b"FAILED test_real_reason")
+    reader.feed_eof()
+    retained, truncated = await _read_capped_stream(reader, 512, keep_tail=64)
+    assert truncated is True and retained.endswith(b"FAILED test_real_reason")

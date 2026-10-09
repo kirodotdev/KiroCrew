@@ -48,6 +48,8 @@ class FakeHandle:
         self._gate = gate
         self.approvals: list = []
         self.rejections: list = []
+        self.model_sets: list = []
+        self.available_models: list = []
         self.destroyed = False
 
     async def prompt(self, message, timeout=0):
@@ -60,8 +62,11 @@ class FakeHandle:
     async def approve_tool(self, request_id, option_id=None):
         self.approvals.append(request_id)
 
-    async def reject_tool(self, request_id):
+    async def reject_tool(self, request_id, option_id=None):
         self.rejections.append(request_id)
+
+    async def set_model(self, model_id):
+        self.model_sets.append(model_id)
 
     async def destroy(self):
         self.destroyed = True
@@ -81,6 +86,7 @@ class FakeRuntime:
         self.killed = False
         self.sessions: dict = {}
         self._session_queues: dict = {}   # read by holder.stats()
+        self.created: list = []  # every handle ever created (survives destroy)
         self.active = 0
         self.max_active = 0
         self._seq = 0
@@ -106,6 +112,7 @@ class FakeRuntime:
         self.max_active = max(self.max_active, self.active)
         h = FakeHandle(self, sid, script=list(self.script), gate=self.gate)
         self.last_handle = h
+        self.created.append(h)
         self.sessions[sid] = h
         self._session_queues[sid] = object()
         # mirror the handle destroy -> pop from _session_queues too
@@ -184,6 +191,74 @@ class TestBatchLifecycle(unittest.IsolatedAsyncioTestCase):
         await pool.end_batch()
         await pool.begin_batch()
         self.assertEqual(len(FakeRuntime.instances), 2)   # a fresh runtime per batch
+        await pool.end_batch()
+
+    async def test_explicit_model_mismatch_on_live_runtime_fails_closed(self):
+        # An overlapping batch asking for a DIFFERENT explicit model must not be
+        # handed the live runtime (per-review model owns the effort-overlay
+        # key); it fails closed instead of silently reviewing with model A.
+        _install_fake_runtime(self)
+        pool = ReviewPool(work_dir=_work_dir(self))
+        await pool.begin_batch(model="model-under-test")
+        rt = FakeRuntime.instances[0]
+        with self.assertRaisesRegex(RuntimeError, "busy with model"):
+            await pool.begin_batch(model="other-model-under-test")
+        self.assertTrue(rt.is_alive())  # refused, not killed
+        self.assertEqual(len(FakeRuntime.instances), 1)
+        self.assertEqual(pool._holder._batches, 1)  # failed batch not counted
+        await pool.end_batch()
+
+    async def test_same_or_auto_model_reuses_live_runtime(self):
+        # The same explicit model keeps pooling; Auto (None) on an AUTO-spawned
+        # runtime keeps pooling too. Auto on a PINNED runtime must fail closed
+        # (test below) — None == None is the only Auto case that reuses.
+        _install_fake_runtime(self)
+        pool = ReviewPool(work_dir=_work_dir(self))
+        await pool.begin_batch(model="model-under-test")
+        await pool.begin_batch(model="model-under-test")
+        self.assertEqual(len(FakeRuntime.instances), 1)
+        await pool.end_batch()
+        await pool.end_batch()
+        self.assertTrue(FakeRuntime.instances[0].killed)  # drains cleanly
+
+    async def test_auto_on_pinned_runtime_fails_closed(self):
+        # An Auto batch inheriting a PINNED runtime silently ran the review
+        # under the pinned model (and the pinned batch's effort overlay, which
+        # is written per spawn). The pool guard is strict equality now, so
+        # this combination refuses instead.
+        _install_fake_runtime(self)
+        pool = ReviewPool(work_dir=_work_dir(self))
+        await pool.begin_batch(model="model-under-test")
+        rt = FakeRuntime.instances[0]
+        with self.assertRaisesRegex(RuntimeError, "busy with model"):
+            await pool.begin_batch()  # Auto inherits nothing
+        self.assertTrue(rt.is_alive())  # refused, not killed
+        self.assertEqual(len(FakeRuntime.instances), 1)
+        await pool.end_batch()
+
+    async def test_pinned_on_auto_runtime_fails_closed(self):
+        # Symmetric direction: a pinned batch must not be handed the Auto
+        # runtime — its session-level set_model would leave the runtime default
+        # (and the effort overlay) pointing at Auto while this batch's sends
+        # expect the pin, and after this batch drains the runtime keeps the pin.
+        _install_fake_runtime(self)
+        pool = ReviewPool(work_dir=_work_dir(self))
+        await pool.begin_batch()  # Auto spawn
+        rt = FakeRuntime.instances[0]
+        with self.assertRaisesRegex(RuntimeError, "busy with model"):
+            await pool.begin_batch(model="model-under-test")
+        self.assertTrue(rt.is_alive())  # refused, not killed
+        self.assertEqual(len(FakeRuntime.instances), 1)
+        await pool.end_batch()
+
+    async def test_mismatched_model_spawns_fresh_after_drain(self):
+        _install_fake_runtime(self)
+        pool = ReviewPool(work_dir=_work_dir(self))
+        await pool.begin_batch(model="model-under-test")
+        await pool.end_batch()
+        self.assertTrue(FakeRuntime.instances[0].killed)
+        await pool.begin_batch(model="other-model-under-test")
+        self.assertEqual(len(FakeRuntime.instances), 2)  # new runtime for the new model
         await pool.end_batch()
 
     async def test_session_created_and_destroyed_per_task(self):
@@ -656,3 +731,109 @@ class TestRuntimePreflight(unittest.TestCase):
                 unittest.mock.patch.object(rp, "resolve_kiro_cli", _resolver):
             rp.runtime_preflight()
         self.assertEqual(calls, ["resolve"])
+
+
+# ── Pool-wide permission floor and model pinning ────────────────────────────
+class _FakeGateResult:
+    """A ToolHookResult stand-in carrying just what the gate reads."""
+
+    def __init__(self, action, reason=""):
+        self.action = action
+        self.reason = reason
+
+
+class _RecordingHookManager:
+    """HookManager stand-in: records the gate call, replays a canned verdict."""
+
+    verdict = _FakeGateResult("allow")
+    calls: list = []
+
+    def __init__(self, *a, **kw):
+        pass
+
+    def on_tool_call(self, *a, **kw):
+        _RecordingHookManager.calls.append((a, kw))
+        return _RecordingHookManager.verdict
+
+
+def _recording_manager_patch():
+    import kiro_crew.hooks as hooks_mod
+
+    _RecordingHookManager.calls = []
+    _RecordingHookManager.verdict = _FakeGateResult("allow")
+    return unittest.mock.patch.object(hooks_mod, "HookManager", _RecordingHookManager)
+
+
+class TestPoolWidePermissionFloor(unittest.IsolatedAsyncioTestCase):
+    """Every permission request goes through the pool-wide ``refusal_for``
+    floor; an allowed request is auto-approved."""
+
+    async def _send_once(self):
+        pool = ReviewPool(work_dir=_work_dir(self))
+        await pool.begin_batch()
+        out = await pool.send("t")
+        await pool.end_batch()
+        return pool, out
+
+    async def test_permission_request_runs_the_pool_wide_floor_once(self):
+        script = [
+            _ev(rp.EVENT_PERMISSION_REQUEST, request_id="r1", title="shell"),
+            _ev(rp.EVENT_TEXT_CHUNK, text="ok"),
+        ]
+        _install_fake_runtime(self, script=script)
+        with _recording_manager_patch():
+            out = (await self._send_once())[1]
+        self.assertEqual(out, "ok")
+        # the hooks are consulted once, through the pool-wide refusal_for
+        self.assertEqual(len(_RecordingHookManager.calls), 1)
+        h = FakeRuntime.instances[0].created[0]
+        self.assertEqual(h.approvals, ["r1"])
+        self.assertEqual(h.rejections, [])
+
+    async def test_approve_failure_does_not_break_the_review(self):
+        script = [
+            _ev(rp.EVENT_PERMISSION_REQUEST, request_id="r1", title="shell"),
+            _ev(rp.EVENT_TEXT_CHUNK, text="done"),
+        ]
+        _install_fake_runtime(self, script=script)
+        orig_ap = FakeHandle.approve_tool
+
+        async def _boom(self, request_id, option_id=None):
+            raise RuntimeError("approve boom")
+
+        FakeHandle.approve_tool = _boom  # type: ignore[method-assign]
+        self.addCleanup(lambda: setattr(FakeHandle, "approve_tool", orig_ap))
+        pool, out = await self._send_once()
+        self.assertEqual(out, "done")
+        self.assertEqual(pool.stats()["busy"], 0)
+
+
+class TestSelectedModelPinning(unittest.IsolatedAsyncioTestCase):
+    async def test_pinned_model_is_applied_to_the_session(self):
+        # An explicit model is entitlement-checked against the session's live
+        # advertised set (empty = unknown -> allowed) and applied via set_model.
+        _install_fake_runtime(self, script=[_ev(rp.EVENT_TEXT_CHUNK, text="ok")])
+        pool = ReviewPool(work_dir=_work_dir(self))
+        await pool.begin_batch(model="model-under-test")
+        out = await pool.send("t", model="model-under-test")
+        await pool.end_batch()
+        self.assertEqual(out, "ok")
+        self.assertEqual(FakeRuntime.instances[0].created[0].model_sets, ["model-under-test"])
+
+    async def test_pinned_model_not_advertised_fails_closed(self):
+        # A model the session's advertised set excludes must be refused BEFORE
+        # any prompt is sent (entitlement pre-flight, fail closed).
+        _install_fake_runtime(self, script=[_ev(rp.EVENT_TEXT_CHUNK, text="ok")])
+        orig_init = FakeHandle.__init__
+
+        def _init(self, *a, **kw):
+            orig_init(self, *a, **kw)
+            self.available_models = [{"modelId": "some-other-model"}]
+
+        FakeHandle.__init__ = _init  # type: ignore[method-assign]
+        self.addCleanup(lambda: setattr(FakeHandle, "__init__", orig_init))
+        pool = ReviewPool(work_dir=_work_dir(self))
+        await pool.begin_batch(model="model-under-test")
+        with self.assertRaises(Exception):
+            await pool.send("t", model="model-under-test")
+        await pool.end_batch()

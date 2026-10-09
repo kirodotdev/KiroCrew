@@ -31,6 +31,10 @@ export interface ConfirmOptions {
   /** `top` paints the prompt above a full-screen overlay (`z-[9999]`) the
    *  caller may be raising it from; see `Modal`'s `layer`. */
   layer?: 'dialog' | 'top'
+  /** Disables the confirming action while a caller-verified precondition is false. */
+  confirmDisabled?: boolean
+  /** A non-confirming remedy rendered in the body, such as refreshing stale data. */
+  secondaryAction?: { label: string; onSelect: () => void }
 }
 
 interface PendingConfirm {
@@ -101,15 +105,34 @@ export function useConfirm(): {
           <Btn onClick={() => settle(false)}>
             {i18nT('components.confirmDialog.cancel')}
           </Btn>
-          <Btn danger={opts.danger !== false} onClick={() => settle(true)}>
+          <Btn danger={opts.danger !== false} disabled={opts.confirmDisabled} onClick={() => settle(true)}>
             {opts.confirmLabel}
           </Btn>
         </>
       }
     >
       {/* Full-contrast body: this line carries the consequence ("permanently
-          deletes bucket …"), which must not read quieter than the buttons. */}
-      {opts.body != null ? <p className="text-sm text-text m-0">{opts.body}</p> : null}
+          deletes bucket …"), which must not read quieter than the buttons.
+          A plain string is the common case and gets a <p>; richer content
+          (e.g. a push preview) supplies its own wrapper, since a block
+          element nested in a <p> is invalid HTML. */}
+      {opts.body != null ? (
+        typeof opts.body === 'string'
+          ? <p className="text-sm text-text m-0">{opts.body}</p>
+          : <div className="text-sm text-text">{opts.body}</div>
+      ) : null}
+      {opts.secondaryAction && (
+        <div className="mt-3">
+          <Btn
+            onClick={() => {
+              opts.secondaryAction?.onSelect()
+              settle(false)
+            }}
+          >
+            {opts.secondaryAction.label}
+          </Btn>
+        </div>
+      )}
     </Modal>
   ) : null
 

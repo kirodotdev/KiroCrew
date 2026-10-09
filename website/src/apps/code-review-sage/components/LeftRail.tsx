@@ -68,7 +68,7 @@ export default function LeftRail({ narrow = false, onCollapse }: {
         <div className="flex-1 min-h-0 mx-2 overflow-hidden rounded-xl border border-border bg-bg-elevated shadow-sm flex flex-col">
           <LearningRail />
         </div>
-      ) : mainView === 'settings' ? (
+      ) : mainView === 'settings' || mainView === 'local' ? (
         <div className="flex-1 min-h-0" />
       ) : (
         <>

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import codecs
+import copy
 import json
 import logging
 import os
@@ -14,7 +15,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping, Protocol
 
 from kiro_crew import git_coord, shutdown_event
 from kiro_crew.atomic_write import atomic_write
@@ -52,6 +53,11 @@ from kiro_crew.task_models import (  # noqa: F401
     STALL_CANCEL_TIMEOUT,
     STALL_TIMEOUT,
     Project,
+    ReviewFixAuditEvent,
+    ReviewFixDependencyGroup,
+    ReviewFixGroupState,
+    ReviewFixMetadata,
+    ReviewFixState,
     Task,
     TaskStatus,
     WorkingMemory,
@@ -411,6 +417,83 @@ def _decompose_yaml_with_audit(
         raise
 
 
+class ReviewFixConflict(ValueError):
+    """Raised when a review-fix mutation is based on stale durable state."""
+
+    code = "stale_task_state"
+
+    def __init__(self, run: Project, reason: str) -> None:
+        self.task_id = run.task_id
+        self.current_revision = run.revision
+        self.current_state = run.review_fix.state.value if run.review_fix else ""
+        self.current_group_revisions = {
+            group.group_id: group.revision
+            for group in (run.review_fix.groups if run.review_fix else [])
+        }
+        super().__init__(reason)
+
+
+# Two edges here exist only so a FAILED START can be undone: RUNNING →
+# AWAITING_GROUP_CONFIRMATION / BLOCKED_VALIDATION (and REREVIEWING → PUSHED) are
+# the "execution never actually began" returns used by start_rolled_back, not
+# states a run may normally leave RUNNING for.
+_REVIEW_FIX_TRANSITIONS: dict[ReviewFixState, set[ReviewFixState]] = {
+    ReviewFixState.DRAFT: {
+        ReviewFixState.PLANNING,
+        ReviewFixState.BLOCKED_DIRTY_OVERLAP,
+        ReviewFixState.BLOCKED_MODEL_RESOLUTION,
+        ReviewFixState.FAILED,
+    },
+    ReviewFixState.PLANNING: {
+        ReviewFixState.AWAITING_GROUP_CONFIRMATION,
+        ReviewFixState.BLOCKED_MODEL_RESOLUTION,
+        ReviewFixState.FAILED,
+    },
+    ReviewFixState.AWAITING_GROUP_CONFIRMATION: {
+        ReviewFixState.RUNNING,
+        ReviewFixState.PLANNING,
+        ReviewFixState.FAILED,
+        ReviewFixState.DONE,
+    },
+    ReviewFixState.RUNNING: {
+        ReviewFixState.AWAITING_VALIDATION,
+        ReviewFixState.PAUSED,
+        ReviewFixState.BLOCKED_MODEL_RESOLUTION,
+        ReviewFixState.BLOCKED_VALIDATION,
+        ReviewFixState.AWAITING_GROUP_CONFIRMATION,
+        ReviewFixState.FAILED,
+    },
+    ReviewFixState.AWAITING_VALIDATION: {
+        ReviewFixState.READY_TO_APPLY,
+        ReviewFixState.BLOCKED_VALIDATION,
+        ReviewFixState.RUNNING,
+        ReviewFixState.DONE,
+    },
+    ReviewFixState.READY_TO_APPLY: {ReviewFixState.AWAITING_COMMIT, ReviewFixState.DONE},
+    ReviewFixState.AWAITING_COMMIT: {ReviewFixState.COMMITTED, ReviewFixState.DONE},
+    ReviewFixState.COMMITTED: {ReviewFixState.AWAITING_PUSH, ReviewFixState.DONE},
+    ReviewFixState.AWAITING_PUSH: {ReviewFixState.PUSHED, ReviewFixState.DONE},
+    ReviewFixState.PUSHED: {ReviewFixState.REREVIEWING, ReviewFixState.DONE},
+    ReviewFixState.REREVIEWING: {ReviewFixState.DONE, ReviewFixState.FAILED, ReviewFixState.PUSHED},
+    ReviewFixState.BLOCKED_MODEL_RESOLUTION: {
+        ReviewFixState.PLANNING,
+        ReviewFixState.AWAITING_GROUP_CONFIRMATION,
+        ReviewFixState.RUNNING,
+        ReviewFixState.BLOCKED_DIRTY_OVERLAP,
+        ReviewFixState.DONE,
+    },
+    ReviewFixState.BLOCKED_DIRTY_OVERLAP: {ReviewFixState.PLANNING, ReviewFixState.DONE},
+    ReviewFixState.BLOCKED_VALIDATION: {
+        ReviewFixState.RUNNING,
+        ReviewFixState.AWAITING_VALIDATION,
+        ReviewFixState.DONE,
+    },
+    ReviewFixState.PAUSED: {ReviewFixState.RUNNING, ReviewFixState.DONE},
+    ReviewFixState.FAILED: {ReviewFixState.RUNNING, ReviewFixState.PLANNING, ReviewFixState.DONE},
+    ReviewFixState.DONE: set(),
+}
+
+
 class TaskRunner:
     """Autonomous spec executor — decomposes and runs tasks."""
 
@@ -500,6 +583,20 @@ class TaskRunner:
         self._persist_written = 0  # highest sequence persisted (lock-guarded)
         self._persist_failed = 0  # newer failures must not be overwritten by stale workers
         self._snapshot_recovery_incomplete = False
+        # Serializes mutate_review_fix's CAS-check -> persist -> publish
+        # sequence per task_id, so two concurrent mutations against the same
+        # run can never both pass the same revision check (lost update).
+        # Lazily created; pruned everywhere a run is removed from _runs.
+        self._review_fix_locks: dict[str, asyncio.Lock] = {}
+        # task_id -> (candidate, revision) for a review-fix write that has
+        # been durably committed to disk but not yet published to self._runs.
+        # Registered before the write's persist sequence number is handed
+        # out and merged into EVERY _serialize_runs() call (not just the
+        # owning mutation's), so any concurrent, unrelated snapshot that
+        # lands ahead of this one on disk still carries the candidate --
+        # a write dropped by _commit_snapshot's seq check is still durable.
+        self._review_fix_inflight: dict[str, tuple[ReviewFixMetadata, int]] = {}
+        self._review_fix_creations_inflight: dict[str, Project] = {}
         self._tasks: dict[str, asyncio.Task] = {}  # type: ignore[type-arg]
         self._start_lock = asyncio.Lock()
         self._start_ids_in_flight: set[str] = set()
@@ -511,7 +608,7 @@ class TaskRunner:
         # Deliberately in memory only and deliberately not on ``Project``: it is
         # a routing hint for the lifetime of one process, and a persisted channel
         # key would outlive the binding it names and send a restart's first
-        # notice into a conversation that may no longer resolve.
+        # notice into a conversation that may fail to resolve.
         self._run_session_keys: dict[str, str] = {}
         # Optional publication port into the shared workflow history. TaskRunner
         # remains the owner of planning/execution semantics; this port only
@@ -1057,6 +1154,182 @@ class TaskRunner:
         matches = [r for r in self._runs.values() if r.name == ref]
         return matches[-1] if matches else None
 
+    def get_review_fix(self, task_id: str) -> Project:
+        """Return a review-fix run or raise a stable not-found error."""
+        run = self._resolve_task(task_id)
+        if not run or not run.review_fix or run.execution_mode != "review_fix":
+            raise ValueError(f"Review-fix task {task_id} not found")
+        return run
+
+    async def create_review_fix(
+        self,
+        metadata: ReviewFixMetadata,
+        *,
+        task_id: str = "",
+        name: str = "",
+        spec_path: str = "",
+        spec_content: str = "",
+        source: str = "code_review_sage",
+        work_dir: str = "",
+        tasks: list[Task] | None = None,
+    ) -> Project:
+        """Create and durably register a review-fix run in draft state."""
+        task_id = task_id or f"review_fix_{time.time_ns()}"
+        if (
+            task_id in self._runs
+            or task_id in self._review_fix_creations_inflight
+            or task_id in self._tasks
+            or task_id in self._start_ids_in_flight
+        ):
+            raise ValueError(f"Task {task_id} already exists")
+        now = time.time()
+        metadata = copy.deepcopy(metadata)
+        metadata.state = ReviewFixState.DRAFT
+        metadata.revision = 0
+        metadata.created_at = metadata.created_at or now
+        metadata.updated_at = now
+        run = Project(
+            spec_path=spec_path,
+            spec_content=spec_content,
+            tasks=list(tasks or []),
+            status="planned",
+            task_id=task_id,
+            name=name or task_id,
+            source=source,
+            work_dir=work_dir,
+            review_fix=metadata,
+            revision=0,
+            execution_mode="review_fix",
+            commit_policy="manual_group",
+        )
+        self._review_fix_creations_inflight[task_id] = run
+        try:
+            await self._apersist_runs()
+        except BaseException:
+            if self._review_fix_creations_inflight.get(task_id) is run:
+                self._review_fix_creations_inflight.pop(task_id, None)
+            raise
+        if self._review_fix_creations_inflight.get(task_id) is run:
+            self._review_fix_creations_inflight.pop(task_id, None)
+        if self._runs.setdefault(task_id, run) is not run:
+            raise ValueError(f"Task {task_id} already exists")
+        return run
+
+    async def mutate_review_fix(
+        self,
+        task_id: str,
+        *,
+        expected_revision: int,
+        action: str,
+        mutate: Callable[[ReviewFixMetadata], None],
+        to_state: ReviewFixState | None = None,
+        expected_state: ReviewFixState | str | None = None,
+        group_id: str = "",
+        expected_group_revision: int | None = None,
+        expected_target_fingerprint: str = "",
+    ) -> Project:
+        """Apply one revision-checked review-fix mutation and persist it.
+
+        The mutator runs against a deep copy. If a state, group, or target CAS
+        check fails, the live Project remains untouched and no audit entry is
+        emitted.
+
+        The whole CAS-check -> persist -> publish sequence runs under a
+        per-task_id lock: without it, two concurrent mutations could both
+        read the same expected_revision, both pass their CAS check, and both
+        publish -- the second silently discarding the first's change even
+        though neither ever saw a conflict. The lock is never held across the
+        get_review_fix() lookup, only from the CAS check onward.
+        """
+        lock = self._review_fix_locks.setdefault(task_id, asyncio.Lock())
+        async with lock:
+            run = self.get_review_fix(task_id)
+            metadata = run.review_fix
+            assert metadata is not None
+            if run.revision != expected_revision or metadata.revision != expected_revision:
+                raise ReviewFixConflict(run, "task revision is stale")
+            if expected_state is not None:
+                expected_value = (
+                    expected_state.value
+                    if isinstance(expected_state, ReviewFixState)
+                    else str(expected_state)
+                )
+                if metadata.state.value != expected_value:
+                    raise ReviewFixConflict(run, "task state is stale")
+            if (
+                expected_target_fingerprint
+                and metadata.target.dirty_fingerprint != expected_target_fingerprint
+            ):
+                raise ReviewFixConflict(run, "target fingerprint is stale")
+            group = None
+            if group_id:
+                group = next((item for item in metadata.groups if item.group_id == group_id), None)
+                if group is None:
+                    raise ValueError(f"Review-fix group {group_id} not found")
+                if (
+                    expected_group_revision is not None
+                    and group.revision != expected_group_revision
+                ):
+                    raise ReviewFixConflict(run, "group revision is stale")
+
+            next_state = to_state or metadata.state
+            if (
+                next_state != metadata.state
+                and next_state not in _REVIEW_FIX_TRANSITIONS[metadata.state]
+            ):
+                raise ValueError(
+                    f"Invalid review-fix transition: {metadata.state.value} -> {next_state.value}"
+                )
+            candidate = copy.deepcopy(metadata)
+            mutate(candidate)
+            previous_state = candidate.state
+            candidate.state = next_state
+            new_revision = max(run.revision, metadata.revision) + 1
+            candidate.revision = new_revision
+            candidate.updated_at = time.time()
+            candidate.audit_log.append(
+                ReviewFixAuditEvent(
+                    action=action,
+                    from_state=previous_state.value,
+                    to_state=next_state.value,
+                    revision=new_revision,
+                    timestamp=candidate.updated_at,
+                    details={"group_id": group_id} if group_id else {},
+                )
+            )
+            candidate.audit_log = candidate.audit_log[-100:]
+            # Persist-before-publish: the durable write is awaited, and its
+            # result inspected (an exception propagates), BEFORE the
+            # candidate is exposed on the live Project. Registering the
+            # candidate in _review_fix_inflight BEFORE the write's persist
+            # sequence number is handed out means every _serialize_runs()
+            # call from this point on -- including one made by a concurrent,
+            # unrelated _apersist_runs() for a different status change --
+            # carries the candidate. So even if this write's own sequence
+            # number ends up behind one of those and gets dropped by
+            # _commit_snapshot's monotonic-seq check, the candidate is
+            # already durable on disk via the snapshot that won. If the
+            # write fails, nothing in memory has changed, so there is
+            # nothing to roll back.
+            self._review_fix_inflight[task_id] = (candidate, new_revision)
+            try:
+                await self._apersist_runs()
+            finally:
+                self._review_fix_inflight.pop(task_id, None)
+            run.review_fix = candidate
+            run.revision = new_revision
+            return run
+
+    @staticmethod
+    def review_fix_group(run: Project, group_id: str) -> ReviewFixDependencyGroup:
+        """Find a persisted group without exposing mutable lookup internals."""
+        if not run.review_fix:
+            raise ValueError("Run is not a review-fix task")
+        group = next((item for item in run.review_fix.groups if item.group_id == group_id), None)
+        if group is None:
+            raise ValueError(f"Review-fix group {group_id} not found")
+        return group
+
     @staticmethod
     def _normalize_cross_group_deps(tasks: list[Task]) -> list[Task]:
         return normalize_cross_group_deps(tasks)
@@ -1230,6 +1503,7 @@ class TaskRunner:
             if not committed:
                 if self._runs.get(task_id) is run:
                     self._runs.pop(task_id, None)
+                    self._review_fix_locks.pop(task_id, None)
                 self._run_session_keys.pop(task_id, None)
                 cleanup_persist = asyncio.create_task(self._apersist_runs())
                 try:
@@ -1376,11 +1650,15 @@ class TaskRunner:
         fresh: bool = False,
         workspace_dir: str = "",
         auto_approve: bool = False,
+        *,
+        _review_fix_launch: bool = False,
     ) -> str:
         self._require_workflow_ready()
         run = self._runs.get(task_id)
         if not run:
             raise ValueError(f"Run {task_id} not found")
+        if run.execution_mode == "review_fix" and not _review_fix_launch:
+            raise ValueError("Review-fix runs must execute through execute_review_fix")
         restartable = {"planned", "paused", "cancelled", "failed"}
         if run.status not in restartable:
             raise ValueError(f"Run {task_id} is not in a startable state (status={run.status})")
@@ -1404,9 +1682,10 @@ class TaskRunner:
             # produced there (files/commits, git worktree state). The path is still
             # resolved+validated below regardless of status (audit/sensitive-path guard).
             self._refresh_from_config()
-            _override = _resolve_workspace_dir(workspace_dir)
-            if _override and run.status == "planned":
-                run.work_dir = _override
+            if run.execution_mode != "review_fix":
+                _override = _resolve_workspace_dir(workspace_dir)
+                if _override and run.status == "planned":
+                    run.work_dir = _override
 
             # Guard: limit concurrent running tasks — check BEFORE mutating state.
             # With the task queue attached the cap is the lane's: excess steps
@@ -1457,7 +1736,13 @@ class TaskRunner:
                 run.started_at = run.last_task_time = time.time()
                 await self._workflow_rebind(run)
                 await self._apersist_runs()  # persist immediately so crash recovery works
-                if run.branch_name:
+                if run.execution_mode == "review_fix":
+                    if not run.work_dir or not Path(run.work_dir).is_dir():
+                        raise ValueError("review-fix candidate worktree is unavailable")
+                    run.git_enabled = True
+                    if run.review_fix and run.review_fix.git.candidate_branch:
+                        run.branch_name = run.review_fix.git.candidate_branch
+                elif run.branch_name:
                     # A restart of a run that once had a worktree (paused /
                     # cancelled / failed) resumes against it exactly like a
                     # retry does, so it shares the retry path's guard: a lost
@@ -1485,6 +1770,15 @@ class TaskRunner:
                 watchdog_task = asyncio.create_task(self._watchdog_loop(run))
                 await self._execute_tasks(run, history_key)
                 if run.status == "running":
+                    if run.execution_mode == "review_fix":
+                        await self.mutate_review_fix(
+                            task_id,
+                            expected_revision=run.revision,
+                            action="execution_complete",
+                            expected_state=ReviewFixState.RUNNING,
+                            to_state=ReviewFixState.AWAITING_VALIDATION,
+                            mutate=lambda metadata: setattr(metadata, "blocked_reason", ""),
+                        )
                     run.status = "completed"
                     run.finished_at = time.time()
                     await self._apersist_runs()
@@ -1501,6 +1795,21 @@ class TaskRunner:
                 logger.exception("Plan execution error")
                 run.status = "failed"
                 run.error = str(exc)
+                if run.execution_mode == "review_fix" and run.review_fix:
+                    try:
+                        error_message = str(exc)[:2000]
+                        await self.mutate_review_fix(
+                            task_id,
+                            expected_revision=run.revision,
+                            expected_state=ReviewFixState.RUNNING,
+                            action="execution_failed",
+                            to_state=ReviewFixState.FAILED,
+                            mutate=lambda metadata: setattr(
+                                metadata, "blocked_reason", error_message
+                            ),
+                        )
+                    except Exception:
+                        logger.debug("review-fix failure state update failed", exc_info=True)
                 await self._notify("\u274c Task error", str(exc), run=run)
             finally:
                 try:
@@ -1510,12 +1819,33 @@ class TaskRunner:
                 # Finalize cancel status after cleanup
                 if run.status in ("cancelling", "pausing"):
                     run.status = "paused" if run.status == "pausing" else "cancelled"
+                if (
+                    run.execution_mode == "review_fix"
+                    and run.review_fix
+                    and run.review_fix.state is ReviewFixState.RUNNING
+                    and run.status == "paused"
+                ):
+                    try:
+                        await self.mutate_review_fix(
+                            task_id,
+                            expected_revision=run.revision,
+                            expected_state=ReviewFixState.RUNNING,
+                            action="execution_paused",
+                            to_state=ReviewFixState.PAUSED,
+                            mutate=lambda metadata: None,
+                        )
+                    except Exception:
+                        logger.debug("review-fix pause state update failed", exc_info=True)
                 run.finished_at = time.time()
                 save_progress(run)
                 try:
                     await self._apersist_runs()
                     await self._taskq_end_run(run)
-                    if run.branch_name and not workspace_lost:
+                    if (
+                        run.branch_name
+                        and not workspace_lost
+                        and run.execution_mode != "review_fix"
+                    ):
                         try:
                             await git_coord.finalize(run)
                         except Exception:
@@ -1534,6 +1864,101 @@ class TaskRunner:
         finally:
             self._release_start(task_id)
         return task_id
+
+    async def execute_review_fix(
+        self,
+        task_id: str,
+        *,
+        agent: str = "",
+        fresh: bool = False,
+        auto_approve: bool = False,
+    ) -> str:
+        """Run confirmed review-fix tasks in their retained candidate worktree."""
+        run = self.get_review_fix(task_id)
+        metadata = run.review_fix
+        assert metadata is not None
+        allowed = {
+            ReviewFixState.AWAITING_GROUP_CONFIRMATION,
+            ReviewFixState.PAUSED,
+            ReviewFixState.FAILED,
+            ReviewFixState.BLOCKED_VALIDATION,
+            ReviewFixState.BLOCKED_MODEL_RESOLUTION,
+        }
+        if metadata.state not in allowed:
+            raise ValueError(f"Review-fix task is not executable in state {metadata.state.value}")
+        if metadata.state is ReviewFixState.AWAITING_GROUP_CONFIRMATION and any(
+            group.state is not ReviewFixGroupState.CONFIRMED for group in metadata.groups
+        ):
+            raise ValueError("Review-fix grouping must be confirmed before execution")
+        if not metadata.model.resolved_model_id:
+            await self.mutate_review_fix(
+                task_id,
+                expected_revision=run.revision,
+                action="model_resolution_required",
+                expected_state=metadata.state,
+                to_state=ReviewFixState.BLOCKED_MODEL_RESOLUTION,
+                mutate=lambda current: setattr(
+                    current, "blocked_reason", "a concrete model pin is required"
+                ),
+            )
+            raise ValueError("Review-fix model resolution is unavailable")
+
+        prior_state = metadata.state
+        try:
+            await self.mutate_review_fix(
+                task_id,
+                expected_revision=run.revision,
+                action="start_execution",
+                expected_state=prior_state,
+                to_state=ReviewFixState.RUNNING,
+                mutate=lambda current: setattr(current, "blocked_reason", ""),
+            )
+            run = self.get_review_fix(task_id)
+            metadata = run.review_fix
+            assert metadata is not None
+            if run.status not in {"planned", "paused", "cancelled", "failed"}:
+                run.status = "planned"
+            run.work_dir = metadata.git.candidate_worktree_path or run.work_dir
+            run.branch_name = metadata.git.candidate_branch or run.branch_name
+            run.git_enabled = True
+            await self._apersist_runs()
+            return await self.execute_plan(
+                task_id,
+                agent=agent,
+                fresh=fresh,
+                _review_fix_launch=True,
+                auto_approve=auto_approve,
+            )
+        except Exception:
+            # execute_plan can reject before its background task exists (planner
+            # failure, concurrency cap), and nothing else would then move the run
+            # out of RUNNING — which every later gate treats as "work in flight".
+            await self._rollback_review_fix_start(task_id, prior_state)
+            raise
+
+    async def _rollback_review_fix_start(self, task_id: str, prior_state: ReviewFixState) -> None:
+        """Undo a start that failed between the RUNNING transition and launch.
+
+        Best effort by contract: the caller is about to re-raise the original
+        failure, so a rollback that itself loses a race (another actor already
+        moved the run) is logged, never allowed to mask it. Restoring only from
+        the exact state we transitioned to keeps a concurrent, legitimate move
+        out of RUNNING from being clobbered.
+        """
+        try:
+            current = self.get_review_fix(task_id)
+            if current.review_fix is None or current.review_fix.state is not ReviewFixState.RUNNING:
+                return
+            await self.mutate_review_fix(
+                task_id,
+                expected_revision=current.revision,
+                expected_state=ReviewFixState.RUNNING,
+                action="start_rolled_back",
+                to_state=prior_state,
+                mutate=lambda metadata: None,
+            )
+        except Exception:
+            logger.warning("review-fix start rollback failed for %s", task_id, exc_info=True)
 
     def plan_to_chat_context(self, task_id: str) -> str:
         run = self._runs.get(task_id)
@@ -1572,6 +1997,9 @@ class TaskRunner:
             raise ValueError("Spec file is empty")
         if not task_id:
             task_id = f"{spec_path.stem}_{int(time.time())}"
+        existing_review_fix = self._runs.get(task_id)
+        if existing_review_fix and existing_review_fix.execution_mode == "review_fix":
+            raise ValueError("Review-fix runs must execute through execute_review_fix")
         self._refresh_from_config()
         _override = _resolve_workspace_dir(workspace_dir)
         _effective_ws = _override or self._workspace_dir
@@ -2114,16 +2542,23 @@ class TaskRunner:
                 task_id
                 for task_id, run in self._runs.items()
                 if run.status in ("completed", "failed", "cancelled")
+                and not (
+                    run.execution_mode == "review_fix"
+                    and run.review_fix is not None
+                    and run.review_fix.state is not ReviewFixState.DONE
+                )
             ]
             # Always purge completed cron runs; keep last 10 others.
             cron_done = [task_id for task_id in completed if self._runs[task_id].source == "cron"]
             for task_id in cron_done:
                 self._runs.pop(task_id, None)
+                self._review_fix_locks.pop(task_id, None)
                 self._stall_cancelled_ids.discard(task_id)
                 self._run_session_keys.pop(task_id, None)
             other_done = [task_id for task_id in completed if task_id in self._runs]
             for task_id in other_done[:-10]:
                 self._runs.pop(task_id, None)
+                self._review_fix_locks.pop(task_id, None)
                 self._stall_cancelled_ids.discard(task_id)
                 self._run_session_keys.pop(task_id, None)
 
@@ -2200,6 +2635,7 @@ class TaskRunner:
                 return task_id
             except BaseException:
                 rollback_run = self._runs.pop(task_id, None)
+                self._review_fix_locks.pop(task_id, None)
                 self._run_session_keys.pop(task_id, None)
                 if rollback_run is not None:
                     delete_task = asyncio.create_task(self._workflow_delete_link(rollback_run))
@@ -2334,6 +2770,7 @@ class TaskRunner:
         if bg_task and not bg_task.done():
             bg_task.cancel()
         self._runs.pop(task_id, None)
+        self._review_fix_locks.pop(task_id, None)
         origin = self._run_session_keys.get(task_id)
         try:
             await self._apersist_runs()
@@ -2430,6 +2867,8 @@ class TaskRunner:
         run = self._resolve_task(task_id)
         if not run:
             raise ValueError(f"Run {task_id} not found")
+        if run.execution_mode == "review_fix":
+            raise ValueError("Review-fix runs must execute through execute_review_fix")
         # _resolve_task accepts a run NAME as well as the canonical id, but
         # self._tasks is keyed by the canonical id. Canonicalize before any
         # lookup, or a name-addressed retry misses the prior background-task
@@ -2864,9 +3303,23 @@ class TaskRunner:
         it can raise ``RuntimeError: dictionary changed size during iteration``
         or capture a torn snapshot, so persistence always snapshots here first
         and offloads only the byte-level write.
+
+        ``self._review_fix_inflight`` maps a task_id to a (review_fix,
+        revision) pair to write in place of that run's live values, without
+        mutating ``self._runs``. ``mutate_review_fix`` registers a candidate
+        there before its durable write is scheduled and pops it once
+        published-or-failed, so EVERY snapshot built while that write is in
+        flight -- this call included, whatever triggered it -- carries the
+        candidate. That is what makes persist-before-publish safe under
+        concurrent, unrelated snapshot writes: even a snapshot this call
+        didn't originate can durably carry another in-flight mutation's
+        candidate.
         """
         data: list[dict] = []
-        for run in self._runs.values():
+        runs = dict(self._runs)
+        for task_id, run in self._review_fix_creations_inflight.items():
+            runs.setdefault(task_id, run)
+        for run in runs.values():
             if run.source == "cron" or (
                 run.execution_context and run.execution_context.memory_mode != "persistent"
             ):
@@ -2882,6 +3335,8 @@ class TaskRunner:
                 "failed",
                 "cancelled",
             ):
+                inflight = self._review_fix_inflight.get(run.task_id)
+                review_fix, revision = inflight if inflight else (run.review_fix, run.revision)
                 data.append(
                     {
                         "task_id": run.task_id,
@@ -2930,6 +3385,16 @@ class TaskRunner:
                         "workflow_revision": run.workflow_revision,
                         "derived_from_workflow_id": run.derived_from_workflow_id,
                         "derived_from_revision": run.derived_from_revision,
+                        **(
+                            {
+                                "review_fix": review_fix.to_dict(),
+                                "revision": revision,
+                                "execution_mode": run.execution_mode,
+                                "commit_policy": run.commit_policy,
+                            }
+                            if review_fix is not None
+                            else {}
+                        ),
                         "task_details": [
                             {
                                 "index": t.index,
@@ -3003,6 +3468,12 @@ class TaskRunner:
         number preserves write ordering. Every production mutation API awaits
         this method before returning, preserving durability without blocking
         unrelated gateway work.
+
+        Any in-flight ``mutate_review_fix`` candidate registered in
+        ``self._review_fix_inflight`` is folded into the snapshot by
+        ``_serialize_runs`` — see its docstring — to support
+        persist-before-publish for that run even when this particular call
+        was triggered by an unrelated mutation.
         """
         seq = self._next_persist_seq()
         payload = self._serialize_runs()
@@ -3141,6 +3612,12 @@ class TaskRunner:
                     for t in item.get("task_details", item.get("tasks", []))
                 ]
                 _worktree_path = item.get("worktree_path", "")
+                review_fix_raw = item.get("review_fix")
+                review_fix = (
+                    ReviewFixMetadata.from_dict(review_fix_raw)
+                    if isinstance(review_fix_raw, Mapping)
+                    else None
+                )
                 run = Project(
                     spec_path=item["spec_path"],
                     spec_content=item.get("spec_content", ""),
@@ -3180,6 +3657,16 @@ class TaskRunner:
                     workflow_revision=int(item.get("workflow_revision") or 0),
                     derived_from_workflow_id=item.get("derived_from_workflow_id", ""),
                     derived_from_revision=int(item.get("derived_from_revision") or 0),
+                    review_fix=review_fix,
+                    revision=int(
+                        item.get("revision", review_fix.revision if review_fix else 0) or 0
+                    ),
+                    execution_mode=item.get(
+                        "execution_mode", "review_fix" if review_fix else "standard"
+                    ),
+                    commit_policy=item.get(
+                        "commit_policy", "manual_group" if review_fix else "per_task"
+                    ),
                 )
                 # Compensating control: never let per-run trust silently survive a
                 # gateway restart. A run recovered from an active state had its

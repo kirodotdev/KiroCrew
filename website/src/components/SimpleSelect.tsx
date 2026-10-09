@@ -79,6 +79,11 @@ export interface SimpleSelectProps {
    *  `h-7 text-[13px]`, and a taller control there would change every row's
    *  height. Merged after the defaults, so it wins. */
   className?: string
+  /** Denser trigger for rows tighter than the default — forwarded to both the
+   *  Radix trigger and the native control's `size`, so touch and desktop match. */
+  density?: 'default' | 'sm'
+  /** Monospace trigger text, for values that are identifiers (model ids) rather than prose. */
+  mono?: boolean
   /** Extra classes for the open LIST (Radix SelectContent). The default panel is
    *  exactly the trigger's width; a caller whose trigger deliberately hugs the
    *  selected value (the template pane's header) passes a `min-w-*` here so the
@@ -95,7 +100,7 @@ export interface SimpleSelectProps {
   title?: string
 }
 
-export default function SimpleSelect({ options, optionLabels, optionIcons, value, onChange, action, clearLabel, triggerFallback, labelsInListOnly, optionBadges, disabled, style, id, className, contentClassName, 'aria-label': ariaLabel, 'aria-describedby': ariaDescribedBy, title }: SimpleSelectProps) {
+export default function SimpleSelect({ options, optionLabels, optionIcons, value, onChange, action, clearLabel, triggerFallback, labelsInListOnly, optionBadges, disabled, style, id, className, density, mono, contentClassName, 'aria-label': ariaLabel, 'aria-describedby': ariaDescribedBy, title }: SimpleSelectProps) {
   const isTouch = useIsTouchDevice()
   const toRadix = (v: string) => (v === '' ? EMPTY_VALUE_SENTINEL : v)
   const fromRadix = (v: string) => (v === EMPTY_VALUE_SENTINEL ? '' : v)
@@ -131,6 +136,8 @@ export default function SimpleSelect({ options, optionLabels, optionIcons, value
         // the wrapper — a flex rule placed on it is simply inert.
         wrapperStyle={selectedIcon ? { flex: '1 1 0', minWidth: 0 } : style}
         className={className}
+        density={density}
+        mono={mono}
         value={toRadix(value)}
         onChange={e => {
           const v = e.target.value
@@ -172,7 +179,7 @@ export default function SimpleSelect({ options, optionLabels, optionIcons, value
         }}
         disabled={disabled}
       >
-        <SelectTrigger id={id} aria-label={ariaLabel} aria-describedby={ariaDescribedBy} title={title} className={className}>
+        <SelectTrigger id={id} aria-label={ariaLabel} aria-describedby={ariaDescribedBy} title={title} className={className} density={density} mono={mono}>
           <SelectValue placeholder={triggerFallback ?? clearLabel ?? (value || '—')}>
             {/* Children override the selected item's text. Passed only when there
                 IS a selectable non-empty value, so an unset control still falls

@@ -1531,6 +1531,18 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "through this pass.",
     ),
     (
+        "Review Fix action errors",
+        "apps/builtins/code_review_sage/backend/fix_tasks.py",
+        "Error bodies returned by the Code Review Sage review-fix endpoints "
+        "(create, confirm, validate, apply, discard, review-again). A failed "
+        "action's message is exception text — git stderr, plan/validation "
+        "refusals, agent-subprocess failures — so it can quote a "
+        "credential-bearing remote URL or an exfiltration-shaped link from the "
+        "reviewed repository. `_safe_error` runs both scanners over it before "
+        "the JSON reaches the dashboard, and the same scrubbed string lands in "
+        "the endpoint's audit record.",
+    ),
+    (
         "Auto Triage Pipeline dashboard strings",
         "apps/builtins/issue_radar/backend/pipeline_fold.py",
         "Every string this read-only fold hands to its routes -- issue titles, "
@@ -2254,6 +2266,14 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "apps/builtins/design_tweak/backend/server.py",
         "suggestions.py",
         "tips.py",
+        # Review-fix internals, same class as task_executor/taskrunner below:
+        # `review_fix.py` scrubs the agent's patch output at the moment it is
+        # written to the task artifact, and `review_fix_git.py` scrubs git's
+        # stderr before it becomes a ReviewFixGitError. Both are persistence and
+        # log hygiene on the way INTO task state — the surfaces a user actually
+        # reads are registered sinks downstream.
+        "review_fix.py",
+        "review_fix_git.py",
         "task_executor.py",
         "taskrunner.py",
         "transcribe.py",
@@ -2442,6 +2462,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "apps/builtins/issue_radar/backend/http_routes/ai.py",
         "apps/builtins/issue_radar/backend/http_routes/recommendations.py",
         "apps/builtins/issue_radar/backend/http_routes/tagging.py",
+        # Local-review input and findings stay inside the app's own persisted
+        # session/UI surface.
+        "apps/builtins/code_review_sage/sage_lib/local_review.py",
         "apps/builtins/meetings/backend/domain/session.py",
         # Live translation redacts the MODEL's answer before writing it to the
         # meeting's translations.json. The source line was already redacted at

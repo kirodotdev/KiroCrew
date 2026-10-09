@@ -180,7 +180,15 @@ async def api_taskrunner_status(request: web.Request) -> web.Response:
     origin, refusal = await _taskrunner_request_origin(request)
     if refusal is not None:
         return refusal
-    visible_sources = {"text", "spec", "file", "chat", "dashboard", "mcp", "yaml"}
+    visible_sources = {
+        "text",
+        "spec",
+        "file",
+        "chat",
+        "dashboard",
+        "mcp",
+        "yaml",
+    }
     data["runs"] = [r for r in data["runs"] if r.get("source") in visible_sources]
     data["running"] = any(row.get("running") for row in data["runs"])
     for run in data["runs"]:

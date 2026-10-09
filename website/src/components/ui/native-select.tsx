@@ -24,6 +24,11 @@ import { cn } from '../../lib/utils'
 interface NativeSelectProps extends React.ComponentPropsWithoutRef<'select'> {
   /** Inline style for the positioning wrapper — where a caller's sizing belongs. */
   wrapperStyle?: React.CSSProperties
+  /** Denser control for rows tighter than the default `pl-3 py-2 text-base` —
+   *  e.g. an inline picker beside a compact label. */
+  density?: 'default' | 'sm'
+  /** Monospace text, for values that are identifiers (model ids) rather than prose. */
+  mono?: boolean
 }
 
 /**
@@ -40,7 +45,7 @@ const NativeSelect = React.forwardRef<HTMLSelectElement, NativeSelectProps>(
   // React infers the devtools name from the function, and the assignment form would
   // add a bare string literal that the i18n gate counts (eslint-rules/i18n-strict.js
   // re-surfaces literals the upstream rule exempts).
-  function NativeSelect({ className, wrapperStyle, children, ...props }, ref) {
+  function NativeSelect({ className, wrapperStyle, density = 'default', mono, children, ...props }, ref) {
     return (
       // The wrapper is the layout box: it owns the chevron's positioning context,
       // so a caller's sizing (a flex basis, a min-width) has to land HERE to have
@@ -60,6 +65,8 @@ const NativeSelect = React.forwardRef<HTMLSelectElement, NativeSelectProps>(
             'flex items-center justify-between w-full pl-3 py-2 rounded-md text-base border border-border bg-bg-elevated text-text truncate',
             'hover:border-border-strong transition-all cursor-pointer outline-hidden appearance-none',
             'focus-visible:border-accent disabled:opacity-40 disabled:pointer-events-none',
+            density === 'sm' && 'pl-2 py-1 text-[12px]',
+            mono && 'font-mono',
             className
           )}
           // The gutter the chevron below sits in. It is a constant of THIS

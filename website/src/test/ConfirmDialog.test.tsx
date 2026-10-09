@@ -73,6 +73,24 @@ describe('useConfirm', () => {
     expect(document.querySelector('.z-\\[10001\\]')).toBeNull()
   })
 
+  it('keeps a secondary remedy in the body, with only two footer actions', async () => {
+    const onSelect = vi.fn()
+    const user = userEvent.setup()
+    render(
+      <Probe
+        onAnswer={vi.fn()}
+        opts={{ secondaryAction: { label: 'Refresh diff', onSelect } }}
+      />,
+    )
+    await user.click(screen.getByText('ask'))
+    const dialog = await screen.findByRole('dialog')
+    const footer = dialog.querySelector('.border-t.border-border')
+    expect(footer?.querySelectorAll('button')).toHaveLength(2)
+    await user.click(screen.getByRole('button', { name: 'Refresh diff' }))
+    expect(onSelect).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  })
+
   it('resolves true only from the confirm button', async () => {
     const onAnswer = vi.fn()
     const user = userEvent.setup()

@@ -2683,7 +2683,7 @@ class TestWholeRunsSerialize:
         monkeypatch.setattr(mod, "_make_progress", lambda run: None)
 
         class _Pool:
-            async def begin_batch(self):
+            async def begin_batch(self, model=None):
                 return None
 
             async def end_batch(self):
@@ -2727,7 +2727,7 @@ class TestReviewersSerialize:
         monkeypatch.setattr(mod, "_make_progress", lambda run: None)
 
         class _Pool:
-            async def begin_batch(self):
+            async def begin_batch(self, model=None):
                 return None
 
             async def end_batch(self):
@@ -2744,6 +2744,76 @@ class TestReviewersSerialize:
         assert seen.get("concurrency") == 1, (
             "the backend must ask for one reviewer at a time; got "
             f"{seen.get('concurrency')!r}")
+
+
+class TestSelectedModelGoesToThePoolOnly:
+    """A run's selected model is bound by ``begin_batch``, not by the driver call.
+
+    ``review_driver.run_review`` takes no ``model`` parameter — the model is fixed
+    when ``begin_batch`` spawns the one shared runtime — so forwarding one there
+    raises TypeError inside ``run_review`` and every review started with a model
+    selected fails before dispatching a single change.
+    """
+
+    @pytest.mark.asyncio
+    async def test_review_start_with_a_model_reaches_run_review(self, monkeypatch):
+        mod = _load_routes_module()
+
+        batch_models: list[str | None] = []
+
+        def fake_run_review(
+            changes,
+            *,
+            dispatch=None,
+            progress=None,
+            run_id=None,
+            cancelled=None,
+            preflight=None,
+            concurrency=0,
+        ):
+            # No **kw on purpose: the stub carries the real signature, so an extra
+            # ``model=`` kwarg raises here exactly as it does in the driver.
+            return {
+                "ok": True,
+                "changes": len(changes),
+                "per_change": [],
+                "result_records": 1,
+                "deep_reviewed": 1,
+            }
+
+        class _Pool:
+            async def begin_batch(self, model=None):
+                batch_models.append(model)
+
+            async def end_batch(self):
+                return None
+
+        monkeypatch.setattr(mod.review_driver, "run_review", fake_run_review)
+        monkeypatch.setattr(mod, "_claim_changes_under_lock", lambda run, changes: list(changes))
+        monkeypatch.setattr(mod, "_record_reviewed", lambda run: None)
+        monkeypatch.setattr(mod, "_make_progress", lambda run: None)
+        monkeypatch.setattr(mod.review_pool, "get_pool", lambda: _Pool())
+        monkeypatch.setattr(
+            mod.review_pool, "make_sync_dispatch", lambda loop, pool: (lambda *a, **k: {"ok": True})
+        )
+        # The runtime looks usable on every host: on a runner without kiro-cli
+        # the preflight would short-circuit before begin_batch, and the model
+        # would never reach the pool at all.
+        monkeypatch.setattr(mod.review_pool, "runtime_preflight", lambda: "")
+
+        # The id is a sentinel, not a real model: the stub pool validates
+        # nothing, and this test pins that the run's selected model reaches the
+        # pool as the ``begin_batch(model=...)`` kwarg -- a hardcoded real id
+        # would trip the model-selection rule (AGENTS.md -> Model selection).
+        run = {"run_id": "run-model", "model": "model-under-test"}
+        await mod._run_review_bg(run, ["https://x/pull/1"])
+
+        assert batch_models == [
+            "model-under-test"
+        ], "the pool must spawn its runtime with the run's selected model"
+        # An "error" here means the driver call raised -- the TypeError dropping the
+        # ``model=`` kwarg prevents.
+        assert run["status"] == "done", f"review start failed: {run.get('error')!r}"
 
 
 class _FakeSessions:
