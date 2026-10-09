@@ -112,10 +112,17 @@ const UNC_PREFIX_RE = /^[/\\]{2}/
  * last argument. The stat probe always refuses it, but the glyph reserve is
  * keyed to SHAPE, not to the probe's answer, so the copy chip kept an invisible
  * 16px glyph slot in front of the command for good — a blank gap that reads as
- * a missing icon. A path never needs a space directly before a separator or a
- * flag, so refusing that pair keeps every spaced name above classifying.
+ * a missing icon.
+ *
+ * A flag must be a whole word (`-s`, `--force`, ending at a space or the end),
+ * so a name with a dash glued to more of it (`Report -final.md`,
+ * `Backup -old/x.md`) still classifies. A space right before a root cannot be
+ * told apart from a command and its argument, so a name like `notes /draft.md`
+ * is refused; that rare loss is the accepted cost. A command whose argument is
+ * relative (`cat src/a.ts`) has no such tell and still classifies.
  */
-const COMMAND_LINE_RE = /\s(?:--?[A-Za-z]|~?[/\\]|\.{1,2}[/\\]|[A-Za-z]:[/\\])/
+const COMMAND_LINE_RE =
+  /\s(?:--?[A-Za-z][A-Za-z0-9-]*(?=\s|$)|~?[/\\]|\.{1,2}[/\\]|[A-Za-z]:[/\\])/
 
 /** The last path segment, split on EITHER separator so a Windows path yields its
  *  real basename. `lastIndexOf('/')` alone returns -1 for `C:\a\notes` and hands

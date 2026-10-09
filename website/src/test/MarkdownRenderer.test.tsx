@@ -306,6 +306,17 @@ describe('isPathCandidate — path chip pre-filter', () => {
     expect(isPathCandidate('docs/Report - final.md')).toBe(true)
     expect(isPathCandidate('My Docs/notes.md')).toBe(true)
     expect(isPathCandidate('C:\\Program Files (x86)\\app.txt')).toBe(true)
+    // A dash glued to more of the name is not a flag: the word after it runs
+    // into a dot or a separator instead of ending at a space.
+    expect(isPathCandidate('docs/Report -final.md')).toBe(true)
+    expect(isPathCandidate('~/Music/Artist -Live.mp3')).toBe(true)
+    expect(isPathCandidate('Backup -old/x.md')).toBe(true)
+  })
+
+  it('refuses a name with a space right before a separator, by design', () => {
+    // A space then a root reads the same as a command and its path argument
+    // (`cat /draft.md`); losing the rare real name is the accepted cost.
+    expect(isPathCandidate('notes /draft.md')).toBe(false)
   })
 
   it('a trailing separator does not rescue a non-path -- no widening (issue #9409)', () => {
