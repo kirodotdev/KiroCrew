@@ -76,6 +76,11 @@ export interface ChatConfig {
    *  the user's call rather than something a client with no stored config
    *  inherits. Cmd/Ctrl+Shift+V remains the per-paste escape hatch either way. */
   showFullPastes: boolean
+  /** Open tool call rows (the per-call pill and the group row around several
+   *  calls) expanded instead of collapsed. Initial state only: a row the user
+   *  toggled keeps that choice. Default false, so a client with no stored
+   *  choice keeps today's collapsed rows (#18254). */
+  toolCallsStartExpanded: boolean
   /** Opt in to a double-click on one of your own messages opening the editor
    *  (#7911). Default false: the gesture takes the double-click that would
    *  otherwise select a word in the bubble, so it is the user's call rather
@@ -113,7 +118,7 @@ const LS_KEY = 'mc-chat-config'
  *  it. The sidebar's view toggle persists this flag BEFORE creating its first
  *  column, so a deliberate board user always has an explicit `true` stored and
  *  is unaffected by the default. */
-const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', tagColumnsEnabled: false, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, showContextTokens: false, pinLastPrompt: true, hideEmptyFolderBody: false, spellcheck: true, inlineMarkdown: false, showFullPastes: false, doubleClickToEdit: false, dimInactivePanes: true, minimapSide: 'left', messageFontSize: DEFAULT_MESSAGE_FONT_SIZE }
+const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', tagColumnsEnabled: false, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, showContextTokens: false, pinLastPrompt: true, hideEmptyFolderBody: false, spellcheck: true, inlineMarkdown: false, showFullPastes: false, toolCallsStartExpanded: false, doubleClickToEdit: false, dimInactivePanes: true, minimapSide: 'left', messageFontSize: DEFAULT_MESSAGE_FONT_SIZE }
 
 const clampMessageFontSize = (n: number): number =>
   Math.max(MIN_MESSAGE_FONT_SIZE, Math.min(MAX_MESSAGE_FONT_SIZE, Math.round(n)))
@@ -161,6 +166,7 @@ export function loadChatConfig(): ChatConfig {
     // string turn off paste collapsing, which is the main-thread guard for a
     // very large paste.
     if (typeof cfg.showFullPastes !== 'boolean') cfg.showFullPastes = false
+    if (typeof cfg.toolCallsStartExpanded !== 'boolean') cfg.toolCallsStartExpanded = false
     // Coerced, not trusted: a stored non-boolean must not attach the
     // double-click gesture that replaces word selection on the bubble.
     if (typeof cfg.doubleClickToEdit !== 'boolean') cfg.doubleClickToEdit = false

@@ -8,6 +8,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { ApiError } from '../../api/client'
 import { isTerminalApprovalRefusal } from '../../api/apiError'
 import { useRowDisclosure } from './rowDisclosure'
+import { useToolCallsStartExpanded } from '../../hooks/useToolCallsStartExpanded'
 
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
@@ -104,10 +105,15 @@ function derivedHeading(meta?: Record<string, unknown>): string {
   return d.derived ? d.title : ''
 }
 
-/** Collapsible row that wraps tool/thinking/permission messages — always collapsed unless autoExpand. */
+/** Collapsible row that wraps tool/thinking/permission messages — collapsed unless autoExpand or the
+ *  "Tool calls start expanded" chat setting is on. */
 const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExpand, disclosureKey, hasPermission, isRunning, children, permissionMeta, permissionMetas, pendingPermCount, onApprove, onApproveBatch, canTrust, onViewActivity, activityOpen }: CollapsibleToolGroupProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
-  const [expanded, setExpanded] = useRowDisclosure(disclosureKey, !!autoExpand)
+  // The chat setting (#18254) raises the resting state from collapsed to
+  // expanded; liveness (autoExpand) can still open a row on top of it.
+  const startExpanded = useToolCallsStartExpanded()
+  const restingExpanded = !!autoExpand || startExpanded
+  const [expanded, setExpanded] = useRowDisclosure(disclosureKey, restingExpanded)
   const userToggled = useRef(false)
   const buttonsRef = useRef<HTMLDivElement | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -115,7 +121,14 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExp
   const [failure, setFailure] = useState<{ terminal: boolean; message: string; attempted: string } | null>(null)
   const needsAttention = !!hasPermission && !localResolved
 
-  useEffect(() => { if (!userToggled.current) setExpanded(!!autoExpand) }, [autoExpand, setExpanded])
+  // Skip the first run: on mount the disclosure already starts from
+  // `restingExpanded` (the fallback above), and writing it here would overwrite
+  // a choice the store kept for this row while it was virtualised out.
+  const restingMounted = useRef(false)
+  useEffect(() => {
+    if (!restingMounted.current) { restingMounted.current = true; return }
+    if (!userToggled.current) setExpanded(restingExpanded)
+  }, [restingExpanded, setExpanded])
 
   // Reset approval state when permission props change (new approval arrives)
   useEffect(() => {
@@ -124,12 +137,13 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExp
     setFailure(null)
   }, [hasPermission, pendingPermCount])
 
-  // Auto-collapse when tools finish running (unless user manually toggled)
+  // Return to the resting state when tools finish running (unless user manually
+  // toggled): collapsed by default, still open when the chat setting is on.
   const wasRunning = useRef(false)
   useEffect(() => {
-    if (wasRunning.current && !isRunning && !userToggled.current) setExpanded(false)
+    if (wasRunning.current && !isRunning && !userToggled.current) setExpanded(startExpanded)
     wasRunning.current = !!isRunning
-  }, [isRunning, setExpanded])
+  }, [isRunning, setExpanded, startExpanded])
 
   // The 'trust' entries are reachable only from a `canTrust` mount (see the
   // prop's contract above): a mount resolving through the one-shot

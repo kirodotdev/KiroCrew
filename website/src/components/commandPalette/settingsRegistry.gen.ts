@@ -1499,6 +1499,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.tool-calls-start-expanded",
+    "label": "Tool calls start expanded",
+    "labelKey": "pages.settings.chatPanel.tool_calls_start_expanded",
+    "description": "Open tool call rows with their input and output showing, instead of collapsed. Rows you open or close by hand keep your choice.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "transcript"
+    }
+  },
+  {
     "id": "chat.what-enter-does-while-the-agent-is-working",
     "label": "What Enter does while the agent is working",
     "labelKey": "pages.settings.chatPanel.what_enter_does_while_the_agent_is_working",

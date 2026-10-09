@@ -373,6 +373,7 @@ describe('ChatPanel — Messages', () => {
     ['Double-click to edit your messages', 'doubleClickToEdit', true],
     ['Pin the latest turn', 'pinLastPrompt', false],
     ['Simplified Tool Call Names', 'simplifiedToolNames', false],
+    ['Tool calls start expanded', 'toolCallsStartExpanded', true],
     ['Show Context Percentage', 'showContextPct', true],
   ])('stores %s locally when flipped', async (label, key, expected) => {
     wrap()

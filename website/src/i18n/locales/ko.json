@@ -15087,6 +15087,8 @@
         "show_timestamps": "타임스탬프 표시",
         "show_token_usage": "컨텍스트 토큰 표시",
         "simplified_tool_call_names": "간소화된 도구 호출 이름",
+        "tool_calls_start_expanded": "도구 호출을 펼친 상태로 시작",
+        "tool_calls_start_expanded_desc": "도구 호출 행을 접지 않고 입력과 출력이 보이는 상태로 엽니다. 직접 펼치거나 접은 행은 그 선택을 유지합니다.",
         "single_line": "한 줄",
         "spellcheck_input": "메시지 입력 맞춤법 검사",
         "spellcheck_input_desc": "메시지 입력란에서 맞춤법이 틀린 단어를 빨간 물결선으로 표시합니다. 입력하는 동안 빨간 밑줄을 없애려면 끄세요.",

@@ -8846,6 +8846,8 @@
         "show_timestamps": "Show Timestamps",
         "show_token_usage": "Show Context Tokens",
         "simplified_tool_call_names": "Simplified Tool Call Names",
+        "tool_calls_start_expanded": "Tool calls start expanded",
+        "tool_calls_start_expanded_desc": "Open tool call rows with their input and output showing, instead of collapsed. Rows you open or close by hand keep your choice.",
         "soft_stop_budget_seconds": "Soft-stop budget (seconds)",
         "split_view_session_grid": "Split View (Session Grid)",
         "subagents": "Subagents",

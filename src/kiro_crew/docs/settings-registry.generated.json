@@ -839,6 +839,13 @@
       "description": "Immediate mode shows raw chunks as they arrive. Smooth mode buffers and fades text in at a steady pace."
     },
     {
+      "id": "chat.tool-calls-start-expanded",
+      "label": "Tool calls start expanded",
+      "tab": "chat",
+      "route": "/settings/chat/transcript?highlight=chat.tool-calls-start-expanded",
+      "description": "Open tool call rows with their input and output showing, instead of collapsed. Rows you open or close by hand keep your choice."
+    },
+    {
       "id": "chat.what-enter-does-while-the-agent-is-working",
       "label": "What Enter does while the agent is working",
       "tab": "chat",

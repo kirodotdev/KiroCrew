@@ -15559,6 +15559,8 @@
         "show_timestamps": "Mostrar carimbos de hora",
         "show_token_usage": "Mostrar os tokens de contexto",
         "simplified_tool_call_names": "Nomes simplificados de chamadas de ferramenta",
+        "tool_calls_start_expanded": "Mostrar chamadas de ferramentas expandidas",
+        "tool_calls_start_expanded_desc": "Abre as linhas de chamadas de ferramentas com a entrada e a saída visíveis, em vez de recolhidas. As linhas que você abre ou fecha manualmente mantêm sua escolha.",
         "single_line": "Linha única",
         "spellcheck_input": "Verificar a ortografia na entrada de mensagens",
         "spellcheck_input_desc": "Sublinha as palavras com erros de ortografia no campo de mensagem com um traço vermelho ondulado. Desative para parar os sublinhados vermelhos enquanto você digita.",

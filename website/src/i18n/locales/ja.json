@@ -15087,6 +15087,8 @@
         "show_timestamps": "タイムスタンプを表示",
         "show_token_usage": "コンテキストトークンを表示",
         "simplified_tool_call_names": "簡略化されたツール呼び出し名",
+        "tool_calls_start_expanded": "ツール呼び出しを展開して表示",
+        "tool_calls_start_expanded_desc": "ツール呼び出しの行を折りたたまず、入力と出力を表示した状態で開きます。手動で開閉した行はその状態を保ちます。",
         "single_line": "単一行",
         "spellcheck_input": "メッセージ入力のスペルチェック",
         "spellcheck_input_desc": "メッセージ入力欄で、スペルミスのある単語を赤い波線で示します。入力中に赤い下線を消すにはオフにします。",

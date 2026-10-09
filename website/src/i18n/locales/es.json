@@ -15559,6 +15559,8 @@
         "show_timestamps": "Mostrar marcas de tiempo",
         "show_token_usage": "Mostrar los tokens de contexto",
         "simplified_tool_call_names": "Nombres simplificados de las llamadas de herramientas",
+        "tool_calls_start_expanded": "Mostrar las llamadas a herramientas expandidas",
+        "tool_calls_start_expanded_desc": "Abre las filas de llamadas a herramientas con su entrada y salida visibles, en lugar de contraídas. Las filas que abras o cierres a mano conservan tu elección.",
         "single_line": "Una sola línea",
         "spellcheck_input": "Revisar la ortografía en la entrada de mensajes",
         "spellcheck_input_desc": "Subraya las palabras mal escritas en el campo de mensaje con una línea roja ondulada. Desactívalo para dejar de ver los subrayados rojos mientras escribes.",

@@ -15323,6 +15323,8 @@
         "show_timestamps": "Zeitstempel anzeigen",
         "show_token_usage": "Kontext-Token anzeigen",
         "simplified_tool_call_names": "Vereinfachte Werkzeugaufrufnamen",
+        "tool_calls_start_expanded": "Tool-Aufrufe ausgeklappt anzeigen",
+        "tool_calls_start_expanded_desc": "Zeilen von Tool-Aufrufen mit sichtbarer Eingabe und Ausgabe öffnen statt eingeklappt. Zeilen, die du von Hand öffnest oder schließt, behalten deine Wahl.",
         "single_line": "Einzeilig",
         "spellcheck_input": "Nachrichteneingabe auf Rechtschreibung prüfen",
         "spellcheck_input_desc": "Unterstreicht falsch geschriebene Wörter im Nachrichtenfeld mit einer roten Wellenlinie. Schalte es aus, um die roten Unterstreichungen beim Tippen zu stoppen.",

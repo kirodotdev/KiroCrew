@@ -35,6 +35,7 @@ import { isRejectedDecision } from '../../utils/approvalDecision'
 import { selectToolRowIndex, lookupLogEntry, denySiblingContent } from './toolRowIndex'
 import type { ToolActivity } from '../../types'
 import { pathBasename } from '../../utils/pathBasename'
+import { useToolCallsStartExpanded } from '../../hooks/useToolCallsStartExpanded'
 
 // Stable empties for slots with no per-slot state yet. A fresh `[]` per
 // selector run would change identity every dispatch and defeat the
@@ -558,7 +559,13 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
   // (manual toggle / focus signal) so the panel stays open if the user took
   // explicit control, and only auto-collapse when the approval resolves
   // *and* we were the ones who opened it.
-  const [localExpanded, setLocalExpanded] = useState(() => hasPendingPerm)
+  //
+  // The "Tool calls start expanded" chat setting (#18254) opens every pill on
+  // first render instead. It is the initial value only: a choice the user made
+  // (held by the host's `disclosure`) still wins, and with it on there is no
+  // collapse to return to once an approval resolves.
+  const startExpanded = useToolCallsStartExpanded()
+  const [localExpanded, setLocalExpanded] = useState(() => hasPendingPerm || startExpanded)
   // Disclosure is HOST-OWNED when `disclosure` is supplied. The transcript is
   // virtualised, so this pill is unmounted whenever its row leaves the mounted
   // window, and state kept only here dies with it. `undefined` means the host
@@ -578,15 +585,16 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
     const key = disclosureKeyRef.current
     if (notify && key) notify(key, next)
   }, [])
-  const [pendingAutoExpand, setPendingAutoExpand] = useState(() => hasPendingPerm)
+  const [pendingAutoExpand, setPendingAutoExpand] = useState(() => hasPendingPerm && !startExpanded)
   const prevPendingRef = useRef(hasPendingPerm)
   useEffect(() => {
     const wasPending = prevPendingRef.current
     prevPendingRef.current = hasPendingPerm
     if (hasPendingPerm && !wasPending) {
-      // Approval just became pending → auto-expand
+      // Approval just became pending → auto-expand. Only mark it as ours to
+      // undo when the row would otherwise rest collapsed.
       applyExpanded(true)
-      setPendingAutoExpand(true)
+      setPendingAutoExpand(!startExpanded)
     } else if (!hasPendingPerm && wasPending && pendingAutoExpand) {
       // Approval just resolved (approved/rejected/cancelled) and the user
       // didn't take over → auto-collapse. Defer to the next animation frame
@@ -601,7 +609,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
       })
       return () => cancelAnimationFrame(raf)
     }
-  }, [hasPendingPerm, pendingAutoExpand, applyExpanded])
+  }, [hasPendingPerm, pendingAutoExpand, applyExpanded, startExpanded])
 
   const containerRef = useRef<HTMLDivElement>(null)
 

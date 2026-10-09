@@ -15087,6 +15087,8 @@
         "show_timestamps": "显示时间戳",
         "show_token_usage": "显示上下文令牌",
         "simplified_tool_call_names": "简化工具调用名称",
+        "tool_calls_start_expanded": "工具调用默认展开",
+        "tool_calls_start_expanded_desc": "工具调用行打开时直接显示输入和输出，而不是折叠。你手动展开或折叠的行会保留你的选择。",
         "single_line": "单行",
         "spellcheck_input": "检查消息输入的拼写",
         "spellcheck_input_desc": "在消息输入框中用红色波浪线标出拼写有误的词。想在输入时去掉红色下划线就把它关掉。",
