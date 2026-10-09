@@ -10997,7 +10997,8 @@
         "wait_status": "অপেক্ষমাণ",
         "ask_wait_status": "তোমার উত্তরের অপেক্ষায়",
         "blocked_by_security_policy": "নিরাপত্তা নীতি দ্বারা অবরুদ্ধ",
-        "end_wait_failed": "অপেক্ষা শেষ করা যায়নি"
+        "end_wait_failed": "অপেক্ষা শেষ করা যায়নি",
+        "tip_cut_hint": "বাকিটা দেখতে ধাপটি খোলো"
       },
       "toolDetails": {
         "auto": "স্বয়ংক্রিয়",

@@ -11159,7 +11159,8 @@
         "wait_status": "In attesa",
         "ask_wait_status": "In attesa della tua risposta",
         "blocked_by_security_policy": "Bloccato dalla policy di sicurezza",
-        "end_wait_failed": "Impossibile terminare l’attesa"
+        "end_wait_failed": "Impossibile terminare l’attesa",
+        "tip_cut_hint": "Apri il passaggio per vedere il resto"
       },
       "toolDetails": {
         "auto": "Automatico",

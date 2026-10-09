@@ -10835,7 +10835,8 @@
         "ask_answered_other": "질문 {{count}}개에 답변했습니다",
         "wait_status": "대기 중",
         "ask_wait_status": "답변을 기다리고 있습니다",
-        "end_wait_failed": "대기를 종료할 수 없습니다"
+        "end_wait_failed": "대기를 종료할 수 없습니다",
+        "tip_cut_hint": "단계를 열어 나머지를 확인하세요"
       },
       "toolDetails": {
         "auto": "자동",

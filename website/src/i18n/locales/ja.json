@@ -10835,7 +10835,8 @@
         "ask_answered_other": "{{count}} 件の質問に回答しました",
         "wait_status": "待機中",
         "ask_wait_status": "回答を待っています",
-        "end_wait_failed": "待機を終了できませんでした"
+        "end_wait_failed": "待機を終了できませんでした",
+        "tip_cut_hint": "ステップを開くと残りを表示できます"
       },
       "toolDetails": {
         "auto": "自動",

@@ -4679,7 +4679,8 @@
         "ask_answered_other": "You answered {{count}} questions",
         "wait_status": "Waiting",
         "ask_wait_status": "Waiting for your answer",
-        "end_wait_failed": "Couldn't end the wait"
+        "end_wait_failed": "Couldn't end the wait",
+        "tip_cut_hint": "Open the step to see the rest"
       },
       "sessionSummary": {
         "empty_body": "A summary is written when a turn finishes. Send a message to get one for this session.",

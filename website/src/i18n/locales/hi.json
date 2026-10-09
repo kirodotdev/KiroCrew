@@ -10997,7 +10997,8 @@
         "wait_status": "प्रतीक्षा में",
         "ask_wait_status": "तुम्हारे उत्तर की प्रतीक्षा में",
         "blocked_by_security_policy": "सुरक्षा नीति द्वारा अवरुद्ध",
-        "end_wait_failed": "प्रतीक्षा खत्म नहीं की जा सकी"
+        "end_wait_failed": "प्रतीक्षा खत्म नहीं की जा सकी",
+        "tip_cut_hint": "बाकी देखने के लिए स्टेप खोलो"
       },
       "toolDetails": {
         "auto": "स्वतः",

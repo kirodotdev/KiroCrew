@@ -10997,7 +10997,8 @@
         "wait_status": "Wartet",
         "ask_wait_status": "Wartet auf deine Antwort",
         "blocked_by_security_policy": "Durch Sicherheitsrichtlinie blockiert",
-        "end_wait_failed": "Das Warten konnte nicht beendet werden"
+        "end_wait_failed": "Das Warten konnte nicht beendet werden",
+        "tip_cut_hint": "Öffne den Schritt, um den Rest zu sehen"
       },
       "toolDetails": {
         "auto": "Automatisch",

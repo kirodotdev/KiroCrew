@@ -22,6 +22,16 @@ if (typeof globalThis.ResizeObserver === 'undefined') {
 
 beforeEach(() => { localStorage.clear() })
 
+/** The verbatim text the pill's hover bubble carries. Focus opens it
+ *  synchronously (no intent timer); the formatted shell grid is aria-hidden,
+ *  so the verbatim copy is its sr-only span. */
+function pillTipText(): string | null {
+  fireEvent.focus(screen.getByRole('button', { name: /Show details/i }))
+  const tip = screen.queryByRole('tooltip')
+  if (!tip) return null
+  return tip.querySelector('.sr-only')?.textContent ?? tip.textContent
+}
+
 function toolMsg(overrides: Partial<ChatMessage> = {}): ChatMessage {
   return { role: 'tool', content: '🔧 Running: echo hello', cls: '', meta: { tool_call_id: 'tc_1', purpose: 'Say hello' }, ...overrides }
 }
@@ -67,7 +77,7 @@ describe('ToolCallLine simplifiedToolNames', () => {
     // A lone `echo` is the Print action (utils/toolCallTitle); the raw command
     // stays reachable from the pill's tooltip and the expanded chip.
     expect(screen.getByText('Print')).toBeTruthy()
-    expect(screen.getByRole('button', { name: /Show details/i }).getAttribute('title')).toBe('echo hello')
+    expect(pillTipText()).toBe('echo hello')
   })
 
   it('substitutes the command digest for a purpose-less shell label that does not parse', () => {
@@ -219,7 +229,7 @@ describe('ToolCallLine simplifiedToolNames', () => {
     renderWithProviders(<ToolCallLine message={msg} running={false} />, { store })
     const pill = screen.getByText(/^python3 ledger\.py ticket-log --text "x+…$/)
     expect(pill.textContent?.length).toBeLessThanOrEqual(81)
-    expect(screen.getByRole('button', { name: /Show details/i }).getAttribute('title')).toBe(cmd)
+    expect(pillTipText()).toBe(cmd)
     expect(screen.queryByText('--text, x…')).toBeNull()
   })
 

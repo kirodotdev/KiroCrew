@@ -56,11 +56,12 @@ export interface TipPos {
    *  top. `below` puts its top edge 8px under the anchor's bottom -- for an
    *  anchor in the top bar, where "above" is off-screen. */
   placement?: TipPlacement
-  /** Where a `below` bubble goes instead when it does not fit under the anchor
-   *  inside the viewport, or would cross `floor`: the `above` position (first
-   *  fragment, boundary lift). Set by `flow` placement only — an explicit
-   *  `below` has no above to go to (its anchor is in the top bar) and is
-   *  clamped instead. */
+  /** The opposite-side candidate: a default/explicit `above` carries the
+   *  anchor's bounding-box `below` position for viewport fitting. A `flow`
+   *  `below` carries `above` (first fragment, boundary lift) when it would
+   *  cross the viewport bottom or `floor`. A `flow` `above` has no candidate
+   *  below, to spare the following prose. An explicit `below` has no above
+   *  to go to (its anchor is in the top bar) and is clamped instead. */
   flip?: { top: number; left: number }
   /** The bottom edge a `below` bubble must stay inside: a flow anchor's
    *  container bottom (`flowFloor`) — the message's own box. A bubble that
@@ -325,7 +326,8 @@ export function useInstantTip({ hold = 0, placement = 'above', openOnTap = false
       setTip({ top: b.bottom + 8, left: b.left, placement: side, flip: placement === 'flow' ? above : undefined, floor: placement === 'flow' ? flowFloor(el) : undefined })
       return
     }
-    setTip(above)
+    const b = el.getBoundingClientRect()
+    setTip({ ...above, flip: placement === 'above' ? { top: b.bottom + 8, left: b.left } : undefined })
   }
   const hide = () => {
     openBubbles.delete(entry)
@@ -475,9 +477,13 @@ export function InstantTip({ tip, tipId, className = '', children }: {
   // visible anchor whose left is already off-screen — either way clipping
   // exactly the long labels the tooltip exists to recover. The left floor wins
   // when the bubble is wider than the viewport, so the start of the text always
-  // survives. Vertically for `below`: a chip on the last line of a full-height
-  // pane would open the bubble off the bottom; a flow anchor goes above after
-  // all (its `flip`), an explicit `below` is clamped to the bottom edge.
+  // survives. A default/explicit `above` that crosses the viewport top takes
+  // its `below` candidate if that side has more room. If neither side fits,
+  // clamp on the roomier side, keeping the text's start at least 8px from the
+  // viewport top even when the bubble is taller than the viewport. Flow keeps
+  // its prose-aware placement. Vertically for `below`: a chip on the last line
+  // of a full-height pane would open the bubble off the bottom; a flow anchor
+  // goes above after all (its `flip`), an explicit `below` is clamped to the bottom edge.
   useLayoutEffect(() => {
     setFit(null)
     if (!tip) return
@@ -496,6 +502,13 @@ export function InstantTip({ tip, tipId, className = '', children }: {
         if (tip.flip) { placement = 'above'; top = tip.flip.top; left = tip.flip.left }
         else top = Math.max(8, maxTop)
       }
+    } else if (tip.flip && top - el.offsetHeight < 8) {
+      const belowRoom = window.innerHeight - 8 - tip.flip.top
+      if (belowRoom > top - 8) {
+        placement = 'below'
+        top = Math.max(8, Math.min(tip.flip.top, window.innerHeight - 8 - el.offsetHeight))
+        left = tip.flip.left
+      } else top = el.offsetHeight + 8
     }
     const maxLeft = window.innerWidth - 8 - el.offsetWidth
     left = Math.max(8, Math.min(left, maxLeft))
