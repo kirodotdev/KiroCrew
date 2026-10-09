@@ -26,6 +26,7 @@ import logging
 import os
 import re
 import shutil
+import signal
 import stat
 import subprocess as subprocess_mod
 import sys
@@ -1801,6 +1802,18 @@ def _make_unified_diff(old: str, new: str, path: str, max_len: int = 65536) -> s
     return make_unified_diff(old, new, path, max_len=max_len)
 
 
+def _exit_origin(code: int | None, sent: tuple[int, str] | None) -> str:
+    """Name the signal behind a negative exit code and who sent it."""
+    if code is None or code >= 0:
+        return ""
+    try:
+        name = signal.Signals(-code).name
+    except ValueError:
+        name = f"signal {-code}"
+    who = f"killed by Crew ({sent[1]})" if sent and sent[0] == -code else "external"
+    return f", {name}, {who}"
+
+
 def _launch_tools() -> LaunchTools:
     """The launch tail's collaborators, as THIS module binds them right now.
 
@@ -2039,6 +2052,7 @@ class AcpClient:
         self._spawn_work_dir = str(self._work_dir)
         self._process: asyncio.subprocess.Process | None = None
         self._pid: int | None = None
+        self._kill_sent: tuple[int, str] | None = None  # (signal, reason) we last sent
         # The root's process-start identity, read once at spawn and handed to
         # both the session-file tracker and the identity-bound retirement in
         # _reset_state, so the line written and the line later compared are one
@@ -6084,6 +6098,7 @@ class AcpClient:
         )
         self._process = launched.process
         self._pid = self._process.pid
+        self._kill_sent = None
         self._process_tree_confirmed_dead = False
         # Minted with the process it names, random rather than pid-derived: a
         # pid can be reused by the OS, and the start-time disambiguator is not
@@ -6376,6 +6391,8 @@ class AcpClient:
                 # variant offloads the Windows taskkill spawn to
                 # subprocess_executor so the event loop keeps ticking while
                 # taskkill.exe runs.
+                self._kill_sent = (int(platform_compat.SIGTERM), "stop requested")
+                logger.info("Sending SIGTERM to ACP PID %s (reason: stop requested)", pid)
                 await platform_compat.kill_process_tree_async(pid, platform_compat.SIGTERM)
             except (ProcessLookupError, OSError):
                 pass
@@ -6390,6 +6407,9 @@ class AcpClient:
             except asyncio.TimeoutError:
                 pass
         # Force kill (async variant offloads Windows taskkill).
+        reason = "forced stop" if force else "SIGTERM timed out"
+        self._kill_sent = (int(platform_compat.SIGKILL), reason)
+        logger.info("Sending SIGKILL to ACP PID %s (reason: %s)", pid, reason)
         try:
             await platform_compat.kill_process_tree_async(pid, platform_compat.SIGKILL)
         except (ProcessLookupError, OSError):
@@ -7955,7 +7975,9 @@ class AcpClient:
                     stderr_tail, _ = redact_exfiltration_urls(stderr_tail)
                     stderr_tail, _ = redact_credentials(stderr_tail)
                 detail = f" — {stderr_tail}" if stderr_tail else ""
-                raise AcpError(f"ACP process exited (code={self._process.returncode}){detail}")
+                code = self._process.returncode
+                origin = _exit_origin(code, self._kill_sent)
+                raise AcpError(f"ACP process exited (code={code}{origin}){detail}")
             await asyncio.sleep(0.1)
             return None
 
