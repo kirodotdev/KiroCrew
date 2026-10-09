@@ -498,9 +498,10 @@ class TestStateBounds:
         that the unknown ones belong to the same rotation as the known ones. A loop
         removed while it still owns a notice breaks that: nothing ever takes its notice,
         the store never empties, and every OTHER loop's take keeps reporting a loss --
-        so every gated pull-request watch fires every interval, permanently. Neither
-        loop-removal site clears the stash, and the judge module exposes no cleanup, so
-        the stuck notice is reachable rather than theoretical.
+        so every gated pull-request watch fires every interval, permanently. Removal
+        forgets a loop's own notice, but a loop that merely stops publishing -- paused,
+        or retargeted away from a pull request -- keeps its notice and nothing ever
+        takes it, so the stuck notice is reachable rather than theoretical.
 
         A rotation's worth of takes is the bound: past it, the unknown notices cannot
         still belong to the rotation the reasoning appeals to.
@@ -703,6 +704,198 @@ class TestStateBounds:
         stashed, dropped = judge.take_pr_bodies("victim")
         assert stashed == {"review:R2": "new prose"}
         assert dropped is False, "the publish repaired the loss, so nothing is owed"
+
+    @staticmethod
+    def _two_loops_with_judge_state(loop_a: str, loop_b: str) -> int:
+        """Both loops hold a stash AND a notice, under an owner-unknown loss mid-rotation.
+
+        Seeded directly rather than through the cap, because the cap never leaves a loop
+        holding both at once and a forget must clear whichever the loop has. Returns the
+        dropped total so a test can assert it did not move.
+        """
+        judge._PR_BODIES.clear()
+        judge._PR_BODIES_DROPPED.clear()
+        judge.publish_pr_bodies(loop_a, {"comment:1": "a's prose"})
+        judge.publish_pr_bodies(loop_b, {"comment:1": "b's prose"})
+        judge._PR_BODIES_DROPPED[loop_a] = None
+        judge._PR_BODIES_DROPPED[loop_b] = None
+        judge._PR_BODIES_FORGOTTEN = 1
+        judge._PR_BODIES_FORGOTTEN_TAKES = 3
+        return judge._PR_BODIES_DROPPED_TOTAL
+
+    @staticmethod
+    def _assert_only_a_was_forgotten(loop_a: str, loop_b: str, dropped_total: int) -> None:
+        assert loop_a not in judge._PR_BODIES, "the removed loop's stash is gone"
+        assert loop_a not in judge._PR_BODIES_DROPPED, "and so is its loss notice"
+        assert judge._PR_BODIES[loop_b] == {"comment:1": "b's prose"}, "the other stash stays"
+        assert loop_b in judge._PR_BODIES_DROPPED, "and so does the other notice"
+        assert judge._PR_BODIES_FORGOTTEN == 1, (
+            "the forgotten state answers for a notice whose owner is unknown; a forget "
+            "that names its loop must not spend it"
+        )
+        assert judge._PR_BODIES_FORGOTTEN_TAKES == 3, "nor advance the rotation that ends it"
+        assert judge._PR_BODIES_DROPPED_TOTAL == dropped_total, "a count of losses is history"
+
+    def test_forgetting_a_loop_drops_its_stash_and_notice_and_nothing_else(self) -> None:
+        """The remover knows the owner, so it clears exactly that owner's two entries.
+
+        A removed loop never takes again, so its stash would sit in the queue until the
+        cap evicted it and its notice would count as pending until the store rotated
+        past it -- the dropped total overstating real losses along the way. Neither
+        the forgotten state nor its take counter may move: both exist for a notice
+        whose owner is unknown, and a forget that names the loop is the one case that
+        has no use for them.
+        """
+        total = self._two_loops_with_judge_state("loop-a", "loop-b")
+
+        judge.forget_pr_bodies("loop-a")
+
+        self._assert_only_a_was_forgotten("loop-a", "loop-b", total)
+        # A loop this module never heard of, and no loop at all, are both no-ops.
+        judge.forget_pr_bodies("never-published")
+        judge.forget_pr_bodies("")
+        self._assert_only_a_was_forgotten("loop-a", "loop-b", total)
+
+    @staticmethod
+    def _assert_nothing_was_forgotten(loop_a: str, loop_b: str, dropped_total: int) -> None:
+        for key in (loop_a, loop_b):
+            assert key in judge._PR_BODIES, f"{key} keeps its stash"
+            assert key in judge._PR_BODIES_DROPPED, f"{key} keeps its loss notice"
+        assert judge._PR_BODIES_FORGOTTEN == 1
+        assert judge._PR_BODIES_FORGOTTEN_TAKES == 3
+        assert judge._PR_BODIES_DROPPED_TOTAL == dropped_total
+
+    def test_a_committed_removal_forgets_the_loop_s_judge_state(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """Both removers forget once the store has committed: the sync one after its
+        own save, the async one after the write it offloads."""
+
+        async def main() -> None:
+            svc = AutoNudgeService(base_dir=tmp_path)
+            sync_gone = await svc.add("chat-1-1", "watch it", idle_secs=60)
+            async_gone = await svc.add("chat-3-3", "watch this", idle_secs=60)
+            kept = await svc.add("chat-2-2", "watch that", idle_secs=60)
+
+            total = self._two_loops_with_judge_state(sync_gone.id, kept.id)
+            assert svc.remove_sync(sync_gone.id, persist=True) is sync_gone
+            self._assert_only_a_was_forgotten(sync_gone.id, kept.id, total)
+
+            total = self._two_loops_with_judge_state(async_gone.id, kept.id)
+            assert await svc.remove(async_gone.id) is True
+            self._assert_only_a_was_forgotten(async_gone.id, kept.id, total)
+
+        asyncio.run(main())
+
+    def test_a_removal_whose_write_fails_keeps_the_loop_s_judge_state(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Persistence is the commit point, and a loop put back is not gone.
+
+        The async remover pops the row first and writes second; a failed write restores
+        the row. Its stash must come back with it, or the restored loop's next tick
+        takes ``({}, False)`` -- bodyless remarks under a reading still stamped whole,
+        and a QUIET drawn from that withholds a wake that was owed.
+        """
+
+        async def main() -> None:
+            svc = AutoNudgeService(base_dir=tmp_path)
+            stays = await svc.add("chat-1-1", "watch it", idle_secs=60)
+            kept = await svc.add("chat-2-2", "watch that", idle_secs=60)
+            total = self._two_loops_with_judge_state(stays.id, kept.id)
+
+            def _wedged(payload: Any) -> None:
+                raise OSError("disk wedged")
+
+            monkeypatch.setattr(svc, "_write_state", _wedged)
+            with pytest.raises(OSError):
+                await svc.remove(stays.id)
+
+            assert svc._loops[stays.id] is stays, "the failed removal put the row back"
+            self._assert_nothing_was_forgotten(stays.id, kept.id, total)
+
+        asyncio.run(main())
+
+    def test_an_arm_whose_write_fails_keeps_the_displaced_loop_s_judge_state(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A replacing arm pops the loop it displaces before the write that commits it."""
+
+        async def main() -> None:
+            svc = AutoNudgeService(base_dir=tmp_path)
+            existing = await svc.add("chat-1-1", "watch it", idle_secs=60)
+            kept = await svc.add("chat-2-2", "watch that", idle_secs=60)
+            total = self._two_loops_with_judge_state(existing.id, kept.id)
+
+            def _wedged(payload: Any) -> None:
+                raise OSError("disk wedged")
+
+            monkeypatch.setattr(svc, "_write_state", _wedged)
+            with pytest.raises(OSError):
+                await svc.add("chat-1-1", "watch it again", idle_secs=60)
+
+            assert svc._loops[existing.id] is existing, "the displaced row came back"
+            self._assert_nothing_was_forgotten(existing.id, kept.id, total)
+
+        asyncio.run(main())
+
+    def test_a_deferred_replacement_forgets_the_prior_only_when_it_commits(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """The prior row of a deferred replacement can still be rolled back to.
+
+        While the replacement is pending the prior is out of the live map but not out
+        of reach, so its judge state has to wait with it: a rollback restores the prior
+        and forgets the replacement, a commit forgets the prior.
+        """
+        from kiro_crew.monitoring.models import MonitorBudgets, MonitorCreationSurface
+
+        async def replace(svc: AutoNudgeService, prior: NudgeLoop, loop_id: str) -> NudgeLoop:
+            assert prior.monitor is not None
+            return await svc.add_monitor(
+                slot_key=prior.slot_key,
+                kind=prior.monitor.kind,
+                target=prior.monitor.target,
+                objective=prior.monitor.objective,
+                cadence_secs=prior.monitor.cadence_secs,
+                budgets=prior.monitor.budgets,
+                expected_existing_monitor_id=prior.id,
+                expected_existing_config_generation=prior.monitor.config_generation,
+                loop_id=loop_id,
+                defer_replaced_trust_revocation=True,
+                creation_surface=MonitorCreationSurface.DASHBOARD,
+            )
+
+        async def main() -> None:
+            svc = AutoNudgeService(base_dir=tmp_path)
+            prior = await svc.add_monitor(
+                slot_key="chat-1-1",
+                kind="gh-pr",
+                target="acme/widgets#42",
+                objective="review_ready",
+                cadence_secs=60,
+                budgets=MonitorBudgets(max_runtime_secs=600),
+                creation_surface=MonitorCreationSurface.DASHBOARD,
+            )
+            kept = await svc.add("chat-2-2", "watch that", idle_secs=60)
+
+            # Rolled back: the prior returns with its state, the replacement is gone.
+            total = self._two_loops_with_judge_state(prior.id, kept.id)
+            await replace(svc, prior, "rolled-back")
+            self._assert_nothing_was_forgotten(prior.id, kept.id, total)
+            judge.publish_pr_bodies("rolled-back", {"comment:1": "never read"})
+            assert await svc.rollback_monitor_replacement("rolled-back") is True
+            assert prior.id in svc._loops, "the prior row is live again"
+            self._assert_nothing_was_forgotten(prior.id, kept.id, total)
+            assert "rolled-back" not in judge._PR_BODIES, "the replacement's stash went"
+
+            # Committed: now the prior is gone for good, and so is its state.
+            total = self._two_loops_with_judge_state(prior.id, kept.id)
+            await replace(svc, prior, "committed")
+            svc.commit_monitor_replacement("committed")
+            self._assert_only_a_was_forgotten(prior.id, kept.id, total)
+
+        asyncio.run(main())
 
     def test_state_fits_the_ceiling_and_drops_oldest_first(self) -> None:
         evidence = [

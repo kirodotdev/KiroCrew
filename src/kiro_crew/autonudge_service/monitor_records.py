@@ -333,6 +333,8 @@ async def rollback_monitor_replacement(self: AutoNudgeService, loop_id: str) -> 
     ``False`` means another mutation already consumed the pending replacement,
     so the rollback deliberately leaves that newer state untouched.
     """
+    from kiro_crew import autonudge_judge as _judge
+
     removed: NudgeLoop | None = None
     prior: NudgeLoop | None = None
     async with _maintenance_lock(self._base_dir):
@@ -366,6 +368,11 @@ async def rollback_monitor_replacement(self: AutoNudgeService, loop_id: str) -> 
                 )
                 raise
             removed = self.remove_sync(loop_id, persist=False, emit=False)
+            # The snapshot above is the commit: the failed row is out of the store
+            # for good, so its judge stash and loss notice go with it. Its self-arm
+            # entry is the authorizer's to withdraw, so the shared hook that pairs
+            # the two does not run here and the forget is spelled out.
+            _judge.forget_pr_bodies(loop_id)
             if prior is not None:
                 self._loops[prior.id] = prior
                 if restore_prior_provider_credentials:

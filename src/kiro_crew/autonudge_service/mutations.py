@@ -1255,8 +1255,21 @@ def _revoke_self_arm_for(self: AutoNudgeService, loop: NudgeLoop) -> None:
     exists to defeat. Revocation therefore keys on the one fact the store
     cannot forge: the loop is being removed. A loop with no entry costs one
     offloaded read (``forget_self_arm`` writes only when it deletes).
+
+    The judge's per-loop remark stash and loss notice go here too, for the
+    same reason this is where trust goes: every caller reaches this line only
+    AFTER the store committed the removal, and a rollback that puts a loop
+    back never does. Forgetting at the ``_loops.pop`` instead would strip a
+    restored loop of a stash its next tick still owes a fire for, and read
+    the missing prose as a whole reading. The owner is known here, so only
+    the loop-id-keyed judge state goes; the judge's forgotten state and its
+    take counter exist for a notice whose owner is NOT known and stay as
+    they are.
     """
+    from kiro_crew import autonudge_judge as judge
+
     self._revoke_self_arm(loop.id)
+    judge.forget_pr_bodies(loop.id)
 
 
 def _revoke_self_arm(loop_id: str) -> None:
