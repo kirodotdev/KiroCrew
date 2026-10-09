@@ -2,6 +2,182 @@
 
 All notable changes to KiroCrew are documented in this file.
 
+## [0.9.0] - 2026-10-09
+
+Crewmates become colleagues you can check on at a glance. Opening one greets you
+with where its work stands, a profile card holds its permission, model and
+schedules, and in preview each crewmate gets a dashboard page read from its own
+record. The composer warns before a prompt outgrows the model, the sidebar hides
+and tidies what you do not need, remote crews open as live windows onto the
+other machine, and the Usage tab estimates Kiro tokens and the day your credits
+run out.
+
+### Crewmates you can read at a glance
+
+- **A crewmate greets you on open**: opening a crewmate on the Crewmates page
+  shows a card with its goal, what is finished, running or waiting on you and
+  one next step, or after six idle hours the goals it left open and its recent
+  sessions, without spending a chat turn.
+- **A profile behind the name**: the pill at the top of a crewmate's thread says
+  what it is doing now and opens a Profile card with its memory, workspace and
+  notes, its own Permission, Model and Reasoning effort, a Schedules tab for
+  what wakes it and a Sessions tab for the work it drives.
+- **Switch crewmates from the header**: with a thread open the roster folds
+  into a switcher of faces in the thread header, whose Show the full roster
+  action brings the column back, and the roster lists only crewmates you
+  created, chatted with, starred or set as the default.
+
+### A dashboard for every crewmate (Preview)
+
+- **Twelve pages to choose from**: with Settings → Developer → Feature Previews
+  → Dynamic Dashboard on, a crewmate's side panel opens a Dashboard tab that
+  shows a project report by default, and you ask the crewmate in chat for
+  another shipped page such as a standup, a roadmap or a kanban of its work.
+- **Numbers from the record**: every figure is read from the crewmate's crew
+  log, a cost nobody measured shows a dash rather than 0, and a value the
+  crewmate wrote itself is tagged crewmate wrote this.
+- **Cards for every session**: the same preview adds a status row above the
+  composer and an All Dashboards page, and its Automatic cards for all sessions
+  switch keeps a summary of each session's recent work and next steps.
+
+### A composer that knows its limits
+
+- **Context window warning**: the composer warns when a prompt nears or passes
+  the model's context window, and a send over the limit is held until you send
+  it a second time.
+- **Style Markdown While Typing**: Settings → Chat → Composer draws bold,
+  italic, strikethrough and inline code as you type and continues a list on
+  the next line; it is off by default because it switches to a rich-text input
+  that is still in beta.
+- **Faster ways in**: drag a file or folder row from the Files tab onto the
+  composer to mention it where you drop it, press Cmd+Up or Ctrl+Up to edit
+  your last message, and type `! <command>` to review and run a shell command
+  in the session's workspace.
+
+### Messages you can quote, widen and hand off
+
+- **Quote a message**: hover a message and choose Quote, or right-click it, to
+  carry the whole message into your next send as a quote card that jumps back
+  to the original.
+- **Widen a table**: a table in a reply gets a Widen toggle that spreads it into
+  the pane's spare width, and its columns drag wider or narrower from the edge
+  of each header cell.
+- **Add to main chat**: a settled Side Chat answer offers Add to main chat,
+  which puts the answer in the main composer for you to send, and a hung side
+  turn can now be stopped.
+
+### A sidebar that keeps up
+
+- **Hide by status, pause your filters**: the filter menu hides Unread, In
+  progress or Pinned sessions with an eye-slash button, Pause all filters lifts
+  every status chip at once, and a pinned session stays in view while a tag or
+  status filter narrows the rest.
+- **Folders that tidy themselves**: the sidebar header's menu offers Clean up
+  empty folders with a list of what goes first, clicking an open folder's
+  connector line collapses it, and a folder path written in chat becomes a chip
+  that reveals the folder.
+- **Titles and unread marks that help**: a session's row menu offers
+  Regenerate title, and Settings → Notifications → Alerts → Mark sessions unread
+  only when they need you marks a background session unread only when its agent
+  finishes or waits on you.
+
+### Remote crews as live windows (Preview)
+
+- **A window onto the other machine**: with Settings → Developer → Feature
+  Previews → Remote crew sessions on, a peer crew's session opens as a window
+  onto that crew's own transcript, running state and approvals, and New chat on
+  crew creates the session on the peer, so nothing is stored on this machine.
+- **Grouped per machine**: the Sessions list puts Local first, then one
+  collapsible group per crew with an online, reconnecting, error or offline
+  badge.
+- **Old relay chats stay readable**: a chat an older build ran on a peer
+  through the retired turn relay opens read-only.
+
+### Channels that follow your sessions
+
+- **Slack threads for new sessions**: Settings → Channels → Slack → Connect new
+  sessions to Slack automatically gives every new dashboard session a thread in
+  your direct message with the bot on its first message.
+- **Telegram topics and proxies**: Telegram serves each forum topic in a private
+  chat as its own session, and `TELEGRAM_API_BASE_URL` routes the Bot API
+  through a reverse proxy where the public host is blocked.
+- **A busy session queues instead of refusing**: a Telegram or Teams message
+  that reaches a session mid-turn is steered into the turn or queued, and the
+  conversation says which.
+
+### Usage you can plan by
+
+- **Estimated tokens for Kiro**: the Usage tab gains an Estimated Tokens card
+  and an Est. tokens column in Daily History, because Kiro CLI reports credits
+  but no token counts.
+- **When your credits run out**: the Kiro Account modal says under its meter
+  whether your credits last until the reset or, at your current pace, the day
+  they run out.
+- **Credits on more surfaces**: a subagent run reports its credits beside its
+  elapsed time, and a cron run's result carries the same usage footer as a chat
+  turn.
+
+### Schedules, memory and the CLI
+
+- **Hand a failed run to the agent**: an expanded failed or timed-out run in a
+  job's history on the Schedule page carries a button that opens a chat with
+  that run's trace.
+- **Restore a memory**: the memory records editor offers Restore an earlier
+  version with a Now and After restoring preview, and
+  `kirocrew memory create-store` creates a declared store.
+- **CLI and export additions**: `kirocrew cron add --managed-by` lets a tool own
+  a cron by key, `kirocrew cloud launch` takes `--ami` and `--extra-packages`,
+  and Settings → Import / Export can include persistent chat history in an
+  export.
+
+### Desktop, terminal and voice
+
+- **Terminal settings and keys**: Settings → Display → Terminal gains Cursor
+  style and Reuse the current terminal, Ctrl+` toggles the terminal and
+  Ctrl+Shift+` adds one, and a tab closes when its shell exits.
+- **Copy images, open decks**: copy an image to the clipboard from the image
+  viewer or the desktop app's right-click menu, and a PowerPoint deck opened in
+  the side panel renders as slides when LibreOffice is on the gateway host.
+- **Voice on your terms**: Settings → Voice gains a Use a key to start
+  dictation switch, a microphone level test and a Custom vocabulary list for
+  Amazon Transcribe.
+
+### Look, layout and defaults
+
+- **Translucent panels are opt-in**: Settings → Display → View → Translucent
+  panels shows the top bar, the message box and the search fields as frosted
+  glass, and solid cards are the default.
+- **Settings that moved**: Agent Capabilities is now Customize, Subagent
+  Settings and Warm Pool move to Settings → Agent Harness, Settings → Chat →
+  Advanced → Compaction Time Limit (seconds) is editable, and Settings →
+  Display → Zoom takes an exact percent.
+- **Quieter by default**: a new install starts Settings → Chat → Transcript →
+  Response Verbosity at Answer only, the Ultra level is retired, Settings → Chat
+  → Sessions → Dim Inactive Panes can be turned off, and the project picker
+  gains a Favorites tab.
+
+### Notable fixes
+
+**Chat and sessions.** A channel, cron or subagent turn whose backend lost its
+session reloads it instead of failing, queued messages survive a recycling
+reset, and a stalled sub-agent no longer holds back your messages. Closing a
+busy session from the sidebar asks first, and Back and Forward keep working
+after a session closes. On Windows, a briefly locked file no longer wipes the
+saved context readings of your other tabs.
+
+**Windows and installs.** The Windows command line is read as UTF-8, `.env`
+files and Claude project settings saved with a byte order mark read correctly,
+and one-shot Kiro CLI calls no longer open a console window. The
+installer shows live progress, a Windows installer exit 17 names its cause, and
+an update verifies a rebuilt environment before it drops the backup.
+
+**Security and access.** Every built-in app's write routes accept only the
+dashboard owner, data-home files are created readable by you alone, and agent
+specs that carry projected secrets are written owner-only. An untrusted
+checkout's agent spec hooks no longer reach the turn loop, config-defined git
+hooks are disabled for host-side git, and the dashboard serves its fonts
+locally.
+
 ## [0.8.0] - 2026-09-27
 
 Kiro Crew spends less of your attention. A monitoring loop now screens what it
