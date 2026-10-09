@@ -78,6 +78,7 @@ from typing import List as _List
 from kiro_crew import hooks, pinned_fs, platform_compat
 from kiro_crew.artifact_source import is_verifiable_root
 from kiro_crew.artifact_store import comments as _threads
+from kiro_crew.artifact_store import dashboard_package as _dashboard
 from kiro_crew.artifact_store import records as _records
 from kiro_crew.artifact_store import rules as _rules
 from kiro_crew.artifact_store.comments import (  # noqa: F401 - facade surface
@@ -589,6 +590,22 @@ class ArtifactStore:
         if kind_auto:
             kind = "markdown"
         kind = _validate_kind(_infer_kind(content, source_path, kind))
+        if kind == _dashboard.DASHBOARD_KIND:
+            # A dashboard artifact's content is a LAYOUT PACKAGE, so the write
+            # gate runs here rather than at each caller: every create reaches
+            # this line, and the stored bytes are the canonical form so a later
+            # layout comparison cannot be perturbed by the author's whitespace.
+            #
+            # A live file pointer is refused outright. The store validates what
+            # it writes, but a linked file is read back from disk on every get,
+            # where an edit made outside the store would reach the page as a
+            # package nothing checked.
+            if source_path:
+                raise ArtifactValidationError(
+                    "a dashboard package is store-owned: kind='dashboard' takes no "
+                    "source_path, because a linked file is read back unvalidated"
+                )
+            content = _dashboard.canonical_package_content(content)
         source = _validate_source(source)
         description = _validate_description(description)
         tags_list = _validate_tags(tags)
@@ -1200,6 +1217,42 @@ class ArtifactStore:
                 art.kind_auto = False
             if webapp_metadata is not None:
                 art.webapp_metadata = webapp_metadata
+            # The dashboard write gate. ``art.kind`` is final by here, so this
+            # one block governs every update that lands on a dashboard artifact
+            # -- the dashboard tool path, the browser PATCH and a plain
+            # ``artifact_update`` all arrive through this method -- and decides
+            # three things the generic path cannot:
+            #
+            # 1. the content is a valid package, stored canonically;
+            # 2. a REVERT restores layout only: ``revert_package`` keeps the
+            #    LIVE ``bound_to`` so rolling back past a rebind cannot hand
+            #    this page to the crewmate it used to belong to (values need no
+            #    handling -- they were never in the package);
+            # 3. the version. A dashboard snapshots exactly when the layout
+            #    changed, overriding the caller's ``snapshot`` either way: an
+            #    MCP write defaults it to True and would version every
+            #    no-op recompose, while a browser write defaults it to False
+            #    and would leave a real layout change with no history to
+            #    revert to.
+            if art.kind == _dashboard.DASHBOARD_KIND:
+                if content is None:
+                    if kind_changed:
+                        raise ArtifactValidationError(
+                            "switching an artifact to kind='dashboard' needs the package "
+                            "content in the same write: there is nothing valid to store"
+                        )
+                    # No content, so no layout change, so no version -- this
+                    # also disarms the explicit-Snapshot path below, which would
+                    # otherwise re-version the live package unchanged.
+                    snapshot = False
+                else:
+                    stored_package = self._read_text(self._artifact_dir(slug) / "current.html")
+                    if event_type == "reverted":
+                        content = _dashboard.revert_package(stored_package, content)
+                    else:
+                        content = _dashboard.canonical_package_content(content)
+                    art.content = content
+                    snapshot = _dashboard.layout_changed(stored_package, content)
             art.updated_at = _now_iso()
 
             # Snapshot of current live state (no new content provided).
