@@ -1295,15 +1295,18 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(navigateSpy).not.toHaveBeenCalled()
   })
 
-  it('withholds only the unfed views, Command Center and Artifacts: Dashboard + Files stand, the + menu keeps its dynamic views', async () => {
+  it('withholds only the unfed views and Command Center: Dashboard + Files + Artifacts stand, the + menu keeps its dynamic views', async () => {
     // The set is the contract: every view fed by ChatPage-owned transcript
-    // indexes plus the session Summary (MEMBERS_UNFED_VIEWS), the chat page's
-    // Command Center (the Dashboard tab is the one dashboard entrance here) and
-    // Artifacts — pinned on the chat page, but this page's standing set is
-    // Dashboard + Files. Nothing else: Terminal, Browser, Git, Subagents,
-    // Workflows, the Developer-Mode views and app tabs stay reachable from +.
+    // indexes plus the session Summary (MEMBERS_UNFED_VIEWS) and the chat
+    // page's Command Center (the Dashboard tab is the one dashboard entrance
+    // here). Nothing else: Artifacts stands (withholding the view also
+    // withholds every artifact document tab, which left a crewmate's
+    // artifacts unopenable on this page, #18320), and Terminal, Browser, Git,
+    // Subagents, Workflows, the Developer-Mode views and app tabs stay
+    // reachable from +.
     expect([...MEMBERS_UNFED_VIEWS].sort()).toEqual(['changes', 'issues', 'links', 'pins', 'summary'])
-    expect([...MEMBERS_WITHHELD_VIEWS].sort()).toEqual([...MEMBERS_UNFED_VIEWS, 'command-center', 'artifacts'].sort())
+    expect([...MEMBERS_WITHHELD_VIEWS].sort()).toEqual([...MEMBERS_UNFED_VIEWS, 'command-center'].sort())
+    expect(MEMBERS_WITHHELD_VIEWS).not.toContain('artifacts')
     expect(MEMBERS_WITHHELD_VIEWS).not.toContain('terminal')
     expect(MEMBERS_WITHHELD_VIEWS).not.toContain('app')
     expect(MEMBERS_WITHHELD_VIEWS).not.toContain('side')
@@ -1323,8 +1326,9 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     act(() => {
       store.dispatch(sseSlots([{ key: 'member-oncall', mode: 'member', running: false, messages: 0 }] as never))
     })
-    // Standing tabs: Dashboard (leading) + Files (pinned) — no Artifacts, no Changes.
-    expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Dashboard', 'Files'])
+    // Standing tabs: Dashboard (leading) + the chat panel's pinned Artifacts and
+    // Files, in the chat page's own order — no Changes.
+    expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Dashboard', 'Artifacts', 'Files'])
     fireEvent.pointerDown(
       screen.getByRole('button', { name: 'Open side panel tab' }),
       { button: 0, ctrlKey: false, pointerType: 'mouse' },
@@ -1333,7 +1337,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     for (const name of ['Side Chat', 'Terminal', 'Browser', 'Git', 'Subagents', 'Workflows']) {
       expect(within(menu).getByRole('menuitem', { name })).toBeInTheDocument()
     }
-    for (const name of ['Pins', 'Issues', 'Links', 'Summary', 'Artifacts', 'Changes', 'Command Center']) {
+    for (const name of ['Pins', 'Issues', 'Links', 'Summary', 'Changes', 'Command Center']) {
       expect(within(menu).queryByRole('menuitem', { name })).toBeNull()
     }
   })

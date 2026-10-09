@@ -277,21 +277,24 @@ export const CREW_PANEL_TAB_IDS: readonly string[] = [CREW_DASHBOARD_TAB_ID]
  *  generic chat session summary would be a third, unrelated summary. Exported so the test pins the set. */
 export const MEMBERS_UNFED_VIEWS: readonly ViewKind[] = [...CHAT_TRANSCRIPT_VIEWS, 'summary']
 /** Everything this page withholds once the thread is confirmed. The rule: the
- *  STANDING tabs here are Dashboard (the host-owned leading tab) and Files (the
- *  one pinned view this page keeps); everything the chat page reaches through
- *  the + menu stays reachable through the + menu here too (Side Chat, Terminal,
- *  Browser, Git, Subagents, Workflows, the Developer-Mode views and any
- *  app-contributed tab), bound to the member's own slot. Withheld, then: the
- *  unfed views above, the chat page's Command Center (the task dashboard lives
- *  in the permanent Dashboard tab, not a second chat view) and Artifacts — a
- *  PINNED standing tab on the chat page, and this page's standing set is
- *  Dashboard + Files, so it is the one withdrawal versus the plain chat panel.
- *  Side chat IS offered — its composer draft lives in the chat-core store
+ *  STANDING tabs here are Dashboard (the host-owned leading tab), Files and
+ *  Artifacts (the chat panel's two pinned views, both slot-fed); everything
+ *  the chat page reaches through the + menu stays reachable through the + menu
+ *  here too (Side Chat, Terminal, Browser, Git, Subagents, Workflows, the
+ *  Developer-Mode views and any app-contributed tab), bound to the member's
+ *  own slot. Withheld, then: the unfed views above and the chat page's Command
+ *  Center (the task dashboard lives in the permanent Dashboard tab, not a
+ *  second chat view). Artifacts was withheld by #16317 to keep the standing
+ *  set at Dashboard + Files; that also withheld every artifact DOCUMENT tab
+ *  (`SidePanel.isWithheld` folds a document into its parent view), so a
+ *  crewmate's artifacts could not be opened on this page at all — not from a
+ *  reply link, not from a list (#18320). A crewmate's output IS largely
+ *  artifacts, so the view stands again. Side chat IS offered — its composer draft lives in the chat-core store
  *  (`sideChatDrafts`, per slot, persisted), so `SidePanel` unmounting the body
  *  on a tab or member switch loses nothing, and the selection toolbar's "Ask
  *  about this" needs the tab as its landing (`openMemberSideChat`); it stays
  *  dynamic, never standing. Exported so the test pins the set. */
-export const MEMBERS_WITHHELD_VIEWS: readonly SidePanelWithholdable[] = [...MEMBERS_UNFED_VIEWS, 'command-center', 'artifacts']
+export const MEMBERS_WITHHELD_VIEWS: readonly SidePanelWithholdable[] = [...MEMBERS_UNFED_VIEWS, 'command-center']
 /** Everything the panel withholds while the thread is UNCONFIRMED: every
  *  classified view, plus Terminal and app tabs. Derived from
  *  `VIEW_DATA_SOURCE` (the exhaustive `Record<ViewKind, …>`) rather than
@@ -1914,9 +1917,8 @@ export default function MembersPage() {
   // extraction, the pins query) — this page has none of those, and an empty
   // Changes chip on the monitoring page would assert "nothing changed" while a
   // member is editing. `summary` is withheld too: Profile Sessions and the generated
-  // Dashboard already own the member-level views. So is the pinned Artifacts tab:
-  // this page's standing tabs are Dashboard + Files only, while every + menu view
-  // stays offered (see MEMBERS_WITHHELD_VIEWS). Until the thread is confirmed, EVERY slot-bound view is
+  // Dashboard already own the member-level views. Files and Artifacts stand, and
+  // every + menu view stays offered (see MEMBERS_WITHHELD_VIEWS). Until the thread is confirmed, EVERY slot-bound view is
   // withheld as well, per the binding rule above — and so is Terminal: while
   // unconfirmed the strip sits in the shared no-slot bucket, so a PTY opened
   // then would be orphaned (live shell, unreachable tab) the moment the
@@ -2119,6 +2121,13 @@ export default function MembersPage() {
   const openFileGuarded = useCallback((...args: Parameters<typeof openFile>) => {
     void openFile(...args)
   }, [openFile])
+  // Same shape for an artifact a crewmate names in its reply: the panel's own
+  // Artifacts opener (a document tab against the DM slot), fire-and-forget
+  // like the file one. Without it the `/artifacts/<slug>` link opened the
+  // standalone view in a new browser tab, out of the DM (#18320).
+  const openArtifactGuarded = useCallback((slug: string) => {
+    void openArtifact(slug)
+  }, [openArtifact])
   // Opening one of the crewmate's sessions leaves `/members` for `/chat` outright, so it
   // destroys the Schedules form as surely as the identity pill does. It is a raw
   // `navigate`, which the leave channel never sees -- only callers that ask reach it --
@@ -4059,6 +4068,7 @@ export default function MembersPage() {
                     openSideChat={openMemberSideChat}
                     threads={threadHooks}
                     onFileOpen={openFileGuarded}
+                    onArtifactOpen={openArtifactGuarded}
                     onSessionOpen={openSessionGuarded}
                     sessions={connected && slotsLoaded ? sessionRoster : undefined}
                     activeSession={activeSlot}

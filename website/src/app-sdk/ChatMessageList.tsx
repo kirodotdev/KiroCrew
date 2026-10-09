@@ -63,6 +63,9 @@ export interface ChatMessageListProps {
    *  (#5400, #5434). */
   canTrust?: boolean
   onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
+  /** Open an artifact link in the host's side panel; see
+   *  `MessageRenderContext.onArtifactOpen`. */
+  onArtifactOpen?: (slug: string) => void
   /** Selection actions offered on assistant text, next to Copy. Host
    *  capabilities, not list behaviour: Quote needs the host's composer, Ask
    *  needs a Side Chat surface the host can bring on screen. Either absent
@@ -169,6 +172,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
   onApproveBatch,
   canTrust,
   onFileOpen,
+  onArtifactOpen,
   onQuote,
   onAsk,
   onQuoteMessage,
@@ -286,6 +290,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
       running,
       key,
       onFileOpen,
+      onArtifactOpen,
       onQuote,
       onAsk,
       onQuoteMessage,
@@ -297,7 +302,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
       row,
     }
     return entry.render(m, ctx)
-  }, [messages, running, contentWidth, onFileOpen, onQuote, onAsk, onQuoteMessage, threads, renderTool, autoDeniedIds, hideCardOwnedOAuth, activeRenderers])
+  }, [messages, running, contentWidth, onFileOpen, onArtifactOpen, onQuote, onAsk, onQuoteMessage, threads, renderTool, autoDeniedIds, hideCardOwnedOAuth, activeRenderers])
 
 
   // Render a TurnItem (single or group)

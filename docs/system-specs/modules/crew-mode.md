@@ -1181,8 +1181,9 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
 crewmate can read and act on; a browser-local list it never sees would promise
 the opposite, so none is offered until that record exists.
 
-The chat SidePanel has two standing entries on this page: the leading
-**Dashboard** tab and pinned **Files**. Dashboard is the crewmate's generated HTML
+The chat SidePanel has three standing entries on this page: the leading
+**Dashboard** tab and the chat panel's two pinned views, **Files** and
+**Artifacts**. Dashboard is the crewmate's generated HTML
 report (`GET /api/members/{slug}/panel?member=<exact-name>`) rendered by
 `CrewDashboardFrame`: the full document fills the tab, minted on mount, with no
 summary card, Contained bar, Expand control, identity row or Command Center
@@ -1210,16 +1211,22 @@ set-up control. That sentence names the crewmate by its display name
 (`displayName`, the page's `crewDisplayName`), falling back to the exact
 `member`; the read itself stays keyed on the raw `member`, so a crewmate shown as
 "Atlas" is not told "atlas has not published". Files is the standard SidePanel browser scoped
-to the workspace rule above. Dashboard and Files are the only STANDING tabs.
+to the workspace rule above. Artifacts is the standard SidePanel artifact list
+fed by the DM slot (`session-artifact-records`): what the crewmate saved or
+emitted as a widget in this thread, plus the library section. It was withheld
+by #16317 to keep the standing set at Dashboard + Files, but `SidePanel`
+folds a document tab into its parent view (`isWithheld`: an `artifact` tab is
+withheld when `artifacts` is), so that choice also made every artifact
+document tab unrenderable here — a crewmate's artifacts could be opened from
+nowhere on this page (#18320). A crewmate's output is largely artifacts, so
+the view stands. Dashboard, Files and Artifacts are the only STANDING tabs.
 Side Chat remains available dynamically through selection Ask and the plus
 menu; it is not a standing entry — and the plus menu keeps every other dynamic
 view the chat page offers (Terminal, Browser, Git, Subagents, Workflows, the
 Developer-Mode Logs / Context / Crew log, app-contributed tabs), bound to the
 member's slot once the thread is confirmed. Withheld outright are the
 transcript-fed views (Changes / Issues / Links / Pins, plus the session
-Summary), the chat page's Command Center, and Artifacts — a pinned standing
-tab on the chat page that has no place in this page's Dashboard + Files set
-(`MEMBERS_WITHHELD_VIEWS`).
+Summary) and the chat page's Command Center (`MEMBERS_WITHHELD_VIEWS`).
 
 SidePanel's resting width on this page is 60% of the row after the live navigation
 rail, clamped so `CHAT_PANE_MIN_W` remains; a persisted user drag wins. The shared
@@ -1669,6 +1676,26 @@ key, so a link naming the thread you are reading is inert. And `onSessionOpen`
 navigates to `/chat?sid=…` — the same primitive the drawer's Driving-sessions
 rows use — because a foreign slot belongs to the chat page with its sidebar,
 history paging and composer; the DM never hosts one in its own pane.
+
+**File and artifact links open in the member's side panel.** A crewmate's
+reply names what it made — a backticked path, a `/artifacts/<slug>` link — and
+both open the way they do on the single-chat page: in the side panel docked to
+this page, as a Files document tab or an Artifacts document tab against the DM
+slot (`usePanelDocumentActions`, the chat page's own implementation, bound to
+`confirmedSlot`; in overlay mode the panel reveals itself after the open). The
+pane never resolves either itself: `ChatPane` takes `onFileOpen` (#9487,
+#14458) and `onArtifactOpen` (#18320) as optional props and hands them to
+`ChatMessageList`, whose per-row `MessageRenderContext` carries them to every
+assistant row — the SDK default and the crewmate bubble both go through
+`renderAssistantBubble`, which passes them to `AssistantMessage` and so to the
+markdown renderer. Capability by omission on both: a host that passes nothing
+gets the renderer's own fallback — a path chip asks the OS to reveal the file,
+an artifact link stays a plain `target="_blank"` anchor to the standalone view
+— which is right for a side chat or an embedded chat and was wrong for the DM,
+where the artifact a crewmate just made opened in another browser tab, or
+nowhere at all when the shell swallows the popup. The split-view pane still passes neither,
+for the reason #3300 records (its dock is `activeSlot`-keyed while pane focus
+is not).
 
 ## Selection: the `select_crew` contract
 

@@ -70,6 +70,12 @@ export interface MessageRenderContext {
   /** Stable React key the list computed for this row. */
   key: string
   onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
+  /** Open an artifact (`/artifacts/<slug>` link in a reply) in the host's side
+   *  panel, the way the main chat does. Absent = the link stays a plain
+   *  `target="_blank"` anchor to the standalone artifact view, which a
+   *  crewmate DM must not do (#18320). Capability by omission, like
+   *  `onFileOpen`. */
+  onArtifactOpen?: (slug: string) => void
   /** Selection actions the host offers on assistant text (see
    *  chat-core/composer/selectionActions). Absent = Copy only. */
   onQuote?: (text: string, rect: DOMRect) => void
@@ -464,6 +470,7 @@ export function renderAssistantBubble(
       showFooter={showFooter}
       slotRunning={ctx.running}
       onFileOpen={ctx.onFileOpen}
+      onArtifactOpen={ctx.onArtifactOpen}
       onQuote={ctx.onQuote}
       onAsk={ctx.onAsk}
       // Session routing, from the host or absent. `MarkdownRenderer` gates on
