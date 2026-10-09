@@ -1598,6 +1598,82 @@ def on_session_released(
     )
 
 
+def on_session_spawned(
+    creator_sid: str,
+    *,
+    creator_slot: str,
+    child_slot: str,
+    on_settled: "Callable[[bool], None] | None" = None,
+) -> None:
+    """Record, on the CREATOR's log, that *creator_slot* created *child_slot*.
+
+    The child has no log yet -- its log is keyed by an ACP session id that only exists
+    after its first turn -- so this is the only durable record of the creating edge
+    before that turn. Without it a gateway restart in between lost the edge for good.
+
+    The creator is the session whose log holds the entry, so the entry names only the
+    child. A creator with no ACP session has no log to write to; ``_handle`` then
+    answers None and nothing is written, which leaves today's in-memory witness as the
+    only record, as before.
+
+    Returns without waiting, and the projection is advanced inside the job AFTER the
+    append succeeds. ``on_settled`` reports the durable outcome the way it does on
+    :func:`on_session_adopted`: called once, off the caller's thread, ``True`` when the
+    entry is on disk and ``False`` when it was given up on or there was no log.
+    """
+    if not creator_sid or not creator_slot or not child_slot or creator_slot == child_slot:
+        if on_settled is not None:
+            on_settled(False)
+        return
+    data: dict[str, Any] = {"child": {"slot": child_slot}}
+
+    settle = _tree_settle_hooks(on_settled)
+
+    def _job() -> None:
+        log = _handle(creator_sid)
+        if log is None:
+            settle.fail()
+            return
+        written = log.append("session/spawned", data, src=_SRC_GATEWAY)
+        settle.wrote()
+        _record_session_tree_spawn(creator_sid, creator_slot, child_slot, written)
+
+    _submit(
+        _job,
+        "appending session/spawned",
+        creator_sid,
+        after=settle.after,
+        on_permanent_drop=settle.fail,
+    )
+
+
+def _record_session_tree_spawn(
+    creator_sid: str, creator_slot: str, child_slot: str, entry: Any
+) -> None:
+    """Fold a just-committed ``session/spawned`` into the in-memory session tree.
+
+    Same contract as :func:`_record_session_tree_decision`: called after the append
+    succeeded, takes ``seq`` and ``time`` from the written line, never raises.
+    """
+    try:
+        from kiro_crew.crew_log.session_tree_projection import record_spawned
+
+        raw = getattr(entry, "time", 0)
+        at = raw if isinstance(raw, int) and not isinstance(raw, bool) else 0
+        raw_seq = getattr(entry, "seq", 0)
+        seq = raw_seq if isinstance(raw_seq, int) and not isinstance(raw_seq, bool) else 0
+        record_spawned(creator_sid, creator_slot, child_slot, at, seq)
+    except Exception:  # pragma: no cover -- defensive; the door guards itself
+        # Rendered text, never ``exc_info``: the caller is the writer job holding the
+        # live handle (see ``_record_session_tree_decision``).
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "session tree projection not advanced for a spawn by %s:\n%s",
+                creator_sid,
+                traceback.format_exc().rstrip(),
+            )
+
+
 def _parent_citation(slot: str, sid: str) -> "dict[str, str]":
     """One ``{slot, sid?}`` citation, or ``{}`` when there is no slot to cite.
 

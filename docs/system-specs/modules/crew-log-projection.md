@@ -1237,7 +1237,10 @@ read again next scan rather than cached.
 
 A record without `parent` never retracts one: a slot whose later logs were opened
 without a `parent` folds to the parent its earlier log recorded. Only
-`session/released` retracts an edge. The tree is keyed by slot and reads `parent.slot` only:
+`session/released` retracts an edge. A `session/spawned` on a CREATOR's log fills a
+child's creating edge only when none of the child's own records names a parent, and
+gives a child with no log yet a node of its own, so a restart between `session_create`
+and the child's first turn keeps the child under its creator (#18341). The tree is keyed by slot and reads `parent.slot` only:
 `parent.sid` on the entry is the creator's ACP session id at the moment of
 creation, an audit citation for a reader of the logs themselves (`crew-log-core.md`
 section 5), and a slot outlives its ACP session, so it is not what a live row
@@ -1321,10 +1324,11 @@ resident (`SessionTreeProjection`), so a poll does not scan. The per-poll lineag
 of `GET /api/sessions/memory` is `ensure_seeded(live_sids)` then `nodes()`, an in-memory
 read; the `SessionTree` scan above runs only as the cold seed when no checkpoint can be
 used. The projection is checkpointed in `session-tree.json` under the store's
-`projections` directory (`CHECKPOINT_VERSION` 4: edges, scans and a root binding; a
+`projections` directory (`CHECKPOINT_VERSION` 5: edges, scans, spawns with their own scan cache, and a root binding; a
 version or root mismatch discards the file and re-seeds). It is kept current by hooks
 rather than by rescans: the emitter's `record_opened` on every `session/opened`, the
-`session/adopted` / `session/released` edge records (`reconcile_edge`), and
+`session/adopted` / `session/released` edge records (`reconcile_edge`), the
+`session/spawned` records (`record_spawned`, re-read by `reconcile_edge` too), and
 `store.remove_unit`'s `forget_unit` / `retract_unit_parent`. It holds at most
 `TREE_UNIT_CAP` units and evicts past it. A seed that raises serves an empty tree,
 fail-soft, and is retried after `SEED_RETRY_COOLDOWN_SECS` (30 s) rather than latched

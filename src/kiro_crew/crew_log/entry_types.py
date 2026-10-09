@@ -810,6 +810,43 @@ _SESSION_TYPES: tuple[EntryType, ...] = (
         ),
     ),
     EntryType(
+        "session/spawned",
+        "This session created another one with session_create or session_fork.",
+        (
+            Field(
+                "child",
+                JSON_OBJECT,
+                required=True,
+                fields=(
+                    Field(
+                        "slot",
+                        JSON_STRING,
+                        required=True,
+                        note=(
+                            "The new session's slot key, minted by the gateway in the same "
+                            "call. The tree's own key, so this is the member a fold reads."
+                        ),
+                    ),
+                ),
+                note=(
+                    "The session this one created. The creator is not named in the "
+                    "entry: it is the session whose log holds it, which the log's own "
+                    "header states."
+                ),
+            ),
+        ),
+        note=(
+            "Recorded on the CREATOR's log at the moment of creation, because the "
+            "child has no log yet: its log is keyed by an ACP session id that only "
+            "exists after its first turn. Without this entry the creating edge lived "
+            "only in gateway memory until that turn, and a restart in between lost it.\n\n"
+            "A fold reads it as the child's creating edge only when none of the "
+            "child's own session/opened entries names a parent. A session/adopted or "
+            "session/released on the child's log still wins over it, the same way they "
+            "win over session/opened.parent."
+        ),
+    ),
+    EntryType(
         "turn/started",
         "A turn was authorized and is about to run.",
         (
