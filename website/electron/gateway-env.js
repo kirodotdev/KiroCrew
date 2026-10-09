@@ -20,6 +20,19 @@ const GATEWAY_UTF8_ENV = Object.freeze({
   PYTHONIOENCODING: "utf-8:backslashreplace",
 });
 
+// CPython honors two inherited roots BEFORE its own layout: PYTHONPATH entries
+// land ahead of the standard library, and PYTHONHOME replaces the install
+// prefix wholesale. For a PACKAGED backend either one means the shipped
+// interpreter imports whatever a development shell happened to export — a
+// checkout's kiro_crew, or a shadowed stdlib module — so the running code
+// silently differs from the bundle that was built, signed, and updated
+// (#17850: an app update then fails saved-prompt document admission because
+// the running gateway no longer matches the shipped backend). A packaged
+// spawn drops both names, case-folded because Windows honors any casing; a
+// source-tree gateway keeps them, because there they are how the checkout
+// under test is found at all.
+const PYTHON_IMPORT_ROOT_NAMES = new Set(["PYTHONPATH", "PYTHONHOME"]);
+
 // Where packaging/build-desktop.sh stages the pinned kiro-cli, relative to the
 // app's resources directory. One spelling shared with the backend's reader
 // (kiro_cli.known_kiro_cli_dirs, via the env var below) and the docs.
@@ -44,13 +57,22 @@ const BUNDLED_KIRO_CLI_PROBE_MS = 10_000;
  * PYTHONIOENCODING=cp1252 on every supported desktop platform.
  *
  * @param {NodeJS.ProcessEnv} baseEnv
+ * @param {boolean} [isPackaged]  A packaged spawn also drops inherited
+ *   PYTHONPATH/PYTHONHOME (any casing), so the shipped backend imports its own
+ *   code rather than a checkout named by a development shell. Source-tree
+ *   launches keep them: there the variables are how the checkout under test is
+ *   found at all.
  * @returns {NodeJS.ProcessEnv}
  */
-function buildGatewayEnvironment(baseEnv) {
-  return {
-    ...baseEnv,
-    ...GATEWAY_UTF8_ENV,
-  };
+function buildGatewayEnvironment(baseEnv, isPackaged = false) {
+  const env = {};
+  for (const [key, value] of Object.entries(baseEnv)) {
+    if (isPackaged && PYTHON_IMPORT_ROOT_NAMES.has(key.toUpperCase())) {
+      continue;
+    }
+    env[key] = value;
+  }
+  return { ...env, ...GATEWAY_UTF8_ENV };
 }
 
 /**

@@ -1351,7 +1351,10 @@ function createGatewaySupervisor({
           path.join(kirocrewDir, "cache", "pycache"),
           app.isPackaged,
         ),
-      }),
+        // Second argument: a packaged spawn drops inherited PYTHONPATH/
+        // PYTHONHOME, so the shipped backend imports its own code rather than
+        // the checkout a dev shell pointed at (see gateway-env.js).
+      }, app.isPackaged),
     });
     gatewayProcess = child;
     gatewayOwnership = "spawned";

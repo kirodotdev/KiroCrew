@@ -47,6 +47,57 @@ test("the gateway UTF-8 contract is explicit and stable", () => {
   });
 });
 
+test("a packaged gateway drops inherited Python import roots; a source tree keeps them", () => {
+  // #17850: launched from a dev shell, a packaged backend inherited PYTHONPATH/
+  // PYTHONHOME and imported the checkout instead of the shipped code, so an app
+  // update ran a gateway that no longer matched its bundle. The packaged spawn
+  // drops both names; a source-tree launch keeps them, because there they are
+  // how the checkout under test is found at all.
+  const inherited = {
+    PATH: "/usr/bin",
+    PYTHONPATH: "/Users/dev/KiroCrew/src",
+    PYTHONHOME: "/Users/dev/KiroCrew/.venv",
+    PYTHONUTF8: "0",
+  };
+
+  const packaged = buildGatewayEnvironment(inherited, true);
+  assert.deepStrictEqual(packaged, {
+    PATH: "/usr/bin",
+    PYTHONUTF8: "1",
+    PYTHONIOENCODING: "utf-8:backslashreplace",
+  });
+
+  const sourceTree = buildGatewayEnvironment(inherited, false);
+  assert.equal(sourceTree.PYTHONPATH, inherited.PYTHONPATH);
+  assert.equal(sourceTree.PYTHONHOME, inherited.PYTHONHOME);
+
+  // The omitted-flag shape is the pre-flag contract: nothing is dropped.
+  assert.equal(buildGatewayEnvironment(inherited).PYTHONPATH, inherited.PYTHONPATH);
+
+  // Electron's own environment is never mutated.
+  assert.equal(inherited.PYTHONPATH, "/Users/dev/KiroCrew/src");
+  assert.equal(inherited.PYTHONHOME, "/Users/dev/KiroCrew/.venv");
+});
+
+test("the import-root strip folds case, because Windows honors any spelling", () => {
+  // Windows environment names are case-insensitive, so a shell that exported
+  // "PythonPath" redirects the packaged interpreter exactly as PYTHONPATH
+  // would; stripping only the uppercase spelling would leave the bypass.
+  const inherited = {
+    Path: String.raw`C:\Windows\System32`,
+    PythonPath: String.raw`D:\checkout\src`,
+    pYtHoNhOmE: String.raw`D:\checkout`,
+  };
+
+  const env = buildGatewayEnvironment(inherited, true);
+
+  assert.deepStrictEqual(env, {
+    Path: inherited.Path,
+    PYTHONUTF8: "1",
+    PYTHONIOENCODING: "utf-8:backslashreplace",
+  });
+});
+
 test("packaged bundles consume shipped bytecode; macOS also forbids writing it", () => {
   const cache = String.raw`C:\Users\test\.kiro\crew\cache\pycache`;
   const posixCache = "/Users/test/.kiro/crew/cache/pycache";
@@ -238,8 +289,9 @@ test("the one desktop gateway spawn uses the hardened environment builder", () =
   assert.equal(gatewaySpawns.length, 1, "expected one owned gateway spawn boundary");
   assert.match(
     supervisor,
-    /env:\s*buildGatewayEnvironment\(\{[\s\S]*?gatewayBytecodeEnvironment\([\s\S]*?\}\),/,
+    /env:\s*buildGatewayEnvironment\(\{[\s\S]*?gatewayBytecodeEnvironment\([\s\S]*?\}, app\.isPackaged\),/,
     "the owned gateway spawn must pass every initial launch and liveness respawn " +
-      "through buildGatewayEnvironment",
+      "through buildGatewayEnvironment, with app.isPackaged so a packaged spawn " +
+      "strips inherited Python import roots",
   );
 });
