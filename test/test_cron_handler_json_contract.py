@@ -21,6 +21,7 @@ both the parse guard and the object-shape guard:
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -356,3 +357,39 @@ async def test_lessons_delete_refuses_selector_shapes_that_collide_with_global()
             )
             assert whitespace_selector.status == 200
             app["state"].lessons.remove.assert_called_once_with("run the gate", "   ", exact=False)
+
+
+# ── A damaged member store answers 503, not 500 ─────────────────────────────
+
+
+async def test_a_damaged_member_store_answers_503_with_its_reason(tmp_path, monkeypatch) -> None:
+    """The lesson handlers' member-store check catches the store's own SQLite errors.
+
+    A member database is opened through ``kiro_crew._sqlite_compat`` (the bundled
+    pysqlite3 where installed), whose exception classes are not the stdlib's. A member
+    file that is not a database answers the check's 503 ``store_unavailable`` with the
+    reason, instead of escaping and making list, create and delete answer a 500.
+    """
+    from kiro_crew import memory_stores
+    from kiro_crew.context import ContextBuilder
+    from kiro_crew.dashboard.handlers import cron as cron_handlers
+    from kiro_crew.vector_memory import read_member_database_identity
+
+    damaged = tmp_path / "memory.db"
+    damaged.write_bytes(b"synthetic bytes that are not a sqlite database " * 64)
+    with pytest.raises(Exception) as opened:
+        read_member_database_identity(damaged)
+
+    async def _ensure_store(_store):
+        raise opened.value  # what ensure_store's V2 arm re-raises
+
+    monkeypatch.setattr(memory_stores, "memory_store_version", lambda _store: 2)
+    monkeypatch.setattr(ContextBuilder, "ensure_store", staticmethod(_ensure_store))
+
+    try:
+        response = await cron_handlers._prepare_member_lesson_store("member-synthetic")
+    except Exception as exc:  # noqa: BLE001 - the escape is what this test pins
+        pytest.fail(f"the store check let {type(exc).__module__}.{type(exc).__name__} escape")
+    assert response is not None and response.status == 503
+    body = json.loads(response.body)
+    assert body == {"error": str(opened.value), "code": "store_unavailable"}

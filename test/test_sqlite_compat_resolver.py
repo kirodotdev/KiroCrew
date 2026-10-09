@@ -29,6 +29,9 @@ IMPORT_SITES = (
     "kiro_crew.portability",
     "kiro_crew.knowledge.store",
     "kiro_crew.knowledge.retrieval",
+    "kiro_crew.metrics.inventory_gauges",
+    "kiro_crew.dashboard.handlers.kiro_usage_api",
+    "kiro_crew.apps.builtins.aws_control.backend.backup",
 )
 
 REPO_SRC = Path(__file__).resolve().parents[1] / "src"
@@ -116,3 +119,31 @@ def test_the_idiom_lives_in_exactly_one_file():
         if pattern.search(path.read_text(encoding="utf-8"))
     )
     assert carriers == ["_sqlite_compat.py"]
+
+
+# Modules that, in the gateway process, open or handle the errors of a database that
+# a resolver-bound connection also opens: memory.db (the V1 store check, and the
+# lesson handlers' member-store check), knowledge.db (the inventory gauge) and
+# kiro-cli's data.sqlite3 (kiro_cli, kiro_prerequisite, the backup's conversation
+# export, the usage API). A stdlib connection there is a second SQLite library with
+# its own lock table, whose close drops the other connections' POSIX locks on the
+# file; a stdlib except clause there does not catch the resolver's error classes.
+SHARED_DATABASE_OPENERS = (
+    "memory_stores.py",
+    "metrics/inventory_gauges.py",
+    "dashboard/handlers/cron.py",
+    "kiro_cli.py",
+    "kiro_prerequisite.py",
+    "apps/builtins/aws_control/backend/backup.py",
+    "dashboard/handlers/kiro_usage_api.py",
+)
+
+
+def test_a_store_database_is_never_opened_with_the_stdlib_driver():
+    stdlib_import = re.compile(r"^\s*(import sqlite3\b|from sqlite3 import)", re.MULTILINE)
+    offenders = [
+        name
+        for name in SHARED_DATABASE_OPENERS
+        if stdlib_import.search((SRC_ROOT / name).read_text(encoding="utf-8"))
+    ]
+    assert offenders == []

@@ -15,7 +15,6 @@ Four layers, mirroring the module's structure:
 
 import json
 import logging
-import sqlite3
 from unittest.mock import patch
 
 from opentelemetry.sdk.metrics import MeterProvider
@@ -430,7 +429,9 @@ def test_knowledge_probe_opens_read_only(tmp_path):
     ``sqlite3.connect`` on the way back out.
     """
     db_path = _make_knowledge_db(tmp_path, 1)
-    real_connect = sqlite3.connect
+    # The gauge's own driver (the shim), which is what its connect goes through.
+    driver = ig.sqlite3
+    real_connect = driver.connect
     refused: list[bool] = []
 
     def _spy(*args, **kwargs):
@@ -443,7 +444,7 @@ def test_knowledge_probe_opens_read_only(tmp_path):
             # accepted by a writable one, with nothing else in the way.
             conn.execute("CREATE TABLE _probe_rw_check (x)")
             refused.append(False)
-        except sqlite3.OperationalError:
+        except driver.OperationalError:
             refused.append(True)
         return conn
 
@@ -451,7 +452,7 @@ def test_knowledge_probe_opens_read_only(tmp_path):
     try:
         with (
             patch("kiro_crew.config.paths.config_dir", return_value=tmp_path),
-            patch.object(sqlite3, "connect", _spy),
+            patch.object(driver, "connect", _spy),
         ):
             assert ig.read_knowledge_documents() == 1, "the probe did not run"
         assert refused == [True], f"the probe's own connection accepted a write: {refused}"

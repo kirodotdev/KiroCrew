@@ -10,6 +10,9 @@ import json
 import logging
 import os
 import stat
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -781,3 +784,69 @@ class TestDefaultStoreStaysReadable:
     def test_reading_the_default_memory_db_is_not_a_blocked_command(self) -> None:
         target = str(Path.home() / ".kiro" / "crew" / MEMORY_DB_FILE)
         assert security.is_sensitive_bash_command(f"cat {target}") is None
+
+
+# A child-process write probe, stdlib only: POSIX locks are per process, so only
+# another process can see whether the store's write lock is still held.
+_WRITE_LOCK_PROBE = textwrap.dedent("""
+    import sqlite3, sys
+    db = sqlite3.connect(sys.argv[1], timeout=0, isolation_level=None)
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        print("ACQUIRED")
+        db.execute("ROLLBACK")
+    except sqlite3.OperationalError as exc:
+        print("LOCKED", exc)
+    """)
+
+
+def _another_process_can_write(database: Path) -> str:
+    result = subprocess.run(
+        [sys.executable, "-c", _WRITE_LOCK_PROBE, str(database)],
+        # The child opens the database by its path; its working directory is the
+        # test's own folder, so nothing it creates lands outside tmp_path.
+        cwd=database.parent,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+    )
+    return (result.stdout or result.stderr).strip()
+
+
+@pytest.mark.skipif(not _IS_POSIX, reason="POSIX fcntl lock semantics")
+class TestTheV1StoreCheckKeepsTheOpenStoresLock:
+    """The V1 check reads memory.db through the SQLite library the store uses.
+
+    A second SQLite library in this process keeps its own lock table, and closing
+    its connection drops every POSIX lock the process holds on the file, so the
+    open store's write lock would vanish for other processes mid-transaction.
+    """
+
+    def test_another_process_still_cannot_write_after_the_check(self, tmp_path: Path) -> None:
+        from kiro_crew.memory_stores import _require_legacy_store_files
+        from kiro_crew.vector_memory import VectorMemoryStore
+
+        target = tmp_path / "notes"
+        target.mkdir()
+        database = target / MEMORY_DB_FILE
+        store = VectorMemoryStore(db_path=database, embedding_dim=8)
+        store.init()
+        assert store.write_episodic(
+            "synthetic episode about the weekly planning review notes",
+            embedding=[1.0, 0, 0, 0, 0, 0, 0, 0],
+            source="user_explicit",
+        )
+        store.db.execute("BEGIN IMMEDIATE")  # a write the store has in progress
+        try:
+            assert _another_process_can_write(database).startswith("LOCKED")
+
+            _require_legacy_store_files("notes", target)
+
+            after = _another_process_can_write(database)
+            assert after.startswith(
+                "LOCKED"
+            ), f"another process took the write lock the store still holds: {after!r}"
+        finally:
+            store.db.execute("ROLLBACK")
+            store.close()

@@ -163,11 +163,13 @@ OSS-CLEAN: opentelemetry (Apache-2.0) + stdlib + first-party helpers only.
 from __future__ import annotations
 
 import logging
-import sqlite3
 import threading
 import time
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Optional
 
+# The knowledge store holds knowledge.db open in this process through the shim; a
+# probe on a second SQLite library would drop that store's locks when it closes.
+from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.metrics.schema import validate_name
 
 if TYPE_CHECKING:  # annotation-only; never imported at runtime

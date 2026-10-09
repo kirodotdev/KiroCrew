@@ -24,8 +24,10 @@ import contextlib
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 import tarfile
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -1088,3 +1090,78 @@ class TestBothChatTablesAreInTheAllowlist:
         """
         assert backup._CONVERSATION_TABLES == ("conversations", "conversations_v2")
         assert _TOKEN_TABLE not in backup._CONVERSATION_TABLES
+
+
+# A WAL reset from a child process, stdlib only: POSIX locks are per process, so only
+# another process (kiro-cli, in production) can see whether this one still holds the
+# export's read lock.
+_WAL_RESET_PROBE = textwrap.dedent("""
+    import sqlite3, sys
+    db = sqlite3.connect(sys.argv[1], timeout=0, isolation_level=None)
+    busy, _log, _done = db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+    print("BUSY" if busy else "RESET")
+    """)
+
+
+def _another_process_resets_the_wal(db: Path) -> str:
+    result = subprocess.run(
+        [sys.executable, "-c", _WAL_RESET_PROBE, str(db)],
+        # The child opens the database by its path; its working directory is the
+        # test's own folder, so nothing it creates lands outside tmp_path.
+        cwd=db.parent,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+    )
+    return (result.stdout or result.stderr).strip()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX fcntl lock semantics")
+class TestTheExportKeepsItsReadLock:
+    """The export's read transaction survives the gateway's other readers of the file.
+
+    The gateway also reads kiro-cli's ``data.sqlite3`` through ``kiro_cli`` (the spawn
+    and prerequisite checks). One SQLite library defers a connection's close while
+    another connection to the same file holds locks; a second library does not, and
+    closing any descriptor drops every POSIX lock this process holds on the file.
+    """
+
+    def test_a_kiro_cli_read_during_the_export_keeps_the_exports_lock(self, tmp_path, monkeypatch):
+        if not backup._CAN_PIN_TRAVERSAL:
+            pytest.skip("sessions export needs descriptor-pinned open; kind is unavailable here")
+        from kiro_crew import kiro_cli
+
+        db = tmp_path / "data.sqlite3"
+        _build_source_db(db, conversation_rows=3)
+        # Committed rows left in the WAL, on a connection kept open so its close does not
+        # fold them: resetting the WAL then needs every reader to be gone.
+        keeper = sqlite3.connect(str(db))
+        keeper.execute("PRAGMA wal_autocheckpoint=0")
+        keeper.executemany(
+            "INSERT INTO conversations_v2 (conversation_id, value) VALUES (?, ?)",
+            [(f"conv-wal-{i}", json.dumps({"turn": i})) for i in range(50)],
+        )
+        keeper.commit()
+        monkeypatch.setattr(backup, "_kiro_cli_conversation_db", lambda: (db, ""))
+        real_copy = backup._copy_table
+        probes: list[str] = []
+
+        def copy_then_read_state(source, target, table):
+            copied = real_copy(source, target, table)
+            if not probes:
+                probes.append(_another_process_resets_the_wal(db))
+                state = kiro_cli._open_state_db_readonly(db)
+                assert state is not None
+                state.execute("SELECT count(*) FROM conversations_v2").fetchone()
+                state.close()
+                probes.append(_another_process_resets_the_wal(db))
+            return copied
+
+        monkeypatch.setattr(backup, "_copy_table", copy_then_read_state)
+        try:
+            with tarfile.open(tmp_path / "out.tar.gz", "w:gz") as tar:
+                backup._export_cli_conversations(tar)
+        finally:
+            keeper.close()
+        assert probes == ["BUSY", "BUSY"], f"kiro-cli could reset the WAL mid-export: {probes}"

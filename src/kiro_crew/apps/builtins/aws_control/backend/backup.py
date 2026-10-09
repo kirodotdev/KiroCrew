@@ -150,7 +150,6 @@ import io
 import json
 import logging
 import os
-import sqlite3
 import stat
 import sys
 import sys as _sys
@@ -165,6 +164,11 @@ from typing import IO, Any, NamedTuple, Optional
 from kiro_crew import hooks
 from kiro_crew import platform_compat as _platform_compat
 from kiro_crew import snapshot
+
+# kiro-cli's data.sqlite3 is also read in this process through the shim (kiro_cli,
+# kiro_prerequisite). One SQLite library keeps the export's read lock when one of
+# those connections closes; a second library's close would drop it.
+from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.apps.builtins.aws_control.backend import accounts as accounts_mod
 from kiro_crew.apps.builtins.aws_control.backend import storage
 from kiro_crew.apps.builtins.aws_control.backend.backup_parts.egress_text import (

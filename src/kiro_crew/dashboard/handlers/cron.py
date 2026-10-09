@@ -2779,8 +2779,9 @@ def _load_workspace_lessons(state: DashboardState, workspace: str) -> list[Lesso
 
 async def _prepare_member_lesson_store(store: str) -> web.Response | None:
     """Prepare V2 before synchronous lesson readers can borrow a handle."""
-    import sqlite3
-
+    # The member database is opened through the shim, so its errors are the shim's
+    # classes; the stdlib ``sqlite3.Error`` would let them escape as a 500.
+    from kiro_crew._sqlite_compat import sqlite3
     from kiro_crew.memory_stores import memory_store_version
 
     try:
