@@ -25,7 +25,6 @@ import CrewAvatarBuilder from '../components/CrewAvatarBuilder'
 import {
   motionsFrom,
   retiredCarryFrom,
-  retiredCueFrom,
   soundsFrom,
   type RetiredCarry,
 } from '../lib/crewAvatarState'
@@ -2607,21 +2606,6 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
               open={avatarBuilderOpen}
               name={editing}
               value={editAvatar}
-              // Read off the SAVED record, which is the only place a served
-              // tier's retired cue still exists: the draft cannot carry one,
-              // because the readers that build it are ghost-gated.
-              retiredCue={retiredCueFrom(editingAgent?.avatar)}
-              // The STORED tier, not the drafted one: a faceless ghost result is
-              // read as "this client cannot see packs" by the backend's carry, so
-              // the builder has to know when that would swallow a tier change.
-              savedPack={packAvatarFrom(editingAgent?.avatar) !== null}
-              // Also the STORED record: an emptied reaction map has to be NAMED
-              // on the wire when the record carries one, and the draft forgets
-              // that after the first Apply lands the empty map.
-              savedReactions={{
-                motions: motionsFrom(editingAgent?.avatar) !== null,
-                sounds: soundsFrom(editingAgent?.avatar) !== null,
-              }}
               onCancel={() => setAvatarBuilderOpen(false)}
               onSave={next => {
                 setEditAvatar(next)

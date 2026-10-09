@@ -25,10 +25,9 @@ import {
 } from '../ui/dialog'
 import ErrorBoundary from '../ErrorBoundary'
 import ErrorNotice from '../ErrorNotice'
-import CrewAvatar, { packAvatarFrom } from '../CrewAvatar'
+import CrewAvatar from '../CrewAvatar'
 import CrewStateAvatar from '../CrewStateAvatar'
 import CrewAvatarBuilder from '../CrewAvatarBuilder'
-import { retiredCueFrom, motionsFrom, soundsFrom } from '../../lib/crewAvatarState'
 import CrewAvatarButton from './CrewAvatarButton'
 import CrewWakeSection from '../CrewWakeSection'
 import CrewWebhookSection from '../CrewWebhookSection'
@@ -500,12 +499,6 @@ export default function CrewEditorDialog({ ctl }: { ctl: CrewEditorController })
             open={avatarBuilderOpen}
             name={editing}
             value={editAvatar}
-            retiredCue={retiredCueFrom(editingAgent?.avatar)}
-            savedPack={packAvatarFrom(editingAgent?.avatar) !== null}
-            savedReactions={{
-              motions: motionsFrom(editingAgent?.avatar) !== null,
-              sounds: soundsFrom(editingAgent?.avatar) !== null,
-            }}
             onCancel={closeAvatarBuilder}
             onSave={applyAvatar}
           />
