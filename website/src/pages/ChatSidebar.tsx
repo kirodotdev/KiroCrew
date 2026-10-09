@@ -1009,8 +1009,8 @@ const SessionRow = memo(function SessionRow({ view, actions }: SessionRowProps) 
         {conductor.orphanOf != null && (
           <span className="inline-flex items-center text-muted shrink-0"
             role="img"
-            aria-label={i18nT('pages.chatSidebar.opened_by_closed_session', { slot: conductor.orphanOf })}
-            title={i18nT('pages.chatSidebar.opened_by_closed_session', { slot: conductor.orphanOf })}
+            aria-label={i18nT('pages.chatSidebar.opened_by_closed_session')}
+            title={i18nT('pages.chatSidebar.opened_by_closed_session')}
             data-orphan-of={conductor.orphanOf}
             data-testid={`conductor-orphan-${rowIdentity}`}>
             <CornerDownRight size={11} className="lucide-inline" aria-hidden="true" />
