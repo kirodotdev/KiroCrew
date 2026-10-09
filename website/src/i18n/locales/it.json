@@ -7847,7 +7847,7 @@
       "answers_set_how_kiro_explains_things_plain_langu": "Le risposte determinano come Kiro spiega le cose — in linguaggio semplice o con dettagli tecnici completi. Salvato su questo dispositivo; modificabile in qualsiasi momento in Impostazioni → Chat.",
       "back": "Indietro",
       "change_anything_later_in_settings": "Puoi modificare tutto più tardi nelle Impostazioni.",
-      "choose_a_color_theme_and_mode_you_can_change_it": "Scegli un tema di colori e una modalità — puoi cambiarli in qualsiasi momento.",
+      "choose_a_color_theme_and_mode_you_can_change_it": "Scegli una modalità, un tema colore e i pannelli traslucidi — puoi cambiarli in qualsiasi momento.",
       "color_theme": "Tema colori",
       "continue": "Continua",
       "couldn_t_save_your_answers_press_next_to_retry_o": "Non è stato possibile salvare le tue risposte — premi Avanti per riprovare, oppure Salta di nuovo per\n            continuare senza salvare.",
@@ -7879,7 +7879,8 @@
       "tech_non_technical": "Non tecnico",
       "tech_somewhat": "In parte",
       "tell_kiro_about_you": "Parla di te a Kiro",
-      "your_role": "Il tuo ruolo"
+      "your_role": "Il tuo ruolo",
+      "translucent_panels_short_desc": "Lascia che il contenuto si veda attraverso la barra in alto e la casella del messaggio, come vetro smerigliato."
     },
     "pastedChip": {
       "collapse_paste": "Comprimi il testo incollato",
@@ -9614,6 +9615,18 @@
     },
     "assistantWelcome": {
       "default_name": "Mate"
+    },
+    "lookPreview": {
+      "session_title": "Configura il progetto",
+      "turn_1_user": "Configura questo progetto ed esegui i test.",
+      "turn_1_assistant": "Ci penso io. Ho trovato `package.json` e tre file di test:\n\n- `src/app.test.ts`\n- `src/api.test.ts`\n- `src/utils.test.ts`\n\nEseguo `npm test` ora…",
+      "turn_2_assistant": "Tutti i 42 test passano. Vuoi che apra una pull request?",
+      "turn_2_user": "Sì, e collega la issue.",
+      "turn_3_assistant": "Fatto. La PR #12 è aperta e collegata a #7. Altro?",
+      "turn_3_user": "Aggiungi anche una voce al CHANGELOG per la correzione.",
+      "turn_4_assistant": "Aggiunta sotto **Unreleased**:\n\n```md\n- fix: retry the token refresh once before signing out\n```\n\nLa metto anche nella PR?",
+      "turn_4_user": "Sì. Poi riassumi cosa è cambiato.",
+      "turn_5_assistant": "Inviato. In breve: un nuovo tentativo attorno al refresh del token, un test di regressione per il percorso di logout e la riga del CHANGELOG. La PR #12 contiene tutte e tre le cose ed è collegata a #7."
     }
   },
   "hooks": {

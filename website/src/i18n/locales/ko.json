@@ -7623,7 +7623,7 @@
       "answers_set_how_kiro_explains_things_plain_langu": "답변에 따라 Kiro의 설명 방식이 쉬운 말 또는 완전한 기술적 설명으로 정해집니다 — 이 기기에 저장되며, 설정 → 채팅에서 언제든지 변경할 수 있습니다.",
       "back": "뒤로",
       "change_anything_later_in_settings": "나중에 설정에서 무엇이든 변경할 수 있습니다.",
-      "choose_a_color_theme_and_mode_you_can_change_it": "색상 테마와 모드를 선택하세요 — 언제든지 변경할 수 있습니다.",
+      "choose_a_color_theme_and_mode_you_can_change_it": "모드, 색상 테마, 반투명 패널을 선택하세요 — 언제든지 바꿀 수 있습니다.",
       "color_theme": "색상 테마",
       "continue": "계속",
       "couldn_t_save_your_answers_press_next_to_retry_o": "답변을 저장하지 못했습니다 — 다시 시도하려면 ‘다음’을, 저장하지 않고 계속하려면\n ‘건너뛰기’를 다시 누르세요.",
@@ -7655,7 +7655,8 @@
       "tech_non_technical": "기술적이지 않음",
       "tech_somewhat": "어느 정도",
       "tell_kiro_about_you": "Kiro에게 자신을 소개하세요",
-      "your_role": "역할"
+      "your_role": "역할",
+      "translucent_panels_short_desc": "상단 바와 메시지 상자를 반투명 유리처럼 만들어 아래 내용이 비쳐 보이게 합니다."
     },
     "pastedChip": {
       "collapse_paste": "붙여넣기 접기",
@@ -9356,6 +9357,18 @@
     },
     "assistantWelcome": {
       "default_name": "Mate"
+    },
+    "lookPreview": {
+      "session_title": "프로젝트 설정",
+      "turn_1_user": "이 프로젝트를 설정하고 테스트를 실행해 줘.",
+      "turn_1_assistant": "진행합니다. `package.json`과 테스트 파일 3개를 찾았습니다:\n\n- `src/app.test.ts`\n- `src/api.test.ts`\n- `src/utils.test.ts`\n\n지금 `npm test`를 실행 중…",
+      "turn_2_assistant": "테스트 42개가 모두 통과했습니다. pull request를 열까요?",
+      "turn_2_user": "응, issue도 연결해 줘.",
+      "turn_3_assistant": "완료했습니다. PR #12를 열고 #7에 연결했습니다. 더 필요한 게 있나요?",
+      "turn_3_user": "이 수정에 대한 CHANGELOG 항목도 추가해 줘.",
+      "turn_4_assistant": "**Unreleased** 아래에 추가했습니다:\n\n```md\n- fix: retry the token refresh once before signing out\n```\n\nPR에도 넣을까요?",
+      "turn_4_user": "응. 그다음 바뀐 내용을 요약해 줘.",
+      "turn_5_assistant": "푸시했습니다. 요약: 토큰 갱신에 재시도 1회, 로그아웃 경로 회귀 테스트, CHANGELOG 한 줄. 세 가지 모두 PR #12에 있고 #7에 연결되어 있습니다."
     }
   },
   "hooks": {

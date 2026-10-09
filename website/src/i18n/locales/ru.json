@@ -7959,7 +7959,7 @@
       "answers_set_how_kiro_explains_things_plain_langu": "Ответы определяют, как Kiro объясняет — простым языком или со всеми техническими деталями. Сохраняется на этом устройстве; изменить можно в любой момент в Настройки → Чат.",
       "back": "Назад",
       "change_anything_later_in_settings": "Всё можно изменить позже в настройках.",
-      "choose_a_color_theme_and_mode_you_can_change_it": "Выберите цветовую тему и режим — их можно изменить в любой момент.",
+      "choose_a_color_theme_and_mode_you_can_change_it": "Выбери режим, цветовую тему и прозрачные панели — это можно изменить в любой момент.",
       "color_theme": "Цветовая тема",
       "continue": "Продолжить",
       "couldn_t_save_your_answers_press_next_to_retry_o": "Не удалось сохранить ответы — нажмите «Далее», чтобы повторить, или снова «Пропустить», чтобы\n            продолжить без сохранения.",
@@ -7991,7 +7991,8 @@
       "tech_non_technical": "Не технический специалист",
       "tech_somewhat": "Немного",
       "tell_kiro_about_you": "Расскажите Kiro о себе",
-      "your_role": "Ваша роль"
+      "your_role": "Ваша роль",
+      "translucent_panels_short_desc": "Пусть содержимое просвечивает через верхнюю панель и поле сообщения, как матовое стекло."
     },
     "pastedChip": {
       "collapse_paste": "Свернуть вставку",
@@ -9743,6 +9744,18 @@
     },
     "assistantWelcome": {
       "default_name": "Mate"
+    },
+    "lookPreview": {
+      "session_title": "Настроить проект",
+      "turn_1_user": "Настрой этот проект и запусти тесты.",
+      "turn_1_assistant": "Делаю. Нашёл `package.json` и три файла тестов:\n\n- `src/app.test.ts`\n- `src/api.test.ts`\n- `src/utils.test.ts`\n\nЗапускаю `npm test`…",
+      "turn_2_assistant": "Все 42 теста проходят. Открыть pull request?",
+      "turn_2_user": "Да, и привяжи issue.",
+      "turn_3_assistant": "Готово. PR #12 открыт и привязан к #7. Что-нибудь ещё?",
+      "turn_3_user": "И добавь запись в CHANGELOG про это исправление.",
+      "turn_4_assistant": "Добавил в **Unreleased**:\n\n```md\n- fix: retry the token refresh once before signing out\n```\n\nДобавить и в PR?",
+      "turn_4_user": "Да. Потом кратко опиши, что изменилось.",
+      "turn_5_assistant": "Отправил. Кратко: одна повторная попытка обновления токена, регрессионный тест для выхода из системы и строка в CHANGELOG. Всё три в PR #12, он привязан к #7."
     }
   },
   "hooks": {

@@ -10,6 +10,8 @@ import type { SessionSummary } from '../../types/sessionSummary'
 import type { DynamicDashboardCard } from '../../types/dynamicDashboard'
 import { getStoredConsent } from '../../utils/themeConsent'
 import { chatSlotDetailPath } from '../chatSlotPaths'
+import { isLookPreviewFrame } from '../../utils/lookPreview'
+import { lookPreviewSlotDetail, lookPreviewSlots } from '../../utils/lookPreviewFixtures'
 import { resolveDefaultMemoryMode } from '../queryClient'
 import { TAB_ID } from '../tabId'
 import type { ClientTransport } from './transport'
@@ -63,7 +65,9 @@ export function createChatEndpoints({ post, put, del, patch, j, jfetch: fetch, s
   }
 
   const slotList = {
-    chatSlots: () => fetch('/api/chat/slots').then(j),
+    // The look-preview frame (utils/lookPreview.ts) shows one demo session in
+    // place of the user's own: fixtures answer both reads below.
+    chatSlots: () => isLookPreviewFrame() ? Promise.resolve(lookPreviewSlots()) : fetch('/api/chat/slots').then(j),
   }
 
   const slots = {
@@ -87,6 +91,7 @@ export function createChatEndpoints({ post, put, del, patch, j, jfetch: fetch, s
       del('/api/chat/slots/' + encodeURIComponent(slot) + '/source-links/' + encodeURIComponent(identity)
         + '?expect=' + encodeURIComponent(expect)).then(j),
     chatSlotDetail: (slot: string, limit?: number, before?: number, signal?: AbortSignal) => {
+      if (isLookPreviewFrame()) return Promise.resolve(lookPreviewSlotDetail())
       const p = new URLSearchParams()
       if (limit) p.set('limit', String(limit))
       if (before !== undefined) p.set('before', String(before))

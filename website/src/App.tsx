@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useRef, createContext, lazy, Suspense, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
+import { isLookPreviewFrame } from './utils/lookPreview'
 import { Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { useAppSelector, useAppDispatch } from './store'
@@ -930,6 +931,8 @@ export default function App() {
     markPrivacyAcked,
   } = useTheme()
   const firstRun = useFirstRunChapters({ onboarded, importOnboarded, privacyAcked, themeBootReady, markOnboarded })
+  // Decided once per document: the URL does not change under a mounted App.
+  const lookPreviewFrame = isLookPreviewFrame()
   const { showAgentImport, showPrivacy, showOnboarding } = firstRun
   // Capture Electron update lifecycle events app-wide so UpdateModal fires on
   // any page, not just after the user has opened Settings > About.
@@ -2301,23 +2304,34 @@ export default function App() {
         </div>
       )}
 
-      {/* Changelog modal */}
-      <ChangelogModal flow={updateFlow} updateAvailable={updateAvailable} />
+      {/* Every surface that opens ITSELF at launch, mounted from one place so
+          the look-preview frame (utils/lookPreview.ts: the scaled dashboard
+          inside the first-run "Pick your look" step) can leave all of them out
+          at once. A launch dialog that mounted inside that picture would be
+          invisible to every test but the one that boots App in frame mode
+          (App.lookPreviewFrame.test.tsx). Add a new auto-opening surface HERE,
+          inside this block, never beside it. */}
+      {!lookPreviewFrame && (
+        <>
+          {/* Changelog modal */}
+          <ChangelogModal flow={updateFlow} updateAvailable={updateAvailable} />
 
-      {/* Updating overlay */}
-      {(updating || showUpdateModal) && <UpdateOverlay onCancel={() => { setUpdating(false); setShowUpdateModal(false) }} />}
-      {/* Both held while What's new is open, so two update dialogs never stack;
-          each takes its turn once What's new closes, with its state intact. */}
-      <UpdateModal held={showChangelog} />
-      {updateAvailable && (
-        <Suspense fallback={null}>
-          <UpdateFoundModal held={showChangelog} />
-        </Suspense>
+          {/* Updating overlay */}
+          {(updating || showUpdateModal) && <UpdateOverlay onCancel={() => { setUpdating(false); setShowUpdateModal(false) }} />}
+          {/* Both held while What's new is open, so two update dialogs never stack;
+              each takes its turn once What's new closes, with its state intact. */}
+          <UpdateModal held={showChangelog} />
+          {updateAvailable && (
+            <Suspense fallback={null}>
+              <UpdateFoundModal held={showChangelog} />
+            </Suspense>
+          )}
+          <StartupVideo startupVideo={startupVideo} />
+          <MobileConnectDialog mobileConnect={mobileConnect} />
+
+          <FirstRunChapters firstRun={firstRun} onboarded={onboarded} privacyAcked={privacyAcked} markOnboarded={markOnboarded} markImportOnboarded={markImportOnboarded} markPrivacyAcked={markPrivacyAcked} />
+        </>
       )}
-      <StartupVideo startupVideo={startupVideo} />
-      <MobileConnectDialog mobileConnect={mobileConnect} />
-
-      <FirstRunChapters firstRun={firstRun} onboarded={onboarded} privacyAcked={privacyAcked} markOnboarded={markOnboarded} markImportOnboarded={markImportOnboarded} markPrivacyAcked={markPrivacyAcked} />
 
       {/* Mobile backdrop — opacity is animated by animateDrawer in lockstep
           with the panel (compositor), so there is no framer fade here; it

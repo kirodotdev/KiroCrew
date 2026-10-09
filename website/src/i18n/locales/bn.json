@@ -7735,7 +7735,7 @@
       "answers_set_how_kiro_explains_things_plain_langu": "উত্তরগুলো ঠিক করে দেয় Kiro কীভাবে ব্যাখ্যা করবে — সাধারণ ভাষায় নাকি সম্পূর্ণ প্রযুক্তিগত বিস্তারিতভাবে। এই ডিভাইসে সংরক্ষিত; যেকোনো সময় সেটিংস → চ্যাট-এ পরিবর্তন করুন।",
       "back": "পেছনে",
       "change_anything_later_in_settings": "পরে Settings থেকে যেকোনো কিছু বদলাতে পারবে।",
-      "choose_a_color_theme_and_mode_you_can_change_it": "একটি রঙের থিম ও মোড বেছে নিন — যেকোনো সময় পরিবর্তন করতে পারবেন।",
+      "choose_a_color_theme_and_mode_you_can_change_it": "একটি মোড, একটি রঙের থিম আর স্বচ্ছ প্যানেল বেছে নাও — যেকোনো সময় বদলানো যায়।",
       "color_theme": "রঙের থিম",
       "continue": "চালিয়ে যান",
       "couldn_t_save_your_answers_press_next_to_retry_o": "আপনার উত্তর সংরক্ষণ করা যায়নি — আবার চেষ্টা করতে পরবর্তী চাপুন, বা সংরক্ষণ ছাড়াই\n            চালিয়ে যেতে আবার বাদ দিন চাপুন।",
@@ -7767,7 +7767,8 @@
       "tech_non_technical": "প্রযুক্তিগত নয়",
       "tech_somewhat": "কিছুটা",
       "tell_kiro_about_you": "Kiro-কে আপনার সম্পর্কে বলুন",
-      "your_role": "আপনার ভূমিকা"
+      "your_role": "আপনার ভূমিকা",
+      "translucent_panels_short_desc": "ওপরের বার আর মেসেজ বক্সের মধ্য দিয়ে কনটেন্ট দেখা যাক, ঘষা কাচের মতো।"
     },
     "pastedChip": {
       "collapse_paste": "পেস্ট সংকুচিত করো",
@@ -9485,6 +9486,18 @@
     },
     "assistantWelcome": {
       "default_name": "Mate"
+    },
+    "lookPreview": {
+      "session_title": "প্রজেক্ট সেট আপ করো",
+      "turn_1_user": "এই প্রজেক্টটা সেট আপ করো আর টেস্ট চালাও।",
+      "turn_1_assistant": "করছি। `package.json` আর তিনটা টেস্ট ফাইল পেয়েছি:\n\n- `src/app.test.ts`\n- `src/api.test.ts`\n- `src/utils.test.ts`\n\nএখন `npm test` চালাচ্ছি…",
+      "turn_2_assistant": "42টা টেস্টই পাস করেছে। একটা pull request খুলব?",
+      "turn_2_user": "হ্যাঁ, আর issue-টা লিংক করে দাও।",
+      "turn_3_assistant": "হয়ে গেছে। PR #12 খোলা আছে আর #7-এর সাথে লিংক করা। আর কিছু?",
+      "turn_3_user": "এই ফিক্সের জন্য একটা CHANGELOG এন্ট্রিও যোগ করো।",
+      "turn_4_assistant": "**Unreleased**-এর নিচে যোগ করেছি:\n\n```md\n- fix: retry the token refresh once before signing out\n```\n\nPR-এও রাখব?",
+      "turn_4_user": "হ্যাঁ। তারপর কী বদলেছে সংক্ষেপে বলো।",
+      "turn_5_assistant": "পুশ করেছি। সংক্ষেপে: টোকেন রিফ্রেশে একবার রিট্রাই, সাইন-আউট পথের জন্য একটা রিগ্রেশন টেস্ট, আর CHANGELOG-এর লাইনটা। তিনটাই PR #12-এ আছে আর সেটা #7-এর সাথে লিংক করা।"
     }
   },
   "hooks": {

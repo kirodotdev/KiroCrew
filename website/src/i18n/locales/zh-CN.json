@@ -7623,7 +7623,7 @@
       "answers_set_how_kiro_explains_things_plain_langu": "回答决定 Kiro 如何讲解 — 通俗语言还是完整\n            技术细节。保存在本设备；可随时在\n            “设置 → 聊天”中更改。",
       "back": "返回",
       "change_anything_later_in_settings": "之后可在设置中随时更改。",
-      "choose_a_color_theme_and_mode_you_can_change_it": "选择配色主题和模式 — 可随时更改。",
+      "choose_a_color_theme_and_mode_you_can_change_it": "选择模式、配色主题和半透明面板 — 可随时更改。",
       "color_theme": "配色主题",
       "continue": "继续",
       "couldn_t_save_your_answers_press_next_to_retry_o": "无法保存你的回答 — 按“下一步”重试，或再次点击“跳过”\n              以不保存继续。",
@@ -7655,7 +7655,8 @@
       "tech_non_technical": "非技术人员",
       "tech_somewhat": "略懂",
       "tell_kiro_about_you": "介绍一下你自己",
-      "your_role": "你的角色"
+      "your_role": "你的角色",
+      "translucent_panels_short_desc": "让内容透过顶栏和消息框显示出来，像磨砂玻璃。"
     },
     "pastedChip": {
       "collapse_paste": "折叠粘贴内容",
@@ -9356,6 +9357,18 @@
     },
     "assistantWelcome": {
       "default_name": "Mate"
+    },
+    "lookPreview": {
+      "session_title": "搭建项目",
+      "turn_1_user": "把这个项目搭起来，然后跑测试。",
+      "turn_1_assistant": "好的。我找到了 `package.json` 和三个测试文件：\n\n- `src/app.test.ts`\n- `src/api.test.ts`\n- `src/utils.test.ts`\n\n正在运行 `npm test`……",
+      "turn_2_assistant": "42 个测试全部通过。要我开一个 pull request 吗？",
+      "turn_2_user": "要，顺便关联那个 issue。",
+      "turn_3_assistant": "搞定。PR #12 已打开并关联到 #7。还有别的吗？",
+      "turn_3_user": "再给这个修复加一条 CHANGELOG。",
+      "turn_4_assistant": "已加到 **Unreleased** 下：\n\n```md\n- fix: retry the token refresh once before signing out\n```\n\n也放进 PR 里吗？",
+      "turn_4_user": "放。然后总结一下改了什么。",
+      "turn_5_assistant": "已推送。简单说：token 刷新加了一次重试，登出路径补了回归测试，还有那条 CHANGELOG。三项都在 PR #12 里，并已关联 #7。"
     }
   },
   "hooks": {

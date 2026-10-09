@@ -7847,7 +7847,7 @@
       "answers_set_how_kiro_explains_things_plain_langu": "Vos réponses déterminent la façon dont Kiro explique les choses — en langage simple ou avec tous les détails techniques. Enregistré sur cet appareil ; modifiable à tout moment dans Paramètres → Chat.",
       "back": "Retour",
       "change_anything_later_in_settings": "Tu pourras tout modifier plus tard dans les Paramètres.",
-      "choose_a_color_theme_and_mode_you_can_change_it": "Choisissez un thème de couleurs et un mode — vous pourrez les changer à tout moment.",
+      "choose_a_color_theme_and_mode_you_can_change_it": "Choisis un mode, un thème de couleurs et des panneaux translucides — modifiable à tout moment.",
       "color_theme": "Thème de couleurs",
       "continue": "Continuer",
       "couldn_t_save_your_answers_press_next_to_retry_o": "Impossible d'enregistrer vos réponses — appuyez sur Suivant pour réessayer, ou sur Ignorer à nouveau pour\n            continuer sans enregistrer.",
@@ -7879,7 +7879,8 @@
       "tech_non_technical": "Non technique",
       "tech_somewhat": "Un peu",
       "tell_kiro_about_you": "Parlez de vous à Kiro",
-      "your_role": "Votre rôle"
+      "your_role": "Votre rôle",
+      "translucent_panels_short_desc": "Laisse le contenu transparaître à travers la barre du haut et la zone de message, comme du verre dépoli."
     },
     "pastedChip": {
       "collapse_paste": "Réduire le contenu collé",
@@ -9614,6 +9615,18 @@
     },
     "assistantWelcome": {
       "default_name": "Mate"
+    },
+    "lookPreview": {
+      "session_title": "Configurer le projet",
+      "turn_1_user": "Configure ce projet et lance les tests.",
+      "turn_1_assistant": "Je m’en occupe. J’ai trouvé `package.json` et trois fichiers de test :\n\n- `src/app.test.ts`\n- `src/api.test.ts`\n- `src/utils.test.ts`\n\nLancement de `npm test`…",
+      "turn_2_assistant": "Les 42 tests passent. Veux-tu que j’ouvre une pull request ?",
+      "turn_2_user": "Oui, et lie l’issue.",
+      "turn_3_assistant": "C’est fait. La PR #12 est ouverte et liée à #7. Autre chose ?",
+      "turn_3_user": "Ajoute aussi une entrée CHANGELOG pour le correctif.",
+      "turn_4_assistant": "Ajoutée sous **Unreleased** :\n\n```md\n- correctif : une nouvelle tentative de rafraîchissement du jeton avant la déconnexion\n```\n\nJe la mets aussi dans la PR ?",
+      "turn_4_user": "Oui. Puis résume ce qui a changé.",
+      "turn_5_assistant": "Poussé. En bref : une nouvelle tentative autour du rafraîchissement du jeton, un test de régression pour la déconnexion et la ligne du CHANGELOG. La PR #12 contient les trois et est liée à #7."
     }
   },
   "hooks": {

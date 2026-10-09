@@ -2921,7 +2921,8 @@
       "role_product_manager": "Product Manager",
       "tech_codes": "I write code",
       "tech_non_technical": "Not technical",
-      "tech_somewhat": "Somewhat"
+      "tech_somewhat": "Somewhat",
+      "translucent_panels_short_desc": "Let content show through the top bar and the message box, like frosted glass."
     },
     "pastedChip": {
       "collapse_paste": "Collapse paste",
@@ -3899,6 +3900,18 @@
     },
     "assistantWelcome": {
       "default_name": "Mate"
+    },
+    "lookPreview": {
+      "session_title": "Set up the project",
+      "turn_1_user": "Set up this project and run the tests.",
+      "turn_1_assistant": "On it. I found `package.json` and three test files:\n\n- `src/app.test.ts`\n- `src/api.test.ts`\n- `src/utils.test.ts`\n\nRunning `npm test` now…",
+      "turn_2_assistant": "All 42 tests pass. Want me to open a pull request?",
+      "turn_2_user": "Yes, and link the issue.",
+      "turn_3_assistant": "Done. PR #12 is open and linked to #7. Anything else?",
+      "turn_3_user": "Also add a CHANGELOG entry for the fix.",
+      "turn_4_assistant": "Added under **Unreleased**:\n\n```md\n- fix: retry the token refresh once before signing out\n```\n\nWant it in the PR too?",
+      "turn_4_user": "Yes. Then summarize what changed.",
+      "turn_5_assistant": "Pushed. In short: one retry around the token refresh, a regression test for the sign-out path, and the CHANGELOG line. PR #12 has all three and is linked to #7."
     }
   },
   "hooks": {

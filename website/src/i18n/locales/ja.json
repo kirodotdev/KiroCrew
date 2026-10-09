@@ -7623,7 +7623,7 @@
       "answers_set_how_kiro_explains_things_plain_langu": "回答は Kiro の説明方法を設定します。平易な言葉か完全な技術詳細か。このデバイスに保存されます。設定 → チャットからいつでも変更できます。",
       "back": "戻る",
       "change_anything_later_in_settings": "設定でいつでも変更できます。",
-      "choose_a_color_theme_and_mode_you_can_change_it": "配色テーマとモードを選択してください。いつでも変更できます。",
+      "choose_a_color_theme_and_mode_you_can_change_it": "モード、カラーテーマ、半透明パネルを選びます — いつでも変更できます。",
       "color_theme": "配色テーマ",
       "continue": "続行",
       "couldn_t_save_your_answers_press_next_to_retry_o": "回答を保存できませんでした。「次へ」を押して再試行するか、「スキップ」を再度押して\n            保存せずに続行してください。",
@@ -7655,7 +7655,8 @@
       "tech_non_technical": "技術的ではない",
       "tech_somewhat": "ある程度",
       "tell_kiro_about_you": "Kiro について教えてください",
-      "your_role": "あなたの役割"
+      "your_role": "あなたの役割",
+      "translucent_panels_short_desc": "上部のバーとメッセージ欄を曇りガラスのようにして、下の内容を透けて見せます。"
     },
     "pastedChip": {
       "collapse_paste": "ペーストを折りたたむ",
@@ -9356,6 +9357,18 @@
     },
     "assistantWelcome": {
       "default_name": "Mate"
+    },
+    "lookPreview": {
+      "session_title": "プロジェクトをセットアップ",
+      "turn_1_user": "このプロジェクトをセットアップして、テストを実行して。",
+      "turn_1_assistant": "了解です。`package.json` とテストファイル 3 件を見つけました：\n\n- `src/app.test.ts`\n- `src/api.test.ts`\n- `src/utils.test.ts`\n\n`npm test` を実行中…",
+      "turn_2_assistant": "42 件のテストがすべて通りました。pull request を開きますか？",
+      "turn_2_user": "はい、issue も紐づけて。",
+      "turn_3_assistant": "完了です。PR #12 を開き、#7 に紐づけました。ほかにありますか？",
+      "turn_3_user": "この修正の CHANGELOG エントリも追加して。",
+      "turn_4_assistant": "**Unreleased** の下に追加しました：\n\n```md\n- fix: retry the token refresh once before signing out\n```\n\nPR にも含めますか？",
+      "turn_4_user": "はい。それから変更点をまとめて。",
+      "turn_5_assistant": "プッシュしました。要点：トークン更新のリトライを 1 回、サインアウト経路の回帰テスト、CHANGELOG の 1 行。3 つとも PR #12 に入り、#7 に紐づいています。"
     }
   },
   "hooks": {

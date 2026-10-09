@@ -7735,7 +7735,7 @@
       "answers_set_how_kiro_explains_things_plain_langu": "उत्तर तय करते हैं कि Kiro चीज़ें कैसे समझाएगा — सरल भाषा में या पूरे तकनीकी विवरण के साथ। इस डिवाइस पर सहेजा जाता है; इसे कभी भी सेटिंग्स → चैट में बदलें।",
       "back": "पीछे",
       "change_anything_later_in_settings": "कुछ भी बाद में सेटिंग्स में बदलें।",
-      "choose_a_color_theme_and_mode_you_can_change_it": "एक रंग थीम और मोड चुनें — आप इसे कभी भी बदल सकते हैं।",
+      "choose_a_color_theme_and_mode_you_can_change_it": "एक मोड, एक रंग थीम और पारभासी पैनल चुनो — तुम इसे कभी भी बदल सकते हो।",
       "color_theme": "रंग थीम",
       "continue": "जारी रखें",
       "couldn_t_save_your_answers_press_next_to_retry_o": "आपके उत्तर सहेजे नहीं जा सके — दोबारा प्रयास करने के लिए “अगला” दबाएँ, या सहेजे बिना\n            आगे बढ़ने के लिए फिर से “छोड़ें” दबाएँ।",
@@ -7767,7 +7767,8 @@
       "tech_non_technical": "तकनीकी नहीं",
       "tech_somewhat": "कुछ-कुछ",
       "tell_kiro_about_you": "Kiro को अपने बारे में बताएँ",
-      "your_role": "आपकी भूमिका"
+      "your_role": "आपकी भूमिका",
+      "translucent_panels_short_desc": "ऊपर की बार और संदेश बॉक्स से सामग्री झलकने दो, धुंधले काँच की तरह।"
     },
     "pastedChip": {
       "collapse_paste": "पेस्ट समेटें",
@@ -9485,6 +9486,18 @@
     },
     "assistantWelcome": {
       "default_name": "Mate"
+    },
+    "lookPreview": {
+      "session_title": "प्रोजेक्ट सेट अप करो",
+      "turn_1_user": "इस प्रोजेक्ट को सेट अप करो और टेस्ट चलाओ।",
+      "turn_1_assistant": "कर रहा हूँ। मुझे `package.json` और तीन टेस्ट फ़ाइलें मिलीं:\n\n- `src/app.test.ts`\n- `src/api.test.ts`\n- `src/utils.test.ts`\n\nअभी `npm test` चला रहा हूँ…",
+      "turn_2_assistant": "सभी 42 टेस्ट पास हो गए। क्या मैं एक pull request खोलूँ?",
+      "turn_2_user": "हाँ, और issue को लिंक कर दो।",
+      "turn_3_assistant": "हो गया। PR #12 खुला है और #7 से लिंक है। और कुछ?",
+      "turn_3_user": "इस फ़िक्स के लिए एक CHANGELOG एंट्री भी जोड़ दो।",
+      "turn_4_assistant": "**Unreleased** के नीचे जोड़ दी:\n\n```md\n- fix: retry the token refresh once before signing out\n```\n\nइसे PR में भी डालूँ?",
+      "turn_4_user": "हाँ। फिर बताओ क्या-क्या बदला।",
+      "turn_5_assistant": "पुश हो गया। संक्षेप में: टोकन रिफ़्रेश पर एक रिट्राई, साइन-आउट पथ के लिए एक रिग्रेशन टेस्ट, और CHANGELOG की लाइन। तीनों PR #12 में हैं और वह #7 से लिंक है।"
     }
   },
   "hooks": {

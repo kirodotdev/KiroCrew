@@ -1,4 +1,5 @@
 import { useEffect, useRef, useCallback } from 'react'
+import { isLookPreviewFrame } from '../utils/lookPreview'
 import { useQueryClient } from '@tanstack/react-query'
 import { useAppDispatch } from '../store'
 import { sseTodoUpdate, sseMcpReportUpdate, sseSlotTitle, triggerRefresh, fetchSlots, remoteSlotRead, sseSubagentStatus, sseSubagentText, type SubagentDetail } from '../store/dashboardSlice'
@@ -214,6 +215,11 @@ export function useWebSocket() {
     // next frame routes normally.
     ws.onmessage = (e) => {
       if (socket.wsRef.current === ws) lastFrameAtRef.current = Date.now()
+      // The look-preview frame (utils/lookPreview.ts) is a still picture of the
+      // product drawn from fixtures: no live frame may repaint it with the
+      // user's real sessions, runs or notices. The socket stays open only so
+      // the frame never shows a disconnected state.
+      if (isLookPreviewFrame()) return
       try {
         const { type, data, msg } = decodeFrame(e.data)
         switch (type) {

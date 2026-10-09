@@ -1,8 +1,13 @@
+// The look-preview frame's fences (utils/lookPreviewBoot.ts). Must stay the
+// very first import: ES modules evaluate in import order, and this has to run
+// before any module -- the base-path shim and the extension root included --
+// touches storage, fetch or a socket.
+import './utils/lookPreviewBoot'
 // Base-path transport shims (sub-path builds only) run before any module that
 // could capture `fetch`. A no-op in the stock build. See ./lib/basePath.ts.
 import './lib/installBasePath'
 // Extension composition root — the one file a downstream edition owns. Imported
-// FIRST (before store/providers/App) so seam registrations run before render.
+// before store/providers/App so seam registrations run before render.
 // Empty in the stock build. See website/src/extensions.ts.
 import './extensions'
 import { startMemoryWatch } from './lib/memoryWatch'
