@@ -105,11 +105,13 @@ export default function MobileConnectModal({
   // desktop nav rail (App.tsx, `focus-chrome-rail`) is a DOM-later z-50 sibling
   // in the shell's stacking context, so it wins the tie and stays clickable —
   // a nav-row click both dismisses (the outside-pointerdown handler above) and
-  // navigates. The DIALOG LAYER sits at z-[65]: ABOVE every piece of chat
+  // navigates. The DIALOG LAYER sits at z-[68]: ABOVE every piece of chat
   // chrome the panel must cover — the sessions flyout (z-[59]), its drawer
   // morph (z-[60]), the rail toggle and focus-peek layers (z-[61]), the
-  // focus-mode rail (inline zIndex 62) and its mac drag strips (inline
-  // zIndex 63) — and BELOW the shell's z-[70] toast/menu band and its z-[100]
+  // focus-mode mac drag strips (inline zIndex 63), workspace fullscreen
+  // (z-[65]) and the focus-mode rail and top bar (TOPBAR_FOCUS_Z, 67), which
+  // is where the rail row that opens this dialog sits while peeked — and
+  // BELOW the shell's z-[70] toast/menu band and its z-[100]
   // full-screen takeovers (the "Installing update…" surface, the update-error
   // and changelog dialogs), which must always paint over an open panel.
   // Modal.tsx's z-[100] is NOT the reference here: Modal portals to
@@ -124,7 +126,7 @@ export default function MobileConnectModal({
         className="fixed inset-0 z-50 bg-bg/80 backdrop-blur-xs animate-rise"
         role="presentation"
       />
-      <div className="fixed inset-0 z-[65] flex items-center justify-center pointer-events-none animate-rise">
+      <div className="fixed inset-0 z-[68] flex items-center justify-center pointer-events-none animate-rise">
         <div
           ref={dialogRef}
           tabIndex={-1}

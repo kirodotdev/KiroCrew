@@ -326,6 +326,7 @@ export default function ComputerUseLiveView() {
     return (
       <button
         className="fixed z-[60] bottom-safe-offset-4 left-safe-offset-4 flex items-center gap-2 px-3 py-2 rounded-full border border-border bg-card shadow-lg hover:bg-bg-hover transition-colors"
+        data-above-workspace-fullscreen
         onClick={() => setPhase('open')}
         aria-label={i18nT('components.computerUseLiveView.show_live_desktop_view')}
         title={i18nT('components.computerUseLiveView.show_live_desktop_view')}
@@ -344,6 +345,7 @@ export default function ComputerUseLiveView() {
   return (
     <div
       className="fixed z-[60] flex flex-col rounded-xl border border-border bg-card shadow-xl overflow-hidden"
+      data-above-workspace-fullscreen
       style={{ left: box.left, top: box.top, width: box.width, height: box.height }}
       role="dialog"
       aria-label={i18nT('components.computerUseLiveView.live_desktop_view')}

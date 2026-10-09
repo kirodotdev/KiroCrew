@@ -1,11 +1,11 @@
 # Smoke: open and close the Activity side panel from the session header. While
-# the panel is closed the header's right end carries an "Open activity panel"
-# button; the panel then mounts beside the transcript (docked right by default)
+# the panel is closed the header's right end carries a "Show side panel"
+# toggle; the panel then mounts beside the transcript (docked right by default)
 # with its tab strip along the top -- the three PINNED views Changes, Artifacts
 # and Files, always present and never closable even when empty (only the active
 # one shows its label, the other two are icon chips), a "+" menu and, at the far
-# right, the panel's own "Close panel" button. That button is the only close:
-# the header button is not rendered while the panel is open. On the seeded
+# right, the panel's own "Hide side panel" toggle. That toggle is the only close:
+# the header toggle is not rendered while the panel is open. On the seeded
 # target the session has no pull requests, so the Changes view is its empty
 # state.
 #
@@ -32,12 +32,12 @@ preconditions:
   start_url: /chat
 steps:
   - You are on the chat page. In the left sidebar's session list click the pinned row titled "Welcome to KiroCrew" (below the "Demos" folder, outside it) so that its conversation opens, with a header bar above the transcript showing that title.  # brand-ok: verbatim seeded session title from the rich fixture
-  - Make sure the Activity panel is open. If nothing is showing to the right of the transcript, click the "Open activity panel" button -- a small panel icon at the right end of that header bar, near the pop-out icon -- once. A panel appears beside the transcript. Do not click anything inside it.
-  - Read the panel's top strip; it has a highlighted tab labelled "Changes", two icon-only tabs beside it, a "+" button and, at its right end, a "Close panel" button (a panel icon). Click "Close panel".
+  - Make sure the Activity panel is open. If nothing is showing to the right of the transcript, click the "Show side panel" button -- the last small panel icon at the right end of that header bar -- once. A panel appears beside the transcript. Do not click anything inside it.
+  - Read the panel's top strip; it has a highlighted tab labelled "Changes", two icon-only tabs beside it, a "+" button and, at its right end, a "Hide side panel" button (a panel icon). Click "Hide side panel".
   - Wait a second.
 expectations:
   - No panel is showing beside the transcript; the conversation fills the width of the main area again.
-  - The "Open activity panel" icon button is back at the right end of the header bar above the transcript.
+  - The "Show side panel" icon button is back at the right end of the header bar above the transcript.
   - In the screenshot where the panel was open, it stood to the right of the transcript with a highlighted "Changes" tab in its top strip and, in its body, the text "No pull requests in this session yet".
   - No red error banner is visible.
 max_steps: 8

@@ -141,7 +141,7 @@ async function main() {
 
   await page.goto(base + '/', { waitUntil: 'domcontentloaded' })
   await page.waitForTimeout(2500)
-  const opener = page.getByRole('button', { name: 'Open activity panel' })
+  const opener = page.getByRole('button', { name: 'Show side panel' })
   if (await opener.count()) {
     await opener.first().click().catch(() => {})
     await page.waitForTimeout(1200)

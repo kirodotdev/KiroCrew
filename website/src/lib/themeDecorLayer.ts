@@ -28,9 +28,11 @@ export const TOPBAR_Z = 45
 
 /**
  * The top bar's z-index in focus mode, where it leaves the grid and becomes an
- * absolute overlay clearing the chat-pane stack (max 61) and the rail (50).
+ * absolute overlay clearing the chat-pane stack (max 61), workspace fullscreen
+ * (65) and the peek triggers lifted above it (66, index.css), and the rail (50),
+ * while remaining below the update banner (70).
  */
-export const TOPBAR_FOCUS_Z = 62
+export const TOPBAR_FOCUS_Z = 67
 
 /**
  * Ceiling for a pack overlay's zIndex, and the slot's own z-index. Derived, not

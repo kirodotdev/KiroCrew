@@ -160,7 +160,7 @@ async function main() {
     await page.waitForTimeout(2500)
     // Open the Changes view so the sidebar chip and the detail payload are on
     // camera together — the whole point is whether they agree.
-    const opener = page.getByRole('button', { name: 'Open activity panel' })
+    const opener = page.getByRole('button', { name: 'Show side panel' })
     if (await opener.count()) {
       await opener.first().click().catch(() => {})
       await page.waitForTimeout(1200)

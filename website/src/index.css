@@ -2610,7 +2610,8 @@ body.mc-focus-mode .linux-electron .focus-caption-reserve{padding-right:112px}
    which grew the strip back under the pointer, which re-opened it — flickering
    indefinitely without the user moving the mouse. Anything that changes the hit
    target under a resting pointer can oscillate like that, so the strip is instead
-   COVERED by the chrome it summons (z-61 against the chrome's z-62): while the
+   COVERED by the chrome it summons (the strip stays below the chrome's focus
+   layer): while the
    chrome is up, hover and clicks land on the header or rail, which keeps them open
    through their own surface handlers, and nothing resizes. */
 .focus-peek-top{height:10px}
@@ -2865,6 +2866,44 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
 .side-tab-inactive:hover::before{
   content:'';position:absolute;left:0;right:0;top:2px;bottom:4px;
   border-radius:8px;background:var(--bg-hover);z-index:-1}
+
+/* Workspace fullscreen expands the existing SidePanel across the content grid.
+   The topbar stays in place, and the panel subtree remains mounted. */
+[data-workspace-fullscreen] #activity-bar-slot {
+  position: absolute;
+  inset: 0;
+  grid-area: 2 / 1 / -1 / -1 !important;
+  z-index: 65;
+  background: var(--bg);
+}
+[data-workspace-fullscreen] #activity-bar-slot [data-workspace-panel-host] {
+  width: 100% !important;
+  height: 100% !important;
+}
+[data-workspace-fullscreen] [data-workspace-panel-host].fixed {
+  height: auto !important;
+  z-index: 65;
+}
+/* In focus mode the fullscreen layer also covers the peek triggers' band. Lift
+   them above it (65) and below the chrome they summon (TOPBAR_FOCUS_Z, 67, in
+   src/lib/themeDecorLayer.ts), so the edges still summon the topbar and rail. */
+[data-workspace-fullscreen] .focus-peek-top,
+[data-workspace-fullscreen] .focus-peek-rail { z-index: 66; }
+/* The computer-use live view (z-[60]) shows and controls an agent driving the
+   real desktop, so fullscreen must not bury it: lift it above the fullscreen
+   layer (65) and keep it below the focus chrome (TOPBAR_FOCUS_Z, 67). */
+[data-workspace-fullscreen] [data-above-workspace-fullscreen] { z-index: 66; }
+/* Outside focus mode the fullscreen strip sits under the 42px topbar, which
+   already reserves the caption band. Focus mode collapses that row to
+   FOCUS_INSET, putting the strip at the window's top corner; Windows and Linux
+   keep their caption controls painted there (the right-dock strip also gets
+   focus-caption-reserve, the bottom-dock strip only this rule), while macOS
+   hides its traffic lights with the chrome. Windows reads the same zoom-aware
+   --mc-win-caption-reserve as the header and focus-caption-reserve rules above;
+   keep 112px in sync with LINUX_CAPTION_CONTROLS_WIDTH in src/lib/electron.ts. */
+body.mc-focus-mode [data-workspace-fullscreen].win-electron .side-panel-strip { padding-right: var(--mc-win-caption-reserve); }
+body.mc-focus-mode [data-workspace-fullscreen].linux-electron .side-panel-strip { padding-right: 112px; }
+
 /* Reveal-in-sidebar confirmation: an accent outline the reveal handler holds
    briefly and then fades (ChatSidebar reveal effect, issue #912). Outline, not
    background, because the revealed row is usually the active one and already

@@ -10,6 +10,8 @@ import { focusComposerElement, queryComposerOrExpand } from '../../pages/chat/co
 import { agentSwitchFailureMessage } from '../../utils/agentSwitchFeedback'
 import { api } from '../../api/client'
 import { newTerminalByChord, toggleTerminalByChord } from '../../lib/terminalChordFocus'
+import { activateTerminalEntry } from '../../lib/terminalEntry'
+import { isBottomTerminalOpen } from '../../hooks/useBottomTerminal'
 import { focusPopout as focusTerminalPopout } from '../../utils/terminalPopout'
 import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts'
 import { useInstanceShortcuts } from '../../hooks/useInstanceShortcuts'
@@ -29,7 +31,7 @@ const APPROVAL_MODE_LEVELS = ['normal', 'trust_reads', 'trust', 'yolo']
  * on the active session (and the notice a failed switch leaves), the panel
  * toggles, and the instance-pane and auto-connect hooks registered once here.
  */
-export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, isPopout, isEmbed, terminalPoppedOut, activeSlotProject }: {
+export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, isPopout, isEmbed, terminalPoppedOut, activeSlotProject, workspaceFullscreen, exitWorkspaceFullscreen }: {
   toggleFocusMode: () => void
   toggleNav: () => void
   terminalEnabled: boolean
@@ -37,6 +39,10 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
   isEmbed: boolean
   terminalPoppedOut: boolean
   activeSlotProject: string | undefined
+  /** Workspace fullscreen is on. App clears it whenever the panel cannot be fullscreen. */
+  workspaceFullscreen: boolean
+  /** Leaves workspace fullscreen so the docked terminal is not opened behind it. */
+  exitWorkspaceFullscreen: () => void
 }) {
   const navigate = useNavigate()
   const dispatch = useAppDispatch()
@@ -257,13 +263,25 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
     // close the terminal in the MAIN window, out of sight of the person pressing
     // the key.
     onToggleTerminal: terminalEnabled && !isPopout && !isEmbed
-      ? () => { if (terminalPoppedOut) focusTerminalPopout(); else toggleTerminalByChord(activeSlotProject) }
+      ? () => activateTerminalEntry({
+        open: isBottomTerminalOpen(),
+        workspaceFullscreen,
+        poppedOut: terminalPoppedOut,
+        exitFullscreen: exitWorkspaceFullscreen,
+        focusPopout: focusTerminalPopout,
+        toggle: () => toggleTerminalByChord(activeSlotProject),
+      })
       : undefined,
     // VS Code's Create New Terminal: open the docked panel if needed and add a
     // tab in the active session's project. Same gating as the toggle above, and
-    // a popped-out panel is focused rather than grown from out of sight.
+    // a popped-out panel is focused rather than grown from out of sight. Workspace
+    // fullscreen covers the docked terminal, so it is left first.
     onNewTerminal: terminalEnabled && !isPopout && !isEmbed
-      ? () => { if (terminalPoppedOut) focusTerminalPopout(); else newTerminalByChord(activeSlotProject) }
+      ? () => {
+        if (terminalPoppedOut) { focusTerminalPopout(); return }
+        if (workspaceFullscreen) exitWorkspaceFullscreen()
+        newTerminalByChord(activeSlotProject)
+      }
       : undefined,
   })
   // Cmd+1..9 (⌘ mac / Ctrl win-linux) switches instance panes: 1=Local,

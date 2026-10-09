@@ -7,7 +7,7 @@
  * own chrome, which deliberately paints ABOVE the chat pane: the sessions flyout
  * (`SessionFlyout.tsx`, z-[59]) and its drawer morph (z-[60]), the focus-peek
  * rail toggle (App.tsx, z-[61]), and the focus-mode top chrome / mac drag strips
- * (inline zIndex 62 / 63). A dialog overlay left on the chat-pane ceiling (z-50)
+ * (inline zIndex 63, and TOPBAR_FOCUS_Z for the focus-mode rail and top bar). A dialog overlay left on the chat-pane ceiling (z-50)
  * paints UNDER all of that — the bug #15754 fixed for MobileConnectModal and
  * #15776 fixes for the three remaining App-root dialogs.
  *
@@ -29,11 +29,12 @@
  * Modal.tsx's own z-[100] is explicitly NOT the bar: Modal portals to
  * document.body, a separate stacking context where z-[100] is correct. These
  * dialogs do not, so the right layer for them is the band between the chat
- * chrome (max 63) and the shell takeover layer (100) — z-[65] today.
+ * chrome (max TOPBAR_FOCUS_Z) and the shell takeover layer (100) — z-[68] today.
  */
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, it, expect } from 'vitest'
+import { TOPBAR_FOCUS_Z } from '../lib/themeDecorLayer'
 
 const SRC = join(__dirname, '..')
 const read = (...parts: string[]) => readFileSync(join(SRC, ...parts), 'utf8')
@@ -77,6 +78,9 @@ function chatChromeCeiling(): number {
   const inlineZ = [...app.matchAll(/zIndex:\s*(\d+)/g)]
     .map(m => Number(m[1]))
     .filter(z => z < SHELL_TAKEOVER_Z)
+  // The focus-mode rail and top bar name their layer by constant, which the
+  // literal scan above cannot see.
+  if (/zIndex:\s*TOPBAR_FOCUS_Z\b/.test(app)) inlineZ.push(TOPBAR_FOCUS_Z)
   expect(flyout.length).toBeGreaterThan(0)
   expect(peek.length).toBeGreaterThan(0)
   expect(inlineZ.length).toBeGreaterThan(0)

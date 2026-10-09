@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { TOPBAR_FOCUS_Z } from '../lib/themeDecorLayer'
 
 /**
  * App-root dialogs render INSIDE the shell's `relative z-[1]` root (App.tsx),
@@ -8,16 +9,17 @@ import { resolve } from 'node:path'
  * decided against the shell's own ladder:
  *
  *   z-[59]  sessions flyout        z-[60]  flyout drawer morph
- *   z-[61]  rail toggle / peek     62/63   focus-mode rail + mac drag strips
- *   z-[65]  in-shell dialog tier (clears all chat chrome above)
+ *   z-[61]  rail toggle / peek     63      mac drag strips
+ *   65      workspace fullscreen   67      focus-mode rail + top bar (TOPBAR_FOCUS_Z)
+ *   z-[68]  in-shell dialog tier (clears all chat chrome above)
  *   z-[70]  toast / context-menu band
  *   z-[100] full-screen takeovers (update overlay, update-error, update dialogs)
  *
  * An overlay at the chat-pane ceiling `z-50` paints UNDER the flyout stack, so
  * a dialog shown while the chat page is up appears half-hidden behind it. Every
  * App-root dialog's outermost overlay must therefore sit at or above the
- * in-shell dialog tier (`z-[65]`), high enough to clear the flyout, its drawer
- * morph, the rail toggle and the focus-mode rail/drag strips at once.
+ * in-shell dialog tier (`z-[68]`), high enough to clear the flyout, its drawer
+ * morph, the rail toggle, workspace fullscreen and the focus-mode chrome at once.
  *
  * Asserted against SOURCE TEXT: the z-indexes are Tailwind classes jsdom cannot
  * resolve into a paint order, and the invariant is the comparison between them.
@@ -25,8 +27,8 @@ import { resolve } from 'node:path'
 const SRC = (p: string) => readFileSync(resolve(__dirname, '..', p), 'utf8')
 
 /** The in-shell dialog tier: the floor every App-root dialog must clear to sit
- *  above the chat chrome (flyout z-[59] through drag strips zIndex 63). */
-const DIALOG_TIER = 65
+ *  above the chat chrome (flyout z-[59] through the focus-mode chrome). */
+const DIALOG_TIER = TOPBAR_FOCUS_Z + 1
 
 /**
  * Each App-root dialog, paired with a regex that pulls the z-index off the
