@@ -584,6 +584,39 @@ test("the hidden notification owner stays inert on failure and re-arms after a h
 
 // ── the page URL ────────────────────────────────────────────────────────────
 
+test("a cookie-authenticated target re-arms with a bare URL; no credential re-arms nothing", () => {
+  const stub = stubElectron();
+  try {
+    const { overlay } = loadModules();
+    overlay.setOverlayTarget("http://localhost:5476", "link");
+    overlay.openPetWindow();
+    const win = stub.created[0];
+    win.webContents.emit(
+      "did-navigate",
+      {},
+      "http://localhost:5476/app-windows/crew-companion/pet.html",
+      403,
+    );
+    win.webContents.emit("did-finish-load");
+    assert.strictEqual(overlay._hasBlankedOverlay(), true);
+
+    // Neither a URL credential nor a cookie: the probe was never answered.
+    overlay.setOverlayTarget("http://localhost:5476", "", false);
+    assert.strictEqual(overlay.rearmBlankedCompanionWindows(), 0);
+
+    // A borrowed session cookie answered the probe: reload bare, ride the cookie.
+    overlay.setOverlayTarget("http://localhost:5476", "", true);
+    assert.strictEqual(overlay.rearmBlankedCompanionWindows(), 1);
+    assert.strictEqual(
+      win.loadedUrl,
+      "http://localhost:5476/app-windows/crew-companion/pet.html",
+      "a cookie credential is never put on the page URL",
+    );
+  } finally {
+    stub.restore();
+  }
+});
+
 test("the page URL mirrors the file layout, and omits an empty credential", () => {
   const stub = stubElectron();
   try {

@@ -630,7 +630,11 @@ app.whenReady().then(async () => {
   try {
     initCrewCompanion({
       backendUrl: BACKEND_URL,
-      mintLocalToken: (...args) => gateway.mintLocalToken(...args),
+      // The same credential chain Mochi and the dashboard window use. The local
+      // mint alone refuses for a remote crew's port and for a gateway this app
+      // adopted rather than spawned, which left the companion unable to ever ask
+      // whether it was enabled.
+      fetchGatewayAuth: () => fetchMochiGatewayAuth(BACKEND_URL),
       glog,
       getDashboardWindow: () => windows.focusedDashboardWindow() || null,
     });

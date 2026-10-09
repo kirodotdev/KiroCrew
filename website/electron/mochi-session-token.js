@@ -58,4 +58,27 @@ async function borrowSessionToken({ electronSession, backendUrl }) {
   }
 }
 
-module.exports = { borrowSessionToken };
+/**
+ * The `Cookie` header that delivers a credential borrowed by borrowSessionToken.
+ *
+ * Same raw-port rule as the borrow, for the same reason: the cookie's name is the
+ * one the GATEWAY chose, and a borrowed credential only exists for a URL that
+ * states its port. Returns "" when the URL states none, so nothing is sent under
+ * a guessed name.
+ *
+ * @param {string} backendUrl the URL the credential was borrowed for.
+ * @param {string} value      the borrowed credential.
+ * @returns {string}
+ */
+function sessionCookieHeader(backendUrl, value) {
+  let port;
+  try {
+    port = new URL(backendUrl).port;
+  } catch {
+    return "";
+  }
+  if (!port || !value) return "";
+  return `mc_token_${port}=${value}`;
+}
+
+module.exports = { borrowSessionToken, sessionCookieHeader };
