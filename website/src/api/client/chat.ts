@@ -14,6 +14,7 @@ import { isLookPreviewFrame } from '../../utils/lookPreview'
 import { lookPreviewSlotDetail, lookPreviewSlots } from '../../utils/lookPreviewFixtures'
 import { resolveDefaultMemoryMode } from '../queryClient'
 import { TAB_ID } from '../tabId'
+import { activeLocale } from '../../i18n/format'
 import type { ClientTransport } from './transport'
 
 /**
@@ -215,7 +216,11 @@ export function createChatEndpoints({ post, put, del, patch, j, jfetch: fetch, s
       // stale-owner session as a bare "refused" send. The steer helper this
       // replaced went through `j` and had both; the transport must not lose them.
       const themeConsent = themeConsentSha(colorTheme)
-      return fetch('/api/chat?ws=1', { method: 'POST', headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify({ message, slot, ...(colorTheme ? { color_theme: colorTheme } : {}), ...(themeConsent ? { theme_consent_sha: themeConsent } : {}), ...(meta ? { meta } : {}), ...(steer ? { steer: steer === 'auto' ? 'auto' : true } : {}) }), signal }).then(sendResponseAuthRecovery)
+      // `X-Guide-Tab` names this tab as the one talking in *slot*, so a live
+      // guide observation before Start asks this tab and no other. `X-UI-Lang`
+      // is the language this tab renders, so the agent quotes dashboard labels
+      // as this screen spells them (the gateway keeps only a shipped tag).
+      return fetch('/api/chat?ws=1', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Guide-Tab': TAB_ID, 'X-UI-Lang': activeLocale(), ..._sk }, body: JSON.stringify({ message, slot, ...(colorTheme ? { color_theme: colorTheme } : {}), ...(themeConsent ? { theme_consent_sha: themeConsent } : {}), ...(meta ? { meta } : {}), ...(steer ? { steer: steer === 'auto' ? 'auto' : true } : {}) }), signal }).then(sendResponseAuthRecovery)
     },
   }
 

@@ -508,6 +508,7 @@ export default function TrustAppModal({
       open={!!app}
       onClose={onCancel}
       maxWidth={560}
+      guideTrustRoot
       title={i18nT('components.appstore.trustAppModal.title', { app: name })}
       footer={
         permanentRefusal ? (

@@ -10,7 +10,7 @@
  * here too so the override cannot leak past the crewmate surface.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen, cleanup } from '@testing-library/react'
+import { render, screen, cleanup, fireEvent } from '@testing-library/react'
 import type { ChatMessage } from '../types'
 import { mergeRenderers, resolveRenderer, type MessageRenderContext } from '../app-sdk/messageRenderers'
 import { createTranscriptRenderers } from '../pages/chat/transcriptRenderers'
@@ -60,6 +60,8 @@ describe("the Steered chip on a crewmate's reply", () => {
   it('still draws on an ordinary transcript (the override is the crewmate entry only)', () => {
     draw({ slot: 's1' })
     expect(screen.getByText('Steered')).toBeInTheDocument()
+    // The summary is folded behind the chip and shown once the reader opens it.
+    fireEvent.click(screen.getByTestId('steer-ack-toggle'))
     expect(screen.getByText(/switched to the new issue/)).toBeInTheDocument()
     expect(screen.getByTestId('md')).not.toHaveTextContent('[STEERING')
   })

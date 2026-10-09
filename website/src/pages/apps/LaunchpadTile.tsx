@@ -37,7 +37,9 @@ import {
   DropdownMenuSeparator,
 } from '../../components/ui/dropdown-menu'
 import { i18nT } from '../../i18n/t'
+import { uiLocation } from '../../uiLocations/uiLocation'
 import type { LibraryApp } from './useAppsData'
+import { guidePick, guidePickAlias, guidePickControl, guidePickOf } from '../../uiLocations/targetRegistry'
 
 /** Management verbs the tile can request. */
 export type LaunchpadAction = 'enable' | 'disable' | 'uninstall' | 'update'
@@ -51,6 +53,7 @@ export default function LaunchpadTile({
   onAction,
   onOpen,
   onDetail,
+  onMenuOpenChange,
 }: {
   app: LibraryApp
   /** True when the app's page(s) show in the sidebar (id NOT in mc-app-nav-hidden). */
@@ -72,10 +75,14 @@ export default function LaunchpadTile({
   onOpen: () => void
   /** Navigate to the app's detail page. */
   onDetail: () => void
+  /** The ⋯ menu opened or closed (the page tells a guide which app is picked). */
+  onMenuOpenChange?: (open: boolean) => void
 }) {
   const m = app.manifest
   const name = app.name
   const display = appDisplayName(app)
+  const canonical = app.displayName || app.name || ''
+  const alias = canonical && canonical !== display ? guidePickAlias(canonical) : null
   // Icon resolution — the UpdatesList chain verbatim: a page
   // icon glyph, else the manifest's icon through `installedIcon` (iconPath
   // first, resolved against the app's own install dir; refuses external
@@ -115,6 +122,12 @@ export default function LaunchpadTile({
     <div
       className="group relative flex flex-col items-center gap-2 rounded-xl px-1.5 pt-3.5 pb-1.5 transition-colors hover:bg-bg-hover focus-within:bg-bg-hover"
       data-testid={`launchpad-tile-${name}`}
+      // The app's name as the card shows it: a guide's pick outlines the one
+      // card named exactly like this (apps.library.app-list). A built-in app
+      // shows a translated name; its manifest name is the alias a pick from
+      // the gateway may use.
+      {...guidePick(display, alias?.ref)}
+      data-guide-pick-alias={alias ? canonical : undefined}
     >
       {/* Tile face — a real button so the tile itself is keyboard focusable:
           opens the app when it can open, else its detail page. The icon is the
@@ -188,18 +201,23 @@ export default function LaunchpadTile({
             <ExternalLink size={11} aria-hidden /> {i18nT('components.appstore.installedAppCard.open')}
           </button>
         )}
-        <DropdownMenu>
+        <DropdownMenu onOpenChange={onMenuOpenChange}>
           <DropdownMenuTrigger asChild>
             <button
               type="button"
+              // What a "choose the app" step outlines on this card: the
+              // control that makes the pick, not the whole card.
+              {...guidePickControl('app_tile_menu_open')}
               aria-label={i18nT('pages.libraryPage.tile_more_actions', { name: display })}
               className="flex items-center text-[11px] px-1.5 py-1 rounded-md transition-colors bg-transparent border-0 cursor-pointer text-muted hover:text-text hover:bg-bg-elevated"
             >
               <MoreHorizontal size={13} aria-hidden />
             </button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="center">
-            <DropdownMenuItem onSelect={onDetail}>
+          {/* The menu is drawn outside the card: it names the app it is for,
+              so a guide about one app never points into another's menu. */}
+          <DropdownMenuContent align="center" {...guidePickOf(display)}>
+            <DropdownMenuItem onSelect={onDetail} {...uiLocation('apps.library.tile-details')}>
               <Info size={12} aria-hidden /> {i18nT('pages.libraryPage.tile_details')}
             </DropdownMenuItem>
             {!disabled && pinnable && (
@@ -238,6 +256,7 @@ export default function LaunchpadTile({
               <DropdownMenuItem
                 disabled={actionLoading === `${name}:disable`}
                 onSelect={() => onAction(name, 'disable')}
+                {...uiLocation('apps.library.tile-disable')}
               >
                 <PowerOff size={12} aria-hidden /> {i18nT('components.appstore.installedAppCard.disable')}
               </DropdownMenuItem>
@@ -247,6 +266,7 @@ export default function LaunchpadTile({
                 className="text-danger focus:text-danger"
                 disabled={actionLoading === `${name}:uninstall`}
                 onSelect={() => onAction(name, 'uninstall')}
+                {...uiLocation('apps.library.tile-uninstall')}
               >
                 <Trash2 size={12} aria-hidden /> {i18nT('components.appstore.installedAppCard.uninstall')}
               </DropdownMenuItem>

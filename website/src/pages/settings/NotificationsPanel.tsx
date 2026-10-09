@@ -385,6 +385,7 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
     <SettingsSubNav
       items={railItems}
       basePath={basePath}
+      guideTargetPrefix="settings.sub.notifications."
       railWidth={220}
       listLabel={i18nT('settings.tabs.notifications.label')}
       banner={banner}

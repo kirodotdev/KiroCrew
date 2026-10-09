@@ -57,6 +57,11 @@ export function fmtTurnElapsed(ms: number): string {
 }
 
 // A compact "Steered" chip rendered in place of the raw [STEERING …] marker.
+// The marker's text after the colon is how the turn responded to the steer
+// (`app-sdk/protocol/steering.ts`): often a real outcome ("Stopped at phase 4
+// as requested"), sometimes the model's own reasoning ("this steer is the
+// only request…"). So it is kept but folded behind the chip: shown only when
+// the reader opens it, never dropped.
 // `entrance` gates the fade-in to the STREAMING moment the chip first appears.
 // A settled transcript's chip must render at its final state: framer replays
 // `initial` on every MOUNT, and transcript rows legitimately remount (window
@@ -64,6 +69,14 @@ export function fmtTurnElapsed(ms: number): string {
 // the fade and a parked reader saw the chip "blinking" (caught mid-fade in a
 // screen recording at ~50% opacity).
 function SteerAckChip({ summary, entrance }: { summary: string; entrance: boolean }) {
+  const [open, setOpen] = useState(false)
+  const summaryId = useId()
+  const label = (
+    <>
+      <Compass size={13} className="shrink-0" aria-hidden="true" />
+      <span className="font-semibold">{i18nT('pages.chat.assistantMessage.steered')}</span>
+    </>
+  )
   return (
     <motion.div
       initial={entrance ? { opacity: 0, y: 4 } : false}
@@ -71,11 +84,22 @@ function SteerAckChip({ summary, entrance }: { summary: string; entrance: boolea
       transition={{ duration: 0.25, ease: 'easeOut' }}
       className="mt-2 inline-flex flex-col items-start rounded-lg bg-accent-subtle px-3 py-2 text-[12px] leading-5 max-w-full"
     >
-      <span className="inline-flex items-center gap-2 text-accent">
-        <Compass size={13} className="shrink-0" />
-        <span className="font-semibold">{i18nT('pages.chat.assistantMessage.steered')}</span>
-      </span>
-      {summary ? <span className="text-text ml-6 mt-1">{summary}</span> : null}
+      {summary
+        ? (
+          <button
+            type="button"
+            aria-expanded={open}
+            aria-controls={summaryId}
+            onClick={() => setOpen(o => !o)}
+            className="inline-flex items-center gap-2 text-accent rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            data-testid="steer-ack-toggle"
+          >
+            {label}
+            <ChevronRight size={12} className={`shrink-0 transition-transform ${open ? 'rotate-90' : ''}`} aria-hidden="true" />
+          </button>
+        )
+        : <span className="inline-flex items-center gap-2 text-accent">{label}</span>}
+      {summary && open ? <span id={summaryId} className="text-text ml-6 mt-1" data-testid="steer-ack-summary">{summary}</span> : null}
     </motion.div>
   )
 }

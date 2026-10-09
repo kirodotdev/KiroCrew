@@ -153,13 +153,16 @@ function neighbour(messages: ChatMessage[], index: number, dir: -1 | 1): ChatMes
  *  wake or an envelope between two replies is filtered out — so the boundary
  *  is read from the UNFILTERED transcript when the caller passes it: any row
  *  between the two that is not the turn's own machinery ends the turn. Without
- *  a transcript (a host that has none) adjacency in the drawn list is the rule. */
+ *  a transcript (a host that has none) adjacency in the drawn list is the rule.
+ *  A guide offer (`card` rows) is the crewmate's own proposal,
+ *  so it joins the run like a message, grouped with the reply that explains it
+ *  instead of floating between two speakers. */
 function chained(
   a: ChatMessage | undefined,
   b: ChatMessage | undefined,
   transcript: ChatMessage[] | undefined,
 ): boolean {
-  if (!a || !b || !isCrewmateSpeech(a) || !isCrewmateSpeech(b)) return false
+  if (!a || !b || !isRunMember(a) || !isRunMember(b)) return false
   if (!transcript) return true
   const ia = transcript.indexOf(a)
   const ib = transcript.indexOf(b)
@@ -172,6 +175,16 @@ function chained(
     return false
   }
   return true
+}
+
+/** The `card` role a guide offer is written under
+ *  (cards/ConversationCard's CARD_ROLE, restated to keep this module free of
+ *  the card store's imports). */
+const CARD_ROW_ROLE = 'card'
+
+/** A row that belongs to the crewmate's run: its speech, or its own proposal. */
+function isRunMember(m: ChatMessage): boolean {
+  return isCrewmateSpeech(m) || m.role === CARD_ROW_ROLE
 }
 
 /** A completion envelope is a turn boundary WHATEVER role carries it: a
@@ -245,6 +258,12 @@ const BUBBLE_BASE =
 /** Classes for the crewmate's message bubble at `pos`. */
 export function crewmateBubbleClass(pos: CrewmateRunPosition): string {
   return `${BUBBLE_BASE} ${CORNERS[pos]}`
+}
+
+/** The run's corner rule alone, for a surface in the run that draws its own
+ *  box (a guide offer). */
+export function crewmateCornerClass(pos: CrewmateRunPosition): string {
+  return CORNERS[pos]
 }
 
 /** Vertical rhythm of a row. Bubbles inside a run sit close but never touch:

@@ -11,8 +11,10 @@ import { settingsPath } from './settingsPath'
 import ErrorNotice, { ErrorNoticeMenuItem } from './ErrorNotice'
 
 import { i18nT } from '../i18n/t'
+import { uiLocation } from '../uiLocations/uiLocation'
 import { activeElementIsEditable } from '../utils/editableTarget'
 import { slotTrustIsScoped } from '../utils/slotApprovalMode'
+import { guideTrustRoot, GuideTrustRootProvider } from '../guide/trustRoot'
 /** Single source of truth for approval-mode presentation.
  *
  *  Only the language-INDEPENDENT metadata (key, icon, colour) lives at module
@@ -98,7 +100,7 @@ export const APPROVAL_MODE_ADJUSTED_LS_KEY = 'mc-approval-mode-adjusted'
  *  open request, so the user's eye lands on where the control lives. */
 const SPOTLIGHT_MS = 2000
 
-export default function ApprovalModePicker({ mode, slotKey, compact, openSignal, nudge, onNudgeDismiss, onNudgeHide, onPicked }: {
+type ApprovalModePickerProps = {
   mode: string; slotKey: string; compact?: boolean
   /** Where focus goes after a PICK closes the menu. Radix's default returns
    *  focus to the trigger, which is right for a cancel (Escape, outside click:
@@ -123,7 +125,14 @@ export default function ApprovalModePicker({ mode, slotKey, compact, openSignal,
    *  the composer should hide the one-time callout for this sitting, not
    *  spend it forever unseen. Falls back to onNudgeDismiss when unset. */
   onNudgeHide?: () => void
-}) {
+}
+
+/** The approval mode is the agent's own ceiling: the picker and what it portals are a trust-root region. */
+export default function ApprovalModePicker(props: ApprovalModePickerProps) {
+  return <GuideTrustRootProvider><ApprovalModePickerBody {...props} /></GuideTrustRootProvider>
+}
+
+function ApprovalModePickerBody({ mode, slotKey, compact, openSignal, nudge, onNudgeDismiss, onNudgeHide, onPicked }: ApprovalModePickerProps) {
   const policyRefusedId = useId()
   const dispatch = useAppDispatch()
   const navigate = useNavigate()
@@ -242,7 +251,7 @@ export default function ApprovalModePicker({ mode, slotKey, compact, openSignal,
         {/* Chrome type ("Normal" / "Reads" / "Trust" / "YOLO" are labels), so no
             `font-mono` — that pinned `var(--mono)`, which the Font Family
             setting never writes. */}
-        <button ref={triggerBtnRef} className={`h-7 px-2 rounded-lg text-[12px] text-muted hover:text-text hover:bg-bg-hover flex items-center gap-1 cursor-pointer transition-all bg-transparent border-none shrink-0 whitespace-nowrap outline-hidden focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-accent/50 focus-visible:-outline-offset-2 ${spotlight || (nudge && !open) ? 'ring-2 ring-accent/60 bg-bg-hover text-text' : ''}`} title={scopedTooltip || i18nT('components.approvalModePicker.approval_mode')} aria-label={i18nT('components.approvalModePicker.approval_mode_aria', { mode: displayText.label })}>
+        <button className={`h-7 px-2 rounded-lg text-[12px] text-muted hover:text-text hover:bg-bg-hover flex items-center gap-1 cursor-pointer transition-all bg-transparent border-none shrink-0 whitespace-nowrap outline-hidden focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-accent/50 focus-visible:-outline-offset-2 ${spotlight || (nudge && !open) ? 'ring-2 ring-accent/60 bg-bg-hover text-text' : ''}`} title={scopedTooltip || i18nT('components.approvalModePicker.approval_mode')} aria-label={i18nT('components.approvalModePicker.approval_mode_aria', { mode: displayText.label })} {...uiLocation('composer.approval-mode', triggerBtnRef)} {...guideTrustRoot}>
           <span className={`shrink-0 ${display.color}`}>{display.icon}</span>
           {!compact && displayText.label}
         </button>
@@ -252,6 +261,7 @@ export default function ApprovalModePicker({ mode, slotKey, compact, openSignal,
         align="start"
         collisionPadding={8}
         className="w-[280px]"
+        {...guideTrustRoot}
         onCloseAutoFocus={e => {
           // See `onPicked`. The flag is consumed here so a later cancel-close
           // (or the policy-refusal re-open followed by Escape) falls back to

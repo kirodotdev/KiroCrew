@@ -11,6 +11,7 @@ import { fileDownloadUrl, fileStreamUrl, fileOfficePreviewUrl, fileOfficeSlidesU
 import { sendErrorToChat } from '../utils/errorReport'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { pathBasename } from '../utils/pathBasename'
+import { guideUntrusted, stripGuideMarkers } from '../guide/untrustedContent'
 /* ── extension helpers ── */
 const IMG_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.avif', '.svg', '.ico'])
 const CSV_EXTS = new Set(['.csv', '.tsv'])
@@ -94,12 +95,13 @@ export const ImageViewer = memo(function ImageViewer({ filePath }: { filePath: s
 export const SvgViewer = memo(function SvgViewer({ content }: { content: string }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const safe = useMemo(
-    () => DOMPurify.sanitize(content, { USE_PROFILES: { svg: true, svgFilters: true } }),
+    () => stripGuideMarkers(DOMPurify.sanitize(content, { USE_PROFILES: { svg: true, svgFilters: true } })),
     [content],
   )
   return (
     <div
       className="flex items-center justify-center h-full overflow-auto p-4 bg-bg-elevated rounded-md border border-border"
+      {...guideUntrusted}
       dangerouslySetInnerHTML={{ __html: safe }}
     />
   )

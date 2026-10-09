@@ -26,8 +26,10 @@ import McpRowSignIn from './McpRowSignIn'
 import { useConnectionsUiEnabled } from '../../hooks/useConnectionsUi'
 
 import { i18nT } from '../../i18n/t'
+import { uiLocation } from '../../uiLocations/uiLocation'
 import { copyWithOutcome } from '../../utils/clipboard'
 import { recordError, type ErrorReport } from '../../utils/errorReport'
+import { guideAnchor } from '../../uiLocations/targetRegistry'
 async function fetchServers(): Promise<McpServer[]> {
   return await api.mcpServers()
 }
@@ -614,8 +616,8 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
       )}
       <InfoTip text={i18nT('pages.overview.mcpTab.servers_scope_tip', { provider: provider.displayName })} />
       <span className="ml-auto flex items-center gap-2">
-        <Btn onClick={() => setCustomOpen(true)}><Braces size={14} /> {i18nT('pages.overview.mcpTab.add_custom')}</Btn>
-        <Btn primary onClick={() => setBrowserOpen(true)}><Download size={14} /> {i18nT('pages.overview.mcpTab.add_server')}</Btn>
+        <Btn onClick={() => setCustomOpen(true)} {...uiLocation('mcp.add-custom', guideAnchor('mcp.add-custom').ref)} data-guide-anchor="mcp.add-custom"><Braces size={14} /> {i18nT('pages.overview.mcpTab.add_custom')}</Btn>
+        <Btn primary onClick={() => setBrowserOpen(true)} {...uiLocation('mcp.add-server')}><Download size={14} /> {i18nT('pages.overview.mcpTab.add_server')}</Btn>
       </span>
     </h4>
     <Card>
@@ -647,7 +649,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
           {/* `title` as well as `aria-label`: the sign-in guidance names this control
               by that string, and an icon-only button renders none of it — without a
               hover the reader cannot match the instruction to the button it means. */}
-          <Btn onClick={() => probe.mutate()} disabled={probe.isPending} aria-label={i18nT('pages.overview.mcpTab.probe_mcp_servers')} title={i18nT('pages.overview.mcpTab.probe_mcp_servers')}><RefreshCw size={14} className={probe.isPending ? 'animate-spin' : ''} /></Btn>
+          <Btn onClick={() => probe.mutate()} disabled={probe.isPending} aria-label={i18nT('pages.overview.mcpTab.probe_mcp_servers')} title={i18nT('pages.overview.mcpTab.probe_mcp_servers')} {...uiLocation('mcp.probe')}><RefreshCw size={14} className={probe.isPending ? 'animate-spin' : ''} /></Btn>
         </div>
       </div>
       <div className="flex gap-2 flex-wrap mb-3">

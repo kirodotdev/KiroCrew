@@ -554,7 +554,8 @@ target's own `dashboard_continue` line records `via=session_control`.
 | `folder` | no | Sidebar folder id or `/`-separated path to file it into once it is live (best-effort; the result's `filed` says whether it happened). Missing path segments are created (`mkdir -p`), like `session_create`'s `folder` |
 
 The mirror of `session_close`: it pulls a history session back up into a live
-tab with its full transcript — the same thing as clicking it in the History tab.
+tab with its full transcript — the same thing as clicking it under Older Sessions at the
+bottom of the Sessions list.
 Nothing runs until someone sends it a message, so the revived session is idle
 and addressable by the key the reply returns: `session_send`,
 `session_read_message`, `chat_folder_move_session` and `chat_tag_assign` all

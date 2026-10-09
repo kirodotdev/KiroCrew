@@ -16,6 +16,7 @@ import { KIND_META, DEFAULT_META, fmtFull, safeInternalUrl } from './notifMeta'
 import { safeHttpUrl } from '../../lib/safeUrl'
 
 import { i18nT } from '../../i18n/t'
+import { uiLocation } from '../../uiLocations/uiLocation'
 /** Intentional failure diagnostic for the navigation/approval actions below. */
 function logError(msg: string, err: unknown): void {
   // eslint-disable-next-line no-console -- intentional failure diagnostic
@@ -113,7 +114,7 @@ export default function NotificationDetailPanel({ n, onClose }: { n: Notificatio
           : <Badge variant="warn">{i18nT('components.notifications.notificationDetailPanel.unread')}</Badge>
         }
         {n.acked
-          ? <button className="text-[13px] text-muted cursor-pointer hover:text-text bg-transparent border-none font-body" onClick={() => dispatch(unackNotification(n.ts))}><MailOpen className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.mark_unread')}</button>
+          ? <button className="text-[13px] text-muted cursor-pointer hover:text-text bg-transparent border-none font-body" onClick={() => dispatch(unackNotification(n.ts))} {...uiLocation('notifications.detail.mark-unread')}><MailOpen className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.mark_unread')}</button>
           : <button className="text-[13px] text-ok cursor-pointer hover:text-text bg-transparent border-none font-body" onClick={() => dispatch(ackNotification(n.ts))}><Check className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.mark_read')}</button>
         }
       </div>

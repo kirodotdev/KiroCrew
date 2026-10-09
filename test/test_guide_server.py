@@ -110,16 +110,19 @@ def test_the_server_accepts_every_name_its_schema_advertises() -> None:
     from kiro_crew import mcp_guide
     from kiro_crew.validation import MCP_GUIDE_SCHEMAS, validate_tool_args
 
-    (tool,) = mcp_guide._list_tools()
+    (tool,) = [t for t in mcp_guide._list_tools() if t["name"] == "rename_self"]
     longest = tool["inputSchema"]["properties"]["name"]["maxLength"]
     name = "a" * longest
     assert validate_tool_args({"name": name}, MCP_GUIDE_SCHEMAS["rename_self"])["name"] == name
 
 
+@pytest.mark.parametrize(
+    "denied",
+    [{f"{GUIDE_REF}/rename_self"}, {f"{GUIDE_REF}/find_ui", f"{GUIDE_REF}/guide_start"}],
+)
 def test_the_governance_ceiling_still_withholds_a_guide_grant(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, denied: set[str]
 ) -> None:
-    denied = {f"{GUIDE_REF}/rename_self"}
     monkeypatch.setattr(agent, "_may_auto_approve", lambda ref: ref not in denied)
     built = agent.build_agent_config()
     assert GUIDE_SERVER in built["mcpServers"]  # still mounted; the user is asked instead
@@ -360,8 +363,9 @@ def test_a_foreign_template_and_its_member_are_left_exactly_as_they_are(
         "unattested_caller",
     ],
 )
+@pytest.mark.parametrize("tool", ["rename_self", "guide_start", "guide_status"])
 def test_every_gateway_admission_refusal_is_said_as_off_the_dashboard(
-    monkeypatch: pytest.MonkeyPatch, code: str
+    monkeypatch: pytest.MonkeyPatch, code: str, tool: str
 ) -> None:
     """How the MCP side words each refusal the admission returns.
 
@@ -373,9 +377,15 @@ def test_every_gateway_admission_refusal_is_said_as_off_the_dashboard(
     reply = {"error": "this message came from a messaging channel", "code": code}
     monkeypatch.setattr(mcp_guide, "_strict_session_key", lambda: ("dashboard:c", ""))
     monkeypatch.setattr(mcp_guide, "_post", lambda *a, **k: dict(reply))
-    out = mcp_guide._call_tool_inner("rename_self", {"name": "Pebble"})
-    assert out.startswith("Error: rename_self needs the dashboard: ")
-    assert "Your name did not change" in out
+    monkeypatch.setattr(mcp_guide, "_get", lambda *a, **k: dict(reply))
+    args: dict[str, Any] = {
+        "rename_self": {"name": "Pebble"},
+        "guide_start": {"actions": [{"id": "settings.show"}]},
+        "guide_status": {},
+    }[tool]
+    out = mcp_guide._call_tool_inner(tool, args)
+    assert out.startswith(f"Error: {tool} needs the dashboard: ")
+    assert "Your name did not change" in out if tool == "rename_self" else "Nothing" in out
 
 
 def test_an_unidentified_caller_gets_the_same_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -384,3 +394,46 @@ def test_an_unidentified_caller_gets_the_same_refusal(monkeypatch: pytest.Monkey
     monkeypatch.setattr(mcp_guide, "_strict_session_key", lambda: ("", "no identity"))
     out = mcp_guide._call_tool_inner("rename_self", {"name": "Pebble"})
     assert out.startswith("Error: rename_self needs the dashboard: no identity")
+
+
+def test_find_ui_and_search_docs_still_answer_off_the_dashboard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kiro_crew import mcp_guide
+
+    refused = {"error": "this message came from a messaging channel", "code": "channel_caller"}
+    monkeypatch.setattr(mcp_guide, "_strict_session_key", lambda: ("slack:C1:t", ""))
+    monkeypatch.setattr(mcp_guide, "_get", lambda *a, **k: dict(refused))
+    monkeypatch.setattr(mcp_guide, "_post", lambda *a, **k: dict(refused))
+    out = json.loads(mcp_guide._call_tool_inner("find_ui", {"query": "dark mode"}))
+    assert out["status"] == "ok" and out["results"]
+    assert all(r["live"]["status"] == "not_observed" for r in out["results"])
+    docs = json.loads(mcp_guide._call_tool_inner("search_docs", {"query": "Slack"}))
+    assert docs["results"]
+
+
+def test_an_offer_result_tells_the_model_how_to_reply(monkeypatch: pytest.MonkeyPatch) -> None:
+    from kiro_crew import mcp_guide
+
+    reply: dict[str, Any] = {}
+    monkeypatch.setattr(mcp_guide, "_strict_session_key", lambda: ("dashboard:c", ""))
+    monkeypatch.setattr(mcp_guide, "_post", lambda *a, **k: dict(reply))
+
+    def next_for(**state: Any) -> str:
+        reply.clear()
+        reply.update({"guide_id": "g1", **state})
+        args = {"actions": [{"id": "settings.show"}]}
+        return json.loads(mcp_guide._call_tool_inner("guide_start", args))["next"]
+
+    assert "Queued" in next_for(delivered_clients=0)
+    assert "Shown above" in next_for(delivered_clients=1)
+
+
+def test_a_refused_guide_start_says_no_card_was_shown(monkeypatch: pytest.MonkeyPatch) -> None:
+    from kiro_crew import mcp_guide
+
+    monkeypatch.setattr(mcp_guide, "_strict_session_key", lambda: ("dashboard:c", ""))
+    monkeypatch.setattr(mcp_guide, "_post", lambda *a, **k: {"error": "no such action"})
+    out = mcp_guide._call_tool_inner("guide_start", {"actions": [{"id": "ui.show"}]})
+    assert out.startswith("Error: no such action")
+    assert mcp_guide.GUIDE_NOT_SHOWN_NOTE in out

@@ -7,7 +7,8 @@
  * view as a tab. Escape covers the dismissal path Radix now owns instead of the
  * document-level mousedown listener this replaced.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { unregisteredMarkers } from './guideTargets'
 import { render, screen, fireEvent, act } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -72,6 +73,9 @@ const openMenu = () => act(() => {
   )
 })
 
+// The forwarding proof: every marker the render drew is registered by its ref.
+afterEach(() => { expect(unregisteredMarkers()).toEqual([]) })
+
 describe('side panel + menu (shadcn dropdown)', () => {
   beforeEach(() => { localStorage.clear() })
 
@@ -103,6 +107,18 @@ describe('side panel + menu (shadcn dropdown)', () => {
     openMenu()
     act(() => { fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' }) })
     expect(screen.queryByRole('menu')).toBeNull()
+  })
+
+  it('puts the Browser row\'s find_ui marker on that menu item alone', () => {
+    // AddMenuItem forwards the marker to the menu item a person picks, and only
+    // the Browser row carries one.
+    renderPanel()
+    openMenu()
+    const marked = document.body.querySelectorAll('[data-ui-location="chat.side-panel.browser"]')
+    expect(marked).toHaveLength(1)
+    expect(marked[0].getAttribute('role')).toBe('menuitem')
+    expect(marked[0].textContent).toBe('Browser')
+    expect(screen.getByRole('menuitem', { name: 'Workflows' }).hasAttribute('data-ui-location')).toBe(false)
   })
 
   it('renders one separator between the groups and none at the edges', () => {

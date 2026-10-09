@@ -94,6 +94,7 @@ import { useAppDispatch, useAppSelector } from '../../store'
 import { removeWarm, setCrewEditForm } from '../../store/instancesSlice'
 import { setCrewEnabled } from '../../lib/crewEnabled'
 import { i18nT } from '../../i18n/t'
+import { guideCaution } from '../../guide/trustRoot'
 import { AddInstanceForm, StatusBadge } from './InstancesPanel'
 import {
   EditInstanceForm,
@@ -1060,7 +1061,7 @@ function CrewRow({
           </Btn>
         ) : isCloud && confirmDelete ? (
           <>
-            <Btn danger onClick={() => onDelete(cloudTag, coordsOf(inst))} disabled={!!busy} aria-label={i18nT('pages.settings.remoteCrewPanel.confirm_delete_of', { name: inst.name })}>
+            <Btn danger onClick={() => onDelete(cloudTag, coordsOf(inst))} disabled={!!busy} aria-label={i18nT('pages.settings.remoteCrewPanel.confirm_delete_of', { name: inst.name })} {...guideCaution}>
               {/* Names its target on screen, not only to assistive tech: this click
                   terminates an EC2 instance, and "Confirm delete" beside two other
                   rows does not say WHICH. */}

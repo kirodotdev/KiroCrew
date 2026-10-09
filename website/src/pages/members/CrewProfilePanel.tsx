@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type HTMLAttributes, type ReactNode, type Ref } from 'react'
+import { forwardRef, useEffect, useRef, useState, type HTMLAttributes, type ReactNode, type Ref, type ForwardedRef } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { AlarmClock, Brain, ChevronLeft, ChevronRight, FolderOpen, Goal, IdCard, NotebookPen, Pencil, Route, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -10,6 +10,8 @@ import type { CronJob } from '../../types'
 import CrewScheduleList from './CrewScheduleList'
 import { cn } from '../../lib/utils'
 import ErrorNotice from '../../components/ErrorNotice'
+import { forwardUiLocation } from '../../uiLocations/uiLocation'
+import type { UiLocationId } from '../../uiLocations/descriptors'
 
 /** The card's four tabs, in strip order (crewmate-panel IA sketch). */
 export const PROFILE_TABS = ['sessions', 'schedule', 'goals', 'profile'] as const
@@ -76,20 +78,23 @@ const TONE: Record<'accent' | 'ok' | 'warn' | 'info', string> = {
   info: 'bg-info-subtle text-info',
 }
 
-function Row({ icon, tone = 'accent', label, sub, onClick, testId }: {
+const Row = forwardRef(function Row({ icon, tone = 'accent', label, sub, onClick, testId, 'data-ui-location': uiLocationId }: {
   icon: ReactNode
   tone?: keyof typeof TONE
   label: string
   sub?: string
   onClick: () => void
   testId: string
-}) {
+  /** A registered find_ui location (`{...uiLocation(id)}` spread on the row). */
+  'data-ui-location'?: UiLocationId
+}, forwardedRef: ForwardedRef<HTMLButtonElement>) {
   return (
     <button
       type="button"
       onClick={onClick}
       className="flex items-center gap-3 w-full px-3.5 py-3 text-left border-t border-border first:border-t-0 hover:bg-bg-hover transition-colors cursor-pointer"
       data-testid={testId}
+      {...forwardUiLocation(uiLocationId, forwardedRef)}
     >
       <span className={cn('w-8 h-8 rounded-[9px] grid place-items-center shrink-0', TONE[tone])} aria-hidden="true">{icon}</span>
       <span className="flex-1 min-w-0 leading-tight">
@@ -99,7 +104,7 @@ function Row({ icon, tone = 'accent', label, sub, onClick, testId }: {
       <ChevronRight size={15} className="text-muted shrink-0" aria-hidden="true" />
     </button>
   )
-}
+})
 
 function Tile({ icon, tone, label, value, title, onClick, testId }: {
   icon: ReactNode

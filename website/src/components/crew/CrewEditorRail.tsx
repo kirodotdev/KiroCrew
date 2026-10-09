@@ -11,9 +11,21 @@
  * reused from `Tablist` rather than reimplemented, because "skip a disabled
  * row, wrap at the ends" is exactly the same problem there.
  */
-import { useRef } from 'react'
+import { useRef, type Ref } from 'react'
 import { nextEnabledIndex, edgeEnabledIndex } from '../Tablist'
 import type { CrewEditorSection, CrewPaneKey } from './crewEditorSections'
+import { forwardUiLocation, UI_LOCATION_ATTR } from '../../uiLocations/uiLocation'
+
+/**
+ * A registered find_ui location for one row, by its section key: the entry's
+ * `label` is the row's label (the generator reads the marker from this array
+ * at the call site, as it does SegmentedControl's `segments`).
+ */
+export interface CrewEditorRailSegment {
+  key: CrewPaneKey
+  label: string
+  'data-ui-location'?: string
+}
 
 export interface CrewEditorRailProps {
   /** Wording for the unsaved-edit marker, used in each row's title and as the
@@ -29,11 +41,15 @@ export interface CrewEditorRailProps {
   ariaLabel: string
   /** Prefix for the `aria-controls` id each row points at. */
   panelIdPrefix: string
+  /** Rows that are registered UI locations; each one's marker lands on its tab. */
+  segments?: readonly CrewEditorRailSegment[]
 }
 
 export default function CrewEditorRail({
-  sections, value, onChange, ariaLabel, panelIdPrefix, unsavedLabel, sharedLabel,
+  sections, value, onChange, ariaLabel, panelIdPrefix, unsavedLabel, sharedLabel, segments,
 }: CrewEditorRailProps) {
+  const markerOf = (key: CrewPaneKey, own: Ref<HTMLButtonElement>) =>
+    forwardUiLocation<HTMLButtonElement>(segments?.find(seg => seg.key === key)?.[UI_LOCATION_ATTR], own)
   const refs = useRef<Array<HTMLButtonElement | null>>([])
 
   // `nextEnabledIndex` takes `TablistTab`s; only `key` and `disabled` are read,
@@ -96,9 +112,6 @@ export default function CrewEditorRail({
               </div>
             )}
             <button
-              ref={el => {
-                refs.current[i] = el
-              }}
               type="button"
               role="tab"
               // Names the matching tabpanel via `aria-labelledby` — focus can be
@@ -117,6 +130,7 @@ export default function CrewEditorRail({
               // reference rather than a relationship.
               {...(isDisabled ? {} : { 'aria-controls': `${panelIdPrefix}-${s.key}` })}
               data-testid={`crew-rail-${s.key}`}
+              {...markerOf(s.key, el => { refs.current[i] = el })}
               onClick={() => {
                 if (!isDisabled) onChange(s.key)
               }}

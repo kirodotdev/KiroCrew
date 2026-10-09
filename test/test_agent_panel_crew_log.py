@@ -607,8 +607,10 @@ def test_the_owner_count_is_bounded_and_evicts_the_oldest():
 #: The reference page's own reader hint, as the paragraph it is written in. The
 #: pins below derive what a reader is promised from THIS text rather than from a
 #: list kept here, so a hint that grows a field the record does not carry reds.
-#: The panel type is the page's last documented type, so its hint is the last one.
+#: Read inside the panel type's own subsection, so a type documented after it does
+#: not move the anchor.
 _READER_HINT_HEAD = "**Reader hint**"
+_PANEL_SUBSECTION = "### `panel/published`"
 
 
 def _reader_hint() -> str:
@@ -617,9 +619,10 @@ def _reader_hint() -> str:
         Path(__file__).resolve().parents[1] / "docs" / "reference" / "crew-log" / "session-types.md"
     )
     text = page.read_text(encoding="utf-8")
-    # The panel type is the page's last documented type, so its hint is the last
-    # one on the page; sliced to the blank line that ends the paragraph.
-    head = text.rindex(_READER_HINT_HEAD)
+    # The hint inside the panel type's subsection, sliced to the blank line that
+    # ends the paragraph.
+    start = text.index(_PANEL_SUBSECTION)
+    head = text.index(_READER_HINT_HEAD, start)
     para = text[head:].split("\n\n", 1)[0]
     assert "crew_key" in para, "the panel type's reader hint moved; re-anchor this"
     return para

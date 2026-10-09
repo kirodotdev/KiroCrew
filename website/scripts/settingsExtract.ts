@@ -28,16 +28,22 @@
 
 import * as fs from 'fs'
 import * as path from 'path'
+import { fileURLToPath } from 'url'
 import { SETTINGS_MANUAL } from '../src/components/commandPalette/settingsManual'
 import { settingsRoute } from '../src/components/commandPalette/settingsRoute'
 import type { ManualSettingEntry, SettingEntry, SettingPrimitiveType } from '../src/components/commandPalette/settingsTypes'
 
 export type { SettingEntry, SettingPrimitiveType }
 
+/** This module's directory, from `import.meta.url` so an ES-module runner (the
+ *  find_ui generator's in-memory freshness check) can load it as well as
+ *  vite-node and vitest. */
+const HERE = path.dirname(fileURLToPath(import.meta.url))
+
 /** English catalogs, in load order (manual wins) — mirrors `src/i18n/enCatalog.ts`. */
 const EN_CATALOG_PATHS = [
-  path.resolve(__dirname, '../src/i18n/locales/en.json'),
-  path.resolve(__dirname, '../src/i18n/locales/en.manual.json'),
+  path.resolve(HERE, '../src/i18n/locales/en.json'),
+  path.resolve(HERE, '../src/i18n/locales/en.manual.json'),
 ]
 
 /** Flatten a nested catalog into dotted leaf paths, matching i18next lookup. */

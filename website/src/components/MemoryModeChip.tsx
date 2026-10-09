@@ -4,6 +4,7 @@ import { EyeOff, Ghost, Undo2, VenetianMask } from 'lucide-react'
 import { Glass } from './Glass'
 
 import { i18nT } from '../i18n/t'
+import { uiLocation } from '../uiLocations/uiLocation'
 
 export type MemoryMode = 'persistent' | 'incognito' | 'temporary'
 
@@ -75,9 +76,9 @@ export function MemoryModeChip({ memoryMode, onSwitchMode }: MemoryModeChipProps
         as="button"
         variant="chip"
         radius={8}
-        ref={btnRef}
         type="button"
         data-testid="memory-mode-chip"
+        {...uiLocation('chat.memory-mode', btnRef)}
         className={`inline-flex items-center gap-1.5 rounded-lg border border-transparent px-3 py-1 text-[12px] transition-colors cursor-pointer ${
           ephemeralActive
             ? 'glass-warn text-warn'

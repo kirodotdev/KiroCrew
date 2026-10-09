@@ -303,6 +303,12 @@ _OWNER_ONLY_EVENTS = MEMBER_LOG_EVENTS | frozenset({
     # Per-row slot metadata edits. Sent only to dashboard-user sockets that
     # declared the capability; an app token gets its filtered full list.
     "slot_patch",
+    # UI-guide state (``handlers/guide.py``, ``deliver_ws_owners``). The guide is
+    # the operator's own dashboard being steered; no app token may watch it.
+    "guide_update",
+    # A live-observation request to one owner tab (``handlers/guide.py``): ids
+    # only, but which controls the agent is asking about is the operator's own.
+    "guide_observe",
 })
 
 

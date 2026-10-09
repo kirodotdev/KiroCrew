@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from aiohttp import web
 
@@ -164,7 +164,23 @@ def _crew_memory_store_rejected(raw: object) -> str | None:
 
 
 async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
-    """POST /api/agents — create a new Kiro Crew agent."""
+    """POST /api/agents — create a new Kiro Crew agent.
+
+    Wrapped in the UI-guide commit hook: when the owner's tab names a guide
+    waiting on its ``crewmate.create`` step (``X-Guide-*`` headers), the guide is
+    credited only from THIS handler's own success response and its immutable
+    ``member_id``. Without the headers it is exactly the handler below.
+    """
+    from kiro_crew.dashboard.handlers.guide import run_guided_crewmate_create
+
+    # The hook returns the inner handler's own response object unchanged.
+    return cast(
+        web.Response, await run_guided_crewmate_create(request, _api_kirocrew_agents_create)
+    )
+
+
+async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
+    """The create itself — see :func:`api_kirocrew_agents_create`."""
 
     denied = await _require_owner(request, "agent.create")
     if denied is not None:

@@ -1,4 +1,5 @@
 import * as React from 'react'
+import { useGuideTrustRootAttrs } from '../../guide/trustRoot'
 import * as ContextMenuPrimitive from '@radix-ui/react-context-menu'
 import { cn } from '../../lib/utils'
 import { useCloseOnFileDrag } from '../../hooks/useCloseOnFileDrag'
@@ -61,10 +62,13 @@ const ContextMenuSub = React.forwardRef<
 const ContextMenuContent = React.forwardRef<
   React.ComponentRef<typeof ContextMenuPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof ContextMenuPrimitive.Content>
->(({ className, ...props }, ref) => (
+>(({ className, ...props }, ref) => {
+  const trustRoot = useGuideTrustRootAttrs()
+  return (
   <ContextMenuPrimitive.Portal>
     <ContextMenuPrimitive.Content
       ref={ref}
+      {...trustRoot}
       className={cn(
         // Cap the height to the space Radix measured between the anchor and the
         // viewport edge (its own collision var) and scroll the overflow, so a
@@ -85,7 +89,8 @@ const ContextMenuContent = React.forwardRef<
       {...props}
     />
   </ContextMenuPrimitive.Portal>
-))
+  )
+})
 ContextMenuContent.displayName = ContextMenuPrimitive.Content.displayName
 
 const ContextMenuItem = React.forwardRef<
@@ -162,6 +167,7 @@ const ContextMenuSubContent = React.forwardRef<
   React.ComponentPropsWithoutRef<typeof ContextMenuPrimitive.SubContent>
 >(({ className, children, ...props }, ref) => {
   const ctx = React.useContext(ContextSubPhoneContext)
+  const trustRoot = useGuideTrustRootAttrs()
   if (ctx?.isPhone) {
     if (!ctx.expanded) return null
     return (
@@ -178,6 +184,7 @@ const ContextMenuSubContent = React.forwardRef<
     <ContextMenuPrimitive.Portal>
       <ContextMenuPrimitive.SubContent
         ref={ref}
+        {...trustRoot}
         className={cn(
           'z-[9999] min-w-[8rem] max-h-[var(--radix-context-menu-content-available-height)] overflow-y-auto overscroll-contain rounded-lg border border-border bg-bg-elevated p-1 text-text shadow-lg',
           'data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',

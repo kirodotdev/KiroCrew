@@ -28,6 +28,8 @@ import {
 } from '../hooks/useBottomTerminal'
 
 import { i18nT } from '../i18n/t'
+import { uiLocation } from '../uiLocations/uiLocation'
+import { useGuideRevealScope } from '../guide/GuideRevealScope'
 
 /** A terminal tab chip — mirrors the activity-bar SidePanel TabChip design.
  *  `hintId` names the strip's visible editing helper (rendered outside the
@@ -452,18 +454,19 @@ export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
         </button>
         {variant === 'dock' ? (
           <div className="flex items-center gap-0.5 ml-auto shrink-0">
-            <DropdownMenu>
+            <DropdownMenu guideScope="menu:shell.terminal-more">
               <DropdownMenuTrigger asChild>
                 <button
                   className="flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0"
                   aria-label={i18nT('components.bottomTerminalPanel.more_actions')}
                   title={i18nT('components.bottomTerminalPanel.more_actions')}
+                  {...uiLocation('shell.terminal-more')}
                 >
                   <MoreHorizontal size={14} />
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="min-w-[180px]">
-                <DropdownMenuItem onSelect={toggleTerminalPosition}>
+                <DropdownMenuItem onSelect={toggleTerminalPosition} {...uiLocation('shell.terminal-more.position')}>
                   {position === 'bottom' ? <PanelRight size={13} className="shrink-0" /> : <PanelBottom size={13} className="shrink-0" />}
                   {position === 'bottom' ? i18nT('components.bottomTerminalPanel.move_panel_to_right') : i18nT('components.bottomTerminalPanel.move_panel_to_bottom')}
                 </DropdownMenuItem>
@@ -571,6 +574,9 @@ export function TerminalDetachedBar() {
 export default function BottomTerminalPanel() {
   const { open, height, width, position } = useBottomTerminal()
   const [dragging, setDragging] = useState(false)
+  // The docked panel's guide scope (`shell.terminal-panel`), reported from
+  // outside its `open` guard so "closed" is said while it is hidden.
+  useGuideRevealScope('shell.terminal-panel', open)
 
   const isRight = position === 'right'
 

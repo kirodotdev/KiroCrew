@@ -15,6 +15,7 @@ import { SaveCreateLabel, expandDow } from '../utils/cronUtils'
 import { adviseCronMode } from '../utils/cronModeAdvice'
 
 import { i18nT } from '../i18n/t'
+import { uiLocation } from '../uiLocations/uiLocation'
 import { fmtWeekday } from '../i18n/format'
 import ErrorNotice from './ErrorNotice'
 export const TIMEZONES = ['America/Los_Angeles','America/Phoenix','America/Denver','America/Chicago','America/New_York','America/Sao_Paulo','Europe/London','Europe/Berlin','Europe/Paris','Asia/Kolkata','Asia/Shanghai','Asia/Tokyo','Australia/Sydney','Pacific/Auckland','UTC']
@@ -641,6 +642,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
           value={schedMode}
           onChange={v => setSchedMode(v as 'interval' | 'weekly' | 'cron')}
           aria-label={i18nT('components.jobForm.schedule')}
+          {...uiLocation('schedule.edit-when')}
         />
         {schedMode === 'interval' ? (<>
           <Input type="number" min={1} style={{ flex: '0 0 70px' }} value={intVal} onChange={e => setIntVal(Math.max(1, parseInt(e.target.value) || 1))} />

@@ -478,11 +478,13 @@ describe('CrewChatWindow', () => {
     // A new shared row must be added to PEER_SAFE_ROWS on purpose, or it draws
     // through the store-free default instead of reading this hub's own state.
     const ids = createTranscriptRenderers({}).map(r => r.id)
-    const decided = new Set([...PEER_SAFE_ROWS, 'workflow_run_tool', 'subagent_run_tool', 'file'])
+    // A guide offer row reads the local guide store, which a peer's window has none of.
+    const decided = new Set([...PEER_SAFE_ROWS, 'workflow_run_tool', 'subagent_run_tool', 'file', 'conversation_card'])
     expect(ids.filter(id => !decided.has(id))).toEqual([])
     const crew = createCrewWindowRenderers({ instanceId: 'cd-1', key: 'k1', name: 'devbox', canRewind: () => false, onRewind: () => {}, rewindDisabled: false }).map(r => r.id)
     expect(crew).not.toContain('workflow_run_tool')
     expect(crew).not.toContain('subagent_run_tool')
+    expect(crew).not.toContain('conversation_card')
   })
 
   it('draws a peer code fence copy-only, with no Run into this machine', async () => {
