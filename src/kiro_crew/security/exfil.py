@@ -2014,6 +2014,10 @@ _DATA_EXFIL_FILE_BODY_RULE = "data-exfil-curl-file-body"
 #: `_INERT_SEARCH_VERBS`, which must not grow the `rm -rf /` deny-exception.
 _CARVEOUT_VERBS = frozenset((*_INERT_SEARCH_VERBS, "date"))
 
+#: Bash splits words on space and tab only; `str.split()` also splits on
+#: Unicode spaces such as NBSP, which would misread `date<NBSP>x` as `date`.
+_BASH_BLANKS_RE = re.compile(r"[ \t]+")
+
 
 def _data_at_carveout_allows(command: str) -> bool:
     """A `-d @` hit in a benign `date`/`grep` command, not an upload: reuses
@@ -2021,8 +2025,8 @@ def _data_at_carveout_allows(command: str) -> bool:
     and requires a first word in `_CARVEOUT_VERBS`, which runs no subcommand."""
     if not _exception_eligible(command):
         return False
-    words = command.split()
-    return bool(words) and words[0] in _CARVEOUT_VERBS
+    words = _BASH_BLANKS_RE.split(command.strip(" \t"))
+    return words[0] in _CARVEOUT_VERBS
 
 
 def audit_bash_exfiltration(

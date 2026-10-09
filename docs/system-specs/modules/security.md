@@ -2200,7 +2200,7 @@ plain command, a character-class check over `_SHELL_ACTIVE_CHARS` that rejects
 any command substitution, process substitution, subshell, redirection or
 chaining and is deliberately quote-blind — and allows the hit only when that
 gate passes AND the command's first word is `date` or an inert-search verb
-(`grep`/`egrep`/`fgrep`). Those programs execute no subcommand, so an eligible
+(`grep`/`egrep`/`fgrep`). The first word is split on space and tab only, as bash splits it, so a Unicode space such as NBSP stays inside the word (`date<NBSP>x` is not `date`). Those programs execute no subcommand, so an eligible
 invocation cannot reach an HTTP client. `sed` is not in the set because its `e`
 command and `s///e` flag run a shell. Anything with shell evaluation in it falls
 through to the unchanged denial — including the reporter's multi-statement

@@ -215,8 +215,9 @@ def _url_payload_command(n: int) -> str:
 #: The denial is unchanged; the carve-out reuses ``denied_rules._exception_eligible``
 #: and allows the hit only for a single plain command whose first word runs no
 #: subcommand. It is a security-deciding predicate, so it cannot leave the package,
-#: and no dead code remains to offset it.
-_PACKAGE_LINE_BUDGET = 28_663
+#: and no dead code remains to offset it. Its first word is split on space and tab
+#: only, the way bash splits, so a Unicode space cannot pose as a word break.
+_PACKAGE_LINE_BUDGET = 28_665
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

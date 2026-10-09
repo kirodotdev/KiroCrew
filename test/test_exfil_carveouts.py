@@ -123,6 +123,24 @@ class TestRedefinitionAndExecIsNotInert:
         assert audit(cmd) is not None
 
 
+class TestFirstWordMatchesBash:
+    """The first word is read the way bash reads it: split on space and tab only."""
+
+    def test_nbsp_glued_first_word_denied(self) -> None:
+        # bash keeps a no-break space inside the word, so this runs a program
+        # named `date<NBSP>x`, not `date`.
+        assert audit("date\u00a0x " + _FLAG + _URL) is not None
+
+    def test_leading_nbsp_first_word_denied(self) -> None:
+        assert audit("\u00a0date " + _FLAG + _URL) is not None
+
+    def test_ideographic_space_glued_first_word_denied(self) -> None:
+        assert audit("grep\u3000x " + _FLAG + " notes.txt") is not None
+
+    def test_tab_separated_first_word_allowed(self) -> None:
+        assert audit("date\t-u -d @0 +%F") is None
+
+
 class TestExistingCurlDenialsUnchanged:
     """The carve-out must not weaken any curl file-body denial."""
 
