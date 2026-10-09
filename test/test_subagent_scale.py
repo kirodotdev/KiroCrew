@@ -888,6 +888,43 @@ class TestSecondStopOfAQueuedRun:
         finally:
             h.close()
 
+    @pytest.mark.asyncio
+    async def test_second_stop_makes_no_store_call(self) -> None:
+        """The second Stop answers from the registered record alone.
+
+        Its row already ended with the first Stop, so there is nothing for the
+        store to cancel, and a store call here would run on the event loop.
+        """
+        h = ManagerHarness(max_concurrent=self.CAP)
+        try:
+            await wait_taskq_open(h.mgr)
+            running = [h.spawn(f"running-{i}") for i in range(self.CAP)]
+            waiting = h.spawn("waiting")
+            await h.settle()
+            assert await h.mgr.cancel(waiting.id) is True
+            assert h.mgr._agents[waiting.id].queued, "premise: the stop's record is registered"
+
+            admission_type = type(h.mgr._admission)
+            real_cancel = admission_type.taskq_cancel_queued
+            store_cancels: list[str] = []
+
+            def _counting(self: object, agent_id: str, *args: object, **kwargs: object) -> object:
+                store_cancels.append(agent_id)
+                return real_cancel(self, agent_id, *args, **kwargs)
+
+            loop_calls = h.store.loop_thread_calls
+            with patch.object(admission_type, "taskq_cancel_queued", _counting):
+                assert await h.mgr.cancel(waiting.id) is False
+            assert store_cancels == [], "the second Stop asked the store to cancel the row again"
+            assert h.store.loop_thread_calls == loop_calls, "a store call ran on the event loop"
+
+            for info in running:
+                await h.end(info)
+            await asyncio.gather(*list(h.mgr._report_tasks))
+            assert h.mgr.running_count == 0
+        finally:
+            h.close()
+
 
 # ── 3. Stall two-sweep confirmation ──────────────────────────────────
 
