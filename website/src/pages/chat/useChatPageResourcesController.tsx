@@ -54,7 +54,6 @@ import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
 import {
   cancelComposerUploads,
   holdComposerSend,
-  landComposerAttachments,
   registerComposerUpload,
   finishComposerAttachment,
   releaseComposerSend,
@@ -727,19 +726,14 @@ export function useChatPageResourcesController({
         setUploadError(i18nT('pages.chatPage.upload_failed_check_file_type_and_size_max_50_mb'))
       }
     } finally {
+      // The slot that is alive now: the replacement, when a memory-mode switch
+      // retired `requestSlot` -- which also handed it this upload's hold and
+      // controller.
+      const landing = resolveSlotSuccession(requestSlot)
       // Drop only THIS request's controller: the registry keeps Cancel offered
       // while a sibling upload of the slot is still running.
-      unregisterComposerUpload(requestSlot, controller)
-      // The paths land in the slot that is alive now (the replacement, when a
-      // memory-mode switch retired `requestSlot`), while the hold is released
-      // on the slot that took it.
-      const landing = resolveSlotSuccession(requestSlot)
-      if (landing === requestSlot) {
-        finishComposerAttachment(requestSlot, completedPaths)
-      } else {
-        landComposerAttachments(landing, completedPaths)
-        releaseComposerSend(requestSlot)
-      }
+      unregisterComposerUpload(landing, controller)
+      finishComposerAttachment(landing, completedPaths)
       releaseSlotSuccession(requestSlot)
       // Unchanged from main, and still wrong for concurrent uploads: the first
       // request to settle clears the shared flag while a sibling runs. Left

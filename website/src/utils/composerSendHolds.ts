@@ -200,6 +200,27 @@ class ComposerSync {
     this.controllers.get(slot)?.forEach(controller => controller.abort())
   }
 
+  /** A slot replaced by another (a memory-mode switch) hands its Send holds
+   *  and running uploads to the replacement, so Send stays held and Cancel
+   *  stays offered where the user now is. */
+  handOverComposerUploads(from: Slot, to: Slot) {
+    if (!from || !to || from === to) return
+    const held = this.holds.get(from) ?? 0
+    const live = this.controllers.get(from)
+    if (!held && !live) return
+    if (held) {
+      this.holds.delete(from)
+      this.holds.set(to, (this.holds.get(to) ?? 0) + held)
+    }
+    if (live) {
+      this.controllers.delete(from)
+      const target = this.controllers.get(to)
+      if (target) live.forEach(controller => target.add(controller))
+      else this.controllers.set(to, live)
+    }
+    this.notify()
+  }
+
   isComposerUploadCancellable(slot: Slot): boolean {
     return !!slot && (this.controllers.get(slot)?.size ?? 0) > 0
   }
@@ -224,6 +245,7 @@ export function releaseComposerSend(slot: Slot) { composerSync.releaseComposerSe
 export function isComposerSendHeld(slot: Slot) { return composerSync.isComposerSendHeld(slot) }
 export function landComposerAttachments(slot: Slot, paths: string[]) { composerSync.landComposerAttachments(slot, paths) }
 export function takeComposerArrivals(slot: Slot) { return composerSync.takeComposerArrivals(slot) }
+export function handOverComposerUploads(from: Slot, to: Slot) { composerSync.handOverComposerUploads(from, to) }
 export function finishComposerAttachment(slot: Slot, paths: string[] = []) { composerSync.finishComposerAttachment(slot, paths) }
 export function registerComposerUpload(slot: Slot, controller: AbortController) { composerSync.registerComposerUpload(slot, controller) }
 export function unregisterComposerUpload(slot: Slot, controller: AbortController) { composerSync.unregisterComposerUpload(slot, controller) }
