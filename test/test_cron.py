@@ -1397,6 +1397,23 @@ class TestComputeNextRunTs:
         assert compute_next_run_ts(job, now=now) is None
 
 
+def _due_runs(job: CronJob, start: float, minutes: int, run_secs: float = 5.0) -> list[float]:
+    """Instants in ``[start, start + minutes)`` at which the timer would run ``job``.
+
+    Mirrors the real loop: a tick at least every ``_TIMER_POLL_SECS``, a due job
+    runs, and ``_execute`` stamps ``last_run_ts`` when the run ends, ``run_secs``
+    after it started.
+    """
+    runs: list[float] = []
+    for i in range(minutes):
+        for offset in range(1, 60, _TIMER_POLL_SECS):
+            now = start + i * 60 + offset
+            if CronService._is_due(job, now):
+                runs.append(now)
+                job.last_run_ts = now + run_secs
+    return runs
+
+
 class TestTimezoneScheduling:
     """Tests for timezone-aware cron scheduling."""
 
@@ -1564,15 +1581,16 @@ class TestTimezoneScheduling:
         assert CronService._is_due(job, now) is False
 
     def test_is_due_spring_forward_skipped_hour(self) -> None:
-        """During spring forward, a job targeting the skipped hour still fires.
+        """During spring forward, a job targeting the skipped hour fires exactly once.
 
         On the spring-forward day, Toronto clocks jump 2:00 AM EST -> 3:00 AM EDT at 07:00 UTC,
         so the wall-clock 2:30 AM never occurs. The invariant we care about is
-        that the daily job is NOT silently lost for the day: it still fires, in
-        the resumed hour, and never before the jump. We assert that invariant
-        rather than the exact resolved instant, because the precise UTC minute(s)
-        croniter maps the skipped wall-time to are croniter-version-specific
-        (e.g. 2.0.7 matches a two-minute window at 07:29-07:30 UTC).
+        that the daily job is NOT silently lost for the day and NOT doubled: it
+        fires once, in the resumed hour, and never before the jump. We assert
+        that invariant rather than the exact resolved instant, because the precise
+        UTC minute(s) croniter maps the skipped wall-time to are
+        croniter-version-specific (e.g. 2.0.7 matches a two-minute window at
+        07:29-07:30 UTC, both instants of the same occurrence).
         """
         job = CronJob(
             id="j1",
@@ -1581,20 +1599,16 @@ class TestTimezoneScheduling:
             schedule=CronSchedule(kind="cron", cron_expr="30 2 * * *"),
             timezone="America/Toronto",
         )
-        # Scan every UTC minute across the spring-forward window (01:00-04:00
-        # local) and collect the minutes the job is due.
-        window_start = datetime(2025, 3, 9, 6, 0, tzinfo=timezone.utc)
+        # Tick across the spring-forward window (01:00-04:00 local) the way the
+        # timer does, stamping each run, and collect the instants the job runs.
+        window_start = datetime(2025, 3, 9, 6, 0, tzinfo=timezone.utc).timestamp()
         jump_utc = datetime(2025, 3, 9, 7, 0, tzinfo=timezone.utc).timestamp()
         resume_end = datetime(2025, 3, 9, 8, 0, tzinfo=timezone.utc).timestamp()
-        fires = [
-            ts
-            for i in range(180)
-            if CronService._is_due(job, (ts := (window_start.timestamp() + i * 60)))
-        ]
-        # Not silently skipped — it fires at least once on the DST day.
-        assert fires, "daily job in the skipped DST hour must still fire"
-        # Every fire lands in the resumed hour [03:00, 04:00) EDT, i.e. at/after
-        # the jump and within the first resumed hour — never at the vanished
+        fires = _due_runs(job, window_start, 180)
+        # Not silently skipped, and not run twice for the one occurrence.
+        assert len(fires) == 1, f"daily job in the skipped DST hour ran {len(fires)} times"
+        # The run lands in the resumed hour [03:00, 04:00) EDT, i.e. at/after
+        # the jump and within the first resumed hour, never at the vanished
         # pre-jump wall-clock time.
         assert all(jump_utc <= ts < resume_end for ts in fires)
 
@@ -1614,6 +1628,52 @@ class TestTimezoneScheduling:
             if CronService._is_due(job, window_start.timestamp() + i * 60)
         ]
         assert len(fires) == 1
+
+    def test_is_due_fall_back_hourly_job_runs_in_both_repeated_hours(self) -> None:
+        """An hourly job runs in both real 1:00 AM hours of the fall-back day.
+
+        Toronto clocks fall back 2:00 AM EDT -> 1:00 AM EST at 06:00 UTC, so
+        1:00 AM happens twice, an hour apart (05:00Z and 06:00Z). Both are real
+        hours, so ``0 * * * *`` runs at 04:00Z, 05:00Z and 06:00Z.
+        """
+        job = CronJob(
+            id="j1",
+            name="test",
+            message="msg",
+            schedule=CronSchedule(kind="cron", cron_expr="0 * * * *"),
+            timezone="America/Toronto",
+        )
+        start = datetime(2025, 11, 2, 4, 0, tzinfo=timezone.utc).timestamp()
+        assert len(_due_runs(job, start, 180)) == 3
+
+    def test_is_due_spring_forward_hourly_job_runs_once_per_real_hour(self) -> None:
+        """An hourly job runs once in each hour the wall clock actually shows.
+
+        From 05:00Z to 09:00Z on the spring-forward day Toronto reads 00:00-01:59
+        EST, then 03:00-04:59 EDT, so ``30 * * * *`` has four occurrences.
+        """
+        job = CronJob(
+            id="j1",
+            name="test",
+            message="msg",
+            schedule=CronSchedule(kind="cron", cron_expr="30 * * * *"),
+            timezone="America/Toronto",
+        )
+        start = datetime(2025, 3, 9, 5, 0, tzinfo=timezone.utc).timestamp()
+        assert len(_due_runs(job, start, 240)) == 4
+
+    @pytest.mark.parametrize("run_secs", [5.0, 54.0])
+    def test_is_due_every_minute_job_runs_every_minute(self, run_secs: float) -> None:
+        """``* * * * *`` runs in every minute, whether a run ends early or late in it."""
+        job = CronJob(
+            id="j1",
+            name="test",
+            message="msg",
+            schedule=CronSchedule(kind="cron", cron_expr="* * * * *"),
+            timezone="America/Toronto",
+        )
+        start = datetime(2025, 4, 18, 12, 0, tzinfo=timezone.utc).timestamp()
+        assert len(_due_runs(job, start, 120, run_secs=run_secs)) == 120
 
 
 class TestGetJob:
