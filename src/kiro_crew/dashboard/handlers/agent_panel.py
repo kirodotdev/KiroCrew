@@ -1669,7 +1669,14 @@ def _folded_through(slot: str, unit: str) -> dict[str, int | None]:
 
     Two reads, not fourteen: the session-keyed folds come back from ONE
     ``fold_session`` pass over the unit's log, and each slot-keyed fold is a warm memo
-    lookup on an eager fold. Neither walks a log this route is the first reader of.
+    lookup on an eager fold that walks nothing.
+
+    What the session pass costs depends on what is already on disk. It is called with no
+    ``since``, so it resumes from the unit's newest savepoint and walks only the entries
+    past it -- and for a unit that has none, which is every unit this route reaches
+    before its first eager fold lands, it walks the log from the beginning. That is one
+    pass for all seven session folds either way, and it is bounded by the log rather than
+    by the number of folds.
 
     Every omission is deliberate and each is ``None`` rather than ``0``:
 

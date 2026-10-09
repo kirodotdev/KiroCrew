@@ -35,7 +35,7 @@ translation step in between.
 ``type: "unknown"``
     The probe saw ``null`` and nothing declares what a non-null value would be. A
     validator can neither accept nor refuse a path ending here. EMPTY TODAY -- every
-    nullable leaf the 14 registered folds render is declared in
+    nullable leaf every registered fold renders is declared in
     :data:`_NULLABLE`, and ``test_dashboard_types`` fails if a new one appears
     undeclared. It exists so that a fold added later degrades to "the catalog cannot
     see this" instead of to a type somebody guessed.
@@ -54,6 +54,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Final, Mapping
 
+from kiro_crew.crew_log.entry_types import DASHBOARD_FOLD_NAME
 from kiro_crew.crew_log.projection import (
     _FOLDS,
     _SLOT_FOLD_ROW_BYTES,
@@ -139,6 +140,13 @@ _NULLABLE: Final[dict[str, dict[str, Any]]] = {
             "seq": {"type": "number"},
         },
     },
+    # ``_outline_render``: the window's first and last turn ORDINAL, both null while it
+    # holds no turn. A number and not a string: ``_outline_step`` places a row only for
+    # a ``turn`` that is an ``int``, is not a ``bool`` and is ``>= 0``, and the row
+    # carries that same value under ``turn`` -- so a non-null leaf here is always one of
+    # those integers, never a formatted label.
+    "outline.first_turn": {"type": "number"},
+    "outline.last_turn": {"type": "number"},
     # ``_work_render``: the item this board hangs under, null for a root conductor.
     "work.conductor.parent_item": {"type": "string"},
 }
@@ -168,7 +176,13 @@ _OPAQUE: Final[dict[str, str]] = {
     "radar.phase_lines": "an item id",
     "panel.data": "a key the publishing crew chose",
     "panel.owners": "an owning crew key",
-    "agentic.fields": "an agentic field name",
+    # Built from the fold's own registry constant rather than spelled out, because a
+    # key naming a fold under a name the registry does not carry is not an error here:
+    # ``_node`` looks this table up with a plain ``in``, misses, and falls through to
+    # the plain-object branch -- so the map renders as ``properties: {}``, which tells a
+    # validator that no key below it is valid. That is the opposite of what this entry
+    # says, and it is the one failure in this module that is silent.
+    f"{DASHBOARD_FOLD_NAME}.fields": "an agentic field name",
 }
 
 

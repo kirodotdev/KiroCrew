@@ -20,6 +20,7 @@ from typing import Any
 import pytest
 
 from kiro_crew import dashboard_types as dt
+from kiro_crew.crew_log.entry_types import DASHBOARD_FOLD_NAME
 from kiro_crew.crew_log.projection import (
     _FOLDS,
     _SLOT_FOLD_ROW_BYTES,
@@ -87,7 +88,7 @@ class TestEveryFoldIsCovered:
         demonstrate that, and the patch is undone with the fixture.
         """
         added = "probe_only_fold"
-        fold = dt._FOLDS["agentic"]
+        fold = dt._FOLDS[DASHBOARD_FOLD_NAME]
         monkeypatch.setitem(dt._FOLDS, added, fold)
         monkeypatch.setattr(dt, "FOLD_NAMES", FOLD_NAMES + (added,))
 
@@ -147,9 +148,9 @@ class TestFoldedThrough:
         assert entries["usage"].folded_through is None
 
     def test_a_supplied_seq_is_carried_through(self) -> None:
-        entries = dt.catalog_by_name({"work": 4219, "agentic": 7})
+        entries = dt.catalog_by_name({"work": 4219, DASHBOARD_FOLD_NAME: 7})
         assert entries["work"].folded_through == 4219
-        assert entries["agentic"].folded_through == 7
+        assert entries[DASHBOARD_FOLD_NAME].folded_through == 7
         assert entries["work"].to_dict()["folded_through"] == 4219
 
     def test_no_seq_at_all_still_answers_the_whole_catalog(self) -> None:
@@ -219,8 +220,8 @@ class TestTheThreeStates:
         assert found == len(dt._OPAQUE), "an opaque declaration did not reach the shape"
 
     def test_every_opaque_declaration_is_a_real_path(self) -> None:
-        """The other direction: a stale entry naming a path a fold no longer renders
-        would sit here forever claiming to describe something."""
+        """The other direction: a stale entry naming a path no fold renders would sit
+        here forever claiming to describe something."""
         by_name = dt.catalog_by_name()
         for key in dt._OPAQUE:
             fold, _, path = key.partition(".")
@@ -229,8 +230,9 @@ class TestTheThreeStates:
 
     def test_no_leaf_is_typed_unknown_today(self) -> None:
         """The third state is REACHABLE and currently EMPTY, which is the claim worth
-        pinning: every nullable leaf the 14 folds render is declared, so an undeclared
-        one is a fold added later and this fails rather than shipping a guess."""
+        pinning: every nullable leaf the registered folds render is declared, so an
+        undeclared one is a fold added later and this fails rather than shipping a
+        guess."""
         unknown = [
             path
             for entry in dt.catalog()
@@ -284,7 +286,7 @@ class TestDeclaredNullables:
 
 class TestShapeAt:
     def test_an_empty_path_is_the_whole_shape(self) -> None:
-        shape = dt.catalog_by_name()["agentic"].shape
+        shape = dt.catalog_by_name()[DASHBOARD_FOLD_NAME].shape
         assert dt.shape_at(shape, "") == dict(shape)
 
     def test_a_real_path_answers_its_leaf(self) -> None:
@@ -323,7 +325,7 @@ class TestShapeAt:
 
 class TestDescribe:
     def test_the_payload_carries_the_types_and_the_vocabulary(self) -> None:
-        payload = dt.describe({"agentic": 12})
+        payload = dt.describe({DASHBOARD_FOLD_NAME: 12})
         names = [row["name"] for row in payload["types"]]
         assert names == list(FOLD_NAMES)
         assert payload["unknown_type"] == dt.UNKNOWN_TYPE
@@ -331,8 +333,8 @@ class TestDescribe:
         assert payload["owner_served"] == OWNER_SERVED_SLOT_PROJECTION
         assert payload["session_keyed"] == list(SESSION_FOLD_NAMES)
         assert payload["slot_keyed"] == list(SLOT_PROJECTION_NAMES)
-        agentic = next(row for row in payload["types"] if row["name"] == "agentic")
-        assert agentic["folded_through"] == 12
+        dashboard = next(row for row in payload["types"] if row["name"] == DASHBOARD_FOLD_NAME)
+        assert dashboard["folded_through"] == 12
 
     def test_the_payload_is_json_serializable(self) -> None:
         import json
