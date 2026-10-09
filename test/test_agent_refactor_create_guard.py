@@ -609,6 +609,7 @@ def test_the_facade_is_found_under_every_name_src_binds_it_to() -> None:
             "auto_approve",
             "conductor_agents",
             "default_spec_commit",
+            "first_crewmate",
             "fork_refresh",
             "kiro_hooks",
             "managed_mcp",

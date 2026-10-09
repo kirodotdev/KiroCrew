@@ -9469,6 +9469,9 @@
       "moreCols": "mehr Spalten",
       "fewerRows": "weniger Zeilen",
       "moreRows": "mehr Zeilen"
+    },
+    "assistantWelcome": {
+      "default_name": "Mate"
     }
   },
   "hooks": {
@@ -17495,7 +17498,8 @@
       "dashboard_unavailable": "Dieses Dashboard konnte nicht geladen werden.",
       "dashboard_render_error": "Dieses Dashboard konnte nicht gezeichnet werden.",
       "dashboard_frame_title": "Dashboard von {{crew}}",
-      "dashboard_rendering": "Dashboard wird gezeichnet…"
+      "dashboard_rendering": "Dashboard wird gezeichnet…",
+      "greeting_failed": "Die erste Begrüßung konnte nicht gestartet werden. Du kannst deine Nachricht trotzdem unten schreiben."
     },
     "tasksCapacityCard": {
       "title": "Aufgaben & Kapazität",

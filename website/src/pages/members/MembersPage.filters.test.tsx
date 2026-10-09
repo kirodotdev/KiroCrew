@@ -117,6 +117,7 @@ async function openFilters() {
 beforeEach(() => {
   vi.clearAllMocks()
   localStorage.clear()
+  localStorage.setItem('mc-preview-crew', '1')
 })
 
 describe('matchesSource', () => {
@@ -537,7 +538,8 @@ describe('MembersPage hides unlisted crewmates', () => {
       ;(api.members as ReturnType<typeof vi.fn>).mockResolvedValue({
         members: [row('pkg-tool', { ...NO }), row('legacy-aim', { source: 'aim', ...NO })],
       })
-      renderWithProviders(<MembersPage />)
+      // Below md a bare visit is the roster.
+      renderWithProviders(<MembersPage />, { route: '/members' })
       expect(await screen.findByTestId('member-all-hidden')).toBeTruthy()
       expect(names()).toEqual([])
       fireEvent.change(screen.getByTestId('member-search'), { target: { value: 'pkg' } })

@@ -2,6 +2,9 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import type { KiroCrewAgent } from '../components/AgentSelector'
+import { hideMateWithoutPreview } from '../lib/assistantMember'
+import { PREVIEW_CREW } from '../utils/previewFlags'
+import { usePreviewFlag } from './usePreviewFlag'
 
 /**
  * Reads the execution-choice catalog (`GET /api/agents/catalog`): configured
@@ -122,13 +125,17 @@ export function useAgents(refreshTrigger: number, sessionKey?: string, projectDi
     return () => { cancelled = true }
   }, [refreshTrigger, sessionKey, projectDir, reloadTick])
 
-  const agents = useMemo(() => foldByName(choices), [choices])
-  const displayAgents = useMemo(() => foldByName(displayChoices), [displayChoices])
+  // Mate stays out of every list until the Crewmates preview is on.
+  const crewPreview = usePreviewFlag(PREVIEW_CREW)
+  const shown = useMemo(() => hideMateWithoutPreview(choices, crewPreview), [choices, crewPreview])
+  const shownDisplay = useMemo(() => hideMateWithoutPreview(displayChoices, crewPreview), [displayChoices, crewPreview])
+  const agents = useMemo(() => foldByName(shown), [shown])
+  const displayAgents = useMemo(() => foldByName(shownDisplay), [shownDisplay])
   // Filtered AFTER the fold, so hiding a member from the pop-up never changes
   // which row a bare name resolves to for the name-only consumers.
   const pickerChoices = useMemo(
-    () => (memberChoices ? choices : withoutCoveredCrewmates(choices, defaultAgent)),
-    [choices, memberChoices, defaultAgent],
+    () => (memberChoices ? shown : withoutCoveredCrewmates(shown, defaultAgent)),
+    [shown, memberChoices, defaultAgent],
   )
 
   return { agents, displayAgents, choices: pickerChoices, defaultAgent, error, reload, reloading }

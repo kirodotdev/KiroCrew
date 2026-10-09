@@ -7856,6 +7856,8 @@ async def _end_turn_tail(
         # with the turn; the next turn's provenance is its own opener's.
         # Outermost frame only: the depth-1 re-entry's exit is not the turn's end.
         slot._turn_channel_narrowed = False
+        slot._turn_channel_origin = False
+        slot._turn_user_sent = False
     # A healthy `wait` clears its own state with a final keepalive ping, but
     # that ping is best-effort and cannot run at all if the MCP subprocess died
     # mid-sleep (hard stop, crash, gateway abort). Clearing at turn end is the
@@ -8336,6 +8338,8 @@ async def _run_chat(
         # the depth-1 re-entry runs inside the same turn and must keep a narrowing
         # the turn already took.
         slot._turn_channel_narrowed = False
+        slot._turn_channel_origin = bool(_directive_channel_origin)
+        slot._turn_user_sent = bool(_directive_user_origin) and not _directive_channel_origin
     # Dispatch appends the triggering row before entering this runner. Freeze
     # that row now, before await points, prompt expansion or new deliveries.
     _current_replay_message = _current_message

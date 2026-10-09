@@ -3,6 +3,7 @@ import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { ChatMessage } from '../../types'
 import {
+  mateNarration,
   crewmateBubbleClass,
   crewmateRunPosition,
   filterCrewmateChat,
@@ -335,5 +336,44 @@ describe('crewmateRowClass', () => {
     expect(crewmateRowClass('end')).toBe('mt-1.5')
     expect(crewmateRowClass('start')).toBe('mt-3')
     expect(crewmateRowClass('single')).toBe('mt-3')
+  })
+})
+
+describe('mateNarration', () => {
+  const streaming = (content: string): ChatMessage => ({ role: 'streaming', content, cls: '' })
+  const verdicts = (rows: ChatMessage[], running: boolean) => {
+    const v = mateNarration(rows, running)
+    return rows.map(m => v.get(m) ?? 'bubble')
+  }
+
+  it('hides the narration before a tool call once the answer follows it', () => {
+    const rows = [user('t1'), said('t2', "I'll look up where chat history lives."), tool('t3'), said('t5', 'Open Older Sessions.')]
+    expect(verdicts(rows, false)).toEqual(['bubble', 'hidden', 'bubble', 'bubble'])
+  })
+
+  it("a settled turn's only text stays a bubble even when a tool call followed it", () => {
+    const rows = [user('t1'), said('t2', 'Here is the answer.'), tool('t3')]
+    expect(verdicts(rows, false)).toEqual(['bubble', 'bubble', 'bubble'])
+  })
+
+  it('a turn with no tool call keeps its text as a bubble once it ends', () => {
+    expect(verdicts([user('t1'), said('t2', 'Yes.')], false)).toEqual(['bubble', 'bubble'])
+  })
+
+  it('while live, the first text is a status line: streaming, after a tool call starts, but not the answer after work', () => {
+    expect(verdicts([user('t1'), streaming("I'll look")], true)).toEqual(['bubble', 'status'])
+    expect(verdicts([user('t1'), said('t2', "I'll look."), tool('t3')], true)).toEqual(['bubble', 'status', 'bubble'])
+    expect(verdicts([user('t1'), said('t2', "I'll look."), tool('t3'), streaming('Open Older')], true))
+      .toEqual(['bubble', 'hidden', 'bubble', 'bubble'])
+  })
+
+  it('only the last turn can be live: an earlier turn is judged settled', () => {
+    const rows = [user('t1'), said('t2', 'Done before.'), tool('t3'), user('t4'), streaming('Now')]
+    expect(verdicts(rows, true)).toEqual(['bubble', 'bubble', 'bubble', 'bubble', 'status'])
+  })
+
+  it('never reaches across a turn boundary for the answer', () => {
+    const rows = [user('t1'), said('t2', 'Checking.'), tool('t3'), user('t4'), said('t5', 'Next answer.')]
+    expect(verdicts(rows, false)).toEqual(['bubble', 'bubble', 'bubble', 'bubble', 'bubble'])
   })
 })

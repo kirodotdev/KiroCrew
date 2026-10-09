@@ -1,11 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { type MemberRosterRow } from '../api/client'
+import { membersRosterQuery } from '../api/membersQuery'
 import { CREWMATES_PAGE_ENTERED_EVENT, START_MEET_CREWMATES_EVENT } from '../components/MeetCrewmatesFlow'
+import { pendingMate } from '../lib/assistantMember'
 import { PREVIEW_CREW } from '../utils/previewFlags'
 import { usePreviewFlag } from './usePreviewFlag'
 import { useTheme } from './useTheme'
 
-/** No crewmate beyond the always-present `default` row (the main assistant). */
+/** No crewmate beyond the always-present `default` row. The first crewmate
+ *  (key `mate`) IS a crewmate, so a roster holding it is not empty: the page
+ *  opens it instead. */
 export function hasNoCrewmates(rows: readonly Pick<MemberRosterRow, 'name'>[] | undefined): boolean {
   return Array.isArray(rows) && rows.every(r => r.name === 'default')
 }
@@ -73,9 +78,6 @@ export function useMeetCrewmatesGate(): {
   // appear once more (after a reload, where the refused write means it is
   // genuinely still due). The Crew Members entry still opens it on demand.
   const closedThisSessionRef = useRef(false)
-  useEffect(() => {
-    if (tourEndDue && !closedThisSessionRef.current) setOpen(true)
-  }, [tourEndDue])
 
   // First visit to the Crewmates page. The entry is remembered, not judged on
   // arrival: on a reload straight into /members the page can announce itself
@@ -87,9 +89,25 @@ export function useMeetCrewmatesGate(): {
     window.addEventListener(CREWMATES_PAGE_ENTERED_EVENT, entered)
     return () => window.removeEventListener(CREWMATES_PAGE_ENTERED_EVENT, entered)
   }, [])
+
+  // Mate's first-visit welcome and this flow never both fire: while the
+  // Crewmates preview is on and Mate exists with no chat history, neither
+  // trigger opens the flow, and one held that way stays held for the session
+  // so it never lands over the user's first exchange with Mate. Mate absent
+  // or already chatted with, or a roster that cannot be read: unchanged.
+  const triggerDue = tourEndDue || (pageEntered && pageEntryDue)
+  const roster = useQuery({ ...membersRosterQuery, enabled: crewPreview && triggerDue })
+  const rosterSettled = !crewPreview || roster.data !== undefined || roster.isError
+  const matePending = crewPreview && roster.data !== undefined && pendingMate(roster.data) !== undefined
+  const heldForMateRef = useRef(false)
   useEffect(() => {
-    if (pageEntered && pageEntryDue && !closedThisSessionRef.current) setOpen(true)
-  }, [pageEntered, pageEntryDue])
+    if (!triggerDue || !rosterSettled || closedThisSessionRef.current || heldForMateRef.current) return
+    if (matePending) {
+      heldForMateRef.current = true
+      return
+    }
+    setOpen(true)
+  }, [triggerDue, rosterSettled, matePending])
 
   // A refused write is shown, not swallowed, and nothing local is marked done
   // on a refusal (`markCrewmatesOnboarded` applies its local state only after

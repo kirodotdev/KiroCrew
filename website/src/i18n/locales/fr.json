@@ -9596,6 +9596,9 @@
       "moreCols": "plus de colonnes",
       "fewerRows": "moins de lignes",
       "moreRows": "plus de lignes"
+    },
+    "assistantWelcome": {
+      "default_name": "Mate"
     }
   },
   "hooks": {
@@ -17749,7 +17752,8 @@
       "dashboard_unavailable": "Ce tableau de bord n'a pas pu etre charge.",
       "dashboard_render_error": "Ce tableau de bord n'a pas pu etre dessine.",
       "dashboard_frame_title": "Tableau de bord de {{crew}}",
-      "dashboard_rendering": "Affichage du tableau de bord…"
+      "dashboard_rendering": "Affichage du tableau de bord…",
+      "greeting_failed": "Le premier message d’accueil n’a pas pu démarrer. Tu peux quand même écrire ton message ci-dessous."
     },
     "tasksCapacityCard": {
       "title": "Tâches et capacité",

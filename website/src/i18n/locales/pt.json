@@ -9596,6 +9596,9 @@
       "moreCols": "mais colunas",
       "fewerRows": "menos linhas",
       "moreRows": "mais linhas"
+    },
+    "assistantWelcome": {
+      "default_name": "Mate"
     }
   },
   "hooks": {
@@ -17749,7 +17752,8 @@
       "dashboard_unavailable": "Nao foi possivel carregar este painel.",
       "dashboard_render_error": "Nao foi possivel desenhar este painel.",
       "dashboard_frame_title": "Painel de {{crew}}",
-      "dashboard_rendering": "Desenhando o painel…"
+      "dashboard_rendering": "Desenhando o painel…",
+      "greeting_failed": "Não foi possível iniciar a primeira saudação. Você ainda pode escrever sua mensagem abaixo."
     },
     "tasksCapacityCard": {
       "title": "Tarefas e capacidade",

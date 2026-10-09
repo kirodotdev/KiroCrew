@@ -3883,6 +3883,9 @@
     },
     "runInTerminalBtn": {
       "copied_paste_into_terminal": "Copied — paste it into the terminal"
+    },
+    "assistantWelcome": {
+      "default_name": "Mate"
     }
   },
   "hooks": {

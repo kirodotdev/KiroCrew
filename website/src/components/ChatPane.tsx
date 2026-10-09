@@ -13,8 +13,9 @@ import { createTranscriptRenderers } from '../pages/chat/transcriptRenderers'
 import ChatInput, { type ComposerBusyMode } from './ChatInput'
 import type { ChatInputProps } from './chat-input/props'
 import { busySteerFlag } from './chat-input/busySend'
-import { filterCrewmateChat } from './chat/crewmateBubbles'
+import { mateNarration, filterCrewmateChat } from './chat/crewmateBubbles'
 import CrewmateLiveActivity from './chat/CrewmateLiveActivity'
+import { useCarryHeldAnswer } from './chat/useCarryHeldAnswer'
 import type { CrewmateIdentity } from '../pages/chat/CrewmateMessage'
 import ErrorNotice from './ErrorNotice'
 import { Btn } from './ui'
@@ -520,11 +521,24 @@ export default function ChatPane({
   // in flight is filtered like any other: what the crewmate is doing right now
   // is the status line above the footer (`liveActivity`), not a transcript
   // row, so the working indicator holds still while steps come and go.
+  // Mate's chat also folds the narration it writes before a tool call
+  // (`mateNarration`): superseded narration is dropped here, and a live
+  // turn's first text is handed to the renderer as a muted status line.
+  // Other crewmates skip the read entirely.
   const crewmateLive = running || !!paneSlot?.running
-  const messages = useMemo(
-    () => (crewmate ? filterCrewmateChat(paneMessages) : paneMessages),
-    [crewmate, paneMessages],
+  const isMate = !!crewmate?.mate
+  const narration = useMemo(
+    () => (isMate ? mateNarration(paneMessages, running) : undefined),
+    [isMate, paneMessages, running],
   )
+  const messages = useMemo(() => {
+    if (!crewmate) return paneMessages
+    const drawn = filterCrewmateChat(paneMessages)
+    if (!narration || narration.size === 0) return drawn
+    const kept = drawn.filter(m => narration.get(m) !== 'hidden')
+    return kept.length === drawn.length ? drawn : kept
+  }, [crewmate, paneMessages, narration])
+  useCarryHeldAnswer(!!narration && Array.from(narration.values()).includes('status'), listRef)
   // What the crewmate is doing right now, for the status line above the
   // working indicator: read through the SAME seam the DM header's identity
   // pill reads (`useSlotActivity` over the slot's live status record), so the
@@ -1545,6 +1559,7 @@ export default function ChatPane({
       onFileOpen,
       crewmate,
       crewmateTranscript,
+      mateNarration: narration,
       // Session links resolve through the SAME renderer path the single-chat
       // page uses; there is no second resolver. Absent from the host = the
       // renderer's own gate leaves them plain.
@@ -1552,7 +1567,7 @@ export default function ChatPane({
       sessions,
       activeSession,
     }),
-    [slotKey, toolDisclosure, setToolDisclosureFor, busyMode, onFileOpen, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession],
+    [slotKey, toolDisclosure, setToolDisclosureFor, busyMode, onFileOpen, crewmate, crewmateTranscript, narration, onSessionOpen, sessions, activeSession],
   )
 
   // Quote / Ask on selected assistant text — the same chat-core seam the main

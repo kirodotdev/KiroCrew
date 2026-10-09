@@ -9342,6 +9342,9 @@
       "moreCols": "列を増やす",
       "fewerRows": "行を減らす",
       "moreRows": "行を増やす"
+    },
+    "assistantWelcome": {
+      "default_name": "Mate"
     }
   },
   "hooks": {
@@ -17241,7 +17244,8 @@
       "dashboard_unavailable": "このダッシュボードを読み込めませんでした。",
       "dashboard_render_error": "このダッシュボードを描画できませんでした。",
       "dashboard_frame_title": "{{crew}} のダッシュボード",
-      "dashboard_rendering": "ダッシュボードを描画中…"
+      "dashboard_rendering": "ダッシュボードを描画中…",
+      "greeting_failed": "最初のあいさつを開始できませんでした。下にメッセージを入力することはできます。"
     },
     "tasksCapacityCard": {
       "title": "タスクと処理能力",

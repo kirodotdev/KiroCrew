@@ -7411,6 +7411,7 @@
       "add_member": "New crewmate",
       "slug_collision": "This crewmate shares its short name with {{name}}, whose chat already uses it. Rename one of the two crewmates to give each its own chat.",
       "thread_open_failed": "Could not open this crewmate's chat.",
+      "greeting_failed": "The first greeting could not be started. You can still write your message below.",
       "thread_repair_failed": "Couldn't reconnect this chat. Reopen the crewmate to try again.",
       "title": "Crewmates",
       "unread_message": "Unread message",

@@ -1275,6 +1275,7 @@ _MANAGED_SERVER_SUBCOMMANDS = {
     "kirocrew-crew-log": "mcp-crew-log",
     "kirocrew-debug": "mcp-debug",
     "kirocrew-panel": "mcp-panel",
+    "kirocrew-guide": "mcp-guide",
 }
 _MANAGED_SERVER_NAMES = set(_MANAGED_SERVER_SUBCOMMANDS)
 
@@ -1290,6 +1291,7 @@ _MANAGED_SERVER_TOOL_MODULES = {
     "kirocrew-crew-log": "kiro_crew.mcp_crew_log",
     "kirocrew-debug": "kiro_crew.mcp_debug",
     "kirocrew-panel": "kiro_crew.mcp_panel",
+    "kirocrew-guide": "kiro_crew.mcp_guide",
 }
 
 
@@ -1333,6 +1335,7 @@ _MANAGED_SERVERS_CALLER_AWARE: frozenset[str] = frozenset(
         "kirocrew-crew-log",
         "kirocrew-debug",
         "kirocrew-panel",
+        "kirocrew-guide",
     }
 )
 

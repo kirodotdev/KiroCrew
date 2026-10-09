@@ -32,19 +32,24 @@
  * no one lands on the crewmate the user last CHATTED with (`last_chat_ts`, a
  * server record, so it survives a gateway restart), else on the one last
  * opened in this browser if it is still on the roster, else on the most
- * recently USED chat (greatest `last_active_ts`). That is the conversation the user
+ * recently USED chat (greatest `last_active_ts`), else on the first crewmate
+ * (key `mate`, see lib/assistantMember), which is a crewmate like any other: a
+ * first visit with no usage lands on its welcome. The reserved `default` member
+ * is never landed on or remembered. That is the conversation the user
  * most plausibly came back for, and it is a property of the user's own
  * history, not of the list order: #11763 rejected priming the user on
  * whichever row the SORT floated to the top, and that still holds — the
- * default follows use, never the sort. Only an EMPTY roster opens nothing;
+ * default follows use, never the sort. Only a roster with no crewmate beyond
+ * `default` opens nothing;
  * it shows the New crewmate hero instead. Below md nothing auto-opens (the
- * phone's two-level list rule).
+ * phone's two-level list rule) -- except Mate's first-visit landing (see
+ * `resolveMateLanding`), which applies at every width.
  */
 import { Fragment, lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, Check, ChevronRight, Circle, Goal, LayoutDashboard, Loader2, MessageCircleQuestionMark, Plus, RotateCw, Sparkles, Square, Star, X, Zap } from 'lucide-react'
 import { usePreviewFlag } from '../../hooks/usePreviewFlag'
-import { PREVIEW_DASHBOARD } from '../../utils/previewFlags'
+import { PREVIEW_CREW, PREVIEW_DASHBOARD } from '../../utils/previewFlags'
 import { PanelRightSolid } from '../../components/icons/panels'
 import { Btn } from '../../components/ui'
 import { CrewMemberMark } from '../../components/CrewMemberMark'
@@ -53,6 +58,8 @@ import { sendTurn } from '../../chat-core/transport/sendTurn'
 import { useTranslation } from 'react-i18next'
 import { api, type CrewTeam, type MemberRosterRow } from '../../api/client'
 import { crewDisplayName, type KiroCrewAgent } from '../../components/AgentSelector'
+import { isAssistantMember, pendingMate } from '../../lib/assistantMember'
+import { useFirstGreeting } from './useFirstGreeting'
 import {
   MEMBERS_ROSTER_QUERY_KEY,
   memberThreadQueryKey,
@@ -219,7 +226,8 @@ const LAST_MEMBER_CHAT_MARK_KEY = 'mc-members-last-member-chat-mark'
  *  a roster holding only `default` resolves to `undefined` and shows the
  *  empty-state hero. A remembered `default` is the restore effect's own case
  *  (`rememberedDefaultPick`, ranked above this). Pure, so the cases —
- *  restore, most-recently-used, tie, stale, empty — are tested directly. */
+ *  restore, most-recently-used, tie, stale, empty — are tested directly.
+ *  Mate's first visit is decided before this, by {@link resolveMateLanding}. */
 export function resolveDefaultMember(
   remembered: string | null,
   ordered: readonly MemberRosterRow[],
@@ -281,6 +289,16 @@ export function rememberedDefaultPick(
   return chatMarkOf(rows) > chatMark ? undefined : hit
 }
 
+/** Mate (`isAssistantMember`) while no message has been exchanged with it:
+ *  the Crewmates page lands there first, ahead of a remembered or more recently
+ *  used crewmate, so its welcome is the user's first look at the page. Once
+ *  its thread holds anything this answers `undefined` and the page's usual
+ *  landing rules apply unchanged. A separate, early rule on purpose, so the
+ *  usual rules ({@link resolveDefaultMember}) carry no Mate special case. */
+export function resolveMateLanding(rows: readonly MemberRosterRow[]): MemberRosterRow | undefined {
+  return pendingMate(rows)
+}
+
 type MemberMemoryDisplay = 'global' | 'legacy' | 'private' | 'ownership_mismatch' | 'unavailable'
 
 /** Full catalog keys for the Profile Memory tile, one per `memberMemoryDisplay` answer. */
@@ -294,6 +312,7 @@ const PROFILE_MEMORY_KEYS: Record<MemberMemoryDisplay, string> = {
 
 export function memberMemoryDisplay(row: MemberRosterRow): MemberMemoryDisplay {
   if (row.name === 'default') return row.memory_store === 'default' ? 'global' : 'unavailable'
+  if (isAssistantMember(row) && row.memory_store === 'default' && !row.memory_owner) return 'global'
   if (row.memory_owner && row.memory_owner !== row.name) return 'ownership_mismatch'
   if (row.memory_version === 2) return row.memory_owner === row.name ? 'private' : 'unavailable'
   if (row.memory_version === 1 && !row.memory_owner) return 'legacy'
@@ -477,6 +496,12 @@ function CrewFaceFlight({ flight, onDone }: { flight: FaceFlight; onDone: () => 
     document.body,
   )
 }
+
+/** The Assistant's docked panel choice, hidden until the user opens it. The
+ *  Assistant is the landing chat for a first-time user, so its page opens on
+ *  the conversation alone; opening the panel there is remembered here without
+ *  moving the choice every other crewmate reads from `PANEL_OPEN_KEY`. */
+const ASSISTANT_PANEL_OPEN_KEY = 'mc-members-assistant-panel-open'
 /** Static key per menu row — a map, not a template, so `check-i18n-keys` can
  *  resolve every reference (assembled keys are a counted blind spot there). */
 const SOURCE_LABEL_KEY: Record<Exclude<MemberSourceFilter, 'all'>, string> = {
@@ -886,13 +911,6 @@ export default function MembersPage() {
   )
   const loaded = rosterQuery.data !== undefined || rosterQuery.isError
   const loadError = rosterQuery.data === undefined && rosterQuery.isError
-  // Ask the host to show Meet CrewMates on the first visit. The host decides
-  // whether it is still due (whether this workspace has seen it, nothing
-  // else), so announcing on every mount is safe; the empty-state button stays
-  // the on-demand entry.
-  useEffect(() => {
-    window.dispatchEvent(new Event(CREWMATES_PAGE_ENTERED_EVENT))
-  }, [])
   // ONE source of truth for the roster fields the page derives from (starred
   // count, the Starred filter, search, sort, source chips): the react-query
   // rows merged with each member's pushed `roster` projection, projection
@@ -1390,7 +1408,14 @@ export default function MembersPage() {
   // permanent column is wanted at all, and whether the drawer is up right now
   // — so dismissing the drawer must not also hide the column the next time the
   // window widens.
-  const [dockedOpen, setDockedOpen] = usePersistedBool(PANEL_OPEN_KEY, true)
+  const [memberDockedOpen, setMemberDockedOpen] = usePersistedBool(PANEL_OPEN_KEY, true)
+  const [assistantDockedOpen, setAssistantDockedOpen] = usePersistedBool(ASSISTANT_PANEL_OPEN_KEY, false)
+  const onAssistant = useMemo(() => {
+    const open = members.find((m) => m.name === activeName)
+    return !!open && isAssistantMember(open)
+  }, [members, activeName])
+  const dockedOpen = onAssistant ? assistantDockedOpen : memberDockedOpen
+  const setDockedOpen = onAssistant ? setAssistantDockedOpen : setMemberDockedOpen
   const { panelVisible, showOpener } = panelChrome({ beside, dockedOpen, overlayOpen })
   // The two real faces the flight copy departs from and lands on (#18236), and
   // the pill face's box taken HERE, on open: by the time the dock commits the
@@ -1578,9 +1603,10 @@ export default function MembersPage() {
   const crewmateName = activeView?.name
   const crewmateAvatar = activeView?.avatar
   const crewmateLabel = activeView ? crewDisplayName(activeView) : undefined
+  const crewmateMate = isAssistantMember(activeView)
   const crewmateIdentity = useMemo<CrewmateIdentity | undefined>(
-    () => (crewmateName ? { name: crewmateName, avatar: crewmateAvatar, label: crewmateLabel } : undefined),
-    [crewmateName, crewmateAvatar, crewmateLabel],
+    () => (crewmateName ? { name: crewmateName, avatar: crewmateAvatar, label: crewmateLabel, mate: crewmateMate } : undefined),
+    [crewmateName, crewmateAvatar, crewmateLabel, crewmateMate],
   )
   // Most-recently-active first (like any IM member list); never-talked
   // members fall to the bottom alphabetically. Sorted from the cached roster,
@@ -1813,6 +1839,32 @@ export default function MembersPage() {
     [orderedMembers, defaultAgent],
   )
   const activeSlot = active ? threadOutcome?.slot_key ?? '' : ''
+  // The Crewmates preview. Mate is created in the background whatever it says,
+  // but nothing about Mate is put in front of the user -- no landing, no
+  // welcome -- until the preview is on and the page is opened.
+  const crewPreview = usePreviewFlag(PREVIEW_CREW)
+  // Mate's first-visit landing happens at most once per page mount, so a phone
+  // Back to the roster is never bounced into Mate's chat again.
+  const mateLandedRef = useRef(false)
+  // Mate speaks first: once its confirmed thread is open, ask the gateway for
+  // its first welcome. The server greets only an empty, never-greeted thread
+  // that still owes one, so this is a no-op on every later open. A crewmate
+  // created on this page greets through the create flow's own seeded turn.
+  const firstGreeting = useFirstGreeting(active?.slug, activeSlot, crewPreview && isAssistantMember(active))
+  // Ask the host to show Meet CrewMates on the first visit, once the roster
+  // says whether Mate's first-visit landing applies: that landing is the first
+  // visit then, so the flow is not also announced over it. The host decides
+  // whether the flow is still due (whether this workspace has seen it), so a
+  // later visit, once Mate has history, still announces; the empty-state
+  // button stays the on-demand entry.
+  const entryAnnouncedRef = useRef(false)
+  useEffect(() => {
+    if (entryAnnouncedRef.current || !loaded) return
+    entryAnnouncedRef.current = true
+    const mate = crewPreview && !loadError ? resolveMateLanding(members) : undefined
+    if (mate && (!urlMember || urlMember === mate.name)) return
+    window.dispatchEvent(new Event(CREWMATES_PAGE_ENTERED_EVENT))
+  }, [loaded, loadError, crewPreview, members, urlMember])
   // Two distinct verdicts with two different sentences: a collision is a
   // fact about the roster (the slug's thread belongs to another crew), a
   // failed POST is a transport error. Both render through ErrorNotice so
@@ -2972,8 +3024,9 @@ export default function MembersPage() {
   // opens it; a URL that names none (a fresh visit, the sidebar entry, a
   // reload) is REPLACED with the remembered crewmate if one is still on the
   // roster, so returning users land back on the conversation they left, else
-  // with the most recently USED one (`resolveDefaultMember`) — the default
-  // follows the user's own history, never the sort order (#11763). "Nothing
+  // with the most recently USED one, else the built-in Assistant
+  // (`resolveDefaultMember`) — the default follows the user's own history,
+  // never the sort order (#11763). "Nothing
   // to open" therefore means an EMPTY roster, and only that. A URL naming a
   // crewmate that is gone (deleted or renamed) falls back the same way, with
   // a one-line notice above the chat naming the swap — the user asked for
@@ -2982,7 +3035,8 @@ export default function MembersPage() {
   // navigation: no `?member=` IS the roster, so no auto-open there (same rule
   // as SidePanelLayout's remembered tab), and a gone crewmate in the URL
   // returns to the roster instead of bouncing the phone user into a different
-  // crewmate's chat.
+  // crewmate's chat. Mate's first-visit landing is the one exception, once
+  // per page mount, so the phone's Back to the roster stays on the roster.
   useEffect(() => {
     if (!loaded || loadError) return
     if (urlMember) {
@@ -3025,6 +3079,17 @@ export default function MembersPage() {
         setActiveName('')
       }
       return
+    }
+    // Mate's first visit wins first: never chatted with, Mate opens ahead of a
+    // remembered or more recently used crewmate. Every rule below is the
+    // page's ordinary landing, untouched by Mate.
+    if (!urlMember && crewPreview && !mateLandedRef.current) {
+      const mate = resolveMateLanding(members)
+      if (mate) {
+        mateLandedRef.current = true
+        setSearchParams({ [MEMBER_PARAM]: mate.name }, { replace: true })
+        return
+      }
     }
     if (isMobile) {
       if (urlMember) {
@@ -3106,7 +3171,7 @@ export default function MembersPage() {
     }
     restoredRef.current = target.name
     setSearchParams({ [MEMBER_PARAM]: target.name }, { replace: true })
-  }, [loaded, loadError, urlMember, urlTeam, teamsQ.data, members, listedMembers, activeName, isMobile, activate, setSearchParams, rosterQuery.isFetching, defaultAgentSettled, orderedMembers])
+  }, [loaded, loadError, urlMember, urlTeam, teamsQ.data, members, listedMembers, activeName, isMobile, activate, setSearchParams, rosterQuery.isFetching, defaultAgentSettled, orderedMembers, crewPreview])
 
   // Team open: the header row's click. Same history rule as openMember -- one
   // entry above md or while something is already open, a PUSHED step from the
@@ -3970,7 +4035,9 @@ export default function MembersPage() {
                         the name's tooltip instead. */}
                     {(() => {
                       const label = crewDisplayName(active)
-                      const idShown = label.toLowerCase() !== active.name.toLowerCase()
+                      // The built-in Assistant's ID beside its label reads as
+                      // noise; it is still shown in Settings.
+                      const idShown = !isAssistantMember(active) && label.toLowerCase() !== active.name.toLowerCase()
                       const idTip = t('components.agentSelector.agent_id_tooltip', { name: active.name })
                       return (
                         <>
@@ -4197,6 +4264,30 @@ export default function MembersPage() {
                 </Btn>
               </div>
             )}
+            {firstGreeting.failed && (
+              /* No hand-off: the Mate composer below stays mounted and can
+                 already hold what the user typed (ChatPane keeps that draft in
+                 local state); the hand-off navigates away and would unmount
+                 it. The chat itself still works, so this says only that the
+                 greeting did not start and offers it again in place. */
+              <div className="px-4 py-2 flex items-start gap-2" data-testid="member-greeting-error-row">
+                <ErrorNotice
+                  message={t('pages.membersPage.greeting_failed')}
+                  variant="inline"
+                  className="flex-1 min-w-0"
+                  testId="member-greeting-error"
+                />
+                <Btn
+                  disabled={firstGreeting.retrying}
+                  onClick={firstGreeting.retry}
+                  className="shrink-0"
+                  data-testid="member-greeting-retry"
+                >
+                  <RotateCw className="lucide-inline" aria-hidden />
+                  {t('pages.chat.thread.retry')}
+                </Btn>
+              </div>
+            )}
             {activeThreadFailed && (
               /* No hand-off while a cached thread is mounted under this line:
                  its DM composer still holds whatever the user typed (ChatPane
@@ -4323,6 +4414,7 @@ export default function MembersPage() {
             <CrewNotesTab
               slug={activeSlug}
               member={activeMemberName}
+              displayName={crewDisplayName(active)}
               header={null}
               visible
             />

@@ -9723,6 +9723,9 @@
       "moreCols": "больше столбцов",
       "fewerRows": "меньше строк",
       "moreRows": "больше строк"
+    },
+    "assistantWelcome": {
+      "default_name": "Mate"
     }
   },
   "hooks": {
@@ -18003,7 +18006,8 @@
       "dashboard_unavailable": "Не удалось загрузить эту панель.",
       "dashboard_render_error": "Не удалось отрисовать эту панель.",
       "dashboard_frame_title": "Панель {{crew}}",
-      "dashboard_rendering": "Отрисовка панели..."
+      "dashboard_rendering": "Отрисовка панели...",
+      "greeting_failed": "Не удалось начать первое приветствие. Ты всё равно можешь написать сообщение ниже."
     },
     "tasksCapacityCard": {
       "title": "Задачи и ёмкость",

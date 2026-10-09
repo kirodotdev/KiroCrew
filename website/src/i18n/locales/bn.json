@@ -9469,6 +9469,9 @@
       "moreCols": "বেশি কলাম",
       "fewerRows": "কম সারি",
       "moreRows": "বেশি সারি"
+    },
+    "assistantWelcome": {
+      "default_name": "Mate"
     }
   },
   "hooks": {
@@ -17495,7 +17498,8 @@
       "dashboard_unavailable": "এই ড্যাশবোর্ড লোড করা যায়নি।",
       "dashboard_render_error": "এই ড্যাশবোর্ড আঁকা যায়নি।",
       "dashboard_frame_title": "{{crew}}-এর ড্যাশবোর্ড",
-      "dashboard_rendering": "ড্যাশবোর্ড আঁকা হচ্ছে…"
+      "dashboard_rendering": "ড্যাশবোর্ড আঁকা হচ্ছে…",
+      "greeting_failed": "প্রথম অভিবাদন শুরু করা যায়নি। তুমি এখনও নিচে তোমার বার্তা লিখতে পারো।"
     },
     "tasksCapacityCard": {
       "title": "কাজ ও সামর্থ্য",

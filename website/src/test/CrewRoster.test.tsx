@@ -652,6 +652,27 @@ describe('crew editor — save', () => {
   })
 })
 
+describe('crew editor — Mate identity', () => {
+  // Mate is listed only with the Crewmates preview on (hideMateWithoutPreview).
+  beforeEach(() => { localStorage.setItem('mc-preview-crew', '1') })
+  afterEach(() => { localStorage.removeItem('mc-preview-crew') })
+  it('renaming Mate writes display_name under its unchanged key', async () => {
+    const mate = { name: 'mate', kiro_agent: 'kirocrew', workspace: 'default', memory_store: 'default' }
+    mockApi.kirocrewAgents.mockResolvedValue({ ...AGENTS_RESPONSE, agents: [DEFAULT_CREW, OTHER_CREW, mate] })
+    await renderRoster(3)
+    const sheet = await openEditor('Mate')
+    gotoPane(sheet, 'overview')
+    fireEvent.change(within(sheet).getByTestId('display-name-input'), { target: { value: 'Skipper' } })
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalled())
+    expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith(
+      'mate',
+      expect.objectContaining({ display_name: 'Skipper', kiro_agent: 'kirocrew' }),
+    )
+  })
+
+})
+
 describe('crew editor — stale writes', () => {
   it('does not close the panel when a write for a DIFFERENT crew lands', async () => {
     // Save A, dismiss while it is in flight, then open B: A's success must not
@@ -801,6 +822,21 @@ describe('crew editor — delete', () => {
     // offered rather than offered-then-rejected.
     expect(within(sheet).queryByRole('button', { name: 'Delete crewmate' })).not.toBeInTheDocument()
     expect(within(sheet).queryByText('Danger zone')).not.toBeInTheDocument()
+  })
+
+  it.each(['kirocrew', 'my-template'])('lets the first crewmate on %s be deleted like any other crew (Crewmates preview on)', async (template) => {
+    localStorage.setItem('mc-preview-crew', '1')
+    try {
+      const first = { name: 'mate', kiro_agent: template, workspace: 'default', memory_store: 'default' }
+      mockApi.kirocrewAgents.mockResolvedValue({ ...AGENTS_RESPONSE, agents: [DEFAULT_CREW, OTHER_CREW, first] })
+      await renderRoster(3)
+      const sheet = await openEditor('Mate')
+      expect(within(sheet).getByTestId('crew-rail-danger')).not.toHaveAttribute('aria-disabled')
+      gotoPane(sheet, 'danger')
+      expect(within(sheet).getByRole('button', { name: 'Delete crewmate' })).toBeInTheDocument()
+    } finally {
+      localStorage.removeItem('mc-preview-crew')
+    }
   })
 })
 

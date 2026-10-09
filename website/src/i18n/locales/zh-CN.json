@@ -9342,6 +9342,9 @@
       "moreCols": "增加列",
       "fewerRows": "减少行",
       "moreRows": "增加行"
+    },
+    "assistantWelcome": {
+      "default_name": "Mate"
     }
   },
   "hooks": {
@@ -17241,7 +17244,8 @@
       "dashboard_unavailable": "无法加载该仪表板。",
       "dashboard_render_error": "无法绘制该仪表板。",
       "dashboard_frame_title": "{{crew}} 的仪表板",
-      "dashboard_rendering": "正在绘制仪表板…"
+      "dashboard_rendering": "正在绘制仪表板…",
+      "greeting_failed": "无法开始第一次问候。你仍然可以在下方输入消息。"
     },
     "tasksCapacityCard": {
       "title": "任务与容量",

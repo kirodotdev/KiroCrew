@@ -28,6 +28,7 @@ import { createTranscriptRenderers, featureRequestRefusalIsNewest, sessionStartR
 import { FEATURE_REQUEST_FORM_URL, FEATURE_REQUEST_ROW_META_KEY } from '../prompts/featureRequest'
 import { isWorkflowRunTool } from '../pages/chat/WorkflowRunCard'
 import { isSpawnRunTool } from '../pages/chat/SubagentRunCard'
+import CrewmateMessage from '../pages/chat/CrewmateMessage'
 import { isWorkflowCompletionMessage } from '../pages/chat/WorkflowCompletionCard'
 import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
 import { parseRecoveryMessage } from '../pages/chat/RecoveryCard'
@@ -537,5 +538,23 @@ describe('the single-chat surface renders from THIS row set', () => {
     expect(chatPageSrc).toMatch(/i18nT\('components\.mcpApp\.from_app', \{ app: appLabel\.split\('\/'\)\[0\] \}\)/)
     expect(chatPageSrc).not.toMatch(/noteSource/)
     expect(chatPageSrc).not.toMatch(/from_note/)
+  })
+})
+
+describe("Mate's live narration", () => {
+  const mate = { name: 'mate', label: 'Mate', mate: true }
+  const narration = msg('streaming', { content: "I'll look up\nwhere chat history lives." })
+
+  it('draws a status-verdict row as a muted line, not a bubble', () => {
+    const el = render(narration, { slot: 's1', crewmate: mate, mateNarration: new Map([[narration, 'status' as const]]) },
+      { index: 0, messages: [narration] }) as ReactElement<{ 'data-testid'?: string; children?: unknown }>
+    expect(el.type).not.toBe(CrewmateMessage)
+    expect(el.props['data-testid']).toBe('mate-status-line')
+    expect(el.props.children).toBe("I'll look up where chat history lives.")
+  })
+
+  it('draws the same row as a bubble without a verdict', () => {
+    const el = render(narration, { slot: 's1', crewmate: mate }, { index: 0, messages: [narration] }) as ReactElement
+    expect(el.type).toBe(CrewmateMessage)
   })
 })

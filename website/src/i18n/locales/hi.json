@@ -9469,6 +9469,9 @@
       "moreCols": "अधिक कॉलम",
       "fewerRows": "कम पंक्तियाँ",
       "moreRows": "अधिक पंक्तियाँ"
+    },
+    "assistantWelcome": {
+      "default_name": "Mate"
     }
   },
   "hooks": {
@@ -17495,7 +17498,8 @@
       "dashboard_unavailable": "यह डैशबोर्ड लोड नहीं हो सका।",
       "dashboard_render_error": "यह डैशबोर्ड ड्रॉ नहीं हो सका।",
       "dashboard_frame_title": "{{crew}} का डैशबोर्ड",
-      "dashboard_rendering": "डैशबोर्ड बनाया जा रहा है…"
+      "dashboard_rendering": "डैशबोर्ड बनाया जा रहा है…",
+      "greeting_failed": "पहला अभिवादन शुरू नहीं हो सका। तुम अब भी नीचे अपना संदेश लिख सकते हो।"
     },
     "tasksCapacityCard": {
       "title": "कार्य और क्षमता",

@@ -311,6 +311,7 @@ _STRICT_IDENTITY_SERVERS = (
     "kirocrew-crew-log",
     "kirocrew-debug",
     "kirocrew-panel",
+    "kirocrew-guide",
 )
 
 
