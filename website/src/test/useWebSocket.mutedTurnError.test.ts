@@ -136,6 +136,18 @@ describe('muted worker turn end over the dashboard socket', () => {
     expect(unread()).toContain(WORKER)
   })
 
+  it('muted: an error row outside a turn does not break the mute on the next turn', () => {
+    const ws = mount(true)
+    send(ws, row('error'))
+    globalStore.dispatch(markSlotRead(WORKER))
+    send(ws, row('user'))
+    send(ws, row('assistant'))
+    send(ws, done)
+    expect(turnChimes()).toBe(0)
+    expect(postNativeNotification).not.toHaveBeenCalled()
+    expect(unread()).not.toContain(WORKER)
+  })
+
   it('muted + terminal error: the error row alone badges the session', () => {
     const ws = mount(true)
     send(ws, row('error'))

@@ -8,7 +8,7 @@ import { sseChatMessage, appendSlotMessage, setSlotStatusDetail, sseToolActivity
 import { dispatchMcNotification, APPROVAL_KIND, shouldChimeOnPermissionRow } from '../notificationEvent'
 import { chatMessageMarksUnread, isMemberThreadSlot, memberThreadRowMarksUnread, noteMemberThreadRow, unreadWatermarkTs } from '../unreadOnAttention'
 import { isSlotMutedByCreator } from '../sessionMute'
-import { isTerminalErrorRow, noteTurnErrorRow } from '../turnError'
+import { isTerminalErrorRow, noteTurnErrorRow, takeTurnErrored } from '../turnError'
 import { noteUnsavedRowTs } from '../../lib/slotReadRelay'
 import { emitThemeSound } from '../themeSound'
 import { isReconcileNote } from '../../lib/noteContract'
@@ -107,6 +107,10 @@ export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: Cha
       }
       if (!isPassiveNote && data.slot && (data.role === 'user' || data.role === 'inject' || data.role === 'subagent')) {
         dispatch(setSlotStatusDetail({ slot: data.slot, kind: 'thinking', ts: Date.now() }))
+        // A new turn starts clean: an error row appended outside a turn (an
+        // archive that failed after cancelling the turn) has no chat_done of
+        // its own to take it, and must not break the mute on this turn.
+        takeTurnErrored(data.slot)
       }
     },
     onSteerPush(data) {
