@@ -624,7 +624,7 @@ def _remove_stale_staging(target_dir: TargetDir, name: str) -> None:
         raise StagingRefused(f"stale staging path cannot be removed: {staging}") from exc
 
 
-def _open_staging_nofollow(target_dir: TargetDir, name: str) -> "io.BufferedWriter":
+def open_staging_nofollow(target_dir: TargetDir, name: str) -> "io.BufferedWriter":
     """Create staging file *name* for a FRESH transfer, refusing to follow a symlink.
 
     The staging path is derived from the target, so it lives wherever the target
@@ -676,12 +676,12 @@ def _open_staging_nofollow(target_dir: TargetDir, name: str) -> "io.BufferedWrit
     return os.fdopen(fd, "wb")
 
 
-def _identity(st: os.stat_result) -> tuple[int, int]:
+def file_identity(st: os.stat_result) -> tuple[int, int]:
     """The inode a stat result names: ``(device, file index)``, on every platform."""
     return st.st_dev, st.st_ino
 
 
-def _install(
+def install_verified(
     target_dir: TargetDir,
     staging_name: str,
     name: str,
@@ -691,7 +691,7 @@ def _install(
 ) -> None:
     """Move the verified staging file onto *name* atomically, both under *target_dir*.
 
-    *verified* is the identity (:func:`_identity`) of the descriptor the bytes were
+    *verified* is the identity (:func:`file_identity`) of the descriptor the bytes were
     hashed through. The rename is by NAME, and the digest was computed on the bytes
     written to one INODE — so a file swapped in at the staging name between the
     last write and the rename would be installed under a digest it never met.
@@ -725,11 +725,15 @@ def _install(
     try:
         fd = target_dir.open(name, os.O_RDONLY | _O_NOFOLLOW | _O_BINARY)
     except OSError as exc:
+        # A link swapped in at the staging name is now AT the final name, and the
+        # no-follow reopen refuses it. Remove it (as a link, never followed) so an
+        # unverified referent is not left where a reader will execute it.
+        _discard(target_dir, name)
         raise StagingRefused(
             f"installed file cannot be re-opened for verification: {target_dir.describe(name)}"
         ) from exc
     try:
-        installed = _identity(os.fstat(fd))
+        installed = file_identity(os.fstat(fd))
     finally:
         os.close(fd)
     if installed != verified:
@@ -839,8 +843,8 @@ def download_to(
     # the descriptor stays open until the install has been checked against it: an
     # inode with an open descriptor cannot be reused, so a file unlinked and
     # recreated at the staging name is a DIFFERENT inode and the identity
-    # comparison in `_install` sees it. Windows refuses to rename or unlink a file
-    # with an open handle, so there it is closed as soon as the body has been
+    # comparison in `install_verified` sees it. Windows refuses to rename or unlink
+    # a file with an open handle, so there it is closed as soon as the body has been
     # written -- NTFS file ids carry a reuse sequence number, so the identity
     # comparison holds without the hold.
     out: "io.BufferedWriter | None" = None
@@ -881,12 +885,12 @@ def download_to(
             started = time.monotonic()
             overflow = 0
             if out is None:
-                out = _open_staging_nofollow(where, staging_name)
+                out = open_staging_nofollow(where, staging_name)
             staging_file = out
             # The inode every hashed byte lands in. The install compares the
             # final name against THIS, not against whatever the staging name
             # resolves to by then.
-            verified = _identity(os.fstat(staging_file.fileno()))
+            verified = file_identity(os.fstat(staging_file.fileno()))
             while True:
                 chunk = resp.read(chunk_bytes)
                 if not chunk:
@@ -931,7 +935,7 @@ def download_to(
         if min_bytes and downloaded < min_bytes:
             where.unlink(staging_name)
             return False, f"downloaded file too small ({downloaded} bytes)"
-        _install(
+        install_verified(
             where, staging_name, path.name, verified=verified, restrict_to_owner=restrict_to_owner
         )
         return True, ""
@@ -985,8 +989,12 @@ __all__ = [
     "DEFAULT_PROGRESS_EVERY_BYTES",
     "DEFAULT_TIMEOUT_SECS",
     "PART_SUFFIX",
+    "TargetDir",
     "build_opener",
     "download_to",
+    "file_identity",
+    "install_verified",
     "make_ssl_context",
+    "open_staging_nofollow",
     "redact_url",
 ]
