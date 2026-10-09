@@ -4560,6 +4560,11 @@ export default function MembersPage() {
               description={profileRegistryQuery.data?.agents.find((a) => a.name === active.name)?.description ?? ''}
               descriptionError={profileRegistryQuery.isError}
               memoryLabel={t(PROFILE_MEMORY_KEYS[memberMemoryDisplay(activeView)])}
+              // Only a crewmate's OWN (V2) store has a page to manage; the shared
+              // global store is not this crewmate's, so that tile stays a readout.
+              onOpenMemory={memberMemoryDisplay(activeView) === 'private' && activeView.memory_store
+                ? () => { const destination = `/settings/overview?view=memory&store=${encodeURIComponent(activeView.memory_store ?? '')}`; leave(() => navigate(destination), destination) }
+                : undefined}
               initialTab={profile.tab}
               schedules={schedulesForActive}
               schedulesLoading={schedulesCountQuery.isPending}

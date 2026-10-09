@@ -150,6 +150,21 @@ describe('CrewProfilePanel Profile tab', () => {
     expect(h.onEdit).toHaveBeenCalledTimes(1)
   })
 
+  it('the Memory tile is a door, by click and by keyboard, once the host hands it one', () => {
+    const onOpenMemory = vi.fn()
+    setup({ onOpenMemory })
+    const memory = screen.getByTestId('crew-profile-memory')
+    expect(memory.tagName).toBe('BUTTON')
+    expect(memory).toHaveAccessibleName(/Memory/)
+    fireEvent.click(memory)
+    expect(onOpenMemory).toHaveBeenCalledTimes(1)
+    // A native button with no tabindex override: Tab reaches it, Enter/Space press it.
+    expect(memory).toHaveAttribute('type', 'button')
+    expect(memory).not.toHaveAttribute('tabindex')
+    memory.focus()
+    expect(memory).toHaveFocus()
+  })
+
   it('draws the host settings (permission, model, effort) in place of editor doors', () => {
     setup({ settingsBody: <div data-testid="host-settings">host settings</div> })
     expect(within(screen.getByTestId('crew-profile-pane-profile')).getByTestId('host-settings')).toBeInTheDocument()

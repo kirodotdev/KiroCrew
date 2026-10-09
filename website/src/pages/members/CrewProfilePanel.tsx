@@ -34,6 +34,9 @@ export interface CrewProfilePanelProps {
   descriptionError?: boolean
   /** Where its memory lives, already worded by the page (private / global / …). */
   memoryLabel: string
+  /** Opens the management page of THIS crewmate's private memory store.
+   *  Absent when the binding is not its own store: the tile stays a readout. */
+  onOpenMemory?: () => void
   /** Which tab opens first. */
   initialTab?: ProfileTab
   /** The head face's element, for the page's face flight (#18236): the page
@@ -137,8 +140,8 @@ function Tile({ icon, tone, label, value, title, onClick, testId }: {
  * It is a floating card over the right of the thread — a hover card, not a
  * second side panel: rounded on every corner, a third of the row wide, the
  * side panel's height. The side panel itself carries only the dynamic Dashboard
- * and the Workspace file browser, which is where the Memory and Workspace tiles
- * lead.
+ * and the Workspace file browser, which is where the Workspace tile leads; the
+ * Memory tile opens the crewmate's private memory page in Settings.
  */
 export default function CrewProfilePanel(p: CrewProfilePanelProps) {
   const { t } = useTranslation()
@@ -331,7 +334,7 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
                 </section>
 
                 <div className="grid grid-cols-2 gap-2.5">
-                  <Tile icon={<Brain size={18} />} tone="accent" label={t('pages.membersPage.profile_memory')} value={p.memoryLabel} testId="crew-profile-memory" />
+                  <Tile icon={<Brain size={18} />} tone="accent" label={t('pages.membersPage.profile_memory')} value={p.memoryLabel} onClick={p.onOpenMemory} testId="crew-profile-memory" />
                   <Tile icon={<FolderOpen size={18} />} tone="info" label={t('pages.membersPage.profile_workspace')} value={ws || t('pages.membersPage.profile_workspace_none')} title={p.member.workspace} onClick={p.onOpenFiles} testId="crew-profile-workspace" />
                 </div>
 

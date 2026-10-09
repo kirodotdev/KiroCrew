@@ -775,3 +775,34 @@ describe('MembersPage Profile card — unsaved schedule draft', () => {
     expect(screen.getByDisplayValue('Check the board')).toBeInTheDocument()
   })
 })
+
+describe('MembersPage Profile card — Memory tile', () => {
+  async function openProfile(member: Record<string, unknown>) {
+    mockRoster([row(member)])
+    renderWithProviders(<NavigationLeaveGuardProvider><MembersPage /><LeaveProbe /></NavigationLeaveGuardProvider>)
+    fireEvent.click(await screen.findByText(member.name as string))
+    await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent(`member-${member.slug}`))
+    fireEvent.click(await screen.findByTestId('member-identity-pill'))
+    const card = await screen.findByTestId('crew-profile-panel')
+    fireEvent.click(within(card).getByRole('tab', { name: 'Profile' }))
+    return await screen.findByTestId('crew-profile-memory')
+  }
+
+  it("opens THAT crewmate's private memory page, the store preselected", async () => {
+    const tile = await openProfile({
+      name: 'radar', slug: 'radar', slot_key: 'member-radar',
+      memory_store: 'member-radar', memory_version: 2, memory_owner: 'radar',
+    })
+    navigateSpy.mockClear()
+    fireEvent.click(tile)
+    await waitFor(() => expect(navigateSpy).toHaveBeenCalledWith('/settings/overview?view=memory&store=member-radar'))
+  })
+
+  it('stays a readout for a crewmate on the shared store', async () => {
+    const tile = await openProfile({
+      name: 'scout', slug: 'scout', slot_key: 'member-scout',
+      memory_store: 'default', memory_version: 1, memory_owner: '',
+    })
+    expect(tile.tagName).toBe('DIV')
+  })
+})
