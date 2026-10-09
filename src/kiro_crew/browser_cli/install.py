@@ -1815,6 +1815,7 @@ def _step(
     timeout: float,
     hint: str = "",
     failure_signal: Callable[[str], bool] | None = None,
+    hint_requires_signal: bool = False,
 ) -> dict[str, Any]:
     """Run one install step and describe its outcome.
 
@@ -1835,14 +1836,18 @@ def _step(
 
     *hint* is our own trusted remediation line, appended AFTER the cap so a long
     stderr cannot push the actionable part out of the operator's view. It is not
-    redacted because it is a constant composed here, never external output.
+    redacted because it is a constant composed here, never external output. A
+    remedy rides on every ordinary failure; with *hint_requires_signal* it rides
+    only on a failure *failure_signal* recognized, which is the rule for a verdict
+    about the host (the engine cannot run here): the missing-library report is
+    its only evidence, and a download that failed for another reason must keep
+    its own error rather than be dressed as a platform limit.
     """
     rc, out, err = _run(argv, timeout)
-    ok = rc == 0
     # Both streams: the diagnostic is on stderr today, and a step that starts
     # printing it to stdout must not silently reopen the bug this guards.
-    if ok and failure_signal is not None and failure_signal(f"{err}\n{out}"):
-        ok = False
+    signalled = failure_signal is not None and failure_signal(f"{err}\n{out}")
+    ok = rc == 0 and not signalled
     # Redact BEFORE truncating: a credential straddling the truncation
     # boundary does not match its regex (e.g. the trailing ``@`` in a
     # ``://user:pass@host`` URL is past the cap), so truncating first can
@@ -1856,7 +1861,8 @@ def _step(
     # ran out of time did not fail for that reason, so it carries no hint; the
     # job layer reads the same return codes to report interrupted / timeout.
     ordinary_failure = not ok and rc not in (INTERRUPTED_RC, TIMEOUT_RC)
-    step_hint = hint if ordinary_failure else ""
+    hint_applies = ordinary_failure and (signalled or not hint_requires_signal)
+    step_hint = hint if hint_applies else ""
     if not ok:
         logger.warning("playwright-cli install step %s failed (rc=%d): %s", name, rc, detail)
         if step_hint:
@@ -1916,6 +1922,12 @@ def _download_browser(command: list[str], engine: str | None = None) -> list[dic
     # downloads name their engine so outcomes remain distinguishable.
     suffix = f"-{engine}" if engine else ""
     hint = os_deps.missing_deps_hint(selected_engine)
+    # A remedy ("install these, then retry") rides on any ordinary failure. The
+    # verdict that this host cannot run the engine does not: its only evidence is
+    # Playwright's own report of the missing libraries, so a WebKit download that
+    # fails for another reason on such a host is reported as that failure, not as
+    # a platform limit.
+    verdict = os_deps.engine_unsupported_here(selected_engine)
 
     def attempt(step_name: str, argv: list[str], with_hint: bool) -> dict[str, Any]:
         return _step(
@@ -1924,6 +1936,7 @@ def _download_browser(command: list[str], engine: str | None = None) -> list[dic
             _BROWSER_INSTALL_TIMEOUT_S,
             hint=hint if with_hint else "",
             failure_signal=os_deps.host_deps_unsatisfied,
+            hint_requires_signal=verdict,
         )
 
     if not os_deps.with_deps_supported():

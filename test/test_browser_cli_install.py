@@ -837,7 +837,9 @@ class TestPerEngineDownloads:
         monkeypatch.setattr(mod, "cli_command", lambda cli=None: [cli or str(fake_cli)])
         seen: list[list[str]] = []
 
-        def _fake_step(name, argv, timeout, hint="", failure_signal=None):
+        def _fake_step(
+            name, argv, timeout, hint="", failure_signal=None, hint_requires_signal=False
+        ):
             seen.append(argv)
             return {"name": name, "ok": True, "returncode": 0}
 
@@ -951,6 +953,46 @@ class TestFailureDetailIsRedactedAtTheSource:
 
         assert step["hint"] == hint
         assert step["stderr"] == f"Missing libraries\n\n{hint}"
+
+    def test_a_hint_that_requires_the_signal_is_withheld_from_an_unrelated_failure(
+        self, monkeypatch
+    ):
+        """A verdict about the host is evidenced by the missing-library report
+        alone; a download that failed for another reason keeps its own error."""
+        hint = "WebKit is not supported on this operating system"
+        monkeypatch.setattr(mod, "_run", lambda argv, timeout: (1, "", "server returned code 503"))
+
+        step = mod._step(
+            "install-browser",
+            ["pw", "install-browser", "webkit"],
+            1.0,
+            hint=hint,
+            failure_signal=mod.os_deps.host_deps_unsatisfied,
+            hint_requires_signal=True,
+        )
+
+        assert step["ok"] is False
+        assert step["hint"] == ""
+        assert step["stderr"] == "server returned code 503"
+
+    @pytest.mark.parametrize("rc", [0, 1], ids=["exit-0", "exit-1"])
+    def test_a_hint_that_requires_the_signal_rides_on_a_signalled_failure(self, monkeypatch, rc):
+        hint = "WebKit is not supported on this operating system"
+        stderr = "Host system is missing dependencies to run browsers.\n    libgtk-4.so.1"
+        monkeypatch.setattr(mod, "_run", lambda argv, timeout: (rc, "", stderr))
+
+        step = mod._step(
+            "install-browser",
+            ["pw", "install-browser", "webkit"],
+            1.0,
+            hint=hint,
+            failure_signal=mod.os_deps.host_deps_unsatisfied,
+            hint_requires_signal=True,
+        )
+
+        assert step["ok"] is False
+        assert step["hint"] == hint
+        assert step["stderr"] == f"{stderr}\n\n{hint}"
 
     def test_credential_straddling_truncation_boundary_is_still_redacted(self, monkeypatch, caplog):
         """A URL credential whose ``@`` anchor sits past the display cap.

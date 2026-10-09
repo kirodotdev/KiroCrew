@@ -1004,8 +1004,9 @@ refusal takes the download down with it. So the flag is passed only on an apt ho
 (`os_deps.with_deps_supported`), and a failed attempt there is retried without it,
 because the download itself needs no privilege. Every other host downloads with
 `install-browser <engine>` alone. Either way a missing library is reported as a
-missing library, with a command the operator runs deliberately; the remedy rides
-on the attempt without the flag, since that is the one a human acts on.
+missing library, with a command the operator runs deliberately where one exists
+(the table below names the one engine-and-distribution pair where none does); the
+remedy rides on the attempt without the flag, since that is the one a human acts on.
 
 `browser_cli/os_deps.py` resolves the host family from `/etc/os-release`
 (`ID` plus `ID_LIKE`, so derivatives resolve through their base) and composes the
@@ -1015,7 +1016,8 @@ remedy for the engine that failed:
 |---|---|---|
 | debian / ubuntu | passed, retried without on failure | `npx playwright install-deps <engine>`, with `sudo` when the host has it |
 | rpm (rhel, fedora, centos, amzn, rocky, alma, suse), Chromium | never passed | an install line for whichever supported manager the host actually has — `dnf`, else `yum`, else `microdnf`, probed not assumed — naming the rpm packages. A SUSE host gets no remedy by lineage, even if `dnf`/`yum` is installed there: `zypper`-world package names differ, so a completed line would fail on its package list |
-| rpm, Firefox / WebKit | never passed | a line naming the engine and pointing at the libraries Playwright printed; no package list is offered, because the verified one covers Chromium alone |
+| rpm, Firefox / WebKit | never passed | a line naming the engine and pointing at the libraries Playwright printed; no package list is offered, because the verified one covers Chromium alone. Fedora, for one, packages the libraries WebKit's build asks for, so the instruction can be followed there |
+| Amazon Linux (`ID=amzn`), WebKit | never passed | a line saying WebKit is not supported on this operating system and that Chromium is the supported engine on this host. One measured pair, one comparison: `os_deps.engine_unsupported_here` is true for WebKit when the os-release `ID` is `amzn`, never by `ID_LIKE` or family (a measurement is of one distribution's repositories). No package list and no retry: measured on Amazon Linux 2023, WebKit's build names 27 missing libraries, most with no package in the distribution's repositories, so no command the operator could run makes it launch. The verdict rides only on a step whose output names the missing libraries (`install._step` reads the predicate as `hint_requires_signal`); a WebKit download there that fails for another reason, a 503 or a full disk, keeps its own error and gets no hint |
 | unrecognized Linux | never passed | none — a guessed package manager fails on its own first argument and reads as the product being broken |
 | macOS / Windows | not applicable | none — the browser download alone is sufficient |
 
@@ -1039,7 +1041,11 @@ turns true because the build is genuinely on disk, and the real error arrives at
 the user's first browse as an opaque stack trace. Every browser step is judged on
 its output as well as its exit code (`os_deps.host_deps_unsatisfied`, matched
 against the header and the message body so a reworded box still trips one), and a
-match fails the step and carries the remedy.
+match fails the step and carries the remedy. On Amazon Linux a WebKit match
+carries the verdict that the engine is not supported on this operating system
+instead, since the remedy there would ask for libraries no repository provides;
+and where a remedy rides on any ordinary failure, the verdict rides on that match
+alone, because the missing-library report is its only evidence.
 
 `browser_ok` keeps meaning "a build is downloaded", which stays literally true on
 such a host; the install error is what carries the truth that it cannot run.
