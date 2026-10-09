@@ -453,7 +453,8 @@ describe('MembersPage hides unlisted crewmates', () => {
   it('a failed default-crew read lists every row and says why through ErrorNotice', async () => {
     ;(api.defaultAgent as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('default lookup down'))
     await renderPage(MIXED)
-    await waitFor(() => expect(screen.getByTestId('member-default-agent-error')).toHaveTextContent("Couldn't read the default crewmate, so every crewmate is shown"))
+    // The default-crew read retries once before it says so (`retryThroughRestart`).
+    await waitFor(() => expect(screen.getByTestId('member-default-agent-error')).toHaveTextContent("Couldn't read the default crewmate, so every crewmate is shown"), { timeout: 5000 })
     expect([...names()].sort()).toEqual(['kirocrew', 'legacy-aim', 'oncall', 'pkg-tool', 'radar'])
   })
 
@@ -554,7 +555,7 @@ describe('MembersPage hides unlisted crewmates', () => {
   it('the default-crew failure notice hands the agent the journal report, not just its localized copy', async () => {
     ;(api.defaultAgent as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Forbidden'))
     await renderPage(MIXED)
-    await screen.findByTestId('member-default-agent-error')
+    await screen.findByTestId('member-default-agent-error', undefined, { timeout: 5000 })
     const noticeProps = (ErrorNoticeMock as ReturnType<typeof vi.fn>).mock.calls
       .map(([props]) => props)
       .filter((props) => props.testId === 'member-default-agent-error')
@@ -569,7 +570,8 @@ describe('MembersPage hides unlisted crewmates', () => {
     await act(async () => {
       await queryClient.refetchQueries({ queryKey: ['default-agent'] })
     })
-    await waitFor(() => expect(screen.getByTestId('member-default-agent-error')).toHaveTextContent("Couldn't read the default crewmate, so every crewmate is shown"))
+    // The default-crew read retries once before it says so (`retryThroughRestart`).
+    await waitFor(() => expect(screen.getByTestId('member-default-agent-error')).toHaveTextContent("Couldn't read the default crewmate, so every crewmate is shown"), { timeout: 5000 })
     expect([...names()].sort()).toEqual(['kirocrew', 'legacy-aim', 'oncall', 'pkg-tool', 'radar'])
   })
 })

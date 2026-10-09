@@ -571,10 +571,45 @@ describe('MembersPage roster', () => {
     expect(aside.className).not.toMatch(/\bmd:flex\b/)
     const notices = within(await screen.findByTestId('member-main-roster-errors', undefined, PANE_READY))
     expect(notices.getByTestId('member-main-patrol-error')).toBeInTheDocument()
-    expect(notices.getByTestId('member-main-default-agent-error')).toBeInTheDocument()
-    expect(notices.getByTestId('member-main-teams-error')).toBeInTheDocument()
+    // These two retry once before they say so (`retryThroughRestart`).
+    expect(await notices.findByTestId('member-main-default-agent-error', undefined, PANE_READY)).toBeInTheDocument()
+    expect(await notices.findByTestId('member-main-teams-error', undefined, PANE_READY)).toBeInTheDocument()
     // No hand-off from above the thread: Profile may hold an unsaved schedule draft.
     expect(notices.queryByRole('button', { name: /ask the agent/i })).toBeNull()
+  })
+
+  it('each roster read notice dismisses for the outage, returns on a failure after a good read, and clears on a good read', async () => {
+    vi.mocked(api.defaultAgent).mockRejectedValue(new Error('default unavailable'))
+    vi.mocked(api.teams.list).mockRejectedValue(new Error('teams unavailable'))
+    const { queryClient } = await renderPage([row()], 'kirocrew', { route: '/members?member=oncall' })
+    const notices = () => within(screen.getByTestId('member-main-roster-errors'))
+    await screen.findByTestId('member-main-teams-error', undefined, PANE_READY)
+    await screen.findByTestId('member-main-default-agent-error', undefined, PANE_READY)
+
+    // A real, named button on each; pressing it removes that notice everywhere.
+    fireEvent.click(within(screen.getByTestId('member-main-teams-error')).getByRole('button', { name: 'Dismiss' }))
+    await waitFor(() => expect(screen.queryByTestId('member-main-teams-error')).toBeNull())
+    expect(screen.queryByTestId('member-roster-teams-error')).toBeNull()
+    expect(notices().getByTestId('member-main-default-agent-error')).toBeInTheDocument()
+    fireEvent.click(within(screen.getByTestId('member-main-default-agent-error')).getByRole('button', { name: 'Dismiss' }))
+    await waitFor(() => expect(screen.queryByTestId('member-main-roster-errors')).toBeNull())
+    expect(screen.queryByTestId('member-default-agent-error')).toBeNull()
+
+    // The same outage re-read (the 30s poll) fails again: the dismiss holds.
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ['crew-teams'] }) })
+    expect(screen.queryByTestId('member-main-teams-error')).toBeNull()
+
+    // A good read ends the outage; a failure after it is new, and says so.
+    vi.mocked(api.teams.list).mockResolvedValueOnce({ teams: [] })
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ['crew-teams'] }) })
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ['crew-teams'] }) })
+    await screen.findByTestId('member-main-teams-error', undefined, PANE_READY)
+    expect(screen.queryByTestId('member-main-default-agent-error')).toBeNull()
+
+    // A good read clears it with no press.
+    vi.mocked(api.teams.list).mockResolvedValue({ teams: [] })
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ['crew-teams'] }) })
+    await waitFor(() => expect(screen.queryByTestId('member-main-teams-error')).toBeNull())
   })
 
   it('renders one row per member from the API', async () => {
@@ -1989,7 +2024,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     fireEvent.click(screen.getByTestId('team-dialog-save'))
     // The failed refetch is a notice, not silence -- the cached list is on
     // screen and must be said to be possibly stale ...
-    await screen.findByTestId('member-roster-teams-error')
+    await screen.findByTestId('member-roster-teams-error', undefined, PANE_READY)
     // ... and that list is the route's answer to the save, not the mount-time one.
     expect(screen.getAllByTestId('team-group-header')[0]).toHaveTextContent('Release')
   })
@@ -2016,7 +2051,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     await screen.findByTestId('team-dialog-body')
     fireEvent.click(screen.getByLabelText('scribe'))
     fireEvent.click(screen.getByTestId('team-dialog-save'))
-    await screen.findByTestId('member-roster-teams-error')
+    await screen.findByTestId('member-roster-teams-error', undefined, PANE_READY)
     // One scribe row, and it sits under the Release header -- the Triage
     // group lost it in the same cache write that gave it to Release.
     const roster = screen.getByTestId('member-roster')
@@ -2064,7 +2099,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     // Both surfaces carry the notice; the pane's copy is the one a narrow
     // viewport can see (the roster's is inside the `hidden md:flex` aside),
     // and it steps aside at md where the roster's own notice is beside it.
-    const paneNotice = await screen.findByTestId('team-view-teams-error')
+    const paneNotice = await screen.findByTestId('team-view-teams-error', undefined, PANE_READY)
     expect(screen.getByTestId('team-view')).toBeTruthy()
     expect(screen.getByTestId('member-roster-teams-error')).toBeTruthy()
     expect(screen.getByTestId('member-roster').className.split(/\s+/)).toContain('hidden')
@@ -2092,7 +2127,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     await screen.findByTestId('team-dialog-body')
     fireEvent.change(screen.getByTestId('team-dialog-name'), { target: { value: 'Release' } })
     fireEvent.click(screen.getByTestId('team-dialog-save'))
-    const paneNotice = await screen.findByTestId('team-view-teams-error')
+    const paneNotice = await screen.findByTestId('team-view-teams-error', undefined, PANE_READY)
     // The roster's own copy is on screen beside the pane from md up, so the
     // pane's copy is the below-md one — exactly the roster's hidden range.
     expect(screen.getByTestId('member-roster').className.split(/\s+/)).toContain('md:flex')

@@ -1197,6 +1197,12 @@ export default function MembersPage() {
   const teamsQ = useQuery(teamsQuery)
   const teams = teamsQ.data ?? EMPTY_TEAMS
   const teamsFailed = teamsQ.isError
+  // A dismiss holds for this outage: a failed read keeps re-reading every 30s
+  // (`refetchWhileFailed`), so the notice stays away until a read succeeds
+  // (`dataUpdatedAt` passes the dismiss) and only a failure after that shows it.
+  const [teamsDismissedAt, setTeamsDismissedAt] = useState(0)
+  const teamsNoticeShown = teamsFailed && teamsDismissedAt <= teamsQ.dataUpdatedAt
+  const dismissTeamsNotice = useCallback(() => setTeamsDismissedAt(teamsQ.errorUpdatedAt), [teamsQ.errorUpdatedAt])
   const urlTeam = searchParams.get(TEAM_PARAM) ?? ''
   const activeTeam = useMemo(() => teams.find((tm) => tm.id === urlTeam), [teams, urlTeam])
   // Collapsed groups persist per browser, keyed by team id (the "No team" group
@@ -1817,6 +1823,10 @@ export default function MembersPage() {
   // through ErrorNotice below.
   const defaultAgentRead = useQuery(defaultAgentQuery)
   const defaultAgentFailed = defaultAgentRead.isError
+  // Dismissed per failure, like the teams notice above.
+  const [defaultAgentDismissedAt, setDefaultAgentDismissedAt] = useState(0)
+  const defaultAgentNoticeShown = defaultAgentFailed && defaultAgentDismissedAt <= defaultAgentRead.dataUpdatedAt
+  const dismissDefaultAgentNotice = useCallback(() => setDefaultAgentDismissedAt(defaultAgentRead.errorUpdatedAt), [defaultAgentRead.errorUpdatedAt])
   // Settled = an answer or a terminal failure (retries keep it pending).
   const defaultAgentSettled = defaultAgentRead.data !== undefined || defaultAgentRead.isError
   const defaultAgent: string | null = defaultAgentFailed ? null : defaultAgentRead.data ?? ''
@@ -3509,12 +3519,13 @@ export default function MembersPage() {
         {/* A failed team read renders the roster FLAT, which is not "no teams"
             -- it is unknown, and said here on the roster the grouping lives
             on. No draft on this page, so the hand-off is safe. */}
-        {teamsFailed && (
+        {teamsNoticeShown && (
           <div className="px-4 pb-2">
             <ErrorNotice
               message={t('pages.membersPage.teams_load_failed')}
               variant="inline"
               askAgent
+              onDismiss={dismissTeamsNotice}
               testId="member-roster-teams-error"
             />
           </div>
@@ -3656,13 +3667,14 @@ export default function MembersPage() {
         {/* Default-crew lookup failed: the hide rule is off (every row listed),
             and this says why in localized copy, never the raw server text.
             Mounted only while failing, like the star error. */}
-        {defaultAgentFailed && (
+        {defaultAgentNoticeShown && (
           <div className="px-2">
             <ErrorNotice
               message={t('pages.membersPage.default_agent_failed_title')}
               report={findReport(defaultAgentRead.error instanceof Error ? defaultAgentRead.error.message : undefined)}
               askAgent
               actionPlacement="below"
+              onDismiss={dismissDefaultAgentNotice}
               testId="member-default-agent-error"
             />
           </div>
@@ -3907,12 +3919,13 @@ export default function MembersPage() {
                 />
               </div>
             )}
-            {teamsFailed && (
+            {teamsNoticeShown && (
               <div className="px-4 pt-3 md:hidden">
                 <ErrorNotice
                   message={t('pages.membersPage.teams_load_failed')}
                   variant="inline"
                   askAgent
+                  onDismiss={dismissTeamsNotice}
                   testId="team-view-teams-error"
                 />
               </div>
@@ -4151,7 +4164,7 @@ export default function MembersPage() {
                 is visible and this wrapper steps aside; below md the roster is
                 hidden regardless of the pin. No hand-off: the Profile card may
                 hold an unsaved schedule draft, and Ask the agent navigates away. */}
-            {(patrol.failed || teamsFailed || defaultAgentFailed || starError) && (
+            {(patrol.failed || teamsNoticeShown || defaultAgentNoticeShown || starError) && (
               <div
                 className={`${rosterPinned ? 'md:hidden' : ''} flex flex-col gap-2 px-4 pb-2`}
                 data-testid="member-main-roster-errors"
@@ -4164,20 +4177,22 @@ export default function MembersPage() {
                     testId="member-main-patrol-error"
                   />
                 )}
-                {teamsFailed && (
+                {teamsNoticeShown && (
                   <ErrorNotice
                     message={t('pages.membersPage.teams_load_failed')}
                     variant="inline"
                     askAgent={false}
+                    onDismiss={dismissTeamsNotice}
                     testId="member-main-teams-error"
                   />
                 )}
-                {defaultAgentFailed && (
+                {defaultAgentNoticeShown && (
                   <ErrorNotice
                     message={t('pages.membersPage.default_agent_failed_title')}
                     report={findReport(defaultAgentRead.error instanceof Error ? defaultAgentRead.error.message : undefined)}
                     askAgent={false}
                     actionPlacement="below"
+                    onDismiss={dismissDefaultAgentNotice}
                     testId="member-main-default-agent-error"
                   />
                 )}

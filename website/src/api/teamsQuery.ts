@@ -1,4 +1,5 @@
 import { api, type CrewTeam } from './client'
+import { refetchWhileFailed, retryThroughRestart } from './queryClient'
 
 /**
  * The Crewmates page's team list (`GET /api/teams`).
@@ -16,6 +17,11 @@ export const teamsQuery = {
   queryKey: TEAMS_QUERY_KEY,
   queryFn: async (): Promise<CrewTeam[]> => (await api.teams.list()).teams,
   staleTime: TEAMS_STALE_MS,
+  // A failed read is a standing notice on the page, so a gateway restart is
+  // ridden out quietly first (see `retryThroughRestart`).
+  retry: retryThroughRestart,
+  // ...and a failed read keeps re-reading, so its notice clears on its own.
+  refetchInterval: refetchWhileFailed,
 }
 
 /**

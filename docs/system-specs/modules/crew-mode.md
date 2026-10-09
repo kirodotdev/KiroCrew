@@ -1116,6 +1116,17 @@ repeats roster-read and team-read failures where the roster column is not on
 screen — below `md` — and the pane's copy is `md:hidden`, exactly the column's
 own hidden range.
 
+The team-read and default-crewmate notices each carry a Dismiss control
+(`ErrorNotice`'s `onDismiss`). One press removes every copy of that notice for
+the rest of that outage: it stays away while the read keeps failing, and only a
+failure after a good read (`dataUpdatedAt` past the dismiss) shows it again; a
+good read clears it unpressed. Both reads ride
+out an unanswered request before they fail (`retryThroughRestart`: a fetch
+rejection, a proxy 502/504 or the gateway's 503 retries three times, 1s/2s/4s;
+every other failure keeps `retryPolicy`). A failed read then re-reads every 30s
+(`refetchWhileFailed`), so the notice clears on its own: nothing else refetches
+either read on an idle page, and the WebSocket may never have dropped.
+
 Because a bare `/members` reopens a crewmate, the folded roster is the desktop
 norm, so the switcher also carries the live per-crewmate signals the roster column
 used to. The page hands it the same `signalsOf` resolver its roster status filters
