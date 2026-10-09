@@ -91,6 +91,7 @@ from kiro_crew.crew_log.errors import CrewLogError
 from kiro_crew.crew_log.schema import KIND_SESSION, Entry
 from kiro_crew.crew_log.store import (
     find_last_tree_edge,
+    find_spawned_entries,
     newest_segment,
     oldest_segment,
     read_head,
@@ -116,6 +117,18 @@ TYPE_RELEASED: Final[str] = "session/released"
 
 #: Both of them, for a reader deciding whether an entry carries an edge at all.
 EDGE_TYPES: Final[frozenset[str]] = frozenset({TYPE_ADOPTED, TYPE_RELEASED})
+
+#: The creating edge as the CREATOR records it, at ``session_create`` time. Written on
+#: the other side from every type above: the child has no log until its first turn, so
+#: this is the only durable record of the edge before that turn. The fold reads it as
+#: the child's creating edge only when none of the child's own ``session/opened``
+#: entries names a parent (see :func:`fold_tree`).
+TYPE_SPAWNED: Final[str] = "session/spawned"
+
+#: How many ``session/spawned`` entries one unit contributes. Far above any real
+#: creator (``MAX_SLOTS_PER_CREATOR`` caps live children much lower); a reader holds
+#: what it reads, so the read is bounded here rather than by the log's length.
+SPAWNED_PER_UNIT_CAP: Final[int] = 1024
 
 #: How many session-log units one scan ADMITS -- probes, lists, reads, caches
 #: and folds. The ONE bound on everything the scanner does and holds, and every
@@ -342,6 +355,10 @@ class TreeReading:
     #: Whether the LISTING faulted. A fault no unit can be named for: the units it hid
     #: are absent from ``records`` and nothing says which slots they belong to.
     unattributed_fault: bool = False
+    #: Every ``session/spawned`` this scan read, as :class:`EdgeRecord` keyed on the
+    #: CHILD's slot and the creator's unit. Empty when the caller did not ask for edges,
+    #: for the reason ``edges`` is.
+    spawned: tuple[EdgeRecord, ...] = ()
 
 
 @dataclass
@@ -532,7 +549,9 @@ def log_rank_of(records: Iterable[OpenedRecord]) -> dict[str, tuple[int, int, st
 
 
 def fold_tree(
-    records: Iterable[OpenedRecord], edges: Iterable[EdgeRecord] = ()
+    records: Iterable[OpenedRecord],
+    edges: Iterable[EdgeRecord] = (),
+    spawned: Iterable[EdgeRecord] = (),
 ) -> dict[str, TreeNode]:
     """Every slot's node, from the records of every session log. Pure.
 
@@ -564,6 +583,18 @@ def fold_tree(
     written: the writer checks the tree as it stands at that moment, while a fold
     sees a checkpoint and a replayed tail whose decisions can reach it in an order
     no writer ever saw.
+
+    *spawned* are the creators' own records of a ``session_create``: ``slot`` is the
+    child, ``parent_slot`` the creator, ``sid`` the creator's unit. One fills the
+    child's creating citation only when none of the child's own records names a
+    parent, so a child that opened a log in the minting process keeps the edge that
+    log recorded. A child with NO log yet still gets a node from it -- that is the
+    child between ``session_create`` and its first turn, which no other record can
+    speak for after a restart. The decisions above still apply over it for a child
+    that has a log, since they replace the creating citation whatever its source.
+    When a child is cited by more than one creator record (only damage produces
+    that), the earliest by ``(at, seq, sid)`` wins, so the answer does not depend
+    on input order.
     """
     # ONE order for the records and for the decisions below, from ``log_rank_of``: within a
     # slot's succession chain it is the ``previous_sid`` link the store wrote, so neither
@@ -589,6 +620,20 @@ def fold_tree(
         if record.parent_slot and record.slot not in cited:
             cited[record.slot] = record.parent_slot
 
+    # The creators' own records, for a child whose records name no parent. Only a
+    # creator that has a log can be cited this way -- the record was read FROM that
+    # log -- so a spawn whose creator unit is gone is a citation with nothing behind it.
+    spawned_only: set[str] = set()
+    for spawn in sorted(spawned, key=lambda s: (s.at, s.seq, s.sid, s.slot)):
+        child = spawn.slot
+        if not child or not spawn.parent_slot or child in cited:
+            continue
+        if spawn.parent_slot not in has_log:
+            continue
+        cited[child] = spawn.parent_slot
+        if child not in has_log:
+            spawned_only.add(child)
+
     # The decisions are placed by the SAME log order the records above were folded in,
     # handed to the comparison rather than re-derived inside it (see
     # :func:`edge_supersedes`): two orderings of one slot's logs could disagree, and the
@@ -609,7 +654,7 @@ def fold_tree(
     on_cycle |= _cycle_members(edge_of)
 
     nodes: dict[str, TreeNode] = {}
-    for slot in has_log:
+    for slot in has_log | spawned_only:
         nodes[slot] = TreeNode(
             slot=slot,
             parent_slot=cited.get(slot),
@@ -1154,6 +1199,44 @@ def edge_record(slot: str, sid: str, entry: Entry | None) -> EdgeRecord | None:
     )
 
 
+def spawned_record(creator_slot: str, creator_sid: str, entry: Entry | None) -> EdgeRecord | None:
+    """The creating edge a ``session/spawned`` entry contributes, or ``None``.
+
+    Keyed on the CHILD: ``slot`` is the child named in the entry, ``parent_slot`` the
+    creator, ``sid`` the creator's unit the entry was read from. The creator is taken
+    from the identity the caller passes -- the unit's own proven head -- and never from
+    the entry, so an entry can only ever name the session whose log it is in as the
+    creator.
+
+    Bounded on the same limits as :func:`edge_record`, and refused rather than
+    truncated for the same reason. A child naming its own creator is refused: it is
+    not an edge.
+    """
+    if entry is None or entry.type != TYPE_SPAWNED:
+        return None
+    if not _bounded(creator_slot, MAX_SHORT_STRING):
+        return None
+    if not _bounded(creator_sid, MAX_ACP_SESSION_ID_LEN):
+        return None
+    child = entry.data.get("child")
+    if not isinstance(child, dict):
+        return None
+    child_slot = child.get("slot")
+    if not isinstance(child_slot, str) or not _bounded(child_slot, MAX_SHORT_STRING):
+        return None
+    if child_slot == creator_slot:
+        return None
+    at = entry.time
+    seq = entry.seq
+    return EdgeRecord(
+        slot=child_slot,
+        parent_slot=creator_slot,
+        at=at if isinstance(at, int) and not isinstance(at, bool) else 0,
+        sid=creator_sid,
+        seq=seq if isinstance(seq, int) and not isinstance(seq, bool) and seq > 0 else 0,
+    )
+
+
 def header_unreadable(segment: Path) -> bool:
     """Whether "no header" means the header could not be READ.
 
@@ -1290,6 +1373,7 @@ class SessionTree:
         *,
         with_edges: bool = False,
         faults: "_ScanFaults | None" = None,
+        spawned_out: "list[EdgeRecord] | None" = None,
     ) -> tuple[list[OpenedRecord], list[EdgeRecord], bool, bool]:
         """:meth:`records`, plus the later decisions when asked for, plus whether any
         unit's bytes could not be READ, plus whether the population ran past the cap.
@@ -1370,6 +1454,24 @@ class SessionTree:
                         faults.sids.append(record.sid)
                     if edge is not None:
                         edges.append(edge)
+                if spawned_out is not None and record is not None and record.slot:
+                    # The children this unit's session created. Not cached: only the
+                    # projection's cold seed asks, once per process, and the
+                    # projection keeps the answer from then on.
+                    try:
+                        entries, truncated = find_spawned_entries(directory, SPAWNED_PER_UNIT_CAP)
+                    except (OSError, ValueError):
+                        entries, truncated = [], True
+                    if truncated:
+                        # A fault, or more spawns than the bound: either way this
+                        # unit's children are not all here, so the reading says so.
+                        faulted = True
+                        if faults is not None:
+                            faults.sids.append(record.sid)
+                    for entry in entries:
+                        spawn = spawned_record(record.slot, record.sid, entry)
+                        if spawn is not None:
+                            spawned_out.append(spawn)
             # Evict what this scan did not admit: a unit that is gone, and one
             # that fell past the cap because the population grew in front of it.
             for gone in [name for name in self._heads if name not in seen]:
@@ -1561,11 +1663,16 @@ class SessionTree:
         """
         try:
             faults = _ScanFaults()
+            spawned: list[EdgeRecord] = []
             records, edges, faulted, over_cap = self._records_with_fault(
-                preferred, with_edges=with_edges, faults=faults
+                preferred,
+                with_edges=with_edges,
+                faults=faults,
+                spawned_out=spawned if with_edges else None,
             )
             return TreeReading(
-                nodes=fold_tree(records, edges),
+                nodes=fold_tree(records, edges, spawned),
+                spawned=tuple(spawned),
                 incomplete=faulted or over_cap,
                 records=tuple(records),
                 edges=tuple(edges),

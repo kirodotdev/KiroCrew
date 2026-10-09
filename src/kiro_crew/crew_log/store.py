@@ -2511,6 +2511,63 @@ def find_last_tree_edge(directory: Path) -> "Entry | None":
     return None
 
 
+#: The entry a creator's log carries for each session it created (see
+#: ``entry_types``). Read separately from :data:`_TREE_EDGE_TYPES`: a unit holds at most
+#: one decision that matters -- its newest -- but one ``session/spawned`` per child.
+_SPAWNED_TYPE = "session/spawned"
+#: The marker a raw record must contain before it is parsed. Every other line in a
+#: busy log is skipped without a JSON parse, which is most of the cost of this read.
+_SPAWNED_NEEDLE = b'"session/spawned"'
+
+
+def find_spawned_entries(directory: Path, limit: int) -> "tuple[list[Entry], bool]":
+    """The NEWEST *limit* ``session/spawned`` entries in *directory*'s surviving log,
+    oldest first, and whether any older ones were left out.
+
+    The whole log, every segment, because a creator records its children over its
+    whole life and any of them may still be waiting for a first turn. The newest are
+    kept because the newest children are the ones most likely to have no log of their
+    own yet. A reader holds what it returns, so the bound is the caller's.
+
+    The flag is load-bearing. A cut answer is not the unit's whole answer, so a caller
+    must not cache it as complete or report a reading built from it as complete.
+
+    Raises what the reads raise, as ``OSError`` or ``ValueError``, for the reason
+    :func:`find_last_tree_edge` does: "no child recorded" and "the bytes were not seen"
+    are different answers, and only the first may be cached.
+    """
+    found = [
+        (first, child)
+        for child in directory.iterdir()
+        if (first := _segment_first_seq(child)) is not None
+    ]
+    found.sort(key=lambda pair: pair[0])
+    kept: "deque[Entry]" = deque(maxlen=max(limit, 0))
+    seen = 0
+    for _first, segment in found:
+        if segment.stat().st_size == 0:
+            continue
+        with open(segment, "rb") as handle:
+            try:
+                for raw in strict_raw_records(handle, segment, cap=MAX_ENTRY_BYTES):
+                    if _SPAWNED_NEEDLE not in raw:
+                        continue
+                    parsed = _parses_to_object(raw.strip())
+                    if parsed is None:
+                        continue
+                    entry = Entry.from_dict(parsed)
+                    if entry is not None and entry.type == _SPAWNED_TYPE:
+                        seen += 1
+                        kept.append(entry)
+            except UnreadableRecord as exc:
+                # Same conversion :func:`_scan_whole_for_types` makes, so every caller
+                # guards one pair of exception types.
+                raise ValueError(
+                    f"crew log segment {segment.name} holds an unreadable record"
+                ) from exc
+    return list(kept), seen > len(kept)
+
+
 def _scan_whole_for_types(segment: Path, types: "frozenset[str]") -> "Entry | None":
     """The newest entry of *types* anywhere in *segment*, or ``None``.
 

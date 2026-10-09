@@ -110,7 +110,7 @@ CHECKPOINT_NAME: Final[str] = "session-tree.json"
 #: why this is a bump rather than a key read additively: a file written before
 #: adoptions existed would load as "no session has ever been adopted", which looks
 #: exactly like the truth and is wrong.
-CHECKPOINT_VERSION: Final[int] = 4
+CHECKPOINT_VERSION: Final[int] = 5
 
 #: How long the projection waits before re-attempting a seed that RAISED, in seconds.
 #: A failed seed serves an empty tree, so latching it for the life of the process makes
@@ -131,7 +131,11 @@ ScanIdentity = tuple[int, int, int, int]
 #: What a checkpoint load yields, and what a tail replay yields on top of it. Aliased for
 #: the same reason: a five-place tuple in a signature is not readable at the call site.
 _LoadedCheckpoint = tuple[
-    "dict[str, OpenedRecord]", "dict[tuple[str, str], EdgeRecord]", "dict[str, ScanIdentity]"
+    "dict[str, OpenedRecord]",
+    "dict[tuple[str, str], EdgeRecord]",
+    "dict[str, ScanIdentity]",
+    "dict[tuple[str, str], EdgeRecord]",
+    "dict[str, ScanIdentity]",
 ]
 _ReplayResult = tuple[
     "dict[str, OpenedRecord]",
@@ -374,6 +378,19 @@ class SessionTreeProjection:
         #: the pass's ordinary cost; the one thing it cannot do is assert a decision,
         #: because no read of the current bytes stands behind it.
         self._scans: dict[str, ScanIdentity] = {}
+        #: Every ``session/spawned`` held, keyed ``(child_slot, creator_sid)``. The
+        #: creators' own record of a ``session_create``, which is the only durable
+        #: creating edge a child has before its first turn writes a log of its own.
+        #: :func:`fold_tree` reads one only for a child whose own records name no
+        #: parent, so it never competes with the child's ``session/opened.parent``,
+        #: and the decisions above still replace it.
+        self._spawned: dict[tuple[str, str], EdgeRecord] = {}
+        #: Per creator unit, the identity its log had when its ``session/spawned``
+        #: entries were last read COMPLETELY -- found or not. The entries held for that
+        #: unit in ``_spawned`` are its whole answer while the identity still matches,
+        #: so a boot skips re-reading a log that has not changed. A cache: a mismatch
+        #: costs one re-read and never asserts an edge.
+        self._spawn_scans: dict[str, ScanIdentity] = {}
         #: The cached fold. ``None`` marks it owed, so :meth:`nodes` recomputes once and
         #: then hands out the same object until something actually changes.
         self._nodes: Optional[dict[str, TreeNode]] = None
@@ -435,6 +452,10 @@ class SessionTreeProjection:
 
     # ── reads ──────────────────────────────────────────────────────────────
 
+    def _fold_locked(self) -> dict[str, TreeNode]:
+        """The one fold over everything held. Caller holds the lock."""
+        return fold_tree(self._records.values(), self._edges.values(), self._spawned.values())
+
     def nodes(self) -> dict[str, TreeNode]:
         """The tree, folded in memory. NO I/O, ever.
 
@@ -446,7 +467,7 @@ class SessionTreeProjection:
         """
         with self._lock:
             if self._nodes is None:
-                self._nodes = fold_tree(self._records.values(), self._edges.values())
+                self._nodes = self._fold_locked()
             return self._nodes
 
     def reading(self) -> TreeReading:
@@ -459,7 +480,7 @@ class SessionTreeProjection:
         """
         with self._lock:
             if self._nodes is None:
-                self._nodes = fold_tree(self._records.values(), self._edges.values())
+                self._nodes = self._fold_locked()
             return TreeReading(
                 nodes=self._nodes,
                 incomplete=self._incomplete,
@@ -580,7 +601,7 @@ class SessionTreeProjection:
             if not creator or creator == slot:
                 return ""
             if self._nodes is None:
-                self._nodes = fold_tree(self._records.values(), self._edges.values())
+                self._nodes = self._fold_locked()
             node = self._nodes.get(slot)
         if node is None or node.cycle or node.parent_slot != creator:
             return ""
@@ -704,6 +725,66 @@ class SessionTreeProjection:
             self._dirty = True
         self._changed()
 
+    def apply_spawned(self, spawn: EdgeRecord) -> None:
+        """Fold ONE newly-committed ``session/spawned`` in.
+
+        Called by the emitter right after the append to the CREATOR's log succeeded,
+        on the terms :meth:`apply` keeps: the memory never runs ahead of durability.
+        *spawn* is keyed on the child -- ``slot`` the child, ``parent_slot`` the
+        creator, ``sid`` the creator's unit.
+
+        Same-reference when nothing moves, bounded like every other door, and past
+        :data:`TREE_UNIT_CAP` the oldest held spawn is evicted and both flags are set.
+        """
+        if not spawn.slot or not spawn.parent_slot or not spawn.sid:
+            return
+        if not _edge_within_bounds(spawn):
+            logger.debug("session tree projection refused an over-long spawn; dropping it")
+            return
+        with self._lock:
+            key = (spawn.slot, spawn.sid)
+            if self._spawned.get(key) == spawn:
+                return
+            self._spawned[key] = spawn
+            # The creator's log just grew, so its cached read is void.
+            self._spawn_scans.pop(spawn.sid, None)
+            self._evict_spawned_to_cap_locked()
+            self._nodes = None
+            self._dirty = True
+        self._changed()
+
+    def _evict_spawned_to_cap_locked(self) -> None:
+        """Bring the spawns back within :data:`TREE_UNIT_CAP`. Caller holds the lock.
+
+        Oldest-first by ``(at, slot, sid)``, the shape the decisions use. An evicted
+        spawn may be a child's only edge, so both flags are set and the creator's unit
+        is marked suspect, and its cached read is dropped so the next boot re-reads it.
+        """
+        surplus = len(self._spawned) - TREE_UNIT_CAP
+        if surplus <= 0:
+            return
+        doomed = sorted(self._spawned.values(), key=lambda e: (e.at, e.slot, e.sid))
+        for spawn in doomed[:surplus]:
+            self._spawned.pop((spawn.slot, spawn.sid), None)
+            self._spawn_scans.pop(spawn.sid, None)
+            if spawn.sid in self._records:
+                self._suspect_sids.add(spawn.sid)
+        self._incomplete = True
+        self._over_cap = True
+
+    def _replace_unit_spawned_locked(self, sid: str, found: "list[EdgeRecord]") -> bool:
+        """Make *found* the whole set of spawns held for creator unit *sid*. Caller
+        holds the lock. Returns whether anything changed."""
+        held = {key: spawn for key, spawn in self._spawned.items() if spawn.sid == sid}
+        fresh = {(spawn.slot, spawn.sid): spawn for spawn in found}
+        if held == fresh:
+            return False
+        for key in held:
+            self._spawned.pop(key, None)
+        self._spawned.update(fresh)
+        self._evict_spawned_to_cap_locked()
+        return True
+
     def _evict_edges_to_cap_locked(self) -> None:
         """Bring the decisions back within :data:`TREE_UNIT_CAP`. Caller holds the lock.
 
@@ -826,6 +907,10 @@ class SessionTreeProjection:
         from kiro_crew.crew_log.session_tree import edge_record
         from kiro_crew.crew_log.store import _checked_crew_log_root, find_last_tree_edge
 
+        # The unit's spawns live in whichever segments recorded them, so the same
+        # removal can strand them. Re-read on the same terms as the decision below.
+        self._reconcile_spawned(sid, slot)
+
         key = (slot, sid)
         with self._lock:
             if key not in self._edges:
@@ -862,6 +947,40 @@ class SessionTreeProjection:
             self._dirty = True
         self._changed()
 
+    def _reconcile_spawned(self, sid: str, slot: str) -> None:
+        """Re-read creator unit *sid*'s spawns after a partial removal. The disk
+        decides: a complete read replaces what is held, a read that raises leaves it
+        and marks the reading incomplete. No I/O when nothing is held for the unit."""
+        from kiro_crew.crew_log.session_tree import SPAWNED_PER_UNIT_CAP, spawned_record
+        from kiro_crew.crew_log.store import _checked_crew_log_root, find_spawned_entries
+
+        with self._lock:
+            if not any(spawn.sid == sid for spawn in self._spawned.values()):
+                return
+        try:
+            root = _checked_crew_log_root(KIND_SESSION)
+            entries, truncated = find_spawned_entries(root / _store_name(sid), SPAWNED_PER_UNIT_CAP)
+        except (OSError, ValueError):
+            with self._lock:
+                self._incomplete = True
+                if sid in self._records:
+                    self._suspect_sids.add(sid)
+            return
+        found = [s for e in entries if (s := spawned_record(slot, sid, e)) is not None]
+        with self._lock:
+            self._spawn_scans.pop(sid, None)
+            if truncated:
+                # The newest spawns are installed, and the unit is reported as cut.
+                self._incomplete = True
+                self._over_cap = True
+                if sid in self._records:
+                    self._suspect_sids.add(sid)
+            if not self._replace_unit_spawned_locked(sid, found):
+                return
+            self._nodes = None
+            self._dirty = True
+        self._changed()
+
     def forget(self, sid: str) -> None:
         """Drop one unit's record -- retention removed it, or a delete took it.
 
@@ -891,6 +1010,13 @@ class SessionTreeProjection:
             dropped_edges = [key for key, edge in self._edges.items() if edge.sid == sid]
             for key in dropped_edges:
                 self._edges.pop(key, None)
+            # The children this unit recorded go with it: the record they came from is
+            # gone. A child that opened its own log still has whatever that log says.
+            dropped_spawns = [key for key, spawn in self._spawned.items() if spawn.sid == sid]
+            for key in dropped_spawns:
+                self._spawned.pop(key, None)
+            dropped_edges = dropped_edges + dropped_spawns
+            self._spawn_scans.pop(sid, None)
             # The cached "this unit records no decision" verdict goes too: it is keyed by
             # a unit that is gone, so the only thing it could still answer about is a
             # directory some later session happens to be given the same name.
@@ -956,6 +1082,8 @@ class SessionTreeProjection:
                     # replay would keep every one it could not disprove.
                     self._records = {}
                     self._edges = {}
+                    self._spawned = {}
+                    self._spawn_scans = {}
                     self._nodes = None
                     self._incomplete = False
                     self._over_cap = False
@@ -1119,6 +1247,25 @@ class SessionTreeProjection:
         self._edges = merged
         self._evict_edges_to_cap_locked()
 
+    def _install_seed_spawned_locked(self, scanned: "dict[tuple[str, str], EdgeRecord]") -> None:
+        """Install the spawns a seed established, keeping any committed meanwhile.
+
+        Caller holds the lock. A spawn applied while the scan ran came from an append
+        that completed, so it is kept over the scan's reading, on the terms
+        :meth:`_install_seed_locked` gives for records. A unit removed while the scan
+        ran takes its spawns with it.
+        """
+        merged = {
+            key: spawn
+            for key, spawn in scanned.items()
+            if spawn.sid not in self._forgotten_while_seeding
+        }
+        for key, held in self._spawned.items():
+            if held.sid not in self._forgotten_while_seeding:
+                merged[key] = held
+        self._spawned = merged
+        self._evict_spawned_to_cap_locked()
+
     def _seed(self, live_sids: "tuple[str, ...]") -> None:
         """The body of :meth:`ensure_seeded`, so its caller owns one try/except."""
         with self._lock:
@@ -1162,13 +1309,22 @@ class SessionTreeProjection:
                 self._install_seed_edges_locked(
                     {(e.slot, e.sid): e for e in reading.edges if e.slot}
                 )
+                self._install_seed_spawned_locked(
+                    {(s.slot, s.sid): s for s in reading.spawned if s.slot}
+                )
                 self._nodes = None
                 self._seeded = True
                 self._dirty = True
             self._schedule_checkpoint()
             return
         faults = _ScanFaults()
-        records, edges, scans, incomplete, over_cap = self._replay_tail(*loaded, faults=faults)
+        records, edges, scans, incomplete, over_cap = self._replay_tail(
+            loaded[0], loaded[1], loaded[2], faults=faults
+        )
+        spawned, spawn_scans, spawn_incomplete = self._replay_spawned(
+            records, loaded[3], loaded[4], faults=faults
+        )
+        incomplete = incomplete or spawn_incomplete
         with self._lock:
             self._incomplete = incomplete
             self._over_cap = over_cap
@@ -1179,6 +1335,14 @@ class SessionTreeProjection:
             # Kept only for units the merge actually holds, so the cache cannot outlive
             # the population it describes and grow without bound across boots.
             self._scans = {sid: ident for sid, ident in scans.items() if sid in self._records}
+            # Installed BEFORE the spawns, because installing them can evict past the
+            # cap, and eviction drops the evicted unit's identity. Assigning the cache
+            # afterwards would restore it, and the next boot would skip a unit whose
+            # spawns are not all held.
+            self._spawn_scans = {
+                sid: ident for sid, ident in spawn_scans.items() if sid in self._records
+            }
+            self._install_seed_spawned_locked(spawned)
             self._nodes = None
             self._seeded = True
             # Compared AFTER the merge, against the state actually installed: a record
@@ -1188,7 +1352,11 @@ class SessionTreeProjection:
             # worth writing even when the tree itself did not move, since that is exactly
             # what spares the NEXT boot the read.
             moved = (
-                self._records != loaded[0] or self._edges != loaded[1] or self._scans != loaded[2]
+                self._records != loaded[0]
+                or self._edges != loaded[1]
+                or self._scans != loaded[2]
+                or self._spawned != loaded[3]
+                or self._spawn_scans != loaded[4]
             )
             if moved:
                 self._dirty = True
@@ -1363,6 +1531,87 @@ class SessionTreeProjection:
                 edges[key] = found
         return records, edges, scans, incomplete or over_cap, over_cap
 
+    def _replay_spawned(
+        self,
+        records: dict[str, OpenedRecord],
+        loaded_spawned: dict[tuple[str, str], EdgeRecord],
+        loaded_scans: "dict[str, ScanIdentity]",
+        *,
+        faults: "_ScanFaults | None" = None,
+    ) -> "tuple[dict[tuple[str, str], EdgeRecord], dict[str, ScanIdentity], bool]":
+        """Reconcile the checkpoint's spawns against the store, unit by unit.
+
+        A unit whose log identity still matches the one its spawns were last read at
+        keeps the checkpoint's answer with no read. Any other unit is read in full and
+        its answer replaces the checkpoint's -- including with none, since a complete
+        read that finds nothing is the only evidence that the entries are gone. A read
+        that raises keeps the checkpoint's answer and reports the replay incomplete.
+        Spawns cited by a unit missing from *records* are dropped.
+
+        Returns ``(spawned, spawn_scans, incomplete)``.
+        """
+        from kiro_crew.crew_log.session_tree import (
+            SPAWNED_PER_UNIT_CAP,
+            TREE_UNIT_CAP,
+            spawned_record,
+        )
+        from kiro_crew.crew_log.store import (
+            _checked_crew_log_root,
+            find_spawned_entries,
+            tree_edge_scan_identity,
+        )
+
+        spawned = {key: s for key, s in loaded_spawned.items() if s.sid in records}
+        scans = {sid: ident for sid, ident in loaded_scans.items() if sid in records}
+        incomplete = False
+        try:
+            root = _checked_crew_log_root(KIND_SESSION)
+        except OSError:
+            # Already reported by the record replay, which lists the same root.
+            return spawned, scans, True
+        for record in list(records.values())[:TREE_UNIT_CAP]:
+            if not record.slot:
+                continue
+            directory = root / _store_name(record.sid)
+            try:
+                identity = tree_edge_scan_identity(directory)
+            except OSError:
+                incomplete = True
+                if faults is not None:
+                    faults.sids.append(record.sid)
+                continue
+            if identity is not None and scans.get(record.sid) == identity:
+                continue
+            try:
+                entries, truncated = (
+                    find_spawned_entries(directory, SPAWNED_PER_UNIT_CAP)
+                    if identity is not None
+                    else ([], False)
+                )
+            except (OSError, ValueError):
+                incomplete = True
+                if faults is not None:
+                    faults.sids.append(record.sid)
+                continue
+            for key in [k for k, s in spawned.items() if s.sid == record.sid]:
+                spawned.pop(key, None)
+            for entry in entries:
+                spawn = spawned_record(record.slot, record.sid, entry)
+                if spawn is not None:
+                    spawned[(spawn.slot, spawn.sid)] = spawn
+            if truncated:
+                # A cut answer is not this unit's whole answer: report it, and never
+                # cache its identity, so the next boot reads the unit again.
+                incomplete = True
+                if faults is not None:
+                    faults.sids.append(record.sid)
+                scans.pop(record.sid, None)
+            elif identity is not None:
+                scans[record.sid] = identity
+            else:
+                scans.pop(record.sid, None)
+        return spawned, scans, incomplete
+
     # ── the checkpoint ─────────────────────────────────────────────────────
 
     def _changed(self) -> None:
@@ -1531,6 +1780,10 @@ class SessionTreeProjection:
                 # next boot can skip re-deriving that per unit. A cache, never evidence:
                 # see ``_scans``.
                 "scans": {sid: list(ident) for sid, ident in self._scans.items()},
+                # The creators' records of the sessions they created, and the unit
+                # identities those were read at (see ``_spawned``, ``_spawn_scans``).
+                "spawned": [_edge_to_json(s) for s in self._spawned.values()],
+                "spawn_scans": {sid: list(ident) for sid, ident in self._spawn_scans.items()},
             }
             # Cleared BEFORE the write, and deliberately: an apply landing during it
             # re-dirties the state and arms another write, where clearing after would
@@ -1551,7 +1804,7 @@ class SessionTreeProjection:
         deliberate shutdown -- rather than whenever the debounce elapses.
         """
         with self._lock:
-            if not self._records and not self._edges and not self._dirty:
+            if not self._records and not self._edges and not self._spawned and not self._dirty:
                 return False
             payload = {
                 "ver": CHECKPOINT_VERSION,
@@ -1563,6 +1816,10 @@ class SessionTreeProjection:
                 # next boot can skip re-deriving that per unit. A cache, never evidence:
                 # see ``_scans``.
                 "scans": {sid: list(ident) for sid, ident in self._scans.items()},
+                # The creators' records of the sessions they created, and the unit
+                # identities those were read at (see ``_spawned``, ``_spawn_scans``).
+                "spawned": [_edge_to_json(s) for s in self._spawned.values()],
+                "spawn_scans": {sid: list(ident) for sid, ident in self._spawn_scans.items()},
             }
             self._dirty = False
             # Pinned from the SAME locked block that built the payload. Resolving it
@@ -1642,11 +1899,28 @@ def _load_checkpoint() -> "_LoadedCheckpoint | None":
         record = _record_from_json(raw)
         if record is not None:
             records[record.sid] = record
+    # Required for the reason ``edges`` is: a file missing it would load as "no
+    # session recorded a child", which looks exactly like the truth.
+    spawn_rows = payload.get("spawned")
+    spawn_scan_rows = payload.get("spawn_scans")
+    if not isinstance(spawn_rows, list) or not isinstance(spawn_scan_rows, dict):
+        return None
     edges: dict[tuple[str, str], EdgeRecord] = {}
     for raw in edge_rows:
         edge = _edge_from_json(raw)
         if edge is not None:
             edges[(edge.slot, edge.sid)] = edge
+    spawned: dict[tuple[str, str], EdgeRecord] = {}
+    for raw in spawn_rows:
+        spawn = _edge_from_json(raw)
+        if spawn is not None and spawn.parent_slot:
+            spawned[(spawn.slot, spawn.sid)] = spawn
+    return records, edges, _scans_from_json(scan_rows), spawned, _scans_from_json(spawn_scan_rows)
+
+
+def _scans_from_json(scan_rows: "dict[Any, Any]") -> "dict[str, ScanIdentity]":
+    """A scan-identity cache from the checkpoint. A row that does not parse is dropped,
+    which only costs its unit a re-read."""
     scans: dict[str, ScanIdentity] = {}
     for sid, raw in scan_rows.items():
         if not isinstance(sid, str) or not sid:
@@ -1656,7 +1930,7 @@ def _load_checkpoint() -> "_LoadedCheckpoint | None":
         if not all(isinstance(part, int) and not isinstance(part, bool) for part in raw):
             continue
         scans[sid] = (raw[0], raw[1], raw[2], raw[3])
-    return records, edges, scans
+    return scans
 
 
 def _save_checkpoint(payload: dict[str, Any], path: "Path | None" = None) -> bool:
@@ -1849,6 +2123,29 @@ def record_released(sid: str, slot: str, at: int, seq: int = 0) -> None:
         log_exception_text(
             logger, logging.DEBUG, "session tree projection could not apply a release"
         )
+
+
+def record_spawned(
+    creator_sid: str, creator_slot: str, child_slot: str, at: int, seq: int = 0
+) -> None:
+    """Fold a just-committed ``session/spawned`` into the projection.
+
+    The emitter's door for a creation, on the terms :func:`record_adopted` keeps. Never
+    raises: the append already succeeded, and a spawn the memory missed is recovered by
+    the replay on the next cold start.
+    """
+    try:
+        projection().apply_spawned(
+            EdgeRecord(
+                slot=child_slot or "",
+                parent_slot=creator_slot or None,
+                at=at,
+                sid=creator_sid,
+                seq=seq,
+            )
+        )
+    except Exception:  # pragma: no cover -- defensive
+        log_exception_text(logger, logging.DEBUG, "session tree projection could not apply a spawn")
 
 
 def retract_unit_parent(sid: str) -> None:

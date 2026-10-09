@@ -3,7 +3,7 @@
 **Local page, not a mirror.** Part of the [crew log reference](README.md), which is
 marked as a named exception in [the Reference index](../README.md).
 
-Thirty-five types. Read [envelope.md](envelope.md) first for the fields every entry
+Thirty-six types. Read [envelope.md](envelope.md) first for the fields every entry
 carries; this page covers only each type's `data`.
 
 Session entries are written with `src` `gateway` or `acp` and nothing else. They
@@ -29,6 +29,7 @@ The **Emitter** column says whether this build writes the type. Every row below 
 | [`session/closed`](#sessionclosed) | The gateway stopped serving this session. | live | `gateway` | — |
 | [`session/adopted`](#sessionadopted) | Another session took this one over. | live | `gateway` | supersedes `session/opened.parent` |
 | [`session/released`](#sessionreleased) | This session's parent let it go. | live | `gateway` | retracts the parent edge |
+| [`session/spawned`](#sessionspawned) | This session created another one. | live | `gateway` | the creator's side of `session/opened.parent` |
 | [`turn/started`](#turnstarted) | A turn was authorized and is about to run. | live | `gateway` | opener of `turn/completed` |
 | [`turn/refused`](#turnrefused) | A gate refused to run a dispatched turn. | live | `gateway` | terminal on its own |
 | [`turn/completed`](#turncompleted) | A turn ended; its outcome and cost. | live | `acp`, `gateway` | closer, written last |
@@ -336,6 +337,39 @@ retraction: it means that entry did not repeat a creator.
 `session/adopted` says otherwise.
 
 **Since** — #12962.
+
+### `session/spawned`
+
+This session created another one with `session_create` or `session_fork`.
+
+**Kind and `src`** — `session`; `src` is `gateway`.
+
+**When written** — When the create commits, on the CREATOR's log. Carries no
+`turn`. Not written when the creator has no ACP session yet, because it then has
+no log.
+
+**Pairing** — None. It is the creating edge as the creator records it. The child's
+own `session/opened.parent` states the same edge from the other side, once the
+child's first turn opens its log.
+
+| Field | Type | Required | Meaning | Enum |
+|---|---|---|---|---|
+| `child` | object | required | The session this one created. | |
+| `child.slot` | string | required inside `child` | The new session's slot key, minted by the gateway in the same call. The tree's own key. | |
+
+**Invariants** — The creator is not named in the entry: it is the session whose log
+holds it. Written because the child has no log until its first turn, so before this
+entry a gateway restart in between lost the edge.
+
+```json
+{"type":"session/spawned","seq":213,"time":1789000093000,"src":"gateway","data":{"child":{"slot":"chat-12-1789000093"}}}
+```
+
+**Reader hint** — Use it as the child's creating edge only when none of the child's
+own `session/opened` entries names a `parent`. A `session/adopted` or
+`session/released` on the child's log still wins over it.
+
+**Since** — #18341.
 
 ### `turn/started`
 

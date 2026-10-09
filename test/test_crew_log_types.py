@@ -68,6 +68,7 @@ CANONICAL: dict[str, dict] = {
         "previous_parent": {"slot": "chat-3", "sid": "acp-sess-former"},
     },
     "session/released": {"previous_parent": {"slot": "chat-9", "sid": "acp-sess-adopter"}},
+    "session/spawned": {"child": {"slot": "chat-12"}},
     "turn/started": {"turn": 3, "actor": "user", "depth": 0, "message_seq": 11, "attempt": 2},
     "turn/refused": {"turn": 4, "actor": "cron", "reason": "gateway_closing", "depth": 1},
     "turn/completed": {
@@ -330,7 +331,11 @@ def test_every_type_written_today_is_declared_and_nothing_else_is():
     # there is no file beside it), and a refused write's whole worth is its history --
     # a mistake book is a fold over refusals, and one overwritable document could hold
     # none of it.
-    assert len(SESSION_ENTRY_TYPES) == 38
+    #
+    # The one past those is the session tree's ``session/spawned``, written on the
+    # CREATOR's log at session_create time so a child's creating edge survives a
+    # restart before the child's first turn writes a log of its own.
+    assert len(SESSION_ENTRY_TYPES) == 39
     # Nine types the vocabulary owns that nothing writes. Declaring one would state
     # a shape no writer produces, and the first emitter to land would have to
     # satisfy a contract written without it. They pass through undeclared instead.

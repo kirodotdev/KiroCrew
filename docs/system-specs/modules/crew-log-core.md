@@ -179,6 +179,7 @@ source were removed (see the emitter spec's "Removed types").
 | `session/closed` | `{reason}` | yes |
 | `session/adopted` | `{parent, previous_parent?}` — the session was adopted under a new parent, replacing the `session/opened` parent edge | yes |
 | `session/released` | `{previous_parent?}` — the session was released from its parent, retracting the edge | yes |
+| `session/spawned` | `{child {slot}}` — written on the CREATOR's log when `session_create` or `session_fork` commits, so the creating edge is durable before the child's first turn opens its own log | yes |
 | `turn/started` | `{turn, actor, depth, message_seq?, attempt?}` | yes |
 | `turn/refused` | `{turn, actor, reason, depth}` | yes |
 | `turn/completed` | `{turn, depth, stop_reason, duration_ms, credits, model, provider, tokens{input,output,cache_read,cache_write}, context?{used, window}}`; `error?` and no `credits`/`tokens` on a turn that ended without its terminal event | yes |
