@@ -721,7 +721,7 @@ browser or handled network-first; no other response is cached:
 |---|---|
 | any URL with a `token` query parameter (the `/?token=...` sign-in link) | Declines to intercept, never answers from the cached shell and never caches it, so the gateway's token exchange always runs |
 | `/api`, `/sandbox-doc/`, `/app-windows/`, `/apps/` | Declines to intercept API, one-shot document, standalone app-window, and app-backend responses |
-| `/assets/`, `/vendor/` | Retries network errors and 5xx responses twice with jitter, but never caches the response |
+| `/assets/`, `/vendor/`, `/pcm-worklet.js` | Retries network errors and 5xx responses twice with jitter, but never caches the response |
 | `/fonts/`, `/sprites/` | Declines to intercept non-critical static resources |
 | `/logo.png`, `/static/` | Declines to intercept gateway-served brand assets |
 
