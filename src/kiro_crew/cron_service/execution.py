@@ -157,13 +157,17 @@ def run_parks_one_shot(job: CronJob) -> bool:
     (``run_never_started``: refused before dispatch, or starved in the queue) is
     not parked, whatever the job's shape: nothing ran, so the one-shot stays
     enabled and retries, as :meth:`CronService._merge_job_result` keeps a
-    ``delete_after_run`` one-shot whose fire never started.
+    ``delete_after_run`` one-shot whose fire never started. The exception is a
+    plain one-shot refused for a reason in its own configuration
+    (``refusal_cannot_clear``): a retry meets the same refusal, so it is parked.
     """
     if job.schedule.kind != "at":
         return False
     if job.fire_time_denied:
         return True
-    return not job.delete_after_run and not job.run_never_started
+    if job.delete_after_run:
+        return False
+    return not job.run_never_started or job.refusal_cannot_clear
 
 
 def close_run(

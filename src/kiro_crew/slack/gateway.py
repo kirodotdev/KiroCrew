@@ -4818,6 +4818,10 @@ class GatewayOrchestrator:
                             f"cron '{job.name}': empty agent_sequence step cannot resolve a crew; "
                             "refusing to dispatch",
                         )
+                        # The job's own configuration causes this refusal, so a
+                        # retry meets it again: a plain one-shot is parked
+                        # (``run_parks_one_shot``) instead of retried every floor.
+                        job.refusal_cannot_clear = True
                         return None
                     _live_agent = _retained_session_agent_mismatch(
                         step.session_key, step.dispatch_agent

@@ -4091,6 +4091,7 @@ class CronService:
         job.last_status = None
         job.fire_time_denied = False
         job.run_never_started = False
+        job.refusal_cannot_clear = False
         # Transient retries the callback took this run. The gateway callback only
         # INCREMENTS `_transient_attempts` (a runtime attribute on the live job);
         # this method is the one owner of reading it, clearing it and persisting

@@ -75,6 +75,14 @@ class CronJob:
     # read solely where a one-shot would otherwise be consumed by a run it never
     # had. Reset at the start of every run.
     run_never_started: bool = False
+    # Runtime-only (never serialized): set by the gateway, with
+    # ``run_never_started``, when THIS run was refused for a reason in the job's
+    # own configuration that a retry cannot clear (an empty ``agent_sequence``
+    # step). A plain one-shot refused this way is parked as a one-shot that ran
+    # is, instead of retrying on every floor for as long as the gateway runs; a
+    # ``delete_after_run`` one-shot is still retained by ``run_never_started``.
+    # Reset at the start of every run.
+    refusal_cannot_clear: bool = False
     last_result: str | None = None
     # Epoch at which ``last_result`` was produced, written by
     # :meth:`set_run_result` and PERSISTED. Carries the run's identity for
