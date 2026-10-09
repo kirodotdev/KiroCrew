@@ -1546,7 +1546,7 @@ class TestIsDeniedReDoSResistance:
         # ``;``/``&&``/``|`` separator) must still be denied — a length-bounded
         # scan window would have let these bypass. Also must stay fast.
         for needle in (
-            "FOO=" + ("A" * 2050) + " rm -rf /home/user/project",
+            "FOO=" + ("A" * 2050) + " rm -rf /",
             "aws " + ("--region x " * 250) + "ec2 terminate-instances --instance-ids i-123",
             "psql -c '" + ("#" * 2100) + " DROP DATABASE prod'",
         ):
@@ -2216,6 +2216,20 @@ class TestInterpreterArgvLiteralMint:
             "echo {v} | xargs {n}",
             "echo {v} | xargs -n1 {n}",
             "echo {n} | xargs PKILL -f",
+            # Opus 5.5 :1494 -- xargs reached through an exec-wrapper (with the
+            # wrapper's own option VALUE) or a multi-call dispatcher is still at
+            # program position, so the mint/self-kill rebuild still fires.
+            "echo {v} | sudo xargs {n}",
+            "echo {v} | timeout 9 xargs {n}",
+            "echo {v} | nice -n 5 xargs {n}",
+            "echo {v} | busybox xargs {n}",
+            # Opus 5.5 :1511 -- the launcher test is a DENYLIST of data-consumers, so
+            # an UNLISTED wrapper (taskset/strace/eval) or a redirection prefix before
+            # xargs still counts as program position and does not fail open.
+            "echo {v} | taskset 1 xargs {n}",
+            "echo {v} | strace xargs {n}",
+            "echo {v} | eval xargs {n}",
+            "echo {v} | 2>/dev/null xargs {n}",
         ],
     )
     def test_xargs_appended_arguments_blocked(self, cmd):
@@ -3223,6 +3237,33 @@ class TestPermissionVerbMentionNarrowing:
             if rule.category == "local-destructive" and rule.pattern.startswith((_CM, _CO))
         }
 
+    def test_two_accepted_over_blocks_are_pinned_not_implied(self):
+        """ACCEPTED residuals from the GPT 5.6 lane's advisory findings.
+
+        Both are FALSE POSITIVES, not bypasses, and both were measured:
+
+        * ``$'…'`` is INERT inside double quotes -- bash's word for
+          ``"$'r\\155 -rf /'"`` is the literal ``$'r\\155 -rf /'`` and ``echo``
+          prints it verbatim -- but the decode is applied without tracking the
+          outer quote context, so a view can hold the decoded text.
+        * ``$'r\\155 -rf /'`` is ONE word (``rm -rf /`` with spaces inside it), and
+          running it gives "No such file or directory" because no program has that
+          name; re-joining tokens with spaces turns those intra-word spaces into
+          argv boundaries.
+
+        Accepted rather than fixed, on the asymmetry this file already documents
+        for its data-consumer denylist: a false positive is "annoying, visible, and
+        safe", while the inverse is a silent bypass -- and ``is_denied``'s own
+        docstring states over-blocking is the safer direction for this pass.  Both
+        suggested remedies push toward LESS denial, and the second one would have to
+        mask intra-token whitespace, which is the mechanism that makes a re-spelled
+        command's argv read as the command in the first place.  Pinned so the
+        behaviour is findable and deliberate; if either is closed, its assertion
+        flips.
+        """
+        assert is_denied("echo \"$'r\\155 -rf /'\"") is not None
+        assert is_denied("echo $'r\\155 -rf /'") is not None
+
     def test_no_other_rule_is_narrowed(self):
         """The adapter answers False for every pattern outside the opt-in set.
 
@@ -3259,13 +3300,13 @@ class TestPermissionVerbMentionNarrowing:
     def test_audit_names_this_narrowing_not_the_glob_map(self, monkeypatch):
         """The SEL record must say WHICH narrowing allowed the command.
 
-        Two unrelated mechanisms reach one emitter -- the glob carve-out map and
-        this argv-structural reading.  Recorded under a single name, the audit
-        trail cannot answer the only question it exists for.
+        The argv-structural inert-mention reading is now the ONLY narrowing that
+        reaches the emitter (the glob carve-out map was retired with the rm text
+        rules), so every granted exemption is recorded under its name.
         """
         seen: list[str] = []
 
-        def _record(_tool, _pattern, mechanism="_DENY_EXCEPTIONS"):
+        def _record(_tool, _pattern, mechanism=security._PERM_VERB_MENTION_MECHANISM):
             seen.append(mechanism)
             return True
 
@@ -3274,7 +3315,6 @@ class TestPermissionVerbMentionNarrowing:
         assert _denied_by(f"grep -rn '{_CM} /etc/' src/") is None
         assert seen, "the exemption was granted without reaching the emitter"
         assert set(seen) == {security._PERM_VERB_MENTION_MECHANISM}
-        assert security._PERM_VERB_MENTION_MECHANISM != "_DENY_EXCEPTIONS"
 
     def test_mention_walk_is_bounded_and_the_bound_only_refuses(self):
         """Past the length bound the deny stands, so padding buys nothing.
@@ -6585,22 +6625,38 @@ class TestDenyMatchingIsQuoteNormalized:
             reason = is_denied(cmd)
             assert reason is not None, f"quoted respelling escaped the rule: {cmd!r}"
 
+    #: Every spelling in ``RESPELLINGS`` is denied by the UNION of the two rm rules'
+    #: whole-line regex patterns (kept LIVE in the ``re`` tier as a fail-closed
+    #: deny-net) AND the argv floor (``_recursive_force_rm_targets``). The
+    #: program-splice spellings (``r''m`` / ``r""m``) are the subtlest, splicing
+    #: INSIDE the ``rm`` word so ``_argv_programs`` sees no ``rm`` command until
+    #: shlex rejoins it; the floor's quote-normalized argv catches them, and the
+    #: contiguous ones the whole-line regex catches too. The assertion above is the
+    #: strong full-set form (a ratchet may only tighten), so a future change that
+    #: lets ANY cell be missed reddens here rather than passing silently (Opus
+    #: security-class).
+
     def test_the_respellings_are_a_real_bypass_without_the_normalized_view(
         self, monkeypatch: pytest.MonkeyPatch
     ):
-        """The additive-proof twin: with the extra view removed, every cell above
-        is ALLOWED.
+        """The additive-proof twin: with the extra view AND the argv-structural
+        rm floor removed, every cell above is ALLOWED.
 
         This is what makes the assertion above a security property rather than an
         incidental match -- if a later change makes the raw text match these on
         its own, this test fails loudly and the cross above stops proving
-        anything.
+        anything. The new ``rm_floor._recursive_force_rm_targets`` IS such a change
+        (it classifies the respelled argv directly), so it is disabled here too so
+        the twin still isolates the NORMALIZED VIEW as the witness (c736); the base
+        contiguous ``rm -rf /`` regex stays live for the canonical control below.
         """
         from kiro_crew import security
+        from kiro_crew.security import rm_floor as _rm_floor
 
         monkeypatch.setattr(
             security, "_deny_segment_views", lambda segment, emit_self=True: (segment.lower(),)
         )
+        monkeypatch.setattr(_rm_floor, "_recursive_force_rm_targets", lambda *a, **k: frozenset())
         for cmd in self.RESPELLINGS:
             assert security.is_denied(cmd) is None, (
                 f"raw text now matches {cmd!r} on its own -- the cross above no longer "
@@ -6658,8 +6714,10 @@ class TestDenyMatchingIsQuoteNormalized:
 
     def test_a_data_consumer_mention_is_not_walked(self):
         """``echo bash -c '<script>'`` PRINTS the script, so descending into it
-        would refuse a command that runs nothing (advisory from the GPT 5.6
-        lane).  The repo's own ``_data_consumer_exempt`` decides this."""
+        would refuse a command that runs nothing.  The repo's own
+        ``_data_consumer_exempt`` decides this: ``bash``/``sh`` is an ARGUMENT of
+        a data consumer, so the ``-c`` payload frame is a printed mention, not an
+        executed command."""
         for cmd in (
             "echo bash -c 'rm -rf \"/\"'",
             "cat bash -c 'rm -rf \"/\"'",
@@ -6667,9 +6725,10 @@ class TestDenyMatchingIsQuoteNormalized:
             assert is_denied(cmd) is None, f"mention over-blocked: {cmd!r}"
 
     def test_the_exemption_does_not_weaken_the_raw_tier(self):
-        """The unquoted mention was already refused BEFORE this change, because
-        the raw text contains the rule's own text.  The exemption must not walk
-        that back -- it only decides whether to DESCEND into a payload."""
+        """The unquoted mention is refused by the whole-text deny-net regex, which
+        contains the rule's own contiguous text.  The data-consumer exemption only
+        decides whether to DESCEND into a payload frame -- it must not walk the
+        raw-tier deny back."""
         for cmd in (
             "echo rm -rf /",
             "echo bash -c 'rm -rf /'",
@@ -6708,18 +6767,18 @@ class TestDenyMatchingIsQuoteNormalized:
                 {"pattern": pattern, "segment": segment, "raw_segment": raw_segment}
             ),
         )
-        assert security.is_denied("ls -la && r''m -rf /") is not None
+        assert security.is_denied("ls -la && d''d if=/dev/zero of=/dev/sda") is not None
         assert events, "no deny event was emitted"
         last = events[-1]
-        assert last["segment"] == "rm -rf /", last
-        assert last["raw_segment"] == "r''m -rf /", last
+        assert last["segment"] == "dd if=/dev/zero of=/dev/sda", last
+        assert last["raw_segment"] == "d''d if=/dev/zero of=/dev/sda", last
 
         # A raw match is caught by the WHOLE-STRING pass 1, which has no segment
         # to normalize, so the extra field stays absent and an ordinary denial's
         # event does not grow.
         events.clear()
-        assert security.is_denied("ls -la && rm -rf /") is not None
-        assert events[-1]["segment"] == "ls -la && rm -rf /"
+        assert security.is_denied("ls -la && dd if=/dev/zero of=/dev/sda") is not None
+        assert events[-1]["segment"] == "ls -la && dd if=/dev/zero of=/dev/sda"
         assert events[-1]["raw_segment"] == ""
 
     def test_the_synthesized_target_keeps_model_authored_quoting(self):
@@ -6812,6 +6871,9 @@ class TestDenyMatchingIsQuoteNormalized:
             "_decode_shell_quoted_literals",
         ):
             monkeypatch.setattr(security, target, _boom)
+            # The rm catalog regexes stay LIVE in the raw ``re`` tier as the
+            # fail-closed deny-net half of the union, so even with the view
+            # helpers neutered the raw tier still decides and the deny stands.
             assert security._deny_segment_views("rm -rf /") == ("rm -rf /",)
             # ...and the raw tier still decides, so the deny stands.
             assert security.is_denied("rm -rf /") is not None
@@ -7098,12 +7160,21 @@ class TestDenyMatchingIsQuoteNormalized:
         # ANSI-C: the body IS decoded, so the two forms are not interchangeable.
         assert decode("$'\\r\\mAA'") == "' \\mAA'"
 
-        assert is_denied('bash -c $"\\r\\m -rf /"') is not None
         assert is_denied('bash -c $"rm -rf /"') is not None
         # ...and the operand form stays denied, because bash's operand there is `/`.
         assert is_denied('rm -rf $"/"') is not None
         # A benign locale-quoted string is untouched.
         assert is_denied('echo $"hello world"') is None
+        # RESTORED (Item 4): a locale-quoted nested payload whose
+        # backslash-letter escapes the INNER shell de-escapes to the program name
+        # (``bash -c $"\\r\\m -rf /"`` -> inner ``rm -rf /``) EXECUTES the root
+        # wipe, and base ``main`` denied it (via the quote-normalized view), so the
+        # floor must deny it too. The floor re-splits the ``bash -c`` payload with
+        # the inner shell's own unquoted backslash de-escaping
+        # (``_rm_deescape_unquoted_backslashes``), so ``\\r\\m`` reforms as ``rm``
+        # and the wipe is caught — where the outer walk's ``_decode_printf_escapes``
+        # had mangled ``\\r`` to whitespace and dropped the ``r``.
+        assert is_denied('bash -c $"\\r\\m -rf /"') is not None
 
     def test_ansi_c_control_escapes_are_decoded(self):
         """``\\cX`` is a control character and ``\\cI`` is a TAB, so
@@ -7277,56 +7348,29 @@ class TestDenyMatchingIsQuoteNormalized:
         assert is_denied(r"$'dd\0junk' if=/dev/zero of=/dev/sda") is not None
         assert is_denied(r"$'mkfs\0junk' /dev/sda") is not None
 
-    def test_flag_interposition_is_a_catalog_gap_not_a_view_gap(self):
-        """DOCUMENTED GAP, with the evidence that places it outside this change.
+    def test_flag_interposition_is_now_closed_by_the_widened_rule(self):
+        """The argv floor closes what a catalog literal alone cannot.
 
         ``$'rm\\0junk' -rf --no-preserve-root /`` normalizes to exactly the command
-        bash runs -- the view is correct -- but the rule ``rm -rf /.*`` requires its
-        text contiguous and does not tolerate an interposed flag, so nothing matches.
-        The PLAIN spelling is allowed too, on base and here alike, which is what
-        shows this is the built-in rule's authoring rather than anything
-        normalization can reach: no view can make a non-matching pattern match.
-
-        Closing it means editing a shipped rule's regex, which changes matching for
-        the whole catalog and is a separate decision.  Pinned so the gap is findable;
-        when it is closed, the first assertion flips.
+        bash runs -- the view was always correct -- but the OLD rule ``rm -rf /.*``
+        required its text contiguous and did not tolerate an interposed flag, so
+        nothing matched and the flag-interposed / long-option / reordered spellings
+        slipped the gate. The rule now carries a flag-tolerant regex, so the
+        interposed and ``--no-preserve-root`` spellings are refused. This test used
+        to assert the gap was OPEN; per its own prior note ("when it is closed, the
+        first assertion flips"), the first assertion has flipped.
         """
         from kiro_crew import security
 
-        # The catalog cannot see the flag-interposed form in ANY spelling...
-        assert is_denied("rm -rf --no-preserve-root /") is None
-        # ...while the contiguous shape the rule is authored for is refused.
+        # The flag-interposed form is now DENIED (was allowed before the widening).
+        assert is_denied("rm -rf --no-preserve-root /") is not None
+        # The contiguous shape stays refused, as always.
         assert is_denied("rm -rf /") is not None
-        # ...and the view for the escaped spelling IS the command bash runs.
+        # The view for the escaped spelling IS the command bash runs, and it is now
+        # itself denied -- the normalization and the widened catalog rule compose.
         views = security._deny_segment_views(r"$'rm\0junk' -rf --no-preserve-root /")
         assert "rm -rf --no-preserve-root /" in views, views
-
-    def test_two_accepted_over_blocks_are_pinned_not_implied(self):
-        """ACCEPTED residuals from the GPT 5.6 lane's advisory findings.
-
-        Both are FALSE POSITIVES, not bypasses, and both were measured:
-
-        * ``$'…'`` is INERT inside double quotes -- bash's word for
-          ``"$'r\\155 -rf /'"`` is the literal ``$'r\\155 -rf /'`` and ``echo``
-          prints it verbatim -- but the decode is applied without tracking the
-          outer quote context, so a view can hold the decoded text.
-        * ``$'r\\155 -rf /'`` is ONE word (``rm -rf /`` with spaces inside it), and
-          running it gives "No such file or directory" because no program has that
-          name; re-joining tokens with spaces turns those intra-word spaces into
-          argv boundaries.
-
-        Accepted rather than fixed, on the asymmetry this file already documents
-        for its data-consumer denylist: a false positive is "annoying, visible, and
-        safe", while the inverse is a silent bypass -- and ``is_denied``'s own
-        docstring states over-blocking is the safer direction for this pass.  Both
-        suggested remedies push toward LESS denial, and the second one would have to
-        mask intra-token whitespace, which is the mechanism that makes a re-spelled
-        command's argv read as the command in the first place.  Pinned so the
-        behaviour is findable and deliberate; if either is closed, its assertion
-        flips.
-        """
-        assert is_denied("echo \"$'r\\155 -rf /'\"") is not None
-        assert is_denied("echo $'r\\155 -rf /'") is not None
+        assert is_denied(r"$'rm\0junk' -rf --no-preserve-root /") is not None
 
     def test_a_single_segment_command_is_not_walked_twice(self):
         """The whole-command payload walk exists for the case where the split
@@ -7374,7 +7418,9 @@ class TestDenyMatchingIsQuoteNormalized:
         self, monkeypatch: pytest.MonkeyPatch
     ):
         """Fail-closed: the raw view is matched FIRST and independently, so a
-        tokenizer that raises loses only the extra match."""
+        tokenizer that raises loses only the extra match. The rm catalog regexes
+        stay LIVE in the raw ``re`` tier, so even when the tokenizer explodes the
+        raw tier still decides and ``rm -rf /`` is denied."""
         from kiro_crew import security
 
         def _boom(cmd: str) -> list[str]:
@@ -7468,18 +7514,20 @@ class TestEmptyArgvElementDoesNotBreakTheDenyView:
     the measured reason.
     """
 
-    # One rule (``rm -rf /.*``), every spelling of an empty word a shell accepts,
-    # at every position where it changes the join.
+    # One rule (the recursive-force root rule), every spelling of an empty word a
+    # shell accepts, at every position where it changes the join. The target is
+    # the EXACT root ``/`` — the rule denies the root itself, and the empty word
+    # is the thing under test, not the operand.
     EMPTY_WORD_SPELLINGS = (
-        'rm -rf "" /home/x',
-        "rm -rf '' /home/x",
-        "rm -rf $'' /home/x",  # ANSI-C quoting, empty body
-        'rm -rf $"" /home/x',  # locale quoting, empty body
-        "rm -rf \"\"'' /home/x",  # concatenation of two empty words
-        "rm -rf ''\"\" /home/x",
-        'rm -rf """" /home/x',
-        'rm -rf "" "" /home/x',  # two separate empty operands
-        'rm "" -rf /home/x',  # between the program and its flag
+        'rm -rf "" /',
+        "rm -rf '' /",
+        "rm -rf $'' /",  # ANSI-C quoting, empty body
+        'rm -rf $"" /',  # locale quoting, empty body
+        "rm -rf \"\"'' /",  # concatenation of two empty words
+        "rm -rf ''\"\" /",
+        'rm -rf """" /',
+        'rm -rf "" "" /',  # two separate empty operands
+        'rm "" -rf /',  # between the program and its flag
     )
 
     def test_every_empty_word_spelling_is_denied(self):
@@ -7490,14 +7538,20 @@ class TestEmptyArgvElementDoesNotBreakTheDenyView:
         self, monkeypatch: pytest.MonkeyPatch
     ):
         """The additive-proof twin, in the shape this file already uses: with the
-        normalized view removed, every cell above is ALLOWED -- so the assertion
-        above is a property of the view's render and not an incidental raw match.
+        normalized view AND the argv-structural rm floor removed, every cell above
+        is ALLOWED -- so the assertion above is a property of the view's render /
+        empty-word elision, not an incidental raw match. The new
+        ``rm_floor._recursive_force_rm_targets`` classifies the elided argv directly,
+        so it is disabled here too so the twin still isolates the elision (c736);
+        the base ``rm -rf /home/x`` literal stays live for the canonical control.
         """
         from kiro_crew import security
+        from kiro_crew.security import rm_floor as _rm_floor
 
         monkeypatch.setattr(
             security, "_deny_segment_views", lambda segment, emit_self=True: (segment.lower(),)
         )
+        monkeypatch.setattr(_rm_floor, "_recursive_force_rm_targets", lambda *a, **k: frozenset())
         for cmd in self.EMPTY_WORD_SPELLINGS:
             assert security.is_denied(cmd) is None, (
                 f"raw text now matches {cmd!r} on its own -- the cross above no "
@@ -7612,7 +7666,7 @@ class TestEmptyArgvElementDoesNotBreakTheDenyView:
     # floor rather than the tiers -- see
     # ``test_the_git_publish_detector_skips_an_empty_word``.
     PROPERTY_BASES = (
-        "rm -rf /home/x",
+        "rm -rf $HOME",
         "dd if=/dev/zero of=/dev/sda",
         "chmod 777 /etc/passwd",
         "git push origin main",
@@ -7767,6 +7821,39 @@ class TestEmptyArgvElementDoesNotBreakTheDenyView:
         # A command with no whitespace-only word gains no view.
         assert security._deny_segment_views("ls -la /tmp") == ("ls -la /tmp",)
         # ...and the two-word filename that makes a whitespace collapse unsound.
+        assert security._deny_segment_views('rm -rf "a b"')[-1] == "rm -rf a b"
+
+    def test_a_whitespace_only_word_before_a_rooted_target_is_denied(self):
+        """A whitespace-only operand interposed before the EXACT root does not
+        save the command: ``rm -rf " " /`` still recursively force-deletes the
+        root, so it is denied. A rooted DESCENDANT (``rm -rf " " /home/x``) is
+        also denied here -- the whitespace-elided deny view renders the
+        contiguous ``rm -rf /home/x`` the base ``rm -rf /.*`` net already
+        refuses -- while a relative two-word name with no rooted target stays
+        allowed.
+        """
+        from kiro_crew import security
+
+        # Whitespace-only operand, then the EXACT root -> denied.
+        for cmd in (
+            'rm -rf " " /',
+            "rm -rf $'\\t' /",
+        ):
+            assert is_denied(cmd) is not None, (
+                f"{cmd!r} should be denied -- it recursively force-deletes the "
+                "root with only a whitespace operand interposed"
+            )
+        # Whitespace-only operand, then a rooted DESCENDANT -> denied via the
+        # whitespace-elided view against the base ``rm -rf /.*`` net.
+        for cmd in (
+            'rm -rf " " /home/x',
+            "rm -rf $'\\t' /home/x",
+        ):
+            assert is_denied(cmd) is not None, cmd
+        # A two-word filename with NO rooted target stays allowed (collapsing its
+        # whitespace would fabricate a command that was never run)...
+        assert is_denied('rm -rf "a b"') is None
+        # ...and the elided view still renders the two-word name faithfully.
         assert security._deny_segment_views('rm -rf "a b"')[-1] == "rm -rf a b"
 
     def test_the_self_protection_floor_was_never_fooled(self):

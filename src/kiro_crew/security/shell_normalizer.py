@@ -1560,7 +1560,11 @@ def _substitution_bodies(text: str) -> "list[str]":
         # substitution does -- ``cat <(kirocrew token)`` executes the inner command and
         # feeds its output through a pipe.  Same paren-nesting walk.
         if text.startswith(("<(", ">(", "$("), i):
-            end, proven = _matching_close_paren(text, i + 2)
+            # Slice from the body so the span is walked in the substitution's OWN
+            # fresh quote context (as ``argv_floor`` does): an outer ``"`` must not
+            # shift the inner parity and read the real ``)`` as quoted (GPT 6.1).
+            rel, proven = _matching_close_paren(text[i + 2 :], 0)
+            end = i + 2 + rel
             bodies.append(text[i + 2 : end - 1] if proven else text[i + 2 :])
             i = end
             continue
