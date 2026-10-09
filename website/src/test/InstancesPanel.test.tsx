@@ -69,7 +69,7 @@ describe('InstancesPanel', () => {
     renderWithProviders(<InstancesPanel />)
 
     await screen.findByText(/No remote crews configured yet/i)
-    await u.type(screen.getByPlaceholderText('Remote Host 1'), 'Nimbus')
+    await u.type(screen.getByPlaceholderText('Crew 1'), 'Nimbus')
     await u.type(screen.getByPlaceholderText('host-1-alias'), 'nimbus-alias')
     await u.type(
       screen.getByPlaceholderText(/leave blank for standard installs/i),
@@ -99,7 +99,7 @@ describe('InstancesPanel', () => {
     const first = renderWithProviders(<InstancesPanel />)
 
     await screen.findByText(/No remote crews configured yet/i)
-    await u.type(screen.getByPlaceholderText('Remote Host 1'), 'Nimbus')
+    await u.type(screen.getByPlaceholderText('Crew 1'), 'Nimbus')
     await u.type(screen.getByPlaceholderText('host-1-alias'), 'nimbus-alias')
     await u.click(screen.getByRole('button', { name: 'Add remote crew' }))
 
@@ -111,7 +111,7 @@ describe('InstancesPanel', () => {
     // navigation is — a fresh one would model a full page reload instead.
     renderWithProviders(<InstancesPanel />, { store: first.store })
     await waitFor(() =>
-      expect(screen.getByPlaceholderText('Remote Host 1')).toHaveValue('Nimbus'),
+      expect(screen.getByPlaceholderText('Crew 1')).toHaveValue('Nimbus'),
     )
     expect(screen.getByPlaceholderText('host-1-alias')).toHaveValue('nimbus-alias')
 
@@ -120,7 +120,7 @@ describe('InstancesPanel', () => {
     ;vi.mocked(api.addInstance).mockResolvedValue({})
     await u.click(screen.getByRole('button', { name: 'Add remote crew' }))
     await waitFor(() => expect(api.addInstance).toHaveBeenCalledTimes(2))
-    await waitFor(() => expect(screen.getByPlaceholderText('Remote Host 1')).toHaveValue(''))
+    await waitFor(() => expect(screen.getByPlaceholderText('Crew 1')).toHaveValue(''))
   })
 
 

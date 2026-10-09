@@ -4602,7 +4602,7 @@
     "instancesViewport": {
       "loading_pane": "Loading pane…",
       "retry": "Retry",
-      "the_tunnel_looks_connected_but_the_remote_dashbo": "The tunnel looks connected but the remote dashboard never loaded. It may be\n                  restarting — retry, or switch tabs above.",
+      "the_tunnel_looks_connected_but_the_remote_dashbo": "The tunnel looks connected but the crew's dashboard never loaded. It may be restarting — retry, or switch tabs above.",
       "this_tab_stays_until_you_disconnect_the_instance": "This tab stays until you disconnect the crew in <0>Settings → Remote Crew</0>."
     },
     "jobForm": {
@@ -5141,7 +5141,7 @@
       "send_a_copy_to": "Send a copy to",
       "sent": "Sent",
       "sent_transcript_only": "Sent (transcript only)",
-      "transcript_only_hint": "That instance could not restore the full conversation context, so this copy resumes from the transcript alone.",
+      "transcript_only_hint": "That crew could not restore the full conversation context, so this copy resumes from the transcript alone.",
       "unknown_error": "Unknown error"
     },
     "sessionActionsMenu": {
@@ -7082,7 +7082,7 @@
         "open_webhooks": "Open Webhooks",
         "webhooks": "Webhooks",
         "remote_instance_sessions": "Remote crew sessions",
-        "merge_a_connected_remote_instances_live_sessions": "Merge a connected remote crew's live sessions into the Sessions list, each marked with a server badge. A remote crew is another machine you have connected, not your agents. Functional, but not finished.",
+        "merge_a_connected_remote_instances_live_sessions": "Merge a connected remote crew's live sessions into the Sessions list, each marked with its crew's name. A remote crew is another machine you have connected, not your agents. Functional, but not finished.",
         "artifact_deploy": "Artifact Deploy",
         "artifact_deploy_desc": "Publish an artifact to a public HTTPS URL in your own AWS account. Off by default: every deploy spends money in your account and serves the content on the open internet.",
         "open_artifact_deploy": "Open Artifact Deploy"
@@ -8977,7 +8977,7 @@
         "home_you_local_bin_kirocrew_leave_blank_for_stan": "/home/you/.local/bin/kirocrew  —  leave blank for standard installs",
         "host_1_alias": "host-1-alias",
         "instances_stay_warm_live_tunnel_at_once_the_rest": "remote crews stay warm (live tunnel) at once; the rest reconnect on\n                demand. Tune with",
-        "is_installed_somewhere_non_standard_on_the_remot": "is installed somewhere\n            non-standard on the remote. Leave blank for a normal pip install on PATH. To find\n            it, run on the remote host:",
+        "is_installed_somewhere_non_standard_on_the_remot": "is installed somewhere non-standard on the crew. Leave blank for a normal pip install on PATH. To find it, run on the crew:",
         "kirocrew": "kirocrew",
         "kirocrew_restart": "kirocrew restart",
         "loading": "Loading…",
@@ -8992,7 +8992,7 @@
         "optional": "(optional)",
         "port_2": "· remote port",
         "refresh": "Refresh",
-        "remote_host_1": "Remote Host 1",
+        "remote_host_1": "Crew 1",
         "remote_kirocrew_path": "Remote kirocrew path",
         "remote_port": "Remote port",
         "remote_user": "Remote user",
@@ -9401,7 +9401,7 @@
         "delete_crew": "Delete {{name}}",
         "delete_warning": "Delete terminates the EC2 instance and ends its charges. This cannot be undone.",
         "deleting": "Deleting…",
-        "doesnt_manage": "{{productName}} does not manage this machine",
+        "doesnt_manage": "{{productName}} does not manage this crew",
         "edit_crew": "Edit {{name}}",
         "edit_reconnect_note": "Changing the host, port, or connection method closes the current tunnel. Reconnect when you are ready.",
         "edit_settings": "Edit settings",
@@ -9450,7 +9450,7 @@
         "no_profile_set": "none set (AWS CLI default)",
         "open_sign_in": "Open sign-in page",
         "plugin": "Session Manager plugin",
-        "plugin_missing": "Not installed — needed to reach the instance without opening any SSH port.",
+        "plugin_missing": "Not installed — needed to reach the crew without opening any SSH port.",
         "plugin_ok": "Installed.",
         "port_must_be_in_range": "Enter a port between 1 and 65535.",
         "prereq_cloudformation": "CloudFormation access",
@@ -9524,7 +9524,7 @@
         "type_fargate": "Fargate",
         "type_ssh": "SSH",
         "type_ssm": "SSM",
-        "unverified_cloud_note": "{{productName}} cannot verify whether this machine has AWS resources",
+        "unverified_cloud_note": "{{productName}} cannot verify whether this crew has AWS resources",
         "up_to_warm": "Up to {{n}} stay warm at once",
         "use_my_edits_anyway": "Apply my edits to the crew as it is now",
         "your_code": "Your code: {{code}}",

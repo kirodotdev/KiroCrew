@@ -177,7 +177,7 @@ describe('RemoteCrewPanel', () => {
     expect(await screen.findByText(/Loading/i)).toBeInTheDocument()
     // No row at all yet — so no overflow menu, and nothing that could delete.
     expect(screen.queryByRole('button', { name: /More actions/i })).not.toBeInTheDocument()
-    expect(screen.queryByText(/does not manage this machine/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/does not manage this crew/i)).not.toBeInTheDocument()
 
     releaseLaunches({ jobs: [DONE_JOB] })
 
@@ -238,7 +238,7 @@ describe('RemoteCrewPanel', () => {
     expect(
       await screen.findByText(/Launched by the EC2 launcher\. Its instance may still be running and billing/i),
     ).toBeInTheDocument()
-    expect(screen.queryByText(/does not manage this machine/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/does not manage this crew/i)).not.toBeInTheDocument()
     const row = screen.getByText(CLOUD_INSTANCE.name).closest('[data-crew-id]') as HTMLElement
     expect(within(row).getByText('EC2')).toBeInTheDocument()
     expect(within(row).getByText('SSM')).toBeInTheDocument()
@@ -305,7 +305,7 @@ describe('RemoteCrewPanel', () => {
       await screen.findByText(/Launched by the EC2 launcher\. Its instance may still be running and billing/i),
     ).toBeInTheDocument()
     expect(
-      screen.queryByText(/cannot verify whether this machine has AWS resources/i),
+      screen.queryByText(/cannot verify whether this crew has AWS resources/i),
     ).not.toBeInTheDocument()
     expect(screen.queryByText(/Added by you/i)).not.toBeInTheDocument()
 
@@ -363,7 +363,7 @@ describe('RemoteCrewPanel', () => {
     // A fargate row IS an AWS resource, so its caption states that plainly and
     // never hedges the way an unidentified SSM row does.
     expect(within(row).getByText(/An AWS Fargate task\./)).toBeInTheDocument()
-    expect(within(row).queryByText(/cannot verify whether this machine has AWS resources/)).not.toBeInTheDocument()
+    expect(within(row).queryByText(/cannot verify whether this crew has AWS resources/)).not.toBeInTheDocument()
   })
 
   it('shows a failed turn URL copy and clears it after a successful retry', async () => {
@@ -446,7 +446,7 @@ describe('RemoteCrewPanel', () => {
     const row = name.closest('[data-crew-id="f3"]') as HTMLElement
     expect(row).not.toBeNull()
     expect(within(row).getByText(/An AWS Fargate task\./)).toBeInTheDocument()
-    expect(within(row).queryByText(/cannot verify whether this machine has AWS resources/)).not.toBeInTheDocument()
+    expect(within(row).queryByText(/cannot verify whether this crew has AWS resources/)).not.toBeInTheDocument()
   })
 
   it('still lists the crews when the gateway cannot do cloud provisioning at all', async () => {
@@ -857,7 +857,7 @@ describe('RemoteCrewPanel', () => {
 
     // Cloud row carries the cloud attribution + a Stop control; manual row does not.
     expect(await screen.findByText('Launched by Kiro Crew')).toBeInTheDocument()
-    expect(screen.getByText(/does not manage this machine/i)).toBeInTheDocument()
+    expect(screen.getByText(/does not manage this crew/i)).toBeInTheDocument()
     await openRowMenu(u, /More actions for Kiro Crew Cloud/i)
     expect(screen.getByRole('menuitem', { name: 'Stop Kiro Crew Cloud (kc-3f9a)' })).toBeInTheDocument()
 
@@ -1413,7 +1413,7 @@ describe('RemoteCrewPanel', () => {
       const first = renderWithProviders(<RemoteCrewPanel />)
 
       await screen.findByText('Nimbus')
-      await u.type(screen.getByPlaceholderText('Remote Host 1'), 'Cirrus')
+      await u.type(screen.getByPlaceholderText('Crew 1'), 'Cirrus')
       await openRowMenu(u)
       await u.click(await screen.findByRole('menuitem', { name: /Diagnose Nimbus/i }))
       await screen.findByText(/c1: Remote dashboard down/i)
@@ -1422,7 +1422,7 @@ describe('RemoteCrewPanel', () => {
 
       renderWithProviders(<RemoteCrewPanel />, { store: first.store })
       await waitFor(() =>
-        expect(screen.getByPlaceholderText('Remote Host 1')).toHaveValue('Cirrus'),
+        expect(screen.getByPlaceholderText('Crew 1')).toHaveValue('Cirrus'),
       )
     })
 
