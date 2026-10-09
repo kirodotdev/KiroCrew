@@ -1659,6 +1659,7 @@ _SELF_PROTECTION_UNGATED_FLOOR_IDS: frozenset[str] = frozenset(
         "self-protection-restart",
         "self-protection-update",
         "self-protection-file-delivery",
+        "self-protection-ssh-agent",
         "self-protection-gateway-restart",
         "self-protection-cloud",
     }
@@ -1715,6 +1716,14 @@ _SELF_PROTECTION_FLOOR_NOTES: dict[str, str] = {
         "and no opt-out. The read-only forms that dispatch nothing -- 'file-delivery' "
         "with no verb, and 'file-delivery --help' -- are not refused, so the usage this "
         "command family is quoted from stays reachable."
+    ),
+    "self-protection-ssh-agent": (
+        "Matched structurally on the command's argv: the product CLI is the argv's own "
+        "program and its leading subcommands are 'ssh-agent approve', which would "
+        "complete an SSH agent forwarding consent step-up and hand every later session "
+        "the use of the operator's ssh-agent keys. This floor has no catalog row and no "
+        "opt-out. The read-only forms that dispatch nothing -- 'ssh-agent' with no verb, "
+        "and 'ssh-agent --help' -- are not refused."
     ),
     "self-protection-gateway-restart": (
         "Matched structurally on the command's argv: the product CLI is the argv's own "

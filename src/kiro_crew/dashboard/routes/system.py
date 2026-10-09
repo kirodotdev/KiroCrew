@@ -203,6 +203,14 @@ def register(app: web.Application) -> None:
         "/api/file-delivery/consent/approve", handlers.api_file_delivery_consent_approve
     )
     app.router.add_delete("/api/file-delivery/consent", handlers.api_file_delivery_consent_delete)
+    # SSH_AUTH_SOCK forward consent: the same arm / host-approve / revoke shape as
+    # the file-delivery consent above, owner-gated in the handler. The approve
+    # route is on the strict-internal list in server.py like its sibling.
+    app.router.add_get("/api/ssh-agent/consent", handlers.api_ssh_agent_consent_get)
+    app.router.add_post("/api/ssh-agent/consent/arm", handlers.api_ssh_agent_consent_arm)
+    app.router.add_get("/api/ssh-agent/consent/arm", handlers.api_ssh_agent_consent_arm_status)
+    app.router.add_post("/api/ssh-agent/consent/approve", handlers.api_ssh_agent_consent_approve)
+    app.router.add_delete("/api/ssh-agent/consent", handlers.api_ssh_agent_consent_delete)
     # Credential-redaction switch. Owner-gated in the handler, like the consent
     # routes above: its only legitimate caller is the owner's browser.
     app.router.add_get("/api/security/credential-redaction", handlers.api_credential_redaction_get)

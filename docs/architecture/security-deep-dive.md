@@ -212,9 +212,15 @@ upgrade. The tier is the operator's to tighten (`agent.sandbox="strict"`), and
 this document names what the default leaves open so that choice is informed.
 
 `SSH_AUTH_SOCK` is scrubbed whenever a Kiro Crew sandbox tier is active, so
-ssh-agent forwarding is unavailable inside a confined spawn. Operators who depend
-on passphrase-protected keys or hardware tokens use key files directly or leave
-`agent.sandbox` at `off`.
+ssh-agent forwarding is unavailable inside a confined spawn by default. Operators
+who depend on passphrase-protected keys or hardware tokens can allow the forward
+explicitly from Settings → Security → SSH agent forwarding: the dashboard arms
+the request and `kirocrew ssh-agent approve` on the gateway host finishes it,
+recording the keystone consent `ssh_auth_sock_consent.json` that
+[security.md](../system-specs/modules/security.md) describes under "SSH_AUTH_SOCK
+forward opt-in". The private key files stay hidden; the socket grants USE of the
+keys to anything a session runs, for the whole session, which is why it is a
+host-confirmed grant and not a config switch.
 
 ## Layer 1: Filesystem gate (`security/` package + `hooks.py`)
 

@@ -1086,3 +1086,15 @@ from kiro_crew.dashboard.handlers.security import (  # noqa: E402, F401
     api_trusted_registry_grant,
     api_trusted_registry_revoke,
 )
+
+# SSH_AUTH_SOCK forward consent -- owner-gated, the mirror of the file-delivery
+# consent above and the ONLY in-tree writer of ``ssh_auth_sock_consent.json``.
+# Recording is arm (owner POST) + approve (host-only ``kirocrew ssh-agent
+# approve``, which consumes the nonce); revoke is a single owner DELETE.
+from kiro_crew.dashboard.handlers.ssh_auth_sock_consent import (  # noqa: E402, F401
+    api_ssh_agent_consent_approve,
+    api_ssh_agent_consent_arm,
+    api_ssh_agent_consent_arm_status,
+    api_ssh_agent_consent_delete,
+    api_ssh_agent_consent_get,
+)

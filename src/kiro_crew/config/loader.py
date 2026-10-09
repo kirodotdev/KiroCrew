@@ -1064,9 +1064,10 @@ def file_delivery_consent_path() -> Path:
     fails soft to NO CONSENT (see ``file_delivery_consent.read_grant``). The only
     writer is the authenticated, OWNER-gated dashboard
     ``/api/file-delivery/consent`` handler, which opens the path directly rather
-    than through this gate. There is deliberately NO CLI verb -- a terminal
-    command that records a grant on request is a grant an automated caller can
-    take. Respects ``KIROCREW_HOME``.
+    than through this gate. The ``kirocrew file-delivery approve`` verb does not
+    write it: it is a STEP-UP that consumes an owner-armed nonce from a
+    sandbox-masked leaf an in-sandbox caller cannot read, so no terminal command
+    records a grant on request. Respects ``KIROCREW_HOME``.
     """
     return config_dir() / "file_delivery_consent.json"
 
@@ -1110,11 +1111,15 @@ def ssh_auth_sock_consent_path() -> Path:
     un-flippable from inside the sandbox.
 
     Holds ``{"enabled": bool, "granted_at": str}``; every read fails soft to
-    DISABLED (see ``ssh_auth_sock_consent.is_granted``). The only writer is the
-    authenticated, OWNER-gated dashboard handler, which opens the path directly
-    rather than through this gate. There is deliberately NO CLI verb -- a
-    terminal command that records the grant on request is a grant an automated
-    caller can take. Respects ``KIROCREW_HOME``.
+    DISABLED (see ``ssh_auth_sock_consent.is_granted``, which reads ``enabled``
+    alone, so a hand-written ``{"enabled": true}`` from outside the sandbox is
+    the same grant). The only in-tree writer is the authenticated, OWNER-gated
+    dashboard ``/api/ssh-agent/consent`` handler, which opens the path directly
+    rather than through this gate. The ``kirocrew ssh-agent approve`` verb does
+    not write it: it is a STEP-UP that consumes an owner-armed nonce from the
+    sandbox-masked ``ssh-auth-sock-consent-pending/`` leaf an in-sandbox caller
+    cannot read, so no terminal command records the grant on request. Respects
+    ``KIROCREW_HOME``.
     """
     return config_dir() / "ssh_auth_sock_consent.json"
 

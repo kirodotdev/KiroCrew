@@ -2776,6 +2776,68 @@ def _file_delivery_approve() -> None:
     print(f"\n✅ Confirmed delivery to {dest}. The dashboard now shows it as confirmed.")
 
 
+def _ssh_agent_approve() -> None:
+    """Approve an SSH agent forwarding consent armed from the dashboard.
+
+    Same step-up shape as :func:`_file_delivery_approve`: the proof of host
+    identity is READING THE NONCE FILE, which lives in a sandbox-hidden,
+    owner-only leaf, so presenting its nonce back to the gateway demonstrates
+    filesystem access as the gateway's own user -- the step an owner-authenticated
+    but agent-DRIVEN browser cannot perform. The gateway records the grant only
+    after the nonce validates; this verb never writes the store.
+    """
+    from kiro_crew.ssh_auth_sock_consent import read_pending_grant
+
+    print("👻 Approving the pending SSH agent forwarding consent…\n")
+    pending = read_pending_grant()
+    if pending is None:
+        print("❌ No armed request (it may have expired).")
+        print("   Click Allow under Settings > Security > SSH agent forwarding, then re-run this.")
+        sys.exit(1)
+    print(f"  🔑 request {pending.request_id}, expires in {pending.expires_in}s")
+
+    port = resolve_client_port(None)
+    url = f"http://127.0.0.1:{port}/api/ssh-agent/consent/approve"
+    payload = json.dumps({"nonce": pending.nonce}).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    secret = read_local_secret(port, dial_host="127.0.0.1")
+    if secret:
+        headers["X-Internal-Secret"] = secret
+    req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+    try:
+        from kiro_crew.dashboard.urls import dashboard_socket_path
+
+        socket_path: str | None = str(dashboard_socket_path(port))
+    except Exception:
+        socket_path = None
+    try:
+        # Unix socket first, TCP only where no AF_UNIX exists: the request carries
+        # the single-use nonce and the local secret, and ``loopback_urlopen``'s
+        # stale-socket TCP fallback would hand both to whatever holds the port
+        # after a dead gateway. Same reasoning, in full, in _file_delivery_approve.
+        if socket_path is not None and hasattr(socket, "AF_UNIX"):
+            approve_resp = unix_socket_urlopen(req, 15, socket_path=socket_path)
+        else:
+            approve_resp = loopback_urlopen(req, timeout=15)
+        with approve_resp as resp:
+            body = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        try:
+            detail = json.loads(e.read()).get("error", "")
+        except Exception:
+            detail = ""
+        print(
+            f"❌ Gateway refused the approval (HTTP {e.code})" + (f": {detail}" if detail else "")
+        )
+        sys.exit(1)
+    except (urllib.error.URLError, OSError):
+        print("❌ Gateway is not running — start it, then re-run: kirocrew ssh-agent approve")
+        sys.exit(1)
+    granted_at = body.get("granted_at") if isinstance(body, dict) else None
+    since = f" (since {granted_at})" if granted_at else ""
+    print(f"\n✅ SSH agent forwarding allowed{since}. Applies to new sessions.")
+
+
 def _status(args: argparse.Namespace) -> None:
     """Query the running gateway for stats, or print offline message."""
     port = resolve_client_port(getattr(args, "port", None))

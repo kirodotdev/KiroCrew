@@ -2510,6 +2510,17 @@ Examples:
         ),
     )
 
+    # ssh-agent
+    ssh_agent_parser = cli_help.add_command(sub, "ssh-agent")
+    ssh_agent_parser.add_argument(
+        "action",
+        choices=["approve"],
+        help=(
+            "approve: finish an SSH agent forwarding consent armed from the "
+            "dashboard's Security panel (proves you are at the host)"
+        ),
+    )
+
     # stop
     stop_parser = cli_help.add_command(sub, "stop")
     stop_parser.add_argument(
@@ -3760,6 +3771,10 @@ env var overrides it.
         from kiro_crew.cli_server import _file_delivery_approve
 
         _file_delivery_approve()
+    elif args.command == "ssh-agent":
+        from kiro_crew.cli_server import _ssh_agent_approve
+
+        _ssh_agent_approve()
     elif args.command == "stop":
         from kiro_crew.cli_server import _stop
 

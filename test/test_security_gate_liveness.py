@@ -208,7 +208,14 @@ def _url_payload_command(n: int) -> str:
 #: window crossing that commit's opening ``/`` with twelve of its digits, one clause
 #: beside the separator ceiling, and the docstring naming them. No pass widened and
 #: no existing threshold moved.
-_PACKAGE_LINE_BUDGET = 28_631
+#:
+#: Raised again, from 28,631, for the ``self-protection-ssh-agent`` floor: the
+#: ``kirocrew ssh-agent approve`` step-up verb joins the three sibling
+#: self-protection floors (``_is_self_ssh_agent`` in ``argv_floor``, its verb set
+#: in ``vocabulary``, its id in the floor loop, exports and rule catalogue) plus
+#: the ``ssh-auth-sock-consent-pending`` keystone leaf in ``paths``. One floor of
+#: an existing shape; no matcher widened, no threshold moved.
+_PACKAGE_LINE_BUDGET = 28_670
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
