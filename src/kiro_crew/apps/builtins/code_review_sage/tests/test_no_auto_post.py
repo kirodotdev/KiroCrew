@@ -22,8 +22,17 @@ from sage_lib import review_driver as D
 from sage_lib import store
 
 
+def _confirmed(_link, _payload):
+    return "1"
+
+
 class _Base(unittest.TestCase):
     def setUp(self):
+        target = mock.patch.object(
+            D, "_canonical_target", return_value="https://github.com/o/r/pull/1"
+        )
+        target.start()
+        self.addCleanup(target.stop)
         self.tmp = tempfile.mkdtemp()
         self._old = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
@@ -129,7 +138,8 @@ class TestNoAutoPost(_Base):
     def test_opt_in_restores_posting(self):
         tasks: list[str] = []
         D.run_review(["CR-1"], dispatch=self._dispatch(tasks),
-                     generate_report=False, root=self.root, post=True)
+                     generate_report=False, root=self.root, post=True,
+                     confirm=_confirmed)
         self.assertTrue(self._posters(tasks), "posting was enabled but no poster ran")
 
     def test_config_flag_enables_posting(self):
@@ -139,7 +149,7 @@ class TestNoAutoPost(_Base):
         cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
         tasks: list[str] = []
         D.run_review(["CR-1"], dispatch=self._dispatch(tasks),
-                     generate_report=False, root=self.root)
+                     generate_report=False, root=self.root, confirm=_confirmed)
         self.assertTrue(self._posters(tasks))
 
     def test_non_boolean_config_does_not_enable_posting(self):
@@ -223,7 +233,7 @@ class TestRecordsKeptWhenPostingFails(_Base):
         tasks: list[str] = []
         out = D.run_review(["CR-1"], dispatch=self._dispatch_failing_poster(tasks),
                            generate_report=True, archiver=lambda html, root: "slug-1",
-                           root=self.root, post=True)
+                           root=self.root, post=True, confirm=lambda *_args: "")
         # A poster WAS dispatched (posting was intended) and it failed.
         self.assertTrue(self._posters(tasks), "no poster was dispatched")
         self.assertFalse(out["per_change"][0]["post_ok"])
@@ -244,6 +254,86 @@ class TestRecordsKeptWhenPostingFails(_Base):
             out = D.run_review(["CR-1"], dispatch=self._dispatch(tasks),
                                generate_report=True,
                                archiver=lambda html, root: "slug-1",
-                               root=self.root, post=True)
+                               root=self.root, post=True, confirm=_confirmed)
         self.assertIn("results_cleaned", out)
         self.assertFalse(out.get("results_kept_undelivered"))
+
+    def test_second_auto_post_replaces_only_a_watermarked_pending_draft(self):
+        for scenario in ("sage", "human", "submitted"):
+            with self.subTest(scenario=scenario):
+                reviews: list[dict] = []
+                deleted = []
+                tasks: list[str] = []
+                run_id = ""
+
+                def dispatch(task, timeout=0):
+                    if "pre-redacted DRAFT review comments" not in task:
+                        return self._dispatch(tasks, run_id)(task, timeout)
+                    tasks.append(task)
+                    self.assertIn('state=="PENDING"', task)
+                    self.assertIn("WHOSE BODY CONTAINS the exact marker", task)
+                    self.assertIn("`[code-review-sage]`, DELETE just that one", task)
+                    self.assertIn("NEVER delete a non-PENDING review", task)
+                    self.assertIn("or a PENDING review lacking", task)
+                    for review in list(reviews):
+                        if review["state"] == "PENDING":
+                            if "[code-review-sage]" not in review["body"]:
+                                return {"ok": False, "error": "422: pending human draft"}
+                            deleted.append(review["id"])
+                            reviews.remove(review)
+                    record = results.read_result("CR-1", self.root, run_id)
+                    wire = D._outbound_payload(
+                        record["github_review_payload"],
+                        record["delivery_intent"]["operation_id"],
+                    )
+                    reviews.append(dict(wire, id=run_id, state="PENDING"))
+                    return {"ok": True, "output": "done", "error": ""}
+
+                def confirm(_link, wire):
+                    return next(
+                        (
+                            review["id"]
+                            for review in reviews
+                            if all(review.get(k) == v for k, v in wire.items())
+                        ),
+                        "",
+                    )
+
+                cfg_path = store.data_dir(self.root) / "config.json"
+                cfg = store.load_config(self.root)
+                cfg["review"]["auto_post"] = True
+                cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+                for attempt in (1, 2):
+                    run_id = f"{scenario}-{attempt}"
+                    out = D.run_review(
+                        ["CR-1"],
+                        dispatch=dispatch,
+                        generate_report=True,
+                        archiver=lambda *_args: "archived",
+                        root=self.root,
+                        run_id=run_id,
+                        confirm=confirm,
+                    )
+                    if attempt == 1:
+                        self.assertTrue(out["per_change"][0]["post_ok"], out)
+                        self.assertIn("results_cleaned", out)
+                        self.assertFalse(results.list_results(self.root, run_id))
+                        if scenario == "human":
+                            reviews[0]["body"] = "My in-progress review"
+                        elif scenario == "submitted":
+                            reviews[0]["state"] = "COMMENTED"
+                    elif scenario == "human":
+                        self.assertFalse(out["per_change"][0]["post_ok"])
+                        self.assertIn(
+                            "422",
+                            results.read_result("CR-1", self.root, run_id)["delivery_intent"][
+                                "error"
+                            ],
+                        )
+                        self.assertEqual(reviews[0]["body"], "My in-progress review")
+                    else:
+                        self.assertTrue(out["per_change"][0]["post_ok"], out)
+                        self.assertIn("results_cleaned", out)
+                        self.assertEqual(reviews[-1]["id"], run_id)
+                self.assertEqual(deleted, ["sage-1"] if scenario == "sage" else [])
+                self.assertEqual(len(reviews), 2 if scenario == "submitted" else 1)

@@ -313,7 +313,11 @@ class TestTheWindowBetweenTheRefusalAndTheWalk(unittest.TestCase):
         (mid / "runs").mkdir(parents=True)
         state = {"planted": False}
 
-        with self._plant_after_the_refusal(mid, impostor, state):
+        # The runner's scratch directory may itself lie below an owned root.
+        with (
+            mock.patch("kiro_crew.atomic_write._owned_roots", return_value=()),
+            self._plant_after_the_refusal(mid, impostor, state),
+        ):
             store.atomic_write_locked(mid / "runs" / "record.json", b"payload")
 
         self.assertTrue(state["planted"], "the plant never ran, so this proved nothing")

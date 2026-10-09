@@ -1333,6 +1333,21 @@ class TestOrphanReapDoesNotBlockStartup(unittest.IsolatedAsyncioTestCase):
             threads[0], threading.current_thread().name,
             "the reap must run on a worker thread, not the loop thread")
 
+    async def test_registration_restores_runs_before_startup_hooks(self):
+        app = web.Application()
+        threads = []
+
+        def _load() -> None:
+            threads.append(threading.current_thread().name)
+
+        with unittest.mock.patch.object(self.routes, "_load_runs", _load):
+            self.routes.register_routes(app)
+            for hook in app.on_startup:
+                await hook(app)
+
+        self.assertEqual(len(threads), 1)
+        self.assertEqual(threads[0], threading.current_thread().name)
+
     async def test_a_failing_reap_never_breaks_startup(self):
         app = web.Application()
 

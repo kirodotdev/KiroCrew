@@ -202,6 +202,9 @@ def _load_runs() -> None:
     ``posted_keys`` is only written on delivery evidence, so whatever actually
     landed stays recorded and ``_pending_comment_count`` offers exactly the
     remainder on the next post.
+
+    Prepared and attempting intents already trigger GitHub reconciliation on the
+    next explicit post, so loading the registry need not rewrite result records.
     """
     global _RUNS
     try:
@@ -211,7 +214,8 @@ def _load_runs() -> None:
         data = json.loads(f.read_text(encoding="utf-8"))
         if not isinstance(data, list):
             return
-        for r in data:
+        _RUNS = data[:_RUNS_MAX]
+        for r in _RUNS:
             if not isinstance(r, dict):
                 continue
             if r.get("status") == "running":
@@ -220,10 +224,8 @@ def _load_runs() -> None:
                 r.setdefault("finished_at", _now())
             if r.get("posting"):
                 r["posting"] = False
-                r["post_error"] = (
-                    "Posting was interrupted by a gateway restart — comments already "
-                    "delivered are marked as sent; post again to send the rest.")
-        _RUNS = data[:_RUNS_MAX]
+                r["post_error"] = ("Posting was interrupted by a gateway restart; "
+                                   "pressing Post reconciles it.")
     except Exception:  # pragma: no cover - defensive
         logger.warning("failed to load runs.json", exc_info=True)
 
@@ -1070,11 +1072,13 @@ async def _post_comments_bg(run_id: str, run: dict,
     is what keeps LLM free-text out of the pull request. Nothing here composes
     comment text.
     """
+    pool_started = False
     try:
         loop = asyncio.get_running_loop()
         pool = review_pool.get_pool()
         dispatch = review_pool.make_sync_dispatch(loop, pool)
         await pool.begin_batch()
+        pool_started = True
         try:
             results_out = []
             for i, link in enumerate(run.get("changes") or []):
@@ -1140,6 +1144,17 @@ async def _post_comments_bg(run_id: str, run: dict,
         # only after the records above reflect what actually landed.
         await asyncio.to_thread(_record_reviewed, run)
         await _notify_posted(run, posted, bool(failed))
+    except (OSError, ValueError) as exc:
+        logger.exception("posting delivery intent persistence failed" if pool_started
+                         else "posting runtime startup failed")
+        async with _LOCK:
+            run["posting"] = False
+            run["post_error"] = (
+                "posting durability state could not be persisted; reconcile the "
+                f"pull request before posting again: {exc}"
+                if pool_started else f"posting runtime could not start; check the reviewer runtime: {exc}")
+            await _save_runs()
+        raise
     except Exception as e:
         logger.exception("posting comments failed")
         async with _LOCK:
@@ -2480,10 +2495,7 @@ def register_routes(app: web.Application) -> None:
     #
     # `_load_runs` is the one that stays inline, and it is the cheap one: a single
     # `read_text` of one registry file, which returns immediately when the file is
-    # absent. What both hooks keep is the ordering the UI depends on -- aiohttp
-    # runs `on_startup` before the site accepts a connection, so a request never
-    # observes a missing `resolved_paths` or an empty `_RUNS`, which is what it
-    # would render as a perpetual "Initializing" message.
+    # absent. aiohttp runs the layout and reap hooks before accepting requests.
 
     async def _reap_on_startup(_app: web.Application) -> None:
         try:

@@ -3473,3 +3473,11 @@ lock, using a strict read and checked atomic write. Read/write failure retains t
 pin and capacity for ordinary maintenance retry; unrelated or newer identities
 survive. The manual-overflow contract and operator recovery procedure are in
 [platform-compat](../common/platform-compat.md#windows-session-tree-teardown).
+
+## Code Review Sage saved posting entries
+
+`sage_lib/review_driver.py::post_recorded` rebuilds saved posting entries from
+reviewed findings when no driver-owned delivery intent exists. Retained intent
+entries must be a list of objects before any entry is dereferenced. Malformed
+entries return a posting error, retain the selection for repair, and leave the
+delivery indeterminate without probing GitHub or dispatching a poster.

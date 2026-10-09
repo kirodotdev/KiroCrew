@@ -87,12 +87,61 @@ class TestRecordContractAtRead(_Base):
 
 
 class TestAdoption(_Base):
+    def test_utf8_stays_within_cap_and_oversize_preserves_files(self):
+        record = _record()
+        record["title"] = "\u754c" * 400
+        source = results.result_path("CR-1", self.root)
+        raw = json.dumps(record, indent=2, ensure_ascii=False).encode("utf-8")
+        source.write_bytes(raw)
+        with unittest.mock.patch.object(results, "_RECORD_MAX_BYTES", len(raw)):
+            self.assertTrue(results.adopt_from_shared("CR-1", self.root, "run-a"))
+        destination = results.result_path("CR-1", self.root, "run-a")
+        before = destination.read_bytes()
+        self.assertLessEqual(len(before), len(raw))
+        compact = json.dumps(record, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        source.write_bytes(compact)
+        with unittest.mock.patch.object(results, "_RECORD_MAX_BYTES", len(compact)):
+            self.assertFalse(results.adopt_from_shared("CR-1", self.root, "run-a"))
+        self.assertEqual(source.read_bytes(), compact)
+        self.assertEqual(destination.read_bytes(), before)
+
+    def test_lone_surrogate_preserves_source_and_destination(self):
+        results.write_result(_record(), self.root, "run-a")
+        destination = results.result_path("CR-1", self.root, "run-a")
+        before = destination.read_bytes()
+        record = _record()
+        record["title"] = "\ud800"
+        source = results.result_path("CR-1", self.root)
+        source.write_text(json.dumps(record), encoding="utf-8")
+        staged = source.read_bytes()
+        self.assertFalse(results.adopt_from_shared("CR-1", self.root, "run-a"))
+        self.assertEqual(destination.read_bytes(), before)
+        self.assertEqual(source.read_bytes(), staged)
+
     def test_adopts_a_shared_record_into_the_run_dir(self):
         results.write_result(_record(), self.root)          # worker's path
         self.assertTrue(results.adopt_from_shared("CR-1", self.root, "run-a"))
         # Present in the run, gone from the staging dir.
         self.assertIsNotNone(results.read_result("CR-1", self.root, "run-a"))
         self.assertIsNone(results.read_result("CR-1", self.root, None))
+
+    def test_a_worker_authored_delivery_intent_never_crosses_adoption(self):
+        """delivery_intent is the driver's evidence that a review reached GitHub.
+
+        post_recorded treats a prepared/attempting/indeterminate intent as an
+        operation to reconcile and confirm, so a worker that ships one in its
+        own record is proposing a delivery the driver would then confirm as its
+        own.
+        """
+        rec = _record()
+        rec["delivery_intent"] = {"operation_id": "a" * 32, "state": "attempting",
+                                  "selected_units": 5}
+        results.write_result(rec, self.root)
+
+        self.assertTrue(results.adopt_from_shared("CR-1", self.root, "run-a"))
+
+        adopted = results.read_result("CR-1", self.root, "run-a") or {}
+        self.assertNotIn("delivery_intent", adopted)
 
     def test_adoption_is_a_no_op_when_the_worker_wrote_nothing(self):
         # Must be reported as a failed change, not a silently empty report.

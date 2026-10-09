@@ -8,6 +8,47 @@ app**, next to the pull request they came from — nothing is written to the pul
 request unless you turn on `review.auto_post`, which publishes them as a PENDING
 (draft) review for you to submit.
 
+## Recovering a posting attempt
+
+Before posting, Sage saves the operation identity, selected findings, target,
+revision and payload digest in the run record. The poster's staged copy never
+replaces that record. A retry first checks GitHub for the same operation,
+account and exact payload; a matching pending or submitted review confirms
+delivery without another POST. Unresolved pending comment positions are checked
+against the diff with both head and base revisions pinned. If those coordinates
+cannot be verified, delivery remains unconfirmed.
+
+If a retry requests different findings while recovering an earlier delivery,
+Sage reports that the earlier delivery was reconciled and the requested selection
+is still pending. Post the remaining selection again to deliver it.
+
+GitHub permits only one pending review per account on a pull request. Before a
+new run posts, Sage clears a prior PENDING review only when its body contains the
+exact `[code-review-sage]` watermark. This works even after the earlier run's
+result records have been cleaned up. Reviews lacking that watermark and submitted
+reviews are never deleted. A human draft can therefore still block posting with
+422; inspect it in GitHub and discard it only if that is what you intend.
+
+A follow-up post carries the earlier selection as well as the new findings.
+Submitting the earlier draft does not remove its findings from later selections;
+submitted reviews are never deleted. Legacy records without delivery intents
+also carry forward their earlier selected findings, but their positional
+`posted_keys` cannot prove delivery or suppress a current finding. An unverified
+legacy draft may block posting with 422; it is never deleted automatically.
+Without a driver-owned delivery intent, saved posting entries are rebuilt from
+the reviewed findings. With an intent, saved entries must be a list of objects;
+malformed entries stop posting with an error and preserve the selection for repair.
+When a replacement deletes a recorded pending draft, the poster first re-reads
+it and compares its body and every comment with what Sage verified; any edit
+made in between stops the post without deleting anything.
+
+The error text a failed attempt keeps in the run record is capped, and a record
+write that would exceed the byte cap is refused before it replaces the previous
+record.
+
+Worker records containing invalid Unicode or exceeding the serialized byte cap
+are rejected without replacing the run record or removing the staged source.
+
 ## Ask the reviewer
 
 A report states conclusions; "why did you decide that?" is answerable only by the

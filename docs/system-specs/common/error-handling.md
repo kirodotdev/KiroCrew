@@ -8,6 +8,31 @@
 2. Error strings at CLI boundaries (never expose tracebacks to users)
 3. Graceful degradation — partial output returned on timeout
 
+## Sage interrupted posting recovery
+
+Registry loading clears interrupted posting flags without rewriting result
+records. Prepared, attempting and indeterminate intents all trigger GitHub
+reconciliation on the next explicit post. A new run clears only a PENDING
+review containing the exact `[code-review-sage]` watermark, even when the prior
+run has cleaned up its records; unmarked and submitted reviews stay untouched.
+A runtime startup failure reports that the reviewer runtime could not start;
+it does not claim a delivery-intent write failed. Intent persistence failures after the pool
+starts still require reconciliation before posting again. The poster puts the
+operation marker on its own final line so delivery read-back can compare the
+marker-free body with the recorded payload. Predecessor bodies stay in the staged
+record, outside the poster prompt. Its final read-back compares raw comment
+anchors, including pending-review positions, with that staged receipt.
+
+If a human submits the predecessor while a replacement is interrupted, recovery
+first proves the replacement absent and verifies the predecessor's account and
+payload. It keeps the full saved selection and operation ID, removing only the
+predecessor deletion instruction before dispatch. Unreadable or conflicting
+remote evidence prevents dispatch; an already delivered replacement is adopted
+without posting again. The same reconciliation applies immediately before a
+fresh replacement dispatch. Legacy records without a delivery intent carry
+forward earlier selected findings; their positional `posted_keys` are not proof
+of delivery and cannot suppress a current finding.
+
 ## Exception Hierarchy
 
 Two independent families. `AcpError` covers protocol and prompt-level failures;
