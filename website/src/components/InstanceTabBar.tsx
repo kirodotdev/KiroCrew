@@ -32,7 +32,7 @@ import { useAppSelector } from '../store'
 import { type WarmConn } from '../store/instancesSlice'
 import { isEmbeddedPane } from '../lib/embedded'
 import { tokenTtlTotalSeconds } from '../lib/tokenTtl'
-import { hasDashboardPane } from '../utils/remoteCrew'
+import { hasDashboardPane, transportTarget } from '../utils/remoteCrew'
 import { useSelectInstance } from '../hooks/useSelectInstance'
 import ErrorNotice from './ErrorNotice'
 import { errMessage } from '../utils/thunkError'
@@ -1292,8 +1292,11 @@ export default function InstanceTabBar({
       ...chainRows(tabInstances).map(({ inst, depth, parentName, reachable, brokenAt }) => {
         const st = inst.status?.state
         // An SSM crew has no ssh_host: it is reached through its managed-instance
-        // target, so that is what names the machine on its row.
-        const target = inst.connection_method === 'ssm' ? inst.ssm_target : inst.ssh_host
+        // target, so that is what names the machine on its row. An unmapped
+        // method has no address field at all -- transportTarget returns ''
+        // rather than falling back to a blank ssh_host that would read as a
+        // configured-but-empty SSH crew.
+        const target = transportTarget(inst)
         // A chained crew's subtitle names the crew it goes through as well as the
         // machine, because the host alone does not say how this dashboard gets
         // there — and that is the one thing a chained row has to explain. Built

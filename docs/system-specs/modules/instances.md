@@ -768,8 +768,15 @@ what its own edit invalidated, and never reopens anything on the user's behalf.
    menu deep.
 
 Every configured row carries separate source and transport badges from the
-instance record. `connection_method="ssm"` shows **SSM**; every other transport
-shows **SSH**. A record whose persisted `provisioner_id` is `aws_ec2` also shows
+instance record. The badge comes from the per-method presentation table in
+`transportCopy.ts` / `remoteCrew.ts`: `connection_method="ssh"` shows **SSH**,
+`"ssm"` shows **SSM**, `"fargate"` shows **FARGATE**. A method the table has no
+row for shows its own raw name instead of inheriting SSH's label, carries a
+visible hint explaining that this build cannot connect over it and what to do
+next, and disables the row's Connect button — the backend resolves the same
+method through its transport registry and refuses it fail-closed with
+`UnknownTransportError` rather than falling through to the SSH transport. A
+record whose persisted `provisioner_id` is `aws_ec2` also shows
 **EC2**, independently of launch-job history. `provisioner_id` is stamped by
 `register_instance` on each launch registration and relaunch, and carries the
 lane that created the box: `aws_ec2` for the EC2 lane, which is the parameter's

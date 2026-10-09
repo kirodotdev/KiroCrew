@@ -9519,6 +9519,7 @@
         "transport_hint_fargate": "Reaches an AWS Fargate task through Session Manager. It serves a chat API, not a dashboard.",
         "transport_hint_ssh": "Connects over SSH.",
         "transport_hint_ssm": "Connects through AWS Systems Manager Session Manager.",
+        "transport_hint_unmapped": "This version of {{productName}} doesn't support the {{method}} connection method, so it can't connect to this crew. Update {{productName}}, then connect again.",
         "transport_locked_note": "{{productName}} matches this crew to its AWS resources through its connection identity, so the connection method and target cannot be changed here.",
         "ttl_must_be_hours_or_minutes": "Enter a lifetime like 20h or 30m.",
         "turn_api": "Chat API",

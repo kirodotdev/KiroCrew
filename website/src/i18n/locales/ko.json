@@ -16591,6 +16591,7 @@
         "transport_hint_fargate": "Session Manager를 통해 AWS Fargate 태스크에 도달합니다. 대시보드가 아닌 채팅 API를 제공합니다.",
         "transport_hint_ssh": "SSH를 통해 연결합니다.",
         "transport_hint_ssm": "AWS Systems Manager Session Manager를 통해 연결합니다.",
+        "transport_hint_unmapped": "이 버전의 {{productName}}은(는) {{method}} 연결 방식을 지원하지 않으므로 이 crew에 연결할 수 없습니다. {{productName}}을(를) 업데이트한 후 다시 연결하세요.",
         "transport_locked_note": "{{productName}}은(는) 연결 정보로 이 크루와 AWS 리소스를 연결하므로 연결 방법과 대상은 여기서 변경할 수 없습니다.",
         "ttl_must_be_hours_or_minutes": "20h 또는 30m 형식의 유효 기간을 입력하세요.",
         "turn_api": "채팅 API",

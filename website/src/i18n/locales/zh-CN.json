@@ -16591,6 +16591,7 @@
         "transport_hint_fargate": "通过 Session Manager 到达 AWS Fargate 任务。它提供的是聊天 API，而不是仪表板。",
         "transport_hint_ssh": "通过 SSH 连接。",
         "transport_hint_ssm": "通过 AWS Systems Manager Session Manager 连接。",
+        "transport_hint_unmapped": "此版本的 {{productName}} 不支持 {{method}} 连接方式，因此无法连接到这个 crew。请升级 {{productName}}，然后重新连接。",
         "transport_locked_note": "{{productName}} 通过连接标识将此 Crew 与其 AWS 资源关联，因此此处无法更改连接方式和目标。",
         "ttl_must_be_hours_or_minutes": "请输入类似 20h 或 30m 的有效期。",
         "turn_api": "聊天 API",

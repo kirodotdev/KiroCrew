@@ -16830,6 +16830,7 @@
         "transport_hint_fargate": "Session Manager-এর মাধ্যমে AWS Fargate টাস্কে পৌঁছায়। এটি চ্যাট API দেয়, ড্যাশবোর্ড নয়।",
         "transport_hint_ssh": "SSH-এর মাধ্যমে সংযোগ করে।",
         "transport_hint_ssm": "AWS Systems Manager Session Manager-এর মাধ্যমে সংযোগ করে।",
+        "transport_hint_unmapped": "{{productName}}-এর এই সংস্করণ {{method}} সংযোগ পদ্ধতি সমর্থন করে না, তাই এই crew-এর সাথে সংযোগ করতে পারে না। {{productName}} আপডেট করো, তারপর আবার সংযোগ করো।",
         "transport_locked_note": "{{productName}} এই ক্রুকে তার সংযোগ পরিচয়ের মাধ্যমে তার AWS রিসোর্সের সঙ্গে মেলায়, তাই এখানে সংযোগ পদ্ধতি ও টার্গেট বদলানো যায় না।",
         "ttl_must_be_hours_or_minutes": "20h বা 30m এর মতো সময়সীমা দিন।",
         "turn_api": "চ্যাট API",

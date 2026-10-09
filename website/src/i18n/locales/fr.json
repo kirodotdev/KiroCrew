@@ -17069,6 +17069,7 @@
         "transport_hint_fargate": "Atteint une tâche AWS Fargate via Session Manager. Elle sert une API de chat, pas un tableau de bord.",
         "transport_hint_ssh": "Se connecte via SSH.",
         "transport_hint_ssm": "Se connecte via AWS Systems Manager Session Manager.",
+        "transport_hint_unmapped": "Cette version de {{productName}} ne prend pas en charge la méthode de connexion {{method}} et ne peut donc pas se connecter à cette équipe. Mettre {{productName}} à jour, puis se reconnecter.",
         "transport_locked_note": "{{productName}} relie cette crew à ses ressources AWS via son identité de connexion : la méthode et la cible ne sont donc pas modifiables ici.",
         "ttl_must_be_hours_or_minutes": "Saisissez une durée comme 20h ou 30m.",
         "turn_api": "API de chat",
