@@ -6,9 +6,10 @@ const {
 
 // The boot splash and token prompt are local file:// documents. An edition may
 // supply the splash at build time, so those pages must never inherit the full
-// dashboard bridge merely because they share its WebContents. Keep their
-// preload surface to the three channels the splash contract actually needs;
-// the token prompt needs no bridge at all and simply ignores this object.
+// dashboard bridge merely because they share its WebContents. All local pages
+// receive the three boot signals and the caption actions that the injected
+// frameless-Linux title-bar buttons (and the stock splash's stalled-boot close
+// control) call. The main process still decides which of those it honours.
 const isLocalShellPage =
   typeof location !== "undefined" && location.protocol === "file:";
 const LOCAL_SHELL_ELECTRON_API = new Set([
@@ -16,10 +17,21 @@ const LOCAL_SHELL_ELECTRON_API = new Set([
   "onBootReady",
   "bootComplete",
 ]);
+const LOCAL_SHELL_WINDOW_ACTIONS = new Set(["minimize", "maximize-toggle", "close"]);
 const contextBridge = {
   exposeInMainWorld(name, api) {
     if (!isLocalShellPage) {
       electronContextBridge.exposeInMainWorld(name, api);
+      return;
+    }
+    if (name === "kirocrew") {
+      electronContextBridge.exposeInMainWorld(name, {
+        platform: api.platform,
+        linuxFrameless: api.linuxFrameless,
+        windowControl: (action) => {
+          if (LOCAL_SHELL_WINDOW_ACTIONS.has(action)) api.windowControl(action);
+        },
+      });
       return;
     }
     if (name !== "electronAPI") return;

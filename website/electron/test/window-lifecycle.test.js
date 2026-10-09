@@ -235,6 +235,25 @@ describe("transient shell navigation", () => {
     );
   });
 
+  it("keeps a local shell page confined after it renames itself", () => {
+    // history.replaceState can rewrite a file: page's path but not its
+    // protocol, so a renamed splash must not escape the guard.
+    for (const renamed of ["file:///app/other.html", "file:///app/", "file:///app/x?loading.html"]) {
+      assert.equal(
+        isAllowedTransientShellNavigation(renamed, "https://attacker.example/", backend),
+        false,
+      );
+    }
+    assert.equal(
+      isAllowedTransientShellNavigation(
+        "file:///app/token-prompt.html",
+        "https://attacker.example/",
+        backend,
+      ),
+      false,
+    );
+  });
+
   it("does not change dashboard navigation policy", () => {
     assert.equal(
       isAllowedTransientShellNavigation(`${backend}/chat`, "https://example.com/", backend),
@@ -1178,6 +1197,8 @@ describe("dashboard window wiring order", () => {
       "win.on:focus",
       "win.on:focus",
       "view.setWindowOpenHandler",
+      "view.on:will-navigate",
+      "view.on:will-redirect",
       "view.session.onBeforeSendHeaders",
     ]);
     assert.deepEqual(onLoad, [

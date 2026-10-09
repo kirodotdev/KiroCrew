@@ -6,11 +6,7 @@ const path = require("path");
 const { createTokenRetryHandler, dashboardRetryPath } = require("./token-retry");
 const { createRendererRecovery, withSafeReload, hasSafeReload } = require("./renderer-recovery");
 const { createHangRecovery } = require("./hang-recovery");
-const {
-  armSplashHistoryClear,
-  fileShellPageBasename,
-  isTransientShellPage,
-} = require("./splash-history");
+const { armSplashHistoryClear, fileShellPageBasename } = require("./splash-history");
 const { hideToTray, cancelPendingTrayHide, shouldKeepAppHidden } = require("./hide-to-tray");
 const { attachHtmlFullScreen } = require("./html-fullscreen");
 const {
@@ -86,8 +82,16 @@ const WINDOWS_TITLEBAR_MENU_IDS = new Set([
   "help-menu",
 ]);
 
+// Every file: document in a dashboard window is a local shell page (the stock
+// or edition splash, or the token prompt). The protocol is checked rather than
+// the page name: a page can rewrite its own path with history.replaceState, but
+// not its protocol, so a renamed shell page still fails closed.
+function isLocalShellUrl(url) {
+  return typeof url === "string" && url.startsWith("file:");
+}
+
 function isAllowedTransientShellNavigation(currentUrl, targetUrl, backendUrl) {
-  if (!isTransientShellPage(currentUrl)) return true;
+  if (!isLocalShellUrl(currentUrl)) return true;
 
   let current;
   let target;
@@ -102,7 +106,9 @@ function isAllowedTransientShellNavigation(currentUrl, targetUrl, backendUrl) {
 
   // Only the stock token prompt has a renderer-driven handoff. Loading pages,
   // including downstream edition pages, cannot navigate at all. The prompt may
-  // hand off only to the exact gateway origin selected by the main process.
+  // hand off only to the exact gateway origin selected by the main process, so
+  // a page that renames itself token-prompt.html can still reach only the
+  // window's own gateway.
   const page = current.pathname.slice(current.pathname.lastIndexOf("/") + 1);
   return page === "token-prompt.html" && target.origin === backend.origin;
 }
@@ -561,7 +567,7 @@ function createWindowLifecycle(options) {
       log: glog,
     });
     view.webContents.setWindowOpenHandler((details) => {
-      if (isTransientShellPage(view.webContents.getURL())) {
+      if (isLocalShellUrl(view.webContents.getURL())) {
         return { action: "deny" };
       }
       return dashboardWindowOpenHandler(details);

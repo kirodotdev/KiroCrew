@@ -181,9 +181,12 @@ nothing, so backend-only builds cannot leave a native asset behind.
 
 Staging injects a deny-by-default Content Security Policy that permits only
 inline script/style and embedded data images/fonts. Remote fetches, frames,
-workers, forms, and navigation are blocked. Local shell pages receive only the
-three splash IPC methods (`onStatus`, `onBootReady`, and `bootComplete`), never
-the dashboard's privileged gateway, updater, filesystem, or browser bridges.
+workers, forms, and navigation are blocked. Edition pages receive only the
+three splash IPC methods (`onStatus`, `onBootReady`, and `bootComplete`) plus
+platform identity and the minimize, maximize and close caption actions used by
+the frameless-Linux title bar, never the dashboard's privileged gateway,
+updater, filesystem, or browser bridges. Off Linux the main process honours
+only `close` from the stock `loading.html`.
 
 The page runs with the restricted local-shell subset of the Electron preload
 bridge. Preserve its startup and recovery feedback contract:
