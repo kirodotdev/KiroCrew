@@ -19,6 +19,7 @@ import pytest
 import source_corpus
 
 from kiro_crew import agent, agent_state, subagent
+from kiro_crew.acp.types import METHOD_SET_MODE
 from kiro_crew.agent_files import (
     OWNED_KIRO_AGENT_FILES,
     REQUIRED_KIRO_AGENT_FILES,
@@ -1119,6 +1120,81 @@ class TestAHandEditedSpecIsRefusedRatherThanRewritten:
             "kirocrew-team-lead", agent_state.spec_digest(after), strict=True
         ), "the digest was renewed for bytes this installer never wrote"
 
+    def test_a_model_reset_aborts_when_ownership_cannot_be_read(self, tmp_path, monkeypatch):
+        """A transient read of the ownership record must ABORT the reset, not fall through
+        as "not confirmed". The confirmed-ours spec at this stem has no heal path: if a
+        failed read were degraded to False, the reset would take the unconfirmed-write
+        branch, rewrite the bytes WITHOUT renewing the recorded digest, and every later
+        start would then refuse the file forever -- for a user action, with storage that
+        had only hiccuped. The fail-safe answer is to do nothing and let the next attempt,
+        once the read recovers, succeed."""
+        _stub_environment(tmp_path, monkeypatch)
+        base = agent.build_agent_config()
+        base["model"] = "my-pinned-model"
+        monkeypatch.setattr(agent, "build_agent_config", lambda: json.loads(json.dumps(base)))
+        target = tmp_path / TEAM_LEAD_AGENT_FILENAME
+        assert agent._install_team_lead_agent() is agent.InstallOutcome.WRITTEN
+        before_bytes = target.read_text(encoding="utf-8")
+        assert json.loads(before_bytes).get("model"), (
+            "the fixture wrote no model pin, so a reset would strip nothing and this "
+            "test could not be about the reset"
+        )
+        assert agent.spec_start_refusal("kirocrew-team-lead") is None
+
+        # Make the STRICT ownership-sidecar read raise the way a transient I/O error
+        # does, exercising the real predicate path (``_attribution_reason`` ->
+        # ``_unconfirmed_digest_reason`` -> ``managed_digest_matches(strict=True)``),
+        # not a stub of the predicate. Scoped to the ownership-digest read so the reset's
+        # other strict reads (capability intent, spec load) still work -- the point is a
+        # transient failure of ONLY the ownership confirmation.
+        real_matches = agent_state.managed_digest_matches
+        strict_reads: list[str] = []
+
+        def _flaky_matches(name, candidate, *, strict=False):
+            if strict:
+                strict_reads.append(name)
+                raise OSError("transient EIO reading the ownership sidecar")
+            return real_matches(name, candidate, strict=strict)
+
+        monkeypatch.setattr(agent_state, "managed_digest_matches", _flaky_matches)
+
+        # ``FileNotFoundError`` is the class the reset CONVERTS this to, not the class the
+        # injection raises: ``reset_agent_model`` catches
+        # ``(_SpecUnusable, OSError, ValueError)`` around ``_confirms_managed_pre_write``
+        # and re-raises as ``FileNotFoundError`` (``agent.py``), which is the one failure
+        # class its own contract and its callers already handle.
+        #
+        # MATCHED on the message, and that is not decoration: three other paths in the
+        # same function raise the same class -- no spec at the name, an unreadable spec,
+        # a spec that is not a JSON object -- so a bare ``raises`` block is satisfied by
+        # an abort that happened BEFORE the ownership read, and every assertion below
+        # then holds because nothing ran. The read is also asserted to have FIRED, so
+        # neither half can go vacuous without failing.
+        with pytest.raises(FileNotFoundError, match="could not read ownership record"):
+            agent.reset_agent_model("kirocrew-team-lead")
+        assert strict_reads == ["kirocrew-team-lead"], (
+            "the injected ownership read never fired, so the abort came from somewhere "
+            f"else in the reset and this test proves nothing: {strict_reads}"
+        )
+
+        # The spec was NOT mutated: the model pin and every byte survive, so when the
+        # read recovers the agent is still its confirmed managed write.
+        monkeypatch.setattr(agent_state, "managed_digest_matches", real_matches)
+        assert (
+            target.read_text(encoding="utf-8") == before_bytes
+        ), "a failed ownership read rewrote the spec; the reset must abort before mutation"
+        assert (
+            agent.spec_start_refusal("kirocrew-team-lead") is None
+        ), "the spec was left unconfirmable by a transient read failure"
+        assert agent_state.managed_digest_matches(
+            "kirocrew-team-lead", agent_state.spec_digest(json.loads(before_bytes)), strict=True
+        )
+        # And once the read recovers, the ordinary reset still works.
+        path, previous = agent.reset_agent_model("kirocrew-team-lead")
+        assert path == target and previous
+        assert not json.loads(target.read_text(encoding="utf-8")).get("model")
+        assert agent.spec_start_refusal("kirocrew-team-lead") is None
+
     def test_a_project_shadow_refuses_the_start_and_names_the_project_file(
         self, tmp_path, monkeypatch
     ):
@@ -1363,6 +1439,54 @@ async def _activate(rt, mode_agent):
         budget=1.0,
         payload_snapshot=None,
         wire_registered=True,
+    )
+
+
+def _runtime_for_native_activation(tmp_path, sent, terminated):
+    """A runtime whose ``set_mode`` SUCCEEDS, so the post-activation half runs.
+
+    The sibling above raises at the send, which is right for pinning a refusal that must
+    land BEFORE kiro-cli loads the spec. The native-path guard is the opposite half: it
+    runs AFTER the host has consumed the spec, so a send that raises never reaches it and
+    a test built on that scaffold would pass for a body with no guard in it at all.
+
+    ``_native_skill_projection`` is ``None``, the host that reads the file itself at
+    ``set_mode``: there is no alias to translate, so the send goes out as the plain
+    request and the consumed bytes are the ones on disk.
+    """
+    from kiro_crew.acp import runtime as runtime_mod
+
+    rt = object.__new__(runtime_mod.AcpRuntime)
+    rt._agent = "kirocrew"
+    rt._work_dir = tmp_path
+    rt._native_skill_projection = None
+    rt._pid = UNALLOCATABLE_PID
+
+    async def _send_and_await(method, params, timeout=None, **kw):
+        sent.append(method)
+        return {}
+
+    async def _terminate(session_id):
+        terminated.append(session_id)
+
+    rt._send_and_await = _send_and_await  # type: ignore[method-assign]
+    rt.terminate_session = _terminate  # type: ignore[method-assign]
+    return rt
+
+
+async def _activate_native(rt, mode_agent):
+    """``set_mode`` through the bracket on the NATIVE path -- ``wire_registered=False``.
+
+    That flag is the whole difference: the wire path takes the payload's snapshot and the
+    generation its caller threaded in, while this one has neither, which is why the
+    bracket has to record its own.
+    """
+    return await rt._activate_mode_bracketed(
+        "sid-1",
+        mode_agent,
+        budget=1.0,
+        payload_snapshot=None,
+        wire_registered=False,
     )
 
 
@@ -2971,3 +3095,476 @@ class TestTeamLeadSkillReusesRatherThanCopies:
         for banned in ("on a timer", "re-check in", "poll"):
             assert banned not in skill, banned
         assert "goal-conductor" in skill
+
+
+class TestTeamLeadPayloadGovernanceGenerationGuard:
+    """A team-lead KAS payload is built from the on-disk spec BEFORE the admission
+    gate's unbounded queue wait. A governance refresh during that wait rebuilds the disk
+    spec (stripping any grant the tightened ceiling removes), but the already-built
+    payload still carries the old grants and is what ``session/new`` registers. The
+    disk-reading admission check cannot see this; the generation the payload was built
+    under can. These pin that guard.
+
+    The worker mirror has its own ``DerivedSpecSnapshot`` bracket, so the generation
+    guard is deliberately team-lead-only -- answering a generation for any other agent
+    would be a second guard over the same consume window.
+    """
+
+    def test_only_the_team_lead_stem_gets_a_payload_generation(self, monkeypatch):
+        """``None`` for every other agent means the recheck is NOT APPLICABLE rather
+        than satisfied -- the worker and the default both mirror a spec and are
+        bracketed by the derived-spec snapshot instead."""
+        monkeypatch.setattr(
+            "kiro_crew.platform.governance_profiles.governance_answer_generation",
+            lambda: 7,
+            raising=False,
+        )
+        assert agent.payload_governance_generation("kirocrew-team-lead") == 7
+        assert agent.payload_governance_generation("kirocrew-worker") is None
+        assert agent.payload_governance_generation("kirocrew") is None
+        assert agent.payload_governance_generation(None) is None
+        assert agent.is_team_lead_agent("kirocrew-team-lead") is True
+        assert agent.is_team_lead_agent("kirocrew-worker") is False
+
+    def test_an_unchanged_generation_admits_the_start(self, monkeypatch):
+        """The payload was built under the ceiling live right now, so the recheck finds
+        no drift and the start proceeds (reason is ``None``)."""
+        gen = {"value": 4}
+        monkeypatch.setattr(
+            "kiro_crew.platform.governance_profiles.governance_answer_generation",
+            lambda: gen["value"],
+            raising=False,
+        )
+        built_under = agent.payload_governance_generation("kirocrew-team-lead")
+        # No refresh landed: the recheck must admit (None).
+        assert agent.stale_payload_generation_reason(built_under, "kirocrew-team-lead") is None
+
+    def test_a_generation_bump_during_the_wait_refuses_the_start(self, monkeypatch):
+        """THE finding. A governance change -- a ceiling install OR a profile edit --
+        landing while the start waited in the admission queue advances the COMBINED
+        governance-answer generation; the payload built under the old one must be refused
+        rather than shipped, because it may carry an auto-approval the change removed. The
+        guard reads ``governance_answer_generation`` (ceiling + profile), not the ceiling
+        counter alone, so a profile-only edit is caught too."""
+        gen = {"value": 4}
+        monkeypatch.setattr(
+            "kiro_crew.platform.governance_profiles.governance_answer_generation",
+            lambda: gen["value"],
+            raising=False,
+        )
+        built_under = agent.payload_governance_generation("kirocrew-team-lead")
+        # A governance change (ceiling or profile) advances the combined token while the
+        # start is queued.
+        gen["value"] = 5
+        reason = agent.stale_payload_generation_reason(built_under, "kirocrew-team-lead")
+        assert reason and "start was in progress" in reason and "governance answer" in reason
+
+    def test_a_none_generation_short_circuits_for_another_agent(self, monkeypatch):
+        """A non-team-lead payload carries ``None``; the recheck is a no-op and must
+        never read the live generation or refuse.
+
+        THE CONTROL for the refusal below. ``None`` admits here and refuses there, and the
+        agent is the only thing that differs, so a change that makes the refusal
+        unconditional reds this and a change that makes it unreachable reds that one."""
+        calls: list[int] = []
+
+        def _tripwire() -> int:
+            calls.append(1)
+            return 0
+
+        monkeypatch.setattr(
+            "kiro_crew.platform.governance_profiles.governance_answer_generation",
+            _tripwire,
+            raising=False,
+        )
+        assert agent.stale_payload_generation_reason(None, "kirocrew-worker") is None
+        assert agent.stale_payload_generation_reason(None, "kirocrew") is None
+        assert agent.stale_payload_generation_reason(None, None) is None
+        assert calls == [], "the None short-circuit still read the live generation"
+
+    def test_an_unrecorded_generation_refuses_the_team_lead(self, monkeypatch):
+        """THE SECOND finding. ``None`` was two facts wearing one spelling, and only one
+        of them may be admitted.
+
+        For another agent ``None`` means NOT APPLICABLE -- it mirrors a default and is
+        bracketed by a ``DerivedSpecSnapshot`` instead. For the team lead it means the
+        question was never ASKED: on the native kiro-cli path the agent IS the team lead
+        and the generation is absent only because that path built no KAS payload. Reading
+        the second as "no drift" admits a spec whose grants nothing checked, which is the
+        same degrade-an-unanswered-question defect as the lenient ownership read."""
+        calls: list[int] = []
+
+        def _tripwire() -> int:
+            calls.append(1)
+            return 0
+
+        monkeypatch.setattr(
+            "kiro_crew.platform.governance_profiles.governance_answer_generation",
+            _tripwire,
+            raising=False,
+        )
+        reason = agent.stale_payload_generation_reason(None, "kirocrew-team-lead")
+        assert reason, "an unrecorded generation for the team lead was ADMITTED"
+        assert "no governance generation was recorded" in reason
+        assert calls == [], (
+            "the refusal read the live generation: there is nothing to compare it "
+            "against, so reading it can only invite a spurious match"
+        )
+
+    def test_the_agent_argument_cannot_be_omitted(self):
+        """A parameter with a default is a parameter the next enforcement point omits
+        silently, which is exactly how the ``None`` hole stayed open. Required, so a
+        fourth call site cannot be added without deciding what its ``None`` means."""
+        import inspect
+
+        sig = inspect.signature(agent.stale_payload_generation_reason)
+        assert list(sig.parameters) == ["generation", "agent"]
+        assert sig.parameters["agent"].default is inspect.Parameter.empty, (
+            "``agent`` gained a default; a caller that omits it gets the admitting "
+            "branch for the team lead, which is the defect this parameter closed"
+        )
+
+
+class TestTheNativePathBracketsTheTeamLeadToo:
+    """The native kiro-cli path consumed the team-lead spec inside NO bracket.
+
+    Both of the existing guards answer ``None`` there, for different reasons, and the
+    bracket then had nothing left to check:
+
+    * ``require_fresh_derived_spec`` answers ``None`` because the team lead mirrors no
+      default -- its SCOPE guard, not a freshness verdict.
+    * the generation recheck answered ``None`` because the caller's
+      ``payload_generation`` is ``None`` on this path: no KAS payload was ever built, so
+      nothing recorded one.
+
+    Two "not applicable"s do not add up to "verified". On this path the agent IS the team
+    lead and its spec IS about to be consumed -- kiro-cli reads it from disk at
+    ``set_mode`` -- so the window between fixing those bytes and activating them is real
+    and was unguarded. The bracket now records the governance answer itself, before the
+    read that fixes the consumed bytes, and rechecks it after the activation returns.
+
+    Driven through a send that SUCCEEDS, because this guard runs after the host has
+    consumed the spec: on the scaffold whose send raises, the body never reaches it and
+    these tests would pass with no guard at all.
+    """
+
+    def _ready(self, tmp_path, monkeypatch):
+        """A clean installed spec, so ``team_lead_start_refusal`` admits and what these
+        tests observe is the generation guard rather than one of the four refusals."""
+        _stub_environment(tmp_path, monkeypatch)
+        assert agent._install_team_lead_agent() is agent.InstallOutcome.WRITTEN
+
+    @pytest.mark.asyncio
+    async def test_no_governance_move_admits_the_native_start(self, tmp_path, monkeypatch):
+        """THE OVER-TIGHT CONTROL, and the one that matters most here: a native team-lead
+        start with nothing moving must go through. An unconditional recheck, or one that
+        treats its own recorded value as stale, reds this and only this -- which is how a
+        guard that terminates every session is told apart from one that terminates the
+        right ones."""
+        self._ready(tmp_path, monkeypatch)
+        sent: list[str] = []
+        terminated: list[str] = []
+        rt = _runtime_for_native_activation(tmp_path, sent, terminated)
+
+        await _activate_native(rt, "kirocrew-team-lead")
+
+        assert sent == [METHOD_SET_MODE], "the activation never went out"
+        assert terminated == [], (
+            "a native team-lead start was terminated with no governance change at all, "
+            "which is a product outage rather than a safety property"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_ceiling_bump_during_the_activation_ends_the_session(
+        self, tmp_path, monkeypatch
+    ):
+        """THE finding's first half. A ceiling install landing between the point the
+        consumed bytes were fixed and the point the host had activated them leaves the
+        session running on grants the install removed, so the session ends.
+
+        The ceiling half is moved by patching ``context.governance_generation``, the
+        counter ``_install`` bumps: installing a real context would have to compose a real
+        ceiling, and what is under test is the bracket, not composition.
+        ``governance_answer_generation`` is NOT patched -- it runs for real and sums the
+        two halves, so this also proves the bracket reads the combined token."""
+        self._ready(tmp_path, monkeypatch)
+        from kiro_crew.acp.session_handle import AcpRuntimeError
+        from kiro_crew.platform import context as context_mod
+
+        ceiling = {"value": 11}
+        monkeypatch.setattr(
+            context_mod, "governance_generation", lambda: ceiling["value"], raising=False
+        )
+
+        sent: list[str] = []
+        terminated: list[str] = []
+        rt = _runtime_for_native_activation(tmp_path, sent, terminated)
+        inner_send = rt._send_and_await
+
+        async def _send_then_tighten(method, params, timeout=None, **kw):
+            # INSIDE the window: the host has read the spec by the time this returns,
+            # and the ceiling moved while it was doing so.
+            result = await inner_send(method, params, timeout=timeout, **kw)
+            ceiling["value"] += 1
+            return result
+
+        rt._send_and_await = _send_then_tighten  # type: ignore[method-assign]
+
+        with pytest.raises(AcpRuntimeError) as refused:
+            await _activate_native(rt, "kirocrew-team-lead")
+
+        assert "start was in progress" in str(refused.value)
+        assert sent == [METHOD_SET_MODE], (
+            "the bump was applied outside the window this guard covers, so this test "
+            "would pass for a bracket that records nothing"
+        )
+        assert terminated == ["sid-1"], (
+            "kiro-cli has already loaded the spec, so a local unregister would leave a "
+            "live session holding the grants the ceiling withdrew"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_profile_bump_during_the_activation_ends_the_session(
+        self, tmp_path, monkeypatch
+    ):
+        """THE finding's second half, and a separate test on purpose: one counter moving
+        proves nothing about the other, and the ceiling test above would stay green for a
+        bracket that read ``context.governance_generation()`` alone.
+
+        This half moves the REAL counter -- ``governance_profiles.reset_store()`` is one
+        of the two writers of ``_PROFILE_GENERATION`` -- so nothing about the profile layer
+        is stubbed here."""
+        self._ready(tmp_path, monkeypatch)
+        from kiro_crew.acp.session_handle import AcpRuntimeError
+        from kiro_crew.platform import governance_profiles as profiles_mod
+
+        sent: list[str] = []
+        terminated: list[str] = []
+        rt = _runtime_for_native_activation(tmp_path, sent, terminated)
+        inner_send = rt._send_and_await
+
+        async def _send_then_publish(method, params, timeout=None, **kw):
+            result = await inner_send(method, params, timeout=timeout, **kw)
+            # A published profile snapshot: the operator edited a profile while the
+            # activation was in flight.
+            profiles_mod.reset_store()
+            return result
+
+        rt._send_and_await = _send_then_publish  # type: ignore[method-assign]
+
+        before = profiles_mod.governance_answer_generation()
+        with pytest.raises(AcpRuntimeError) as refused:
+            await _activate_native(rt, "kirocrew-team-lead")
+
+        assert profiles_mod.governance_answer_generation() != before, (
+            "reset_store did not move the combined token, so this test proves nothing "
+            "about the profile half"
+        )
+        assert "start was in progress" in str(refused.value)
+        assert terminated == ["sid-1"]
+
+    @pytest.mark.asyncio
+    async def test_a_native_team_lead_start_with_nothing_recorded_is_refused(
+        self, tmp_path, monkeypatch
+    ):
+        """The ``None`` case, at the enforcement point rather than at the function.
+
+        A bracket that reaches activation having recorded nothing has proven nothing about
+        the grants it is activating. Before the fix this was the ORDINARY native path and
+        it was admitted; now it is refused wherever it occurs, which leaves it as a
+        fail-closed backstop for a fifth path added tomorrow that forgets to record."""
+        self._ready(tmp_path, monkeypatch)
+        from kiro_crew.acp.session_handle import AcpRuntimeError
+
+        # A capture that answers nothing -- the state the native path was in before it
+        # had a capture of its own.
+        monkeypatch.setattr(agent, "payload_governance_generation", lambda a: None)
+
+        sent: list[str] = []
+        terminated: list[str] = []
+        rt = _runtime_for_native_activation(tmp_path, sent, terminated)
+
+        with pytest.raises(AcpRuntimeError) as refused:
+            await _activate_native(rt, "kirocrew-team-lead")
+
+        assert "no governance generation was recorded" in str(refused.value)
+        assert terminated == ["sid-1"]
+
+    @pytest.mark.asyncio
+    async def test_a_native_start_of_another_agent_is_unaffected(self, tmp_path, monkeypatch):
+        """THE CONTROL that keeps this from terminating every session. Another agent gets
+        no recorded generation on this path and must be admitted anyway: it mirrors a
+        default and its own bracket is the derived-spec snapshot. Moving the ceiling under
+        it changes nothing, because there is no recorded value to compare against."""
+        self._ready(tmp_path, monkeypatch)
+        from kiro_crew.platform import context as context_mod
+
+        ceiling = {"value": 3}
+        monkeypatch.setattr(
+            context_mod, "governance_generation", lambda: ceiling["value"], raising=False
+        )
+
+        sent: list[str] = []
+        terminated: list[str] = []
+        rt = _runtime_for_native_activation(tmp_path, sent, terminated)
+        inner_send = rt._send_and_await
+
+        async def _send_then_tighten(method, params, timeout=None, **kw):
+            result = await inner_send(method, params, timeout=timeout, **kw)
+            ceiling["value"] += 1
+            return result
+
+        rt._send_and_await = _send_then_tighten  # type: ignore[method-assign]
+
+        # ``kirocrew`` is this runtime's own spawn agent, so the activation is the
+        # ordinary same-agent one every shared session performs.
+        await _activate_native(rt, "kirocrew")
+
+        assert sent == [METHOD_SET_MODE]
+        assert terminated == [], (
+            "a governance move terminated a session for an agent this guard does not "
+            "cover, which would make every native start fragile"
+        )
+
+
+class TestOwnershipIsSettledBeforeAnyBookkeepingWrite:
+    """The dashboard model PATCH asked "is this ours?" AFTER recording the model pin.
+
+    ``_confirms_managed_pre_write`` propagates a transient ownership-read failure by
+    contract -- that is the whole point of the strict read, so the caller aborts instead
+    of rewriting a spec with a stale digest. But the PATCH asked it below
+    ``set_model_managed``, so the raise arrived with the sidecar already saying the model
+    was the owner's and with nothing written to the file. The spec then reproduces no
+    recorded digest, so the admission gate refuses every later start as hand-edited, and
+    the next rebuild carries forward a pin the bytes never received.
+
+    Settled first, the same failure aborts with nothing written at all. The ORDER is the
+    fix; the propagation was already there.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_transient_ownership_read_leaves_the_pin_and_the_file_alone(
+        self, tmp_path, monkeypatch
+    ):
+        """A one-shot ``OSError`` out of the ownership read during a model PATCH. Nothing
+        may be left behind: not the sidecar's ``model_managed``, not the file."""
+        from unittest.mock import MagicMock
+
+        from aiohttp import web
+
+        from kiro_crew.dashboard.handlers import agents as detail_mod
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+            lambda request: True,
+        )
+        _stub_environment(tmp_path, monkeypatch)
+        monkeypatch.setattr(agent, "KIRO_AGENTS_DIR", tmp_path)
+        assert agent._install_team_lead_agent() is agent.InstallOutcome.WRITTEN
+        target = tmp_path / TEAM_LEAD_AGENT_FILENAME
+
+        before_bytes = target.read_bytes()
+        before_pin = agent_state.get_model_managed("kirocrew-team-lead")
+
+        reads: list[str] = []
+
+        def _unreadable(name, data):
+            reads.append(name)
+            raise OSError("ownership record temporarily unavailable")
+
+        monkeypatch.setattr(detail_mod, "_confirms_managed_pre_write", _unreadable)
+
+        request = MagicMock(spec=web.Request)
+        request.method = "PATCH"
+        request.match_info = {"name": "kirocrew-team-lead"}
+        request.app = {"state": MagicMock()}
+
+        async def _json():
+            return {"model": "a-pinned-model"}
+
+        request.json = _json
+
+        try:
+            resp = await api_agent_detail(request)
+        except OSError:
+            # Either shape is acceptable: what this pins is that nothing was written,
+            # not which status the handler maps a transient storage failure to.
+            resp = None
+        if resp is not None:
+            assert resp.status != 200, "the PATCH reported success on an unanswered read"
+
+        assert reads == ["kirocrew-team-lead"], (
+            "the ownership read never fired, so this test would pass for a handler that "
+            "writes the pin and never asks"
+        )
+        assert agent_state.get_model_managed("kirocrew-team-lead") == before_pin, (
+            "``model_managed`` was recorded before ownership was settled, so a transient "
+            "sidecar failure leaves the pin claimed and the digest unrenewed -- the "
+            "half-applied state that makes every later start refuse"
+        )
+        assert target.read_bytes() == before_bytes, "the spec was rewritten after an abort"
+
+    @pytest.mark.asyncio
+    async def test_the_settled_answer_is_read_once_and_reused(self, tmp_path, monkeypatch):
+        """ONE read, used twice. Two reads of the same question can disagree across a
+        concurrent write, and the handler would then decide under one answer and renew
+        under the other -- a third state nobody reasoned about."""
+        from unittest.mock import MagicMock
+
+        from aiohttp import web
+
+        from kiro_crew.dashboard.handlers import _shared as shared_mod
+        from kiro_crew.dashboard.handlers import agents as agents_handlers
+        from kiro_crew.dashboard.handlers import agents as detail_mod
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+            lambda request: True,
+        )
+        _stub_environment(tmp_path, monkeypatch)
+        monkeypatch.setattr(agent, "KIRO_AGENTS_DIR", tmp_path)
+        assert agent._install_team_lead_agent() is agent.InstallOutcome.WRITTEN
+
+        skill_md = tmp_path / "skills" / "a-skill" / "SKILL.md"
+        skill_md.parent.mkdir(parents=True)
+        skill_md.write_text("# a skill\n", encoding="utf-8")
+        snapshot = shared_mod.SkillCatalogSnapshot(
+            entries={"a-skill": skill_md}, dir_mtimes={}, walked_at_ns=0
+        )
+        monkeypatch.setattr(shared_mod, "walk_skill_catalog", lambda *a, **k: snapshot)
+        monkeypatch.setattr(
+            agents_handlers, "enumerate_skill_catalog", lambda *a, **k: {"a-skill": skill_md}
+        )
+
+        real = detail_mod._confirms_managed_pre_write
+        calls: list[str] = []
+
+        def _counted(name, data):
+            calls.append(name)
+            return real(name, data)
+
+        monkeypatch.setattr(detail_mod, "_confirms_managed_pre_write", _counted)
+
+        request = MagicMock(spec=web.Request)
+        request.method = "PATCH"
+        request.match_info = {"name": "kirocrew-team-lead"}
+        request.app = {"state": MagicMock()}
+
+        async def _json():
+            return {"model": "a-pinned-model"}
+
+        request.json = _json
+        resp = await api_agent_detail(request)
+        assert resp.status == 200, resp.status
+
+        assert calls == ["kirocrew-team-lead"], (
+            f"ownership was read {len(calls)} times for one write; the answer is taken "
+            "once and reused so the decision and the renewal cannot disagree"
+        )
+        # The write still happened and still renewed, so the reorder did not cost the
+        # feature it was protecting.
+        saved = json.loads((tmp_path / TEAM_LEAD_AGENT_FILENAME).read_text(encoding="utf-8"))
+        assert saved["model"] == "a-pinned-model"
+        assert (
+            agent.spec_start_refusal("kirocrew-team-lead") is None
+        ), "the digest was not renewed, so the admission gate refuses every later start"

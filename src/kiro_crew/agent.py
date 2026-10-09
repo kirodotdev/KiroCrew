@@ -290,7 +290,10 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         _narrow_whole_server_grants,
         _team_lead_mcp_servers,
         _team_lead_unassignable_servers,
+        is_team_lead_agent,
+        payload_governance_generation,
         spec_start_refusal,
+        stale_payload_generation_reason,
         team_lead_start_refusal,
     )
     from kiro_crew.agent_materialization.worker_agent import (  # noqa: F401
@@ -2238,6 +2241,9 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "_install_team_lead_agent",
         "spec_start_refusal",
         "team_lead_start_refusal",
+        "is_team_lead_agent",
+        "payload_governance_generation",
+        "stale_payload_generation_reason",
         "_narrow_whole_server_grants",
         "_team_lead_mcp_servers",
         "_team_lead_unassignable_servers",
@@ -3243,8 +3249,25 @@ def _confirms_managed_pre_write(name: str, data: dict) -> bool:
     confirms = renewable.get(name)
     if confirms is None:
         return False
+    # Two outcomes a predicate can give must NOT be conflated, because the caller acts
+    # oppositely on them. A predicate that ANSWERED "not this installer's own write"
+    # is False: the reset proceeds and leaves the file unconfirmed, which the admission
+    # gate reports and the next rebuild repairs. But a predicate that COULD NOT ANSWER
+    # -- a transient read of the ownership record raised -- is not an answer at all, and
+    # degrading it to False here is lossy: ``reset_agent_model`` would then take the
+    # unconfirmed-write branch and rewrite the bytes WITHOUT renewing the recorded
+    # digest, leaving a file that fails to reproduce it and a start that is refused every
+    # time, with no heal path for this stem even after storage recovers. The transient
+    # classes the strict ownership readers raise (``_SpecUnusable`` from the team-lead
+    # attribution, ``OSError``/``ValueError`` from the worker's strict digest read)
+    # therefore PROPAGATE, so the caller aborts before mutation; only a genuinely
+    # unexpected predicate error is read as "unanswerable -> not confirmed".
     try:
         return bool(confirms(data))
+    except (conductor_agents._SpecUnusable, OSError, ValueError):
+        # Could not read ownership -> no answer. Abort the write; do not rewrite the
+        # spec with a stale digest.
+        raise
     except Exception:  # noqa: BLE001 — an unanswerable confirmation is not a confirmation
         logger.debug("ownership confirmation failed for managed spec %r", name, exc_info=True)
         return False
@@ -3293,8 +3316,17 @@ def reset_agent_model(name: str) -> tuple[Path, str]:
             raise FileNotFoundError(f"agent spec {spec_path} is not readable as a JSON object")
         # Snapshot the PRE-edit bytes to decide ownership BEFORE this writer mutates them:
         # the digest is renewed below only when the file WAS already our confirmed managed
-        # write, never for a user file at the once-user-creatable stem.
-        pre_write_confirmed = _confirms_managed_pre_write(name, data)
+        # write, never for a user file at the once-user-creatable stem. A transient read of
+        # the ownership record cannot be answered, so it ABORTS here rather than falling
+        # through as "not confirmed" -- which would rewrite the spec without renewing its
+        # digest and leave it permanently refused (this stem has no heal path). Fail closed:
+        # the reset does nothing and the next attempt, once storage recovers, succeeds.
+        try:
+            pre_write_confirmed = _confirms_managed_pre_write(name, data)
+        except (conductor_agents._SpecUnusable, OSError, ValueError) as exc:
+            raise FileNotFoundError(
+                f"could not read ownership record for agent spec {spec_path}: {exc}"
+            ) from exc
         # Digest of the CURRENT on-disk bytes (pre-edit), captured before mutation so
         # ``begin_managed_write`` can keep the file confirmable if this write is interrupted.
         pre_write_digest = agent_state.spec_digest(data) if pre_write_confirmed else None

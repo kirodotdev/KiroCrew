@@ -404,6 +404,25 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                                 (f.stem, spec_str(fresh, "name") or f.stem)
                             ):
                                 require_unmanaged_template(identity)
+                            # Ownership is settled HERE, before the first bookkeeping
+                            # write, and the ONE result is what the renewal below acts
+                            # on. The ordering is the safety property, not tidiness:
+                            # this call PROPAGATES a transient ownership-read failure
+                            # by contract (see ``_confirms_managed_pre_write``), so
+                            # asking it after ``set_model_managed`` left a window where
+                            # the sidecar had already recorded the model as the owner's
+                            # while the raise skipped both the renewal and the file
+                            # write -- a half-applied state whose file then reproduces
+                            # no recorded digest, so every later start is refused as
+                            # hand-edited and the next rebuild carries a pin the bytes
+                            # never got. Asked first, that failure aborts with nothing
+                            # written.
+                            #
+                            # Read ONCE and reused, never asked twice: two reads of the
+                            # same question can disagree across a concurrent write, and
+                            # the write path would then be deciding under one answer and
+                            # renewing under another.
+                            confirms_managed = _confirms_managed_pre_write(f.stem, pre_write)
                             if "model" in patch_body:  # type: ignore[operator]
                                 data["model"] = patch_body["model"] or None  # type: ignore[index]
                                 if data["model"] is None:
@@ -447,7 +466,11 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                             # customization path breaking the agent permanently. The table
                             # returns False for any stem it does not list, so it subsumes the
                             # membership half of the question as well as the confirmation.
-                            if _confirms_managed_pre_write(f.stem, pre_write):
+                            #
+                            # The answer was taken ABOVE, before any bookkeeping write, and
+                            # is reused here rather than re-asked; see that call for why the
+                            # order and the single read are the safety property.
+                            if confirms_managed:
                                 agent_state.begin_managed_write(
                                     f.stem,
                                     agent_state.spec_digest(fresh),

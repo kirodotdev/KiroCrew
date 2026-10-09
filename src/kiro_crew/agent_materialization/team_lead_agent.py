@@ -705,6 +705,106 @@ def team_lead_start_refusal(
     return None
 
 
+def is_team_lead_agent(agent: str | None) -> bool:
+    """Is *agent* the owned team-lead stem? Then its wire payload needs the
+    governance-generation guard below, because it mirrors no default spec and so
+    carries no :class:`DerivedSpecSnapshot` to bracket its consume window."""
+    return bool(agent) and agent == _TEAM_LEAD_AGENT_NAME
+
+
+def payload_governance_generation(agent: str | None) -> int | None:
+    """The governance generation to stamp on *agent*'s wire payload, or ``None``.
+
+    Captured when the KAS payload is BUILT, so the generation names the governance
+    ANSWER the payload's grants were filtered under -- the ceiling AND the profile
+    layer, because both decide which tools the team-lead spec may auto-approve
+    (``platform.governance.may_skip_gate_now`` withholds a ref that
+    ``any_configured_profile_governs``). The combined token
+    :func:`kiro_crew.platform.governance_profiles.governance_answer_generation` is what
+    the rest of the codebase compares for "has a governance answer changed", so a
+    PROFILE edit during the admission wait is caught here, not only a ceiling install.
+
+    Only the team-lead stem gets a value: every other wire-registered agent mirrors a
+    default and is bracketed by
+    :func:`require_fresh_derived_spec`/:func:`require_unchanged_derived_spec` instead, so
+    answering a generation for it would be a second, redundant guard over the same load.
+
+    Comparison-only: the consumer tests it for equality with the generation live at
+    consume time and never reads its magnitude. A pure in-process read (two locked int
+    reads, no filesystem), so it is safe on the event loop.
+    """
+    if not is_team_lead_agent(agent):
+        return None
+    from kiro_crew.platform.governance_profiles import governance_answer_generation
+
+    return governance_answer_generation()
+
+
+#: The answer to a question that was never ASKED, which is not the same fact as an
+#: answer of "no drift" and must not be spelled the same way. See
+#: :func:`stale_payload_generation_reason` for why ``None`` alone cannot carry it.
+_UNRECORDED_GENERATION_REFUSAL = (
+    f"no governance generation was recorded for this {_TEAM_LEAD_AGENT_FILENAME} start, so "
+    "nothing proves the tool surface the session would activate was filtered under the "
+    "governance answer in force now; refusing the start rather than admitting an unanswered "
+    "question. Restart the gateway; if it keeps failing, rebuild the agent."
+)
+
+
+def stale_payload_generation_reason(generation: int | None, agent: str | None) -> str | None:
+    """Why a team-lead spec recorded at *generation* must not be activated, or ``None``.
+
+    Returns a REASON string rather than raising, for the same reason
+    :func:`team_lead_start_refusal` does: this owner module hands the runtime a verdict
+    and the runtime raises its own transport error. ``None`` admits the start.
+
+    The team-lead spec is fixed BEFORE the window that activates it, and on both host
+    paths: on the KAS path the wire payload is assembled from the on-disk spec before the
+    admission gate's unbounded queue wait, and on the native path the consumed bytes are
+    read by the skill projection (or by kiro-cli itself at ``set_mode``) before the
+    activation returns. A governance change landing inside either window -- a tightened
+    CEILING installed, or a PROFILE edit published -- re-filters what the spec may
+    auto-approve, but what is about to be activated still carries the old grants. A disk
+    re-read cannot catch this: the file is clean, only what was already captured is
+    stale. So the governance ANSWER it was recorded under (ceiling ∩ profile, via
+    :func:`~kiro_crew.platform.governance_profiles.governance_answer_generation`) is
+    rechecked here, and a mismatch ends the start rather than activating an auto-approval
+    a live revocation removed. The start is retried fresh against the current answer.
+
+    *agent* IS REQUIRED, and required because ``None`` for *generation* is two different
+    facts that must not share one spelling:
+
+    * *agent* is not the owned team-lead stem -- the guard is NOT APPLICABLE. Every other
+      wire-registered agent mirrors a default and is bracketed by a
+      ``DerivedSpecSnapshot`` instead, so there is no generation for it to be stale
+      against. Admitted.
+    * *agent* IS the team lead and no generation was recorded anyway -- the question was
+      never ASKED. That is not an answer of "no drift", and degrading it to one is the
+      same defect this module already fixed at the strict ownership read: a caller that
+      reached activation without capturing has proven nothing about the grants it is
+      about to activate. REFUSED (:data:`_UNRECORDED_GENERATION_REFUSAL`).
+
+    Which is why *agent* has no default. A caller that cannot name the agent cannot tell
+    those two apart, and a parameter it may omit is a parameter the next enforcement
+    point omits silently -- exactly the hole a defaulted ``None`` opened here.
+    """
+    if generation is None:
+        if is_team_lead_agent(agent):
+            return _UNRECORDED_GENERATION_REFUSAL
+        return None
+    from kiro_crew.platform.governance_profiles import governance_answer_generation
+
+    if governance_answer_generation() == generation:
+        return None
+    return (
+        f"the governance ceiling or a profile changed while the {_TEAM_LEAD_AGENT_FILENAME} "
+        "start was in progress, so the agent definition this session would activate was "
+        "recorded under a stale governance answer and may carry auto-approvals the current "
+        "answer removes; refusing the start so it is rebuilt against the live governance "
+        "answer"
+    )
+
+
 def _our_file_is_what_would_run(agent: str) -> bool:
     """Would a start of *agent* execute OUR file, whatever name it asks for?
 

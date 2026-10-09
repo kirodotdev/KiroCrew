@@ -250,6 +250,26 @@ class SessionExtras:
     nothing, or takes its agent at spawn time.
     """
 
+    payload_governance_generation: int | None = None
+    """The governance-answer generation the wire payload's grants were filtered under.
+
+    The companion to ``derived_spec_snapshot`` for an OWNED stem (the team lead)
+    that mirrors no default and so has no ``DerivedSpecSnapshot``. The payload is
+    built from the on-disk spec BEFORE the admission gate's unbounded queue wait;
+    a governance change landing during that wait -- a tightened CEILING installed,
+    or a PROFILE edit published -- re-filters what the spec may auto-approve, but
+    the already-built payload still carries the old grants and is what
+    ``session/new`` registers. The disk re-read at admission cannot see this -- the
+    file is clean -- so the stale generation is recorded here and rechecked where
+    the payload is consumed: a mismatch means the governance answer (ceiling ∩
+    profile) moved under the payload and the start is refused rather than shipping
+    an auto-approval a live revocation removed.
+
+    ``None`` when the payload is not a governance-filtered owned stem (every host
+    that mirrors a default uses ``derived_spec_snapshot`` instead), so the recheck
+    is not applicable rather than satisfied.
+    """
+
 
 # ── Seam 5: notification aliases ──
 

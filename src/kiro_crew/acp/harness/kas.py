@@ -232,7 +232,7 @@ class KasHarness(MembershipHarness):
         if not agent:
             return SessionExtras()
 
-        def _build() -> tuple[list[dict[str, Any]], Any]:
+        def _build() -> tuple[list[dict[str, Any]], Any, int | None]:
             agent_mod.require_fork_governance(agent, work_dir)
             try:
                 agent_mod.ensure_agent_materialized(agent)
@@ -313,6 +313,13 @@ class KasHarness(MembershipHarness):
             # registered and reads nothing -- so the check that proves the consumed spec
             # did not change has to compare against this snapshot rather than against a
             # fresh read of the file.
+            #
+            # The team-lead stem mirrors no default and so has no ``DerivedSpecSnapshot``;
+            # its consume window is bracketed by the GOVERNANCE GENERATION instead,
+            # captured here -- before the payload's grants are assembled -- so a ceiling
+            # refresh landing during the admission wait is caught where the payload is
+            # consumed. ``None`` for every other agent (see payload_governance_generation).
+            payload_generation = agent_mod.payload_governance_generation(agent)
             return (
                 kas_agents_mod.build_kas_custom_agents(
                     agents_dir,
@@ -324,11 +331,16 @@ class KasHarness(MembershipHarness):
                     session_key=session_key,
                 ),
                 snapshot,
+                payload_generation,
             )
 
         try:
-            built, built_from = await asyncio.to_thread(_build)
-            return SessionExtras(custom_agents=built, derived_spec_snapshot=built_from)
+            built, built_from, built_generation = await asyncio.to_thread(_build)
+            return SessionExtras(
+                custom_agents=built,
+                derived_spec_snapshot=built_from,
+                payload_governance_generation=built_generation,
+            )
         except ForkGovernanceUnresolved as exc:
             raise AcpRuntimeError(str(exc)) from exc
         except KasReservedAgentIdError as exc:
