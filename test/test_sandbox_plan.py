@@ -528,6 +528,8 @@ _SEATBELT_GOLDEN = """\
 (deny file-write* (subpath "/srv/u/.kiro/crew/.env"))
 (deny file-write* (literal "/srv/u/.kiro/crew/.env"))
 (deny file-link (subpath "/srv/u/.kiro/crew/.env"))
+(deny file-read* (literal "/srv/u/.kiro/crew/.env"))
+(deny file-link (literal "/srv/u/.kiro/crew/.env"))
 (deny file-read* (subpath "/srv/u/.kiro/crew/run/voice-runtime"))
 (deny file-write* (subpath "/srv/u/.kiro/crew/run/voice-runtime"))
 (deny file-link (subpath "/srv/u/.kiro/crew/run/voice-runtime"))
