@@ -114,6 +114,29 @@ const AUTO_WARM_STAGGER_MS = 1_500
 const MAX_REACTIVE_REMINTS = 3
 
 
+/**
+ * The live `--mc-win-caption-reserve` the main process sets inline on this
+ * document's <html> (pushWinCaptionReserve in electron/runtime/window/chrome.js),
+ * followed across every rewrite (zoom step, reload) so it can be relayed into
+ * embedded panes, which are separate documents and never inherit it. Empty when
+ * there is no Windows inset or the main process has not pushed a value yet.
+ */
+function useWinCaptionReserve(enabled: boolean): string {
+  const read = () => document.documentElement.style.getPropertyValue('--mc-win-caption-reserve').trim()
+  const [value, setValue] = useState(() => (enabled ? read() : ''))
+  useEffect(() => {
+    if (!enabled) {
+      setValue('')
+      return
+    }
+    setValue(read())
+    const observer = new MutationObserver(() => setValue(read()))
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['style'] })
+    return () => observer.disconnect()
+  }, [enabled])
+  return value
+}
+
 export default function InstancesViewport({ macInset = false }: { macInset?: boolean } = {}) {
   // Windows counterpart of `macInset`: the caption overlay is a shell property,
   // not a window state, so it derives straight from the platform flag rather
@@ -136,6 +159,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         ...(winInset ? { paddingRight: 'var(--mc-win-caption-reserve)' } : null),
       }
     : undefined
+  const winCaptionReserve = useWinCaptionReserve(winInset)
   const dispatch = useAppDispatch()
   const queryClient = useQueryClient()
   const warm = useAppSelector(s => s.instances.warm)
@@ -1094,6 +1118,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         : null
       return {
         type: 'mc-host-model', v: 1, tabs, activeId, self, macInset, winInset, focusMode,
+        ...(winCaptionReserve ? { winCaptionReserve } : null),
         electron: isElectron,
         // Array, not the Set itself: structured clone rejects a Set across this
         // boundary in some engines and the receiver validates element-wise anyway.
@@ -1101,7 +1126,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         stableOrder,
       }
     },
-    [instancesQuery.data, warm, unread, activeId, macInset, winInset, focusMode, pinnedCrews, stableOrder],
+    [instancesQuery.data, warm, unread, activeId, macInset, winInset, winCaptionReserve, focusMode, pinnedCrews, stableOrder],
   )
 
   // Post the model into one embedded pane, addressed to its exact loopback
@@ -1158,7 +1183,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // to a loopback frame.
   useEffect(() => {
     for (const id of Object.keys(warm)) postModelTo(id)
-  }, [warm, activeId, unread, macInset, winInset, instancesQuery.data, postModelTo, pinnedCrews, stableOrder])
+  }, [warm, activeId, unread, macInset, winInset, winCaptionReserve, instancesQuery.data, postModelTo, pinnedCrews, stableOrder])
 
   // Keep warm iframes mounted across Local<->remote switches (hide-not-unmount).
   // Also render when the active tab is a remote instance with no warm iframe
