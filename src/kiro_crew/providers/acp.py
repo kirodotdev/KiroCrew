@@ -2266,6 +2266,13 @@ class AcpProvider(LLMProvider):
         it), and logs a warning. Naming the clash is all it does: which server
         wins is the backend's tool table, not Crew's.
 
+        MCP Tool Search deferral, on by default, also leaves a running server
+        absent from ``/tools``. :func:`servers_exposing_no_tools` tells the two
+        apart from the ``/tools`` result itself -- the loader tool is present
+        exactly when the session defers -- so a deferred server is not mistaken
+        for a clash victim; without that this would warn for nearly every server
+        on a default install.
+
         ``/tools`` is only read when at least two servers are running, since a
         clash needs two. Bounded, and never fails the start: on any error the
         session simply has no warning.
