@@ -250,6 +250,8 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
     setRawMode(!rawMode)
   }
   const selectionActions = useSelectionActions(onQuote, onAsk)
+  const touch = isTouchDevice()
+  const toolbarActions = touch ? selectionActions.filter(a => a.id !== 'copy') : selectionActions
 
   const { term, caseSensitive } = useSearchHighlight()
   const currentOcc = useCurrentOcc()
@@ -585,10 +587,12 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
           The three sibling gates below (file chips, turn stats, footer) stay
           `!isStreaming` -- those are end-of-turn summaries, with no partial form
           to show.
-          Not mounted on a touch device at all: there the platform draws its own
-          selection handles and Copy / Look Up callout, and a second floating
-          toolbar sat on top of them and took the taps meant for the handles. */}
-      {selectionActions.length > 0 && !isTouchDevice() && <SelectionToolbar containerRef={contentRef} actions={selectionActions} />}
+          On a touch device the row DOCKS above the composer instead of floating
+          at the selection: there the platform draws its own handles, magnifier
+          and Copy callout around the selection, and a row drawn on top of them
+          took the taps meant for the handles. Copy is left to that callout, so
+          the dock carries only what the platform cannot do (Quote, Ask). */}
+      {toolbarActions.length > 0 && <SelectionToolbar containerRef={contentRef} actions={toolbarActions} dock={touch} />}
     </div>
     </MessageContextMenu>
     {/* Directly under the bubble, above the file chips: the strip says how THIS
