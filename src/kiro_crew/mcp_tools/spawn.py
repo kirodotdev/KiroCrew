@@ -1240,7 +1240,15 @@ def spawn_status(name: str, args: dict[str, Any]) -> str:
         path += "?" + urlencode(spawn_params)
     d = mcp_core._get(path)
     usage = format_subagent_usage(d.get("credits"), d.get("elapsed"))
-    if d.get("error"):
+    # ``error`` means two different things here. On a payload that is not a
+    # finished run (a failed lookup or a transport error, such as
+    # ``{"error": "HTTP 404"}``) it is the whole answer. On a finished run
+    # (``done`` is True) it is the reason the run ended badly, sent next to the
+    # transcript the run retained; a timed-out or reaped run keeps its partial
+    # output on purpose. That transcript must stay readable, so the reason
+    # becomes a header instead of replacing the output.
+    ended_with_error = d.get("done") is True and bool(d.get("error"))
+    if d.get("error") and not ended_with_error:
         error = f"Error: {d['error']}"
         return f"[usage: {usage}]\n{error}" if usage else error
 
@@ -1327,8 +1335,14 @@ def spawn_status(name: str, args: dict[str, Any]) -> str:
         header, _ = redact_credentials(header)
         return f"{header}\n{result}"
     if isinstance(meta, dict) and meta:
-        return result
-    return f"[usage: {usage}]\n{result}" if usage else result
+        out = result
+    else:
+        out = f"[usage: {usage}]\n{result}" if usage else result
+    if ended_with_error:
+        reason, _ = redact_exfiltration_urls(str(d["error"]))
+        reason, _ = redact_credentials(reason)
+        out = f"[ENDED WITH ERROR · {reason}]\n{out}"
+    return out
 
 
 #: Server-side hold per resume-poll request (seconds); under the client GET

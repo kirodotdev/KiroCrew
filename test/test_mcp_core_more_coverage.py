@@ -990,6 +990,61 @@ class TestSpawnStatusTool:
             out = _call_tool_inner("spawn_status", {"agent_id": "a1"})
         assert "AKIAIOSFODNN7EXAMPLE" not in out
 
+    def test_a_run_that_ended_with_an_error_keeps_its_transcript(self) -> None:
+        # A finished run reports why it ended badly in ``error``, next to the
+        # transcript it retained (a timed-out or reaped run keeps its partial
+        # output on purpose). That is a run record, not a failed request: the
+        # reason heads the output and the transcript stays readable, so the
+        # caller can see what the run did instead of re-running it.
+        payload = {
+            "done": True,
+            "result": "step 1: read config\nstep 2: wrote report.md",
+            "error": "Timed out after 180 minutes [3 turns]",
+            "elapsed": 42,
+            "credits": 0.5,
+        }
+        with patch.object(mcp_core, "_get", return_value=payload):
+            out = _call_tool_inner("spawn_status", {"agent_id": "a1"})
+        ended, usage, body = out.split("\n", 2)
+        assert ended == "[ENDED WITH ERROR · Timed out after 180 minutes [3 turns]]"
+        assert usage.startswith("[usage: ")
+        assert body == "step 1: read config\nstep 2: wrote report.md"
+
+    def test_a_paged_read_of_a_run_that_ended_with_an_error_keeps_paging(self) -> None:
+        payload = {
+            "done": True,
+            "result": "step 2: wrote report.md",
+            "error": "Timed out after 180 minutes [3 turns]",
+            "result_meta": {
+                "total_lines": 3,
+                "offset": 1,
+                "returned_lines": 1,
+                "has_more": True,
+            },
+        }
+        with patch.object(mcp_core, "_get", return_value=payload):
+            out = _call_tool_inner("spawn_status", {"agent_id": "a1", "offset": 1, "limit": 1})
+        ended, paged, body = out.split("\n", 2)
+        assert ended == "[ENDED WITH ERROR · Timed out after 180 minutes [3 turns]]"
+        assert "showing lines 1-2 of 3" in paged
+        assert "call again with offset=2" in paged
+        assert body == "step 2: wrote report.md"
+
+    def test_a_run_that_ended_with_an_error_and_no_transcript_reads_as_a_run(self) -> None:
+        # Without the header this would read ``Error: <reason>``, the same
+        # shape as a failed lookup (``Error: HTTP 404``).
+        payload = {"done": True, "result": "", "error": "Orphaned (unknown cause)"}
+        with patch.object(mcp_core, "_get", return_value=payload):
+            out = _call_tool_inner("spawn_status", {"agent_id": "a1"})
+        assert out == "[ENDED WITH ERROR · Orphaned (unknown cause)]\n_No result._"
+
+    def test_the_ending_reason_is_redacted(self) -> None:
+        payload = {"done": True, "result": "x", "error": "provider said AKIAIOSFODNN7EXAMPLE"}
+        with patch.object(mcp_core, "_get", return_value=payload):
+            out = _call_tool_inner("spawn_status", {"agent_id": "a1"})
+        assert out.startswith("[ENDED WITH ERROR · ")
+        assert "AKIAIOSFODNN7EXAMPLE" not in out
+
 
 class TestLearnAddTool:
     def test_a_missing_rule_is_refused(self) -> None:
