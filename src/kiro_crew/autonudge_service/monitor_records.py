@@ -139,7 +139,12 @@ async def add_monitor(
     defer_replaced_trust_revocation: bool = False,
     creation_surface: MonitorCreationSurface = MonitorCreationSurface.DASHBOARD,
 ) -> NudgeLoop:
-    """Create one durable structured record without legacy prompt routing."""
+    """Create one durable structured record without legacy prompt routing.
+
+    Structured records never carry ``stop_sentinel_path`` and have no default
+    stop file to retire; that transaction parameter belongs only to legacy
+    :func:`mutations.add`.
+    """
     admission = self._admit_mutation()
     inner: "asyncio.Task[NudgeLoop]" = asyncio.ensure_future(
         self._add_monitor_locked(

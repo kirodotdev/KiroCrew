@@ -75,6 +75,8 @@ from kiro_crew.autonudge import (
     CONSECUTIVE_FAILURE_REASON,
     FINISHED_LOOP_REASONS,
     MONITOR_TERMINAL_REASON,
+    PARKED_ROW_REVIVED_EVENT,
+    STALE_SENTINEL_CLEANUP_FAILED_REASON,
     STRUCTURAL_TERMINAL_REASON,
     AutoNudgeService,
     NudgeLoop,
@@ -7957,7 +7959,10 @@ class GatewayOrchestrator:
                     else self.dashboard_state.broadcast_ws
                 )
                 _frame = {
-                    "event": event,
+                    # A revived parked row is an ``updated`` frame to every client:
+                    # its own event name only tells this observer to restart the
+                    # member patrol below.
+                    "event": "updated" if event == PARKED_ROW_REVIVED_EVENT else event,
                     "slot": loop.slot_key,
                     "loop": loop_payload,
                 }
@@ -7999,17 +8004,30 @@ class GatewayOrchestrator:
                     _pslug = eventlog_hooks.member_slug_for_slot(loop.slot_key)
                     _etype2: str | None = None
                     _edata: dict = {}
-                    if event == "added":
+                    if event in ("added", PARKED_ROW_REVIVED_EVENT) and loop.active:
+                        # Play on a parked row restarts a patrol its inactive
+                        # ``added`` recorded as stopped, so it starts here too,
+                        # before the active frame publishes.
                         _etype2, _edata = PATROL_STARTED, {"slot_key": loop.slot_key}
-                    elif event in ("removed", "expired") or (
-                        # A loop FINISHED by its stop file is kept and deactivated,
-                        # so it arrives as ``updated``; the patrol is over all the
-                        # same, and a log left reading ``armed`` would never close --
-                        # the boot closer closes only a log whose row is gone. A
-                        # plain pause stays a pause: not a stop, not recorded.
-                        event == "updated"
-                        and not loop.active
-                        and reason_in(loop.stopped_reason, FINISHED_LOOP_REASONS)
+                    elif (
+                        (
+                            event == "added"
+                            and not loop.active
+                            and loop.stopped_reason == STALE_SENTINEL_CLEANUP_FAILED_REASON
+                        )
+                        or event in ("removed", "expired")
+                        or (
+                            # A loop FINISHED by its stop file is kept and deactivated,
+                            # so it arrives as ``updated``; the patrol is over all the
+                            # same, and a log left reading ``armed`` would never close --
+                            # the boot closer closes only a log whose row is gone. A
+                            # plain pause stays a pause: not a stop, not recorded. An
+                            # inactive failed add is handled above because its retained
+                            # row must be visible without ever announcing a start.
+                            event == "updated"
+                            and not loop.active
+                            and reason_in(loop.stopped_reason, FINISHED_LOOP_REASONS)
+                        )
                     ):
                         _reason = getattr(loop, "stopped_reason", None) or event
                         _etype2, _edata = (

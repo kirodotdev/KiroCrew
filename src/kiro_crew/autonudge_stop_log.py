@@ -31,6 +31,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from kiro_crew.autonudge_service.model import STALE_SENTINEL_CLEANUP_FAILED_REASON
 from kiro_crew.jsonl_util import rotate_jsonl_at
 from kiro_crew.owner_only_files import ensure_directory, owner_only_opener_for
 from kiro_crew.platform import redact_log_via_context
@@ -112,7 +113,13 @@ def _stored_reason(row: Mapping[str, Any]) -> tuple[str, str]:
         detail = str(monitor.get("user_stop_reason") or "")
         if reason:
             return reason, detail
-    return str(row.get("stopped_reason") or ""), ""
+    reason = str(row.get("stopped_reason") or "")
+    detail = (
+        str(row.get("stop_sentinel_path") or "")
+        if reason == STALE_SENTINEL_CLEANUP_FAILED_REASON
+        else ""
+    )
+    return reason, detail
 
 
 def stop_records(

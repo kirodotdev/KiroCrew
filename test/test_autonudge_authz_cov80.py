@@ -12,6 +12,7 @@ Every test patches ``sel`` so nothing is written to the real security event log.
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import threading
 from copy import deepcopy
@@ -26,6 +27,7 @@ from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew import autonudge_authz
 from kiro_crew.autonudge import (
+    STALE_SENTINEL_CLEANUP_FAILED_REASON,
     AutoNudgeService,
     MonitorUpdateConflict,
     NudgeAdmissionReason,
@@ -37,6 +39,8 @@ from kiro_crew.autonudge_authz import (
     authorize_and_update_nudge,
     normalize_banner,
 )
+from kiro_crew.autonudge_selfarm import is_recorded_self_arm
+from kiro_crew.autonudge_service import mutations as autonudge_mutations
 from kiro_crew.autonudge_service.model import SERVICE_SHUTTING_DOWN_MESSAGE
 from kiro_crew.constants import MAX_BANNER_CHARS
 from kiro_crew.dashboard.handlers import autonudge as autonudge_handler
@@ -870,30 +874,242 @@ async def test_add_rejects_a_sensitive_stop_sentinel_path(audits: list[dict]) ->
 async def test_add_removes_a_stale_default_sentinel_only_after_successful_arm(
     audits: list[dict], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A new channel loop gets its per-session sentinel and clears a stale marker
-    only after the service has accepted the arm."""
+    """A successful channel arm retires its stale default inside ``add``."""
     sentinel = tmp_path / "stop-slack"
     sentinel.write_text("stale", encoding="utf-8")
     monkeypatch.setattr(
         autonudge_authz, "resolve_stop_sentinel", lambda key, *a, **kw: str(sentinel)
     )
+    svc = AutoNudgeService(base_dir=tmp_path / "home")
+    channel = SimpleNamespace()
+    try:
+        loop, error, status = await authorize_and_add_nudge(
+            svc=svc,
+            state=_state(sessions=SimpleNamespace(get_channel=lambda key: channel)),
+            slot_key="slack:1712345.6789",
+            message="watch",
+            source="workflow",
+        )
 
-    class SentinelObservingSvc(RecordingSvc):
-        async def add(self, **kw: Any) -> Any:
-            assert sentinel.exists(), "the stale sentinel was unlinked before admission"
-            return await super().add(**kw)
+        assert error is None and status == 200 and loop is not None
+        assert loop.stop_sentinel_path == str(sentinel)
+        assert not sentinel.exists(), "the successful arm left its stale sentinel in place"
+        assert loop.id in svc._timers, "the successful arm did not publish its timer"
+        assert [event["outcome"] for event in audits] == ["invoked", "success"]
+    finally:
+        svc.stop()
 
-    svc = SentinelObservingSvc()
-    loop, error, status = await authorize_and_add_nudge(
-        svc=svc,
-        state=_state(sessions=SimpleNamespace(get_channel=lambda key: SimpleNamespace())),
-        slot_key="slack:1712345.6789",
-        message="watch",
-        source="workflow",
+
+@pytest.mark.asyncio
+async def test_stale_default_sentinel_cleanup_failure_returns_coded_500_and_denied_audit(
+    audits: list[dict], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    slot_key = "chat-1-1"
+    sentinel = tmp_path / "stop-chat-1-1"
+    sentinel.mkdir()
+    monkeypatch.setattr(
+        autonudge_authz,
+        "resolve_stop_sentinel",
+        lambda key, *args, **kwargs: str(sentinel),
     )
-    assert error is None and status == 200 and loop is not None
-    assert svc.added[0]["stop_sentinel_path"] == str(sentinel)
-    assert not sentinel.exists(), "the successful arm left its stale sentinel in place"
+    svc = AutoNudgeService(base_dir=tmp_path / "home")
+    monkeypatch.setattr(autonudge_handler, "_autonudge_get", lambda: svc)
+    monkeypatch.setattr(
+        autonudge_handler,
+        "sel",
+        lambda: SimpleNamespace(log_api_access=lambda **kwargs: None),
+    )
+    state = _state(
+        slots={
+            slot_key: SimpleNamespace(
+                workspace="default",
+                mode="",
+                memory_mode="persistent",
+                is_closing=False,
+            )
+        }
+    )
+    state.owner_id = ""
+    app = web.Application()
+    app["state"] = state
+    request = make_mocked_request("POST", "/api/autonudge", app=app)
+    request["user"] = "local-app"
+    request["app"] = ""
+    request.json = AsyncMock(  # type: ignore[method-assign]
+        return_value={"slot_key": slot_key, "message": "replacement goal"}
+    )
+
+    try:
+        response = await autonudge_handler.api_autonudge_start(request)
+
+        assert response.status == 500
+        assert isinstance(response.body, bytes)
+        body = json.loads(response.body.decode("utf-8"))
+        assert body["code"] == "autonudge_not_armed"
+        assert str(sentinel) in body["error"]
+        assert (
+            "repair or remove that path, then press Play on the retained row, "
+            "or Clear it and arm again"
+        ) in body["error"]
+        loop = svc.get_by_slot(slot_key)
+        assert loop is not None
+        assert not loop.active
+        assert loop.stopped_reason == STALE_SENTINEL_CLEANUP_FAILED_REASON
+        assert loop.next_due_ts == 0.0
+        assert loop.id not in svc._timers, "the failed route left its loop armed"
+        assert [event["outcome"] for event in audits] == ["invoked", "denied"]
+    finally:
+        svc.stop()
+
+
+@pytest.mark.asyncio
+async def test_probe_oserror_enters_typed_cleanup_and_keeps_self_arm_trust_for_play(
+    audits: list[dict], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    slot_key = "member-conductor"
+    sentinel = tmp_path / "stop-member-conductor"
+    sentinel.mkdir()
+
+    def deny_probe(_path: Path) -> None:
+        raise PermissionError(errno.EACCES, "sentinel probe denied")
+
+    monkeypatch.setattr(autonudge_mutations, "_probe_stale_stop_sentinel", deny_probe)
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "crew-home"))
+    monkeypatch.setattr(
+        autonudge_authz,
+        "resolve_stop_sentinel",
+        lambda key, *args, **kwargs: str(sentinel),
+    )
+    svc = AutoNudgeService(base_dir=tmp_path / "store")
+    state = _state(
+        slots={
+            slot_key: SimpleNamespace(
+                workspace="default",
+                mode="member",
+                memory_mode="persistent",
+                is_closing=False,
+            )
+        }
+    )
+    try:
+        loop, error, status = await authorize_and_add_nudge(
+            svc=svc,
+            state=state,
+            slot_key=slot_key,
+            message="patrol",
+            source="mcp-directive",
+            initiator_slot_key=slot_key,
+        )
+
+        assert loop is None and status == 500
+        assert error is not None and "press Play on the retained row" in error
+        retained = svc.get_by_slot(slot_key)
+        assert retained is not None and not retained.active
+        assert retained.stopped_reason == STALE_SENTINEL_CLEANUP_FAILED_REASON
+        assert is_recorded_self_arm(retained.id, slot_key)
+
+        sentinel.rmdir()
+        revived, error, status = await authorize_and_update_nudge(
+            svc=svc,
+            loop_id=retained.id,
+            active=True,
+            fresh_run=True,
+            source="dashboard",
+        )
+        assert error is None and status == 200 and revived is retained
+        assert revived.active and revived.stopped_reason == ""
+        assert is_recorded_self_arm(retained.id, slot_key)
+        assert [event["outcome"] for event in audits][-2:] == ["invoked", "success"]
+    finally:
+        svc.stop()
+
+
+@pytest.mark.asyncio
+async def test_activation_persistence_failure_is_typed_and_keeps_replacement_trust(
+    audits: list[dict], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    slot_key = "member-conductor"
+    sentinel = tmp_path / "stop-member-conductor"
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "crew-home"))
+    monkeypatch.setattr(
+        autonudge_authz,
+        "resolve_stop_sentinel",
+        lambda key, *args, **kwargs: str(sentinel),
+    )
+    svc = AutoNudgeService(base_dir=tmp_path / "store")
+    state = _state(
+        slots={
+            slot_key: SimpleNamespace(
+                workspace="default",
+                mode="member",
+                memory_mode="persistent",
+                is_closing=False,
+            )
+        }
+    )
+    try:
+        existing, error, status = await authorize_and_add_nudge(
+            svc=svc,
+            state=state,
+            slot_key=slot_key,
+            message="before",
+            source="mcp-directive",
+            initiator_slot_key=slot_key,
+        )
+        assert error is None and status == 200 and existing is not None
+        assert is_recorded_self_arm(existing.id, slot_key)
+        sentinel.write_text("stop", encoding="utf-8")
+
+        real_start_persistence = svc._start_persistence
+        persistence_calls = 0
+
+        def fail_activation_persistence(payload, *, admission=None):
+            nonlocal persistence_calls
+            persistence_calls += 1
+            if persistence_calls == 2:
+                raise OSError("activation store unavailable")
+            return real_start_persistence(payload, admission=admission)
+
+        revoked: list[str] = []
+        real_revoke = svc._revoke_self_arm_for
+
+        def record_revoke(loop: NudgeLoop) -> None:
+            revoked.append(loop.id)
+            real_revoke(loop)
+
+        events: list[tuple[str, str]] = []
+        monkeypatch.setattr(svc, "_start_persistence", fail_activation_persistence)
+        monkeypatch.setattr(svc, "_revoke_self_arm_for", record_revoke)
+        svc.subscribe(
+            lambda event, loop: events.append((event, loop.id)) if loop is not None else None
+        )
+
+        loop, error, status = await authorize_and_add_nudge(
+            svc=svc,
+            state=state,
+            slot_key=slot_key,
+            message="after",
+            source="mcp-directive",
+            initiator_slot_key=slot_key,
+        )
+
+        assert loop is None and status == 500
+        assert error is not None and "could not persist activation" in error
+        assert "press Play on the retained row, or Clear it and arm again" in error
+        retained = svc.get_by_slot(slot_key)
+        assert retained is not None and retained.id != existing.id
+        assert persistence_calls == 2, "the activation persistence failure was not exercised"
+        assert revoked == [existing.id]
+        assert events == [("removed", existing.id), ("added", retained.id)]
+        assert not sentinel.exists(), "the retired sentinel survived activation failure"
+        assert not retained.active
+        assert retained.stopped_reason == STALE_SENTINEL_CLEANUP_FAILED_REASON
+        assert retained.next_due_ts == 0.0
+        assert retained.id not in svc._timers, "activation failure published a timer"
+        assert is_recorded_self_arm(retained.id, slot_key)
+        assert audits[-1]["outcome"] == "denied"
+    finally:
+        svc.stop()
 
 
 @pytest.mark.asyncio

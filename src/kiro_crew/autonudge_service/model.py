@@ -41,10 +41,23 @@ MONITOR_TERMINAL_REASON = "monitor_terminal"
 #: unchanged here), so the record is KEPT and deactivated under this reason rather
 #: than removed -- a removed row left the goal popover on its empty form with
 #: nothing saying the goal was met.
-#: The stop file itself is left where it was written. After a new loop is
-#: successfully armed on the slot, the arm path unlinks the stale file
-#: (``authorize_and_add_nudge``).
+#: The stop file itself is left where it was written. A replacement arm retires
+#: the stale file inside its add transaction, after the replacement row commits
+#: and before its timer is published.
 STOP_SENTINEL_REASON = "stop_sentinel"
+
+#: ``stopped_reason`` for a provisional stale-sentinel replacement. Every
+#: two-phase add commits the replacement inactive and timerless under this reason
+#: before cleanup; the reason is retained when cleanup or activation persistence
+#: fails, including when the stale file was removed successfully. This is
+#: system-imposed and may be displaced by a later re-arm after recovery.
+STALE_SENTINEL_CLEANUP_FAILED_REASON = "stale_sentinel_cleanup_failed"
+
+#: The event ``update`` emits, in place of ``updated``, when it revives a row parked
+#: under :data:`STALE_SENTINEL_CLEANUP_FAILED_REASON`. That row's inactive ``added``
+#: was announced as a stopped patrol, and the revival clears the reason an observer
+#: would read, so it needs a name of its own for the patrol to read started again.
+PARKED_ROW_REVIVED_EVENT = "parked_row_revived"
 
 #: The two FINISHED stops -- the agent created its stop file, or the watched
 #: subject merged or closed. Terminal in a way the bounds are not: there is nothing
@@ -185,6 +198,24 @@ class NudgeAdmissionRefused(RuntimeError):
         self.reason = reason
 
 
+class StaleStopSentinelCleanupFailed(RuntimeError):
+    """A provisional replacement remains inactive because its stale file stayed."""
+
+    def __init__(self, path: str, loop_id: str) -> None:
+        self.path = path
+        self.loop_id = loop_id
+        super().__init__(f"could not retire stale stop sentinel {path}")
+
+
+class StaleStopSentinelActivationFailed(RuntimeError):
+    """A provisional replacement remains inactive because activation did not persist."""
+
+    def __init__(self, path: str, loop_id: str) -> None:
+        self.path = path
+        self.loop_id = loop_id
+        super().__init__(f"could not persist activation after retiring stale stop sentinel {path}")
+
+
 @dataclass
 class _MutationAdmission:
     """One service-generation lease for durable mutation writes.
@@ -245,6 +276,7 @@ _TERMINAL_BOUND_REASONS = _BUDGET_EXHAUSTED_REASONS | {
     STRUCTURAL_TERMINAL_REASON,
     SESSION_START_FAILURE_REASON,
     CONSECUTIVE_FAILURE_REASON,
+    STALE_SENTINEL_CLEANUP_FAILED_REASON,
 }
 
 
@@ -303,10 +335,12 @@ def _stopped_row_is_replaceable(loop: "NudgeLoop") -> bool:
     Unknown outcomes and reasons are treated as evidence (fail closed).
 
     An EMPTY reason is evidence too: a pause recorded before the reason field
-    existed carries one, and the store holds nothing that tells it apart from a
-    torn write. The torn shape that CAN be told apart — no reason AND a live
-    deadline — is resumed by ``_load`` (``_is_torn_deactivation``) before any
-    re-arm asks, so refusing here costs nothing for that case.
+    existed carries one. Current two-phase adds persist their provisional row
+    under ``stale_sentinel_cleanup_failed``, so an interrupted add is marked as
+    a system-imposed, replaceable pause. The torn shape that CAN be told apart —
+    no reason AND a live deadline — is resumed by ``_load``
+    (``_is_torn_deactivation``) before any re-arm asks, so refusing here costs
+    nothing for that case.
     """
     state = loop.monitor
     if state is not None and state.outcome is not None:
@@ -530,9 +564,12 @@ class NudgeLoop:
     # "manual" (user pause / any caller that didn't say otherwise),
     # "autonudge_stop" (deliberate directive), "cycle_cap",
     # "runtime_budget", or "approval_stalled" (set by _timer's terminal
-    # bounds), "stop_sentinel" (the stop file existed when _timer woke) or
-    # "monitor_terminal" (the watched subject merged or closed). "approval_stalled"
-    # is from before approval stalls became a hold; it is still read on old rows.
+    # bounds), "stale_sentinel_cleanup_failed" (set before a two-phase add's
+    # provisional snapshot and retained when cleanup or activation persistence
+    # fails), "stop_sentinel" (the stop file existed when _timer woke), or
+    # "monitor_terminal" (the watched subject merged or closed).
+    # "approval_stalled" is from before approval stalls became a hold; it is
+    # still read on old rows.
     # Persisted so revival logic can distinguish a manual pause from a bound
     # expiry — elapsed wall-clock keeps growing after a manual pause, so
     # WITHOUT this record a paused loop whose budget has since elapsed is

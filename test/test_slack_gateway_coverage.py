@@ -37,10 +37,12 @@ from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TOOL_CALL, EVENT_TOOL_RESU
 from kiro_crew.autonudge import (
     MANUAL_STOP_REASON,
     MONITOR_TERMINAL_REASON,
+    STALE_SENTINEL_CLEANUP_FAILED_REASON,
     AutoNudgeService,
     NudgeLoop,
 )
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.eventlog.members_projections import WakeProjection
 from kiro_crew.monitoring import models as monitor_models
 from kiro_crew.monitoring.completion import MonitorCompletionHook
 from kiro_crew.monitoring.models import (
@@ -1310,6 +1312,175 @@ class TestAutonudgeRouterAndObserver:
         assert appended == [
             ("crew-x", PATROL_STOPPED, {"slot_key": "member-crew-x", "reason": "stop_sentinel"})
         ]
+
+    @pytest.mark.asyncio
+    async def test_observer_never_starts_member_patrol_for_inactive_cleanup_failure(self):
+        from kiro_crew import eventlog_hooks
+        from kiro_crew.eventlog import types
+
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        frame_published = asyncio.Event()
+        orch.dashboard_state.broadcast_ws.side_effect = lambda *_args: frame_published.set()
+        _on_fire, observer, _inst = await self._wire(orch)
+        appended: list[tuple[str, str, dict]] = []
+        failed = _loop(
+            "member-crew-x",
+            active=False,
+            stopped_reason=STALE_SENTINEL_CLEANUP_FAILED_REASON,
+        )
+        with (
+            patch.object(eventlog_hooks, "member_slug_for_slot", lambda slot: "crew-x"),
+            patch.object(eventlog_hooks, "submit", lambda fn: (fn(), True)[1]),
+            patch.object(
+                eventlog_hooks,
+                "emit",
+                lambda slug, _actor, etype, data: (
+                    appended.append((slug, etype, data)),
+                    True,
+                )[1],
+            ),
+        ):
+            observer("added", failed)
+            await _within_lost_run(
+                frame_published.wait(), "inactive cleanup-failure frame publication"
+            )
+
+        assert appended == [
+            (
+                "crew-x",
+                types.PATROL_STOPPED,
+                {
+                    "slot_key": "member-crew-x",
+                    "reason": STALE_SENTINEL_CLEANUP_FAILED_REASON,
+                },
+            )
+        ]
+        projection = WakeProjection()
+        projected = projection.apply(
+            projection.init(),
+            {"type": appended[0][1], "data": appended[0][2], "time": 99},
+        )
+        assert projection.view(projected) == {
+            "patrol": "stopped",
+            "slot_key": "member-crew-x",
+            "stopped_reason": STALE_SENTINEL_CLEANUP_FAILED_REASON,
+            "since": 99,
+        }
+        topic, payload = orch.dashboard_state.broadcast_ws.call_args.args
+        assert topic == "autonudge_state"
+        assert payload["event"] == "added"
+        assert payload["loop"]["active"] is False
+        assert payload["loop"]["stopped_reason"] == STALE_SENTINEL_CLEANUP_FAILED_REASON
+
+    @pytest.mark.asyncio
+    async def test_MUTATION_play_on_a_parked_member_patrol_records_its_start_before_the_frame(
+        self, tmp_path, monkeypatch
+    ):
+        """Play on a row a failed stale-sentinel cleanup parked restarts its patrol log.
+
+        The parked ``added`` recorded the patrol as stopped and the revival clears the
+        reason this observer reads, so ``update`` announces it as
+        ``PARKED_ROW_REVIVED_EVENT``. The member log reads started before the active
+        frame publishes, the frame still says ``updated``, and after a restart the
+        startup closer leaves the patrol armed.
+        """
+        from kiro_crew import eventlog_hooks, members
+        from kiro_crew.autonudge import StaleStopSentinelCleanupFailed
+        from kiro_crew.config.loader import KiroCrewAgentConfig
+        from kiro_crew.eventlog import types
+        from kiro_crew.eventlog.service import get_service, set_service
+
+        monkeypatch.setattr(members, "data_home", lambda: tmp_path / "members-home")
+        set_service(None)
+        crew = "code-reviewer"
+        slot_key = f"member-{crew}"
+        slug = eventlog_hooks.member_slug_for_slot(slot_key)
+        assert slug == crew
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        frames: list[tuple[str, bool, str | None]] = []
+        published = asyncio.Event()
+
+        def _broadcast(_topic: str, frame: dict) -> None:
+            wake = get_service().snapshot(slug)["values"].get(types.PROJ_WAKE, {})
+            frames.append((frame["event"], frame["loop"]["active"], wake.get("patrol")))
+            published.set()
+
+        orch.dashboard_state.broadcast_ws.side_effect = _broadcast
+        _on_fire, observer, _inst = await self._wire(orch)
+        svc = AutoNudgeService(base_dir=tmp_path / "home")
+        svc.subscribe(observer)
+        sentinel = tmp_path / "stop-member"
+        sentinel.mkdir()
+        try:
+            with pytest.raises(StaleStopSentinelCleanupFailed):
+                await svc.add(
+                    slot_key=slot_key,
+                    message="patrol",
+                    idle_secs=60,
+                    stop_sentinel_path=str(sentinel),
+                    retire_stale_stop_sentinel=sentinel,
+                )
+            await _within_lost_run(published.wait(), "the parked row's frame")
+            parked = svc.get_by_slot(slot_key)
+            assert parked is not None and not parked.active
+            assert frames == [("added", False, "stopped")]
+
+            published.clear()
+            sentinel.rmdir()
+            assert await svc.update(parked.id, active=True, fresh_run=True) is parked
+            assert parked.active and parked.stopped_reason == ""
+            await _within_lost_run(published.wait(), "the revived row's frame")
+            assert frames[-1] == (
+                "updated",
+                True,
+                "armed",
+            ), "the active frame published before the patrol start landed"
+            newest = get_service().history(slug, before=None, limit=1)[0]
+            assert newest["type"] == types.PATROL_STARTED
+            assert newest["data"] == {"slot_key": slot_key}
+        finally:
+            svc.stop()
+
+        restarted = AutoNudgeService(base_dir=tmp_path / "home")
+        await asyncio.to_thread(restarted._load)
+        reloaded = restarted.get_by_slot(slot_key)
+        assert reloaded is not None and reloaded.active
+        cfg = SimpleNamespace(
+            agents={crew: KiroCrewAgentConfig(kiro_agent="reviewer")},
+            default_agent=crew,
+            memory_stores={},
+            degraded_sections=frozenset(),
+        )
+        seq_before = get_service().last_seq(slug)
+        try:
+            await asyncio.to_thread(
+                eventlog_hooks.reconcile_members_at_startup,
+                cfg,
+                SimpleNamespace(_slots={}),
+                restarted,
+            )
+            wake = get_service().snapshot(slug)["values"][types.PROJ_WAKE]
+            assert wake["patrol"] == "armed", "the startup closer stopped a revived patrol"
+            assert wake["slot_key"] == slot_key
+            assert not [
+                event
+                for event in get_service().history(slug, before=None, limit=10)
+                if event["seq"] > seq_before and event["type"] == types.PATROL_STOPPED
+            ]
+            # Control: the same sweep does close this member's patrol once its row is
+            # gone, so the armed reading above is the closer's decision, not a skip.
+            closed = await asyncio.to_thread(
+                eventlog_hooks.reconcile_members_at_startup,
+                cfg,
+                SimpleNamespace(_slots={}),
+                SimpleNamespace(get_by_slot=lambda _key: None),
+            )
+            assert closed == 1
+            assert get_service().snapshot(slug)["values"][types.PROJ_WAKE]["patrol"] == "stopped"
+        finally:
+            set_service(None)
 
     @pytest.mark.asyncio
     async def test_observer_broadcasts_structured_state_to_owners_only(self):

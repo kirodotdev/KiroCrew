@@ -150,9 +150,10 @@ async def _run_timer_callback(self: AutoNudgeService, loop: NudgeLoop) -> None:
     # Kill switch: sentinel file present? The goal is finished, so the record is
     # KEPT under its own reason rather than removed: a removed row left the goal
     # popover on its empty form with nothing saying the goal was met. The file
-    # stays where it was written -- the next arm on this slot unlinks it once the
-    # new loop is armed (``authorize_and_add_nudge``), and an inactive loop's
-    # timer is never armed, so the stale file can kill nothing in between. No
+    # stays where it was written. The next default-sentinel arm retires it
+    # inside ``mutations.add`` after the replacement row commits and before its
+    # timer is published. Until then the inactive loop has no timer, so the
+    # stale file can kill nothing. No
     # ``expired`` here: that event says the loop stopped SHORT of its goal, and
     # this stop is the agent reporting the goal reached.
     if loop.stop_sentinel_path and Path(loop.stop_sentinel_path).exists():

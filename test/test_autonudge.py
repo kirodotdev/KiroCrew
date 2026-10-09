@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import gc
 import json
 import logging
@@ -26,12 +27,15 @@ from kiro_crew.autonudge import (
     MANUAL_STOP_REASON,
     RUNTIME_BUDGET_REASON,
     SESSION_START_FAILURE_REASON,
+    STALE_SENTINEL_CLEANUP_FAILED_REASON,
     STRUCTURAL_TERMINAL_REASON,
     AutoNudgeService,
     MonitorUpdateConflict,
     NudgeAdmissionReason,
     NudgeAdmissionRefused,
     NudgeLoop,
+    StaleStopSentinelActivationFailed,
+    StaleStopSentinelCleanupFailed,
     runtime_budget_exceeded,
 )
 from kiro_crew.dashboard.handlers.autonudge import render_nudge_message
@@ -237,6 +241,538 @@ async def test_terminal_notification_delivery_survives_opaque_monitor_reload(svc
         MonitorOutcome.BLOCKED,
         0.0,
     )
+
+
+@pytest.mark.asyncio
+async def test_add_retires_stale_sentinel_before_timer_publication_and_zero_delay_fire(
+    tmp_path, monkeypatch
+):
+    sentinel = tmp_path / "stale-stop"
+    sentinel.write_text("stop", encoding="utf-8")
+    on_fire = AsyncMock(return_value=True)
+    service = AutoNudgeService(base_dir=tmp_path / "home", on_fire=on_fire)
+    real_arm = service._arm_from_deadline
+    real_start_persistence = service._start_persistence
+    armed: list[str] = []
+    persistence_calls = 0
+    activation_persistence_started = asyncio.Event()
+    release_activation_persistence = asyncio.Event()
+
+    def observe_arm(loop: NudgeLoop) -> None:
+        assert not sentinel.exists(), "timer publication preceded stale-sentinel retirement"
+        armed.append(loop.id)
+        real_arm(loop)
+
+    def block_activation_persistence(payload, *, admission=None):
+        nonlocal persistence_calls
+        persistence_calls += 1
+        if persistence_calls != 2:
+            return real_start_persistence(payload, admission=admission)
+
+        async def persist_after_release() -> None:
+            activation_persistence_started.set()
+            await asyncio.wait_for(release_activation_persistence.wait(), timeout=_LOST_RUN_SECS)
+            await real_start_persistence(payload, admission=admission)
+
+        return asyncio.create_task(persist_after_release())
+
+    monkeypatch.setattr(service, "_arm_from_deadline", observe_arm)
+    monkeypatch.setattr(service, "_start_persistence", block_activation_persistence)
+    add_task = asyncio.create_task(
+        service.add(
+            slot_key="chat-1-123",
+            message="go",
+            idle_secs=60,
+            stop_sentinel_path=str(sentinel),
+            retire_stale_stop_sentinel=sentinel,
+        )
+    )
+    try:
+        await asyncio.wait_for(activation_persistence_started.wait(), timeout=_LOST_RUN_SECS)
+        provisional = service.get_by_slot("chat-1-123")
+        assert provisional is not None
+        assert not provisional.active, "activation was published before its snapshot persisted"
+        assert provisional.next_due_ts == 0.0
+        assert provisional.stopped_reason == STALE_SENTINEL_CLEANUP_FAILED_REASON
+        assert provisional.id not in service._timers
+
+        release_activation_persistence.set()
+        loop = await asyncio.wait_for(add_task, timeout=_LOST_RUN_SECS)
+        assert persistence_calls == 2
+        assert armed == [loop.id], "the committed replacement was not armed exactly once"
+        persisted = json.loads(service._path.read_text(encoding="utf-8"))["loops"][0]
+        assert persisted["active"] is True
+        assert persisted["next_due_ts"] == loop.next_due_ts
+        service._cancel_timer(loop.id)
+
+        await service._timer(loop, delay=0.0)
+
+        assert loop.active, "a zero-delay first tick treated the retired marker as live"
+        assert loop.stopped_reason != "stop_sentinel"
+        on_fire.assert_awaited_once_with(loop)
+    finally:
+        release_activation_persistence.set()
+        if not add_task.done():
+            try:
+                await asyncio.wait_for(add_task, timeout=_LOST_RUN_SECS)
+            except BaseException:
+                pass
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_activation_write_failure_cannot_publish_a_timer_during_turn_completion(
+    tmp_path, monkeypatch, caplog
+):
+    sentinel = tmp_path / "stale-stop"
+    sentinel.write_text("stop", encoding="utf-8")
+    service = AutoNudgeService(base_dir=tmp_path / "home")
+    real_start_persistence = service._start_persistence
+    persistence_calls = 0
+    activation_persistence_started = asyncio.Event()
+    release_activation_persistence = asyncio.Event()
+
+    def fail_activation_persistence(payload, *, admission=None):
+        nonlocal persistence_calls
+        persistence_calls += 1
+        if persistence_calls != 2:
+            return real_start_persistence(payload, admission=admission)
+
+        async def fail_after_release() -> None:
+            activation_persistence_started.set()
+            await asyncio.wait_for(release_activation_persistence.wait(), timeout=_LOST_RUN_SECS)
+            raise OSError("activation store unavailable")
+
+        return asyncio.create_task(fail_after_release())
+
+    monkeypatch.setattr(service, "_start_persistence", fail_activation_persistence)
+    caplog.set_level(logging.WARNING, logger="kiro_crew.autonudge")
+    add_task = asyncio.create_task(
+        service.add(
+            slot_key="chat-1-123",
+            message="go",
+            idle_secs=60,
+            stop_sentinel_path=str(sentinel),
+            retire_stale_stop_sentinel=sentinel,
+        )
+    )
+    try:
+        await asyncio.wait_for(activation_persistence_started.wait(), timeout=_LOST_RUN_SECS)
+        provisional = service.get_by_slot("chat-1-123")
+        assert provisional is not None and not provisional.active
+        assert provisional.next_due_ts == 0.0
+        assert provisional.stopped_reason == STALE_SENTINEL_CLEANUP_FAILED_REASON
+
+        service.notify_turn_complete("chat-1-123")
+
+        assert (
+            provisional.id not in service._timers
+        ), "turn completion armed a timer while activation persistence was pending"
+        release_activation_persistence.set()
+        with pytest.raises(StaleStopSentinelActivationFailed):
+            await asyncio.wait_for(add_task, timeout=_LOST_RUN_SECS)
+
+        retained = service.get_by_slot("chat-1-123")
+        assert retained is provisional
+        assert not retained.active
+        assert retained.next_due_ts == 0.0
+        assert retained.stopped_reason == STALE_SENTINEL_CLEANUP_FAILED_REASON
+        assert retained.id not in service._timers
+        warnings = [
+            record
+            for record in caplog.records
+            if record.name == "kiro_crew.autonudge"
+            and "could not persist activation" in record.getMessage()
+        ]
+        assert len(warnings) == 1
+        assert warnings[0].exc_info is not None
+        assert warnings[0].exc_info[0] is OSError
+        assert str(warnings[0].exc_info[1]) == "activation store unavailable"
+    finally:
+        release_activation_persistence.set()
+        if not add_task.done():
+            try:
+                await asyncio.wait_for(add_task, timeout=_LOST_RUN_SECS)
+            except BaseException:
+                pass
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_activation_serialize_failure_restores_the_provisional_row(tmp_path, monkeypatch):
+    sentinel = tmp_path / "stale-stop"
+    sentinel.write_text("stop", encoding="utf-8")
+    service = AutoNudgeService(base_dir=tmp_path / "home")
+    real_serialize = service._serialize_state
+    serialize_calls = 0
+
+    def fail_activation_serialize():
+        nonlocal serialize_calls
+        serialize_calls += 1
+        if serialize_calls == 2:
+            raise RuntimeError("activation serialization unavailable")
+        return real_serialize()
+
+    monkeypatch.setattr(service, "_serialize_state", fail_activation_serialize)
+    try:
+        with pytest.raises(RuntimeError, match="activation serialization unavailable"):
+            await service.add(
+                slot_key="chat-1-123",
+                message="go",
+                idle_secs=60,
+                stop_sentinel_path=str(sentinel),
+                retire_stale_stop_sentinel=sentinel,
+            )
+
+        retained = service.get_by_slot("chat-1-123")
+        assert retained is not None
+        assert not retained.active
+        assert retained.next_due_ts == 0.0
+        assert retained.stopped_reason == STALE_SENTINEL_CLEANUP_FAILED_REASON
+        assert retained.id not in service._timers
+        assert not sentinel.exists(), "the completed cleanup was lost"
+        persisted = json.loads(service._path.read_text(encoding="utf-8"))["loops"][0]
+        assert persisted["active"] is False
+        assert persisted["next_due_ts"] == 0.0
+        assert persisted["stopped_reason"] == STALE_SENTINEL_CLEANUP_FAILED_REASON
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_add_retires_a_dangling_stale_sentinel_symlink(tmp_path, monkeypatch):
+    from kiro_crew.autonudge_service import mutations as mutations_mod
+
+    sentinel = tmp_path / "stale-stop"
+    sentinel.symlink_to(tmp_path / "missing-target")
+    assert sentinel.is_symlink() and not sentinel.exists(), "fixture is not a dangling symlink"
+    service = AutoNudgeService(base_dir=tmp_path / "home")
+    real_probe = mutations_mod._probe_stale_stop_sentinel
+
+    def probe_under_lock(path: Path) -> None:
+        assert service._lock.locked(), "the sentinel probe ran outside the add transaction"
+        real_probe(path)
+
+    monkeypatch.setattr(mutations_mod, "_probe_stale_stop_sentinel", probe_under_lock)
+    try:
+        loop = await service.add(
+            slot_key="chat-1-123",
+            message="go",
+            idle_secs=60,
+            stop_sentinel_path=str(sentinel),
+            retire_stale_stop_sentinel=sentinel,
+        )
+
+        assert not sentinel.is_symlink(), "the dangling sentinel entry survived cleanup"
+        assert loop.active and loop.stopped_reason == ""
+        assert loop.id in service._timers, "the replacement was not armed after link cleanup"
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_add_treats_enotdir_stale_sentinel_probe_as_absent(tmp_path, monkeypatch):
+    from kiro_crew.autonudge_service import mutations as mutations_mod
+
+    sentinel = tmp_path / "blocked-parent" / "stale-stop"
+    service = AutoNudgeService(base_dir=tmp_path / "home")
+    real_start_persistence = service._start_persistence
+    persistence_calls = 0
+
+    def raise_enotdir(_path: Path) -> None:
+        raise OSError(errno.ENOTDIR, "sentinel parent is not a directory")
+
+    def count_persistence(payload, *, admission=None):
+        nonlocal persistence_calls
+        persistence_calls += 1
+        return real_start_persistence(payload, admission=admission)
+
+    monkeypatch.setattr(mutations_mod, "_probe_stale_stop_sentinel", raise_enotdir)
+    monkeypatch.setattr(service, "_start_persistence", count_persistence)
+    try:
+        loop = await service.add(
+            slot_key="chat-1-123",
+            message="go",
+            idle_secs=60,
+            stop_sentinel_path=str(sentinel),
+            retire_stale_stop_sentinel=sentinel,
+        )
+
+        assert persistence_calls == 1
+        assert loop.active
+        assert loop.stopped_reason == ""
+        assert loop.next_due_ts > 0
+        assert loop.id in service._timers
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("winerror", [21, 123, 1921])
+async def test_add_treats_cpython_312_path_exists_winerrors_as_absent(
+    tmp_path, monkeypatch, winerror
+):
+    from kiro_crew.autonudge_service import mutations as mutations_mod
+
+    sentinel = tmp_path / "stale-stop"
+    service = AutoNudgeService(base_dir=tmp_path / "home")
+    real_start_persistence = service._start_persistence
+    persistence_calls = 0
+
+    def raise_winerror(_path: Path) -> None:
+        error = OSError("sentinel probe has a Windows absence error")
+        error.winerror = winerror  # type: ignore[attr-defined]
+        raise error
+
+    def count_persistence(payload, *, admission=None):
+        nonlocal persistence_calls
+        persistence_calls += 1
+        return real_start_persistence(payload, admission=admission)
+
+    monkeypatch.setattr(mutations_mod, "_probe_stale_stop_sentinel", raise_winerror)
+    monkeypatch.setattr(service, "_start_persistence", count_persistence)
+    try:
+        loop = await service.add(
+            slot_key="chat-1-123",
+            message="go",
+            idle_secs=60,
+            stop_sentinel_path=str(sentinel),
+            retire_stale_stop_sentinel=sentinel,
+        )
+
+        assert persistence_calls == 1
+        assert loop.active
+        assert loop.stopped_reason == ""
+        assert loop.id in service._timers
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_MUTATION_probe_value_error_restores_displaced_row_and_timer(tmp_path, monkeypatch):
+    from kiro_crew.autonudge_service import mutations as mutations_mod
+
+    service = AutoNudgeService(base_dir=tmp_path / "home")
+    existing = await service.add(
+        slot_key="chat-1-123",
+        message="before",
+        idle_secs=60,
+    )
+    original_timer = service._timers[existing.id]
+    stored_before = service._path.read_bytes()
+    sentinel = tmp_path / "stale-stop"
+
+    def fail_probe(_path: Path) -> None:
+        raise ValueError("invalid sentinel path")
+
+    monkeypatch.setattr(mutations_mod, "_probe_stale_stop_sentinel", fail_probe)
+    try:
+        with pytest.raises(ValueError, match="invalid sentinel path"):
+            await service.add(
+                slot_key="chat-1-123",
+                message="after",
+                idle_secs=60,
+                stop_sentinel_path=str(sentinel),
+                retire_stale_stop_sentinel=sentinel,
+            )
+
+        assert service.get_by_slot("chat-1-123") is existing
+        restored_timer = service._timers.get(existing.id)
+        assert restored_timer is not None and not restored_timer.done()
+        assert restored_timer is not original_timer
+        assert service._path.read_bytes() == stored_before
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_add_cleanup_failure_is_durable_inactive_timerless_and_typed(
+    tmp_path, monkeypatch, caplog
+):
+    sentinel = tmp_path / "stale-stop"
+    sentinel.mkdir()
+    service = AutoNudgeService(base_dir=tmp_path / "home")
+    real_start_persistence = service._start_persistence
+    persistence_calls = 0
+
+    def count_persistence(payload, *, admission=None):
+        nonlocal persistence_calls
+        persistence_calls += 1
+        return real_start_persistence(payload, admission=admission)
+
+    monkeypatch.setattr(service, "_start_persistence", count_persistence)
+    caplog.set_level(logging.WARNING, logger="kiro_crew.autonudge")
+    try:
+        with pytest.raises(StaleStopSentinelCleanupFailed) as raised:
+            await service.add(
+                slot_key="chat-1-123",
+                message="go",
+                idle_secs=60,
+                stop_sentinel_path=str(sentinel),
+                retire_stale_stop_sentinel=sentinel,
+            )
+
+        assert raised.value.path == str(sentinel)
+        assert persistence_calls == 1, "cleanup failure wrote a second reason snapshot"
+        loop = service.get_by_slot("chat-1-123")
+        assert loop is not None
+        assert not loop.active
+        assert loop.stopped_reason == STALE_SENTINEL_CLEANUP_FAILED_REASON
+        assert loop.next_due_ts == 0.0
+        assert loop.id not in service._timers, "cleanup failure published a timer"
+
+        restored = AutoNudgeService(base_dir=tmp_path / "home")
+        await asyncio.to_thread(restored._load)
+        persisted = restored.get_by_slot("chat-1-123")
+        assert persisted is not None
+        assert not persisted.active
+        assert persisted.stopped_reason == STALE_SENTINEL_CLEANUP_FAILED_REASON
+        assert persisted.next_due_ts == 0.0
+
+        warnings = [
+            record
+            for record in caplog.records
+            if record.name == "kiro_crew.autonudge" and record.levelno >= logging.WARNING
+        ]
+        assert len(warnings) == 1, "cleanup failure emitted duplicate warning records"
+        assert f"detail={str(sentinel)!r}" in warnings[0].getMessage()
+        assert warnings[0].exc_info is None, "cleanup failure emitted a warning traceback"
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_add_interrupted_after_provisional_snapshot_is_replaceable_after_restart(
+    tmp_path, monkeypatch
+):
+    sentinel = tmp_path / "stale-stop"
+    sentinel.write_text("stop", encoding="utf-8")
+    service = AutoNudgeService(base_dir=tmp_path / "home")
+    existing = await service.add("chat-1-123", "before", idle_secs=60)
+
+    def interrupt_after_snapshot(_loop: NudgeLoop) -> None:
+        raise RuntimeError("simulated interruption after snapshot one")
+
+    monkeypatch.setattr(service, "_revoke_self_arm_for", interrupt_after_snapshot)
+    try:
+        with pytest.raises(RuntimeError, match="simulated interruption after snapshot one"):
+            await service.add(
+                slot_key="chat-1-123",
+                message="after",
+                idle_secs=60,
+                stop_sentinel_path=str(sentinel),
+                retire_stale_stop_sentinel=sentinel,
+            )
+
+        replacement = service.get_by_slot("chat-1-123")
+        assert replacement is not None and replacement.id != existing.id
+        assert not replacement.active
+        assert replacement.next_due_ts == 0.0
+        assert replacement.stopped_reason == STALE_SENTINEL_CLEANUP_FAILED_REASON
+        assert not _an._is_torn_deactivation(replacement)
+        assert _an._stopped_row_is_replaceable(replacement)
+        persisted = json.loads(service._path.read_text(encoding="utf-8"))["loops"][0]
+        assert persisted["stopped_reason"] == STALE_SENTINEL_CLEANUP_FAILED_REASON
+    finally:
+        service.stop()
+
+    restored = AutoNudgeService(base_dir=tmp_path / "home")
+    await restored.start()
+    try:
+        paused = restored.get_by_slot("chat-1-123")
+        assert paused is not None and paused.id == replacement.id
+        assert not paused.active
+        assert paused.stopped_reason == STALE_SENTINEL_CLEANUP_FAILED_REASON
+        assert paused.id not in restored._timers, "the loader resumed the provisional row"
+
+        sentinel.unlink()
+        rearmed = await restored.add(
+            slot_key="chat-1-123",
+            message="rearmed",
+            idle_secs=60,
+            stop_sentinel_path=str(sentinel),
+            replace_existing=False,
+            replace_stopped=True,
+        )
+        assert rearmed.active and rearmed.id != paused.id
+    finally:
+        restored.stop()
+
+
+@pytest.mark.asyncio
+async def test_add_cleanup_failure_retires_displaced_self_arm_before_unlink(tmp_path, monkeypatch):
+    sentinel = tmp_path / "stale-stop"
+    sentinel.mkdir()
+    service = AutoNudgeService(base_dir=tmp_path / "home")
+    existing = await service.add("chat-1-123", "before", idle_secs=60)
+    await service.update(existing.id, active=False)
+    transitions: list[tuple[str, str]] = []
+
+    class _RecordingPath(type(sentinel)):
+        def unlink(self, missing_ok: bool = False) -> None:
+            transitions.append(("unlink", str(self)))
+            super().unlink(missing_ok=missing_ok)
+
+    recording_sentinel = _RecordingPath(sentinel)
+    monkeypatch.setattr(
+        service,
+        "_revoke_self_arm_for",
+        lambda loop: transitions.append(("revoked", loop.id)),
+    )
+    service.subscribe(
+        lambda event, loop: transitions.append((event, loop.id)) if loop is not None else None
+    )
+    try:
+        with pytest.raises(StaleStopSentinelCleanupFailed):
+            await service.add(
+                slot_key="chat-1-123",
+                message="after",
+                idle_secs=60,
+                stop_sentinel_path=str(recording_sentinel),
+                retire_stale_stop_sentinel=recording_sentinel,
+            )
+
+        replacement = service.get_by_slot("chat-1-123")
+        assert replacement is not None
+        assert transitions == [
+            ("revoked", existing.id),
+            ("removed", existing.id),
+            ("unlink", str(recording_sentinel)),
+            ("added", replacement.id),
+        ]
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_add_with_absent_stale_sentinel_uses_one_persistence_write(tmp_path, monkeypatch):
+    sentinel = tmp_path / "absent-stop"
+    service = AutoNudgeService(base_dir=tmp_path / "home")
+    real_start_persistence = service._start_persistence
+    persistence_calls = 0
+
+    def count_persistence(payload, *, admission=None):
+        nonlocal persistence_calls
+        persistence_calls += 1
+        return real_start_persistence(payload, admission=admission)
+
+    monkeypatch.setattr(service, "_start_persistence", count_persistence)
+    try:
+        loop = await service.add(
+            slot_key="chat-1-123",
+            message="go",
+            idle_secs=60,
+            stop_sentinel_path=str(sentinel),
+            retire_stale_stop_sentinel=sentinel,
+        )
+
+        assert persistence_calls == 1
+        assert loop.active
+        assert loop.stopped_reason == ""
+        assert loop.next_due_ts > 0
+        assert loop.id in service._timers
+    finally:
+        service.stop()
 
 
 @pytest.mark.asyncio
@@ -1223,6 +1759,55 @@ async def test_MUTATION_shutdown_drains_the_section_not_the_callers_remaining_ta
         else:
             assert persisted is not None and persisted.monitor is not None
             assert persisted.monitor.wake_instructions == "after"
+    finally:
+        await restored.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_MUTATION_cancelled_admitted_add_retires_stale_sentinel_during_shutdown(
+    tmp_path,
+):
+    sentinel = tmp_path / "stale-stop"
+    sentinel.write_text("stop", encoding="utf-8")
+    svc = AutoNudgeService(base_dir=tmp_path / "home")
+    await svc.start()
+    await asyncio.wait_for(svc._lock.acquire(), timeout=_LOST_RUN_SECS)
+    caller = asyncio.create_task(
+        svc.add(
+            "slot-cancelled",
+            "after",
+            idle_secs=60,
+            stop_sentinel_path=str(sentinel),
+            retire_stale_stop_sentinel=sentinel,
+        )
+    )
+    try:
+        await _wait_for_mutation_owner(svc)
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(caller, timeout=_LOST_RUN_SECS)
+        shutdown = asyncio.create_task(svc.shutdown())
+        await _wait_until(lambda: not svc.accepting_mutations, "shutdown admission closure")
+        svc._lock.release()
+        await asyncio.wait_for(shutdown, timeout=_LOST_RUN_SECS)
+    finally:
+        if svc._lock.locked():
+            svc._lock.release()
+
+    on_fire = AsyncMock(return_value=True)
+    restored = AutoNudgeService(base_dir=tmp_path / "home", on_fire=on_fire)
+    await restored.start()
+    try:
+        loop = restored.get_by_slot("slot-cancelled")
+        assert loop is not None, "the shielded add did not commit"
+        assert not sentinel.exists(), "the cancelled caller stranded the stale sentinel"
+        restored._cancel_timer(loop.id)
+
+        await restored._timer(loop, delay=0.0)
+
+        assert loop.active, "the first post-restart tick consumed the stale sentinel"
+        assert loop.stopped_reason != "stop_sentinel"
+        on_fire.assert_awaited_once_with(loop)
     finally:
         await restored.shutdown()
 

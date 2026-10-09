@@ -76,6 +76,29 @@ def test_inactive_row_reports_its_stored_reason():
     ]
 
 
+def test_stale_sentinel_cleanup_stop_reports_the_failed_path() -> None:
+    before = stoplog.active_summaries([_row("a", active=True)])
+    sentinel = "/srv/kirocrew/stale-stop"
+
+    [record] = stoplog.stop_records(
+        before,
+        [
+            _row(
+                "a",
+                active=False,
+                stopped_reason=_an.STALE_SENTINEL_CLEANUP_FAILED_REASON,
+                stop_sentinel_path=sentinel,
+            )
+        ],
+        {},
+    )
+
+    assert (record["reason"], record["detail"]) == (
+        _an.STALE_SENTINEL_CLEANUP_FAILED_REASON,
+        sentinel,
+    )
+
+
 def test_removed_row_takes_the_note_and_falls_back_to_removed():
     before = stoplog.active_summaries([_row("a", active=True), _row("b", active=True)])
     out = stoplog.stop_records(before, [], {"a": ("autonudge_stop", "goal met")}, now=2000.0)

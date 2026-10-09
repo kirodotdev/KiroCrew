@@ -16,6 +16,7 @@ reaches it.
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
 import time
 import uuid
@@ -40,14 +41,18 @@ from kiro_crew.autonudge_service.model import (
     CYCLE_CAP_REASON,
     FINISHED_LOOP_REASONS,
     MANUAL_STOP_REASON,
+    PARKED_ROW_REVIVED_EVENT,
     RUNTIME_BUDGET_REASON,
     SERVICE_SHUTTING_DOWN_MESSAGE,
+    STALE_SENTINEL_CLEANUP_FAILED_REASON,
     STOP_SENTINEL_REASON,
     AutoNudgeStaleBaseline,
     MonitorUpdateConflict,
     NudgeAdmissionReason,
     NudgeAdmissionRefused,
     NudgeLoop,
+    StaleStopSentinelActivationFailed,
+    StaleStopSentinelCleanupFailed,
     _MutationAdmission,
     _stopped_row_is_replaceable,
     budget_elapsed,
@@ -71,6 +76,11 @@ if TYPE_CHECKING:
 
 # The service's own logger: callers and tests filter on it by name.
 logger = logging.getLogger("kiro_crew.autonudge")
+
+
+def _probe_stale_stop_sentinel(path: Path) -> None:
+    """Probe *path* without following its final symlink."""
+    path.lstat()
 
 
 def _stop_file_lifted(loop: NudgeLoop) -> bool:
@@ -111,7 +121,12 @@ async def add(
     loop_id: str | None = None,
     creation_surface: MonitorCreationSurface = MonitorCreationSurface.DASHBOARD,
     default_patrol: bool = False,
+    retire_stale_stop_sentinel: Path | None = None,
 ) -> NudgeLoop:
+    # Every add without an inherited callback lease starts single-write. The
+    # supervised transaction upgrades its own lease only when the locked,
+    # off-loop probe finds a stale sentinel, because that path commits a
+    # provisional row before it retires the file.
     admission = self._admit_mutation()
     # CANCELLATION SAFETY: the mutate+persist runs as a SHIELDED task. If
     # the awaiting caller is cancelled mid-write, a bare await would release
@@ -132,6 +147,7 @@ async def add(
             idle_secs=idle_secs,
             max_cycles=max_cycles,
             stop_sentinel_path=stop_sentinel_path,
+            retire_stale_stop_sentinel=retire_stale_stop_sentinel,
             max_runtime_secs=max_runtime_secs,
             banner=banner,
             admission_check=admission_check,
@@ -151,8 +167,15 @@ async def add(
 
     def _finish(t: "asyncio.Task[NudgeLoop]") -> None:
         self._inflight_adds.discard(t)
-        if not t.cancelled() and t.exception() is not None:
-            logger.warning("AutoNudge: detached add() failed", exc_info=t.exception())
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc is None or isinstance(
+            exc,
+            (StaleStopSentinelCleanupFailed, StaleStopSentinelActivationFailed),
+        ):
+            return
+        logger.warning("AutoNudge: detached add() failed", exc_info=exc)
 
     inner.add_done_callback(_finish)
     return await asyncio.shield(inner)
@@ -201,6 +224,7 @@ async def _add_locked(
     idle_secs: int,
     max_cycles: int,
     stop_sentinel_path: str,
+    retire_stale_stop_sentinel: Path | None,
     max_runtime_secs: int = 0,
     banner: str = "",
     admission_check: Callable[[], bool] | None = None,
@@ -222,6 +246,7 @@ async def _add_locked(
             idle_secs=idle_secs,
             max_cycles=max_cycles,
             stop_sentinel_path=stop_sentinel_path,
+            retire_stale_stop_sentinel=retire_stale_stop_sentinel,
             max_runtime_secs=max_runtime_secs,
             banner=banner,
             admission_check=admission_check,
@@ -246,6 +271,7 @@ async def _add_unserialized(
     idle_secs: int,
     max_cycles: int,
     stop_sentinel_path: str,
+    retire_stale_stop_sentinel: Path | None,
     max_runtime_secs: int = 0,
     banner: str = "",
     admission_check: Callable[[], bool] | None = None,
@@ -373,6 +399,58 @@ async def _add_unserialized(
             if displaces_default:
                 detached_timer = detach_firing_default_timer(self, existing)
             self.remove_sync(existing.id, persist=False, emit=False)
+
+        async def _restore_displaced_existing() -> None:
+            """Restore the row, provider grant, and active or detached timer.
+
+            This does not restore ``remove_sync``'s other pops:
+            ``_accepted_monitor_turns``, ``_deferred_monitor_replacements``, or
+            self-arm trust revoked for a deferred prior. The snapshot-one
+            failure path has the same pre-existing gap.
+            """
+            if existing is None:
+                return
+            self._loops[existing.id] = existing
+            if restore_existing_provider_credentials:
+                await self._restore_provider_credentials(existing)
+            if detached_timer is not None and not detached_timer.done():
+                # Still delivering: give it back rather than arm a second timer,
+                # but only while admission remains open.
+                if self._accepting_mutations:
+                    self._timers[existing.id] = detached_timer
+            elif existing.active:
+                self._arm_from_deadline(existing)
+
+        if retire_stale_stop_sentinel is not None:
+            try:
+                await asyncio.to_thread(
+                    _probe_stale_stop_sentinel,
+                    retire_stale_stop_sentinel,
+                )
+            except OSError as exc:
+                if exc.errno in {
+                    errno.ENOENT,
+                    errno.ENOTDIR,
+                    errno.EBADF,
+                    errno.ELOOP,
+                } or getattr(
+                    exc, "winerror", None
+                ) in {21, 123, 1921}:
+                    # Match CPython 3.12's Path.exists(): these errors prove no
+                    # usable entry is present, so the common one-write active add
+                    # remains safe.
+                    retire_stale_stop_sentinel = None
+                else:
+                    # An unreadable lexical entry is not absence. Commit the inactive
+                    # snapshot and let unlink produce the typed retained-row failure.
+                    pass
+            except BaseException:
+                await _restore_displaced_existing()
+                raise
+            if retire_stale_stop_sentinel is not None and admission is not None:
+                # No persistence has been submitted yet. Upgrade this admitted
+                # transaction before its provisional and activation snapshots.
+                admission.allow_multiple_persistence = True
         now = time.time()
         # Scrubbed ONCE, then used for both the stored field and the subject the
         # monitor is built from. Two calls would be two values: the scrub may
@@ -383,6 +461,7 @@ async def _add_unserialized(
             id=self._mint_loop_id(loop_id),
             slot_key=slot_key,
             message=message,
+            active=retire_stale_stop_sentinel is None,
             idle_secs=idle_secs,
             max_cycles=max(0, int(max_cycles)),
             created_ts=now,
@@ -397,11 +476,16 @@ async def _add_unserialized(
             # today is judged once the scope is granted -- the tick, not the arm, is
             # where that is decided.
             judge=stored_judge,
-            # Anchor the first deadline at arm time (set BEFORE the
-            # snapshot below so it persists): the countdown starts the
-            # moment the loop is armed, and user turns from here on only
-            # defer delivery, never restart it.
-            next_due_ts=now + idle_secs,
+            # An ordinary add anchors its first deadline at arm time. A stale-file
+            # replacement first commits on the existing paused shape: inactive,
+            # timerless, with no deadline, and under the system-imposed reason that
+            # makes an interrupted replacement safe for a later directive re-arm.
+            next_due_ts=(now + idle_secs if retire_stale_stop_sentinel is None else 0.0),
+            stopped_reason=(
+                STALE_SENTINEL_CLEANUP_FAILED_REASON
+                if retire_stale_stop_sentinel is not None
+                else ""
+            ),
             # The SUBJECT is decided HERE, from the instruction the caller
             # already wrote -- no target, kind or enable flag is ever passed.
             # WHETHER to look for one is the ``gate`` argument above, which the
@@ -457,39 +541,85 @@ async def _add_unserialized(
             default_patrol=bool(default_patrol),
         )
         self._loops[loop.id] = loop
-        # Persist WITHOUT blocking the event loop (no-blocking-call rule:
-        # _write_state fsyncs, and a wedged disk must not freeze the
-        # gateway). Snapshot under the lock (mutation safety), write on a
-        # worker thread, and await it so a persistence failure still
-        # propagates to the caller before the loop is reported armed.
+        # The first snapshot is the rollback boundary. Ordinary adds commit active;
+        # stale-file replacements commit provisionally inactive so neither restart
+        # nor an observer can treat them as armed before cleanup succeeds.
         payload = self._serialize_state()
         try:
             await asyncio.shield(self._start_persistence(payload, admission=admission))
         except BaseException:
             self._loops.pop(loop.id, None)
-            if existing is not None:
-                self._loops[existing.id] = existing
-                if restore_existing_provider_credentials:
-                    await self._restore_provider_credentials(existing)
-                if detached_timer is not None and not detached_timer.done():
-                    # Still delivering: give it back rather than arm a second timer --
-                    # but only while admission is open. Once ``shutdown()`` has closed
-                    # it, the timer table is emptied and this tick is either a running
-                    # callback shutdown cancelled or one it drains through its own
-                    # bookkeeping section, so putting it back would register it behind
-                    # the teardown: the repopulation ``_arm_timer`` refuses after closure.
-                    if self._accepting_mutations:
-                        self._timers[existing.id] = detached_timer
-                elif existing.active:
-                    self._arm_from_deadline(existing)
+            await _restore_displaced_existing()
             raise
-        self._arm_from_deadline(loop)
         if existing is not None:
-            # Committed: the displaced row is gone from the store, so its
-            # self-arm entry is revoked now, not before the write.
+            # Snapshot one committed the displacement. Revoke and announce it
+            # before cleanup, regardless of whether the replacement can activate.
             self._revoke_self_arm_for(existing)
             self._emit("removed", existing)
+
+        cleanup_failure: StaleStopSentinelCleanupFailed | None = None
+        cleanup_cause: OSError | None = None
+        activation_failure: StaleStopSentinelActivationFailed | None = None
+        activation_cause: Exception | None = None
+        if retire_stale_stop_sentinel is None:
+            self._arm_from_deadline(loop)
+        else:
+            try:
+                await asyncio.to_thread(retire_stale_stop_sentinel.unlink, missing_ok=True)
+            except OSError as exc:
+                logger.warning(
+                    "AutoNudge: loop %r on %r not armed - reason=%r detail=%r",
+                    autonudge_stop_log.safe_text(loop.id),
+                    autonudge_stop_log.safe_text(loop.slot_key),
+                    STALE_SENTINEL_CLEANUP_FAILED_REASON,
+                    autonudge_stop_log.safe_text(
+                        str(retire_stale_stop_sentinel), autonudge_stop_log.DETAIL_MAX_CHARS
+                    ),
+                )
+                cleanup_failure = StaleStopSentinelCleanupFailed(
+                    str(retire_stale_stop_sentinel), loop.id
+                )
+                cleanup_cause = exc
+            else:
+                staged_due = time.time() + loop.idle_secs
+                try:
+                    loop.active = True
+                    loop.next_due_ts = staged_due
+                    loop.stopped_reason = ""
+                    payload = self._serialize_state()
+                finally:
+                    # Keep the live row provisional while the active snapshot
+                    # serializes and writes, so a failed serialization cannot leak
+                    # the staged shape and turn completion cannot publish a timer
+                    # for an activation that never committed.
+                    loop.active = False
+                    loop.next_due_ts = 0.0
+                    loop.stopped_reason = STALE_SENTINEL_CLEANUP_FAILED_REASON
+                try:
+                    await asyncio.shield(self._start_persistence(payload, admission=admission))
+                except Exception as exc:
+                    logger.warning(
+                        "AutoNudge: could not persist activation for loop %r on %r",
+                        autonudge_stop_log.safe_text(loop.id),
+                        autonudge_stop_log.safe_text(loop.slot_key),
+                        exc_info=exc,
+                    )
+                    activation_failure = StaleStopSentinelActivationFailed(
+                        str(retire_stale_stop_sentinel), loop.id
+                    )
+                    activation_cause = exc
+                except BaseException:
+                    raise
+                else:
+                    loop.active = True
+                    loop.next_due_ts = staged_due
+                    loop.stopped_reason = ""
+                    self._arm_from_deadline(loop)
     self._emit("added", loop)
+    if cleanup_failure is not None:
+        raise cleanup_failure from cleanup_cause
+    if activation_failure is not None:
+        raise activation_failure from activation_cause
     logger.info("AutoNudge: added loop %s on slot %s (idle=%ds)", loop.id, slot_key, idle_secs)
     return loop
 
@@ -1224,7 +1354,11 @@ async def _update_unserialized(
             # mid-turn.
             if loop.active and (loop.next_due_ts > 0 or revived):
                 self._arm_from_deadline(loop)
-    self._emit("updated", loop)
+    # Play on a row a stale-sentinel cleanup failure parked revives a patrol whose
+    # inactive ``added`` was announced as stopped, and this revival has cleared the
+    # reason an observer would read, so it is announced under its own event.
+    resumed_parked = revived and previous["stopped_reason"] == STALE_SENTINEL_CLEANUP_FAILED_REASON
+    self._emit(PARKED_ROW_REVIVED_EVENT if resumed_parked else "updated", loop)
     return loop
 
 

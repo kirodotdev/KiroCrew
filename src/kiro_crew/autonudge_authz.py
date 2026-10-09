@@ -34,6 +34,8 @@ from kiro_crew.autonudge import (
     MonitorUpdateConflict,
     NudgeAdmissionReason,
     NudgeAdmissionRefused,
+    StaleStopSentinelActivationFailed,
+    StaleStopSentinelCleanupFailed,
     is_channel_key,
     scrub_loop_text,
 )
@@ -1272,8 +1274,8 @@ async def authorize_and_add_nudge(
         if stop_sentinel_path and is_sensitive_path(stop_sentinel_path):
             return _deny("stop_sentinel_path points to a sensitive location", 400)
         # Auto-default: one per-session sentinel so multiple loops do not clash.
-        # Keep the path only. The stale file is unlinked off-loop after ``add``
-        # succeeds, so an admission refusal cannot erase an existing loop's stop.
+        # Keep the path for ``add`` to retire inside its admitted transaction,
+        # after the replacement commits and before its timer is published.
         if not stop_sentinel_path:
             if is_channel_key(slot_key):
                 stop_sentinel_path = resolve_stop_sentinel(slot_key)
@@ -1437,6 +1439,8 @@ async def authorize_and_add_nudge(
                 "gate": gate,
                 "creation_surface": creation_surface,
             }
+            if stale_default_sentinel is not None:
+                add_kwargs["retire_stale_stop_sentinel"] = stale_default_sentinel
             if not replace_existing:
                 add_kwargs["replace_existing"] = False
             if judge:
@@ -1493,6 +1497,20 @@ async def authorize_and_add_nudge(
             loop = await svc.add_monitor(
                 **add_monitor_kwargs,
             )
+    except (StaleStopSentinelCleanupFailed, StaleStopSentinelActivationFailed) as exc:
+        # The inactive row is committed and remains playable. Its self-arm trust
+        # must remain beside it so a member-mode row can run after recovery.
+        if isinstance(exc, StaleStopSentinelCleanupFailed):
+            error = (
+                f"could not retire stale stop sentinel {exc.path}; repair or remove "
+                "that path, then press Play on the retained row, or Clear it and arm again"
+            )
+        else:
+            error = (
+                f"could not persist activation after retiring stale stop sentinel {exc.path}; "
+                "press Play on the retained row, or Clear it and arm again"
+            )
+        return _deny(error, 500)
     except NudgeAdmissionRefused as exc:
         await asyncio.to_thread(_forget_orphaned_trust)
         status = admission_refusal_status(exc)
@@ -1509,8 +1527,6 @@ async def authorize_and_add_nudge(
         await asyncio.to_thread(_forget_orphaned_trust)
         _audit("error", f"svc.add failed: {type(exc).__name__}")
         raise
-    if stale_default_sentinel is not None:
-        await asyncio.to_thread(stale_default_sentinel.unlink, missing_ok=True)
     if owner_credentials_grant:
         try:
             await asyncio.to_thread(
