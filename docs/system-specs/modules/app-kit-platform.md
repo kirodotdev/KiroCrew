@@ -3458,6 +3458,54 @@ shipped `data` link, the root `data` file refused before the record),
 
 
 
+## 23. An app's worker slots are leased, one at a time by default
+
+An app that owns agent sessions acquires them with
+`apps/worker_slots.py::acquire_worker_slot(state, app, key, *, project, ...)`,
+which returns a `WorkerSlotLease`. The helper is the supported seam over the
+slot's private owner, working-directory and trust attributes: it creates the
+slot if missing and re-stamps `_app` and `project` on every acquire, because a
+slot another create path made first (ChatEmbed's own POST) carries neither.
+
+- **Limit.** Each app holds at most `limit` leases at once,
+  `DEFAULT_WORKER_SLOT_LIMIT = 1`, changed by `set_worker_slot_limit(app, n)`.
+  A lowered limit never revokes a held lease. The limit is advisory and
+  self-set: it keeps a cooperating app's own workers in line, and an app can
+  raise it or skip the helper. It is per gateway process and not persisted.
+- **One owner per slot.** A slot key is held by one lease at a time across
+  every app (requested and folded keys both count), and a slot whose `_app` is
+  another app is refused with `ValueError`, so one app's trust grant or working
+  directory never lands on another app's worker.
+- **Lost leases are reclaimed.** Every acquire, and a waiting acquire every
+  0.5s, drops leases whose slot `state.get_slot(key)` no longer returns
+  (deleted or replaced), withdrawing their trust, so a lease the app lost
+  cannot lock it out until a restart.
+- **Timeout.** An acquire that cannot proceed waits up to `timeout` seconds
+  (`DEFAULT_ACQUIRE_TIMEOUT_SECS = 30`) and then raises `WorkerSlotTimeout`,
+  whose message names the app, the held count, the limit, a busy key, the wait,
+  and how to free a slot. A timed-out or failed acquire creates no slot and
+  holds no lease.
+- **Blanket trust is a scoped grant.** `trust=True` never writes `slot._trust`:
+  that flag does not expire and `_persistable_session_policy` caches it as the
+  session's `"auto"` policy, which the subagent spawn gate and each subagent's
+  approval policy read later without re-checking. The helper instead activates
+  `SafetyOverride.activate_scoped(worker_trust_scope(app, key), source="app:<app>",
+  ttl=...)` and sets `slot._trust_scope`, which `_slot_is_trusted` re-checks on
+  every approval and which is never cached as a policy. The activation is
+  SEL-audited fail-closed by `SafetyOverride`; if it is refused,
+  `lease.trust_granted` is False and the worker falls back to interactive
+  approval. A slot already trusted by a human, or carrying a different scope, is
+  left alone.
+- **Patterns.** `trusted_patterns` are added to `slot._trusted_patterns` only
+  after their SEL row is written with `critical=True`; a failed write adds none.
+- **Withdrawal.** Both grants end on `release()` or after `trust_ttl_secs`
+  (default 1h), whichever is first. A zero, negative, non-finite or over-cap TTL
+  (`MAX_TRUST_TTL_SECS`, 24h) is refused. Only what the lease added is
+  withdrawn, and each withdrawal is a SEL row (`<app>.worker_slot_trust`,
+  outcome `revoked`).
+
+Writers: `apps/worker_slots.py`. Tests: `test/test_apps_worker_slots.py`.
+
 ## Windows stale-backend cleanup capacity
 
 Stale-backend tree reaping shares the Windows cleanup admission budget with ACP.
