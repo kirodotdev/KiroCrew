@@ -3827,6 +3827,25 @@ def _settle_created_database(
         )
 
 
+def _memory_create_store(args: argparse.Namespace) -> None:
+    """``kirocrew memory create-store <name>``: create a declared V1 store's directory.
+
+    Use never creates a store's directory (a deleted store must stay a visible
+    loss), so this explicit step is how a declared store becomes usable. A
+    refusal raises ``UnknownMemoryStore`` (a ``ValueError``), which
+    :func:`_memory_cmd` prints as one line with exit 1.
+    """
+    from kiro_crew.memory_stores import create_declared_store
+
+    name = args.name
+    path, created = create_declared_store(name)
+    safe = _TERMINAL_CTRL_RE.sub("", name)
+    if created:
+        print(f"Created memory store {safe!r} at {path}.")
+    else:
+        print(f"Memory store {safe!r} already exists at {path}; nothing changed.")
+
+
 def _memory_cmd(args: argparse.Namespace) -> None:
     """Manage the memory system (vector store + markdown layer).
 
@@ -3873,6 +3892,11 @@ def _memory_verb(args: argparse.Namespace) -> None:
     # store dispatches before anything opens one.
     if action == "carve":
         _memory_carve(args)
+        return
+    # "create-store" makes a declared store's directory, so it must run before any
+    # store is opened -- the store it names is the one that does not exist yet.
+    if action == "create-store":
+        _memory_create_store(args)
         return
     cfg = KiroCrewConfig.load()
     # `export` and `import` are the only verbs reaching this shared open that name a

@@ -597,6 +597,51 @@ def ensure_memory_store_dir(store: str) -> Path:
         return target
 
 
+def create_store_remedy(store: str) -> str:
+    """The command that creates a declared V1 store's missing directory."""
+    return f"run `kirocrew memory create-store {store}` to create it"
+
+
+def create_declared_store(store: str) -> tuple[Path, bool]:
+    """Create a DECLARED named V1 store's directory; ``(path, created)``.
+
+    The one explicit create step for such a store. Use never creates it:
+    :func:`require_memory_store` refuses a missing directory before
+    :func:`ensure_memory_store_dir` is reached, so a deleted store is not
+    silently recreated empty. An operator runs this instead.
+
+    Refuses the default store (its root is ``workspace/``), an undeclared name,
+    and a V2 member store (provisioned with its member). An existing directory
+    is left as it is and answered with ``created=False``.
+    """
+    name = resolve_declared_store(store)
+    if name == DEFAULT_MEMORY_STORE:
+        raise UnknownMemoryStore("the default store needs no create step")
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    config = KiroCrewConfig.load()
+    if memory_store_version(name) == 2:
+        raise UnknownMemoryStore(
+            f"memory store {name!r} is a member store; it is created with its member"
+        )
+    # Ownership and shape checks only: the directory is what this creates.
+    require_memory_store(name, config=config, require_directory=False)
+    with memory_store_namespace_lock():
+        target = _named_store_dir(name)
+        if target.is_dir():
+            # Left exactly as it is: no mode change, no content change.
+            existed = True
+        elif os.path.lexists(target):
+            raise UnknownMemoryStore(
+                f"memory store {name!r} path exists and is not a directory; nothing was created"
+            )
+        else:
+            existed = False
+            target = ensure_memory_store_dir(name)
+    require_memory_store(name, config=config)
+    return target, not existed
+
+
 def member_memory_identity(store: str) -> tuple[str, int]:
     """Read the canonical database identity without any filesystem manifest."""
     from kiro_crew.vector_memory import read_member_database_identity

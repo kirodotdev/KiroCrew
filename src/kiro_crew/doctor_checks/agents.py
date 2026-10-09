@@ -9,6 +9,7 @@ time, so a patch there reaches these sections.
 
 from __future__ import annotations
 
+import os
 import shutil
 from typing import TYPE_CHECKING
 
@@ -69,6 +70,29 @@ def _doctor_member_dispatchability(cfg: KiroCrewConfig, issues: list[str]) -> No
     issues.append("stored Crew Member names are not dispatchable")
 
 
+def _missing_v1_store_remedy(cfg: KiroCrewConfig, member: str, store: object) -> str:
+    """The create command for a V1 binding whose only defect is a missing store directory."""
+    from kiro_crew.memory_stores import (
+        DEFAULT_MEMORY_STORE,
+        create_store_remedy,
+        memory_store_dir_for,
+        require_member_memory_store,
+    )
+
+    if not isinstance(store, str) or store == DEFAULT_MEMORY_STORE:
+        return ""
+    record = cfg.memory_stores.get(store)
+    if record is None or getattr(record, "memory_version", None) != 1:
+        return ""
+    try:
+        require_member_memory_store(cfg, member, require_directory=False)
+        if os.path.lexists(memory_store_dir_for(store)):
+            return ""
+    except Exception:  # noqa: BLE001 -- a different defect; no create step fixes it
+        return ""
+    return create_store_remedy(store)
+
+
 def _doctor_member_memory_bindings(cfg: KiroCrewConfig, issues: list[str]) -> None:
     """Check every configured member's existing binding without initializing memory."""
     from kiro_crew.memory_stores import (
@@ -111,6 +135,9 @@ def _doctor_member_memory_bindings(cfg: KiroCrewConfig, issues: list[str]) -> No
         except Exception as exc:  # noqa: BLE001 -- one broken member must not hide healthy peers
             print(f"  {binding}: unavailable ({render._safe_display(str(exc))})")
             issues.append(f"member memory binding unavailable: {binding}")
+            remedy = _missing_v1_store_remedy(cfg, name, store)
+            if remedy:
+                print(f"               To fix: {render._safe_display(remedy)}.")
         else:
             print(f"  {binding}: valid binding")
     for store, reason in legacy.items():

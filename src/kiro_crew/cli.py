@@ -3098,6 +3098,16 @@ Examples:
         action="store_true",
         help="Cancel a staged memory restore without changing active memory",
     )
+    mem_create = mem_sub.add_parser(
+        "create-store",
+        help="Create a declared memory store's directory (use never creates it)",
+        description=(
+            "Create the directory of a named V1 memory store declared in config.json "
+            "memory_stores. A store is never created on first use, so a deleted store "
+            "stays missing until this is run. Member stores are created with their member."
+        ),
+    )
+    mem_create.add_argument("name", help="The declared store's name")
     mem_carve = mem_sub.add_parser(
         "carve", help="Filter or count a crew store's memory by its carve facets"
     )
