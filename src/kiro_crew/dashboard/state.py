@@ -5965,6 +5965,15 @@ class DashboardState:
         # entry path is protected, including task/workflow continuations.
         self.kiro_prerequisite_service: Any = None
         self.subagents = subagents
+        if subagents is not None:
+            # Sub-agent runs wait out a branch switch on their repository the
+            # same way turns do at ``_run_chat``'s entry.
+            from kiro_crew.dashboard import repo_checkout_guard
+
+            async def _checkout_gate(info: Any) -> None:
+                await repo_checkout_guard.wait_for_subagent_checkout(self, info)
+
+            subagents.pre_run_gate = _checkout_gate
         self.channel_manager: Any = None  # lazy-init in server.py
         # A gateway launch defers legacy channel-agent relaunch until memory
         # preparation settles. Standalone dashboard callers keep the immediate

@@ -256,5 +256,7 @@
   "pages.chat.crewLog.subagents_unmatched",
   "pages.chat.toolCallLine.ask_answered",
   "components.questionCard.chars_left",
-  "components.questionCard.answer_at_limit"
+  "components.questionCard.answer_at_limit",
+  "components.branchSwitcher.ahead_count",
+  "components.branchSwitcher.behind_count"
 ]

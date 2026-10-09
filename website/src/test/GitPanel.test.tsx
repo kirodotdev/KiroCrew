@@ -25,7 +25,7 @@ import { namedCeiling } from './namedCeiling'
 
 const PROJECT = '/workspace/project'
 
-function mount() {
+function mount(props: { busy?: boolean } = {}) {
   // GitPanel's reads set `retry: 1` themselves, which outranks the `retry` here,
   // so a rejected route is asked twice before it surfaces. `retryDelay: 0` (they
   // set none) makes that second ask immediate instead of React Query's real
@@ -33,7 +33,7 @@ function mount() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } })
   return render(
     <QueryClientProvider client={queryClient}>
-      <GitPanel projectDir={PROJECT} onClose={vi.fn()} />
+      <GitPanel projectDir={PROJECT} onClose={vi.fn()} busy={props.busy} />
     </QueryClientProvider>,
   )
 }
@@ -209,6 +209,25 @@ describe('GitPanel repository state', () => {
     expect(screen.getByText('clean')).toBeInTheDocument()
     expect(screen.getByText('No changes or commits to display.')).toBeInTheDocument()
     expect(screen.queryByText('Not a Git repository')).toBeNull()
+  })
+
+  it('keeps the header branch copyable, not switchable, while the chat response runs', async () => {
+    mount({ busy: true })
+
+    const trigger = await screen.findByTestId('branch-switcher-trigger')
+    expect(trigger).toBeEnabled()
+    expect(trigger).toHaveAttribute('data-mode', 'copy')
+    expect(trigger).toHaveAccessibleDescription('Copy branch name. Stop the current response to switch branch.')
+    expect(trigger).not.toHaveAttribute('aria-haspopup')
+  })
+
+  it('leaves the header branch switcher on when the chat is idle', async () => {
+    mount()
+
+    const trigger = await screen.findByTestId('branch-switcher-trigger')
+    expect(trigger).toBeEnabled()
+    expect(trigger).toHaveAttribute('data-mode', 'switch')
+    expect(trigger).toHaveAttribute('aria-haspopup', 'listbox')
   })
 
   it('keeps the dirty-repository label, count, and changed-file row', async () => {

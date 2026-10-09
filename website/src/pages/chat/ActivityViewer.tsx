@@ -18,7 +18,7 @@ import IssuePanel from '../../components/IssuePanel'
 import { PinnedMessagesPanel } from './PinnedMessagesPanel'
 import type { ChatPin } from '../../api/pins'
 import { useAppSelector, useAppDispatch } from '../../store'
-import { markSubagentApproving, openActivityToTab, selectSubagent, clearTerminalSubagents, sseSubagentDone } from '../../store/chatSlice'
+import { markSubagentApproving, openActivityToTab, selectSubagent, clearTerminalSubagents, sseSubagentDone, selectComposerBusy } from '../../store/chatSlice'
 import SegmentedControl from '../../components/SegmentedControl'
 import { PanelSectionHeader, ContentSkeleton } from '../../components/ui'
 import SideChat from './SideChat'
@@ -947,6 +947,9 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
   // Why they wait, when the gateway said (memory floor, critical posture, a
   // paused adaptive cap); undefined keeps the concurrency text below.
   const queuedReason = useAppSelector(s => s.chat.subagentQueuedReason?.[slot])
+  // The Git panel's branch switcher is off while this chat's composer is busy,
+  // the same rule the composer chip follows.
+  const composerBusy = useAppSelector(s => selectComposerBusy(s, slot || null))
   // Render cap: bounds DOM at 60-100 agents; exceptions are always within
   // the cap thanks to the ordering above.
   const [showAllSubagents, setShowAllSubagents] = useState(false)
@@ -1103,7 +1106,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
       {effectiveTab === ('git' as string) && (
         <div className="flex-1 min-h-0 overflow-hidden">
           {projectDir ? (
-            <GitPanel projectDir={projectDir} onFileOpen={onFileOpen} onClose={onToggle} />
+            <GitPanel projectDir={projectDir} onFileOpen={onFileOpen} onClose={onToggle} busy={composerBusy} />
           ) : (
             <div className="text-muted text-[13px] pt-8 px-6 text-center">
               {i18nT('components.gitPanel.no_project')}

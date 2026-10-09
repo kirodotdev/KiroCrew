@@ -10,7 +10,7 @@ import { copyToClipboard } from '../utils/clipboard'
  * for a check. If the copy genuinely fails, the failure is swallowed and the
  * label stays put rather than falsely announcing success.
  *
- * Shared by the pull-request panel header and the composer's project chip.
+ * Shared by the pull-request panel header and the branch picker's footer.
  * Extracted to its own module so the composer does not have to import the
  * pull-request panel (and with it DOMPurify / hljs / the diff parser) just to
  * reuse one button.

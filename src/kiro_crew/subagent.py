@@ -3587,6 +3587,11 @@ class SubagentManager:
         self._on_spawn_approval = on_spawn_approval
         self._is_yolo = is_yolo
         self._on_event = on_event
+        # Awaited by every run just before it executes, after the run is already
+        # visible as pending work for its parent. The dashboard installs one that
+        # waits out a branch switch on the run's repository
+        # (``dashboard.repo_checkout_guard.wait_for_subagent_checkout``).
+        self.pre_run_gate: Callable[[SubagentInfo], Awaitable[None]] | None = None
         # Orphan-notification delivery (gateway-wired). ``on_orphan_notify``
         # injects a message into the parent dashboard slot (returns True on
         # success); ``on_orphan_dm`` is the owner-DM / notification fallback.

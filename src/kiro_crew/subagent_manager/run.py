@@ -898,6 +898,14 @@ class RunEventCoordinator(ManagerComponent):
         # report once its kill has decided (see the ``finally``).
         reap_owns_report = False
         try:
+            # Inside the ``try`` so a Stop or shutdown during the wait ends the
+            # run through the same cancellation arms as one during execution.
+            pre_run_gate = getattr(self._manager, "pre_run_gate", None)
+            # Imported here: an ``_impl`` body runs with the facade module's globals.
+            import inspect
+
+            if inspect.iscoroutinefunction(pre_run_gate):
+                await pre_run_gate(info)
             await asyncio.wait_for(
                 self._manager._run_inner(info, session_key), timeout=self._manager._default_timeout
             )
