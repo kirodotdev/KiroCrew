@@ -273,6 +273,15 @@ CANONICAL: dict[str, dict] = {
         "corrects": [],
         "crew_key": "9f2c" + "0" * 60,
     },
+    "guide/offered": {
+        "slot": "member-helper",
+        "guide_id": "g_0a1b2c3d4e5f",
+        "actions": ["crewmate.create"],
+        "turn": 4,
+        "mid": "m-7f3b",
+    },
+    "guide/started": {"guide_id": "g_0a1b2c3d4e5f"},
+    "guide/finished": {"guide_id": "g_0a1b2c3d4e5f", "status": "completed"},
 }
 
 
@@ -330,7 +339,11 @@ def test_every_type_written_today_is_declared_and_nothing_else_is():
     # there is no file beside it), and a refused write's whole worth is its history --
     # a mistake book is a fold over refusals, and one overwritable document could hold
     # none of it.
-    assert len(SESSION_ENTRY_TYPES) == 38
+    #
+    # The three past that are the guide offers: each offer is a row of the
+    # conversation, and ``guide/*`` records the offer and every outcome in the same
+    # session's history.
+    assert len(SESSION_ENTRY_TYPES) == 41
     # Nine types the vocabulary owns that nothing writes. Declaring one would state
     # a shape no writer produces, and the first emitter to land would have to
     # satisfy a contract written without it. They pass through undeclared instead.
@@ -415,6 +428,11 @@ def test_only_a_vocabulary_the_writer_clamps_is_enforced():
         # vocabulary from the declaration beside the type, so the closed enum and the
         # writer's set are one tuple.
         ("dashboard/instance_changed", "action"),
+        # The guide store's own finished statuses: the emitter refuses any other
+        # value before it builds the entry.
+        ("guide/finished", "status"),
+        # Dropped by the emitter, not refused, when it is not a known reason.
+        ("guide/finished", "reason"),
     }
     emitted = set(_types_with_a_producing_site())
     assert {spec_type for spec_type, _ in closed} <= emitted

@@ -1440,19 +1440,19 @@ _MANAGED_MCP_SERVERS: dict[str, dict] = {
         "invocation_fn": lambda: _kirocrew_mcp_invocation("mcp-panel"),
         "opt_in": True,
     },
-    # The platform guide server: tools a crewmate uses on the Kiro Crew
-    # dashboard itself (today, taking the name its user gives it). A platform
-    # capability of every crewmate and every dashboard session, so it is always
-    # emitted, like the two servers at the top of this map; its own server so an
-    # operator or a policy can withhold the whole set at once. Its tools need a
-    # dashboard turn and refuse clearly without one (``mcp_guide``). Which of
-    # its tools run without a prompt is :data:`_GUIDE_AUTO_GRANTS`, through
-    # ``allowedTools``.
+    # The platform guide set: where-is answers (``find_ui``), the packaged docs
+    # (``search_docs``), dashboard guides and a crewmate's own rename. A platform capability
+    # of every crewmate and every dashboard session, so it is always emitted,
+    # like the two servers at the top of this map; its own server so an operator
+    # or a policy can withhold the whole set at once. Its tools need a dashboard
+    # tab and refuse clearly without one (``mcp_guide``). Which of its tools run
+    # without a prompt is :data:`_GUIDE_AUTO_GRANTS`, through ``allowedTools``.
     #
     # No ``autoApprove`` key, and none may ever be added -- the same prohibition
     # every set above carries, for the same mechanism: an autoApproved MCP tool is
     # approved inside kiro-cli and never reaches ``hooks.on_tool_call``, so the
-    # deny floor and governance ceiling would be bypassed.
+    # deny floor and governance ceiling would be bypassed for a tool that steers
+    # what the operator looks at and clicks.
     "kirocrew-guide": {
         "invocation_fn": lambda: _kirocrew_mcp_invocation("mcp-guide"),
     },
@@ -4646,11 +4646,20 @@ automatically. The Research Lab app drives you; the nudge names the campaign and
 _GUIDE_SERVER = "kirocrew-guide"
 #: The guide tools that run without a prompt on every agent, through the same
 #: ``allowedTools`` ceiling every grant passes (``_apply_allowed_tools_ceiling``),
-#: so a governance ceiling that denies one still keeps it out. ``rename_self``
-#: changes only the calling crewmate's own display name, and only on a turn the
-#: user sent. A tool added to the server is not in this tuple, so it asks first
+#: so a governance ceiling that denies one still keeps it out. All of them either
+#: read (packaged docs and location index, a guide's status), OFFER (a guide is
+#: inert until the user presses its button in the dashboard, and nothing
+#: automated can press it), or rename the calling crewmate on the user's word.
+#: ``guide_cancel`` removes this conversation's pointer and undoes nothing the
+#: user saved. A tool added to the server is not in this tuple, so it asks first
 #: until it is reviewed here.
 _GUIDE_AUTO_GRANTS = (
+    f"@{_GUIDE_SERVER}/find_ui",
+    f"@{_GUIDE_SERVER}/search_docs",
+    f"@{_GUIDE_SERVER}/guide_list_actions",
+    f"@{_GUIDE_SERVER}/guide_start",
+    f"@{_GUIDE_SERVER}/guide_status",
+    f"@{_GUIDE_SERVER}/guide_cancel",
     f"@{_GUIDE_SERVER}/rename_self",
 )
 

@@ -463,6 +463,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
     <SettingsSubNav
       items={railItems}
       basePath={basePath}
+      guideTargetPrefix="settings.sub.display."
       railWidth={220}
       listLabel={i18nT('settings.tabs.display.label')}
       banner={configBanner}

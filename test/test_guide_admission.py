@@ -13,7 +13,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from guide_route_helpers import FakeState, agent, in_dashboard_turn, run_guide_app
+from guide_route_helpers import CREWMATE, FakeState, agent, in_dashboard_turn, run_guide_app
 
 from kiro_crew import mcp_guide
 
@@ -85,6 +85,44 @@ def test_a_turn_the_user_did_not_send_is_refused() -> None:
     state.open_slot("chat-1")._turn_user_sent = False
     status, body = _rename_from("dashboard:chat-1", state)
     assert (status, body["code"]) == (403, "not_user_turn")
+
+
+def test_a_turn_the_user_did_not_send_cannot_start_a_guide() -> None:
+    state = FakeState()
+    state.open_slot("chat-1")._turn_user_sent = False
+
+    async def go(client):
+        resp = await client.post(
+            "/api/guide/agent/start", json={"actions": CREWMATE}, headers=agent("dashboard:chat-1")
+        )
+        return resp.status, await resp.json()
+
+    status, body = run_guide_app(go, state)
+    assert (status, body["code"]) == (403, "not_user_turn")
+
+
+def _language_from(session_key: str, state: FakeState) -> tuple[int, dict]:
+    async def go(client):
+        resp = await client.get("/api/guide/agent/language", headers=agent(session_key))
+        return resp.status, await resp.json()
+
+    return run_guide_app(go, state)
+
+
+def test_a_read_still_answers_a_turn_the_user_did_not_send() -> None:
+    """Only what starts something on screen needs the user's own turn."""
+    state = FakeState()
+    state.open_slot("chat-1")._turn_user_sent = False
+    status, _body = _language_from("dashboard:chat-1", state)
+    assert status == 200
+
+
+def test_a_read_refuses_a_channel_turn_like_any_other_call() -> None:
+    """``find_ui``'s live read is refused like any other, and answers not_observed."""
+    state = FakeState()
+    _mirrored_channel_slot(state)._turn_channel_origin = True
+    status, body = _language_from(SLACK_KEY, state)
+    assert (status, body["code"]) == (403, "channel_caller")
 
 
 # ── the runner records the provenance the admission reads ──

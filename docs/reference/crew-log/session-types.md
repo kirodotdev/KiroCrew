@@ -3,7 +3,7 @@
 **Local page, not a mirror.** Part of the [crew log reference](README.md), which is
 marked as a named exception in [the Reference index](../README.md).
 
-Thirty-five types. Read [envelope.md](envelope.md) first for the fields every entry
+Forty types. Read [envelope.md](envelope.md) first for the fields every entry
 carries; this page covers only each type's `data`.
 
 Session entries are written with `src` `gateway` or `acp` and nothing else. They
@@ -59,6 +59,9 @@ The **Emitter** column says whether this build writes the type. Every row below 
 | [`radar/recorded`](#radarrecorded) | One Issue Radar crew-ledger update: the work-item fields it set and the event explaining them. | live | `gateway` | — |
 | [`work/recorded`](#workrecorded) | One work-board mutation: who acted, on which item, and the fields it set. | live | `gateway` | — |
 | [`panel/published`](#panelpublished) | One publish of a crew's own webview: the data, and the template that renders it. | live | `gateway` | — |
+| [`guide/offered`](#guideoffered) | The agent offered a guide, at this point in the conversation. | live | `gateway` | opener of `guide/finished` |
+| [`guide/started`](#guidestarted) | The person started an offered guide. | live | `gateway` | — |
+| [`guide/finished`](#guidefinished) | A guide ended. | live | `gateway` | closer, by `guide_id` |
 
 ## Session and turn
 
@@ -1495,6 +1498,92 @@ best-effort, so a publish whose entry never landed leaves the fold with no recor
 the file still serves that crew's panel.
 
 **Since** — #13440.
+
+## Guides
+
+A guide offer is part of the conversation at the point the agent offered it. The
+offer route appends one `card` row to the slot's transcript and writes the opener
+here in the same step; every outcome patches that row in place and writes a
+closer. The guide store owns the LIVE state (the tab that drives a guide); these
+entries are what the session's history keeps about each offer once the store has
+pruned it.
+
+### `guide/offered`
+
+The agent offered a guide, at this point in the conversation.
+
+**Kind and `src`** — `session`; `src` is `gateway`.
+
+**When written** — Once per guide, when `POST /api/guide/agent/start` lands, beside
+the append of the offer's transcript row.
+
+**Pairing** — Opener of `guide/finished`, by `guide_id`.
+
+| Field | Type | Required | Meaning | Enum |
+|---|---|---|---|---|
+| `slot` | string | required | The slot whose chat shows the offer. | |
+| `guide_id` | string | required | The guide's id in the guide store. | |
+| `actions` | array[string] | required | The registered action ids, in order. Never their parameters. | |
+| `turn` | int | optional | The turn that offered it, when one was live. | |
+| `mid` | string | optional | Id of the transcript row the offer is drawn at. | |
+
+```json
+{"type":"guide/offered","seq":102,"time":1789000005200,"src":"gateway","data":{"slot":"member-scout","guide_id":"g_0a1b2c3d4e5f","actions":["crewmate.create"],"turn":4,"mid":"m-7f3b"}}
+```
+
+**Reader hint** — Draw the offer at its `mid`; its outcome is the `guide/finished`
+with the same `guide_id`.
+
+**Since** — the change that added dashboard guides.
+
+### `guide/started`
+
+The person started an offered guide.
+
+**Kind and `src`** — `session`; `src` is `gateway`.
+
+**When written** — The first time a tab claims the guide after the person pressed
+Start. A tab re-claiming after its lease lapsed is not a second start.
+
+**Pairing** — None.
+
+| Field | Type | Required | Meaning | Enum |
+|---|---|---|---|---|
+| `guide_id` | string | required | The guide's id. | |
+
+```json
+{"type":"guide/started","seq":104,"time":1789000005400,"src":"gateway","data":{"guide_id":"g_0a1b2c3d4e5f"}}
+```
+
+**Reader hint** — Its absence before a `guide/finished {cancelled}` means the
+person dismissed the offer without starting it.
+
+**Since** — the change that added dashboard guides.
+
+### `guide/finished`
+
+A guide ended.
+
+**Kind and `src`** — `session`; `src` is `gateway`.
+
+**When written** — When the guide store publishes the guide in a terminal status.
+
+**Pairing** — Closer of `guide/offered`, by `guide_id`.
+
+| Field | Type | Required | Meaning | Enum |
+|---|---|---|---|---|
+| `guide_id` | string | required | The guide's id. | |
+| `status` | string | required | How it ended. Closed: the emitter refuses anything else. | `completed`, `cancelled`, `expired` |
+| `reason` | string | optional | Why, when the status alone misleads: a cancelled guide whose save went through. Closed: an unknown reason is left out. | `saved_without_guide` |
+
+```json
+{"type":"guide/finished","seq":109,"time":1789000006100,"src":"gateway","data":{"guide_id":"g_0a1b2c3d4e5f","status":"completed"}}
+```
+
+**Reader hint** — A guide finishes once; the store holds no terminal-to-terminal
+transition.
+
+**Since** — the change that added dashboard guides.
 
 ## Removed types
 

@@ -1,8 +1,8 @@
-import { useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
-import { Check, ChevronRight } from 'lucide-react'
+import { ArrowLeft, Check, ChevronRight } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { api, type SlackConfigData } from '../api/client'
@@ -13,20 +13,22 @@ import { useDocumentImeLatch, useImeGuard } from '../hooks/useImeGuard'
 import { compareText, fmtTime } from '../i18n/format'
 import CrewAvatar, { seededTraits } from './CrewAvatar'
 import ErrorNotice from './ErrorNotice'
+import { useGuardedLeave, usePublishNavigationStake, useRegisterNavigationLeaveGuard } from './NavigationLeaveGuard'
 import OnboardingChapterShell, { OnboardingShellContext } from './OnboardingChapterShell'
 import SimpleSelect from './SimpleSelect'
 import { Btn, Input, SendBtn, Toggle } from './ui'
+import { useGuideRequestHeaders, useGuideSaveLifecycle } from '../guide/GuideContext'
+import { GUIDE_ANCHORS } from '../guide/guideActions'
+import { guideAnchor, maybe } from '../uiLocations/targetRegistry'
 
 /**
- * "Meet CrewMates" — the first-run flow for a user who has NO crewmates and NO
- * custom agents (an existing user with custom agents gets the opt-in step
- * instead; `App` gates the two on the same fact so they never both fire).
+ * Crewmate creation in the split-panel chapter chrome. The Crewmates page
+ * hosts the embedded variant for manual and agent-proposed goals; a caller
+ * can still explicitly request the standalone presentation.
  *
- * Four steps in the shipped split-screen chapter chrome:
- *   1. Give a crewmate a goal       what a crewmate is + three example goals
- *   2. Choose a name                name (prefilled) + Built from
- *   3. What should <Name> achieve?  the goal / when (daily time) / where it reports
- *   4. <Name> is ready              big avatar + the goal + when it next runs
+ * Embedded steps collect the goal, name and schedule before the ready result.
+ * Returning to chat retains unfinished input without unmounting the flow.
+ * The host receives a typed creation receipt and owns where completion returns.
  *
  * Create (step 3 → 4) is two existing writes: POST /api/agents (the crewmate,
  * with its own memory allocated by the server) and, unless "Only when I ask" was
@@ -35,10 +37,8 @@ import { Btn, Input, SendBtn, Toggle } from './ui'
  * `description` — the roster's "what it is for" field — and repeated in the
  * schedule's message so the crewmate knows what to do on each wake.
  *
- * Completion and dismissal both report through `onDone`; the host persists the
- * flag (`dashboard.crewmates_onboarded`) so the flow fires once per workspace.
- * The Crewmates page empty state re-opens it through the `mc-start-meet-crewmates`
- * window event, which the host listens for.
+ * Completion reports through `onDone`; creation and completed exits update
+ * the legacy completion flag. Entry is explicit, never triggered by that flag.
  */
 
 export const START_MEET_CREWMATES_EVENT = 'mc-start-meet-crewmates'
@@ -210,11 +210,65 @@ function FocusSeat({ onMount }: { onMount: () => void }) {
   return null
 }
 
+/**
+ * Guards work an exit would destroy, only while it is MOUNTED: render it
+ * conditionally (`{atStake && <DraftLeaveGuard .../>}`), so the shell's
+ * guard set and stake set hold this surface exactly while it holds work. Covers in-app route
+ * changes and the browser's Back (the shell's channel) and a reload or tab
+ * close (`beforeunload`). In-page controls are never intercepted.
+ */
+export function DraftLeaveGuard({ message, confirmLeave }: {
+  message: string
+  /** The host page's synchronous ask (the shell's registry cannot await the
+   *  app's confirm dialog). Without one, a route leave is not interrupted;
+   *  the stake and the reload/close warning still hold. */
+  confirmLeave?: (message: string) => boolean
+}) {
+  useRegisterNavigationLeaveGuard(() => (confirmLeave ? confirmLeave(message) : true))
+  usePublishNavigationStake(true)
+  useEffect(() => {
+    const warn = (e: BeforeUnloadEvent) => {
+      e.preventDefault()
+      // Legacy browsers only show the prompt when returnValue is set.
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [])
+  return null
+}
+
+/** What `onCreated` reports: the crewmate as made and what became of its
+ *  schedule (`none` = "Only when I ask", nothing was requested). */
+export interface CrewmateCreatedReceipt {
+  /** The display name the user typed. */
+  name: string
+  /** The member key the server derived (`Issue Radar` -> `issue-radar`):
+   *  what the roster and `?member=` address. Absent on older records. */
+  key?: string
+  goal: string
+  schedule: 'saved' | 'refused' | 'unknown' | 'none'
+}
+
+/** A goal (and optionally a name) handed over by the page that opened the flow,
+ *  e.g. what the user just described in chat. */
+export interface MeetCrewmatesDraft {
+  name?: string
+  goal?: string
+}
+
 export default function MeetCrewmatesFlow({
   open,
   onDone,
   onCreated,
   persistFailed = false,
+  embedded = false,
+  initialDraft,
+  onReturnToChat,
+  onDraftKept,
+  onDraftStateChange,
+  confirmLeave,
+  onOpenMember,
 }: {
   open: boolean
   /** Fired exactly once per opening, when the user leaves the flow (Not now,
@@ -222,12 +276,39 @@ export default function MeetCrewmatesFlow({
   onDone: (outcome: 'completed' | 'dismissed') => void
   /** Fired the moment the crewmate exists, BEFORE the ready step is shown, so
    *  the host can persist "done" without closing: closing the tab on step 4
-   *  must not re-run the flow over a crewmate that is already there. */
-  onCreated: () => void
+   *  must not re-run the flow over a crewmate that is already there. Receives
+   *  the {@link CrewmateCreatedReceipt}; a zero-argument callback still fits. */
+  onCreated: (receipt: CrewmateCreatedReceipt) => void
   /** The host could not persist "done"; rendered as an ErrorNotice on the
    *  current step (a refusal at exit is carried to the next entry -- an exit
    *  never waits for the server). */
   persistFailed?: boolean
+  /** Render in place inside the page (no portal, no scrim, no focus trap, no
+   *  document Escape handler). Goal comes first, the starting setup moves under
+   *  an "Advanced" disclosure, the schedule defaults to "Only when I ask", and
+   *  an unfinished draft -- step, fields and errors -- survives `open` going
+   *  false and true again while the component stays MOUNTED. Only a flow the
+   *  user left from its ready step starts fresh on the next opening. */
+  embedded?: boolean
+  /** Prefill for a FRESH start (the first opening, or after a completed flow).
+   *  A different draft on a later opening is a new hand-off and also starts
+   *  fresh; the same draft again resumes the retained one. */
+  initialDraft?: MeetCrewmatesDraft
+  /** Embedded: take the user back to the chat the flow was opened from. Fired
+   *  just before `onDone` by "Not now" and by the ready step's primary Done. */
+  onReturnToChat?: () => void
+  /** Embedded: a different `initialDraft` arrived while the user holds an
+   *  edited draft. The draft is kept untouched (never silently replaced); the
+   *  unused proposal is handed back so the host can say so. */
+  onDraftKept?: (proposal: MeetCrewmatesDraft | undefined) => void
+  /** Authoritative form state for hosts that switch between creation surfaces. */
+  onDraftStateChange?: (state: { edited: boolean; busy: boolean }) => void
+  /** Embedded: how the host page asks before a route leave would drop the
+   *  draft. Passed to `DraftLeaveGuard`. */
+  confirmLeave?: (message: string) => boolean
+  /** Embedded: opens the new crewmate through the host's own guarded switch.
+   *  Without it, the ready step navigates to its chat. */
+  onOpenMember?: (key: string) => void
 }) {
   const { t } = useTranslation()
   const navigate = useNavigate()
@@ -236,10 +317,10 @@ export default function MeetCrewmatesFlow({
   const ime = useImeGuard()
 
   const [step, setStep] = useState(1)
-  const [name, setName] = useState(() => t('components.meetCrewmatesFlow.example_radar_name'))
+  const [name, setName] = useState(() => initialDraft?.name ?? (embedded ? '' : t('components.meetCrewmatesFlow.example_radar_name')))
   const [builtFrom, setBuiltFrom] = useState(DEFAULT_TEMPLATE)
-  const [job, setJob] = useState(() => t('components.meetCrewmatesFlow.example_radar_task'))
-  const [when, setWhen] = useState<WhenChoice>('morning')
+  const [job, setJob] = useState(() => initialDraft?.goal ?? (embedded ? '' : t('components.meetCrewmatesFlow.example_radar_task')))
+  const [when, setWhen] = useState<WhenChoice>(embedded ? 'ask' : 'morning')
   // The daily time as the native time input holds it (`HH:mm`, or '' while
   // cleared). Kept across Back; reset on every opening.
   const [dailyTime, setDailyTime] = useState(DEFAULT_DAILY_TIME)
@@ -285,16 +366,81 @@ export default function MeetCrewmatesFlow({
   // Reset on every opening so a re-entry from the Crewmates page starts clean.
   // `t` is read through a ref: a language switch mid-flow must not reset the
   // user's typed name and job.
+  // Embedded mode resets only on a FRESH start: the first opening, the one
+  // after the user left from the ready step (`freshNextRef`), or a different
+  // `initialDraft` (a new hand-off). Otherwise the unfinished draft, its step
+  // and its errors are kept exactly as the user left them.
   const tRef = useRef(t)
   tRef.current = t
+  // A structural key (never a delimiter-joined string): two hand-offs are the
+  // same proposal exactly when name, goal and presence all match.
+  const draftKey = JSON.stringify([initialDraft?.name ?? null, initialDraft?.goal ?? null, !!initialDraft])
+  const draftRef = useRef(initialDraft)
+  draftRef.current = initialDraft
+  const appliedDraftKeyRef = useRef<string | null>(null)
+  // The hand-off object last applied. On the ready step a NEW hand-off (a
+  // fresh guide re-entering this page) starts the flow over even when it
+  // proposes the same name and goal: the finished crewmate is not a draft.
+  const appliedDraftObjRef = useRef(initialDraft)
+  const readyHandoff = embedded && step === 4 ? initialDraft : undefined
+  // Before the ready step, whatever hand-off is current IS the applied one
+  // (a page can hand the same proposal over twice); only one that arrives
+  // while the ready step shows is new.
+  useEffect(() => {
+    if (step !== 4 && initialDraft) appliedDraftObjRef.current = initialDraft
+  }, [initialDraft, step])
+  const freshNextRef = useRef(true)
+  // The fields as the last fresh start seeded them. The draft is EDITED once
+  // the user has moved past step 1 (and not reached the ready step) or changed
+  // anything that start put there; an edited draft is never overwritten by a
+  // new `initialDraft` -- the user's own work wins, the proposal is reported
+  // through `onDraftKept`, and discarding stays the user's explicit act.
+  const baselineRef = useRef({ name, job, builtFrom, when, dailyTime, reportChat })
+  const edited =
+    (step > 1 && step < 4) ||
+    (step === 1 &&
+      (name !== baselineRef.current.name ||
+        job !== baselineRef.current.job ||
+        builtFrom !== baselineRef.current.builtFrom ||
+        when !== baselineRef.current.when ||
+        dailyTime !== baselineRef.current.dailyTime ||
+        reportChat !== baselineRef.current.reportChat))
+  const editedRef = useRef(edited)
+  editedRef.current = edited
+  const onDraftKeptRef = useRef(onDraftKept)
+  onDraftKeptRef.current = onDraftKept
   useEffect(() => {
     if (!open) return
+    const restartFromReady = embedded && step === 4 && !!initialDraft && initialDraft !== appliedDraftObjRef.current
+    if (embedded && !freshNextRef.current && !restartFromReady) {
+      // The same proposal handed over again before the ready step (the page
+      // can process one hand-off twice) is the draft already applied: record
+      // the object, or the ready step would later read it as a new hand-off.
+      if (initialDraft) appliedDraftObjRef.current = initialDraft
+      if (appliedDraftKeyRef.current === draftKey) return
+      // A new proposal over a draft the user has worked on: keep the draft.
+      // The key is recorded so the same proposal is not re-offered on every
+      // opening; the host decides how to tell the user (e.g. in its chat).
+      if (editedRef.current) {
+        appliedDraftKeyRef.current = draftKey
+        onDraftKeptRef.current?.(draftRef.current)
+        return
+      }
+    }
+    freshNextRef.current = false
+    appliedDraftKeyRef.current = draftKey
+    appliedDraftObjRef.current = initialDraft
+    const draft = draftRef.current
+    const seedName = draft?.name ?? (embedded ? '' : tRef.current('components.meetCrewmatesFlow.example_radar_name'))
+    const seedJob = draft?.goal ?? (embedded ? '' : tRef.current('components.meetCrewmatesFlow.example_radar_task'))
+    const seedWhen: WhenChoice = embedded ? 'ask' : 'morning'
+    baselineRef.current = { name: seedName, job: seedJob, builtFrom: DEFAULT_TEMPLATE, when: seedWhen, dailyTime: DEFAULT_DAILY_TIME, reportChat: true }
     dirRef.current = 1
     setStep(1)
-    setName(tRef.current('components.meetCrewmatesFlow.example_radar_name'))
+    setName(seedName)
     setBuiltFrom(DEFAULT_TEMPLATE)
-    setJob(tRef.current('components.meetCrewmatesFlow.example_radar_task'))
-    setWhen('morning')
+    setJob(seedJob)
+    setWhen(seedWhen)
     setDailyTime(DEFAULT_DAILY_TIME)
     setTimeZone(browserTimeZone())
     setReportChat(true)
@@ -305,7 +451,10 @@ export default function MeetCrewmatesFlow({
     setCreatedKey('')
     setCreatedGoal('')
     setCreatedDaily(null)
-  }, [open])
+    // `draftKey` re-runs this only for an embedded flow (a new hand-off while
+    // open or closed); a standalone flow resets on the opening alone.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, embedded, embedded ? draftKey : '', readyHandoff])
 
   const { data: installed, isError: installedFailed } = useQuery<InstalledAgentRow[]>({
     queryKey: ['agents-installed'],
@@ -330,9 +479,21 @@ export default function MeetCrewmatesFlow({
   // also navigate do so right after, onto a page the chapter no longer covers.
   const finish = useCallback(
     (outcome: 'completed' | 'dismissed') => {
+      // Leaving from the ready step ends this draft: the next opening of an
+      // embedded flow starts fresh. Any other exit keeps it.
+      if (step === 4) freshNextRef.current = true
       onDone(outcome)
     },
-    [onDone],
+    [onDone, step],
+  )
+  // Embedded: back to the chat the flow was opened from, then close.
+  const returnToChat = useCallback(
+    (outcome: 'completed' | 'dismissed') => {
+      if (step === 4) freshNextRef.current = true
+      onReturnToChat?.()
+      onDone(outcome)
+    },
+    [onDone, onReturnToChat, step],
   )
 
   const go = (next: number) => {
@@ -341,6 +502,8 @@ export default function MeetCrewmatesFlow({
     setStep(next)
   }
 
+  const guideHeaders = useGuideRequestHeaders('crewmate.create')
+  const guideSave = useGuideSaveLifecycle('crewmate.create')
   const create = useMutation({
     mutationFn: async () => {
       const crewmate = trimmed
@@ -359,7 +522,15 @@ export default function MeetCrewmatesFlow({
       // flow cannot prove it made is someone else's -- a 409 `agent_exists` is
       // a taken name on every attempt. The unanswered case is disclosed on
       // step 3 instead (`createError.unknown`), naming the page to check.
-      const r = (await api.createKirocrewAgent({
+      // A guided create (the human pressed Start on the assistant's guide and
+      // is now pressing Create) carries the guide headers on THIS request
+      // alone, so the gateway can confirm the step from what it actually
+      // created. The cron write below never carries them.
+      // A progress report still in flight (the guide catching up with a
+      // fast click) would leave the headers unread and the save uncredited.
+      if (embedded) await guideSave.sync()
+      const guide = embedded ? guideHeaders() : undefined
+      const body = {
         name: crewmate,
         kiro_agent: builtFrom,
         description: jobText,
@@ -369,10 +540,20 @@ export default function MeetCrewmatesFlow({
         // (`Issue Radar` -> `issue-radar`), so an unpinned crew would wear a
         // different face from the one the user saw while naming it.
         avatar: { kind: 'ghost', traits: seededTraits(crewmate) },
-      })) as { ok?: boolean; error?: string; name?: string; member_id?: string }
+      }
+      const r = (await (guide ? api.createKirocrewAgent(body, guide) : api.createKirocrewAgent(body))) as {
+        ok?: boolean
+        error?: string
+        name?: string
+        member_id?: string
+      }
       if (r?.error) throw new Error(r.error)
       const identity = r?.member_id
       if (!identity) throw new Error('create returned no identity')
+      // Saved, but without the guide's headers (it never reached the Create
+      // step in time): the guide is closed honestly rather than left asking
+      // for the press the user already made.
+      if (embedded && !guide) guideSave.savedUncredited()
       // `none`: the user chose "Only when I ask", so there is no schedule to
       // report on. `saved` is reserved for a schedule that actually exists.
       let outcome: 'saved' | 'refused' | 'unknown' | 'none' = spec ? 'saved' : 'none'
@@ -438,9 +619,12 @@ export default function MeetCrewmatesFlow({
       setStep(4)
       // Persist "done" the moment the crewmate exists (the host keeps the flow
       // open for the ready step); `finish` runs only when the user leaves.
-      onCreated()
+      onCreated({ name: crewmate, key, goal, schedule: outcome })
     },
     onError: (e: Error) => {
+      // A 4xx made nothing: the guide stops waiting on this save and follows
+      // the form back to the step it now shows.
+      if (e instanceof ApiError && e.status >= 400 && e.status < 500) guideSave.refused()
       if (e instanceof ApiError && e.status === 409 && parseErrorCode(e.body) === 'agent_exists') {
         setNameError({ message: t('components.meetCrewmatesFlow.error_name_taken', { name: trimmed }), taken: true, name: trimmed })
         go(2)
@@ -466,21 +650,36 @@ export default function MeetCrewmatesFlow({
     },
   })
   const busy = create.isPending
+  useLayoutEffect(() => {
+    onDraftStateChange?.({ edited, busy })
+  }, [onDraftStateChange, edited, busy])
 
   const dismiss = useCallback(() => {
     if (busy) return
-    finish('dismissed')
-  }, [busy, finish])
+    if (embedded) returnToChat('dismissed')
+    else finish('dismissed')
+  }, [busy, embedded, finish, returnToChat])
 
+  // Leaving the ready step for another page (or another crewmate) asks the
+  // page's own guards first: a hidden Profile draft must not vanish unasked.
+  const guardedLeave = useGuardedLeave()
   const openChat = () => {
-    finish('completed')
-    navigate(`/members?member=${encodeURIComponent(createdKey)}`)
+    // The host's switch asks its own guards (asking here too would ask twice).
+    if (onOpenMember) {
+      onOpenMember(createdKey)
+      return
+    }
+    guardedLeave(() => {
+      finish('completed')
+      navigate(`/members?member=${encodeURIComponent(createdKey)}`)
+    })
   }
 
   // ── Dialog a11y: initial focus, Tab trap, Escape ──────────────────────────
   const shellHost = useContext(OnboardingShellContext)
   const localDialogRef = useRef<HTMLDivElement>(null)
-  const dialogRef = shellHost?.dialogRef ?? localDialogRef
+  // Embedded: the shell ignores any host and the ref points at its own region.
+  const dialogRef = !embedded && shellHost ? shellHost.dialogRef : localDialogRef
   const imeLatch = useDocumentImeLatch(open)
   const getFocusable = useCallback(() => {
     const node = dialogRef.current
@@ -495,8 +694,10 @@ export default function MeetCrewmatesFlow({
   // dialog still holds only the OUTGOING step, so a seat taken from the parent
   // effect at that moment lands on a control that unmounts 0.22 s later and
   // focus falls back to `document.body` -- outside the Tab trap below.
+  // The embedded header's "Not now" precedes every step's controls in DOM order
+  // and is skipped, so a step still opens on its own first field.
   const seatFocus = useCallback(() => {
-    getFocusable()[0]?.focus()
+    getFocusable().find(el => !el.hasAttribute('data-focus-seat-skip'))?.focus()
   }, [getFocusable])
   const busyKeyRef = useRef<boolean | null>(null)
   useEffect(() => {
@@ -512,6 +713,9 @@ export default function MeetCrewmatesFlow({
       busyKeyRef.current = busy
       seatFocus()
     }
+    // Embedded, the chapter is part of the page: no document-level Escape and
+    // no Tab trap -- focus moves freely to the rest of the page.
+    if (embedded) return
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault()
@@ -539,9 +743,23 @@ export default function MeetCrewmatesFlow({
     // dialog node does not exist on the commit where `open` flips, so the
     // effect bails above and must re-run once the host has rendered it --
     // otherwise step 1 would ship with no Escape and no Tab trap.
-  }, [open, step, busy, dismiss, finish, dialogRef, getFocusable, seatFocus, imeLatch, shellHost?.sectionSlot])
+  }, [open, embedded, step, busy, dismiss, finish, dialogRef, getFocusable, seatFocus, imeLatch, shellHost?.sectionSlot])
 
-  if (!open) return null
+  // Embedded, an unfinished draft is kept while the flow is hidden, so it is
+  // guarded whether or not it is on screen: a route change or reload would
+  // unmount the page and the draft with it. A create in flight is guarded too
+  // (leaving loses its answer); a create only runs from step 3, which already
+  // counts as edited, so `edited` covers it and `busy` picks the wording.
+  // The standalone chapter resets on every opening
+  // and covers the viewport, so it holds nothing an exit could newly destroy.
+  const leaveGuard = embedded && edited ? (
+    <DraftLeaveGuard
+      message={busy ? t('pages.membersPage.create_leave_busy') : t('components.meetCrewmatesFlow.leave_draft')}
+      confirmLeave={confirmLeave}
+    />
+  ) : null
+
+  if (!open) return <>{leaveGuard}</>
 
   const eyebrow = t('components.meetCrewmatesFlow.step_eyebrow', { n: step, total: TOTAL_STEPS })
   const aside = {
@@ -578,21 +796,76 @@ export default function MeetCrewmatesFlow({
 
   let body: ReactNode
   let footer: ReactNode
+  // "Starting setup": a visible step-2 field in the standalone chapter; the
+  // embedded flow tucks it under step 3's Advanced disclosure, since the
+  // built-in is right for nearly everyone and the choice is technical.
+  const builtFromBlock = (
+    <div className={embedded ? 'mt-3' : 'mt-6'}>
+      <label htmlFor="meet-crewmates-built-from" className={FIELD_LABEL_CLS}>
+        {t('components.meetCrewmatesFlow.built_from_label')}
+      </label>
+      <SimpleSelect
+        id="meet-crewmates-built-from"
+        options={templates}
+        optionLabels={templateLabels}
+        value={builtFrom}
+        onChange={setBuiltFrom}
+        disabled={embedded && busy}
+        aria-label={t('components.meetCrewmatesFlow.built_from_label')}
+      />
+      <p className="mt-1.5 text-[12px] text-muted">{t('components.meetCrewmatesFlow.built_from_hint', { name: displayName })}</p>
+      {installedFailed && (
+        /* No hand-off: the name typed above is unsaved. */
+        <ErrorNotice
+          message={t('components.meetCrewmatesFlow.built_from_unavailable')}
+          variant="inline"
+          className="mt-3"
+          testId="meet-crewmates-built-from-error"
+        />
+      )}
+    </div>
+  )
   if (step === 1) {
+    const goalOk = !!job.trim()
     body = (
       <>
         {title(t('components.meetCrewmatesFlow.step1_title'), t('components.meetCrewmatesFlow.step1_body'))}
+        {embedded && (
+          /* Goal first: the user's own words, with the examples below as
+             starting points rather than the only way in. */
+          <div className="mb-5">
+            <label id="meet-crewmates-goal-label" htmlFor="meet-crewmates-goal" className={FIELD_LABEL_CLS}>
+              {t('components.meetCrewmatesFlow.job_label')}
+            </label>
+            <textarea
+              id="meet-crewmates-goal"
+              aria-labelledby="meet-crewmates-goal-label"
+              rows={3}
+              value={job}
+              onChange={e => setJob(e.target.value)}
+              autoComplete="off"
+              maxLength={JOB_MAX}
+              className="w-full resize-y rounded-lg border border-border bg-bg p-3 text-sm text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              data-testid="meet-crewmates-goal"
+            />
+          </div>
+        )}
         <ul className="flex flex-col divide-y divide-border rounded-xl border border-border bg-bg-elevated list-none m-0 p-0" data-testid="meet-crewmates-examples">
           {EXAMPLES.map(ex => (
             <li key={ex.id}>
               {/* A row that looks selectable IS selectable: it preselects this
-                  example's name and job and moves on to step 2. */}
+                  example's name and job and moves on to step 2. Embedded, a
+                  name the user already typed (or brought from chat) is kept. */}
               <button
                 type="button"
                 onClick={() => {
-                  setName(t(ex.name))
-                  setNameError(null)
-                  setJob(t(ex.task))
+                  const untouchedName = !trimmed || EXAMPLES.some(e => t(e.name) === trimmed)
+                  if (!embedded || untouchedName) {
+                    setName(t(ex.name))
+                    setNameError(null)
+                  }
+                  const untouchedJob = !job.trim() || EXAMPLES.some(e => t(e.task) === job.trim())
+                  if (!embedded || untouchedJob) setJob(t(ex.task))
                   go(2)
                 }}
                 aria-label={t('components.meetCrewmatesFlow.start_with', { name: t(ex.name) })}
@@ -611,7 +884,12 @@ export default function MeetCrewmatesFlow({
         </ul>
       </>
     )
-    footer = (
+    footer = embedded ? (
+      /* "Not now" lives in the header on every step of an embedded flow. */
+      <SendBtn type="button" disabled={!goalOk} onClick={() => go(2)} data-testid="meet-crewmates-next" {...guideAnchor(GUIDE_ANCHORS.crewmateGoalNext)}>
+        {t('components.meetCrewmatesFlow.next')}
+      </SendBtn>
+    ) : (
       <>
         <Btn type="button" className="h-9 rounded-lg px-4" onClick={dismiss} data-testid="meet-crewmates-not-now">
           {t('components.meetCrewmatesFlow.not_now')}
@@ -699,9 +977,10 @@ export default function MeetCrewmatesFlow({
                       // notice clears and Next comes back.
                       setNameError(null)
                       // Only a prefilled (or empty) job follows the chip; a job
-                      // the user typed on step 3 is never overwritten.
+                      // the user typed on step 3 is never overwritten. Embedded,
+                      // the goal came first, so a chip is a name and nothing else.
                       const untouched = !job.trim() || EXAMPLES.some(e => t(e.task) === job)
-                      if (untouched) setJob(t(ex.task))
+                      if (untouched && !embedded) setJob(t(ex.task))
                     }}
                     aria-pressed={on}
                     className={`flex items-center gap-1 rounded-full px-3 py-1.5 text-[13px] cursor-pointer transition-colors border ${
@@ -719,29 +998,7 @@ export default function MeetCrewmatesFlow({
                 )
               })}
             </div>
-            <div className="mt-6">
-              <label htmlFor="meet-crewmates-built-from" className={FIELD_LABEL_CLS}>
-                {t('components.meetCrewmatesFlow.built_from_label')}
-              </label>
-              <SimpleSelect
-                id="meet-crewmates-built-from"
-                options={templates}
-                optionLabels={templateLabels}
-                value={builtFrom}
-                onChange={setBuiltFrom}
-                aria-label={t('components.meetCrewmatesFlow.built_from_label')}
-              />
-              <p className="mt-1.5 text-[12px] text-muted">{t('components.meetCrewmatesFlow.built_from_hint', { name: displayName })}</p>
-              {installedFailed && (
-                /* No hand-off: the name typed above is unsaved. */
-                <ErrorNotice
-                  message={t('components.meetCrewmatesFlow.built_from_unavailable')}
-                  variant="inline"
-                  className="mt-3"
-                  testId="meet-crewmates-built-from-error"
-                />
-              )}
-            </div>
+            {!embedded && builtFromBlock}
           </div>
         </div>
       </>
@@ -751,7 +1008,7 @@ export default function MeetCrewmatesFlow({
         <Btn type="button" className="h-9 rounded-lg px-4" onClick={() => go(1)} data-testid="meet-crewmates-back">
           {t('components.meetCrewmatesFlow.back')}
         </Btn>
-        <SendBtn type="button" disabled={!nameValid || !!nameError} onClick={() => go(3)} data-testid="meet-crewmates-next">
+        <SendBtn type="button" disabled={!nameValid || !!nameError} onClick={() => go(3)} data-testid="meet-crewmates-next" {...maybe(embedded ? GUIDE_ANCHORS.crewmateNameNext : undefined, guideAnchor)}>
           {t('components.meetCrewmatesFlow.next')}
         </SendBtn>
       </>
@@ -767,9 +1024,22 @@ export default function MeetCrewmatesFlow({
     body = (
       <>
         {title(t('components.meetCrewmatesFlow.step3_title', { name: displayName }), t('components.meetCrewmatesFlow.step3_body'))}
-        <label htmlFor="meet-crewmates-job" className={FIELD_LABEL_CLS}>
+        <label id="meet-crewmates-job-label" htmlFor="meet-crewmates-job" className={FIELD_LABEL_CLS}>
           {t('components.meetCrewmatesFlow.job_label')}
         </label>
+        {embedded ? (
+          <textarea
+            id="meet-crewmates-job"
+            aria-labelledby="meet-crewmates-job-label"
+            rows={3}
+            value={job}
+            onChange={e => setJob(e.target.value)}
+            maxLength={JOB_MAX}
+            disabled={busy}
+            className="w-full resize-y rounded-lg border border-border bg-bg p-3 text-sm text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            data-testid="meet-crewmates-job"
+          />
+        ) : (
         <Input
           id="meet-crewmates-job"
           type="text"
@@ -783,6 +1053,7 @@ export default function MeetCrewmatesFlow({
           data-testid="meet-crewmates-job"
           {...ime.bindEnter({ onEnter: submit })}
         />
+        )}
         <div className="mt-5">
           <label htmlFor="meet-crewmates-when" className={FIELD_LABEL_CLS}>
             {t('components.meetCrewmatesFlow.when_label')}
@@ -904,6 +1175,14 @@ export default function MeetCrewmatesFlow({
             }
           />
         )}
+        {embedded && (
+          <details className="mt-5 rounded-xl border border-border px-4 py-3" data-testid="meet-crewmates-advanced">
+            <summary className="cursor-pointer text-[13px] font-medium text-text-strong">
+              {t('pages.membersPage.create_advanced')}
+            </summary>
+            {builtFromBlock}
+          </details>
+        )}
       </>
     )
     footer = (
@@ -911,7 +1190,7 @@ export default function MeetCrewmatesFlow({
         <Btn type="button" className="h-9 rounded-lg px-4" disabled={busy} onClick={() => go(2)} data-testid="meet-crewmates-back">
           {t('components.meetCrewmatesFlow.back')}
         </Btn>
-        <SendBtn type="button" disabled={!canCreate} onClick={submit} data-testid="meet-crewmates-create">
+        <SendBtn type="button" disabled={!canCreate} onClick={submit} data-testid="meet-crewmates-create" {...maybe(embedded ? GUIDE_ANCHORS.crewmateCreate : undefined, guideAnchor)}>
           {busy
             ? t('components.meetCrewmatesFlow.creating', { name: displayName })
             : t('components.meetCrewmatesFlow.create', { name: displayName })}
@@ -951,6 +1230,13 @@ export default function MeetCrewmatesFlow({
             {startsLine}
             {schedule === 'saved' && (
               <>
+                {/* A space before the break: the <br> alone separates the two
+                    sentences visually, but any flattened reading of this
+                    paragraph (its text content, an accessibility snapshot)
+                    would join them as "(UTC).Its reports". The space is
+                    trailing whitespace before a forced break, so it renders
+                    nothing. */}
+                {' '}
                 <br />
                 {t(reportChat ? 'components.meetCrewmatesFlow.ready_where' : 'components.meetCrewmatesFlow.ready_where_hidden', { name: createdName })}
               </>
@@ -978,10 +1264,10 @@ export default function MeetCrewmatesFlow({
               <button
                 type="button"
                 className="text-[12px] font-medium underline underline-offset-2 text-danger hover:opacity-80 cursor-pointer bg-transparent border-none p-0"
-                onClick={() => {
+                onClick={() => guardedLeave(() => {
                   finish('completed')
                   navigate('/schedule')
-                }}
+                }, '/schedule')}
                 data-testid="meet-crewmates-open-schedule"
               >
                 {t('components.meetCrewmatesFlow.open_schedule')}
@@ -991,7 +1277,18 @@ export default function MeetCrewmatesFlow({
         )}
       </div>
     )
-    footer = (
+    footer = embedded ? (
+      /* Embedded, the user came from a chat: Done takes them back to it (the
+         primary action), and the new crewmate's own chat stays one click away. */
+      <>
+        <Btn type="button" className="h-9 rounded-lg px-4" onClick={openChat} data-testid="meet-crewmates-open-chat">
+          {t('components.meetCrewmatesFlow.open_chat', { name: createdName })}
+        </Btn>
+        <SendBtn type="button" onClick={() => returnToChat('completed')} data-testid="meet-crewmates-done">
+          {t('components.meetCrewmatesFlow.done')}
+        </SendBtn>
+      </>
+    ) : (
       <>
         <Btn type="button" className="h-9 rounded-lg px-4" onClick={() => finish('completed')} data-testid="meet-crewmates-done">
           {t('components.meetCrewmatesFlow.done')}
@@ -1004,10 +1301,29 @@ export default function MeetCrewmatesFlow({
   }
 
   return (
+    <>
+    {leaveGuard}
     <OnboardingChapterShell
       {...aside}
       eyebrow={eyebrow}
       dialogRef={dialogRef}
+      embedded={embedded}
+      headerAction={
+        embedded && step !== 4 ? (
+          /* The way back to the chat, on every step: the draft is kept. */
+          <Btn
+            type="button"
+            disabled={busy}
+            onClick={dismiss}
+            className="min-h-[44px] sm:min-h-0"
+            data-testid="meet-crewmates-not-now"
+            data-focus-seat-skip=""
+          >
+            <ArrowLeft className="lucide-inline" aria-hidden />
+            {t('components.meetCrewmatesFlow.back_to_chat')}
+          </Btn>
+        ) : undefined
+      }
       header={null}
       footer={
         <AnimatePresence mode="wait" initial={false}>
@@ -1022,21 +1338,20 @@ export default function MeetCrewmatesFlow({
           <FocusSeat onMount={seatFocus} />
           {body}
           {persistFailed && (
-            /* No hand-off on steps 2-3: the typed name and job are unsaved
-               drafts. On steps 1 and 4 nothing can be lost, so the hand-off is on
-               (`errors-use-error-notice`); it closes the flow the way the step's
-               own exit does, because the chat it opens sits behind this dialog. */
+            /* No hand-off while an embedded goal or name draft is edited.
+               A ready result holds no draft; its notice can open help. */
             <ErrorNotice
-              message={t('components.meetCrewmatesFlow.save_failed')}
+              message={t(embedded ? 'components.agentImportFlow.could_not_save_onboarding_state' : 'components.meetCrewmatesFlow.save_failed')}
               variant="inline"
               className="mt-5"
               testId="meet-crewmates-persist-error"
-              askAgent={step === 1 || step === 4}
+              askAgent={(!embedded || !edited) && (step === 1 || step === 4)}
               onHandoff={() => finish(step === 4 ? 'completed' : 'dismissed')}
             />
           )}
         </motion.div>
       </AnimatePresence>
     </OnboardingChapterShell>
+    </>
   )
 }

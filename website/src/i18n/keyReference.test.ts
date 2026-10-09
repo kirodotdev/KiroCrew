@@ -128,6 +128,12 @@ function makeTree(tree: Tree): string {
     )
   }
   fs.copyFileSync(GATE, path.join(root, 'scripts/check-i18n-keys.mjs'))
+  // The gate's resolver is shared with the find_ui generator and imported by path.
+  fs.mkdirSync(path.join(root, 'scripts/lib'), { recursive: true })
+  fs.copyFileSync(
+    path.join(WEBSITE, 'scripts/lib/i18n-key-resolve.mjs'),
+    path.join(root, 'scripts/lib/i18n-key-resolve.mjs'),
+  )
 
   for (const [rel, source] of Object.entries(tree.files)) {
     fs.mkdirSync(path.join(root, path.dirname(rel)), { recursive: true })

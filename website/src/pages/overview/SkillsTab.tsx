@@ -25,6 +25,7 @@ import { Trans } from 'react-i18next'
 
 import { fmtBytes, fmtCompact, fmtDateTime, fmtNumber, fmtRelative } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
+import { uiLocation } from '../../uiLocations/uiLocation'
 import { parseErrorCode, findReport, type ErrorReport } from '../../utils/errorReport'
 import { SettingRef } from '../../components/settingRef/SettingRef'
 const EMPTY_FORM: SkillFormData = { name: '', category: '', description: '', triggers: '', tags: '', always: false, body: '' }
@@ -413,7 +414,7 @@ export default function SkillsTab() {
       * null when nothing is pending — this heading moves in and out of
       * `:first-child` with the pending count, so a positional rule would make
       * the gap depend on it. */}
-    <h4 className="text-sm font-semibold text-text-strong mb-2 flex flex-wrap items-center gap-2">{i18nT('pages.overview.skillsTab.skills_count', { count: skills.length })} <InfoTip text={i18nT('pages.overview.skillsTab.skills_tip')} /> <span className="w-full md:w-auto md:ml-auto flex flex-col md:flex-row items-stretch md:items-center [&>button]:justify-center md:[&>button]:justify-start gap-2"><Btn onClick={showBudget} className="text-accent border-accent/30 bg-accent/5 hover:bg-accent/10">{i18nT('pages.overview.skillsTab.budget_doorway_static')}</Btn><Btn onClick={() => setSkillBrowserOpen(true)}><Download size={14} /> {i18nT('pages.overview.skillsTab.add_skill')}</Btn><Btn primary onClick={() => { setFormData(EMPTY_FORM); setCreateError(''); setCreating(true) }}>{i18nT('pages.overview.skillsTab.create_new_skill')}</Btn></span></h4>
+    <h4 className="text-sm font-semibold text-text-strong mb-2 flex flex-wrap items-center gap-2">{i18nT('pages.overview.skillsTab.skills_count', { count: skills.length })} <InfoTip text={i18nT('pages.overview.skillsTab.skills_tip')} /> <span className="w-full md:w-auto md:ml-auto flex flex-col md:flex-row items-stretch md:items-center [&>button]:justify-center md:[&>button]:justify-start gap-2"><Btn onClick={showBudget} className="text-accent border-accent/30 bg-accent/5 hover:bg-accent/10">{i18nT('pages.overview.skillsTab.budget_doorway_static')}</Btn><Btn onClick={() => setSkillBrowserOpen(true)} {...uiLocation('skills.add')}><Download size={14} /> {i18nT('pages.overview.skillsTab.add_skill')}</Btn><Btn primary onClick={() => { setFormData(EMPTY_FORM); setCreateError(''); setCreating(true) }} {...uiLocation('skills.create')}>{i18nT('pages.overview.skillsTab.create_new_skill')}</Btn></span></h4>
     <p className="text-[12px] text-muted mb-2"><Trans i18nKey="pages.overview.skillsTab.auto_create_hint" components={{ settingRef: <SettingRef configKey="skills.auto_create_from_sessions" /> }} /></p>
     <Card>
       {/* Wraps instead of squeezing the search: beside the sort and refresh
@@ -439,7 +440,7 @@ export default function SkillsTab() {
             value={skillSort}
             onChange={v => setSkillSort(v as SkillSort)}
           />
-          <Btn onClick={() => refetch()} disabled={isFetching} aria-label={i18nT('pages.overview.skillsTab.refresh_skills')}><RefreshCw size={14} className={isFetching ? 'animate-spin' : ''} /></Btn>
+          <Btn onClick={() => refetch()} disabled={isFetching} aria-label={i18nT('pages.overview.skillsTab.refresh_skills')} {...uiLocation('skills.refresh')}><RefreshCw size={14} className={isFetching ? 'animate-spin' : ''} /></Btn>
         </div>
       </div>
 

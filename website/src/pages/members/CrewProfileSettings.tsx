@@ -11,6 +11,7 @@ import { useAvailableModelsQuery } from '../../hooks/useAvailableModels'
 import { EFFORT_LEVELS, effortLabel, modelSupportsEffort } from '../../lib/effort'
 import { crewDisplayName } from '../../components/AgentSelector'
 import { Field, ModelField } from '../KiroCrewAgentsPage'
+import { uiLocation } from '../../uiLocations/uiLocation'
 
 /** The approval modes a crewmate's record may pin, in label order; YOLO is process-global. */
 const MODES = ['normal', 'trust_reads', 'trust'] as const
@@ -126,6 +127,7 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
           value={mode}
           onChange={(v) => void save('approval_mode', v)}
           aria-label={t('pages.membersPage.profile_permissions')}
+          {...uiLocation('members.permissions')}
         />
       </Field>
       {/* "Inherited" alone does not say what runs: name the model it resolves to. */}

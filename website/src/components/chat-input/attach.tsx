@@ -4,6 +4,8 @@ import { Crop, FileText, Loader2, PenLine, Plus, X } from 'lucide-react'
 import { useAnchorRemeasure } from '../../hooks/useAnchorRemeasure'
 import { isScreenSnipSupported } from '../../hooks/useScreenSnip'
 import { i18nT } from '../../i18n/t'
+import { uiLocation } from '../../uiLocations/uiLocation'
+import { GuideRevealScope } from '../../guide/GuideRevealScope'
 import type { ComposerControl } from '../composerControl'
 import type { useComposerPickers } from './pickers'
 import type { ChatInputProps } from './props'
@@ -207,12 +209,12 @@ export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, dir
               className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all bg-transparent ${uploading ? 'opacity-30 cursor-default' : 'cursor-pointer text-muted hover:text-text hover:bg-bg-hover'}`}
               aria-label={i18nT('components.chatInput.attach_files')}
               title={i18nT('components.chatInput.attach_files')}
+              {...uiLocation('composer.attach-files')}
             >
               {uploading ? <Loader2 size={18} className="animate-spin" /> : <Plus size={18} />}
             </label>
           ) : (
             <button
-              ref={plusBtnRef}
               className={`w-8 h-8 rounded-lg flex items-center justify-center cursor-pointer transition-all disabled:opacity-30 bg-transparent border-none ${plusOpen ? 'text-text bg-bg-hover' : 'text-muted hover:text-text hover:bg-bg-hover'}`}
               onClick={togglePlus}
               disabled={uploading}
@@ -220,10 +222,13 @@ export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, dir
               aria-expanded={plusOpen}
               aria-label={i18nT('components.chatInput.add_files_options')}
               title={i18nT('components.chatInput.add_files_options')}
+              {...uiLocation('composer.add-menu', plusBtnRef)}
             >
               {uploading ? <Loader2 size={18} className="animate-spin" /> : <Plus size={18} className={`transition-transform ${plusOpen ? 'rotate-45' : ''}`} />}
             </button>
           ))}
+          {/* The drop-up's scope owner, outside its own open conditional. */}
+          <GuideRevealScope id="menu:composer.add-menu" open={!directFilePicker && plusOpen}>
           {!directFilePicker && plusOpen && plusRect && createPortal(
             <div
               ref={plusMenuRef}
@@ -234,6 +239,7 @@ export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, dir
                 <button
                   type="button"
                   onClick={() => openPicker(false)}
+                  {...uiLocation('composer.add-menu.upload')}
                   className="flex-1 flex flex-col items-center gap-1.5 px-2 py-3 rounded-lg border border-border bg-transparent hover:bg-bg-hover hover:border-border-strong transition-all cursor-pointer"
                 >
                   <FileText size={18} className="text-muted" />
@@ -243,6 +249,7 @@ export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, dir
                   <button
                     type="button"
                     onClick={() => { setPlusOpen(false); onScreenshot() }}
+                    {...uiLocation('composer.add-menu.screenshot')}
                     className="flex-1 flex flex-col items-center gap-1.5 px-2 py-3 rounded-lg border border-border bg-transparent hover:bg-bg-hover hover:border-border-strong transition-all cursor-pointer"
                   >
                     <Crop size={18} className="text-muted" />
@@ -261,6 +268,7 @@ export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, dir
                   type="button"
                   onClick={() => { setPlusOpen(false); setSketchOpen(true) }}
                   title={i18nT('components.chatInput.sketch')}
+                  {...uiLocation('composer.add-menu.sketch')}
                   className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-transparent hover:bg-bg-hover transition-colors cursor-pointer text-left"
                 >
                   <PenLine size={14} className="w-4 shrink-0 text-muted lucide-inline" />
@@ -296,6 +304,7 @@ export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, dir
                   type="button"
                   onClick={() => openTrigger('/')}
                   title={i18nT('components.chatInput.slash_commands')}
+                  {...uiLocation('composer.add-menu.slash')}
                   className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-transparent hover:bg-bg-hover transition-colors cursor-pointer text-left"
                 >
                   <span className="w-4 text-center text-[14px] font-mono leading-none text-muted shrink-0">/</span>
@@ -309,6 +318,7 @@ export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, dir
                     type="button"
                     onClick={() => openTrigger('@')}
                     title={i18nT('components.chatInput.reference_a_file')}
+                    {...uiLocation('composer.add-menu.reference-file')}
                     className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-transparent hover:bg-bg-hover transition-colors cursor-pointer text-left"
                   >
                     <span className="w-4 text-center text-[14px] font-mono leading-none text-muted shrink-0">@</span>
@@ -322,6 +332,7 @@ export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, dir
                   type="button"
                   onClick={() => openTrigger('$')}
                   title={i18nT('components.chatInput.use_a_skill')}
+                  {...uiLocation('composer.add-menu.skill')}
                   className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-transparent hover:bg-bg-hover transition-colors cursor-pointer text-left"
                 >
                   <span className="w-4 text-center text-[14px] font-mono leading-none text-muted shrink-0">$</span>
@@ -334,6 +345,7 @@ export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, dir
             </div>,
             document.body
           )}
+          </GuideRevealScope>
         </div>
       )}
       {/* Touch path: directFilePicker replaces the "+" drop-up with a

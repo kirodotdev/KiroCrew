@@ -12073,7 +12073,10 @@ async def _run_chat(
                                     "tool_result",
                                     {"slot": slot.key, "tool_call_id": tcid, "output": ""},
                                 )
-                        elif m.get("role") not in ("tool", "permission", "chunk"):
+                        # A `card` row is a guide offer the
+                        # tool group's own call put into the conversation, so
+                        # the scan reads past it like the tool rows around it.
+                        elif m.get("role") not in ("tool", "permission", "chunk", "card"):
                             break
                     # The same inference for the log. A tool that produced no
                     # output sent no result frame, so its call is still open here;

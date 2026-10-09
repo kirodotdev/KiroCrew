@@ -99,7 +99,7 @@ export function useFirstRunChapters({ onboarded, importOnboarded, privacyAcked, 
   }, [])
   // Meet CrewMates: the crewmate first-run chapter, gated on zero crewmates +
   // zero custom agents (see the hook).
-  const meetCrewmates = useMeetCrewmatesGate()
+  const meetCrewmates = useMeetCrewmatesGate({ explicit: false })
   return {
     showAgentImport, setShowAgentImport, showPrivacy, setShowPrivacy, showOnboarding, setShowOnboarding,
     continueTourAfterImport, privacyExit, endFirstRun, meetCrewmates,

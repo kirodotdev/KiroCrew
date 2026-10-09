@@ -7,6 +7,7 @@ import {
 import { baseCommandLabel, trustBasePattern } from '../utils/trustPatterns'
 
 import { i18nT } from '../i18n/t'
+import { guideTrustRoot, GuideTrustRootProvider } from '../guide/trustRoot'
 interface TrustDropdownProps {
   fullCommand: string
   baseCommand: string
@@ -190,27 +191,31 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCo
   }
 
   return (
-    <DropdownMenu open={open} onOpenChange={setOpen}>
-      <DropdownMenuTrigger asChild>
-        <button disabled={disabled} className={className}>
-          <Handshake size={12} className="shrink-0" />{i18nT('components.trustDropdown.trust')}<ChevronDown size={10} className="shrink-0 opacity-70" />
-        </button>
-      </DropdownMenuTrigger>
-      {/* The width cap is viewport-aware: a flat max-w overflows a narrow screen
-          (measured at 320px, the menu reached 440px and ran off the right edge),
-          which hides the very label this menu exists to make readable. */}
-      <DropdownMenuContent side="top" align="end" className="min-w-[220px] max-w-[min(450px,calc(100vw-2rem))]">
-        {tiers.map(tier => (
-          <DropdownMenuItem
-            key={tier.action}
-            className="gap-2 text-[12px]"
-            onSelect={tier.fire}
-          >
-            {tier.icon}
-            {tier.body}
-          </DropdownMenuItem>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
+    // A trust grant is the agent's own ceiling, wherever the menu is used:
+    // the provider marks what it portals, the content says so itself as well.
+    <GuideTrustRootProvider>
+      <DropdownMenu open={open} onOpenChange={setOpen}>
+        <DropdownMenuTrigger asChild>
+          <button disabled={disabled} className={className}>
+            <Handshake size={12} className="shrink-0" />{i18nT('components.trustDropdown.trust')}<ChevronDown size={10} className="shrink-0 opacity-70" />
+          </button>
+        </DropdownMenuTrigger>
+        {/* The width cap is viewport-aware: a flat max-w overflows a narrow screen
+            (measured at 320px, the menu reached 440px and ran off the right edge),
+            which hides the very label this menu exists to make readable. */}
+        <DropdownMenuContent side="top" align="end" className="min-w-[220px] max-w-[min(450px,calc(100vw-2rem))]" {...guideTrustRoot}>
+          {tiers.map(tier => (
+            <DropdownMenuItem
+              key={tier.action}
+              className="gap-2 text-[12px]"
+              onSelect={tier.fire}
+            >
+              {tier.icon}
+              {tier.body}
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </GuideTrustRootProvider>
   )
 }

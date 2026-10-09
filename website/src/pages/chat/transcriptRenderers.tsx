@@ -35,6 +35,7 @@ import type React from 'react'
 import ThinkingBlock from './ThinkingBlock'
 import ToolCallLine from './ToolCallLine'
 import NudgeCard, { nudgeMatchesLoop } from './NudgeCard'
+import ConversationCard, { CARD_ROLE } from '../../cards/ConversationCard'
 import RecoveryCard, { opensTurn, resolveInjectCard } from './RecoveryCard'
 import { SystemNoticeRow, isSystemNoticeRow } from './CompactionCard'
 import SkillLoadCard, { isSkillLoadRow } from './SkillLoadCard'
@@ -51,7 +52,8 @@ import { REASONING_ROLES, hasReasoningContent } from './groupDisplayItems'
 import { FileCard } from '../../components/FileCard'
 import UserMessage from './UserMessage'
 import CrewmateMessage, { type CrewmateIdentity } from './CrewmateMessage'
-import { crewmateBubbleClass, crewmateRunPosition, type MateNarration } from '../../components/chat/crewmateBubbles'
+import { crewmateBubbleClass, crewmateCornerClass, crewmateRunPosition, type MateNarration } from '../../components/chat/crewmateBubbles'
+import { CardCornersContext } from '../../cards/cardCorners'
 import { formatTs, quoteMessageFor, renderAssistantBubble, replyInThreadFor, threadFooterFor, type MessageRenderer, type MessageRenderContext } from '../../app-sdk/messageRenderers'
 import { renderUserContent } from './ChatPageMessageContent'
 import { fmtMessageTimeFull } from './messageTime'
@@ -382,6 +384,31 @@ export function createTranscriptRenderers(
           return o.renderUnparsedFile ? o.renderUnparsedFile(m, ctx) : null
         }
         return ctx.row(<FileCard file={file} />)
+      },
+    },
+    {
+      // a guide offer, at the point it was proposed. The
+      // row holds a reference; the live card is the card / guide store's, so it
+      // updates in place (cards/ConversationCard). The SDK default draws nothing
+      // for this role, which is right for a store-free surface.
+      id: 'conversation_card',
+      roles: [CARD_ROLE],
+      // In a crewmate's chat the card is the crewmate's own message: it joins
+      // the run of the reply that explains it, in the same column and exactly
+      // as wide as a reply.
+      render: (m, ctx) => {
+        if (!crewmate) return ctx.row(<ConversationCard message={m} slot={o.slot} />)
+        const pos = crewmateRunPosition(ctx.messages, ctx.index, crewmateTranscript)
+        return ctx.row(
+          <CrewmateMessage pos={pos}>
+            {/* Same cap as a crewmate bubble (72ch at the message font size). */}
+            <div className="max-w-[72ch]" style={{ fontSize: 'var(--mc-message-font-size, 14px)' }}>
+              <CardCornersContext.Provider value={crewmateCornerClass(pos)}>
+                <ConversationCard message={m} slot={o.slot} />
+              </CardCornersContext.Provider>
+            </div>
+          </CrewmateMessage>,
+        )
       },
     },
     {

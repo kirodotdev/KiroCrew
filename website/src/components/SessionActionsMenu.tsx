@@ -21,6 +21,7 @@ import { api } from '../api/client'
 import { useSessionActions } from '../hooks/useSessionActions'
 import { useChatPopouts } from '../hooks/useChatPopouts'
 
+import { uiLocation } from '../uiLocations/uiLocation'
 import { i18nT } from '../i18n/t'
 export interface SessionActionsMenuProps {
   /** Chooses the Radix primitive family; must match the enclosing menu. */
@@ -190,7 +191,7 @@ export default function SessionActionsMenu({
     // Modifiers to the tab itself
     [
       onRename && (
-        <Item key="rename" onSelect={onRename}>
+        <Item key="rename" onSelect={onRename} {...uiLocation('sessions.row-menu.rename')}>
           <Pencil size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.rename')}
         </Item>
       ),
@@ -202,7 +203,7 @@ export default function SessionActionsMenu({
       <Item key="read" onSelect={() => toggleRead(slotKey)}>
         <Circle size={13} className="shrink-0 text-muted" /> {isUnread ? i18nT('components.sessionActionsMenu.mark_as_read') : i18nT('components.sessionActionsMenu.mark_as_unread')}
       </Item>,
-      <Item key="pin" onSelect={() => togglePin(slotKey)}>
+      <Item key="pin" onSelect={() => togglePin(slotKey)} {...uiLocation('sessions.row-menu.pin')}>
         <Pin size={13} className="shrink-0 text-muted" /> {isPinned ? i18nT('components.sessionActionsMenu.unpin') : i18nT('components.sessionActionsMenu.pin')}
       </Item>,
       <Item key="mute-opened" onSelect={() => toggleMutesOpened(slotKey)}>

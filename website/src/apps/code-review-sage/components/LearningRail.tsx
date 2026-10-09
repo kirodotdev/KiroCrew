@@ -14,6 +14,7 @@ import { useSage } from '../context'
 import { i18nT } from '../../../i18n/t'
 import ErrorNotice from '../../../components/ErrorNotice'
 import { useImeGuard } from '../../../hooks/useImeGuard'
+import { guideCaution } from '../../../guide/trustRoot'
 export default function LearningRail() {
   const ime = useImeGuard()
   const { selectedNamespace, selectNamespace } = useSage()
@@ -148,6 +149,7 @@ export default function LearningRail() {
                     type="button"
                     onClick={() => setConfirmDelete(ns.name)}
                     aria-label={i18nT('apps.codeReviewSage.components.learningRail.delete_namespace', { name: ns.name })}
+                    {...guideCaution}
                     className="flex-shrink-0 p-0.5 bg-transparent text-muted opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 focus-visible:opacity-100 hover:text-danger cursor-pointer"
                   >
                     <Trash2 size={12} />

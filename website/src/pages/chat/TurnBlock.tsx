@@ -69,9 +69,11 @@ const isConclusion = (it: TurnItem) => it.kind === 'single' && (it.msg.role === 
  * mcp_app inject: an embedded app's ui/message delivery is the USER'S OWN action
  * (an Acknowledge click, a form submit) landing in the transcript — folding it
  * into the steps pane hides the record of what they did behind a toggle.
+ * card: a guide offer — only the user can confirm it, so
+ * it is never folded away with the tool steps that proposed it.
  */
 const isAlwaysVisible = (it: TurnItem) => it.kind === 'single' && (
-  it.msg.role === 'mcp_oauth' || it.msg.role === 'error' ||
+  it.msg.role === 'mcp_oauth' || it.msg.role === 'error' || it.msg.role === 'card' ||
   (it.msg.role === 'inject' && it.msg.meta?.injectKind === 'mcp_app')
 )
 

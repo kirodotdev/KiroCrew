@@ -1,4 +1,4 @@
-"""Shared fixtures for tests that drive the ``kirocrew-guide`` HTTP routes in-process.
+"""Shared fixtures for tests that drive the guide HTTP routes in-process.
 
 A dedicated ``*_helpers.py`` imported by bare name, per the repo convention (see
 ``mcp_merge_helpers``): no ``test_*`` module imports another, and a
@@ -21,11 +21,13 @@ from aiohttp.test_utils import TestClient, TestServer
 from kiro_crew.dashboard.handlers import guide as guide_routes
 from kiro_crew.dashboard.state import _ChatSlot
 
+CREWMATE = [{"id": "crewmate.create", "params": {"name": "Scout"}}]
+
 
 class DashboardTurn:
     """Stands in for the task of a turn the user sent from the dashboard.
 
-    The agent-half routes admit a tool call only from the turn its slot is
+    The guide and card routes admit a tool call only from the turn its slot is
     executing (``_ChatSlot.turn_running``), so a slot a test opens carries one.
     """
 
@@ -44,7 +46,7 @@ def in_dashboard_turn(slot: _ChatSlot) -> _ChatSlot:
 
 
 class FakeState:
-    """The slice of ``DashboardState`` the agent-half routes read."""
+    """The slice of ``DashboardState`` the guide routes read."""
 
     owner_id = ""
 

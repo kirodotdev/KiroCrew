@@ -1461,6 +1461,8 @@ describe('chatSlice steer frame placement', () => {
 
     expect(screen.queryByText(/\[STEERING/)).toBeNull()
     expect(screen.getByText('Steered')).toBeInTheDocument()
+    // The summary is folded behind the chip and shown once the reader opens it.
+    fireEvent.click(screen.getByTestId('steer-ack-toggle'))
     expect(screen.getByText('switched to the new question')).toBeInTheDocument()
   })
 

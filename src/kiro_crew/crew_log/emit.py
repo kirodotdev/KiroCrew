@@ -95,7 +95,7 @@ import threading
 import time
 import traceback
 from collections import OrderedDict
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Final
 
 from kiro_crew.constants import CREW_LOG_ENV, crew_log_enabled
@@ -4344,6 +4344,65 @@ def on_dashboard_instance_changed(session_id: str, data: dict[str, Any]) -> None
     ``_write``.
     """
     _write(session_id, "dashboard/instance_changed", data, src=_SRC_GATEWAY)
+
+
+_GUIDE_ID_MAX = 64
+
+
+def _guide_id(value: Any) -> str:
+    return value if isinstance(value, str) and 0 < len(value) <= _GUIDE_ID_MAX else ""
+
+
+def on_guide_offered(
+    session_id: str,
+    *,
+    slot: str,
+    guide_id: str,
+    actions: Sequence[str],
+    mid: str = "",
+) -> None:
+    """The agent offered a guide in this session's conversation.
+
+    ``actions`` are the registered action ids only, never their parameters. ``mid``
+    joins the entry to its transcript row.
+    """
+    gid = _guide_id(guide_id)
+    if not gid:
+        return
+    data: dict[str, Any] = {
+        "slot": slot,
+        "guide_id": gid,
+        "actions": [str(a)[:64] for a in actions if isinstance(a, str)][:16],
+    }
+    turn = live_turn(session_id) if session_id else 0
+    if turn:
+        data["turn"] = turn
+    if mid:
+        data["mid"] = str(mid)[:64]
+    _write(session_id, "guide/offered", data, src=_SRC_GATEWAY)
+
+
+def on_guide_started(session_id: str, *, guide_id: str) -> None:
+    """The person pressed Start on an offered guide and a tab took it over."""
+    gid = _guide_id(guide_id)
+    if gid:
+        _write(session_id, "guide/started", {"guide_id": gid}, src=_SRC_GATEWAY)
+
+
+def on_guide_finished(
+    session_id: str, *, guide_id: str, status: str, reason: str | None = None
+) -> None:
+    """A guide ended: completed, cancelled (by the person, the agent or a closed
+    conversation) or expired. *reason* is kept only when it is a known one."""
+    from kiro_crew.crew_log.entry_types import GUIDE_FINISHED_REASONS, GUIDE_FINISHED_STATUSES
+
+    gid = _guide_id(guide_id)
+    if not gid or status not in GUIDE_FINISHED_STATUSES:
+        return
+    data: dict[str, Any] = {"guide_id": gid, "status": status}
+    if reason in GUIDE_FINISHED_REASONS:
+        data["reason"] = reason
+    _write(session_id, "guide/finished", data, src=_SRC_GATEWAY)
 
 
 def on_work_recorded(session_id: str, data: dict[str, Any], *, timeout: float = 5.0) -> bool:

@@ -10,6 +10,7 @@ import type { PasteBlock } from '../../utils/pasteTokens'
 import { offlineProps } from '../../utils/offline'
 import type { SendMode } from '../../pages/chat/ChatSettings'
 import { i18nT } from '../../i18n/t'
+import { uiLocation } from '../../uiLocations/uiLocation'
 import type { ComposerBusyMode } from './props'
 
 /* The composer's send path: `fireComposer` is every Enter and Send, idle or
@@ -319,7 +320,7 @@ export function BusySendControls({ stopState, killingEscaped, stopWithTap, isQue
         <span className="text-[13px] leading-4 text-muted min-w-0 break-words" data-testid="stop-declined-hint">{i18nT('components.chatInput.click_again_to_force_stop_resets_session')}</span>
       </div>
     ) : onStop ? (
-      <button className="w-8 h-8 rounded-lg bg-transparent border-none text-danger hover:bg-danger/10 flex items-center justify-center cursor-pointer transition-all" onClick={stopWithTap} title={i18nT('components.chatInput.stop_generation')} aria-label={i18nT('components.chatInput.stop_generation')} data-testid="stop-button-armed">
+      <button className="w-8 h-8 rounded-lg bg-transparent border-none text-danger hover:bg-danger/10 flex items-center justify-center cursor-pointer transition-all" onClick={stopWithTap} title={i18nT('components.chatInput.stop_generation')} aria-label={i18nT('components.chatInput.stop_generation')} data-testid="stop-button-armed" {...uiLocation('composer.stop')}>
         <Square size={18} fill="currentColor" />
       </button>
     ) : steerOnly ? (

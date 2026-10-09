@@ -8,7 +8,8 @@
  * instead. Second, the disabled row: it exists to make a known gap visible, which
  * only works if it stays reachable by keyboard and refuses selection.
  */
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { unregisteredMarkers } from './guideTargets'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { Boxes, Clock, LayoutDashboard, Trash2, Webhook } from 'lucide-react'
 
@@ -44,6 +45,9 @@ function renderRail(value: CrewEditorSection['key'] = 'overview') {
   )
   return { onChange }
 }
+
+// The forwarding proof: every marker the render drew is registered by its ref.
+afterEach(() => { expect(unregisteredMarkers()).toEqual([]) })
 
 describe('crew editor rail — structure from the registry', () => {
   it('emits one heading per group, and none for a footer row', () => {
@@ -187,5 +191,25 @@ describe('crew editor rail — the disabled row is visible, not selectable', () 
     expect(onChange).toHaveBeenCalledWith('overview')
     fireEvent.keyDown(screen.getByTestId('crew-rail-template'), { key: 'End' })
     expect(onChange).toHaveBeenCalledWith('danger')
+  })
+})
+
+describe('crew editor rail — registered UI locations', () => {
+  it("puts a segment's marker on that section's tab, and on no other row", () => {
+    render(
+      <CrewEditorRail
+        sections={SECTIONS}
+        value="overview"
+        onChange={() => {}}
+        ariaLabel="Crew settings"
+        panelIdPrefix="pane"
+        unsavedLabel="Unsaved changes"
+        sharedLabel="Shared"
+        segments={[{ key: 'danger', label: 'Danger zone', 'data-ui-location': 'agents.section-danger' }]}
+      />,
+    )
+    const marked = document.querySelectorAll('[data-ui-location]')
+    expect(marked).toHaveLength(1)
+    expect(marked[0]).toBe(screen.getByRole('tab', { name: /Danger zone/ }))
   })
 })

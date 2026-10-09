@@ -4,6 +4,7 @@ import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
 } from './ui/dropdown-menu'
 import { i18nT } from '../i18n/t'
+import { uiLocation } from '../uiLocations/uiLocation'
 
 /**
  * Split button for creating a job: primary half starts blank, the ▾ half offers
@@ -32,7 +33,7 @@ export default function AddJobSplitButton({ onBlank, onBrowseTemplates }: {
 }) {
   return (
     <span className="inline-flex items-stretch">
-      <Btn primary className="!rounded-r-none !border-r-0" onClick={onBlank}>
+      <Btn primary className="!rounded-r-none !border-r-0" onClick={onBlank} {...uiLocation('schedule.add-job')}>
         <span className="flex items-center gap-1.5">
           <Plus size={14} aria-hidden="true" />
           {i18nT('pages.schedulePage.add_job')}

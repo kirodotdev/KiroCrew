@@ -152,6 +152,21 @@ describe('crewmateRunPosition', () => {
     expect(crewmateRunPosition(rows, 1)).toBe('single')
   })
 
+  it("a guide offer joins the reply that explains it, so it sits under the crewmate's avatar", () => {
+    const card: ChatMessage = { role: 'card', content: 'Theme', cls: 'msg msg-card', ts: iso(5_000) }
+    // Drawn: user, card, reply. The tool step that proposed the card is filtered.
+    const transcript = [user(iso(-60_000)), tool(iso(1_000)), card, said(iso(9_000))]
+    const rows = filterCrewmateChat(transcript)
+    expect(rows.map(r => r.role)).toEqual(['user', 'card', 'assistant'])
+    // The card opens the run (it carries the author line); the reply continues it.
+    expect(crewmateRunPosition(rows, 1, transcript)).toBe('start')
+    expect(crewmateRunPosition(rows, 2, transcript)).toBe('end')
+    // A short acknowledgement before the proposal keeps the author line on top.
+    const withAck = [user(iso(-60_000)), said(iso(0), 'Checking.'), tool(iso(1_000)), card, said(iso(9_000))]
+    const drawn = filterCrewmateChat(withAck)
+    expect(drawn.map((_, i) => crewmateRunPosition(drawn, i, withAck)).slice(1)).toEqual(['start', 'cont', 'end'])
+  })
+
   it('a user message breaks the run', () => {
     const rows = [said(iso(0)), user(iso(10_000)), said(iso(20_000))]
     expect(crewmateRunPosition(rows, 0)).toBe('single')
@@ -340,6 +355,7 @@ describe('crewmateRowClass', () => {
 })
 
 describe('mateNarration', () => {
+  const card = (ts: string): ChatMessage => ({ role: 'card', content: '', cls: '', ts, meta: { card_id: `c-${ts}` } })
   const streaming = (content: string): ChatMessage => ({ role: 'streaming', content, cls: '' })
   const verdicts = (rows: ChatMessage[], running: boolean) => {
     const v = mateNarration(rows, running)
@@ -347,13 +363,18 @@ describe('mateNarration', () => {
   }
 
   it('hides the narration before a tool call once the answer follows it', () => {
-    const rows = [user('t1'), said('t2', "I'll look up where chat history lives."), tool('t3'), said('t5', 'Open Older Sessions.')]
-    expect(verdicts(rows, false)).toEqual(['bubble', 'hidden', 'bubble', 'bubble'])
+    const rows = [user('t1'), said('t2', "I'll look up where chat history lives."), tool('t3'), card('t4'), said('t5', 'Open Older Sessions.')]
+    expect(verdicts(rows, false)).toEqual(['bubble', 'hidden', 'bubble', 'bubble', 'bubble'])
+  })
+
+  it('a card alone counts as the work that ends narration (the duplicated pre-card answer goes too)', () => {
+    const rows = [user('t1'), said('t2', 'Narration.'), said('t3', 'Early answer.'), card('t4'), said('t5', 'Answer.')]
+    expect(verdicts(rows, false)).toEqual(['bubble', 'hidden', 'hidden', 'bubble', 'bubble'])
   })
 
   it("a settled turn's only text stays a bubble even when a tool call followed it", () => {
-    const rows = [user('t1'), said('t2', 'Here is the answer.'), tool('t3')]
-    expect(verdicts(rows, false)).toEqual(['bubble', 'bubble', 'bubble'])
+    const rows = [user('t1'), said('t2', 'Here is the guide.'), tool('t3'), card('t4')]
+    expect(verdicts(rows, false)).toEqual(['bubble', 'bubble', 'bubble', 'bubble'])
   })
 
   it('a turn with no tool call keeps its text as a bubble once it ends', () => {

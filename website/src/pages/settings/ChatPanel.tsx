@@ -1328,6 +1328,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
     <SettingsSubNav
       items={railItems}
       basePath={basePath}
+      guideTargetPrefix="settings.sub.chat."
       railWidth={220}
       listLabel={i18nT('pages.settings.chatPanel.rail_label')}
       backLabel={i18nT('settings.tabs.chat.label')}

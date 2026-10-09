@@ -105,6 +105,14 @@ class PostureControl:
 # Where a sink runs only ONE of the two scanners, its detail text says so.
 _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     (
+        "Guide rows in a conversation",
+        "dashboard/chat_cards.py",
+        "The title and result text of each guide row written into a chat "
+        "transcript and rendered in the browser. The text comes from an agent's "
+        "offer or a gateway outcome, so each string passes the "
+        "exfiltration-URL then the credential redactor before it is stored.",
+    ),
+    (
         "Thread, GIL and loop-stall diagnostics",
         "diag/threads.py",
         "Python frames, folded stacks and loop-stall dump text, on their way to an "
@@ -1710,6 +1718,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # WOULD need redaction and refuses the pin when it would. Nothing is
         # emitted here; the chat routes that act on the answer are the sinks.
         "members.py",
+        # Gate-side, like `link_meta.py` above: the UI-guide catalog asks whether
+        # the redactor WOULD change a proposed crewmate name/goal or MCP command,
+        # args or url, and REFUSES the guide when it would. Nothing it returns is
+        # redacted text.
+        "guide_catalog.py",
         # Inbound / gate-side: redacts what comes IN or what a gate logs, not what
         # goes out to a human.
         "context.py",

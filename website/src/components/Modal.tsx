@@ -6,6 +6,7 @@ import { X } from 'lucide-react'
 import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
 import { useDocumentImeLatch } from '../hooks/useImeGuard'
 import { i18nT } from '../i18n/t'
+import { guideTrustRoot, GuideTrustRootProvider, useGuideTrustRoot } from '../guide/trustRoot'
 interface ModalProps {
   /** Whether the modal is open */
   open: boolean
@@ -59,6 +60,10 @@ interface ModalProps {
    *  focus having left, and pull it back out on each keypress. See
    *  `useDialogFocusTrap`'s `enabled`. */
   interactionDisabled?: boolean
+  /** The dialog decides what the agent may do (a trust or approval prompt):
+   *  a guide never points at, resolves or reports a control inside it
+   *  (`guide/findTargetPolicy.ts`). */
+  guideTrustRoot?: boolean
   /** Modal content */
   children: React.ReactNode
 }
@@ -76,7 +81,9 @@ const SPRING = { type: 'spring' as const, stiffness: 500, damping: 35 }
  * therefore capture the restore target at page load and move focus into a
  * dialog that is not on screen.
  */
-function ModalDialog({ onClose, title, ariaLabel, footer, headerActions, maxWidth, height, layoutId, dismissDisabled = false, interactionDisabled = false, children }: ModalDialogProps) {
+function ModalDialog({ onClose, title, ariaLabel, footer, headerActions, maxWidth, height, layoutId, dismissDisabled = false, interactionDisabled = false, guideTrustRoot: trustRootProp = false, children }: ModalDialogProps) {
+  // Asked for, or opened from inside a trust-root region (it portals out of it).
+  const trustRoot = useGuideTrustRoot() || trustRootProp
   const dialogRef = useRef<HTMLDivElement>(null)
   const dismiss = useCallback(() => { if (!dismissDisabled) onClose() }, [dismissDisabled, onClose])
   const reactId = useId()
@@ -148,7 +155,7 @@ function ModalDialog({ onClose, title, ariaLabel, footer, headerActions, maxWidt
         transition: SPRING,
       }
 
-  return (
+  const dialog = (
     <motion.div
       ref={dialogRef}
       role="dialog"
@@ -160,6 +167,7 @@ function ModalDialog({ onClose, title, ariaLabel, footer, headerActions, maxWidt
       aria-labelledby={ariaLabel ? undefined : titleId}
       tabIndex={-1}
       onKeyDown={isolateKeys}
+      {...(trustRoot ? guideTrustRoot : {})}
       {...motionProps}
       className={`bg-card border border-border rounded-xl shadow-2xl w-full flex flex-col ${interactionDisabled ? 'pointer-events-none' : 'pointer-events-auto'} overflow-hidden outline-hidden`}
       style={{ maxWidth, height, maxHeight: '90vh' }}
@@ -195,6 +203,8 @@ function ModalDialog({ onClose, title, ariaLabel, footer, headerActions, maxWidt
       )}
     </motion.div>
   )
+  // What the dialog itself portals (a menu, a tip) is part of it too.
+  return trustRoot ? <GuideTrustRootProvider>{dialog}</GuideTrustRootProvider> : dialog
 }
 
 export default function Modal({ open, onClose, maxWidth = 640, guardAccidentalDismiss = false, dismissDisabled = false, layer = 'dialog', ...rest }: ModalProps) {

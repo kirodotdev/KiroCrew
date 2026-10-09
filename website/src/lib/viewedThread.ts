@@ -28,16 +28,34 @@
  */
 
 let viewedThreadSlot: string | null = null
+const listeners = new Set<() => void>()
+
+function notify(): void {
+  // Iterated over a copy: a listener may unsubscribe from its own callback.
+  for (const listener of [...listeners]) listener()
+}
 
 /** Register *slot* as the thread on screen. Replaces any earlier registration. */
 export function setViewedThreadSlot(slot: string): void {
+  if (viewedThreadSlot === slot) return
   viewedThreadSlot = slot
+  notify()
 }
 
 /** Retire *slot*'s registration. A no-op when another slot has since
  *  registered, so a late effect cleanup cannot un-register its successor. */
 export function clearViewedThreadSlot(slot: string): void {
-  if (viewedThreadSlot === slot) viewedThreadSlot = null
+  if (viewedThreadSlot !== slot) return
+  viewedThreadSlot = null
+  notify()
+}
+
+/** Subscribe to registration changes, for a render that must follow the
+ *  thread on screen (`useSyncExternalStore`). The websocket reader keeps
+ *  reading synchronously through `getViewedThreadSlot`. */
+export function subscribeViewedThreadSlot(listener: () => void): () => void {
+  listeners.add(listener)
+  return () => { listeners.delete(listener) }
 }
 
 /** The registered slot, or `null` when no non-chat surface is showing one. */
@@ -48,4 +66,5 @@ export function getViewedThreadSlot(): string | null {
 /** Test-only reset. */
 export function _resetViewedThreadForTests(): void {
   viewedThreadSlot = null
+  notify()
 }
