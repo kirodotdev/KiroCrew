@@ -2301,6 +2301,7 @@ async def create_session(
     caller_session_key: str,
     title: str = "",
     agent: str = "",
+    agent_kind: str = "",
     folder_id: str = "",
     model: str = "",
     caller_fenced: bool | None = None,
@@ -2357,6 +2358,27 @@ async def create_session(
     coroutine suspends many times before it is consulted. ``None`` means "not
     settled", and the fence is then evaluated inline. It is read by the
     private-store authorization below and nothing else.
+
+    ``agent_kind`` is the selection NAMESPACE for ``agent``, and this route takes
+    one value: ``"template"`` names the shared provider template of that name,
+    and ``""`` keeps the name-first resolution (a crew member wins over a
+    same-named template). It exists for the one case the bare name cannot
+    express: a template that a crew member of the same name shadows. The stock
+    ``kirocrew-worker`` is such a name on installs where an older agent sync
+    enrolled it as a crew member with its own private memory -- a bare
+    ``agent="kirocrew-worker"`` then selects the MEMBER, and a conductor that may
+    not bind that member's store (a member DM thread, a fenced deputy) is refused
+    ``memory_delegation_denied`` for a worker that needs no memory of its own.
+    ``agent_kind="template"`` dispatches the worker template on the caller's own
+    store instead, exactly as the chat route's explicit template pick "never pins
+    member memory". There is no ``"member"`` kind here: a bare name already
+    selects the member, so the value would only restate that resolution. The kind
+    is selection input, never authority: every gate below still applies, and a
+    template child takes the caller's store the same way an unshadowed template
+    already does. It is recorded on the slot (``agent_kind``) and in the birth
+    metadata, so a restart rehydrates the child in the namespace it was committed
+    in rather than re-resolving the bare name. A stated kind requires ``agent``:
+    the namespace qualifies a selection, and an inherited caller agent is not one.
 
     ``dry_run`` runs every gate up to the allocation, including the two slot
     ceilings, and returns ``{"dry_run": True}`` instead of minting a slot. It
@@ -2470,6 +2492,19 @@ async def create_session(
     # An inherited caller agent is already internal, but running both through the
     # same call keeps the guard on the field rather than on one of its sources.
     agent_name = sanitize_outbound(agent.strip() or (getattr(caller_slot, "agent", "") or ""))
+    # The selection namespace, validated HERE and not left to the HTTP route or
+    # the MCP schema: `create_session` is also reached in-process, and a kind
+    # outside the closed set would otherwise travel into `resolve_agent_bindings`
+    # as a silent name-first resolution. A kind without an explicit `agent`
+    # qualifies nothing -- the inherited caller agent is not a selection -- so it
+    # is refused rather than ignored.
+    if agent_kind not in ("", "template"):
+        raise SessionControlError('agent_kind must be "template"', code="invalid_agent_kind")
+    if agent_kind and not agent.strip():
+        raise SessionControlError(
+            "agent_kind qualifies an explicit agent; name the agent too",
+            code="agent_kind_requires_agent",
+        )
 
     log = state.conversation_log
     if log is None:
@@ -2524,8 +2559,16 @@ async def create_session(
         # awaited HERE, still ahead of the caller re-resolve below, so the decisions
         # that authorize the allocation are all made after the last suspension.
         cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        # Resolved in the STATED namespace when the caller gave one, so a
+        # template pick takes the template even when a crew member carries the
+        # same name -- the chat create route's contract, kept identical here.
         bindings = await asyncio.to_thread(
-            resolve_agent_bindings, cfg, agent_name, project_dir, validate_memory_files=False
+            resolve_agent_bindings,
+            cfg,
+            agent_name,
+            project_dir,
+            validate_memory_files=False,
+            selection_kind=agent_kind,
         )
     except Exception:
         raise SessionControlError(
@@ -2553,11 +2596,24 @@ async def create_session(
         # session exists yet, and a corrected name is one retry away. (An existing
         # slot is the opposite case -- there the stored name is the user's own
         # intent and is kept verbatim, since a momentarily stale resolution must
-        # not permanently rebind it.)
+        # not permanently rebind it.) A stated namespace never falls back to
+        # whoever answers by default either, and its refusal names the namespace
+        # so the caller can tell "no such template" from "no such agent".
+        if agent_kind:
+            raise SessionControlError(
+                f"{agent_name!r} does not resolve to a configured {agent_kind}",
+                code="agent_unresolved",
+            )
         raise SessionControlError(
             f"{agent_name!r} does not resolve to a configured agent",
             code="agent_unresolved",
         )
+    # The namespace the selection RESOLVED in, taken from the resolver's verdict
+    # before `bindings` is rewritten below to carry the child's execution route
+    # (whose `selection_kind` is the child's identity, which for a template child
+    # of an id-less member is still "member"). This is what the slot records when
+    # the caller stated a kind -- the chat create route's `chosen.selection_kind`.
+    committed_kind = bindings.selection_kind if agent_kind else ""
 
     # The model the child starts on. Checked by the SAME guard the dashboard's
     # model picker runs (`_model_rejected_reason`), against the provider from the
@@ -2782,6 +2838,22 @@ async def create_session(
                 # are not reached as a private-member CREATE caller the way an
                 # agent-created Global conductor is, so this names the condition
                 # that actually reaches this line.
+                #
+                # A caller whose own record is on the SHARED store is named next,
+                # for the same reason: it too is never vouched, so without this it
+                # logs "no vouched identity" and points the operator at a re-bind
+                # that cannot help -- a shared-store caller has no private store
+                # of its own for the selected member's to match, so no vouch, and
+                # no re-selection, ever admits it. This is the shape a Global-store
+                # crew member's DM thread meets when it names a crew member that
+                # owns private memory (the stock conductor dispatching a worker an
+                # older agent sync enrolled with its own store); the way out is a
+                # template dispatch (`agent_kind="template"`) or the owner's own tab,
+                # and the log should say so instead of describing a lost vouch. The
+                # store is tested beside the missing id because the id alone does
+                # not place a record on the shared store: a V1 crew member bound to
+                # its own named store also carries no `member_id`, and this line
+                # would be false for it.
                 caller_slot_now = state.get_slot(caller_key)
                 if (
                     caller_fenced is None
@@ -2792,6 +2864,16 @@ async def create_session(
                     and not _channel_link_of(caller_slot_now)
                 ):
                     cause = "the caller is fenced by its creation lineage (_created_by)"
+                elif (
+                    caller_execution is not None
+                    and caller_execution.member_id is None
+                    and caller_execution.store.store_id == "default"
+                ):
+                    cause = (
+                        "the caller runs on the shared store, so it holds no private "
+                        "store of its own for the selected member's to match (dispatch "
+                        "the template instead, or create from the owner's own tab)"
+                    )
                 elif caller_vouched is None:
                     cause = "this process holds no vouched identity for the caller"
                 elif (
@@ -3070,6 +3152,14 @@ async def create_session(
         # key and silently return this session to the global store.
         slot.memory_store = bindings.memory_store_name
         slot.memory_mode = child_execution.memory_mode
+        # The namespace the pick was committed in, recorded only when the caller
+        # stated one -- the chat create route's rule ("a name-only pick writes no
+        # agent_kind; only an explicit template pick says this was never a
+        # member session"). The resolver's verdict rather than the request's word,
+        # so the slot records what RESOLVED. Without it a rehydrated template child
+        # of a shadowed name would read as a bare name and re-resolve member-first.
+        if committed_kind:
+            slot.agent_kind = committed_kind
         # cwd must follow the workspace too, or file search and project-scoped agents
         # resolve against a directory the slot does not claim -- the same
         # authorization-vs-execution split as the agent binding, one layer down.
@@ -3160,6 +3250,12 @@ async def create_session(
                     "project": slot.project or "",
                     "title": slot.title or "",
                     "memory_mode": getattr(slot, "memory_mode", "persistent"),
+                    # The committed selection namespace, only when the caller
+                    # stated one -- the metadata codec writes `agent_kind` the same
+                    # way (truthy only), and for an idle newborn this dict is the
+                    # only record, so without it a restart would rehydrate a
+                    # template child of a shadowed name as a bare name.
+                    **({"agent_kind": slot.agent_kind} if slot.agent_kind else {}),
                     # Only when filed, mirroring the normal save path, which omits
                     # `folder_id` from the metadata line when empty. Without this
                     # the filing would not survive a restart: for an idle newborn

@@ -237,6 +237,18 @@ misconfigured. `select_crew` and `session_create` are also **not wired**:
 `select_crew` returns a crew's resolved configuration and binds nothing, so you
 pass the agent name to `session_create` yourself.
 
+**A worker needs no memory of its own.** Always dispatch `kirocrew-worker` with
+`agent_kind: "template"`: the worker then runs the `kirocrew-worker` template on
+YOUR memory, which is what a one-item worker needs; nothing else about the
+dispatch changes. The reason is an install shape you cannot see from here: on
+some installs an older agent sync also enrolled `kirocrew-worker` as a crew
+member with private memory, and a bare `agent: "kirocrew-worker"` then selects
+that member. When your session may not bind that member's memory — you run as a
+crew member on the shared store, or a parent conductor created you —
+`session_create` refuses it with `memory_delegation_denied`, and that refusal is
+not a setting to change: a crew member's memory binding is immutable and
+Settings offers no control for it.
+
 ### Patrol
 
 After dispatching, arm a loop on your own session with `monitor_start`. Put the

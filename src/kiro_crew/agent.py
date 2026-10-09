@@ -4950,6 +4950,12 @@ global default — so the child comes up as a second conductor, with no
 does not wire itself to `session_create` either: it returns a name and you pass
 it.
 
+**A worker needs no memory of its own.** Always dispatch `kirocrew-worker` with
+`agent_kind: "template"`: the worker then runs its template on your own memory,
+which is all a one-item worker needs. On an install where an older agent sync
+enrolled a crew member of that name, the bare name selects that member and is
+refused `memory_delegation_denied` — a binding no setting can change.
+
 ## Patrol
 
 Arm a loop on your own session with `monitor_start`, carrying the cycle

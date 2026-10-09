@@ -454,6 +454,38 @@ memory boundary stay the caller's. An invalid folder project refuses the create
 with 400 `folder_project_invalid`, and a folder whose project changes while the
 creation is in flight refuses with 409 `folder_target_changed`.
 
+`session_create` also takes an optional `agent_kind`, with one value: `template`.
+It is the selection namespace for `agent`, and it exists for the one case a bare
+`agent` cannot express: a shared template that a crew member of the same name
+shadows. Name-first resolution (the kind omitted) selects the member, and a
+caller that may not bind that member's private store is refused
+`memory_delegation_denied` even when it wanted only the template. The stock
+`kirocrew-worker` is such a name on installs where the pre-0.8 enrol-on-mount
+agent sync registered it as a crew member with its own V2 store (a binding that
+is immutable by design, so no setting undoes it): a conductor running as a crew
+member's DM thread on the shared store, or a child a parent conductor created,
+could not dispatch it. `agent_kind: "template"` resolves the template in
+`resolve_agent_bindings(selection_kind="template")`, so the child takes the
+caller's own store exactly as an unshadowed template child does (see "A created
+worker receives one execution identity"). On an install with no shadowing member
+the template kind resolves exactly what the bare name resolves — the resolver
+skips only the alias lookup — so the goal conductor's charter and the
+goal-conductor skill always pass it when they dispatch `kirocrew-worker`, and no
+conductor meets the refusal first. There is no `member` kind on this route: a bare
+name already selects the member, so the value would only restate that
+resolution. The kind is selection input, never authority, and every gate on this
+route still applies. A stated kind requires `agent` (`agent_kind_requires_agent`,
+400), any value other than `template` is refused `invalid_agent_kind` (400), and a
+kind that does not resolve is refused `agent_unresolved` naming the namespace
+rather than falling back to whoever answers by default. When a kind was stated,
+the slot records the namespace the pick resolved in (`agent_kind`), and the
+persist-at-birth metadata carries it, so an idle template child of a shadowed
+name rehydrates in its namespace instead of re-resolving the bare name
+member-first. The MCP tool's reply to a `memory_delegation_denied` refusal names
+the two real remedies — re-send with `agent_kind: "template"`, or the owner's own
+tab — and says the binding is not a setting, because the refusal's deliberate
+terseness had left callers inventing a Settings control that does not exist.
+
 The path walk itself never leaves an empty or duplicate folder behind. When the
 `folder` path still has segments to create, `session_create` first posts the
 same create with `dry_run: true` against the deepest folder that already
@@ -881,6 +913,15 @@ closing a tab. The refusal
 the caller sees names neither store nor member, so it is the server-side cause line that
 tells an operator a dropped entry apart from a record that disagrees with what this
 process committed; a member cannot diagnose which it hit from the refusal alone.
+The cause line also names, on its own, the caller class no re-bind can help: a
+caller whose own record is on the SHARED store (a Global-V1 crew member's DM
+thread, or an agent-created Global-store session under a carried fence verdict)
+is never vouched, because `bind_session_execution` vouches only a truthy
+`member_id`, so without that line every such refusal would read "no vouched
+identity" and point the operator at a restart or cap churn that is not the
+condition. The line says the caller holds no private store of its own for the
+selected member's to match and names the two remedies (a template dispatch, or the
+owner's own tab), while still naming neither the store nor the member.
 
 The vouched half is also BOUNDED, by one named count cap. The population is not the
 set of live sessions: every persistent `bind_session_execution` that establishes its
