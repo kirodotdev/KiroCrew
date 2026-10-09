@@ -555,12 +555,50 @@ class OrphanStallMonitor(ManagerComponent):
                     state,
                     reason=f"subagent {agent_id}'s process outlived its kill in a prior gateway run",
                 )
-                logger.info(
-                    "Ended leaked process of subagent %s: pid=%s, outcome=%s",
-                    agent_id,
-                    state.get("pid"),
-                    outcome or "not running",
-                )
+                if outcome == "unverified":
+                    # The pid is live but cannot be shown to be the run's (no
+                    # /proc, or a /proc entry newer than the recorded spawn).
+                    # Nothing was signalled, and the next start would read the
+                    # same answer, so the flag goes -- but the log says a
+                    # process may still be running rather than that none is.
+                    logger.warning(
+                        "Leaked process of subagent %s not ended: pid=%s is running but "
+                        "cannot be verified as the run's; it may still be running",
+                        agent_id,
+                        state.get("pid"),
+                    )
+                elif outcome == "failed":
+                    logger.warning(
+                        "Leaked process of subagent %s not ended: the kill of pid=%s failed; "
+                        "the next start tries again",
+                        agent_id,
+                        state.get("pid"),
+                    )
+                elif outcome == "refused":
+                    logger.info(
+                        "Leaked process of subagent %s left running: the lease table refused "
+                        "the kill of pid=%s because other tenants hold it",
+                        agent_id,
+                        state.get("pid"),
+                    )
+                elif outcome == "killed":
+                    logger.info(
+                        "Ended leaked process of subagent %s: pid=%s",
+                        agent_id,
+                        state.get("pid"),
+                    )
+                elif state.get("pid"):
+                    logger.info(
+                        "Leaked process of subagent %s already gone: pid=%s is not running",
+                        agent_id,
+                        state.get("pid"),
+                    )
+                else:
+                    logger.warning(
+                        "Leaked process of subagent %s cannot be ended: its state record "
+                        "names no pid; dropping the flag",
+                        agent_id,
+                    )
                 if outcome != "failed":
                     await asyncio.to_thread(clear_leaked_process, agent_id)
             except Exception:
@@ -571,9 +609,12 @@ class OrphanStallMonitor(ManagerComponent):
     ) -> str | None:
         """End the process a prior gateway run's record names, and audit what happened.
 
-        Returns the audited outcome -- ``killed``, ``refused`` or ``failed`` -- or
-        None when the recorded pid is not running or now belongs to another
-        process, so there was nothing to end.
+        Returns the audited outcome -- ``killed``, ``refused`` or ``failed`` --
+        ``unverified`` when the recorded pid is running but cannot be shown to be
+        the run's (``_is_orphan_process`` is False: no ``/proc`` on this
+        platform, a ``/proc`` entry newer than the recorded spawn, or a recycled
+        pid), so nothing was signalled, or None when the recorded pid is not
+        running, so there was nothing to end.
         """
         # Imported HERE, not at this module's top, and structurally required
         # rather than a style choice: ``bind_component_globals`` rebuilds every
@@ -591,7 +632,9 @@ class OrphanStallMonitor(ManagerComponent):
         pid = state.get("pid")
         if not pid or not self._manager._is_pid_alive(pid):
             return None
-        outcome: str | None = None
+        # Stays ``unverified`` unless the identity check below passes: a live
+        # pid it cannot vouch for was not signalled, which is not "not running".
+        outcome: str | None = "unverified"
         # Use pid_recorded_at (when PID was actually written) instead of
         # started (folder creation time) to avoid false negatives under load
         pid_recorded_at = state.get("pid_recorded_at", state.get("started", 0))

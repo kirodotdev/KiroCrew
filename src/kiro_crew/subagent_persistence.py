@@ -1545,6 +1545,11 @@ def list_leaked_processes() -> list[dict]:
     is not told about it again. Its ``leaked_process`` flag says only that a
     process may still be running, which is what the next start's reconciliation
     reads this for: to end the survivor without sending a notice.
+
+    A flagged folder whose ``state.json`` is missing or unreadable is returned
+    as ``{"id": <folder>}``: with no pid on record nothing can be ended, and
+    leaving it out would keep the flag -- and so the folder, which the pruner
+    skips while flagged -- forever.
     """
     results: list[dict] = []
     try:
@@ -1558,9 +1563,7 @@ def list_leaked_processes() -> list[dict]:
         if not isinstance(tombstone, dict) or tombstone.get("leaked_process") is not True:
             continue
         state = read_state(d.name)
-        if state is None:
-            continue
-        results.append(state)
+        results.append(state if state is not None else {"id": d.name})
     return results
 
 
