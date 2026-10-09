@@ -81,6 +81,7 @@ from kiro_crew.history import (
     transcript_stems,
     transcript_withholds_derivation,
 )
+from kiro_crew.kiro_cli import kiro_cli_version_at, pin_kiro_cli
 from kiro_crew.kiro_prerequisite import spawn_supervised_oneshot
 from kiro_crew.label_guard import PROSE_OPENERS, is_verdict_reply, looks_like_prose
 from kiro_crew.llm_helpers import run_bg_oneliner
@@ -258,7 +259,9 @@ _BONUS_COLON_RE = re.compile(
 # --- Text-scrape back-off --------------------------------------------------
 # The `/usage` text scrape is a kiro-cli slash command handled locally: it calls
 # the same free GetUsageLimits API the primary path uses and prints the usage
-# table, so no prompt reaches a model and the read costs no credits. It is the
+# table, so no prompt reaches a model and the read costs no credits. That holds
+# only on kiro-cli's V2 engine -- the V3 engine sends `/usage` to the model as a
+# prompt -- so the scrape pins V2 (see :func:`_usage_scrape_argv`). It is the
 # automatic fallback whenever the API path returns no plan. What it does cost is
 # a subprocess (whoami + the scrape, up to a minute and a half) on every refresh
 # interval, so a scrape that keeps producing unparseable output (kiro-cli format
@@ -763,12 +766,41 @@ def _wrap_argv_at_configured_tier(argv: list[str]) -> tuple[list[str], str | Non
     return wrap_argv(argv, mode=configured_sandbox_mode(), is_kiro_cli=True)
 
 
+#: Lowest kiro-cli release verified to accept ``chat --agent-engine v2``. Below
+#: it the scrape keeps the plain argv: an unknown flag fails the whole command,
+#: while an unpinned scrape fails only for a user whose global engine is V3.
+#: Lowering it once an older release is verified is a one-line change.
+USAGE_SCRAPE_ENGINE_PIN_MIN_VERSION: tuple[int, int, int] = (2, 28, 0)
+
+
+def _usage_scrape_argv(kiro_bin: str) -> list[str]:
+    """The ``/usage`` scrape argv, with the V2 engine pinned where it is accepted.
+
+    Without a pin kiro-cli uses the user's global ``chat.agentEngine``. On V3,
+    ``/usage`` is not a slash command: it goes to the model as a prompt, spends
+    a model turn and prints no usage table.
+
+    The version read runs ``--version`` outside the sandbox, so it runs only on
+    the :func:`pin_kiro_cli` binary, and only when that is the binary being
+    spawned. *kiro_bin* may come off the inherited ``PATH``, which can lead with
+    an agent-writable directory; a binary from there gets the plain argv and is
+    never run unsandboxed. Blocking: the pin stats install directories, and the
+    version read is a bounded spawn on its first call per binary identity.
+    """
+    argv = [kiro_bin, "chat", "--no-interactive"]
+    version = None
+    pinned, _unpinned = pin_kiro_cli()
+    if pinned is not None and os.path.realpath(pinned) == os.path.realpath(kiro_bin):
+        version = kiro_cli_version_at(pinned)
+    if version is not None and version >= USAGE_SCRAPE_ENGINE_PIN_MIN_VERSION:
+        argv += ["--agent-engine", "v2"]
+    return argv + ["--agent", "kirocrew-lite", "/usage"]
+
+
 def _wrap_argv_usage_scrape(kiro_bin: str) -> tuple[list[str], str | None]:
     """Executor entrypoint for the ``/usage`` scrape's wrap (see
     :func:`_wrap_argv_at_configured_tier` for why this runs off the loop)."""
-    return _wrap_argv_at_configured_tier(
-        [kiro_bin, "chat", "--no-interactive", "--agent", "kirocrew-lite", "/usage"]
-    )
+    return _wrap_argv_at_configured_tier(_usage_scrape_argv(kiro_bin))
 
 
 def _wrap_argv_whoami(kiro_bin: str) -> tuple[list[str], str | None]:

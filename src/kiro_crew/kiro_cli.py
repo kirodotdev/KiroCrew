@@ -272,6 +272,9 @@ def kiro_cli_version_at(binary: str) -> tuple[int, int, int] | None:
             capture_output=True,
             timeout=_VERSION_PROBE_TIMEOUT_SECS,
             check=False,
+            # A console-less Windows gateway would otherwise flash a console
+            # window for this child; the constant is 0 elsewhere.
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             # Pinned UTF-8 rather than bare text=True: a platform-locale decode
             # could mangle the version token and report a supported kiro-cli as
             # unparseable, which this gate reads as refusing.

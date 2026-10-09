@@ -2453,3 +2453,96 @@ class TestSpawnSuppressesConsoleWindow:
             _reset_usage_globals()
         assert spawn.await_args is not None, "usage scrape did not spawn"
         assert spawn.await_args.kwargs.get("creationflags") == sessions_mod._SUBPROCESS_NO_WINDOW
+
+
+class TestUsageScrapePinsTheEngine:
+    """The ``/usage`` scrape names its agent engine instead of inheriting one.
+
+    A kiro-cli whose global ``chat.agentEngine`` is ``v3`` sends ``/usage`` to the
+    model as a prompt: it spends a model turn and prints no usage table. The
+    scrape pins ``v2``, where ``/usage`` is a local slash command, on every
+    release verified to accept the selector. Below that floor, or when the
+    version cannot be read, the argv stays as it is, since an unknown flag
+    fails the whole command.
+    """
+
+    @staticmethod
+    def _no_sandbox(monkeypatch):
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.sessions.wrap_argv",
+            lambda argv, **k: (list(argv), None),
+        )
+
+    @staticmethod
+    def _pin(monkeypatch, pinned):
+        monkeypatch.setattr(sessions_mod, "pin_kiro_cli", lambda: (pinned, False))
+
+    def _argv(self, monkeypatch, version):
+        self._no_sandbox(monkeypatch)
+        self._pin(monkeypatch, "/bin/kiro")
+        monkeypatch.setattr(sessions_mod, "kiro_cli_version_at", lambda binary: version)
+        argv, _cleanup = sessions_mod._wrap_argv_usage_scrape("/bin/kiro")
+        return argv
+
+    def test_a_verified_release_pins_the_v2_engine(self, monkeypatch):
+        argv = self._argv(monkeypatch, sessions_mod.USAGE_SCRAPE_ENGINE_PIN_MIN_VERSION)
+        assert argv == [
+            "/bin/kiro",
+            "chat",
+            "--no-interactive",
+            "--agent-engine",
+            "v2",
+            "--agent",
+            "kirocrew-lite",
+            "/usage",
+        ]
+
+    def test_a_newer_release_pins_the_v2_engine(self, monkeypatch):
+        argv = self._argv(monkeypatch, (3, 0, 0))
+        assert argv[argv.index("--agent-engine") + 1] == "v2"
+        assert argv[-1] == "/usage"
+
+    @pytest.mark.parametrize("version", [None, (2, 27, 9)])
+    def test_an_unverified_or_unknown_release_keeps_the_plain_argv(
+        self, monkeypatch, version
+    ):
+        argv = self._argv(monkeypatch, version)
+        assert argv == [
+            "/bin/kiro",
+            "chat",
+            "--no-interactive",
+            "--agent",
+            "kirocrew-lite",
+            "/usage",
+        ]
+
+    def test_the_version_probe_reads_the_spawned_binary(self, monkeypatch):
+        seen: list[str] = []
+
+        def probe(binary):
+            seen.append(binary)
+            return None
+
+        self._no_sandbox(monkeypatch)
+        self._pin(monkeypatch, "/opt/kiro/bin/kiro-cli")
+        monkeypatch.setattr(sessions_mod, "kiro_cli_version_at", probe)
+        sessions_mod._wrap_argv_usage_scrape("/opt/kiro/bin/kiro-cli")
+        assert seen == ["/opt/kiro/bin/kiro-cli"]
+
+    @pytest.mark.parametrize("pinned", [None, "/opt/kiro/bin/kiro-cli"])
+    def test_a_binary_that_is_not_the_pin_is_never_probed(self, monkeypatch, pinned):
+        # A kiro-cli found only on the inherited PATH may sit in an
+        # agent-writable directory; the version probe runs outside the
+        # sandbox, so such a binary keeps the plain argv and is never run.
+        seen: list[str] = []
+
+        def probe(binary):
+            seen.append(binary)
+            return (3, 0, 0)
+
+        self._no_sandbox(monkeypatch)
+        self._pin(monkeypatch, pinned)
+        monkeypatch.setattr(sessions_mod, "kiro_cli_version_at", probe)
+        argv, _cleanup = sessions_mod._wrap_argv_usage_scrape("/tmp/venv/bin/kiro-cli")
+        assert seen == []
+        assert "--agent-engine" not in argv
