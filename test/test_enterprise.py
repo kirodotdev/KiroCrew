@@ -148,6 +148,33 @@ def test_self_user_id_cached_from_auth_test_and_reset_on_failure(tmp_path):
     assert enterprise.validated_self_user_id() == ""
 
 
+def test_set_validated_self_identity_records_and_clears():
+    """An edition gate that replaces validate_enterprise records identity here.
+
+    Without it the trusted-bot admission sees an empty self id and refuses
+    every listed peer bot with trusted_bot_requires_verified_self_id.
+    """
+    try:
+        enterprise.set_validated_self_identity(bot_id="B_SELF", user_id="U_SELF")
+        assert enterprise.validated_self_bot_id() == "B_SELF"
+        assert enterprise.validated_self_user_id() == "U_SELF"
+        assert enterprise.trusted_bot_admission("B_PEER", {"B_PEER"}) == (True, "")
+        assert enterprise.trusted_bot_admission("B_SELF", {"B_SELF"}) == (
+            False,
+            "own_bot_id_never_trusted",
+        )
+        enterprise.set_validated_self_identity()
+        assert enterprise.validated_self_bot_id() == ""
+        assert enterprise.validated_self_user_id() == ""
+        assert enterprise.trusted_bot_admission("B_PEER", {"B_PEER"}) == (
+            False,
+            "trusted_bot_requires_verified_self_id",
+        )
+    finally:
+        enterprise._validated_self_bot_id = ""
+        enterprise._validated_self_user_id = ""
+
+
 # --------------------------------------------------------------------------
 # Allowlist configured + auth.test succeeds
 # --------------------------------------------------------------------------

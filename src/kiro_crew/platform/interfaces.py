@@ -281,6 +281,11 @@ class SlackEnterpriseGate(Protocol):
     add ids the config does not list -- against the default gate they are
     dropped. It stays in the signature because an edition whose allowlist comes
     from somewhere other than that config key can still use it.
+
+    An implementation that replaces ``validate_enterprise`` must also record the
+    bot's own identity through ``slack.enterprise.set_validated_self_identity``:
+    clear it before re-validating, set it from ``auth.test`` on success. The
+    trusted-bot admission reads it and trusts no peer bot while it is empty.
     """
 
     def validate_enterprise(
