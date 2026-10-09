@@ -57,6 +57,7 @@ import { createCapabilityManagerEndpoints } from './client/capabilityManager'
 import { createVoiceEndpoints } from './client/voice'
 import { createSourceControlEndpoints } from './client/sourceControl'
 import { createMonitorsEndpoints } from './client/monitors'
+import { createPersonalInsightsEndpoints } from './client/personalInsights'
 import { createChatOrganizationEndpoints } from './client/chatOrganization'
 import { createNotificationsEndpoints } from './client/notifications'
 import { createSubagentsEndpoints } from './client/subagents'
@@ -1284,6 +1285,7 @@ const capabilityManager = createCapabilityManagerEndpoints(transport)
 const voice = createVoiceEndpoints(transport)
 const sourceControl = createSourceControlEndpoints(transport)
 const monitors = createMonitorsEndpoints(transport)
+const personalInsights = createPersonalInsightsEndpoints(transport)
 const chatOrganization = createChatOrganizationEndpoints(transport)
 const notifications = createNotificationsEndpoints(transport)
 const subagents = createSubagentsEndpoints(transport)
@@ -1391,6 +1393,7 @@ export const api = {
   ...sourceControl.providers,
   ...chat.slotList,
   ...monitors.loops,
+  ...personalInsights.personalInsights,
   ...chat.slots,
   ...chatOrganization.sidebar,
   ...chat.send,

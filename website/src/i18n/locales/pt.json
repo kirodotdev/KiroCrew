@@ -9798,7 +9798,8 @@
     "settings": "Configurações",
     "task_runner": "Task Runner",
     "webhooks": "Webhooks",
-    "crew_members": "Colegas"
+    "crew_members": "Colegas",
+    "insights": "Insights"
   },
   "pages": {
     "agentsPage": {
@@ -17839,6 +17840,43 @@
     "layoutEditorHarness": {
       "title": "Ambiente de teste do editor de layout",
       "reset": "Redefinir layout"
+    },
+    "insightsPage": {
+      "title": "Insights pessoais",
+      "subtitle": "Uma retrospectiva privada das suas próprias sessões, com mudanças que você pode aplicar com um clique e desfazer.",
+      "no_runs": "Ainda não há relatório. Peça ao agente para executar seu relatório de Insights pessoais e recarregue esta página.",
+      "load_failed": "Não foi possível carregar o relatório",
+      "run_line": "Última execução {{when}}: {{analyzed}} de {{cataloged}} sessões do painel analisadas. Visível só para você.",
+      "actions_heading": "Próximas mudanças recomendadas",
+      "no_actions": "Nenhuma mudança atingiu o limite de evidência nesta execução.",
+      "evidence": "Evidência: {{sessions}} de {{total}} sessões analisadas",
+      "cta_lesson_proposal": "Aplicar",
+      "cta_prompt": "Usar agora",
+      "cta_steering_patch": "Revisar e aplicar",
+      "cta_existing_capability": "Executar",
+      "label_lesson": "Lição salva que o agente seguirá",
+      "label_prompt": "Prompt reutilizável",
+      "label_steering": "Adição de steering",
+      "label_capability": "Capacidade existente",
+      "expected_later": "Esperado depois",
+      "verify": "Verificar",
+      "undo": "Desfazer",
+      "undo_it": "Desfazer isto",
+      "copy": "Copiar",
+      "copied": "Copiado",
+      "copy_first": "Apenas para copiar nesta versão: cole onde for adequado.",
+      "applying": "Aplicando…",
+      "undoing": "Desfazendo…",
+      "apply_anyway": "Aplicar mesmo assim",
+      "held_title": "Retido, não aplicado: a verificação de evidência não passou",
+      "overfit_summary": "Verificação de evidência: {{sessions}} sessões, {{lineages}} linhas independentes, {{days}} dias distintos",
+      "state_done_verified": "Concluído e verificado",
+      "state_changed_unverified": "Aplicado, verificação pendente",
+      "state_undone": "Desfeito",
+      "state_held": "Retido",
+      "applied_at": "Aplicado {{when}}",
+      "applied_earlier": "Aplicado anteriormente",
+      "follow_through_hint": "O próximo relatório compara as sessões antes e depois de cada mudança aplicada assim que existirem pelo menos {{min}} novas sessões."
     }
   },
   "privacyDisclosure": {

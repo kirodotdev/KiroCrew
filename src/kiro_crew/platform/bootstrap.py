@@ -54,6 +54,7 @@ from kiro_crew.platform.defaults import (
     DefaultTelemetryProvider,
     DefaultTipsProvider,
     DefaultTunnelProvider,
+    DefaultUnavailableInsightsProjectionProvider,
 )
 from kiro_crew.platform.discovery import discover_companion_context, plugin_entry_points
 from kiro_crew.platform.governance import (
@@ -164,6 +165,7 @@ def build_default_context(
         jail=DefaultJailProvider(),
         mobile_connect=DefaultMobileConnectProvider(),
         remote_provisioners=DefaultRemoteProvisionerProvider(),
+        insights_projection=DefaultUnavailableInsightsProjectionProvider(),
         feature_apps=(),
         governance=governance,
     )

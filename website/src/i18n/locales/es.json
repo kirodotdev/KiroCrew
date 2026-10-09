@@ -9798,7 +9798,8 @@
     "settings": "Configuración",
     "task_runner": "Task Runner",
     "webhooks": "Webhooks",
-    "crew_members": "Compañeros"
+    "crew_members": "Compañeros",
+    "insights": "Perspectivas"
   },
   "pages": {
     "agentsPage": {
@@ -17839,6 +17840,43 @@
     "layoutEditorHarness": {
       "title": "Banco de pruebas del editor de diseño",
       "reset": "Restablecer diseño"
+    },
+    "insightsPage": {
+      "title": "Perspectivas personales",
+      "subtitle": "Una retrospectiva privada de tus propias sesiones, con cambios que puedes aplicar con un clic y deshacer.",
+      "no_runs": "Aún no hay informe. Pide al agente que ejecute tu informe de Perspectivas personales y luego recarga esta página.",
+      "load_failed": "No se pudo cargar el informe",
+      "run_line": "Última ejecución {{when}}: {{analyzed}} de {{cataloged}} sesiones del panel analizadas. Solo visible para ti.",
+      "actions_heading": "Próximos cambios recomendados",
+      "no_actions": "Ningún cambio superó el umbral de evidencia en esta ejecución.",
+      "evidence": "Evidencia: {{sessions}} de {{total}} sesiones analizadas",
+      "cta_lesson_proposal": "Hacerlo",
+      "cta_prompt": "Usar ahora",
+      "cta_steering_patch": "Revisar y hacerlo",
+      "cta_existing_capability": "Ejecutar",
+      "label_lesson": "Lección guardada que el agente seguirá",
+      "label_prompt": "Prompt reutilizable",
+      "label_steering": "Adición de steering",
+      "label_capability": "Capacidad existente",
+      "expected_later": "Esperado más adelante",
+      "verify": "Verificar",
+      "undo": "Deshacer",
+      "undo_it": "Deshacerlo",
+      "copy": "Copiar",
+      "copied": "Copiado",
+      "copy_first": "Solo para copiar en esta versión: pégalo donde corresponda.",
+      "applying": "Aplicando…",
+      "undoing": "Deshaciendo…",
+      "apply_anyway": "Aplicar de todos modos",
+      "held_title": "Retenido, no aplicado: la comprobación de evidencia no se superó",
+      "overfit_summary": "Comprobación de evidencia: {{sessions}} sesiones, {{lineages}} hilos independientes, {{days}} días distintos",
+      "state_done_verified": "Hecho y verificado",
+      "state_changed_unverified": "Aplicado, verificación pendiente",
+      "state_undone": "Deshecho",
+      "state_held": "Retenido",
+      "applied_at": "Aplicado {{when}}",
+      "applied_earlier": "Aplicado anteriormente",
+      "follow_through_hint": "El próximo informe compara las sesiones anteriores y posteriores a cada cambio aplicado cuando existan al menos {{min}} sesiones nuevas."
     }
   },
   "privacyDisclosure": {

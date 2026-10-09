@@ -43,6 +43,7 @@ if TYPE_CHECKING:  # avoid import cycles — config.loader imports heavy modules
         GatewayLifecycleProvider,
         IdentityProvider,
         ImportSourceProvider,
+        InsightsProjectionProvider,
         JailProvider,
         KnowledgeProvider,
         McpToolingProvider,
@@ -338,6 +339,8 @@ class PlatformContext:
     # plus whatever the edition adds), each backed by a ``LaunchEngine`` the
     # core's launch job drives. v1 addition (no CONTRACT_VERSION bump).
     remote_provisioners: "RemoteProvisionerProvider"
+
+    insights_projection: "InsightsProjectionProvider"
 
     # ── bundled feature apps ──
     feature_apps: "Tuple[FeatureApp, ...]"  # [RESERVED] — see RESERVED_SLOTS

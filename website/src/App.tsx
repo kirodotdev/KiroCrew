@@ -180,6 +180,7 @@ const AppPage = lazyPage(() => import('./pages/AppPage'))
 const AppDetailPage = lazyPage(() => import('./pages/AppDetailPage'))
 const MigrationPage = lazyPage(() => import('./pages/MigrationPage'))
 const HooksPage = lazyPage(() => import('./pages/HooksPage'))
+const InsightsPage = lazyPage(() => import('./pages/InsightsPage'))
 
 type LogSubscribeFn = (cb: ((data: { level: string; msg: string }) => void) | null) => void
 
@@ -2727,6 +2728,7 @@ export default function App() {
             <Route path="/tasks" element={<TasksRedirect />} />
             <Route path="/logs" element={<LogsPage />} />
             <Route path="/hooks" element={<HooksPage />} />
+            <Route path="/insights" element={<ErrorBoundary><InsightsPage /></ErrorBoundary>} />
             <Route path="/webhooks" element={<ErrorBoundary><WebhooksPage /></ErrorBoundary>} />
             <Route path="/capabilities" element={<CapabilitiesPage />} />
             {/* Instances setup moved into Settings; switching happens via the header tab strip. */}

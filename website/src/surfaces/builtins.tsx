@@ -7,7 +7,7 @@
  * Order in this file = order in the rail (within each group). Add new
  * built-in surfaces here; do not add hardcoded badge logic to `App.tsx`.
  */
-import { MessageSquare, Bell, Component, CalendarDays, Settings, ClipboardCheck, Compass, Webhook, BookOpen, Link2, Library, MessageSquareText, Workflow, ScrollText, Bot } from 'lucide-react'
+import { MessageSquare, Bell, Component, CalendarDays, Settings, ClipboardCheck, Compass, Webhook, BookOpen, Link2, Library, MessageSquareText, Workflow, ScrollText, Bot, Sparkles } from 'lucide-react'
 import type { ReactElement } from 'react'
 import { createSelector } from '@reduxjs/toolkit'
 import { KiroGhostMark } from '../components/KiroGhostMark'
@@ -187,6 +187,17 @@ registerBuiltinSurface({
   labelKey: 'nav.artifacts',
   icon: <Component size={16} />,
   group: 'Main',
+})
+
+// Personal Insights: the owner's private retrospective with one-click actions
+// (`/insights`, InsightsPage). Owner-only on the backend; no slot, no badge.
+registerBuiltinSurface({
+  navId: 'insights',
+  route: '/insights',
+  label: surfaceMachineValue('Insights'),
+  labelKey: 'nav.insights',
+  icon: <Sparkles size={16} />,
+  group: surfaceMachineValue('Main'),
 })
 
 // Knowledge is not a main-rail surface BY DEFAULT: it lives as a tab inside

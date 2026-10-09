@@ -9668,7 +9668,8 @@
     "settings": "Einstellungen",
     "task_runner": "Task Runner",
     "webhooks": "Webhooks",
-    "crew_members": "Crewmates"
+    "crew_members": "Crewmates",
+    "insights": "Einblicke"
   },
   "pages": {
     "agentsPage": {
@@ -17582,6 +17583,43 @@
     "layoutEditorHarness": {
       "title": "Layout-Editor-Testumgebung",
       "reset": "Layout zurücksetzen"
+    },
+    "insightsPage": {
+      "title": "Persönliche Einblicke",
+      "subtitle": "Eine private Rückschau auf deine eigenen Sitzungen, mit Änderungen, die du mit einem Klick anwenden und rückgängig machen kannst.",
+      "no_runs": "Noch kein Bericht. Bitte den Agenten, deinen Bericht „Persönliche Einblicke“ zu erstellen, und lade diese Seite dann neu.",
+      "load_failed": "Bericht konnte nicht geladen werden",
+      "run_line": "Letzter Lauf {{when}}: {{analyzed}} von {{cataloged}} Dashboard-Sitzungen analysiert. Nur für dich sichtbar.",
+      "actions_heading": "Empfohlene nächste Änderungen",
+      "no_actions": "In diesem Lauf hat keine Änderung die Evidenzschwelle erreicht.",
+      "evidence": "Evidenz: {{sessions}} von {{total}} analysierten Sitzungen",
+      "cta_lesson_proposal": "Anwenden",
+      "cta_prompt": "Jetzt verwenden",
+      "cta_steering_patch": "Prüfen und anwenden",
+      "cta_existing_capability": "Ausführen",
+      "label_lesson": "Gespeicherte Lektion, der der Agent folgt",
+      "label_prompt": "Wiederverwendbarer Prompt",
+      "label_steering": "Steering-Ergänzung",
+      "label_capability": "Vorhandene Fähigkeit",
+      "expected_later": "Später erwartet",
+      "verify": "Prüfen",
+      "undo": "Rückgängig",
+      "undo_it": "Rückgängig machen",
+      "copy": "Kopieren",
+      "copied": "Kopiert",
+      "copy_first": "In dieser Version nur zum Kopieren: füge es dort ein, wo es hingehört.",
+      "applying": "Wird angewendet…",
+      "undoing": "Wird rückgängig gemacht…",
+      "apply_anyway": "Trotzdem anwenden",
+      "held_title": "Zurückgehalten, nicht angewendet: die Evidenzprüfung ist fehlgeschlagen",
+      "overfit_summary": "Evidenzprüfung: {{sessions}} Sitzungen, {{lineages}} unabhängige Stränge, {{days}} verschiedene Tage",
+      "state_done_verified": "Erledigt und geprüft",
+      "state_changed_unverified": "Angewendet, Prüfung ausstehend",
+      "state_undone": "Rückgängig gemacht",
+      "state_held": "Zurückgehalten",
+      "applied_at": "Angewendet {{when}}",
+      "applied_earlier": "Früher angewendet",
+      "follow_through_hint": "Der nächste Bericht vergleicht Sitzungen vor und nach jeder angewendeten Änderung, sobald mindestens {{min}} neue Sitzungen vorliegen."
     }
   },
   "privacyDisclosure": {

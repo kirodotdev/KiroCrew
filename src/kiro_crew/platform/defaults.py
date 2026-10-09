@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from kiro_crew.platform.interfaces import (
         ImportSource,
         InboundToken,
+        InsightsProjectionDescriptor,
         McpScope,
         MemoryRoots,
         SessionPrincipal,
@@ -34,6 +35,7 @@ from kiro_crew import security, sso_status
 from kiro_crew.platform.interfaces import (
     BUILTIN_PROVISIONER_ID,
     CapabilityResult,
+    InsightsProjectionUnavailable,
     InterceptDecision,
     MobileConnectMethod,
     OtlpDestination,
@@ -863,3 +865,10 @@ class DefaultRemoteProvisionerProvider:
             return CloudConfig.load().fargate_config()
         except Exception:  # noqa: BLE001 - a config read must not break the selector
             return None
+
+
+class DefaultUnavailableInsightsProjectionProvider:
+    def descriptor(self) -> "InsightsProjectionDescriptor":
+        raise InsightsProjectionUnavailable(
+            "no insights projection executable is composed in the public edition"
+        )

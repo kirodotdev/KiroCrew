@@ -131,6 +131,7 @@ from kiro_crew.dashboard.handlers.artifacts import (  # noqa: F401
 )
 from kiro_crew.dashboard.handlers.feedback import setup_feedback_routes
 from kiro_crew.dashboard.handlers.knowledge import setup_knowledge_routes
+from kiro_crew.dashboard.handlers.personal_insights import setup_personal_insights_routes
 from kiro_crew.dashboard.handlers.link_meta import setup_link_meta_routes
 from kiro_crew.dashboard.handlers.secrets import setup_secrets_routes
 from kiro_crew.dashboard.handlers.source_providers import (  # noqa: F401
@@ -1785,6 +1786,7 @@ async def start_dashboard(
     setup_knowledge_routes(app)
     setup_weixin_routes(app)
     setup_feedback_routes(app)
+    setup_personal_insights_routes(app)
     setup_secrets_routes(app)
     setup_whatsapp_routes(app)
 

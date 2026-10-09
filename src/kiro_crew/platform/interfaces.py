@@ -2009,3 +2009,42 @@ class FeatureApp(Protocol):
     def manifest_path(self) -> Path: ...
 
     def register(self, ctx: Any) -> None: ...
+
+
+class InsightsProjectionUnavailable(Exception):
+    pass
+
+
+@dataclass(frozen=True)
+class InsightsProjectionDescriptor:
+    schema_version: str
+    executable_path: str
+    executable_sha256: str
+    argv: "Tuple[str, ...]"
+    max_stdin_bytes: int
+    max_stdout_bytes: int
+    timeout_seconds: int
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "agent-session-intelligence.projection-descriptor-template/1.0":
+            raise ValueError("descriptor schema version is unsupported")
+        path = Path(self.executable_path)
+        if not path.is_absolute() or path.resolve() != path:
+            raise ValueError("descriptor executable path is not canonical and absolute")
+        if len(self.executable_sha256) != 64 or any(
+            character not in "0123456789abcdef" for character in self.executable_sha256
+        ):
+            raise ValueError("descriptor executable digest is invalid")
+        if self.argv != ("asi-projection-probe", "project"):
+            raise ValueError("descriptor argv does not match the fixed projection command")
+        for value in (
+            self.max_stdin_bytes,
+            self.max_stdout_bytes,
+            self.timeout_seconds,
+        ):
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise ValueError("descriptor bounds must be positive integers")
+
+
+class InsightsProjectionProvider(Protocol):
+    def descriptor(self) -> InsightsProjectionDescriptor: ...

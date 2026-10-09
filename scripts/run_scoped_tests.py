@@ -294,11 +294,16 @@ def reference_tokens(path: str) -> set[str]:
     if len(p.parts) >= 2:
         tokens.add("/".join(p.parts[-2:]))
     if p.suffix == ".py":
-        tokens.add(p.stem)
         parts = list(p.parts)
-        if parts and parts[0] == "src":
-            parts = parts[1:]
-        tokens.add(".".join([*parts[:-1], p.stem]))
+        src_relative = parts[1:] if parts and parts[0] == "src" else parts
+        if p.stem == "__init__":
+            package_parts = src_relative[:-1]
+            if package_parts:
+                tokens.add(".".join(package_parts))
+                tokens.add("/".join(p.parts[:-1]))
+        else:
+            tokens.add(p.stem)
+            tokens.add(".".join([*src_relative[:-1], p.stem]))
     return {t for t in tokens if t}
 
 

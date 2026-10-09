@@ -9668,7 +9668,8 @@
     "settings": "सेटिंग्स",
     "task_runner": "Task Runner",
     "webhooks": "वेबहुक",
-    "crew_members": "साथी"
+    "crew_members": "साथी",
+    "insights": "इनसाइट्स"
   },
   "pages": {
     "agentsPage": {
@@ -17582,6 +17583,43 @@
     "layoutEditorHarness": {
       "title": "लेआउट एडिटर हार्नेस",
       "reset": "लेआउट रीसेट करो"
+    },
+    "insightsPage": {
+      "title": "व्यक्तिगत इनसाइट्स",
+      "subtitle": "आपके अपने सत्रों से बनी एक निजी समीक्षा, जिसमें बदलाव एक क्लिक में लागू और पूर्ववत किए जा सकते हैं।",
+      "no_runs": "अभी कोई रिपोर्ट नहीं है। एजेंट से अपनी व्यक्तिगत इनसाइट्स रिपोर्ट चलाने को कहें, फिर यह पेज फिर से लोड करें।",
+      "load_failed": "रिपोर्ट लोड नहीं हो सकी",
+      "run_line": "नवीनतम रन {{when}}: {{cataloged}} डैशबोर्ड सत्रों में से {{analyzed}} का विश्लेषण किया गया। केवल आपके लिए।",
+      "actions_heading": "सुझाए गए अगले बदलाव",
+      "no_actions": "इस रन में किसी बदलाव ने साक्ष्य सीमा पार नहीं की।",
+      "evidence": "साक्ष्य: विश्लेषित {{total}} सत्रों में से {{sessions}}",
+      "cta_lesson_proposal": "लागू करें",
+      "cta_prompt": "अभी उपयोग करें",
+      "cta_steering_patch": "समीक्षा करके लागू करें",
+      "cta_existing_capability": "चलाएँ",
+      "label_lesson": "सहेजा गया पाठ जिसका एजेंट पालन करेगा",
+      "label_prompt": "पुन: उपयोग योग्य प्रॉम्प्ट",
+      "label_steering": "steering जोड़",
+      "label_capability": "मौजूदा क्षमता",
+      "expected_later": "बाद में अपेक्षित",
+      "verify": "सत्यापित करें",
+      "undo": "पूर्ववत करें",
+      "undo_it": "इसे पूर्ववत करें",
+      "copy": "कॉपी करें",
+      "copied": "कॉपी हो गया",
+      "copy_first": "इस रिलीज़ में केवल कॉपी: इसे सही जगह पर पेस्ट करें।",
+      "applying": "लागू किया जा रहा है…",
+      "undoing": "पूर्ववत किया जा रहा है…",
+      "apply_anyway": "फिर भी लागू करें",
+      "held_title": "रोका गया, लागू नहीं हुआ: साक्ष्य जाँच पास नहीं हुई",
+      "overfit_summary": "साक्ष्य जाँच: {{sessions}} सत्र, {{lineages}} स्वतंत्र थ्रेड, {{days}} अलग दिन",
+      "state_done_verified": "पूर्ण और सत्यापित",
+      "state_changed_unverified": "लागू, सत्यापन बाकी",
+      "state_undone": "पूर्ववत किया गया",
+      "state_held": "रोका गया",
+      "applied_at": "{{when}} को लागू",
+      "applied_earlier": "पहले लागू किया गया",
+      "follow_through_hint": "अगली रिपोर्ट कम से कम {{min}} नए सत्र होने पर हर लागू बदलाव के पहले और बाद के सत्रों की तुलना करेगी।"
     }
   },
   "privacyDisclosure": {

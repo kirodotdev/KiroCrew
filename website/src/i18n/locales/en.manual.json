@@ -4041,7 +4041,8 @@
     "settings": "Settings",
     "task_runner": "Task Runner",
     "webhooks": "Webhooks",
-    "crew_members": "Crewmates"
+    "crew_members": "Crewmates",
+    "insights": "Insights"
   },
   "pages": {
     "aidlc": {
@@ -8093,6 +8094,43 @@
     },
     "membersPage": {
       "drawer_delegated_working": "Delegated work running"
+    },
+    "insightsPage": {
+      "title": "Personal Insights",
+      "subtitle": "A private retrospective from your own sessions, with changes you can apply in one click and undo.",
+      "no_runs": "No report yet. Ask the agent to run your Personal Insights report, then reload this page.",
+      "load_failed": "Could not load the report",
+      "run_line": "Latest run {{when}}: {{analyzed}} of {{cataloged}} dashboard sessions analyzed. Private to you.",
+      "actions_heading": "Recommended next changes",
+      "no_actions": "No change cleared the evidence bar this run.",
+      "evidence": "Evidence: {{sessions}} of {{total}} analyzed sessions",
+      "cta_lesson_proposal": "Do it",
+      "cta_prompt": "Use this now",
+      "cta_steering_patch": "Review and do it",
+      "cta_existing_capability": "Run it",
+      "label_lesson": "Saved lesson the agent will follow",
+      "label_prompt": "Reusable prompt",
+      "label_steering": "Steering addition",
+      "label_capability": "Existing capability",
+      "expected_later": "Expected later",
+      "verify": "Verify",
+      "undo": "Undo",
+      "undo_it": "Undo it",
+      "copy": "Copy",
+      "copied": "Copied",
+      "copy_first": "Copy-first in this release: paste it where it belongs.",
+      "applying": "Applying…",
+      "undoing": "Undoing…",
+      "apply_anyway": "Apply anyway",
+      "held_title": "Held, not applied: the evidence check did not pass",
+      "overfit_summary": "Evidence check: {{sessions}} sessions, {{lineages}} independent threads, {{days}} distinct days",
+      "state_done_verified": "Done and verified",
+      "state_changed_unverified": "Applied, verification pending",
+      "state_undone": "Undone",
+      "state_held": "Held",
+      "applied_at": "Applied {{when}}",
+      "applied_earlier": "Applied earlier",
+      "follow_through_hint": "The next report compares sessions before and after each applied change once at least {{min}} new sessions exist."
     }
   },
   "privacyDisclosure": {

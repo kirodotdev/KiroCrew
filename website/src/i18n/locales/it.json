@@ -9798,7 +9798,8 @@
     "settings": "Impostazioni",
     "task_runner": "Task Runner",
     "webhooks": "Webhooks",
-    "crew_members": "Compagni"
+    "crew_members": "Compagni",
+    "insights": "Approfondimenti"
   },
   "pages": {
     "agentsPage": {
@@ -17839,6 +17840,43 @@
     "layoutEditorHarness": {
       "title": "Banco di prova dell’editor di layout",
       "reset": "Reimposta layout"
+    },
+    "insightsPage": {
+      "title": "Approfondimenti personali",
+      "subtitle": "Una retrospettiva privata delle tue sessioni, con modifiche da applicare con un clic e annullare.",
+      "no_runs": "Nessun report ancora. Chiedi all'agente di eseguire il report Approfondimenti personali, poi ricarica questa pagina.",
+      "load_failed": "Impossibile caricare il report",
+      "run_line": "Ultima esecuzione {{when}}: {{analyzed}} di {{cataloged}} sessioni della dashboard analizzate. Visibile solo a te.",
+      "actions_heading": "Prossime modifiche consigliate",
+      "no_actions": "Nessuna modifica ha superato la soglia di evidenza in questa esecuzione.",
+      "evidence": "Evidenza: {{sessions}} di {{total}} sessioni analizzate",
+      "cta_lesson_proposal": "Applica",
+      "cta_prompt": "Usa ora",
+      "cta_steering_patch": "Rivedi e applica",
+      "cta_existing_capability": "Esegui",
+      "label_lesson": "Lezione salvata che l'agente seguirà",
+      "label_prompt": "Prompt riutilizzabile",
+      "label_steering": "Aggiunta di steering",
+      "label_capability": "Capacità esistente",
+      "expected_later": "Atteso in seguito",
+      "verify": "Verifica",
+      "undo": "Annulla",
+      "undo_it": "Annullala",
+      "copy": "Copia",
+      "copied": "Copiato",
+      "copy_first": "Solo da copiare in questa versione: incollalo dove serve.",
+      "applying": "Applicazione…",
+      "undoing": "Annullamento…",
+      "apply_anyway": "Applica comunque",
+      "held_title": "Trattenuto, non applicato: il controllo dell'evidenza non è stato superato",
+      "overfit_summary": "Controllo dell'evidenza: {{sessions}} sessioni, {{lineages}} filoni indipendenti, {{days}} giorni distinti",
+      "state_done_verified": "Fatto e verificato",
+      "state_changed_unverified": "Applicato, verifica in attesa",
+      "state_undone": "Annullato",
+      "state_held": "Trattenuto",
+      "applied_at": "Applicato {{when}}",
+      "applied_earlier": "Applicato in precedenza",
+      "follow_through_hint": "Il prossimo report confronta le sessioni prima e dopo ogni modifica applicata quando esistono almeno {{min}} nuove sessioni."
     }
   },
   "privacyDisclosure": {

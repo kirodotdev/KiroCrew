@@ -9538,7 +9538,8 @@
     "settings": "設定",
     "task_runner": "Task Runner",
     "webhooks": "Webhooks",
-    "crew_members": "クルーメイト"
+    "crew_members": "クルーメイト",
+    "insights": "インサイト"
   },
   "pages": {
     "agentsPage": {
@@ -17325,6 +17326,43 @@
     "layoutEditorHarness": {
       "title": "レイアウトエディタのハーネス",
       "reset": "レイアウトをリセット"
+    },
+    "insightsPage": {
+      "title": "パーソナルインサイト",
+      "subtitle": "あなた自身のセッションに基づく非公開の振り返りです。変更はワンクリックで適用し、取り消せます。",
+      "no_runs": "まだレポートがありません。エージェントにパーソナルインサイトのレポートを実行してもらい、このページを再読み込みしてください。",
+      "load_failed": "レポートを読み込めませんでした",
+      "run_line": "最新の実行 {{when}}: ダッシュボードセッション {{cataloged}} 件のうち {{analyzed}} 件を分析。あなただけに表示されます。",
+      "actions_heading": "推奨される次の変更",
+      "no_actions": "今回の実行では、証拠の基準を満たした変更はありません。",
+      "evidence": "証拠: 分析した {{total}} セッションのうち {{sessions}} 件",
+      "cta_lesson_proposal": "実行する",
+      "cta_prompt": "今すぐ使う",
+      "cta_steering_patch": "確認して実行",
+      "cta_existing_capability": "実行",
+      "label_lesson": "エージェントが従う保存済みレッスン",
+      "label_prompt": "再利用できるプロンプト",
+      "label_steering": "steering の追加",
+      "label_capability": "既存の機能",
+      "expected_later": "後で期待される結果",
+      "verify": "確認",
+      "undo": "取り消す",
+      "undo_it": "これを取り消す",
+      "copy": "コピー",
+      "copied": "コピーしました",
+      "copy_first": "このリリースではコピーのみ対応です。適切な場所に貼り付けてください。",
+      "applying": "適用中…",
+      "undoing": "取り消し中…",
+      "apply_anyway": "それでも適用",
+      "held_title": "保留、未適用: 証拠チェックを通過しませんでした",
+      "overfit_summary": "証拠チェック: {{sessions}} セッション、独立したスレッド {{lineages}} 件、{{days}} 日",
+      "state_done_verified": "完了・検証済み",
+      "state_changed_unverified": "適用済み、検証待ち",
+      "state_undone": "取り消し済み",
+      "state_held": "保留",
+      "applied_at": "{{when}} に適用",
+      "applied_earlier": "以前に適用",
+      "follow_through_hint": "次のレポートでは、新しいセッションが {{min}} 件以上たまった時点で、適用した各変更の前後のセッションを比較します。"
     }
   },
   "privacyDisclosure": {

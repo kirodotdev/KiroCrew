@@ -711,3 +711,66 @@ def test_the_reference_scan_reads_each_test_file_once_and_drops_it(gate) -> None
         "run_scoped_tests._read_text is memoised again; the reference scan must "
         "read each file once and drop it, not retain the test tree's text"
     )
+
+
+# ---------------------------------------------------------------------------
+# reference_tokens(): a package __init__.py contributes package-path tokens,
+# never the bare "__init__" stem (which word-matches ~every test file).
+# ---------------------------------------------------------------------------
+
+
+def test_package_init_excludes_bare_init_stem(gate) -> None:
+    selector = importlib.import_module("run_scoped_tests")
+    tokens = selector.reference_tokens("src/kiro_crew/personal_insights/__init__.py")
+    assert "__init__" not in tokens
+    assert "kiro_crew.personal_insights.__init__" not in tokens
+    assert "personal_insights.__init__" not in tokens
+
+
+def test_package_init_includes_dotted_package_path(gate) -> None:
+    selector = importlib.import_module("run_scoped_tests")
+    tokens = selector.reference_tokens("src/kiro_crew/personal_insights/__init__.py")
+    assert "kiro_crew.personal_insights" in tokens
+
+
+def test_package_init_includes_slashed_package_path(gate) -> None:
+    selector = importlib.import_module("run_scoped_tests")
+    tokens = selector.reference_tokens("src/kiro_crew/personal_insights/__init__.py")
+    assert "src/kiro_crew/personal_insights" in tokens
+
+
+def test_package_init_still_selects_an_importing_test(gate) -> None:
+    selector = importlib.import_module("run_scoped_tests")
+    tokens = selector.reference_tokens("src/kiro_crew/personal_insights/__init__.py")
+    matcher = selector._reference_matcher(tokens)
+    assert matcher is not None
+    importing = "from kiro_crew.personal_insights import insights_models\n"
+    assert matcher.search(importing) is True
+    unrelated = "from kiro_crew.session import SessionManager\n"
+    assert matcher.search(unrelated) is False
+
+
+def test_ordinary_module_stems_are_unchanged(gate) -> None:
+    selector = importlib.import_module("run_scoped_tests")
+    tokens = selector.reference_tokens("src/kiro_crew/session.py")
+    assert "session" in tokens
+    assert "kiro_crew.session" in tokens
+    assert "src/kiro_crew/session.py" in tokens
+    assert "session.py" not in tokens or "kiro_crew/session.py" in tokens
+
+
+def test_non_python_file_tokens_are_unchanged(gate) -> None:
+    selector = importlib.import_module("run_scoped_tests")
+    tokens = selector.reference_tokens(
+        "src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/SKILL.md"
+    )
+    assert "SKILL.md" not in tokens
+    assert "kirocrew-prepare-pr/SKILL.md" in tokens
+
+
+def test_package_init_does_not_select_the_whole_tree(gate) -> None:
+    selector = importlib.import_module("run_scoped_tests")
+    targets, _verdict = selector.related_targets(
+        "backend", ["src/kiro_crew/personal_insights/__init__.py"]
+    )
+    assert len(targets) < 50

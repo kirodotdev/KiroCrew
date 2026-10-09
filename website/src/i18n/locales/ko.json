@@ -9538,7 +9538,8 @@
     "settings": "설정",
     "task_runner": "Task Runner",
     "webhooks": "Webhooks",
-    "crew_members": "크루메이트"
+    "crew_members": "크루메이트",
+    "insights": "인사이트"
   },
   "pages": {
     "agentsPage": {
@@ -17325,6 +17326,43 @@
     "layoutEditorHarness": {
       "title": "레이아웃 편집기 하네스",
       "reset": "레이아웃 초기화"
+    },
+    "insightsPage": {
+      "title": "개인 인사이트",
+      "subtitle": "내 세션을 바탕으로 한 비공개 회고입니다. 변경 사항은 한 번의 클릭으로 적용하고 되돌릴 수 있습니다.",
+      "no_runs": "아직 보고서가 없습니다. 에이전트에게 개인 인사이트 보고서를 실행하도록 요청한 뒤 이 페이지를 새로 고치세요.",
+      "load_failed": "보고서를 불러올 수 없습니다",
+      "run_line": "최근 실행 {{when}}: 대시보드 세션 {{cataloged}}개 중 {{analyzed}}개 분석. 나에게만 표시됩니다.",
+      "actions_heading": "권장되는 다음 변경",
+      "no_actions": "이번 실행에서는 증거 기준을 통과한 변경이 없습니다.",
+      "evidence": "증거: 분석한 {{total}}개 세션 중 {{sessions}}개",
+      "cta_lesson_proposal": "적용하기",
+      "cta_prompt": "지금 사용",
+      "cta_steering_patch": "검토 후 적용",
+      "cta_existing_capability": "실행",
+      "label_lesson": "에이전트가 따를 저장된 교훈",
+      "label_prompt": "재사용 가능한 프롬프트",
+      "label_steering": "steering 추가",
+      "label_capability": "기존 기능",
+      "expected_later": "이후 기대 결과",
+      "verify": "확인",
+      "undo": "되돌리기",
+      "undo_it": "이 변경 되돌리기",
+      "copy": "복사",
+      "copied": "복사됨",
+      "copy_first": "이 릴리스에서는 복사만 지원합니다. 알맞은 위치에 붙여 넣으세요.",
+      "applying": "적용 중…",
+      "undoing": "되돌리는 중…",
+      "apply_anyway": "그래도 적용",
+      "held_title": "보류, 미적용: 증거 검사를 통과하지 못했습니다",
+      "overfit_summary": "증거 검사: 세션 {{sessions}}개, 독립 스레드 {{lineages}}개, 서로 다른 날 {{days}}일",
+      "state_done_verified": "완료 및 검증됨",
+      "state_changed_unverified": "적용됨, 검증 대기 중",
+      "state_undone": "되돌림",
+      "state_held": "보류",
+      "applied_at": "{{when}} 적용",
+      "applied_earlier": "이전에 적용됨",
+      "follow_through_hint": "다음 보고서는 새 세션이 {{min}}개 이상 쌓이면 적용된 각 변경의 전후 세션을 비교합니다."
     }
   },
   "privacyDisclosure": {

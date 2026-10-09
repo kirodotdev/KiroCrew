@@ -9798,7 +9798,8 @@
     "settings": "Paramètres",
     "task_runner": "Task Runner",
     "webhooks": "Webhooks",
-    "crew_members": "Coéquipiers"
+    "crew_members": "Coéquipiers",
+    "insights": "Aperçus"
   },
   "pages": {
     "agentsPage": {
@@ -17839,6 +17840,43 @@
     "layoutEditorHarness": {
       "title": "Banc d’essai de l’éditeur de disposition",
       "reset": "Réinitialiser la disposition"
+    },
+    "insightsPage": {
+      "title": "Aperçus personnels",
+      "subtitle": "Une rétrospective privée de vos propres sessions, avec des changements à appliquer en un clic et à annuler.",
+      "no_runs": "Aucun rapport pour l'instant. Demandez à l'agent de lancer votre rapport Aperçus personnels, puis rechargez cette page.",
+      "load_failed": "Impossible de charger le rapport",
+      "run_line": "Dernière exécution {{when}} : {{analyzed}} sessions du tableau de bord analysées sur {{cataloged}}. Visible par vous seul.",
+      "actions_heading": "Prochains changements recommandés",
+      "no_actions": "Aucun changement n'a franchi le seuil de preuve lors de cette exécution.",
+      "evidence": "Preuves : {{sessions}} sessions analysées sur {{total}}",
+      "cta_lesson_proposal": "Appliquer",
+      "cta_prompt": "Utiliser maintenant",
+      "cta_steering_patch": "Vérifier et appliquer",
+      "cta_existing_capability": "Exécuter",
+      "label_lesson": "Leçon enregistrée que l'agent suivra",
+      "label_prompt": "Prompt réutilisable",
+      "label_steering": "Ajout de steering",
+      "label_capability": "Capacité existante",
+      "expected_later": "Attendu plus tard",
+      "verify": "Vérifier",
+      "undo": "Annuler",
+      "undo_it": "L'annuler",
+      "copy": "Copier",
+      "copied": "Copié",
+      "copy_first": "À copier uniquement dans cette version : collez-le à sa place.",
+      "applying": "Application…",
+      "undoing": "Annulation…",
+      "apply_anyway": "Appliquer quand même",
+      "held_title": "Retenu, non appliqué : la vérification des preuves a échoué",
+      "overfit_summary": "Vérification des preuves : {{sessions}} sessions, {{lineages}} fils indépendants, {{days}} jours distincts",
+      "state_done_verified": "Fait et vérifié",
+      "state_changed_unverified": "Appliqué, vérification en attente",
+      "state_undone": "Annulé",
+      "state_held": "Retenu",
+      "applied_at": "Appliqué {{when}}",
+      "applied_earlier": "Appliqué précédemment",
+      "follow_through_hint": "Le prochain rapport compare les sessions avant et après chaque changement appliqué dès qu'au moins {{min}} nouvelles sessions existent."
     }
   },
   "privacyDisclosure": {

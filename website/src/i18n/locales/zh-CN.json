@@ -9538,7 +9538,8 @@
     "settings": "设置",
     "task_runner": "Task Runner",
     "webhooks": "Webhook",
-    "crew_members": "队友"
+    "crew_members": "队友",
+    "insights": "洞察"
   },
   "pages": {
     "agentsPage": {
@@ -17325,6 +17326,43 @@
     "layoutEditorHarness": {
       "title": "布局编辑器测试台",
       "reset": "重置布局"
+    },
+    "insightsPage": {
+      "title": "个人洞察",
+      "subtitle": "基于你自己会话的私密回顾，其中的改动可一键应用并撤销。",
+      "no_runs": "暂无报告。请让智能体运行你的个人洞察报告，然后刷新此页面。",
+      "load_failed": "无法加载报告",
+      "run_line": "最近一次运行 {{when}}：已分析 {{cataloged}} 个仪表板会话中的 {{analyzed}} 个。仅你可见。",
+      "actions_heading": "建议的下一步改动",
+      "no_actions": "本次运行没有改动达到证据门槛。",
+      "evidence": "证据：已分析的 {{total}} 个会话中有 {{sessions}} 个",
+      "cta_lesson_proposal": "执行",
+      "cta_prompt": "立即使用",
+      "cta_steering_patch": "审阅并执行",
+      "cta_existing_capability": "运行",
+      "label_lesson": "智能体将遵循的已保存经验",
+      "label_prompt": "可复用提示词",
+      "label_steering": "steering 补充",
+      "label_capability": "现有能力",
+      "expected_later": "预期后续效果",
+      "verify": "验证",
+      "undo": "撤销",
+      "undo_it": "撤销此项",
+      "copy": "复制",
+      "copied": "已复制",
+      "copy_first": "此版本仅支持复制：请粘贴到合适的位置。",
+      "applying": "正在应用…",
+      "undoing": "正在撤销…",
+      "apply_anyway": "仍然应用",
+      "held_title": "已暂缓，未应用：证据检查未通过",
+      "overfit_summary": "证据检查：{{sessions}} 个会话，{{lineages}} 个独立话题，{{days}} 个不同日期",
+      "state_done_verified": "已完成并验证",
+      "state_changed_unverified": "已应用，等待验证",
+      "state_undone": "已撤销",
+      "state_held": "已暂缓",
+      "applied_at": "应用于 {{when}}",
+      "applied_earlier": "此前已应用",
+      "follow_through_hint": "当至少有 {{min}} 个新会话后，下一份报告将比较每项已应用改动前后的会话。"
     }
   },
   "privacyDisclosure": {
