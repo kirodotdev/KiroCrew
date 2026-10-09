@@ -190,10 +190,21 @@ MAX_ITEMS_PER_CONDUCTOR = 32
 #: append-only log, so a record removed from ``items/`` -- torn, hand-deleted, lost
 #: -- still has its create there, and a count of what the directory holds would
 #: admit one create more than the fold retains for every record it lost. Removing
-#: a record reclaims nothing. Enforced by :func:`_create_item`, which refuses rather
-#: than evicts -- nothing in this module deletes a record. A board at this bound has
-#: run its course: once every item is closed, ``kirocrew ledger-sweep --purge``
-#: removes the finished ledger whole.
+#: a record reclaims nothing. Enforced by :func:`_create_item`, which never evicts a
+#: record -- nothing in this module deletes one in place. A board at this bound has
+#: run its course: when the next create arrives, every item is terminal AND no goal
+#: is recorded on it, :func:`_archive_and_recreate_locked` ARCHIVES the board (renames
+#: the whole directory to an idle sibling the ledger-sweep reclaims on its normal
+#: window) and opens a fresh one in its place, so the create proceeds on the new board
+#: and a spent queue board unblocks itself. The archive is a rename, NOT a delete:
+#: nothing a model triggers removes a finished record, so there is no create-time data
+#: loss to recover from -- the old generation's history stays on disk until the sweep's
+#: idle window retires it. A board still holding an OPEN item is refused instead
+#: (archiving it would strand that live item), which is BACKPRESSURE: the conductor
+#: dispatches nothing new, keeps patrolling what is in flight, and the next create
+#: archives the board the moment the last item closes. A board running a GOAL is
+#: refused too (its ``item_cap`` spend ceiling must not be reset silently), pointing
+#: at starting the next goal in a fresh conductor.
 MAX_STORED_ITEMS_PER_CONDUCTOR = WORK_STORED_ITEM_LIMIT
 #: How many items one GOAL may create, every round and re-plan together, when the
 #: user set no budget of their own. A spend bound, where the two above bound the
@@ -1964,6 +1975,224 @@ def _write_goal(
         return current
 
 
+def _archive_key(slot_key: str, generation: str) -> str:
+    """A distinct, path-shaped key for *slot_key*'s retired generation.
+
+    The archive directory must be reclaimable by the EXISTING ledger-sweep, which
+    purges a store only when the key in its ``slot_key`` breadcrumb resolves back
+    to the directory the breadcrumb sits in (``_path_matches_key``). So the archive
+    cannot carry the live key -- that resolves to the LIVE board's directory, and
+    the sweep would read the archive as a copy and never purge it. It carries a key
+    of its OWN instead: the live key with a retired-generation marker appended. The
+    marker holds no ``/`` or null byte, so the key stays path-shaped
+    (:func:`_slot_key_is_shaped`); its ``_store_name`` digest is taken over this
+    full string, so the archive directory can never collide with the live board's,
+    and the sweep's ``conductor_dir(archive_key)`` resolves to exactly the archive
+    directory. The marker also makes a retired generation recognisable at a glance
+    in the work-ledger root.
+    """
+    return f"{slot_key}#retired-{generation}"
+
+
+def _archive_and_recreate_locked(slot_key: str, live: ConductorRecord) -> ConductorRecord:
+    """Archive a spent board and open a fresh one under the same slot, under the lock.
+
+    Called by :func:`_create_item` when the board has created its last admissible
+    item (:data:`MAX_STORED_ITEMS_PER_CONDUCTOR`), every item on it is terminal AND
+    no goal is recorded on it: the board has run its course, so the create proceeds
+    on a fresh generation instead of being refused until an operator runs the sweep
+    by hand.
+
+    ARCHIVE, NOT DELETE. The finished records are MOVED to an idle sibling
+    directory, not removed. This is the whole shape of the fix: a create that a
+    model triggers must never do an irreversible delete, so retirement moves the
+    finished board's records aside and leaves them for the ledger-sweep to reclaim
+    on its normal idle window (``_scan_work_ledgers``: every item closed + idle >=
+    the window). The archive carries a breadcrumb key of its own
+    (:func:`_archive_key`) so that existing scan names and purges it with no change
+    to the sweep. Nothing here deletes a finished record, so there is no create-time
+    data loss, no orphaned generation when a later step fails, and no torn-record
+    race to lose a live item in -- the three failure modes the delete-in-place shape
+    could not close.
+
+    THE LIVE DIRECTORY IS NOT RENAMED, so no open handle is ever moved. The caller
+    holds the conductor lock on ``.lock`` inside this directory, and the item locks
+    are held inside ``items/``, and Windows refuses to rename a directory that has
+    an open handle inside it (the hazard ``purge_conductor``'s docstring records,
+    which is why the purge removes contents rather than renaming the store away). So
+    the archive is a FRESH sibling and the records move into it file-by-file, then
+    the live header is reset in place.
+
+    The sequence, all under the already-held conductor lock:
+
+    * Hold EVERY item lock (:func:`_hold_every_item_lock`, non-blocking, in the
+      conductor -> item order), so an item a worker is writing this instant reads
+      as a live writer and refuses the archive rather than being archived mid-write.
+    * Run the FULL census (:func:`census_items`, which reads the item FILES, unlike
+      :func:`list_work_items`, which SKIPS an unreadable record). Refuse
+      (``CODE_LEDGER_NOT_FINISHED``) on ANY open item, ANY unreadable record, or
+      directory damage. A torn record is invisible to a listing, so a listing-based
+      "every item terminal" check would archive a board whose unfinished item it
+      could not read; the census counts a torn record as neither open nor closed,
+      so this refuses on it.
+    * Build the archive sibling and NAME IT FIRST -- its own breadcrumb and header,
+      written at the archive path (never at the live path, so a failure here cannot
+      strand the live board carrying the archive key).
+    * MOVE each record (``<id>.json`` + ``<id>.jsonl``, which carry no open handle;
+      only ``<id>.lock`` does, and it stays put) into the archive with ``os.replace``
+      per file. A move that fails raises with the live header STILL the old full one
+      -- the board stays full and refuses, the create fails cleanly, whatever moved
+      is readable at the archive and the sweep reclaims it. No orphan, no half-reset.
+    * Only once every record is at the archive, RESET the live header in place --
+      a fresh ``generation``, ``created_total`` back to zero, ``round`` reset,
+      ``goal``/``goal_version``/``item_cap``/``goal_items_base`` to defaults (there
+      was no goal to carry), ``recorded_at`` cleared -- so the create proceeds on
+      the fresh board. This is a header rewrite, not a directory rename, so the held
+      conductor-lock handle is untouched.
+
+    The live item LOCK files are orphaned once their records move; they are unlinked
+    exactly as the purge does -- POSIX inside the hold (a queued writer then acquires
+    a detached inode and refuses), Windows deferred to after the hold releases. The
+    conductor's OWN lock stays, because the board lives on under the same slot.
+
+    No ``crew_log_incomplete`` gap opens: the fresh ``generation`` is minted here
+    under the lock, and the next create (a conductor entry stamped with it) carries
+    it into the crew-log fold, so cache and fold cross to the new generation
+    together; a rebuild takes this same conductor lock, held across the archive AND
+    the create.
+
+    NO GOAL CROSSES THE ARCHIVE. The caller only reaches this function for a board
+    with NO goal recorded -- no goal text and ``goal_version == 0``, a plain queue
+    board. A board that recorded a goal is refused upstream, not archived: its
+    ``item_cap`` is a spend ceiling a human set, and silently resetting the board
+    would reset ``goal_items_used`` and bypass that ceiling. So the fresh header
+    keeps only ``depth`` and ``parent_item`` -- lineage, not a goal.
+    """
+    directory = conductor_dir(slot_key)
+    deferred_item_locks: list[Path] = []
+    with _hold_every_item_lock(directory):
+        census = census_items(directory)
+        if census.damage:
+            raise WorkLedgerError(
+                f"conductor ledger's {census.damage}; refusing to retire it",
+                code=CODE_LEDGER_NOT_FINISHED,
+                field="state",
+            )
+        if census.open_items:
+            raise WorkLedgerError(
+                f"conductor ledger has {census.open_items} open item(s); refusing to retire it",
+                code=CODE_LEDGER_NOT_FINISHED,
+                field="state",
+            )
+        if census.unreadable:
+            raise WorkLedgerError(
+                f"conductor ledger has {census.unreadable} unreadable item record(s); "
+                "refusing to retire it",
+                code=CODE_LEDGER_NOT_FINISHED,
+                field="state",
+            )
+        archive_slot = _archive_key(slot_key, live.generation)
+        archive_dir = conductor_dir(archive_slot)
+        if archive_dir.exists():
+            # Astronomically unlikely (the generation is a 64-bit token), but a
+            # collision would make the move clobber a prior archive. Refuse rather
+            # than overwrite finished history; the full board stays and the create
+            # fails cleanly.
+            raise WorkLedgerError(
+                "conductor ledger's retired-generation directory already exists; "
+                "refusing to retire over it",
+                code=CODE_LEDGER_NOT_FINISHED,
+                field="state",
+            )
+        # The LIVE directory is NOT renamed. The caller holds the conductor lock on
+        # ``.lock`` inside it and the item locks are held inside ``items/`` right
+        # now, and Windows refuses to rename a directory with an open handle inside
+        # it (the hazard ``purge_conductor``'s docstring records). So the archive is
+        # built as a fresh sibling and the finished RECORDS are moved into it
+        # file-by-file -- a record is ``<id>.json`` + ``<id>.jsonl``, neither of
+        # which carries an open handle (only ``<id>.lock`` does, and that stays put)
+        # -- then the live header is reset IN PLACE. Nothing with an open handle is
+        # renamed, on any platform.
+        archive_items = archive_dir / _ITEMS_DIR
+        archive_items.mkdir(parents=True, exist_ok=True)
+        # The archive names ITSELF first: breadcrumb and header under its own key,
+        # so the moment the records land it is a store the sweep's
+        # ``_path_matches_key`` resolves to ``archive_dir`` and reclaims on the
+        # ordinary idle window. Written at the ARCHIVE path, never at the live one,
+        # so a failure here cannot leave the live board carrying the archive key.
+        atomic_write(archive_dir / _KEY_FILE, archive_slot + "\n", mode=0o600)
+        _write_record(
+            archive_dir / _CONDUCTOR_FILE,
+            dataclasses.replace(live, slot_key=archive_slot).to_dict(),
+        )
+        # A conductor lock file at the archive too, so the archive is a COMPLETE
+        # store: the ledger-sweep reclaims it through ``purge_conductor``, which
+        # opens ``conductor_lock(archive_slot, create=False)`` and would read a
+        # store with no ``.lock`` as already gone and skip it. An empty lock file
+        # is all the advisory lock needs; it is removed with the store on purge.
+        (archive_dir / _LOCK_FILE).touch(exist_ok=True)
+        live_items = directory / _ITEMS_DIR
+        try:
+            record_names = sorted(
+                entry.name
+                for entry in os.scandir(live_items)
+                if entry.is_file() and not entry.name.endswith(".lock")
+            )
+        except OSError:
+            record_names = []
+        moved = 0
+        for name in record_names:
+            try:
+                os.replace(live_items / name, archive_items / name)
+                moved += 1
+            except OSError:
+                # A move that fails leaves the live header UNTOUCHED (the reset
+                # below has not run), so the board is still full and still refuses
+                # -- the create fails cleanly and the next attempt retries. Whatever
+                # already moved is readable at the archive and the sweep reclaims it;
+                # the live board keeps the rest. No orphan, no half-reset header.
+                raise WorkLedgerError(
+                    f"conductor ledger retirement could not move {name!r} to the "
+                    f"archive ({moved} of {len(record_names)} moved); the board is "
+                    "unchanged and still full, retry once the files are free",
+                    code=CODE_LEDGER_NOT_FINISHED,
+                    field="state",
+                )
+        # Only now, every record safely at the archive, reset the live header IN
+        # PLACE: a fresh generation, the counter back to zero, the board-scoped
+        # fields to their defaults (there was no goal to carry); keep ``depth`` and
+        # ``parent_item`` as lineage. This is a header rewrite, not a directory
+        # rename, so the held conductor-lock handle is untouched.
+        rotated = dataclasses.replace(
+            live,
+            goal="",
+            generation=secrets.token_hex(8),
+            created_total=0,
+            round=0,
+            goal_version=0,
+            recorded_at="",
+            item_cap=DEFAULT_GOAL_ITEM_CAP,
+            goal_items_base=0,
+            created_at=_now_iso(),
+        )
+        _write_record(directory / _CONDUCTOR_FILE, rotated.to_dict())
+        # The live item LOCK files are now orphaned (their records moved away).
+        # Unlink them exactly as the purge does: POSIX inside the hold (so a queued
+        # writer acquires a detached inode and refuses), Windows deferred to after
+        # the hold releases. The conductor's OWN lock stays -- the board lives on.
+        deferred_item_locks = _unlink_item_locks_in_hold(directory)
+    # After the item locks release: unlink the lock files Windows refused under the
+    # hold. A late unlink there fails only while a handle is open, so it cannot
+    # detach a fresh inode a retried writer took. POSIX unlinked them in-hold and
+    # this list is empty.
+    for lock_path in deferred_item_locks:
+        try:
+            lock_path.unlink(missing_ok=True)
+        except OSError:
+            logger.debug("work ledger archive: item lock still held; leaving it")
+    return rotated
+
+
 def _create_item(
     slot_key: str,
     record: ConductorRecord,
@@ -2047,15 +2276,66 @@ def _create_item(
         # ever admit is refused whatever its open count, so closed history cannot
         # carry the board past the fold's ceiling.
         if live.created_total >= MAX_STORED_ITEMS_PER_CONDUCTOR:
-            raise WorkLedgerError(
-                f"conductor has created {live.created_total} items over its life, open "
-                f"and closed together; the stored bound is {MAX_STORED_ITEMS_PER_CONDUCTOR}. "
-                "Nothing evicts a record and removing one reclaims nothing: once every "
-                "item is closed, `kirocrew ledger-sweep --purge` removes the finished "
-                "ledger whole",
-                code=CODE_ITEM_STORE_FULL,
-                field="items",
-            )
+            # The board has run its course. What happens next is decided by whether
+            # a goal is recorded on it and whether any work is still live:
+            #   * a GOAL is present (goal text set, or ``goal_version > 0``) -> never
+            #     auto-retire. The goal's ``item_cap`` is a spend ceiling a person
+            #     set, and a fresh board would reset ``goal_items_used`` and bypass
+            #     it; the create baseline carries the goal text but not its version,
+            #     so a rotated goal board would also lose the cap on a later rebuild.
+            #     A goal board at the stored bound is a human decision point, so
+            #     refuse and point at starting a new goal explicitly (which the
+            #     person authorises). In practice the goal's own cap (checked just
+            #     below, default 20) stops a goal board long before the stored bound,
+            #     so this is the rare board whose cap was raised near the stored
+            #     bound and burned. Keyed on goal TEXT, not only ``goal_version``: a
+            #     board whose goal was set at ``ensure_conductor`` but never recorded
+            #     via a ``goal`` action still identifies a workstream whose goal must
+            #     not vanish in a silent rotation.
+            #   * no goal, every item terminal -> ARCHIVE this generation (rename the
+            #     directory to an idle sibling the sweep reclaims) and open a fresh
+            #     board under the same slot, so this create proceeds without an
+            #     operator running ``kirocrew ledger-sweep --purge`` by hand and
+            #     without deleting a single finished record at create time. The
+            #     terminal check is the FULL census, under the item locks, inside
+            #     ``_archive_and_recreate_locked`` -- not the listing here, which
+            #     cannot see a torn record.
+            #   * no goal, any item still open -> refuse, as before. This is
+            #     BACKPRESSURE, not a dead end: the conductor dispatches nothing new
+            #     and keeps patrolling what is in flight, and the moment the last
+            #     open item closes (its worker finishing, or the conductor force-
+            #     closing one whose worker is gone) the next create archives the
+            #     board and opens a fresh one automatically. The board heals itself
+            #     once the backlog drains; nothing here deletes a live item.
+            if live.goal or live.goal_version > 0:
+                raise WorkLedgerError(
+                    f"conductor has created {live.created_total} items over its life, "
+                    f"the stored bound of {MAX_STORED_ITEMS_PER_CONDUCTOR}, and it is "
+                    "running a goal whose spend ceiling must not be reset silently. "
+                    "Decide with the user whether this goal is done: if so, start the "
+                    "next workstream in a fresh conductor; the board is not retired "
+                    "automatically while a goal is recorded on it",
+                    code=CODE_ITEM_STORE_FULL,
+                    field="items",
+                )
+            open_now = [
+                item for item in list_work_items(slot_key) if item.state not in TERMINAL_ITEM_STATES
+            ]
+            if open_now:
+                raise WorkLedgerError(
+                    f"conductor has created {live.created_total} items over its life, "
+                    f"the stored bound of {MAX_STORED_ITEMS_PER_CONDUCTOR}, and "
+                    f"{len(open_now)} item(s) are still open, so the board cannot be "
+                    "archived to make room yet. Dispatch nothing new and keep "
+                    "patrolling what is in flight: close those items (accept/reject, "
+                    "or abandon one whose worker is gone) and the next create archives "
+                    "this board and opens a fresh one automatically",
+                    code=CODE_ITEM_STORE_FULL,
+                    field="items",
+                )
+            live = _archive_and_recreate_locked(slot_key, live)
+            if checked_round is None:
+                checked_round = live.round
         # The goal's own spend bound: every item this goal created, closed ones
         # and every round's re-plans included. A person decides past it. Only a
         # board that recorded a goal has one: a queue board never writes ``goal``.

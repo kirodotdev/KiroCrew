@@ -201,6 +201,69 @@ def test_purge_removes_only_the_candidates():
     assert live.is_dir() and young.is_dir() and open_work.is_dir()
 
 
+def test_an_archived_generation_is_reclaimed_by_the_existing_sweep():
+    """A board archived at the stored bound is purged by the UNCHANGED sweep.
+
+    This is the load-bearing claim of the archive-not-delete shape: retirement
+    renames the spent board to a sibling that carries its OWN ``slot_key``
+    breadcrumb (``_archive_key``), so the sweep's ``_path_matches_key`` resolves
+    that key back to the archive directory and the archive qualifies on the normal
+    ``every item closed + idle`` path -- with no change to ``ledger_sweep``. The
+    LIVE board the archive was spun off is young and must survive the same purge.
+    """
+    monkeypatch_bound = 4
+    original = wl.MAX_STORED_ITEMS_PER_CONDUCTOR
+    wl.MAX_STORED_ITEMS_PER_CONDUCTOR = monkeypatch_bound
+    try:
+        wl.ensure_conductor(CONDUCTOR)  # a goal-free queue board
+        ids = []
+        for index in range(monkeypatch_bound):
+            ids.append(
+                wl.apply_conductor_action(CONDUCTOR, "create", title=f"t{index}", acceptance={})[
+                    "item"
+                ].item_id
+            )
+            wl.apply_conductor_action(CONDUCTOR, "close", item_id=ids[-1], state="accepted")
+        old_generation = wl.read_conductor(CONDUCTOR).generation
+        # The next create archives the spent board and opens a fresh one.
+        wl.apply_conductor_action(CONDUCTOR, "create", title="fresh", acceptance={})
+    finally:
+        wl.MAX_STORED_ITEMS_PER_CONDUCTOR = original
+
+    live_dir = wl.conductor_dir(CONDUCTOR)
+    archive_slot = wl._archive_key(CONDUCTOR, old_generation)
+    archive_dir = wl.conductor_dir(archive_slot)
+    assert archive_dir.is_dir(), "the spent board was archived, not deleted"
+
+    # Age the archive past the window; leave the live board young. Rewrite the
+    # closed_at stamps FIRST, then backdate the file mtimes -- a write resets mtime,
+    # so backdating has to come last or ``newest_write_at`` reads as today.
+    for old_id in ids:
+        record_path = wl.item_path(archive_slot, old_id)
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        record["closed_at"] = _iso_days_ago(90.0)
+        record_path.write_text(json.dumps(record), encoding="utf-8")
+    _backdate(archive_dir / "conductor.json", 90.0)
+    _backdate_items(archive_dir, 90.0)
+    # The archive directory itself is minted at retirement, so its own mtime reads
+    # as now until the window passes; age it too, since purge_conductor's
+    # _newest_activity reads the directory mtime as a fallback.
+    _backdate(archive_dir / "items", 90.0)
+    _backdate(archive_dir, 90.0)
+
+    report = sweep.scan(older_than_days=30)
+    # The archive is a removable candidate (addressable: its breadcrumb names it).
+    archive_candidate = next(c for c in report.candidates if c.store == archive_dir.name)
+    assert archive_candidate.purgeable, "the archive must be reclaimable by the plain purge"
+    assert "every item closed" in archive_candidate.reason
+
+    result = sweep.purge(report)
+
+    assert archive_dir.name in {c.store for c in result.removed}
+    assert not archive_dir.exists(), "the existing sweep reclaimed the archived generation"
+    assert live_dir.is_dir(), "the young live board survives the same purge"
+
+
 # ── never a candidate, whatever the age ───────────────────────────────────
 
 
