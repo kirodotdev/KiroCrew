@@ -124,6 +124,75 @@ describe("gateway supervisor wiring (source pins)", () => {
     assertNoReveal(fnBody("reconnectOrRespawnAdoptedGateway"), "reconnectOrRespawnAdoptedGateway");
   });
 
+  // Liveness recovery must resolve the incumbent from a SOCKET-INDEPENDENT
+  // source before giving up: a draining gateway releases its socket while still
+  // holding gateway.lock, so the socket snapshot can never name it. The helper
+  // retries the snapshot for a transient gap, then falls back to the CLI's
+  // lock-holder probe, and surfaces the terminal error only when THAT is
+  // indeterminate ("unverified").
+  it("reconnectOrRespawnAdoptedGateway resolves the incumbent via the lock before giving up", () => {
+    const body = fnBody("reconnectOrRespawnAdoptedGateway");
+    assert.match(
+      body,
+      /snapshotIncumbentForRespawn\(/,
+      "liveness recovery must retry the incumbent snapshot, not refuse on the first miss",
+    );
+    // The socket-independent lock-holder probe MUST be injected: the socket
+    // snapshot can never see a draining gateway, so a lock-file identity is
+    // required.
+    assert.match(
+      body,
+      /lockHolderProbe:\s*\(\)\s*=>\s*probeLockHolderPid\(\)/,
+      "liveness recovery must fall back to the socket-independent lock-holder probe",
+    );
+    assert.match(
+      body,
+      /capture\.verdict === "unverified"[\s\S]*?showUnrecoverableGatewayError/,
+      "the terminal dialog must be gated on the indeterminate 'unverified' verdict only",
+    );
+    // A captured PID still drives waitForIncumbentExit so the lock is released
+    // before spawning; a "released" lock means nothing to wait on.
+    assert.match(
+      body,
+      /const incumbentPids = capture\.verdict === "released" \? null : capture\.pids[\s\S]*?waitForIncumbentExit\(incumbentPids/,
+      "the resolved PID must drive waitForIncumbentExit so the lock is released before spawning",
+    );
+  });
+
+  // The probe itself must reach the backend's maintained lock_holder oracle
+  // through the CLI, not reimplement lock reading in JS.
+  it("probeLockHolderPid invokes the kirocrew gateway-pid CLI probe", () => {
+    const body = fnBody("probeLockHolderPid");
+    assert.match(
+      body,
+      /gatewayCliInvocation\(bin,\s*\["gateway-pid"\]\)/,
+      "the lock-holder probe must invoke `kirocrew gateway-pid` through the Windows-safe helper",
+    );
+    assert.match(
+      body,
+      /execFile\(probeBin,\s*probeArgs/,
+      "the probe must execFile the resolved (bin, args) so a bundled kirocrew.cmd is unwrapped to python.exe",
+    );
+    assert.match(body, /payload\.holder === "nobody"[\s\S]*?verdict: "released"/, "holder=nobody maps to the lock-released verdict");
+    assert.match(body, /payload\.holder === "process"[\s\S]*?verdict: "captured"/, "holder=process maps to the captured verdict");
+    assert.match(body, /payload\.holder === "held"[\s\S]*?verdict: "held"/, "holder=held maps to the held verdict (the Windows mandatory-lock case)");
+    assert.match(
+      body,
+      /if \(IS_WIN && app\.isPackaged && isPathFallback\(bin\)\) \{[\s\S]*?verdict: "unverified"[\s\S]*?execFile\(probeBin/,
+      "a packaged Windows app must refuse to run a PATH-fallback kirocrew before execFile, as spawnGateway does",
+    );
+  });
+
+  // The adopt-time drain path carries the exact
+  // same transient refusal and must route through the same retry+lock fallback.
+  it("the drain path resolves the incumbent via the lock before refusing with probe-failed", () => {
+    assert.match(
+      SUPERVISOR_JS,
+      /drainCapture = await snapshotIncumbentForRespawn\([\s\S]*?lockHolderProbe:\s*\(\)\s*=>\s*probeLockHolderPid\(\)[\s\S]*?drainCapture\.verdict === "unverified"[\s\S]*?return "probe-failed"/,
+      "the drain branch must retry the snapshot AND fall back to the lock-holder probe, not refuse on the first miss",
+    );
+  });
+
   it("showLoadingThenConnect routes its initial reveal through the helper", () => {
     const body = fnBody("showLoadingThenConnect");
     assert.match(

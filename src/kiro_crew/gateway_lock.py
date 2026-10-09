@@ -466,11 +466,23 @@ class LockProbeError(RuntimeError):
     Callers that act on the answer (``kirocrew stop``/``restart``) report this
     and exit without signalling anything. A lock path that is not a regular file
     is the typed subclass :class:`LockPathProbeError`.
+
+    ``held`` tells the two cases apart for a caller that can act on them
+    differently. It is True when the probe POSITIVELY established the lock is
+    held but could not NAME a live holder (a draining gateway whose recorded pid
+    is unreadable under a Windows mandatory lock, or a forked-inheritor wedge):
+    a gateway IS alive, so a caller may wait for the lock to be released rather
+    than give up. It is False when the probe could not even establish whether
+    the lock is held (an unopenable lock file, an unmeasurable filesystem):
+    nothing is known, so waiting would be unbounded. ``stop``/``restart`` ignore
+    it and refuse either way; it exists for ``gateway-pid`` and the desktop
+    recovery that polls on it.
     """
 
-    def __init__(self, path: Path, cause: OSError) -> None:
+    def __init__(self, path: Path, cause: OSError, *, held: bool = False) -> None:
         self.path = path
         self.cause = cause
+        self.held = held
         super().__init__(f"could not determine whether a gateway holds the lock at {path}: {cause}")
 
 
@@ -1253,6 +1265,7 @@ def lock_holder(home: Path) -> LockHolder:
         raise LockProbeError(
             path,
             OSError(f"the lock is held but its recorded acquirer (pid {owner}) is gone"),
+            held=True,
         )
     if recorded is not None and recorded > 0 and platform_compat.pid_exists(recorded):
         return LockHolder(pid=recorded, alive=True, source="recorded_pid")
@@ -1263,7 +1276,7 @@ def lock_holder(home: Path) -> LockHolder:
     # rather than "nobody": "nobody" would make stop and restart report nothing
     # running while `kirocrew gateway` refuses to start on the very same lock.
     raise LockProbeError(
-        path, OSError("the lock is held but no live holder pid can be established")
+        path, OSError("the lock is held but no live holder pid can be established"), held=True
     )
 
 
@@ -1307,6 +1320,7 @@ def _anchor_holder_or_nobody(home: Path, path: Path) -> LockHolder:
     raise LockProbeError(
         path,
         OSError(f"{home} is still held by a gateway that {LOCK_FILENAME} no longer names"),
+        held=True,
     )
 
 

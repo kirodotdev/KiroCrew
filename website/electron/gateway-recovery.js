@@ -1,4 +1,5 @@
 "use strict";
+const path = require("path");
 //
 // Injectable recovery-strategy decisions, extracted from main.js so they can
 // be unit-tested without Electron (mirrors gateway-liveness.js / gateway-wait.js
@@ -181,6 +182,130 @@ function incumbentSnapshotBlocksRespawn({ pids, isWindows = false }) {
   return pids === null && isWindows;
 }
 
+// When the lock probe reports the lock is HELD but its owner is unnameable (a
+// draining gateway whose pid is unreadable under a Windows mandatory lock), the
+// recovery waits for the lock to be released rather than giving up. A draining
+// gateway finishes teardown in seconds to low minutes; this budget covers that
+// while still bounding the wait, so a gateway genuinely stuck holding the lock
+// surfaces the terminal dialog instead of waiting forever.
+const INCUMBENT_LOCK_HELD_BUDGET_MS = 120_000;
+const INCUMBENT_LOCK_HELD_POLL_MS = 2_000;
+
+/**
+ * Name the incumbent gateway so recovery can wait for it to exit before
+ * respawning — first from a single LISTEN-socket lookup, then, when that cannot
+ * name it, from a SOCKET-INDEPENDENT lock-holder probe.
+ *
+ * One socket lookup is taken. When it names the incumbent, that is used. When
+ * it names no one — either a shutting-down gateway caught mid-exit, or a
+ * draining gateway that has released its socket but still holds `gateway.lock`
+ * (which `lsof`/`netstat` can never name, since they see only LISTEN-socket
+ * owners) — the lock-holder probe is consulted straight away. The probe closes
+ * both cases, so there is no socket-retry loop: retrying the socket would only
+ * delay recovery without resolving anything the probe does not.
+ *
+ * The fallback is `lockHolderProbe` (the CLI's `gateway-pid`, resolved through
+ * the backend's maintained `lock_holder` oracle), which reads the incumbent
+ * from the lock file and outlives the socket. Its verdicts drive the outcome:
+ *
+ *  - `"captured"` — a live lock holder is named; the caller waits for THAT pid
+ *    to exit (`waitForIncumbentExit`) before spawning. The kernel releases the
+ *    lock atomically on exit, so this is race-free.
+ *  - `"released"` — the lock itself (not merely the socket) is released; the
+ *    incumbent is gone, so the caller may spawn now. This is LOCK-released, the
+ *    authoritative signal, distinct from a free socket: a free port is never
+ *    treated as a released lock.
+ *  - `"held"` — the lock is POSITIVELY held but its owner cannot be named: a
+ *    draining gateway whose pid is unreadable under a Windows mandatory lock.
+ *    We cannot wait on a pid, but we CAN wait for the lock to be RELEASED — the
+ *    same authoritative signal — so the probe is polled on a bounded budget
+ *    until it reports "released" (then spawn) or the budget expires (then
+ *    terminal). This is what lets recovery heal on a Windows host where the pid
+ *    is unreadable.
+ *  - `"unverified"` — the probe could not establish the lock's state at all, or
+ *    a held lock never released within the budget. The one case that still
+ *    surfaces the terminal dialog, because spawning blind would race the lock.
+ *
+ * With no `lockHolderProbe` injected a socket lookup that names no one yields
+ * `"unverified"`.
+ *
+ * Pure/injectable so the whole policy is unit-testable without Electron.
+ *
+ * @param {object} o
+ * @param {() => Promise<number[]|null>} o.snapshot      capture listener PIDs now
+ * @param {(pids:number[]|null) => boolean} o.blocksRespawn  is this snapshot unusable?
+ * @param {(ms:number) => Promise<void>} o.sleep
+ * @param {() => Promise<{verdict:"captured"|"released"|"held"|"unverified", pid:number|null}>} [o.lockHolderProbe]
+ *        socket-independent incumbent identity, consulted when the socket lookup names no one
+ * @param {number} [o.lockHeldBudgetMs]  how long to wait for a held-but-unnameable lock to release
+ * @param {number} [o.lockHeldPollMs]
+ * @param {(message:string) => void} [o.log]
+ * @returns {Promise<{verdict:"captured"|"released"|"unverified", pids:number[]|null, via:"snapshot"|"lock"}>}
+ */
+async function snapshotIncumbentForRespawn({
+  snapshot,
+  blocksRespawn,
+  sleep,
+  lockHolderProbe = null,
+  lockHeldBudgetMs = INCUMBENT_LOCK_HELD_BUDGET_MS,
+  lockHeldPollMs = INCUMBENT_LOCK_HELD_POLL_MS,
+  log = () => {},
+}) {
+  // One socket lookup. When it names the incumbent, use it. There is no retry
+  // loop: the lock probe below resolves BOTH the transient drain gap (a gateway
+  // mid-exit) and the socket-shed case (socket released, lock still held), so a
+  // socket retry would only delay recovery without closing any gap the probe
+  // leaves.
+  const pids = await snapshot();
+  if (!blocksRespawn(pids)) {
+    return { verdict: "captured", pids, via: "snapshot" };
+  }
+  // The listener snapshot named no one. A draining gateway that has shed its
+  // socket but still holds the lock cannot be named by a socket probe at all,
+  // so ask the lock itself, which outlives the socket.
+  if (lockHolderProbe) {
+    log(
+      "the listener snapshot named no incumbent "
+      + "— asking the gateway lock directly (it outlives the socket)",
+    );
+    const lockDeadline = Date.now() + lockHeldBudgetMs;
+    for (;;) {
+      const lock = await lockHolderProbe();
+      if (lock.verdict === "captured") {
+        // The lock named a live pid — wait for THAT process to exit.
+        return { verdict: "captured", pids: [lock.pid], via: "lock" };
+      }
+      if (lock.verdict === "released") {
+        // The lock is released: the incumbent has fully exited, spawn now.
+        return { verdict: "released", pids: null, via: "lock" };
+      }
+      if (lock.verdict === "held") {
+        // A live gateway holds the lock but cannot be named (Windows mandatory
+        // lock hides the pid). We cannot wait on a pid, but we CAN wait for the
+        // lock to be released — the authoritative "safe to spawn" signal — on a
+        // bounded budget. A gateway stuck holding the lock past the budget is
+        // the genuinely-unrecoverable case the terminal dialog is for.
+        if (Date.now() >= lockDeadline) {
+          log(
+            `the gateway lock is still held after waiting ${lockHeldBudgetMs}ms `
+            + "and its owner stayed unnameable — surfacing the terminal error",
+          );
+          return { verdict: "unverified", pids: null, via: "lock" };
+        }
+        log(
+          "the gateway lock is held but its owner is unnameable (a draining gateway) "
+          + `— waiting ${lockHeldPollMs}ms for it to release before spawning`,
+        );
+        await sleep(lockHeldPollMs);
+        continue;
+      }
+      // Truly indeterminate: the probe could not establish the lock's state.
+      return { verdict: "unverified", pids: null, via: "lock" };
+    }
+  }
+  return { verdict: "unverified", pids: null, via: "snapshot" };
+}
+
 /**
  * Build the terminal recovery dialog without loading Electron.
  *
@@ -357,7 +482,25 @@ function isStaleBundleSignal({ exitCode = null, spawnErrorCode = "" }) {
   return exitCode === STALE_ASSET_EXIT_CODE || spawnErrorCode === "ENOENT";
 }
 
+// Resolve how to invoke a `kirocrew` SUBCOMMAND through execFile, applying the
+// same Windows unwrap the spawn path uses: Node's shell-free execFile refuses a
+// `.cmd`/`.bat` (spawn EINVAL), so a bundled `bin\kirocrew.cmd` is replaced by
+// the bundled `python.exe` one directory up, run with `-s -P -m kiro_crew`
+// exactly as the spawn path does (`-s`/`-P` keep the user site and the spawn
+// cwd off sys.path). Any other bin (a POSIX console script, a dev entry point)
+// is called as-is. Pure: `pathMod` defaults to the host's `path`.
+function gatewayCliInvocation(bin, subArgs, pathMod = path) {
+  if (bin.endsWith("kirocrew.cmd")) {
+    return {
+      bin: pathMod.resolve(pathMod.dirname(bin), "..", "python.exe"),
+      args: ["-s", "-P", "-m", "kiro_crew", ...subArgs],
+    };
+  }
+  return { bin, args: subArgs };
+}
+
 module.exports = {
+  gatewayCliInvocation,
   chooseRecoveryStrategy,
   classifyAdoptedGateway,
   revealWindowForConnect,
@@ -369,6 +512,7 @@ module.exports = {
   waitForProcessExit,
   snapshotPortPids,
   incumbentSnapshotBlocksRespawn,
+  snapshotIncumbentForRespawn,
   unrecoverableGatewayDialog,
   SERVICE_REBIND_GRACE_MS,
   INCUMBENT_EXIT_GRACE_MS,

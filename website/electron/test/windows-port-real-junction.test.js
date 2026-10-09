@@ -11,18 +11,24 @@
 //      THROUGH a junction, canonicalising both sides makes the launcher's
 //      resolver spelling and the reported spelling one file, and the
 //      path-bound matcher accepts it.
+//
+// A third probe covers the lock-holder probe's launcher: Node's shell-free
+// execFile refuses a `.cmd` here (EINVAL), so `kirocrew gateway-pid` is reached
+// only through gatewayCliInvocation's unwrap of the bundled
+// backend-dist\kirocrew-backend\bin\kirocrew.cmd to the python.exe beside it.
 
-const { test } = require("node:test");
+const { describe, it, test } = require("node:test");
 const assert = require("node:assert");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { spawn } = require("node:child_process");
+const { execFile, spawn } = require("node:child_process");
 const {
   canonicalWindowsPath,
   windowsGatewayExecutablePaths,
   windowsProcessCommand,
 } = require("../windows-port");
+const { gatewayCliInvocation } = require("../gateway-recovery");
 const { isKirocrewCommand } = require("../gateway-stop");
 
 const IS_WIN = process.platform === "win32";
@@ -138,3 +144,43 @@ test("a process launched through a junction is matched however Win32_Process spe
     await new Promise((resolve) => child.once("exit", resolve));
   }
 }));
+
+describe("gatewayCliInvocation on a real Windows host", { skip: IS_WIN ? false : "a .cmd launcher and its EINVAL refusal exist only on Windows" }, () => {
+  it("unwraps the bundled kirocrew.cmd to the bundled python.exe with -s -P -m kiro_crew", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "kc-cli-inv-"));
+    try {
+      const backend = path.join(root, "backend-dist", "kirocrew-backend");
+      const cmd = path.join(backend, "bin", "kirocrew.cmd");
+      const { bin, args } = gatewayCliInvocation(cmd, ["gateway-pid"]);
+      assert.strictEqual(bin, path.join(backend, "python.exe"));
+      assert.ok(path.isAbsolute(bin), "the unwrapped interpreter path is absolute");
+      assert.deepStrictEqual(args, ["-s", "-P", "-m", "kiro_crew", "gateway-pid"]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("passes a non-.cmd bin through unchanged", () => {
+    const exe = path.join(os.tmpdir(), "kirocrew.exe");
+    assert.deepStrictEqual(gatewayCliInvocation(exe, ["gateway-pid"]), { bin: exe, args: ["gateway-pid"] });
+  });
+
+  it("execFile refuses a .cmd as-is, the failure the unwrap exists to avoid", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "kc-cli-cmd-"));
+    try {
+      const cmd = path.join(root, "kirocrew.cmd");
+      fs.writeFileSync(cmd, "@echo off\r\necho hi\r\n");
+      const error = await new Promise((resolve) => {
+        try {
+          execFile(cmd, ["gateway-pid"], { windowsHide: true }, (err) => resolve(err));
+        } catch (err) {
+          resolve(err);
+        }
+      });
+      assert.ok(error, "a shell-free execFile of a .cmd must fail on Windows");
+      assert.strictEqual(error.code, "EINVAL");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

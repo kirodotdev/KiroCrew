@@ -944,6 +944,9 @@ class TestLockHolder:
         assert excinfo.value.path == tmp_path / LOCK_FILENAME
         assert "could not determine whether a gateway holds the lock" in str(excinfo.value)
         assert "flock unsupported" in str(excinfo.value)
+        # The probe could NOT establish whether the lock is held, so held=False:
+        # a caller must treat this as unknown, not as a gateway to wait out.
+        assert excinfo.value.held is False
 
     def test_probe_error_still_names_a_live_proc_locks_acquirer(self, tmp_path, monkeypatch):
         # /proc/locks naming a LIVE acquirer is positive ownership on its own;
@@ -991,8 +994,11 @@ class TestLockHolder:
             "kiro_crew.gateway_lock.platform_compat.flock_owner_pid", lambda _p: 222
         )
         monkeypatch.setattr("kiro_crew.gateway_lock.platform_compat.pid_exists", lambda pid: False)
-        with pytest.raises(LockProbeError, match="pid 222"):
+        with pytest.raises(LockProbeError, match="pid 222") as excinfo:
             lock_holder(tmp_path)
+        # Positively held (the kernel named an acquirer), just not nameable as a
+        # live holder: held=True so a caller may wait for the lock to release.
+        assert excinfo.value.held is True
 
     def test_held_lock_with_a_dead_recorded_pid_is_indeterminate(self, tmp_path, monkeypatch):
         # Held, no /proc/locks, and the file names a pid that is gone: somebody
@@ -1005,8 +1011,10 @@ class TestLockHolder:
             "kiro_crew.gateway_lock.platform_compat.flock_owner_pid", lambda _p: None
         )
         monkeypatch.setattr("kiro_crew.gateway_lock.platform_compat.pid_exists", lambda pid: False)
-        with pytest.raises(LockProbeError):
+        with pytest.raises(LockProbeError) as excinfo:
             lock_holder(tmp_path)
+        # Positively held, holder unnameable (the Windows mandatory-lock shape): held=True.
+        assert excinfo.value.held is True
 
     def test_unreadable_lock_file_is_still_probed(self, tmp_path, monkeypatch):
         # The Windows shape: the gateway's mandatory lock makes the file's
@@ -1040,8 +1048,11 @@ class TestLockHolder:
         monkeypatch.setattr("kiro_crew.gateway_lock._lock_is_held", lambda *_a: False)
         assert lock_holder(tmp_path) == LockHolder(pid=None, alive=False, source="none")
         monkeypatch.setattr("kiro_crew.gateway_lock._lock_is_held", lambda *_a: True)
-        with pytest.raises(LockProbeError):
+        with pytest.raises(LockProbeError) as excinfo:
             lock_holder(tmp_path)
+        # The Windows mandatory-lock shape: held, but the lock hides the pid.
+        # held=True so recovery waits for release instead of giving up.
+        assert excinfo.value.held is True
         assert len(denied_reads) == 2, "the read itself must have been refused both times"
 
     def test_missing_lock_file_is_nobody(self, tmp_path):
