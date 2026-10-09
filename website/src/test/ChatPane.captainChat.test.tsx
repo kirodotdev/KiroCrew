@@ -12,9 +12,8 @@ import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 
 /* Captain's chat has no static opening card any more: Captain greets the user
- * with a real first turn instead (see pages/members/useCaptainFirstGreeting).
- * So an empty Captain thread renders exactly like any other empty pane, and a
- * host creation receipt still renders without sending anything. */
+ * with a real first turn instead (see pages/members/useMemberFirstGreeting).
+ * So an empty Captain thread renders exactly like any other empty pane. */
 
 vi.mock('react-virtuoso', () => ({
   Virtuoso: ({ data, itemContent }: { data?: unknown[]; itemContent: (index: number, item: unknown) => ReactNode }) => (
@@ -74,7 +73,7 @@ function makeStore() {
   })
 }
 
-function renderPane(opts: { receipt?: ReactNode } = {}) {
+function renderPane() {
   const store = makeStore()
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const view = render(
@@ -82,7 +81,7 @@ function renderPane(opts: { receipt?: ReactNode } = {}) {
       <QueryClientProvider client={qc}>
         <ThemeProvider>
           <MemoryRouter>
-            <ChatPane slotKey={SLOT} frameless crewmateCreated={opts.receipt} />
+            <ChatPane slotKey={SLOT} frameless />
           </MemoryRouter>
         </ThemeProvider>
       </QueryClientProvider>
@@ -106,13 +105,5 @@ describe('Captain chat in ChatPane', () => {
     expect(view.queryByRole('region', { name: /Captain/ })).toBeNull()
     expect(view.container.querySelectorAll('textarea')).toHaveLength(1)
     expect(sendChat).not.toHaveBeenCalled()
-  })
-
-  it('shows a host creation receipt without sending an AI turn', async () => {
-    const view = renderPane({ receipt: <section data-testid="creation-receipt">Scout is ready</section> })
-    expect(await view.findByTestId('creation-receipt')).toHaveTextContent('Scout is ready')
-    expect(view.queryByTestId('assistant-welcome')).toBeNull()
-    expect(sendChat).not.toHaveBeenCalled()
-    expect(view.container.querySelectorAll('textarea')).toHaveLength(1)
   })
 })

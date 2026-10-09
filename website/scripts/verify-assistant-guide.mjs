@@ -58,6 +58,10 @@ try {
           if (path === '/api/teams') return reply({ teams: [] })
           if (path === '/api/members/assistant/thread') { threadReads.push('assistant'); return reply({ member: 'assistant', slot_key: 'chat-assistant' }) }
           if (path === '/api/members/default/thread') { threadReads.push('default'); return reply({ member: 'default', slot_key: 'chat-default' }) }
+          // The crewmate the guide created: its chat opens after the create.
+          if (path === '/api/members/scout/thread') return reply({ member: 'Scout', slug: 'scout', slot_key: 'chat-scout' })
+          if (path === '/api/chat/slots/chat-scout') return reply({ key: 'chat-scout', messages: [], running: false, has_more: false, total: 0 })
+          if (path.endsWith('/greet')) return reply({ outcome: 'not_owed' })
           if (path.endsWith('/projections')) return reply({ asOfSeq: 0, values: {} })
           if (path === '/api/chat/slots/chat-assistant') return reply({ key: 'chat-assistant', messages: [], running: false, has_more: false, total: 0 })
           if (path === '/api/agents/installed') return reply([{ name: 'kirocrew', source: 'kirocrew' }])
@@ -96,7 +100,9 @@ try {
             assert.equal(headers['x-guide-revision'], String(guide.revision))
             const data = route.request().postDataJSON()
             saves++
-            assert.equal(guide.step_index, 2)
+            // `crewmate.create` has a single step: the Create commit.
+            assert.equal(guide.action_index, 0)
+            assert.equal(guide.step_index, 0)
             members.push({ ...members[1], kiro_agent: 'kirocrew', source: 'kirocrew', name: data.name, slug: data.name.toLowerCase(), slot_key: '', bound: false })
             await reply({ ok: true, name: data.name, member_id: 'fixture-scout' })
             guide.actions[0].result = { name: data.name, member_id: 'fixture-scout' }
@@ -113,7 +119,8 @@ try {
     await setup(page)
     await page.goto(`${base}/members`)
     await page.getByTestId('guide-start').waitFor()
-    assert.equal(await page.getByTestId('onboarding-chapter-embedded').count(), 0)
+    // Nothing opens before the human presses Start.
+    assert.equal(await page.getByTestId('crewmate-create-embedded').count(), 0)
     // The guide is offered in the Assistant member's chat; `default` is never opened.
     assert.equal(new URL(page.url()).searchParams.get('member'), 'assistant', 'lands on the Assistant member')
     assert.equal(threadReads.includes('default'), false, 'the default member is not opened')
@@ -130,19 +137,27 @@ try {
       await setup(other)
       await other.goto(`${base}/members`)
       await other.getByTestId('guide-take-over').waitFor()
-      assert.equal(await other.getByTestId('onboarding-chapter-embedded').count(), 0)
+      // The tab that does not own the guide opens no card of its own.
+      assert.equal(await other.getByTestId('crewmate-create-embedded').count(), 0)
       await page.bringToFront()
     }
-    await shot('guide-goal')
-    await page.getByTestId('meet-crewmates-next').click()
-    await page.getByTestId('meet-crewmates-name').waitFor()
-    await page.waitForFunction(() => document.querySelector('[data-testid="guide-step-text"]')?.textContent?.includes('name'))
-    await page.getByTestId('meet-crewmates-next').click()
-    await page.getByTestId('meet-crewmates-create').waitFor()
+    // The guide's one step: the New crewmate card, opened in place with the
+    // proposed name and goal, Advanced unfolded so the goal is in view, and the
+    // arrow on its Create button.
+    const card = page.getByTestId('crewmate-create-embedded')
+    await card.waitFor()
+    assert.equal(await card.getByLabel('Name', { exact: true }).inputValue(), 'Scout')
+    assert.equal(await card.getByTestId('crewmate-create-advanced-toggle').getAttribute('aria-expanded'), 'true')
+    await card.getByTestId('crewmate-create-advanced').waitFor()
+    assert.equal(await card.getByLabel('What it looks after', { exact: true }).inputValue(), 'Prepare a weekly project update for my review.')
+    await page.waitForFunction(() => document.querySelector('[data-testid="guide-step-text"]')?.textContent?.includes('Create'))
+    await card.locator('[data-guide-anchor="crewmate.create"]').waitFor()
+    assert.equal(saves, 0, 'nothing is created before the human presses Create')
     await page.waitForTimeout(600)
     await shot('guide-create')
-    await page.getByTestId('meet-crewmates-create').click()
-    await page.getByTestId('meet-crewmates-ready').waitFor()
+    await card.getByTestId('crewmate-create-submit').click()
+    // The card stands down once the gateway has the record; the guide moves on.
+    await card.waitFor({ state: 'detached' })
     assert.equal(saves, 1)
     await page.getByTestId('guide-continue').click()
     // Step 1: the existing Connections page opens on Services; the arrow is on

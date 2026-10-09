@@ -3457,91 +3457,12 @@ config sections cannot enter configuration through this path.
 
 ### Meet CrewMates first-run state
 
-`DashboardConfig.crewmates_onboarded` records completion of the "Meet CrewMates"
-creation flow (`website/src/components/MeetCrewmatesFlow.tsx`). It no longer
-controls automatic presentation: neither completing the tour nor entering
-Crewmates opens a fullscreen chapter. The Crewmates page owns the flow and
-opens it only on an explicit create action. Its Assistant chat supplies the
-first-visit welcome instead.
-The embedded steps collect a goal, choose a name, review the run schedule and
-confirm the result. They reuse the chapter shell without a portal or modal focus
-trap. Technical template selection stays under Advanced. The default is
-on-demand, so completing creation alone never schedules background work.
-Unfinished draft fields, step and errors survive returning to chat and reopening
-the still-mounted flow. Leaving the page warns before discarding an edited draft;
-a later Assistant proposal cannot silently replace it. After completion, the
-next opening starts fresh. The standalone shell retains its existing behavior
-for callers that explicitly request that presentation.
-The shared chapter shell hides floating decorative mascots below `sm` so they
-cannot overlap the headline or body in the stacked mobile header.
-Examples describe outcomes (issue triage, current release notes, passing checks),
-not event triggers. The introduction explains chats, dashboards, notes and
-requests for a human decision; it does not promise uninterrupted execution.
-The daily schedule accepts a minute-precision `HH:mm` time, defaulting to
-`09:00`, with the browser's IANA timezone displayed beside it. Daily jobs set
-`strict_schedule: true` so random jitter cannot shift the chosen time. That zone is
-captured once per opening and used for both the cron and confirmation. An
-empty or invalid daily time prevents both button and Enter submissions before
-any create request. Hourly and on-demand choices do not require a time.
-Back preserves the selected time; a fresh creation resets it. The ready screen repeats
-the submitted goal as plain text and formats the chosen time in the UI locale.
-The today/tomorrow label is calculated when creation completes, at minute
-precision; the selected minute itself counts as passed. Failed schedule writes
-show their recovery notice without a next-run claim. This flow creates a crew
-and optional recurring schedule, not a separate goal-completion control loop.
-`useMeetCrewmatesGate` listens only for the explicit create event
-(`START_MEET_CREWMATES_EVENT`); it does not inspect the roster, installed
-agents, tour completion or prior completion flag before opening. The crewmate name is free-form: `POST /api/agents` keeps it as the crew's
-label and derives an id-shaped key from it (`members.key_new_crew`), so spaces
-and CJK are accepted. The flow disables Next only on a blank name; the server's
-`validate_member_name` is the gate, and a 400 `invalid_member_name` or
-`credential_shaped_name`, or a 409 `agent_exists`, lands as an `ErrorNotice`
-under the name field.  Notices
-follow `errors-use-error-notice`: the agent hand-off is on where nothing can be
-lost (the step-4 schedule notices, the "done" notice on
-steps 1 and 4) and closes the flow the way that step's own exit does, since the
-chat it opens sits behind the dialog; it is off beside the unsaved name and job
-on steps 2-3, each such notice naming the draft. Its Create step is two
-existing writes — `POST /api/agents` (the crewmate, job text stored as
-`description`) and `POST /api/crons` with `member_id` naming the crewmate so the
-schedule runs on the crewmate's own memory. Delivery is mechanical, never an
-instruction to the model: the job is created non-`silent`, so every run rings
-the dashboard bell and — when Slack is connected — reaches the owner's Slack DM
-through the runtime's own leg (the flow's Slack row therefore only states that
-fact; it is not a switch), and "Its own chat" maps to `hide_in_chat`, the one
-delivery choice the runtime actually offers. The crewmate's identity is held
-only from a clean create response -- the immutable `member_id` the server
-allocates with its member memory, which `POST /api/agents` now returns beside
-`memory_store` -- and it is the one thing the flow binds to or reconciles
-against later; nothing is ever claimed by display NAME, because two
-openings prefill the same example name and a same-named crewmate the flow
-cannot prove it made is someone else's. So a 409 `agent_exists` is a taken name
-on every attempt (step 2, error under the field, with a button to the Crew
-Members page where that crewmate lives -- leaving dismisses the flow -- and the
-suggestion chip carrying that name marked "already exists"), a create the server refused
-(any other 4xx) says "could not be created" inline, and a create with no usable
-answer (a dropped response, a 5xx) stops on step 3 with a block notice that the
-crewmate "may or may not have been created", posts no schedule, and carries a
-button to the Crewmates page (leaving completes the flow) so the user checks
-before making a second one. The schedule is posted with `member_id` = that
-identity, never the display name (a name is late-resolved on the server, so a
-crewmate deleted and remade under the same name between the two writes would
-otherwise receive the job; the identity resolves to exactly the crewmate just
-made, or to nothing). A schedule write the server refused
-(4xx) is reported as "not saved"; any other failure after the request left (a
-dropped response, a 5xx) is reconciled against `GET /api/crons`, and only a job
-that IS the one asked for counts -- `member_id` equal to the held identity, the
-same name, the same message and the same schedule; an older or foreign job on
-the crewmate is not evidence that this write landed -- so only when nothing matches, or that read fails, is it
-reported as "may not have been saved", with a button to the Schedule page on
-the notice (leaving completes the flow) rather than inviting a duplicate. "Only when I ask" posts no schedule and step 4 then
-says nothing about reports or the Schedule page. An exit never waits for the
-server: `onDone` closes the page-owned flow immediately. Creation and completed
-exits persist `crewmates_onboarded` asynchronously; dismissing an unfinished
-draft writes nothing. A refusal remains visible through `persistFailed`, while
-the local completion cache is changed only after the server accepts the write.
-`GET /api/theme/boot` and the existing localStorage mirrors retain the legacy
-completion record for compatibility, but none of those flags auto-opens the flow.
+`DashboardConfig.crewmates_onboarded` is a legacy completion record. Nothing
+reads it to decide what to show: entering Crewmates opens Captain's chat, and
+creating a crewmate happens on the New crewmate card (see
+[crew-mode](crew-mode.md)), which neither reads nor writes the flag.
+`GET /api/theme/boot` and `PUT /api/config/theme` keep carrying it for
+compatibility; the dashboard neither reads nor writes it.
 
 ### `ChannelConfig.from_dict(data: dict) -> ChannelConfig`
 Parses a channel config entry from JSON. Invalid activation values fall back to `"mention"`.

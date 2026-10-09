@@ -826,7 +826,7 @@ Captain's identity is locked:
   `/api/agents/kirocrew-captain` (`deletes_assistant_member`). The crew editor
   shows Captain's Danger zone row disabled with the reason.
 - **Key reserved for the installer.** `members.key_new_crew` -- shared by
-  `POST /api/agents` (which the Meet CrewMates flow and the `crewmate.create`
+  `POST /api/agents` (which the New crewmate card and the `crewmate.create`
   card both call) and `kirocrew agent create` -- refuses the key with 409
   `assistant_member_reserved` whether or not Captain exists, and never derives it
   from a free-form name. The `crewmate.create` card refuses it at preview, and
@@ -931,7 +931,11 @@ control is or wants to make the change themselves. Card outcomes reach its next
 turn as a `[CHANGE CARD RESULTS]` block that never starts a turn, and every owner
 change through those routes, card or manual, is a names-only "Dashboard: ..." line
 in Global memory history it recalls when recommending configuration. Crewmate
-proposals are `crewmate.create` cards; the
+proposals are `crewmate.create` cards; the card builds the crewmate from
+`kirocrew` (`change_card_catalog.DEFAULT_CREWMATE_TEMPLATE`, the
+Crewmates page's own default) and sends `first_greeting`, so the crewmate opens
+its chat by asking about the proposed goal exactly as one created on the
+Crewmates page does (see the first greeting below); the
 `/members?create=1&name=<encoded-name>&goal=<encoded-goal>` link to an editable UI
 draft remains for a user who wants to fill it in; opening a draft never creates a
 member or starts a schedule.
@@ -1018,7 +1022,7 @@ user has moved to another page meanwhile.
 Captain's chat has no static welcome card. Captain speaks first instead: once
 the thread endpoint has confirmed Captain's pinned thread, the page calls
 `POST /api/members/{slug}/greet` (owner-only; app tokens get 404), once per
-thread per tab (`pages/members/useCaptainFirstGreeting.ts`). The server
+thread per tab (`pages/members/useMemberFirstGreeting.ts`). The server
 (`dashboard/captain_greeting.py`) starts a greeting only when the slug's DM
 binding names `kirocrew-captain`, the live slot is that member's pinned
 (`mode="member"`, agent `kirocrew-captain`) local thread, it holds no rows or
@@ -1044,38 +1048,81 @@ username, home path, email or host name, and a first greeting never says
 ordinary turn error path once; the marker is already claimed, so it never loops,
 and the composer stays usable.
 
-The primary New crewmate action and Assistant proposals open the same embedded
-`MeetCrewmatesFlow`: goal, name, schedule and confirmation in the chapter shell's
-split-panel layout. The embedded shell retains the original 760px height and
-6xl width caps and the same four-mascot composition. From `xl` its aside takes the
-original shell's widest 415px and shows all four mascots; narrower asides show
-none, since the page navigation leaves no room for them beside the copy.
-No modal, viewport scrim or focus trap is added. The current
-chat stays mounted while hidden, preserving its draft and reading position.
-Back returns to it and retains the unfinished creation draft; navigation away
-warns before losing that draft. A proposal cannot replace an edited draft.
-Completion offers a return to the originating conversation with a host-rendered
-creation receipt, or an explicit link to the new member's chat. Receipts are
-shape-checked records in this browser tab's sessionStorage, keyed by originating
-member; they survive a page return in that tab but are not server-side transcript
-entries or cross-device history. The receipt is
-not an AI message and does not start an agent turn. Schedule failures are reported
-separately from successful member creation. Timing and write reconciliation are
-specified in [config](config.md#meet-crewmates-first-run-state).
+A newly created crewmate speaks first through the same route and the same
+dispatch (`maybe_start_member_greeting`), and only when its create asked for it:
+`POST /api/agents` with `first_greeting: true` (exactly `true`; any other value
+owes nothing) writes `members/<member_id>/first_greeting_owed.json` after the
+record is published. The Crewmates page's create form sends it, and so does the `crewmate.create` card; the crew manager's door and the
+CLI do not. The page asks only for Captain and for
+dashboard-created rows (`dashboard_created`); the server answers `not_owed` for
+a crewmate without the record, so an existing crewmate is never greeted. An
+owed crewmate greets on its own pinned local thread (binding member == slot
+agent), while that thread is empty and idle, at most once: its own
+`members/<slug>/first_greeting.json` claim, with `O_CREAT|O_EXCL` before
+dispatch, beside Captain's untouched marker. The turn runs the hidden kickoff
+`CREWMATE_GOAL_KICKOFF` with no transcript row, which asks the crewmate to
+introduce itself by name and ask, in plain words, what the user wants it to do,
+without starting work. The user chose a name and a look, not a template, so the
+kickoff also tells it not to name its template, role or agent type and not to
+describe how it works; when the
+record carries a `description`, `crewmate_goal_kickoff` appends it as a first
+draft of the goal for the crewmate to confirm. A failed record write is logged
+and leaves the create successful, with a chat that simply opens empty.
 
-The explicit Advanced entry preserves the full create form's workspace, model,
-routing and colour controls, also embedded in the page. That full form is the ONE
-"New crewmate" dialog (`website/src/pages/members/NewCrewmateDialog.tsx`): it is
+The primary New crewmate action (the header **+** menu's row, the empty roster's
+hero and the switcher's New crewmate) opens the embedded `NewCrewmateDialog`:
+one card headed **New crewmate** with a **Name** field, an **Avatar** preview
+with **Try another look**, an **Advanced settings** row, a one-line hint that the
+crewmate will ask what it should do, and **Cancel** / **Create** (stacked
+full-width below `sm`, Create on top). Create builds the crewmate from
+`kirocrew`, and the folded card does not name that template. The look is a
+name-seeded ghost (`seededTraits`), re-rolled by appending `#<n>` to the seed,
+and is pinned on the record as `avatar: {kind: 'ghost', traits}`, so the face
+shown is the face kept. The **Advanced settings** row (the whole row is the
+button; its chevron turns as it opens) unfolds inline below the avatar, in the
+same card: Built from, What it looks after, and the crew editor fields
+(workspace, model, triggers, session colour). It is folded by default;
+`startExpanded` opens it unfolded, which is what the hero's Advanced link and
+the crew manager's door pass; the "+" menu holds only New crewmate and New team. Folding unmounts
+those fields but keeps their values, and every create sends them.
+
+The card is the page's one creation surface. A drafted proposal (a Captain
+create link `/members?create=1&name=…&goal=…`, clicked in Captain's chat or
+reached by address, or the `crewmate.create` guide, whose enter step is that
+link) opens the same card with the proposal filled in: the name in **Name**,
+the goal in **What it looks after**, with Advanced settings unfolded when a
+goal is proposed so it is in view (`initialDraft`). The page strips the link's
+parameters once read. A proposal left as proposed is not the user's draft: it
+leaves without asking, and a later proposal replaces it at once; a card the
+user changed is replaced only once its own leave guard agrees, or when the
+guide that brought the proposal already asked. No modal, viewport scrim or
+focus trap is added. The current chat stays mounted while hidden, preserving
+its draft and reading position, and closing the card returns to it. The guided
+door (`guided`) carries the guide's anchor on its Create button, and its create
+request carries the guide headers so the gateway credits the guide's one
+commit step from the crewmate it actually created; a save the guide had not
+reached closes the guide as saved without it, and a refused save stops it
+waiting. When the crewmate runs is not asked on the card: the crewmate's first
+greeting asks for its goal and, once the goal is clear, may offer a schedule
+for the user to confirm (see `captain_greeting.py`).
+
+The explicit Advanced entry opens the same card with its workspace, model,
+routing and colour controls already unfolded, also embedded in the page. That
+card is the ONE "New crewmate" dialog (`website/src/pages/members/NewCrewmateDialog.tsx`): it is
 also mounted by the crew manager's "Add crew member" tile / header button and its
 dashed roster card (`website/src/pages/KiroCrewAgentsPage.tsx`, the Crews tab of
 Agent Capabilities), which has no separate create sheet. Both forms use the
 existing owner-gated `POST /api/agents`; editing an existing member still uses
-the crew manager. What happens after a create from the full form depends on the
-door. On the Crewmates page the post-create greeting follows the existing
-verified-thread and composer-send path, with failures retaining their retry. From
+the crew manager. The crew manager's door opens with Advanced settings
+unfolded and `kirocrew` as the default **Built from** (labelled as the
+default), and shows no first-greeting hint, since it asks for none. What happens after a create depends on
+the door. On the Crewmates page the dialog sends `first_greeting`, the page
+re-reads the roster and opens the new crewmate's verified thread (a failed
+re-read keeps its retry), and that open's greeting request starts the hidden
+goal question; nothing is sent in the user's name. From
 the crew manager the door is CONFIG mode: the dialog closes and the crew manager
 re-reads its roster so the new card appears in place; it does NOT navigate to the
-crewmate's chat and seeds no greeting. The dialog's own success path (cache
+crewmate's chat and asks for no greeting. The dialog's own success path (cache
 invalidation, the post-failure reconcile, "what it looks after" stored as
 `description`) is identical on both doors; only the caller's `onCreated`
 differs. `NewCrewmateDialog` imports its field frame and field components from

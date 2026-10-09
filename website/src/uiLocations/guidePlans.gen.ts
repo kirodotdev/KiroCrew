@@ -3,7 +3,7 @@
 import type { UiGuidePlan } from './types'
 
 /** The `build_digest` of the packaged index this bundle was built with (see `guideBuildDigest`). */
-export const GUIDE_BUILD_DIGEST = "sha256:dd55fa292cd001a49d6700513c12fa578f8557d9ff5680e3d9a98723b4db0f5c"
+export const GUIDE_BUILD_DIGEST = "sha256:51f5e44bb21947881c5ce290ff34bac88ac942970253755bd7973faa71cc064b"
 
 /** Curated location ids: the only ids a live observation may name. */
 export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
@@ -62,7 +62,6 @@ export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
   "mcp.add-server",
   "mcp.probe",
   "members.add-menu",
-  "members.add-menu.advanced",
   "members.add-menu.new-team",
   "members.back",
   "members.details",

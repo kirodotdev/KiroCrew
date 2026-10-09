@@ -6,7 +6,7 @@
 import { describe, it, expect } from 'vitest'
 
 import {
-  countByFilter, listedByDefault, matchesStatus, narrowRoster, parseSort, parseStatusFilters, queryNarrows,
+  countByFilter, hasNoCrewmates, listedByDefault, matchesStatus, narrowRoster, parseSort, parseStatusFilters, queryNarrows,
   rosterPopulation, rosterShows, sortRoster,
   type MemberSignals, type RosterQuery,
 } from './rosterFilter'
@@ -225,5 +225,15 @@ describe('storage parsers reject junk', () => {
     expect(parseSort(null)).toBe('recent')
     expect(parseSort('name')).toBe('name')
     expect(parseSort('date-desc')).toBe('recent')
+  })
+})
+
+describe('hasNoCrewmates', () => {
+  it('treats a default-only roster as empty; the built-in Captain member is a crewmate', () => {
+    expect(hasNoCrewmates([])).toBe(true)
+    expect(hasNoCrewmates([{ name: 'default' }])).toBe(true)
+    expect(hasNoCrewmates([{ name: 'default' }, { name: 'kirocrew-captain' }])).toBe(false)
+    expect(hasNoCrewmates([{ name: 'default' }, { name: 'Radar' }])).toBe(false)
+    expect(hasNoCrewmates(undefined)).toBe(false)
   })
 })

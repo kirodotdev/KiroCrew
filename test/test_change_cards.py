@@ -161,6 +161,10 @@ def test_crewmate_create_binds_its_schedule_to_the_created_identity():
     )
     plan = catalog.build_preview("crewmate.create", p, {"exists": False}, {})["apply"]
     assert [s["path"] for s in plan] == ["/api/agents", "/api/crons"]
+    # Built from the Crewmates page's template, and owed the same first message.
+    assert plan[0]["body"]["kiro_agent"] == "kirocrew"
+    assert plan[0]["body"]["first_greeting"] is True
+    assert plan[1]["body"]["agent"] == "kirocrew"
     assert plan[1]["fill"] == [
         {"field": "member_id", "source": "step", "step": 0, "key": "member_id"}
     ]

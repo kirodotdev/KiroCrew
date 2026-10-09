@@ -66,15 +66,15 @@ _GOLDENS = [
     (
         "advanced crewmate setup",
         "en",
-        "members.add-menu.advanced",
-        ["Crewmates", "Add…", "Advanced"],
+        "members.add-menu",
+        ["Crewmates", "Add…"],
         ["has_crewmates"],
     ),
     (
         "高级队友设置",
         "zh-CN",
-        "members.add-menu.advanced",
-        ["队友", "添加…", "高级"],
+        "members.add-menu",
+        ["队友", "添加…"],
         ["has_crewmates"],
     ),
     (
@@ -189,7 +189,7 @@ def test_creating_a_crewmate_names_every_host_and_the_state_that_draws_it() -> N
 
 
 def test_menu_items_hang_under_the_add_menu() -> None:
-    for target in ("members.add-menu.advanced", "members.add-menu.new-team"):
+    for target in ("members.add-menu.new-team",):
         (p,) = ui_index.find_ui(target, "en")["results"][0]["placements"]
         assert [s["id"] for s in p["path"]] == ["page.members", "members.add-menu", target]
         assert p["path"][-1]["role"] == "target"

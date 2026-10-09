@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo, type ReactNode } from 'react'
+import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { X, LoaderCircle } from 'lucide-react'
@@ -135,7 +135,6 @@ export default function ChatPane({
   onSessionOpen,
   sessions,
   activeSession,
-  crewmateCreated,
 }: {
   slotKey: string
   onOpenCommandCenter?: () => void
@@ -228,8 +227,6 @@ export default function ChatPane({
   onSessionOpen?: (key: string) => void
   sessions?: ReadonlyMap<string, string>
   activeSession?: string
-  /** Host confirmation of a user-created crewmate, never a synthetic AI reply. */
-  crewmateCreated?: ReactNode
 }) {
   // One instance covers both dropdown filter inputs (never open at once).
   const dispatch = useAppDispatch()
@@ -1686,7 +1683,6 @@ export default function ChatPane({
                     to start" beside a summary that counts its wakes. Said only
                     once the read is the WHOLE history (`crewmateQuietUnproven`
                     above): a bounded window with no speech in it is not proof. */}
-                {crewmateCreated}
                 {messages.length === 0 && !running && !slotDetailFailed && !hideEmptyHint && !crewmateQuietUnproven && (
                   <div className="text-center text-muted text-[13px] px-4 py-8" data-testid={crewmate && paneMessages.length > 0 ? 'crewmate-quiet-hint' : undefined}>
                     {crewmate && paneMessages.length > 0 ? (

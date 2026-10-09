@@ -32,8 +32,6 @@ import { GUIDE_GATE_TEXT_KEYS, GUIDE_SELECTION_TEXT_KEYS, isGate, isSelectionSco
 
 /** Stable `data-guide-anchor` values. A control opts in by carrying one. */
 export const GUIDE_ANCHORS = {
-  crewmateGoalNext: 'crewmate.goal-next',
-  crewmateNameNext: 'crewmate.name-next',
   crewmateCreate: 'crewmate.create',
   mcpServersTab: 'mcp.servers-tab',
   mcpAddCustom: 'mcp.add-custom',
@@ -153,17 +151,9 @@ function resolveCrewmateCreate(params: Record<string, unknown>): GuideActionReso
       id: 'crewmate.create',
       titleKey: 'components.guideLayer.title_crewmate_create',
       titleVars: {},
+      // One step: the New crewmate card opens with the name and goal filled
+      // in, and the guide points at its Create button.
       steps: [
-        {
-          target: { kind: 'anchor', anchor: GUIDE_ANCHORS.crewmateGoalNext },
-          complete: { kind: 'reach', targets: [anchor(GUIDE_ANCHORS.crewmateNameNext), anchor(GUIDE_ANCHORS.crewmateCreate)] },
-          textKey: 'components.guideLayer.step_crewmate_goal',
-        },
-        {
-          target: { kind: 'anchor', anchor: GUIDE_ANCHORS.crewmateNameNext },
-          complete: { kind: 'reach', targets: [anchor(GUIDE_ANCHORS.crewmateCreate)] },
-          textKey: 'components.guideLayer.step_crewmate_name',
-        },
         {
           target: { kind: 'anchor', anchor: GUIDE_ANCHORS.crewmateCreate },
           complete: { kind: 'committed' },
@@ -173,10 +163,10 @@ function resolveCrewmateCreate(params: Record<string, unknown>): GuideActionReso
       enter: {
         kind: 'navigate',
         // Hands the draft to the Crewmates page's own `?create=1` hand-off,
-        // which gives it to the guided flow as a PROPOSAL: a draft the user
-        // already edited is kept (MeetCrewmatesFlow `onDraftKept`). On that
-        // page already, the rest of the address (the open member) is kept so
-        // "back to chat" still knows where the user came from.
+        // which opens the New crewmate card with it filled in; a card the
+        // user already edited is replaced only once they agree to leave it.
+        // On that page already, the rest of the address (the open member) is
+        // kept so "back to chat" still knows where the user came from.
         to: (here) => {
           const next = new URLSearchParams(here.pathname === '/members' ? here.search : '')
           next.set('create', '1')

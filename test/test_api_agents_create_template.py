@@ -259,3 +259,39 @@ class TestMissingTemplateWarnsButCreates:
         # …but the substitution risk is on the record rather than silent.
         assert "not in the installed agent listing" in caplog.text
         assert "not-installed" in caplog.text
+
+
+class TestFirstGreetingOwed:
+    """``first_greeting`` on the create records the crewmate's opening question.
+
+    The record is what lets ``POST /api/members/{slug}/greet`` start a
+    crewmate's first turn at all (``captain_greeting.NOT_OWED`` otherwise), so a
+    create without the flag must never write it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_flagged_create_marks_the_greeting_owed_by_member_id(self):
+        cfg = _fake_config()
+        marked: list[str] = []
+        with patch("kiro_crew.dashboard.captain_greeting.mark_greeting_owed", new=marked.append):
+            status, data = await _post(
+                {"name": "scout", "kiro_agent": "kirocrew", "first_greeting": True},
+                cfg,
+                installed=("kirocrew",),
+            )
+        assert status == 200
+        assert data["member_id"]
+        assert marked == [data["member_id"]]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("flag", [None, False, "true", 1])
+    async def test_a_create_without_the_flag_owes_nothing(self, flag):
+        cfg = _fake_config()
+        marked: list[str] = []
+        body = {"name": "scout", "kiro_agent": "kirocrew"}
+        if flag is not None:
+            body["first_greeting"] = flag
+        with patch("kiro_crew.dashboard.captain_greeting.mark_greeting_owed", new=marked.append):
+            status, _ = await _post(body, cfg, installed=("kirocrew",))
+        assert status == 200
+        assert marked == []

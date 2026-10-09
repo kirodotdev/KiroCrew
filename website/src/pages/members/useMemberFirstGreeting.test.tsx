@@ -8,13 +8,14 @@ vi.mock('../../api/client', () => ({
 }))
 
 import { api } from '../../api/client'
-import { resetCaptainGreetingRequests, useCaptainFirstGreeting } from './useCaptainFirstGreeting'
+import { resetMemberGreetingRequests, useMemberFirstGreeting } from './useMemberFirstGreeting'
 import { store } from '../../store'
 import { selectComposerBusy, selectSlotRunEpoch, sseChatMessage, startServerTurn } from '../../store/chatSlice'
 
-/* The page-side trigger of Captain's first greeting. The server owns the
- * once-only guarantee; this hook only has to ask at the right moment (Captain,
- * confirmed thread) and not ask again for the same thread in this tab. */
+/* The page-side trigger of a member's first greeting (Captain's, or a new
+ * crewmate's). The server owns the once-only guarantee; this hook only has to
+ * ask at the right moment (an enabled member, confirmed thread) and not ask
+ * again for the same thread in this tab. */
 
 const greet = api.memberGreet as ReturnType<typeof vi.fn>
 
@@ -25,25 +26,36 @@ function wrapper({ children }: { children: ReactNode }) {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  resetCaptainGreetingRequests()
+  resetMemberGreetingRequests()
 })
 
-describe('useCaptainFirstGreeting', () => {
+describe('useMemberFirstGreeting', () => {
   it('asks once the Captain thread is confirmed', async () => {
-    renderHook(() => useCaptainFirstGreeting('kirocrew-captain', 'member-kirocrew-captain', true), { wrapper })
+    renderHook(() => useMemberFirstGreeting('kirocrew-captain', 'member-kirocrew-captain', true), { wrapper })
     await waitFor(() => expect(greet).toHaveBeenCalledWith('kirocrew-captain'))
     expect(greet).toHaveBeenCalledTimes(1)
   })
 
-  it('never asks for another crewmate', async () => {
-    renderHook(() => useCaptainFirstGreeting('alpha', 'member-alpha', false), { wrapper })
+  it('asks for a crewmate the page enabled it for, by that crewmate\'s slug, once', async () => {
+    const { rerender } = renderHook(({ slot }) => useMemberFirstGreeting('scout', slot, true), {
+      wrapper,
+      initialProps: { slot: 'member-scout' },
+    })
+    await waitFor(() => expect(greet).toHaveBeenCalledWith('scout'))
+    rerender({ slot: 'member-scout' })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(greet).toHaveBeenCalledTimes(1)
+  })
+
+  it('never asks for a member the page did not enable', async () => {
+    renderHook(() => useMemberFirstGreeting('alpha', 'member-alpha', false), { wrapper })
     await new Promise((r) => setTimeout(r, 0))
     expect(greet).not.toHaveBeenCalled()
   })
 
   it('waits for the confirmed slot key before asking', async () => {
     const { rerender } = renderHook(
-      ({ slot }: { slot: string }) => useCaptainFirstGreeting('kirocrew-captain', slot, true),
+      ({ slot }: { slot: string }) => useMemberFirstGreeting('kirocrew-captain', slot, true),
       { wrapper, initialProps: { slot: '' } },
     )
     await new Promise((r) => setTimeout(r, 0))
@@ -53,17 +65,17 @@ describe('useCaptainFirstGreeting', () => {
   })
 
   it('does not ask again for the same thread after a remount in this tab', async () => {
-    const first = renderHook(() => useCaptainFirstGreeting('kirocrew-captain', 'member-kirocrew-captain', true), { wrapper })
+    const first = renderHook(() => useMemberFirstGreeting('kirocrew-captain', 'member-kirocrew-captain', true), { wrapper })
     await waitFor(() => expect(greet).toHaveBeenCalledTimes(1))
     first.unmount()
-    renderHook(() => useCaptainFirstGreeting('kirocrew-captain', 'member-kirocrew-captain', true), { wrapper })
+    renderHook(() => useMemberFirstGreeting('kirocrew-captain', 'member-kirocrew-captain', true), { wrapper })
     await new Promise((r) => setTimeout(r, 0))
     expect(greet).toHaveBeenCalledTimes(1)
   })
 
   it('a failed request is reported for that thread and may be asked again', async () => {
     greet.mockRejectedValueOnce(new Error('offline'))
-    const { result } = renderHook(() => useCaptainFirstGreeting('kirocrew-captain', 'member-kirocrew-captain', true), { wrapper })
+    const { result } = renderHook(() => useMemberFirstGreeting('kirocrew-captain', 'member-kirocrew-captain', true), { wrapper })
     await waitFor(() => expect(result.current.failed).toBe(true))
     expect(greet).toHaveBeenCalledTimes(1)
     // The failure waits for the person: no re-ask on its own.
@@ -76,26 +88,26 @@ describe('useCaptainFirstGreeting', () => {
 
   it('a failed request does not block the next open of the same thread', async () => {
     greet.mockRejectedValueOnce(new Error('offline'))
-    const first = renderHook(() => useCaptainFirstGreeting('kirocrew-captain', 'member-kirocrew-captain', true), { wrapper })
+    const first = renderHook(() => useMemberFirstGreeting('kirocrew-captain', 'member-kirocrew-captain', true), { wrapper })
     await waitFor(() => expect(first.result.current.failed).toBe(true))
     first.unmount()
-    renderHook(() => useCaptainFirstGreeting('kirocrew-captain', 'member-kirocrew-captain', true), { wrapper })
+    renderHook(() => useMemberFirstGreeting('kirocrew-captain', 'member-kirocrew-captain', true), { wrapper })
     await waitFor(() => expect(greet).toHaveBeenCalledTimes(2))
   })
 
   it('a request that fails after the page unmounted does not block the next open', async () => {
     let reject: (e: Error) => void = () => {}
     greet.mockImplementationOnce(() => new Promise((_res, rej) => { reject = rej }))
-    const first = renderHook(() => useCaptainFirstGreeting('kirocrew-captain', 'member-kirocrew-captain', true), { wrapper })
+    const first = renderHook(() => useMemberFirstGreeting('kirocrew-captain', 'member-kirocrew-captain', true), { wrapper })
     await waitFor(() => expect(greet).toHaveBeenCalledTimes(1))
     first.unmount()
     await act(async () => { reject(new Error('offline')) })
-    renderHook(() => useCaptainFirstGreeting('kirocrew-captain', 'member-kirocrew-captain', true), { wrapper })
+    renderHook(() => useMemberFirstGreeting('kirocrew-captain', 'member-kirocrew-captain', true), { wrapper })
     await waitFor(() => expect(greet).toHaveBeenCalledTimes(2))
   })
 
   it('reports no failure for another crewmate', () => {
-    const { result } = renderHook(() => useCaptainFirstGreeting('alpha', 'member-alpha', false), { wrapper })
+    const { result } = renderHook(() => useMemberFirstGreeting('alpha', 'member-alpha', false), { wrapper })
     expect(result.current.failed).toBe(false)
   })
 
@@ -105,14 +117,14 @@ describe('useCaptainFirstGreeting', () => {
   it('a started greeting makes the thread composer busy before any frame', async () => {
     const slot = 'member-kirocrew-captain-busy'
     expect(selectComposerBusy(store.getState(), slot)).toBe(false)
-    renderHook(() => useCaptainFirstGreeting('kirocrew-captain', slot, true), { wrapper })
+    renderHook(() => useMemberFirstGreeting('kirocrew-captain', slot, true), { wrapper })
     await waitFor(() => expect(selectComposerBusy(store.getState(), slot)).toBe(true))
   })
 
   it('a declined greeting leaves the thread idle', async () => {
     greet.mockResolvedValueOnce({ outcome: 'not_empty' })
     const slot = 'member-kirocrew-captain-declined'
-    renderHook(() => useCaptainFirstGreeting('kirocrew-captain', slot, true), { wrapper })
+    renderHook(() => useMemberFirstGreeting('kirocrew-captain', slot, true), { wrapper })
     await waitFor(() => expect(greet).toHaveBeenCalledTimes(1))
     await new Promise((r) => setTimeout(r, 0))
     expect(selectComposerBusy(store.getState(), slot)).toBe(false)

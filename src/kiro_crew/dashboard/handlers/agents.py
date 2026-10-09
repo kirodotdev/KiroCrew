@@ -218,6 +218,7 @@ from kiro_crew.dashboard.agent_admin.crew_records import (  # noqa: F401
     _api_kirocrew_agents_create,
     _crew_effort_rejected,
     _crew_memory_store_rejected,
+    _mark_first_greeting_owed,
     _refresh_session_defaults,
     api_kirocrew_agent_resolved_model,
     api_kirocrew_agents_create,

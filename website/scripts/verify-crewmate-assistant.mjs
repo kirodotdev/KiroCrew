@@ -1,7 +1,7 @@
 /** Real built SPA, synthetic API only. Proves layout and creation/chat continuity
  * without sending a prompt or changing a running gateway. Pass an output dir. */
 import assert from 'node:assert/strict'
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { chromium } from 'playwright'
 import { serveDist } from './lib/serve-dist.mjs'
@@ -64,6 +64,10 @@ try {
         if (path === '/api/teams') return respond({ teams: [] })
         if (path === '/api/members/assistant/thread') { threadReads.push('assistant'); return respond({ member: 'assistant', slot_key: 'chat-assistant' }) }
         if (path === '/api/members/default/thread') { threadReads.push('default'); return respond({ member: 'default', slot_key: 'chat-default' }) }
+        // The crewmate the card creates: its chat opens after the create.
+        if (path === '/api/members/scout/thread') return respond({ member: 'Scout', slug: 'scout', slot_key: 'chat-scout' })
+        if (path === '/api/chat/slots/chat-scout') return respond({ key: 'chat-scout', messages: [], running: false, has_more: false, total: 0 })
+        if (path.endsWith('/greet')) return respond({ outcome: 'not_owed' })
         if (path === '/api/chat/slots/chat-default') return respond({ key: 'chat-default', messages: [], running: false, has_more: false, total: 0 })
         if (path.endsWith('/projections')) return respond({ asOfSeq: 0, values: {} })
         if (path === '/api/chat/slots/chat-assistant') return respond({ key: 'chat-assistant', messages, running: false, has_more: false, total: messages.length })
@@ -108,58 +112,67 @@ try {
       await shot('assistant-first-message')
     }
     const openCreation = async () => {
-      if (await welcome.getByTestId('assistant-welcome-create').isVisible()) {
-        await welcome.getByTestId('assistant-welcome-create').click()
-      } else {
-        await page.getByTestId('member-add').click()
-        await page.getByTestId('member-add-crewmate').click()
-      }
+      await page.getByTestId('member-add').click()
+      await page.getByTestId('member-add-crewmate').click()
     }
+    // The card's own labels, in the language this pass renders.
+    const membersCopy = JSON.parse(readFileSync(new URL(`../src/i18n/locales/${lang}.json`, import.meta.url), 'utf8')).pages.membersPage
+    const card = page.getByTestId('crewmate-create-embedded')
+    const nameInput = card.getByLabel(membersCopy.create_name, { exact: true })
+    const goalInput = card.getByLabel(membersCopy.create_job, { exact: true })
+    const goal = 'Prepare a weekly progress update for my review.'
+    // The "+" door: the card opens blank in place of the chat, and its X
+    // returns to the same chat with the unsent draft still in its composer.
     await composer.fill('Keep this unsent draft')
     await openCreation()
-    await page.getByTestId('meet-crewmates-goal').fill('Prepare a weekly progress update for my review.')
-    await page.getByTestId('meet-crewmates-not-now').click()
+    await card.waitFor()
+    assert.equal(await nameInput.inputValue(), '')
+    await card.getByTestId('crewmate-create-close').click()
+    await card.waitFor({ state: 'detached' })
     await composer.waitFor({ state: 'visible' })
     assert.equal(await composer.inputValue(), 'Keep this unsent draft')
     assert.equal(await page.evaluate(() => window.__composer === document.querySelector('textarea')), true)
-    await openCreation()
-    assert.equal(await page.getByTestId('meet-crewmates-goal').inputValue(), 'Prepare a weekly progress update for my review.')
+    // A Captain create link (client-side, so the chat behind stays mounted):
+    // the card opens prefilled, the goal in Advanced and Advanced unfolded.
+    await page.evaluate(({ name, goal }) => {
+      const url = new URL(location.href)
+      url.searchParams.set('create', '1')
+      url.searchParams.set('name', name)
+      url.searchParams.set('goal', goal)
+      history.pushState(history.state, '', url)
+      dispatchEvent(new PopStateEvent('popstate', { state: history.state }))
+    }, { name: 'Scout', goal })
+    await card.waitFor()
+    assert.equal(await nameInput.inputValue(), 'Scout')
+    assert.equal(await card.getByTestId('crewmate-create-advanced-toggle').getAttribute('aria-expanded'), 'true')
+    await card.getByTestId('crewmate-create-advanced').waitFor()
+    assert.equal(await goalInput.inputValue(), goal)
     await shot('assistant-create')
-    const panel = page.getByTestId('onboarding-chapter-embedded')
-    const visibleGhosts = panel.locator('aside .pointer-events-none:visible')
-    assert.equal(await visibleGhosts.count(), width < 1280 ? 0 : 4, 'four original ghosts on wide screens only')
-    if (width >= 1280) {
-      const brand = await panel.locator('aside span').first().boundingBox()
-      const right = await panel.locator('aside .pointer-events-none').nth(1).boundingBox()
-      assert.ok(right.x >= brand.x + brand.width, 'right ghost clears the brand lockup')
-    }
-    if (width >= 1280) {
-      const brand = await panel.locator('aside span').first().boundingBox()
-      const top = await panel.locator('aside .pointer-events-none').nth(3).boundingBox()
-      assert.ok(top.x >= brand.x + brand.width, 'top ghost clears the brand lockup')
-    }
     if (width >= 640) {
-      const [box, pane] = [await panel.boundingBox(), await page.getByTestId('member-create-guided').boundingBox()]
-      assert.ok(Math.abs(box.width - pane.width) <= 1 && Math.abs(box.height - pane.height) <= 1, 'embedded panel fills its pane')
+      const [box, pane] = [await card.boundingBox(), await page.getByTestId('member-create-pane').boundingBox()]
+      assert.ok(box.width <= pane.width + 1, 'card fits its pane')
     }
-    await page.getByTestId('meet-crewmates-next').click()
-    await page.getByTestId('meet-crewmates-name').fill('Scout')
-    await page.getByTestId('meet-crewmates-next').click()
-    // The footer can enter before the preceding chapter has finished exiting.
-    await page.getByTestId('meet-crewmates-step-3').waitFor()
-    await page.waitForFunction(() => {
-      const step = document.querySelector('[data-testid="meet-crewmates-step-3"]')
-      return step && getComputedStyle(step).opacity === '1'
-    })
-    await page.getByTestId('meet-crewmates-create').click()
-    await page.getByTestId('meet-crewmates-ready').waitFor()
+    await card.getByTestId('crewmate-create-submit').click()
+    // The card stands down once the server has the record, and the new
+    // crewmate's chat opens.
+    await card.waitFor({ state: 'detached' })
+    await page.waitForURL(u => u.searchParams.get('member') === 'Scout')
     assert.equal(creates, 1)
     assert.equal(schedules, 0)
     assert.equal(sends, firstSends)
-    await page.getByTestId('meet-crewmates-done').click()
-    await page.getByTestId('member-created-receipt').waitFor()
+    // Back to the Assistant's chat: its unsent draft is still there.
+    await page.evaluate(() => {
+      const url = new URL(location.href)
+      url.searchParams.set('member', 'assistant')
+      history.pushState(history.state, '', url)
+      dispatchEvent(new PopStateEvent('popstate', { state: history.state }))
+    })
+    await page.waitForURL(u => u.searchParams.get('member') === 'assistant')
+    await composer.waitFor({ state: 'visible' })
     assert.equal(await composer.inputValue(), 'Keep this unsent draft')
-    assert.equal(await page.evaluate(() => window.__composer === document.querySelector('textarea')), true)
+    // Another chat was mounted in between: the identity checks below are
+    // about the Assistant's composer as it is now.
+    await page.evaluate(() => { window.__composer = document.querySelector('textarea') })
     await shot('assistant-return')
     await composer.fill('Help me prepare the update.')
     await composer.press('Enter')

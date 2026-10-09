@@ -5,18 +5,18 @@ import { store } from '../../store'
 import { selectSlotRunEpoch, startServerTurn } from '../../store/chatSlice'
 
 /** Thread slot keys this tab has already asked to greet. Module-level so a
- *  return to Captain (another member in between, a remount) does not ask
+ *  return to the member (another member in between, a remount) does not ask
  *  again; the server's own once-only marker is what actually guarantees one
  *  greeting, across tabs and reloads. A request that FAILED is taken back out,
  *  so a later open (or the Retry the page offers) can ask again. */
 const requested = new Set<string>()
 
 /** Test seam: forget what this tab asked, so each test starts clean. */
-export function resetCaptainGreetingRequests(): void {
+export function resetMemberGreetingRequests(): void {
   requested.clear()
 }
 
-export interface CaptainGreeting {
+export interface MemberGreeting {
   /** The greeting request for the current thread failed (a transport error or
    *  a non-2xx answer). The chat stays usable; the page says so and offers
    *  `retry`. */
@@ -28,16 +28,19 @@ export interface CaptainGreeting {
 }
 
 /**
- * Ask the gateway for Captain's first greeting once its pinned thread is open.
+ * Ask the gateway for a member's first greeting once its pinned thread is open.
  *
- * `enabled` is true only for the built-in Captain member, and `slotKey` only
- * once the thread endpoint has confirmed it, so the request never races the
- * thread's creation. The server starts a real Captain turn only when that
- * thread is still empty and has never been greeted; every other answer is a
- * no-op here. A failed request is reported through `failed` (the page renders
- * it) and forgotten, so it can be asked again.
+ * `enabled` is true only for members that can be owed one (the built-in
+ * Captain, and crewmates created on the dashboard), and `slotKey` only once
+ * the thread endpoint has confirmed it, so the request never races the
+ * thread's creation. The server starts a real turn, with no user row for its
+ * hidden kickoff, only when that thread is still empty, has never been greeted
+ * and is owed a greeting (Captain always; a crewmate when its create asked for
+ * one); every other answer is a no-op here. A failed request is reported
+ * through `failed` (the page renders it) and forgotten, so it can be asked
+ * again.
  */
-export function useCaptainFirstGreeting(slug: string | undefined, slotKey: string, enabled: boolean): CaptainGreeting {
+export function useMemberFirstGreeting(slug: string | undefined, slotKey: string, enabled: boolean): MemberGreeting {
   const { mutate, isPending } = useMutation({
     mutationFn: ({ slug: s }: { slug: string; slot: string }) => api.memberGreet(s),
     // Hook-level, so it runs even when the page unmounted before the answer

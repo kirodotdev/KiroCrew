@@ -33,7 +33,6 @@ const EXPECTED: Record<string, [string, string, string, string, string[], string
   'members.new': ['button', 'pages.membersPage.add_member', 'New crewmate', '新建队友', ['page.members'], 'content', '/members', [cond('no_crewmates')]],
   'members.new-advanced': ['button', 'pages.membersPage.create_advanced', 'Advanced', '高级', ['page.members'], 'content', '/members', [cond('no_crewmates')]],
   'members.add-menu': ['button', 'pages.membersPage.add_menu', 'Add…', '添加…', ['page.members'], 'toolbar', '/members', [cond('has_crewmates'), ROSTER_SHOWN, ROSTER_SHOWN_PHONE]],
-  'members.add-menu.advanced': ['menu-item', 'pages.membersPage.create_advanced', 'Advanced', '高级', ['page.members', 'members.add-menu'], 'menu', '/members', [cond('has_crewmates'), ROSTER_SHOWN, ROSTER_SHOWN_PHONE]],
   'members.add-menu.new-team': ['menu-item', 'pages.membersPage.team_new', 'New team', '新建团队', ['page.members', 'members.add-menu'], 'menu', '/members', [cond('has_crewmates'), ROSTER_SHOWN, ROSTER_SHOWN_PHONE]],
   'members.back': ['button', 'pages.membersPage.back_to_roster', 'Back to crewmates', '返回队友列表', ['page.members'], 'header', '/members', [vp('mobile'), cond('crewmate_selected')]],
   'members.switcher': ['button', 'pages.membersPage.switch_crewmate', 'Switch crewmate', '切换队友', ['page.members'], 'header', '/members', [vp('desktop'), cond('crewmate_selected')]],
@@ -81,7 +80,7 @@ describe('the Crewmates area in the index', () => {
       expect(terms['zh-CN'].length, id).toBeGreaterThan(0)
     }
     expect(byId.get('members.new')!.terms!['zh-CN']).toContain('创建代理')
-    expect(byId.get('members.add-menu.advanced')!.terms!.en).toContain('advanced crewmate setup')
+    expect(byId.get('members.add-menu')!.terms!.en).toContain('advanced crewmate setup')
   })
 
   it("marks agents.delete on the Danger zone's unarmed delete only, never the armed confirm", () => {

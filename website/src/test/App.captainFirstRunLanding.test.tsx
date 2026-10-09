@@ -14,8 +14,6 @@ const themeState = {
   onboarded: false,
   importOnboarded: true,
   privacyAcked: true,
-  crewmatesOnboarded: true,
-  crewmatesFlowSeen: true,
   themeBootReady: true,
   themes: [],
   allThemes: [] as Array<{ value: string; label: string }>,
@@ -24,7 +22,6 @@ const themeState = {
   markOnboarded: vi.fn(),
   markImportOnboarded: vi.fn(),
   markPrivacyAcked: vi.fn(),
-  markCrewmatesOnboarded: vi.fn(),
   setColorTheme: vi.fn(),
   setMode: vi.fn(),
 }

@@ -180,8 +180,9 @@ export function createAgentsEndpoints({ post, put, del, j, sessionKeyHeader: _sk
     // mode="member"), so this is also the only place a member slot key comes from.
     memberThread: (slug: string) =>
       post('/api/members/' + encodeURIComponent(slug) + '/thread').then(j) as Promise<{ slot_key: string; slug: string; member: string }>,
-    // Captain's once-only first greeting. The server decides: it starts one
-    // Captain turn only for Captain's own empty pinned thread, at most once
+    // A member's once-only first greeting. The server decides: it starts one
+    // turn only on Captain's own empty pinned thread, or on the empty thread of
+    // a crewmate whose create asked for it (`first_greeting`), at most once
     // ever, and answers every other case with the outcome that declined it.
     memberGreet: (slug: string) =>
       post('/api/members/' + encodeURIComponent(slug) + '/greet').then(j) as Promise<{ outcome: string }>,

@@ -366,6 +366,8 @@ def test_the_owner_tab_replans_a_ui_show_guide_over_http():
 def test_browser_cannot_report_a_commit_step_done():
     state = FakeState()
     g = _started(state)
+    commit = guide_catalog.commit_step_index("crewmate.create")
+    assert commit is not None
 
     async def go(c):
         r = await c.post(
@@ -374,7 +376,7 @@ def test_browser_cannot_report_a_commit_step_done():
             headers=OWNER,
         )
         cur = await r.json()
-        for _ in range(2):  # goal, name (ui steps)
+        for _ in range(commit):  # any ui steps ahead of the commit
             r = await c.post(
                 "/api/guide/progress",
                 json={
@@ -395,14 +397,14 @@ def test_browser_cannot_report_a_commit_step_done():
                 "tab_id": "t1",
                 "revision": cur["revision"],
                 "action_index": 0,
-                "step_index": 2,
+                "step_index": commit,
                 "outcome": "observed",
             },
             headers=OWNER,
         )
         return cur["step_index"], r.status, (await r.json())["code"]
 
-    assert _run(go, state) == (2, 409, "commit_step_requires_server_evidence")
+    assert _run(go, state) == (commit, 409, "commit_step_requires_server_evidence")
 
 
 def test_second_tab_needs_explicit_take_over_and_stale_revision_is_refused():
@@ -491,6 +493,7 @@ def _hooked(impl):
 
 
 CREATED = {"ok": True, "name": "Scout", "member_id": "m_123", "memory_store": "x"}
+_CREWMATE_COMMIT = guide_catalog.commit_step_index("crewmate.create")
 
 
 def _commit(state, g, impl, *, headers=None):
@@ -539,7 +542,7 @@ def test_failure_or_unknown_result_never_completes(response):
         return response
 
     _status, stored = _commit(state, g, impl)
-    assert stored.status == "active" and stored.step_index == 2
+    assert stored.status == "active" and stored.step_index == _CREWMATE_COMMIT
     assert stored.pending_commit is None and "result" not in stored.actions[0]
 
 
@@ -607,7 +610,7 @@ def test_a_save_that_does_not_match_the_waiting_step_does_not_count(case):
         return web.json_response(CREATED)
 
     _status, stored = _commit(state, g, impl, headers=headers)
-    assert stored.status == "active" and stored.step_index == 2
+    assert stored.status == "active" and stored.step_index == _CREWMATE_COMMIT
 
 
 def test_a_commit_of_another_kind_is_not_associated_with_the_crewmate_step():
@@ -622,7 +625,7 @@ def test_a_commit_of_another_kind_is_not_associated_with_the_crewmate_step():
     )
     assert token is None
     stored = store._guides[g["guide_id"]]
-    assert stored.status == "active" and stored.step_index == 2
+    assert stored.status == "active" and stored.step_index == _CREWMATE_COMMIT
 
 
 def test_two_concurrent_saves_credit_at_most_one():
@@ -891,12 +894,26 @@ def _ts(path: str) -> str:
     return (REPO / "website/src" / path).read_text(encoding="utf-8")
 
 
-def test_crewmate_caps_match_the_real_form():
-    flow = _ts("components/MeetCrewmatesFlow.tsx")
-    job = int(re.search(r"const JOB_MAX = (\d+)", flow).group(1))
-    name = int(re.search(r"const NAME_MAX = (\d+)", flow).group(1))
-    assert guide_catalog._GOAL_MAX_CHARS == job
-    assert guide_catalog._NAME_MAX_CHARS == name
+def test_crewmate_create_steps_match_the_page():
+    # The page walks the New crewmate card: one step, its Create, completed only
+    # by the gateway from what was created. The catalog counts the same steps,
+    # or the browser's step index would name a step the gateway never offered.
+    src = _ts("guide/guideActions.ts")
+    body = re.search(r"function resolveCrewmateCreate\(.*?\n}\n", src, re.S).group(0)
+    page_steps = re.findall(r"complete: \{ kind: '(\w+)'", body)
+    steps = guide_catalog.ACTIONS["crewmate.create"].steps
+    assert page_steps == ["committed"]
+    assert [st.kind for st in steps] == [guide_catalog.STEP_COMMIT]
+
+
+def test_crewmate_caps_fit_the_real_form():
+    # The card a guide pre-fills sets no shorter limit on either field, so a
+    # proposal the catalog accepts always lands whole and can be edited back.
+    card = _ts("pages/members/NewCrewmateDialog.tsx")
+    limits = [int(v) for v in re.findall(r"maxLength=\{?(\d+)", card)]
+    assert all(v >= guide_catalog._GOAL_MAX_CHARS for v in limits)
+    job = guide_catalog._GOAL_MAX_CHARS
+    name = guide_catalog._NAME_MAX_CHARS
     ok = [{"id": "crewmate.create", "params": {"name": "a" * name, "goal": "g" * job}}]
     assert guide_catalog.validate_actions(ok)
     for params in ({"goal": "g" * (job + 1)}, {"name": "a" * (name + 1)}):

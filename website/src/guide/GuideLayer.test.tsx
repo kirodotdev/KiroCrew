@@ -63,6 +63,10 @@ const guide = (over: Partial<Guide> = {}): Guide => ({
 
 const claimed = (g: Guide): Guide => ({ ...g, status: 'active', owner_tab: TAB_ID, revision: g.revision + 1 })
 
+/** A two-step, UI-only action (the MCP add form): the fixture for a step that
+ *  completes when the page moves on to a later registered control. */
+const MCP_OPEN = { id: 'mcp.open_add', params: {} }
+
 function LocationProbe() {
   const loc = useLocation()
   return <div data-testid="loc" data-granted={(loc.state as { leaveGranted?: boolean } | null)?.leaveGranted ? '1' : '0'} data-show-chat={(loc.state as { showChat?: boolean } | null)?.showChat ? '1' : '0'}>{loc.pathname + loc.search}</div>
@@ -246,7 +250,7 @@ describe('offer and consent', () => {
   })
 })
 
-async function startCrewmate(extra?: ReactNode, over: Partial<Guide> = {}) {
+async function startCrewmate(extra?: ReactNode, over: Partial<Guide> = {}, at = '/members') {
   pending = [guide(over)]
   let current = claimed(guide(over))
   onWrite = (name, b) => {
@@ -259,14 +263,14 @@ async function startCrewmate(extra?: ReactNode, over: Partial<Guide> = {}) {
   }
   renderGuide('/chat/slot-A', extra)
   fireEvent.click(await screen.findByTestId('guide-start'))
-  await waitFor(() => expect(screen.getByTestId('loc').textContent).toContain('/members'))
+  await waitFor(() => expect(screen.getByTestId('loc').textContent).toContain(at))
   return () => current
 }
 
 describe('arrow and targets', () => {
   it('points at the registered control without a scrim or pointer capture, and follows it', async () => {
     const rect = { top: 300, left: 100, width: 80, height: 30 }
-    await startCrewmate(<Target anchor={GUIDE_ANCHORS.crewmateGoalNext} rect={rect} />)
+    await startCrewmate(<Target anchor={GUIDE_ANCHORS.crewmateCreate} rect={rect} />)
     const outline = await screen.findByTestId('guide-target-outline')
     const arrow = screen.getByTestId('guide-arrow')
     for (const el of [outline, arrow]) {
@@ -288,8 +292,8 @@ describe('arrow and targets', () => {
     expect(outline.style.top).toBe('296px')
     // The page underneath still gets its click.
     const onClick = vi.fn()
-    screen.getByTestId(`target-${GUIDE_ANCHORS.crewmateGoalNext}`).addEventListener('click', onClick)
-    fireEvent.click(screen.getByTestId(`target-${GUIDE_ANCHORS.crewmateGoalNext}`))
+    screen.getByTestId(`target-${GUIDE_ANCHORS.crewmateCreate}`).addEventListener('click', onClick)
+    fireEvent.click(screen.getByTestId(`target-${GUIDE_ANCHORS.crewmateCreate}`))
     expect(onClick).toHaveBeenCalled()
     // Scrolling re-measures the same control, and the panel follows it.
     rect.top = 420
@@ -319,7 +323,7 @@ describe('arrow and targets', () => {
     it('stays next to the target even when that covers another control', async () => {
       // The default target sits at 300..330; a full-width row lies where the panel first goes.
       await startCrewmate(<>
-        <Target anchor={GUIDE_ANCHORS.crewmateGoalNext} />
+        <Target anchor={GUIDE_ANCHORS.crewmateCreate} />
         <button type="button" ref={boxed({ top: 400, left: 0, width: 1024, height: 40 })}>row</button>
       </>)
       await screen.findByTestId('guide-target-outline')
@@ -332,7 +336,7 @@ describe('arrow and targets', () => {
       await startCrewmate(
         <main id="main-content" ref={boxed({ top: 42, left: 0, width: 1024, height: 726 })}>
           <div className="sticky top-0" ref={boxed({ top: 42, left: 0, width: 1024, height: 108 })} />
-          <Target anchor={GUIDE_ANCHORS.crewmateGoalNext} rect={{ top: 200, left: 100, width: 80, height: 30 }} />
+          <Target anchor={GUIDE_ANCHORS.crewmateCreate} rect={{ top: 200, left: 100, width: 80, height: 30 }} />
           <button type="button" ref={boxed({ top: 250, left: 0, width: 1024, height: 40 })}>row</button>
         </main>,
       )
@@ -344,7 +348,7 @@ describe('arrow and targets', () => {
   })
 
   it('floats a bottom chip, not a top bar, while no target is tracked', async () => {
-    await startCrewmate(<Target testId="meet-crewmates-next" />)
+    await startCrewmate(<Target testId="look-alike-create" />)
     const panel = await screen.findByTestId('guide-pill')
     expect(await screen.findByText(L('looking_for_control'))).toBeTruthy()
     expect(panel.getAttribute('data-placement')).toBe('chip')
@@ -356,7 +360,7 @@ describe('arrow and targets', () => {
   })
 
   it('reports observed once the form reaches a later registered control', async () => {
-    await startCrewmate(<><Target anchor={GUIDE_ANCHORS.crewmateGoalNext} /><Target anchor={GUIDE_ANCHORS.crewmateNameNext} /></>)
+    await startCrewmate(<><Target anchor={GUIDE_ANCHORS.mcpServersTab} /><Target anchor={GUIDE_ANCHORS.mcpAddCustom} /></>, { actions: [MCP_OPEN] }, '/capabilities')
     await waitFor(() => expect(writes('/api/guide/progress').length).toBeGreaterThan(0))
     const [first] = writes('/api/guide/progress')
     expect(first.body).toMatchObject({ guide_id: 'g1', tab_id: TAB_ID, action_index: 0, step_index: 0, outcome: 'observed' })
@@ -364,7 +368,7 @@ describe('arrow and targets', () => {
 
   it('reports target_missing after the bounded wait and never points at a look-alike', async () => {
     // An unregistered button that looks like the step's Next is not a target.
-    await startCrewmate(<Target testId="meet-crewmates-next" />)
+    await startCrewmate(<Target testId="look-alike-create" />)
     // Let the tracker start its wait, then move the clock past the bound.
     await new Promise(r => setTimeout(r, 300))
     expect(writes('/api/guide/progress')).toHaveLength(0)
@@ -730,7 +734,14 @@ function ToggleTarget({ anchor, initial = false }: { anchor: string; initial?: b
 /** The gateway's progress transitions, including recovery in place. */
 const gatewayProgress = (current: Guide, b: Record<string, unknown>): Guide => {
   const next = { ...current, revision: current.revision + 1 }
-  if (b.outcome === 'observed') return { ...next, status: 'active', step_index: (b.step_index as number) + 1 }
+  if (b.outcome === 'observed') {
+    const resolved = resolveGuideActions(current.actions)
+    const steps = resolved.ok ? resolved.actions[current.action_index]?.steps.length ?? 0 : 0
+    const step = (b.step_index as number) + 1
+    return step < steps
+      ? { ...next, status: 'active', step_index: step }
+      : { ...next, status: 'active', action_index: current.action_index + 1, step_index: 0 }
+  }
   if (b.outcome === 'target_missing') return { ...next, status: 'target_missing' }
   if (current.status !== 'target_missing') return current
   const resume = typeof b.resume_step_index === 'number' ? { step_index: b.resume_step_index } : {}
@@ -740,7 +751,7 @@ const gatewayProgress = (current: Guide, b: Record<string, unknown>): Guide => {
 describe('leaving a step and coming back', () => {
   const outcomes = () => writes('/api/guide/progress').map(c => c.body.outcome)
 
-  async function startTracked(extra: ReactNode, over: Partial<Guide> = {}) {
+  async function startTracked(extra: ReactNode, over: Partial<Guide> = {}, at = '/members') {
     pending = [guide(over)]
     let current = claimed(guide(over))
     onWrite = (name, b) => {
@@ -750,12 +761,12 @@ describe('leaving a step and coming back', () => {
     }
     renderGuide('/chat/slot-A', extra)
     fireEvent.click(await screen.findByTestId('guide-start'))
-    await waitFor(() => expect(screen.getByTestId('loc').textContent).toContain('/members'))
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).toContain(at))
     return () => current
   }
 
   it('only a navigation asked about in the same step tells the page its leave was granted', async () => {
-    await startTracked(<><Target anchor={GUIDE_ANCHORS.crewmateGoalNext} /><NavTo to="/settings/chat" /></>)
+    await startTracked(<><Target anchor={GUIDE_ANCHORS.crewmateCreate} /><NavTo to="/settings/chat" /></>)
     // Start awaited its claim after asking: a draft typed meanwhile was never asked about.
     expect(screen.getByTestId('loc').dataset.granted).toBe('0')
     await screen.findByTestId('guide-arrow')
@@ -767,7 +778,7 @@ describe('leaving a step and coming back', () => {
   })
 
   it('says the user left the step at once, and Go back returns to the step page and resumes it', async () => {
-    await startTracked(<><Target anchor={GUIDE_ANCHORS.crewmateGoalNext} /><NavTo to="/settings/chat" /></>)
+    await startTracked(<><Target anchor={GUIDE_ANCHORS.crewmateCreate} /><NavTo to="/settings/chat" /></>)
     await screen.findByTestId('guide-arrow')
     fireEvent.click(screen.getByTestId('nav-away'))
     expect(await screen.findByText(L('left_step'))).toBeTruthy()
@@ -785,7 +796,7 @@ describe('leaving a step and coming back', () => {
   })
 
   it('a missing target that shows again resumes the same step by itself, once each time', async () => {
-    const now = await startTracked(<><ToggleTarget anchor={GUIDE_ANCHORS.crewmateGoalNext} /><NavTo to="/settings/chat" /></>)
+    const now = await startTracked(<><ToggleTarget anchor={GUIDE_ANCHORS.crewmateCreate} /><NavTo to="/settings/chat" /></>)
     await new Promise(r => setTimeout(r, 300))
     const t0 = Date.now()
     const clock = vi.spyOn(Date, 'now').mockImplementation(() => t0 + GUIDE_TARGET_WAIT_MS + 1000)
@@ -805,7 +816,7 @@ describe('leaving a step and coming back', () => {
     expect(found).toMatchObject({ step_index: 0, revision: now().revision - 1 })
     expect(now()).toMatchObject({ status: 'active', step_index: 0 })
     expect(await screen.findByTestId('guide-arrow')).toBeTruthy()
-    expect(screen.getByTestId('guide-step-text').textContent).toBe(i18nT('components.guideLayer.step_crewmate_goal'))
+    expect(screen.getByTestId('guide-step-text').textContent).toBe(i18nT('components.guideLayer.step_crewmate_create'))
     await new Promise(r => setTimeout(r, 300))
     expect(outcomes()).toEqual(['target_missing', 'target_found'])
     // Gone again: reported again, at its new revision, not swallowed as sent.
@@ -821,7 +832,7 @@ describe('leaving a step and coming back', () => {
   })
 
   it('a guide that ended never resumes when its target shows again', async () => {
-    await startTracked(<ToggleTarget anchor={GUIDE_ANCHORS.crewmateGoalNext} />)
+    await startTracked(<ToggleTarget anchor={GUIDE_ANCHORS.crewmateCreate} />)
     await new Promise(r => setTimeout(r, 300))
     const t0 = Date.now()
     vi.spyOn(Date, 'now').mockImplementation(() => t0 + GUIDE_TARGET_WAIT_MS + 1000)
@@ -844,7 +855,7 @@ describe('leaving a step and coming back', () => {
       if (name === 'progress') current = gatewayProgress(current, b)
       return current
     }
-    renderGuide('/chat/slot-A', <ToggleTarget anchor={GUIDE_ANCHORS.crewmateGoalNext} />)
+    renderGuide('/chat/slot-A', <ToggleTarget anchor={GUIDE_ANCHORS.crewmateCreate} />)
     fireEvent.click(await screen.findByTestId('guide-take-over'))
     await waitFor(() => expect(screen.getByTestId('loc').textContent).toBe('/members?create=1&name=radar&goal=watch+the+build'))
     expect(writes('/api/guide/progress')).toHaveLength(0)
@@ -874,7 +885,7 @@ describe('leaving a step and coming back', () => {
         return HttpResponse.json({ guide: onWrite('progress', body) })
       }),
     )
-    renderGuide('/chat/slot-A', <ToggleTarget anchor={GUIDE_ANCHORS.crewmateGoalNext} />)
+    renderGuide('/chat/slot-A', <ToggleTarget anchor={GUIDE_ANCHORS.crewmateCreate} />)
     fireEvent.click(await screen.findByTestId('guide-take-over'))
     await waitFor(() => expect(screen.getByTestId('loc').textContent).toContain('/members?create=1'))
     fireEvent.click(screen.getByTestId('toggle-target'))
@@ -890,7 +901,7 @@ describe('leaving a step and coming back', () => {
   })
 
   it('a report slower than the retry spacing still ends in a stopped panel, never a silent tracker', async () => {
-    await startTracked(<><ToggleTarget anchor={GUIDE_ANCHORS.crewmateGoalNext} /></>)
+    await startTracked(<><ToggleTarget anchor={GUIDE_ANCHORS.crewmateCreate} /></>)
     const release: Array<() => void> = []
     server.use(
       http.post('/api/guide/progress', async ({ request }) => {
@@ -928,7 +939,7 @@ describe('leaving a step and coming back', () => {
   }, 15_000)
 
   it('a failed target_missing report is offered again, and Go back re-arms a tracker that gave up', async () => {
-    const now = await startTracked(<><ToggleTarget anchor={GUIDE_ANCHORS.crewmateGoalNext} /></>)
+    const now = await startTracked(<><ToggleTarget anchor={GUIDE_ANCHORS.crewmateCreate} /></>)
     let failing = true
     server.use(
       http.post('/api/guide/progress', async ({ request }) => {
@@ -968,51 +979,49 @@ describe('leaving a step and coming back', () => {
   })
 
   it('a form that restarts on return takes the guide back to the step it shows', async () => {
-    // The real wizard keeps its step in local state: leaving /members unmounts
+    // A form that keeps its step in local state: leaving its page unmounts
     // it, and coming back starts it over at the first step.
     function Wizard() {
       const [step, setStep] = useState(1)
       return step === 1
-        ? <Target anchor={GUIDE_ANCHORS.crewmateGoalNext} onClick={() => setStep(2)} />
-        : <Target anchor={GUIDE_ANCHORS.crewmateNameNext} />
+        ? <Target anchor={GUIDE_ANCHORS.mcpServersTab} onClick={() => setStep(2)} />
+        : <Target anchor={GUIDE_ANCHORS.mcpAddCustom} />
     }
     function RoutedWizard() {
       const loc = useLocation()
-      return loc.pathname === '/members' ? <Wizard /> : null
+      return loc.pathname === '/capabilities' ? <Wizard /> : null
     }
-    const now = await startTracked(<><RoutedWizard /><NavTo to="/settings/chat" /></>)
-    fireEvent.click(await screen.findByTestId(`target-${GUIDE_ANCHORS.crewmateGoalNext}`))
+    const now = await startTracked(<><RoutedWizard /><NavTo to="/settings/chat" /></>, { actions: [MCP_OPEN] }, '/capabilities')
+    fireEvent.click(await screen.findByTestId(`target-${GUIDE_ANCHORS.mcpServersTab}`))
     await waitFor(() => expect(now()).toMatchObject({ status: 'active', step_index: 1 }))
     fireEvent.click(screen.getByTestId('nav-away'))
     expect(await screen.findByText(L('left_step'))).toBeTruthy()
     fireEvent.click(screen.getByTestId('guide-go-back'))
-    await waitFor(() => expect(screen.getByTestId('loc').textContent).toContain('/members?create=1'))
-    expect(await screen.findByTestId(`target-${GUIDE_ANCHORS.crewmateGoalNext}`)).toBeTruthy()
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).toContain('/capabilities'))
+    expect(await screen.findByTestId(`target-${GUIDE_ANCHORS.mcpServersTab}`)).toBeTruthy()
     const t0 = Date.now()
     vi.spyOn(Date, 'now').mockImplementation(() => t0 + GUIDE_EARLIER_STEP_WAIT_MS + 500)
     await waitFor(() => expect(outcomes()).toEqual(['observed', 'target_missing', 'target_found']))
     expect(writes('/api/guide/progress')[2].body).toMatchObject({ step_index: 1, resume_step_index: 0 })
     expect(now()).toMatchObject({ status: 'active', step_index: 0 })
-    await waitFor(() => expect(screen.getByTestId('guide-step-text').textContent).toBe(i18nT('components.guideLayer.step_crewmate_goal')))
+    await waitFor(() => expect(screen.getByTestId('guide-step-text').textContent).toBe(i18nT('components.guideLayer.step_mcp_open_tab')))
     expect(await screen.findByTestId('guide-arrow')).toBeTruthy()
   })
 
-  it('a save the server refused stops the waiting, and the guide follows the form back', async () => {
+  it('a save the server refused stops the waiting, and the guide stays on the Create step', async () => {
     let api: ReturnType<typeof useGuide> = null
     function Probe() { api = useGuide(); return null }
-    const now = await startTracked(<><ToggleTarget anchor={GUIDE_ANCHORS.crewmateNameNext} initial /><Probe /></>, { step_index: 2 })
+    const now = await startTracked(<><Target anchor={GUIDE_ANCHORS.crewmateCreate} /><Probe /></>)
     // On the Create step, the human pressed Create: the step is "submitted".
     act(() => { expect(api?.requestHeadersFor('crewmate.create')).toBeTruthy() })
     expect(api?.submitted).toBe(true)
-    // The create came back 409: the form is on the name step again.
+    // The create came back 409: the card is still there, Create pressable again.
     act(() => api?.noteSaveRefused('crewmate.create'))
     expect(api?.submitted).toBe(false)
     await new Promise(r => setTimeout(r, 300))
-    const t0 = Date.now()
-    vi.spyOn(Date, 'now').mockImplementation(() => t0 + GUIDE_EARLIER_STEP_WAIT_MS + 500)
-    await waitFor(() => expect(outcomes()).toEqual(['target_missing', 'target_found']))
-    expect(writes('/api/guide/progress')[1].body).toMatchObject({ step_index: 2, resume_step_index: 1 })
-    expect(now()).toMatchObject({ status: 'active', step_index: 1 })
+    expect(outcomes()).toEqual([])
+    expect(now()).toMatchObject({ status: 'active', step_index: 0 })
+    expect(await screen.findByTestId('guide-arrow')).toBeTruthy()
   })
 
   it('a save waits for a report still in flight, and then reads the step the gateway moved to', async () => {
@@ -1020,7 +1029,16 @@ describe('leaving a step and coming back', () => {
     function Probe() { api = useGuide(); return null }
     let release!: () => void
     const gate = new Promise<void>(r => { release = r })
-    await startTracked(<><Target anchor={GUIDE_ANCHORS.crewmateNameNext} /><Probe /></>, { step_index: 1 })
+    await startTracked(<><ToggleTarget anchor={GUIDE_ANCHORS.crewmateCreate} initial /><Probe /></>)
+    // The Create button went missing, and the guide said so. The arrow goes
+    // on the same tracker tick that starts the missing clock.
+    await screen.findByTestId('guide-arrow')
+    fireEvent.click(screen.getByTestId('toggle-target'))
+    await waitFor(() => expect(screen.queryByTestId('guide-arrow')).toBeNull())
+    const t0 = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => t0 + GUIDE_TARGET_WAIT_MS + 1000)
+    await waitFor(() => expect(outcomes()).toEqual(['target_missing']))
+    clock.mockRestore()
     server.use(
       http.post('/api/guide/progress', async ({ request }) => {
         const body = (await request.json()) as Record<string, unknown>
@@ -1029,9 +1047,9 @@ describe('leaving a step and coming back', () => {
         return HttpResponse.json({ guide: onWrite('progress', body) })
       }),
     )
-    // The form reaches Create before the gateway answered the step-1 report.
-    act(() => api?.report('observed'))
-    await waitFor(() => expect(outcomes()).toEqual(['observed']))
+    // The button is back and pressed before the gateway answered the recovery.
+    fireEvent.click(screen.getByTestId('toggle-target'))
+    await waitFor(() => expect(outcomes()).toEqual(['target_missing', 'target_found']))
     let synced = false
     const done = api!.awaitSync('crewmate.create').then((ok) => { synced = true; expect(ok).toBe(true) })
     await new Promise(r => setTimeout(r, 50))
@@ -1046,7 +1064,7 @@ describe('leaving a step and coming back', () => {
 
   it('an observed report that fails is offered again, so the guide does not stay a step behind', async () => {
     let failNext = true
-    const now = await startTracked(<><Target anchor={GUIDE_ANCHORS.crewmateGoalNext} /></>)
+    const now = await startTracked(<><Target anchor={GUIDE_ANCHORS.mcpServersTab} /></>, { actions: [MCP_OPEN] }, '/capabilities')
     server.use(
       http.post('/api/guide/progress', async ({ request }) => {
         const body = (await request.json()) as Record<string, unknown>
@@ -1055,8 +1073,8 @@ describe('leaving a step and coming back', () => {
         return HttpResponse.json({ guide: onWrite('progress', body) })
       }),
     )
-    // The form moved on: the next step's control is on screen.
-    render(<Target anchor={GUIDE_ANCHORS.crewmateNameNext} rect={{ top: 500, left: 100, width: 80, height: 30 }} />)
+    // The page moved on: the next step's control is on screen.
+    render(<Target anchor={GUIDE_ANCHORS.mcpAddCustom} rect={{ top: 500, left: 100, width: 80, height: 30 }} />)
     await waitFor(() => expect(outcomes()).toEqual(['observed']))
     const t0 = Date.now()
     vi.spyOn(Date, 'now').mockImplementation(() => t0 + GUIDE_FOUND_RETRY_MS + 500)
@@ -1084,7 +1102,7 @@ describe('leaving a step and coming back', () => {
         </button>
       )
     }
-    await startTracked(<><Target anchor={GUIDE_ANCHORS.crewmateGoalNext} /><Sliding /></>)
+    await startTracked(<><Target anchor={GUIDE_ANCHORS.crewmateCreate} /><Sliding /></>)
     const arrow = await screen.findByTestId('guide-arrow')
     const at = (el: HTMLElement) => ({ top: parseFloat(el.style.top), left: parseFloat(el.style.left) })
     const before = at(arrow)
@@ -1097,13 +1115,22 @@ describe('leaving a step and coming back', () => {
     let api: ReturnType<typeof useGuide> = null
     function Probe() { api = useGuide(); return null }
     let current: Guide | null = null
-    const now = await startTracked(<><Target anchor={GUIDE_ANCHORS.crewmateNameNext} /><Probe /></>, { step_index: 1 })
+    const now = await startTracked(<><ToggleTarget anchor={GUIDE_ANCHORS.crewmateCreate} initial /><Probe /></>)
+    // The Create button is missing, so the guide is not on a step a save could
+    // credit. The arrow goes on the same tracker tick that starts the missing clock.
+    await screen.findByTestId('guide-arrow')
+    fireEvent.click(screen.getByTestId('toggle-target'))
+    await waitFor(() => expect(screen.queryByTestId('guide-arrow')).toBeNull())
+    const tMissing = Date.now()
+    const missingClock = vi.spyOn(Date, 'now').mockImplementation(() => tMissing + GUIDE_TARGET_WAIT_MS + 1000)
+    await waitFor(() => expect(outcomes()).toEqual(['target_missing']))
+    missingClock.mockRestore()
     const prev = onWrite
     onWrite = (name, b) => {
       if (name === 'cancel') { current = { ...now(), status: 'cancelled', reason: b.reason as string, owner_tab: null, finished_at: 10, revision: now().revision + 1 }; return current }
       return prev(name, b)
     }
-    // Still on the name step: the wait for the Create step runs out.
+    // Still missing: the wait for the Create step runs out.
     const t0 = Date.now()
     let ok: boolean | undefined
     const wait = api!.awaitSync('crewmate.create').then(v => { ok = v })
@@ -1117,15 +1144,15 @@ describe('leaving a step and coming back', () => {
     expect(writes('/api/guide/cancel')[0].body).toMatchObject({ reason: 'saved_without_guide' })
     expect((await screen.findAllByText(L('finished_saved_without_guide'))).length).toBeGreaterThan(0)
     expect(screen.queryByText(L('finished_cancelled'))).toBeNull()
-  })
+  }, 10_000)
 
   it('closing a guide its save went past retries at the re-read revision after a 409', async () => {
     let api: ReturnType<typeof useGuide> = null
     function Probe() { api = useGuide(); return null }
-    const now = await startTracked(<><Target anchor={GUIDE_ANCHORS.crewmateNameNext} /><Probe /></>, { step_index: 1 })
+    const now = await startTracked(<><Target anchor={GUIDE_ANCHORS.crewmateCreate} /><Probe /></>)
     // The gateway moved on (a late progress report) before the browser heard.
     const server_ = { revision: now().revision + 1 }
-    pending = [{ ...now(), revision: server_.revision, step_index: 2 }]
+    pending = [{ ...now(), revision: server_.revision }]
     server.use(
       http.post('/api/guide/cancel', async ({ request }) => {
         const body = (await request.json()) as Record<string, unknown>
@@ -1143,9 +1170,9 @@ describe('leaving a step and coming back', () => {
   it('closing after a 409 waits for a slow re-read, then closes the same guide at its new revision', async () => {
     let api: ReturnType<typeof useGuide> = null
     function Probe() { api = useGuide(); return null }
-    const now = await startTracked(<><Target anchor={GUIDE_ANCHORS.crewmateNameNext} /><Probe /></>, { step_index: 1 })
+    const now = await startTracked(<><Target anchor={GUIDE_ANCHORS.crewmateCreate} /><Probe /></>)
     const server_ = { revision: now().revision + 1 }
-    pending = [{ ...now(), revision: server_.revision, step_index: 2 }]
+    pending = [{ ...now(), revision: server_.revision }]
     server.use(
       // The re-read takes longer than any fixed retry spacing would.
       http.get('/api/guide/pending', async () => {
@@ -1217,7 +1244,7 @@ describe('leaving a step and coming back', () => {
       report = useGuide()?.report
       return null
     }
-    await startTracked(<><Target anchor={GUIDE_ANCHORS.crewmateGoalNext} /><Probe /></>)
+    await startTracked(<><Target anchor={GUIDE_ANCHORS.crewmateCreate} /><Probe /></>)
     await screen.findByTestId('guide-arrow')
     act(() => report?.('target_found'))
     await new Promise(r => setTimeout(r, 100))
@@ -1266,7 +1293,7 @@ describe('owner tab and revision', () => {
   it('a second tab cannot advance; explicit takeover claims the current revision', async () => {
     pending = [guide({ status: 'active', owner_tab: 'other-tab', revision: 5 })]
     onWrite = () => claimed(guide({ revision: 5 }))
-    renderGuide('/chat/slot-A', <><Target anchor={GUIDE_ANCHORS.crewmateGoalNext} /><Target anchor={GUIDE_ANCHORS.crewmateNameNext} /></>)
+    renderGuide('/chat/slot-A', <Target anchor={GUIDE_ANCHORS.crewmateCreate} />)
     expect(await screen.findByText(L('other_tab'))).toBeTruthy()
     await new Promise(r => setTimeout(r, 400))
     expect(writes('/api/guide/progress')).toHaveLength(0)
@@ -1277,7 +1304,7 @@ describe('owner tab and revision', () => {
   })
 
   it('the old tab stops once another tab takes the guide over', async () => {
-    await startCrewmate(<Target anchor={GUIDE_ANCHORS.crewmateGoalNext} />)
+    await startCrewmate(<Target anchor={GUIDE_ANCHORS.crewmateCreate} />)
     await screen.findByTestId('guide-arrow')
     act(() => applyGuideUpdate(qc, { ...claimed(guide()), owner_tab: 'other-tab', revision: 9 }))
     await waitFor(() => expect(screen.queryByTestId('guide-arrow')).toBeNull())
@@ -1608,11 +1635,11 @@ describe('a surface the guide opened', () => {
     expect(onClose).not.toHaveBeenCalled()
   })
 
-  it('the Crewmates page wires it to the guided flow and its edited flag', () => {
+  it('the Crewmates page wires it to the New crewmate card and its edited flag', () => {
     const src = readFileSync(path.join(__dirname, '../pages/members/MembersPage.tsx'), 'utf-8')
     expect(src).toMatch(/useGuideOpenedSurface\('crewmate\.create'/)
-    expect(src).toMatch(/isPristine: \(\) => !guidedEditedRef\.current && !guidedBusyRef\.current/)
-    expect(src).toMatch(/markGuideOpenedRef\.current\(\)\n\s+openGuided\(/)
+    expect(src).toMatch(/isPristine: \(\) => !createEditedRef\.current && !createBusyRef\.current/)
+    expect(src).toMatch(/markGuideOpenedRef\.current\(\)\n\s+openCreate\(/)
   })
 })
 
@@ -2614,7 +2641,7 @@ describe("Captain's own words in a guide", () => {
 
   const noted = (over: Partial<Guide> = {}): Partial<Guide> => ({
     intro: 'Radar keeps an eye on your build so you do not have to.',
-    actions: [{ id: 'crewmate.create', params: { name: 'radar', goal: 'watch the build' }, note: 'Creating it is what puts radar on duty tonight.' }],
+    actions: [{ ...MCP_OPEN, note: 'Adding it is what puts radar on duty tonight.' }],
     ...over,
   })
   const follows = (a: HTMLElement, b: HTMLElement) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
@@ -2638,9 +2665,9 @@ describe("Captain's own words in a guide", () => {
   })
 
   it("puts the intro on the first step, under the dashboard's own line, and no note there", async () => {
-    await startCrewmate(<Target anchor={GUIDE_ANCHORS.crewmateGoalNext} />, noted())
+    await startCrewmate(<Target anchor={GUIDE_ANCHORS.mcpServersTab} />, noted(), '/capabilities')
     const template = await screen.findByTestId('guide-step-text')
-    expect(template.textContent).toBe(L('step_crewmate_goal'))
+    expect(template.textContent).toBe(L('step_mcp_open_tab'))
     const intro = screen.getByTestId('guide-step-intro')
     expect(follows(template, intro)).toBe(true)
     expect(screen.getByTestId('guide-step-intro-from').textContent).toBe(L('note_from', { name: 'Skipper' }))
@@ -2648,11 +2675,11 @@ describe("Captain's own words in a guide", () => {
   })
 
   it("shows an action's note under its final step and keeps the template line", async () => {
-    await startCrewmate(<Target anchor={GUIDE_ANCHORS.crewmateCreate} />, noted({ step_index: 2 }))
+    await startCrewmate(<Target anchor={GUIDE_ANCHORS.mcpAddCustom} />, noted({ step_index: 1 }), '/capabilities')
     const template = await screen.findByTestId('guide-step-text')
-    expect(template.textContent).toBe(L('step_crewmate_create'))
+    expect(template.textContent).toBe(L('step_mcp_add_custom'))
     const note = screen.getByTestId('guide-step-note')
-    expect(note.textContent).toContain('Creating it is what puts radar on duty tonight.')
+    expect(note.textContent).toContain('Adding it is what puts radar on duty tonight.')
     expect(screen.getByTestId('guide-step-note-from').textContent).toBe(L('note_from', { name: 'Skipper' }))
     expect(follows(template, note)).toBe(true)
     expect(screen.queryByTestId('guide-step-intro')).toBeNull()

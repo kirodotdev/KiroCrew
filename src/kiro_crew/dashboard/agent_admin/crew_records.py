@@ -167,6 +167,24 @@ def _crew_memory_store_rejected(raw: object) -> str | None:
     )
 
 
+async def _mark_first_greeting_owed(member_id: str, name: str) -> None:
+    """Record that the crewmate just created opens its chat with its goal question.
+
+    Best-effort: the crewmate exists either way, and a failed record only means
+    its chat opens empty, so it is logged rather than turned into a failed
+    create. Keyed by the immutable ``member_id``, which is the slug its thread
+    and member directory use (``members.member_slug``).
+    """
+    from kiro_crew.dashboard.captain_greeting import mark_greeting_owed
+
+    if not member_id:
+        return
+    try:
+        await asyncio.to_thread(mark_greeting_owed, member_id)
+    except Exception:
+        logger.warning("could not record the first greeting owed to %r", name, exc_info=True)
+
+
 async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
     """POST /api/agents — create a new Kiro Crew agent.
 
@@ -469,6 +487,8 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
     # session naming that crew would take the chat default instead. Creation is
     # therefore always a change by `_effort_inputs` (None -> a tuple).
     await _refresh_session_defaults(request, name)
+    if body.get("first_greeting") is True:
+        await _mark_first_greeting_owed(cfg.agents[name].member_id, name)
     _sel().log_api_access(
         caller=request.get("user", "dashboard"),
         operation="agent.create",

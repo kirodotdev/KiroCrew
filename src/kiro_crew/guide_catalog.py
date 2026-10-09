@@ -67,10 +67,9 @@ MAX_ACTIONS_BYTES = 64 * 1024
 STEP_UI = "ui"
 STEP_COMMIT = "commit"
 
-#: The create-a-crewmate form's own field caps (``MeetCrewmatesFlow.tsx``
-#: ``JOB_MAX`` / ``NAME_MAX``). A pre-fill longer than the field it lands in is a
-#: draft the user can see but not reproduce or edit back to, so a guide never
-#: proposes one.
+#: Caps on a guide's pre-filled name and goal: a proposal short enough to read
+#: at a glance in the New crewmate card's Name and "What it looks after"
+#: fields, which accept at least this much (they set no shorter limit).
 _GOAL_MAX_CHARS = 200
 _NAME_MAX_CHARS = 24
 _SETTING_ID_MAX_CHARS = 200
@@ -270,16 +269,12 @@ ACTIONS: dict[str, ActionDef] = {
         id=ACTION_CREWMATE_CREATE,
         title="Create a crewmate",
         description=(
-            "Open the create-a-crewmate flow with an optional name and goal "
-            "pre-filled, then point at the goal, the name and the Create button. "
-            "Nothing is created until the user clicks Create; completion reports "
-            "the new crewmate's id."
+            "Open the New crewmate card with an optional name and goal "
+            "pre-filled, then point at its Create button. Nothing is created "
+            "until the user clicks Create; completion reports the new "
+            "crewmate's id."
         ),
-        steps=(
-            StepDef("goal", STEP_UI),
-            StepDef("name", STEP_UI),
-            StepDef("create", STEP_COMMIT),
-        ),
+        steps=(StepDef("create", STEP_COMMIT),),
         params_schema={
             "type": "object",
             "properties": {

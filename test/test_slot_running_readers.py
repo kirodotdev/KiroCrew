@@ -123,9 +123,11 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
         **{
             site: reservation
             for site in {
-                # Captain's first greeting must not land on a slot a send has
-                # already reserved, so it reads the reservation, not the turn.
+                # Captain's and a new crewmate's first greeting must not land on
+                # a slot a send has already reserved, so they read the
+                # reservation, not the turn.
                 ("captain_greeting.py", "maybe_start_captain_greeting"),
+                ("captain_greeting.py", "maybe_start_member_greeting"),
                 ("chat_folders.py", "api_chat_slot_mode"),
                 ("chat_handlers.py", "_switch_target_busy"),
                 ("chat_handlers.py", "api_chat_slot_agent"),

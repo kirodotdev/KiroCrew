@@ -1443,15 +1443,16 @@ async def api_member_projections(request: web.Request) -> web.Response:
 
 
 async def api_member_greet(request: web.Request) -> web.Response:
-    """POST /api/members/{slug}/greet — Captain's once-only first greeting.
+    """POST /api/members/{slug}/greet — a member's once-only first greeting.
 
     The dashboard calls this after opening a member thread. It starts a turn
-    only for Captain's own pinned thread, only while that thread is empty, and
-    at most once ever (see :mod:`kiro_crew.dashboard.captain_greeting`). Every
-    other case answers 200 with the outcome that declined it, so the caller
-    never has to branch on errors for an ordinary "nothing to do".
+    for Captain's own pinned thread, or for a crewmate whose create asked for
+    its first greeting, only while that thread is empty, and at most once ever
+    (see :mod:`kiro_crew.dashboard.captain_greeting`). Every other case answers
+    200 with the outcome that declined it, so the caller never has to branch on
+    errors for an ordinary "nothing to do".
     """
-    from kiro_crew.dashboard.captain_greeting import maybe_start_captain_greeting
+    from kiro_crew.dashboard.captain_greeting import maybe_start_member_greeting
 
     denied = await _deny_app_caller(request, "members.greet")
     if denied is not None:
@@ -1472,9 +1473,9 @@ async def api_member_greet(request: web.Request) -> web.Response:
             {"error": "invalid member slug", "code": "invalid_member_slug"}, status=400
         )
     try:
-        outcome = await maybe_start_captain_greeting(state, slug)
+        outcome = await maybe_start_member_greeting(state, slug)
     except Exception:
-        logger.warning("captain greeting failed to start for %r", slug, exc_info=True)
+        logger.warning("first greeting failed to start for %r", slug, exc_info=True)
         return web.json_response(
             {"error": "could not start the greeting", "code": "member_greet_failed"}, status=500
         )

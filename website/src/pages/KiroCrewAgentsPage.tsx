@@ -392,7 +392,7 @@ function withCurrent(opts: string[], cur: string): string[] {
 /**
  * One component per binding, so the create dialog and the editor's panes render
  * the SAME control rather than two copies that drift. The Crewmates page's
- * `NewCrewmateDialog` composes them in its Advanced fold; the editor mounts them
+ * `NewCrewmateDialog` composes them in its Advanced settings; the editor mounts them
  * individually, one per rail pane.
  */
 export function WorkspaceField({ options, value, onChange, onNewWorkspace, subject, hint }: {
@@ -2645,6 +2645,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
           duplicate against before any request. */}
       <NewCrewmateDialog
         open={createOpen}
+        startExpanded
         onClose={() => setCreateOpen(false)}
         onCreated={handleCapCreated}
         existingNames={agents.flatMap(a => (a.display_name ? [a.name, a.display_name] : [a.name]))}
