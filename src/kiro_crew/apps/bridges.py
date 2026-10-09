@@ -1482,7 +1482,9 @@ def _register_crons(app_name: str, manifest: AppManifest) -> list[str]:
 
     path = _app_crons_path(app_name)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(cron_defs, indent=2), encoding="utf-8")
+    # Atomic: the scheduler reads this file at every start, so a write cut off
+    # part way must leave the previous definitions in place, not a torn file.
+    atomic_write(path, json.dumps(cron_defs, indent=2))
     logger.info("Wrote %d cron definition(s) for app %s", len(cron_defs), app_name)
     return registered
 
@@ -1524,7 +1526,16 @@ def load_app_cron_defs(app_name: str) -> list[dict[str, Any]]:
         return []
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+        # A manifest that exists but cannot be read (for example one left torn by
+        # an interrupted write) is logged at WARNING and treated as no crons, so
+        # none of the app's scheduled jobs from it are registered.
+        logger.warning(
+            "App %s: cron manifest %s could not be read (%s); ignoring it",
+            app_name,
+            path,
+            type(exc).__name__,
+        )
         return []
     if not isinstance(data, list):
         logger.warning(
