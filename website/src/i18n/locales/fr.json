@@ -11719,7 +11719,13 @@
       "run_in_terminal_copy_failed_error": "La commande n'a pas pu être copiée, donc rien n'a été envoyé au terminal. Copie-la depuis le bloc de code et colle-la toi-même.",
       "run_in_terminal_no_tab_error": "La commande n'a pas pu s'exécuter : impossible d'ouvrir un nouveau terminal, car trop de terminaux sont déjà ouverts. Fermes-en un et réessaie.",
       "run_in_terminal_cwd_pending_error": "La commande n'a pas pu s'exécuter : le répertoire de travail de ce chat n'est pas encore chargé. Réessaie dans un instant.",
-      "run_in_terminal_config_read_failed_error": "Tes paramètres de terminal n'ont pas pu être lus ; « réutiliser le terminal actuel » a donc été ignoré et la commande a été ouverte dans un nouveau terminal. Recharge pour réessayer."
+      "run_in_terminal_config_read_failed_error": "Tes paramètres de terminal n'ont pas pu être lus ; « réutiliser le terminal actuel » a donc été ignoré et la commande a été ouverte dans un nouveau terminal. Recharge pour réessayer.",
+      "open_older_sessions": "Ouvrir Sessions plus anciennes",
+      "tabs_were_not_restored_many": "{{count}} onglets qui étaient ouverts avant le redémarrage n'ont pas été restaurés.",
+      "tabs_were_not_restored_one": "{{count}} onglet qui était ouvert avant le redémarrage n'a pas été restauré.",
+      "tabs_were_not_restored_other": "{{count}} onglets qui étaient ouverts avant le redémarrage n'ont pas été restaurés.",
+      "dismiss_until_next_visit": "Masquer jusqu’à la prochaine visite",
+      "could_not_check_restored_tabs": "Impossible de vérifier si tous les onglets ont été restaurés après le dernier redémarrage."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 ignorée — actuellement sélectionnée)",

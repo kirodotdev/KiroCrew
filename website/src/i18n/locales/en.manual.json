@@ -5148,7 +5148,12 @@
       "run_in_terminal_copy_failed_error": "The command couldn't be copied, so nothing was sent to the terminal. Copy it from the code block and paste it yourself.",
       "run_in_terminal_no_tab_error": "The command couldn't run: no new terminal could be opened because too many are already open. Close one and try again.",
       "run_in_terminal_cwd_pending_error": "The command couldn't run: this chat's working directory hasn't loaded yet. Try again in a moment.",
-      "run_in_terminal_config_read_failed_error": "Your terminal settings couldn't be read, so \"reuse the current terminal\" was skipped and the command opened a new terminal instead. Reload to try again."
+      "run_in_terminal_config_read_failed_error": "Your terminal settings couldn't be read, so \"reuse the current terminal\" was skipped and the command opened a new terminal instead. Reload to try again.",
+      "open_older_sessions": "Open Older Sessions",
+      "tabs_were_not_restored_one": "{{count}} tab that was open before the restart was not restored.",
+      "tabs_were_not_restored_other": "{{count}} tabs that were open before the restart were not restored.",
+      "dismiss_until_next_visit": "Dismiss until next visit",
+      "could_not_check_restored_tabs": "Could not check whether every tab was restored after the last restart."
     },
     "chatSidebar": {
       "no_sessions_match_folders": "No sessions match — only a folder name did",

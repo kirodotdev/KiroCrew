@@ -11395,7 +11395,11 @@
       "run_in_terminal_copy_failed_error": "コマンドをコピーできなかったため、ターミナルには何も送信されませんでした。コードブロックからコピーして自分で貼り付けてください。",
       "run_in_terminal_no_tab_error": "コマンドを実行できませんでした：開いているターミナルが多すぎて新しいターミナルを開けません。1 つ閉じてからもう一度お試しください。",
       "run_in_terminal_cwd_pending_error": "コマンドを実行できませんでした：このチャットの作業ディレクトリがまだ読み込まれていません。少し待ってからもう一度お試しください。",
-      "run_in_terminal_config_read_failed_error": "ターミナル設定を読み込めなかったため、「現在のターミナルを再利用」はスキップされ、コマンドは新しいターミナルで開かれました。再試行するには再読み込みしてください。"
+      "run_in_terminal_config_read_failed_error": "ターミナル設定を読み込めなかったため、「現在のターミナルを再利用」はスキップされ、コマンドは新しいターミナルで開かれました。再試行するには再読み込みしてください。",
+      "open_older_sessions": "「以前のセッション」を開く",
+      "tabs_were_not_restored_other": "再起動前に開いていたタブ {{count}} 個が復元されませんでした。",
+      "dismiss_until_next_visit": "次回アクセスまで非表示にする",
+      "could_not_check_restored_tabs": "前回の再起動後にすべてのタブが復元されたかを確認できませんでした。"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 件を除外 — 現在選択中)",

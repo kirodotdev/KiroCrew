@@ -415,6 +415,13 @@ async def test_a_boot_reads_nothing_from_the_outer_home(
 #: so a home-derived global startup grows must land on the harness reset list
 #: (``conftest._reset_home_bound_globals``) or, with a reason, here.
 _KNOWN_SECOND_BOOT_CHANGES: dict[tuple[str, str], str] = {
+    # Derived from the PROCESS umask, not from the home, and computed lazily by the
+    # first ``atomic_write`` that passes no explicit mode. One such write comes from
+    # the session pool's background warm (``providers.acp._write_tool_search_overlay``),
+    # a thread started during boot whose write can land after the boot that started it
+    # has been torn down -- so which boot flips it from ``None`` is a race, and both
+    # boots compute the same value from the same umask.
+    ("kiro_crew.atomic_write", "_default_mode"): "umask-derived file mode",
     # Monotonic counters and clocks: carry no home state.
     ("kiro_crew.config.loader", "_CONFIG_AUTOCOMPACT_ISSUED"): "counter",
     ("kiro_crew.config.loader", "_CONFIG_AUTOCOMPACT_TICKET"): "counter",

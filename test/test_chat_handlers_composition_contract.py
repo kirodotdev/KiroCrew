@@ -122,7 +122,8 @@ _BASE_NAMES = frozenset("""
         api_chat_slot_resume api_chat_slot_selection_capabilities
         api_chat_slot_source_link_unlink api_chat_slot_source_links api_chat_slot_stop
         api_chat_slot_summary api_chat_slot_summary_generate api_chat_slot_workspace
-        api_chat_slots api_chat_slots_cleanup api_chat_slots_model api_recent_projects
+        api_chat_slots api_chat_slots_cleanup api_chat_slots_model
+        api_chat_slots_unrestored api_recent_projects
         approval_mode_permitted asyncio attachment_meta
         base_consent_pattern base_trust_patterns cached_project_agent_names canonical_key
         cap_effort_capability_levels capabilities_of carry_provenance channel_slot_name
@@ -168,6 +169,7 @@ _BASE_ROUTES = (
         "api_chat_slot_source_link_unlink",
     ),
     ("GET", "/api/chat/slots", "api_chat_slots"),
+    ("GET", "/api/chat/slots/unrestored", "api_chat_slots_unrestored"),
     ("GET", "/api/chat/slots/{slot}", "api_chat_slot_detail"),
     ("GET", "/api/chat/slots/{slot}/autocompact", "api_chat_slot_autocompact"),
     (
@@ -535,6 +537,11 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
     ),
     "slot_detail": (
         ("api_chat_slots", "async function", "(request: 'web.Request') -> 'web.Response'"),
+        (
+            "api_chat_slots_unrestored",
+            "async function",
+            "(request: 'web.Request') -> 'web.Response'",
+        ),
         ("_finite_number", "function", "(value: 'Any') -> 'float | None'"),
         (
             "_context_reading",

@@ -11719,7 +11719,13 @@
       "run_in_terminal_copy_failed_error": "No se pudo copiar el comando, por lo que no se envió nada al terminal. Cópialo desde el bloque de código y pégalo tú mismo.",
       "run_in_terminal_no_tab_error": "No se pudo ejecutar el comando: no se pudo abrir un terminal nuevo porque ya hay demasiados abiertos. Cierra uno e inténtalo de nuevo.",
       "run_in_terminal_cwd_pending_error": "No se pudo ejecutar el comando: el directorio de trabajo de este chat aún no se ha cargado. Inténtalo de nuevo en un momento.",
-      "run_in_terminal_config_read_failed_error": "No se pudieron leer los ajustes del terminal, así que se omitió «reutilizar el terminal actual» y el comando se abrió en un terminal nuevo. Vuelve a cargar para intentarlo de nuevo."
+      "run_in_terminal_config_read_failed_error": "No se pudieron leer los ajustes del terminal, así que se omitió «reutilizar el terminal actual» y el comando se abrió en un terminal nuevo. Vuelve a cargar para intentarlo de nuevo.",
+      "open_older_sessions": "Abrir Sesiones anteriores",
+      "tabs_were_not_restored_many": "No se restauraron {{count}} pestañas que estaban abiertas antes del reinicio.",
+      "tabs_were_not_restored_one": "No se restauró {{count}} pestaña que estaba abierta antes del reinicio.",
+      "tabs_were_not_restored_other": "No se restauraron {{count}} pestañas que estaban abiertas antes del reinicio.",
+      "dismiss_until_next_visit": "Ocultar hasta la próxima visita",
+      "could_not_check_restored_tabs": "No se pudo comprobar si todas las pestañas se restauraron tras el último reinicio."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 omitida — seleccionada actualmente)",

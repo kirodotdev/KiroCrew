@@ -273,6 +273,10 @@ CANONICAL: dict[str, dict] = {
         "corrects": [],
         "crew_key": "9f2c" + "0" * 60,
     },
+    # A whole working set lost at once: of sixteen listed tabs none comes back, and
+    # all sixteen stay in the reopen seed. ``kept`` counts the SET rather than this
+    # one tab, which is what lets a reader tell that case from one bad transcript.
+    "session/unrestored": {"listed": 16, "restored": 0, "kept": 16},
 }
 
 
@@ -330,7 +334,15 @@ def test_every_type_written_today_is_declared_and_nothing_else_is():
     # there is no file beside it), and a refused write's whole worth is its history --
     # a mistake book is a fold over refusals, and one overwritable document could hold
     # none of it.
-    assert len(SESSION_ENTRY_TYPES) == 38
+    #
+    # The one past THOSE is ``session/unrestored``, the open-tab registry's own
+    # record. It joins for the reason the agentic pair does -- this log is its ONLY
+    # record -- and the gap it covers is the sharpest of the set: a tab the startup
+    # restore lists and cannot show has nothing to show anywhere else. No
+    # ``session/closed``, because the gateway did not stop serving the session; no
+    # delete, because nothing was deleted; and the restore's own warning goes to a
+    # gateway log that rotates away.
+    assert len(SESSION_ENTRY_TYPES) == 39
     # Nine types the vocabulary owns that nothing writes. Declaring one would state
     # a shape no writer produces, and the first emitter to land would have to
     # satisfy a contract written without it. They pass through undeclared instead.

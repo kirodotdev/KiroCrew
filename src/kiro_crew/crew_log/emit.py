@@ -1598,6 +1598,42 @@ def on_session_released(
     )
 
 
+def on_open_tab_unrestored(
+    session_id: str,
+    *,
+    listed: int,
+    restored: int,
+    kept: int,
+) -> None:
+    """Record that this session's tab was listed as open but did not come back.
+
+    The durable account of a dashboard startup that could not rebuild a tab. Before
+    this, a tab that vanished left NOTHING anywhere: no ``session/closed``, because
+    the gateway did not stop serving the session; no delete, because nothing was
+    deleted; and the restore's own ``logger.warning`` goes to a rotated gateway log
+    that is gone long before anyone asks what happened. So the only account of a lost
+    working set was the user noticing it, which is how a loss of sixteen tabs went
+    from happening to being understood with nothing in between.
+
+    It is emitted on the DROPPED session's own log rather than on a gateway-wide one
+    because that is where a reader goes: the question is always "what happened to this
+    conversation", asked of the conversation. The counts put the one tab in context --
+    one of sixteen that did not come back reads differently from one of one.
+
+    ``kept`` is how many of the listed keys stayed in the reopen seed, this one
+    included. They are not gone: the seed is re-read next boot. The entry says the
+    tab was not SHOWN, which is the fact the user saw.
+    """
+    if not session_id:
+        return
+    _write(
+        session_id,
+        "session/unrestored",
+        {"listed": int(listed), "restored": int(restored), "kept": int(kept)},
+        src=_SRC_GATEWAY,
+    )
+
+
 def _parent_citation(slot: str, sid: str) -> "dict[str, str]":
     """One ``{slot, sid?}`` citation, or ``{}`` when there is no slot to cite.
 
