@@ -1,7 +1,7 @@
 """Residue sweep for the agent aggregate source.
 
-An agent-document add commits its item chunks, the previous group's deletion and
-its ``agent_item_state`` ownership row as three separate autocommit transactions.
+An agent-document add commits its item chunks, then -- in ONE transaction -- the
+previous group's deletion and its ``agent_item_state`` ownership row.
 A plain cancellation is already covered -- the row is written from inside the
 ingest's uncancellable finalize hop -- but a HARD KILL between the item commit
 and the row commit still leaves committed items that no state row names. Nothing
@@ -936,3 +936,271 @@ class TestOwnedIdDerivationIsShared:
             (sid,),
         ).fetchone()["c"]
         assert left == 1, "marker kept because the owned set is unprovable"
+
+
+def _searchable(store, word):
+    """Bodies an FTS search for ``word`` returns, i.e. what a user can still find."""
+    return [hit["content"] for hit in store.search_items_fts(word, limit=50)]
+
+
+class TestReplaceNeverLosesTheSoleCopy:
+    """A replace interrupted between the old-group delete and the
+    ownership-row write must never end with the document's only copy deleted.
+
+    Two independent guards, both pinned here: the delete and the row write now
+    commit as ONE transaction (so the window cannot be persisted by a new
+    store), and the sweep ADOPTS unowned residue into the slug's row when that
+    row's own group is gone (so a store that already persisted the window, or
+    any future path that does, is repaired instead of emptied).
+    """
+
+    @pytest.mark.asyncio
+    async def test_failure_after_old_group_delete_keeps_document_searchable(
+        self, kstore, pipeline, monkeypatch
+    ):
+        # Fault injection on the real replace path: the ownership-row write
+        # raises after the finalize hop deleted the previous group. As two
+        # commits this persisted "old gone, new unowned + marker", and the sweep
+        # then deleted the new version too -- nothing was left to find.
+        from kiro_crew.knowledge import agent_source
+
+        sid, _ = ensure_agent_source(kstore)
+        await add_agent_document(pipeline, title="Doc", content="alphaword body", source_uri=URI)
+        assert _searchable(kstore, "alphaword")
+
+        real = agent_source._write_state_row
+
+        def _boom(*a, **kw):
+            raise RuntimeError("simulated failure before the ownership row")
+
+        monkeypatch.setattr(agent_source, "_write_state_row", _boom)
+        with pytest.raises(RuntimeError):
+            await add_agent_document(pipeline, title="Doc", content="betaword body", source_uri=URI)
+        monkeypatch.setattr(agent_source, "_write_state_row", real)
+
+        kstore.reclaim_agent_source_residue()
+
+        # The delete rolled back with the failed write, so the previous version
+        # is still owned and searchable, and the failed attempt left nothing.
+        assert _searchable(kstore, "alphaword")
+        assert not _searchable(kstore, "betaword")
+        _, ids = get_state(kstore, sid, document_slug(URI))
+        assert ids and set(ids) <= _live_ids(kstore, sid)
+
+    @pytest.mark.asyncio
+    async def test_persisted_window_is_adopted_not_deleted(self, kstore, pipeline):
+        # The exact end state the non-atomic finalize could persist: the row
+        # still names the DELETED previous group, the new version's items are
+        # committed and unowned, and their intent marker survives. The new
+        # version is the slug's only surviving content, so the sweep must adopt
+        # it -- the state a completed replace would have left.
+        import hashlib
+
+        from kiro_crew.knowledge.agent_source import mark_ingesting
+
+        sid, _ = ensure_agent_source(kstore)
+        await add_agent_document(pipeline, title="Doc", content="gammaword body", source_uri=URI)
+        slug = document_slug(URI)
+        old_hash, old_ids = get_state(kstore, sid, slug)
+        new_text = "deltaword body"
+        new_hash = hashlib.sha256(new_text.encode()).hexdigest()
+        mark_ingesting(kstore, sid, slug, new_hash, "Doc", source_uri=URI)
+        new_id = kstore.add_item("Doc", new_text, "document", source_id=sid, content_hash=new_hash)
+        kstore.delete_items_batch(old_ids, owner_source_id=sid)
+        assert get_state(kstore, sid, slug) == (old_hash, old_ids)
+
+        removed = kstore.reclaim_agent_source_residue()
+
+        assert removed == 0
+        assert new_id in _live_ids(kstore, sid)
+        assert get_state(kstore, sid, slug) == (new_hash, [new_id])
+        assert _searchable(kstore, "deltaword")
+        row = kstore.db.execute(
+            "SELECT status FROM agent_item_state WHERE source_id = ? AND slug = ?", (sid, slug)
+        ).fetchone()
+        assert row["status"] == "active"
+        # The adopted attempt's marker is retired: a second sweep is a no-op.
+        assert not kstore.db.execute(
+            "SELECT 1 FROM agent_ingest_intent WHERE source_id = ?", (sid,)
+        ).fetchone()
+        assert kstore.reclaim_agent_source_residue() == 0
+        assert new_id in _live_ids(kstore, sid)
+        # And the adopted group behaves as owned: the next add replaces it.
+        await add_agent_document(pipeline, title="Doc", content="epsilonword body", source_uri=URI)
+        assert new_id not in _live_ids(kstore, sid)
+        assert _searchable(kstore, "epsilonword")
+
+    @pytest.mark.asyncio
+    async def test_newest_attempt_is_adopted_and_older_residue_reaped(self, kstore, pipeline):
+        import hashlib
+
+        from kiro_crew.knowledge.agent_source import mark_ingesting
+
+        sid, _ = ensure_agent_source(kstore)
+        await add_agent_document(pipeline, title="Doc", content="first body", source_uri=URI)
+        slug = document_slug(URI)
+        _, old_ids = get_state(kstore, sid, slug)
+        kstore.delete_items_batch(old_ids, owner_source_id=sid)
+        ids = {}
+        for text, started in (
+            ("older body", "2024-01-01T00:00:00"),
+            ("newer body", "2024-06-01T00:00:00"),
+        ):
+            h = hashlib.sha256(text.encode()).hexdigest()
+            mark_ingesting(kstore, sid, slug, h, "Doc", source_uri=URI)
+            kstore.db.execute(
+                "UPDATE agent_ingest_intent SET started_at = ? "
+                "WHERE source_id = ? AND content_hash = ?",
+                (started, sid, h),
+            )
+            kstore.db.commit()
+            ids[text] = (h, kstore.add_item("Doc", text, "document", source_id=sid, content_hash=h))
+
+        removed = kstore.reclaim_agent_source_residue()
+
+        newer_hash, newer_id = ids["newer body"]
+        assert get_state(kstore, sid, slug) == (newer_hash, [newer_id])
+        assert newer_id in _live_ids(kstore, sid)
+        assert removed == 1
+        assert ids["older body"][1] not in _live_ids(kstore, sid)
+
+    @pytest.mark.asyncio
+    async def test_first_add_crash_is_still_reaped(self, kstore, pipeline):
+        # No prior group: nothing was replaced, so nothing can be lost, and the
+        # orphan is reaped exactly as before.
+        sid, _ = ensure_agent_source(kstore)
+        await add_agent_document(pipeline, title="Doc", content="zetaword body", source_uri=URI)
+        _simulate_hard_kill(kstore, sid, document_slug(URI))
+
+        assert kstore.reclaim_agent_source_residue() == 1
+        assert not _live_ids(kstore, sid)
+        assert get_state(kstore, sid, document_slug(URI)) == (None, [])
+
+    @pytest.mark.asyncio
+    async def test_hash_marked_at_two_gone_slugs_is_spared(self, kstore, pipeline):
+        # The same content crashed at two documents whose previous groups are
+        # both gone: the residue cannot be attributed to one of them, so it is
+        # neither adopted nor deleted.
+        import hashlib
+
+        from kiro_crew.knowledge.agent_source import mark_ingesting
+
+        sid, _ = ensure_agent_source(kstore)
+        text = "shared body"
+        h = hashlib.sha256(text.encode()).hexdigest()
+        for uri, body in ((URI, "one body"), (OTHER_URI, "two body")):
+            await add_agent_document(pipeline, title="Doc", content=body, source_uri=uri)
+            _, old = get_state(kstore, sid, document_slug(uri))
+            kstore.delete_items_batch(old, owner_source_id=sid)
+            mark_ingesting(kstore, sid, document_slug(uri), h, "Doc", source_uri=uri)
+        orphan = kstore.add_item("Doc", text, "document", source_id=sid, content_hash=h)
+
+        assert kstore.reclaim_agent_source_residue() == 0
+        assert orphan in _live_ids(kstore, sid)
+        for uri in (URI, OTHER_URI):
+            assert orphan not in get_state(kstore, sid, document_slug(uri))[1]
+
+    @pytest.mark.asyncio
+    async def test_a_group_that_still_exists_non_active_is_not_adopted_over(self, kstore, pipeline):
+        # A user flipped the document's items out of ``active``; they still
+        # exist, so the row keeps its claim and the marked orphan is reaped.
+        import hashlib
+
+        from kiro_crew.knowledge.agent_source import mark_ingesting
+
+        sid, _ = ensure_agent_source(kstore)
+        await add_agent_document(pipeline, title="Doc", content="kept body", source_uri=URI)
+        slug = document_slug(URI)
+        old = get_state(kstore, sid, slug)
+        kstore.db.execute(
+            f"UPDATE items SET status = 'archived' WHERE id IN " f"({','.join('?' * len(old[1]))})",
+            old[1],
+        )
+        kstore.db.commit()
+        h = hashlib.sha256(b"orphan body").hexdigest()
+        mark_ingesting(kstore, sid, slug, h, "Doc", source_uri=URI)
+        orphan = kstore.add_item("Doc", "orphan body", "document", source_id=sid, content_hash=h)
+
+        assert kstore.reclaim_agent_source_residue() == 1
+        assert orphan not in _live_ids(kstore, sid)
+        assert get_state(kstore, sid, slug) == old
+
+    @pytest.mark.asyncio
+    async def test_hash_also_marked_at_a_live_slug_is_still_adopted(self, kstore, pipeline):
+        # Only slugs whose group is gone compete for a hash; a marker at a
+        # live document does not make the gone document's residue ambiguous.
+        import hashlib
+
+        from kiro_crew.knowledge.agent_source import mark_ingesting
+
+        sid, _ = ensure_agent_source(kstore)
+        await add_agent_document(pipeline, title="A", content="a body", source_uri=URI)
+        await add_agent_document(pipeline, title="B", content="b body", source_uri=OTHER_URI)
+        _, gone = get_state(kstore, sid, document_slug(URI))
+        kstore.delete_items_batch(gone, owner_source_id=sid)
+        h = hashlib.sha256(b"etaword body").hexdigest()
+        for uri in (URI, OTHER_URI):
+            mark_ingesting(kstore, sid, document_slug(uri), h, "Doc", source_uri=uri)
+        new_id = kstore.add_item("A", "etaword body", "document", source_id=sid, content_hash=h)
+
+        kstore.reclaim_agent_source_residue()
+
+        assert get_state(kstore, sid, document_slug(URI)) == (h, [new_id])
+        assert _searchable(kstore, "etaword")
+
+
+class TestFinalizeCommitsDeleteAndOwnershipTogether:
+    @pytest.mark.asyncio
+    async def test_raising_in_txn_callback_rolls_back_the_old_group_delete(
+        self, kstore, pipeline, tmp_path
+    ):
+        sid, _ = ensure_agent_source(kstore)
+        old_id = kstore.add_item("Old", "old body", "document", source_id=sid)
+        doc = tmp_path / "doc.md"
+        doc.write_text("new body", encoding="utf-8")
+
+        def _boom(_ids):
+            raise RuntimeError("ownership write failed")
+
+        with pytest.raises(RuntimeError):
+            await pipeline.ingest_file(
+                str(doc),
+                original_name="doc.md",
+                source_id=sid,
+                old_item_ids=[old_id],
+                on_committed=_boom,
+                on_committed_in_txn=True,
+            )
+
+        assert old_id in _live_ids(kstore, sid)
+
+    @pytest.mark.asyncio
+    async def test_in_txn_callback_sees_the_delete_and_commits_with_it(
+        self, kstore, pipeline, tmp_path
+    ):
+        sid, _ = ensure_agent_source(kstore)
+        old_id = kstore.add_item("Old", "old body", "document", source_id=sid)
+        doc = tmp_path / "doc.md"
+        doc.write_text("new body", encoding="utf-8")
+        seen = {}
+
+        def _record(ids):
+            assert kstore.db.in_transaction
+            seen["old_present"] = (
+                kstore.db.execute("SELECT 1 FROM items WHERE id = ?", (old_id,)).fetchone()
+                is not None
+            )
+            seen["ids"] = ids
+
+        await pipeline.ingest_file(
+            str(doc),
+            original_name="doc.md",
+            source_id=sid,
+            old_item_ids=[old_id],
+            on_committed=_record,
+            on_committed_in_txn=True,
+        )
+
+        assert seen["old_present"] is False
+        assert seen["ids"] and set(seen["ids"]) <= _live_ids(kstore, sid)
+        assert old_id not in _live_ids(kstore, sid)

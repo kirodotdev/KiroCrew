@@ -806,6 +806,7 @@ class IngestionPipeline:
         embed_priority: int = PRIORITY_NORMAL,
         count_toward_import_budget: bool = True,
         import_budget_token: int | None = None,
+        on_committed_in_txn: bool = False,
     ) -> str | None:
         """Full pipeline. Returns job_id, or None if content hash unchanged.
 
@@ -836,6 +837,16 @@ class IngestionPipeline:
         and the record that makes them replaceable -- each one a cancellation
         point that strands the items unowned. Passing the write in here gives it
         the same run-to-completion guarantee as the delete it belongs with.
+
+        ``on_committed_in_txn`` goes one step further: ``on_committed`` then runs
+        INSIDE the old group's delete transaction, so the delete and the caller's
+        ownership write commit together or not at all. Run-to-completion covers a
+        cancellation, not a hard kill or a raising callback; with two commits a
+        failure between them persists "old group gone, new group named by no
+        row", and the agent path's residue sweep would then read the new group as
+        crash residue and delete the document's only copy. The callback must not
+        commit or open a transaction of its own (it runs under the caller's
+        ``BEGIN IMMEDIATE``); if it raises, the delete rolls back with it.
 
         ``on_duplicate`` is that same bargain for the branch where the pre-ingest
         gate REFUSES the write. It receives the extracted-text hash matched by the
@@ -883,6 +894,7 @@ class IngestionPipeline:
                     namespace=namespace, source_id=source_id, old_item_ids=old_item_ids,
                     on_committed=on_committed, on_duplicate=on_duplicate,
                     embed_priority=embed_priority,
+                    on_committed_in_txn=on_committed_in_txn,
                 )
             finally:
                 # Reclaim the reservation on EVERY exit that did not settle it: an
@@ -906,6 +918,7 @@ class IngestionPipeline:
         on_committed: Callable[[list[str]], None] | None = None,
         on_duplicate: Callable[[str], None] | None = None,
         embed_priority: int = PRIORITY_NORMAL,
+        on_committed_in_txn: bool = False,
     ) -> str | None:
         p = Path(path)
         display_name = original_name or p.name
@@ -1071,6 +1084,7 @@ class IngestionPipeline:
                 _old_item_ids=_old_item_ids, path=path, on_progress=on_progress,
                 embed_priority=embed_priority, on_committed=on_committed,
                 budget_token=budget_token,
+                on_committed_in_txn=on_committed_in_txn,
             )
         except Exception:
             try:
@@ -1097,7 +1111,8 @@ class IngestionPipeline:
                                 uri, content_hash, display_name, namespace,
                                 old_item_ids, _old_item_ids, path,
                                 on_progress, embed_priority,
-                                on_committed=None, budget_token=None) -> str | None:
+                                on_committed=None, budget_token=None,
+                                on_committed_in_txn=False) -> str | None:
         """Chunk/extract/store/finalize — split out so ingest_file can mark the
         pre-inserted job row 'failed' on ANY exception in one place."""
         # 4. Chunk (use per-source chunk size if configured)
@@ -1225,9 +1240,29 @@ class IngestionPipeline:
             # (isolation_level=None), so no enclosing transaction spans this,
             # and WAL + busy_timeout=10000 rides out write-lock contention.
             if processed == total:
-                self.store.delete_items_batch(_old_item_ids, owner_source_id=source_id)
-                if on_committed is not None:
-                    on_committed(list(created_item_ids))
+                if on_committed is not None and on_committed_in_txn:
+                    # ONE transaction for the old group's delete and the
+                    # caller's ownership write (see ingest_file). Two commits
+                    # leave a window where a crash or a raising callback
+                    # persists the old group deleted and the new group owned
+                    # by no row.
+                    self.store.db.execute("BEGIN IMMEDIATE")
+                    try:
+                        if _old_item_ids:
+                            self.store.delete_items_batch_in_txn(
+                                _old_item_ids, owner_source_id=source_id)
+                        on_committed(list(created_item_ids))
+                        self.store.db.execute("COMMIT")
+                    except BaseException:
+                        self.store.db.execute("ROLLBACK")
+                        raise
+                    if _old_item_ids:
+                        # The duty delete_items_batch_in_txn hands its caller.
+                        self.store.reload_graph()
+                else:
+                    self.store.delete_items_batch(_old_item_ids, owner_source_id=source_id)
+                    if on_committed is not None:
+                        on_committed(list(created_item_ids))
                 # A key DELTA onto the row's current blob, in one write-locked
                 # take with the status and timestamp: the sync scheduler's
                 # outcome writers land on this same row from their own worker

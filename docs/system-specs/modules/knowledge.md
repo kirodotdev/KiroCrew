@@ -281,6 +281,38 @@ permanently. Running inside the hop gives the ownership write the same run-to-co
 guarantee as the delete it belongs with. The `deduped` marker is written by the caller
 instead, because the duplicate gate returns before the hop ever runs.
 
+**The superseded group's delete and the new ownership row commit as ONE transaction.**
+The agent path passes `on_committed_in_txn=True`, so the finalize hop opens one
+`BEGIN IMMEDIATE`, runs `delete_items_batch_in_txn` on the old group, invokes
+`on_committed` (which writes the row and clears this attempt's intent marker without
+committing), and commits once. Run-to-completion covers a cancellation, not a hard kill
+or a raising write; as two commits, a failure between them persisted "previous version
+deleted, new version named by no row, intent marker present", and the residue sweep below
+then deleted the new version as crash residue — the document's only copy (#18423). A
+raise inside the callback now rolls the delete back with it. The folder and artifact
+paths keep the two-step form; their owners never reap on intent markers.
+
+**The residue sweep never deletes a document's sole surviving copy.**
+`KnowledgeStore.reclaim_agent_source_residue` reaps unowned agent items only on positive
+evidence (an `agent_ingest_intent` marker naming their hash, created at or after the
+attempt began). Its first step, `_adopt_agent_sole_copy_residue`, covers the one case where
+that evidence names a document's last copy: a slug whose ownership row names a non-empty
+group of which no id still exists in `items` at all (an item set non-active, or detached
+to another source, still exists and keeps the row's claim). That slug's most recently
+started marker's unowned items are ADOPTED into the row (hash, group and `active` status
+rewritten — the state a completed replace would have left) and the marker is retired;
+older attempts' residue at the slug is then reaped normally. A first-add crash (no row)
+and a row that owned nothing (refused / `deduped`) are reaped as before, since nothing was
+replaced. A hash marked at more than one such slug cannot be attributed to one document
+and is spared — neither adopted nor deleted, and nothing older is adopted in its place. The
+state cannot tell a crash apart from a user having deleted every item of a document while
+a stale marker for it remained; that case now adopts the (already searchable) residue
+rather than reaping it, which is accepted: it keeps content rather than losing it. A
+double crash on a store written before the transaction existed can adopt a truncated
+newer attempt over an older complete one; chunk sets carry no completeness marker, so
+this is not distinguishable either. A store written before the transaction
+above existed is repaired by this step rather than emptied.
+
 The tool takes the document TEXT and **never opens a file**. A path opened here on
 behalf of whatever supplied it is exactly the case where a component can be swapped for a
 link to a credential file between the check and the open, and a path pointing at a binary

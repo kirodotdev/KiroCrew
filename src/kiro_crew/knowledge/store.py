@@ -1482,6 +1482,129 @@ class KnowledgeStore:
                 ids_owned.update(i for i in parsed if isinstance(i, str))
         return ids_owned
 
+    def _adopt_agent_sole_copy_residue(self, source_id: str) -> set[str] | None:
+        """Adopt crash residue that is a document's ONLY surviving content.
+
+        Runs as the first step of :meth:`reclaim_agent_source_residue`, inside
+        its drained maintenance window. A replace whose old-group delete
+        committed but whose ownership-row write did not (a store written
+        while those two were separate commits) leaves a slug whose
+        row still names the DELETED previous group, beside the new version's
+        unowned items and their intent marker. Reaping those items, as the
+        marker alone would authorize, deletes the document's last copy. So for
+        a slug whose row names a non-empty group of which NOTHING still exists
+        (under any source or status), the unowned items of the slug's most
+        recently started marker are written into that row instead -- the state
+        a completed replace would have left -- and that marker is retired.
+
+        Left to the sweep, unchanged: a slug with no row (a first add that
+        crashed -- nothing was replaced, so nothing is lost), and a row that
+        owned nothing (a refused or deduped document whose content another row
+        holds). A hash marked at more than one such slug cannot be attributed to
+        one document; it is SPARED rather than adopted or reaped -- a leaked
+        duplicate is recoverable, a deleted sole copy is not.
+
+        Returns the spared hashes for the sweep to leave alone, or ``None`` --
+        "cannot tell, do not sweep" -- when an ownership group is unreadable.
+        """
+        spared: set[str] = set()
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            owned = self.agent_owned_item_ids(source_id)
+            if owned is None:
+                self.db.execute("COMMIT")
+                return None
+            markers: dict[str, list[tuple[str, str]]] = defaultdict(list)
+            for r in self.db.execute(
+                    "SELECT slug, content_hash, started_at FROM agent_ingest_intent "
+                    "WHERE source_id = ?", (source_id,)).fetchall():
+                if not r["content_hash"]:
+                    continue
+                markers[r["slug"]].append((r["content_hash"], r["started_at"] or ""))
+            # Pass 1: the slugs whose recorded group is GONE -- not one of its
+            # ids exists any more, under any source or status. An item a user
+            # set non-active, or one a delete detached to another source, still
+            # exists, so its row is not a candidate and keeps its claim.
+            candidates: list[str] = []
+            for slug in markers:
+                row = self.db.execute(
+                    "SELECT item_ids FROM agent_item_state "
+                    "WHERE source_id = ? AND slug = ?",
+                    (source_id, slug)).fetchone()
+                if not row or row["item_ids"] in (None, ""):
+                    continue
+                try:
+                    group = json.loads(row["item_ids"])
+                except (TypeError, ValueError):
+                    self.db.execute("COMMIT")
+                    return None
+                group = [i for i in group if isinstance(i, str)] \
+                    if isinstance(group, list) else []
+                if not group:
+                    continue
+                gone = True
+                for off in range(0, len(group), _RECLAIM_CHUNK):
+                    batch = group[off:off + _RECLAIM_CHUNK]
+                    if self.db.execute(
+                            f"SELECT 1 FROM items "  # noqa: S608
+                            f"WHERE id IN ({','.join('?' * len(batch))}) LIMIT 1",
+                            batch).fetchone():
+                        gone = False
+                        break
+                if gone:
+                    candidates.append(slug)
+            # A hash is ambiguous only between CANDIDATE slugs: a marker at a
+            # slug whose group is live is that slug's ordinary residue.
+            candidate_slugs_by_hash: dict[str, int] = defaultdict(int)
+            for slug in candidates:
+                for content_hash in {h for h, _ in markers[slug]}:
+                    candidate_slugs_by_hash[content_hash] += 1
+            adopted_total = 0
+            for slug in candidates:
+                # Newest attempt first: it is the content the agent last meant
+                # this document to hold. Older attempts' residue is reaped by the
+                # sweep once this row names a live group again.
+                for content_hash, started in sorted(
+                        markers[slug], key=lambda m: m[1], reverse=True):
+                    ids = [
+                        r["id"] for r in self.db.execute(
+                            "SELECT id, created_at FROM items "
+                            "WHERE source_id = ? AND status = 'active' "
+                            "AND content_hash = ? ORDER BY chunk_index, created_at",
+                            (source_id, content_hash)).fetchall()
+                        if r["id"] not in owned
+                        and (r["created_at"] or "") >= started
+                    ]
+                    if not ids:
+                        continue
+                    if candidate_slugs_by_hash[content_hash] > 1:
+                        # Cannot attribute it to one document: neither adopt
+                        # nor reap it, and adopt nothing older in its place.
+                        spared.add(content_hash)
+                        break
+                    self.db.execute(
+                        "UPDATE agent_item_state SET content_hash = ?, "
+                        "item_ids = ?, status = 'active', updated_at = ? "
+                        "WHERE source_id = ? AND slug = ?",
+                        (content_hash, json.dumps(ids),
+                         datetime.now().isoformat(), source_id, slug))
+                    self.db.execute(
+                        "DELETE FROM agent_ingest_intent "
+                        "WHERE source_id = ? AND slug = ? AND content_hash = ?",
+                        (source_id, slug, content_hash))
+                    owned.update(ids)
+                    adopted_total += len(ids)
+                    break
+            self.db.execute("COMMIT")
+        except Exception:
+            self.db.execute("ROLLBACK")
+            raise
+        if adopted_total:
+            logger.info(
+                "agent residue sweep adopted %d item(s) that were a replaced "
+                "document's only surviving copy", adopted_total)
+        return spared
+
     def reclaim_agent_source_residue(self) -> int:
         """Delete items an interrupted agent-document ingest provably left behind.
 
@@ -1514,6 +1637,12 @@ class KnowledgeStore:
         row, so it covers a crash while REPLACING a live group as well as a
         first add, and two interrupted attempts at one slug each keep their own
         evidence. A reaped attempt's marker is deleted in the same transaction.
+
+        NEVER DELETES A DOCUMENT'S SOLE SURVIVING COPY: before any residue is
+        chosen, :meth:`_adopt_agent_sole_copy_residue` adopts the residue of a
+        slug whose recorded group is gone into that slug's row (and
+        spares a hash it cannot attribute to one slug), so a replace interrupted
+        after its old-group delete is repaired rather than emptied.
 
         SCOPED TO THE ``agent://`` SOURCE ALONE: only the agent path writes these
         markers, so the sweep cannot reach a folder- or artifact-backed item.
@@ -1677,9 +1806,22 @@ class KnowledgeStore:
         ingesting = _ingesting_hashes()
         if not ingesting:
             return 0
+        # Sole-copy adoption runs BEFORE any residue is chosen. It may
+        # rewrite an ownership row, so ownership and the marker map are re-read
+        # once it has committed.
+        spared = self._adopt_agent_sole_copy_residue(source_id)
+        if spared is None:
+            return 0
+        owned = _owned_ids()
+        if owned is None:
+            return 0
+        ingesting = _ingesting_hashes()
+        if not ingesting:
+            return 0
         live_owned = _live_owned_hashes()
         if live_owned is None:
             return 0
+        live_owned |= spared
         # Active items under the agent source that no row owns, whose content
         # hash a stale ``ingesting`` marker names, AND which were created at or
         # after that marker's attempt began -- the positive, attempt-scoped
@@ -1731,6 +1873,7 @@ class KnowledgeStore:
                 if live_now is None:
                     self.db.execute("COMMIT")
                     break
+                live_now |= spared
                 # And the item must still exist, still belong to this source,
                 # still be ACTIVE, and still carry a hash a marker names. The
                 # status filter closes the window where a concurrent writer

@@ -322,13 +322,17 @@ def clear_ingesting(store: KnowledgeStore, source_id: str, slug: str,
 def set_state(store: KnowledgeStore, source_id: str, slug: str, content_hash: str,
               item_ids: list[str], name: str, status: str = "active",
               *, source_uri: str) -> None:
-    """Record one document's hash, item group, display name and status.
+    """Record one document's hash, item group, display name and status, and commit.
 
     ``status`` is written explicitly on every call: the statement is an
     ``INSERT OR REPLACE``, so omitting it would silently reset a ``deduped``
     marker back to the column default and the document would be re-ingested and
     re-collapsed on every pass. ``source_uri`` (the redacted locator) rides the
     same rule, and is required so no caller can erase it by accident.
+
+    The add path's finalize does NOT use this: it writes the row with
+    :func:`_write_state_row` inside the old group's delete transaction, so the
+    two commit together.
     """
     _write_state_row(store, source_id, slug, content_hash, item_ids, name,
                      status=status, source_uri=source_uri)
@@ -535,9 +539,15 @@ async def _add_agent_document(
     recorded_ids: list[str] = []
 
     def _record_ownership(new_ids: list[str]) -> None:
-        recorded_ids[:] = new_ids
-        set_state(store, source_id, slug, content_hash, new_ids, title,
-                  source_uri=source_uri)
+        # Runs INSIDE the finalize hop's delete transaction
+        # (``on_committed_in_txn=True`` below), so this takes no transaction
+        # and never commits: the old group's delete and this row commit as one
+        # unit. As two commits, a hard kill or a raise between them persisted
+        # "previous version deleted, new version named by no row" with this
+        # attempt's intent marker still present -- which the residue sweep then
+        # read as crash residue and deleted, losing the document's only copy.
+        _write_state_row(store, source_id, slug, content_hash, new_ids, title,
+                         source_uri=source_uri)
         # The ownership row and the intent marker live in separate tables, so
         # writing the row does not touch the marker; drop THIS attempt's marker
         # explicitly so a finished ingest leaves no crash evidence behind. But a
@@ -546,6 +556,10 @@ async def _add_agent_document(
         # earlier attempt stranded is still waiting for the sweep.
         clear_ingesting(store, source_id, slug, content_hash,
                         preserve_if_orphans=True)
+        # Only after both writes succeeded: a raise above rolls the transaction
+        # back, and the except branches below key "nothing was recorded" off
+        # this list being empty.
+        recorded_ids[:] = new_ids
 
     tmp_path: str | None = None
 
@@ -598,6 +612,7 @@ async def _add_agent_document(
                 old_item_ids=old_item_ids,
                 on_committed=_record_ownership,
                 on_duplicate=_finalize_deduped,
+                on_committed_in_txn=True,
             )
         except ImportChunkBudgetError as exc:
             # The cross-file import budget refused this add. Surface WHY to the
