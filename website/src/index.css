@@ -1719,7 +1719,15 @@ html[data-font-family="custom"][data-custom-ligatures="off"] body{font-variant-l
 
 /* ── Code in messages ── */
 .msg-content code{font-family:var(--mono);font-size:.9em}
-.msg-content :not(pre)>code{background:rgba(0,0,0,.15);padding:.15em .4em;border-radius:4px;overflow-wrap:break-word;word-break:break-all}
+/* `color:var(--accent)` so inline code reads as a distinct run in EVERY theme,
+   not just the two Kiro rules below. Without it, every other theme (e.g. Monokai
+   dark) fell back to the body text colour — MarkdownRenderer gives plain inline
+   code only CHIP_BASE (geometry + mono face, no colour), so the stylesheet is the
+   only source of one. `--accent` is a required theme token (theme_validate.py
+   _THEME_REQUIRED_VARS), so a custom pack cannot leave inline code uncoloured and
+   no new token is introduced. The Kiro rules below override at a higher
+   specificity (an added attribute selector), so their colours are unchanged. */
+.msg-content :not(pre)>code{background:rgba(0,0,0,.15);color:var(--accent);padding:.15em .4em;border-radius:4px;overflow-wrap:break-word;word-break:break-all}
 [data-mode="light"] .msg-content :not(pre)>code{background:rgba(0,0,0,.06)}
 /* Kiro theme: inline code = neutral elevated surface (Prey/750) + light-purple text (Figma 3906:185658) */
 [data-theme="kiro-dark"] .msg-content :not(pre)>code{background:#28242e;color:#c19aff}
