@@ -162,6 +162,64 @@ of correcting it in a second write that a due-scan can beat. The rationale per
 field, the fields still deliberately omitted, and the tests pinning each one are
 in `learn-cron-dashboard.md` under "App SDK create allowlist".
 
+An app observes that its owned job has work ready in its OWN loop rather than on
+that job's schedule, so without a run-now verb the only lever is lowering
+`every_secs` until the next-due calculation lands in the past — which expresses a
+one-off action as a persisted schedule change and cannot react faster than the
+60s `_MIN_INTERVAL_SECS` floor. `CronSDK.run_job_async` is that verb. It is
+**async-only, with no sync sibling**: the other mutators have a synchronous form
+because they are store writes a loop-less caller can block on, while running a
+job is not a store write — `CronService.run_job` takes the run claim on the event
+loop and spawns the run as a loop task, so a loop-less caller has no loop to
+spawn on and nothing to await, and a `run_job` added for symmetry would hand an
+app a coroutine that never runs. It **returns once the run has really started
+or been refused**, and does not wait for the run to finish: `True` means the run
+passed the store refresh and every check on the job it resolved and was spawned,
+and its outcome lands in the job's own history; `False` means no run started, and
+the one `False` that writes to that history is a `cancel()` taking the claim while
+the call is parked in its store refresh, which records a `cancelled` entry. This is a stronger answer than the dashboard
+Run button's, which reports a dispatch, because the SDK's ownership check reads
+the cache and the run re-checks the job on disk before it starts: a `True` given
+at the claim could describe a run that the re-check then refused, leaving the app
+no reason to try again. The answer travels on a `started` future the SDK passes to
+`trigger_run`, resolved `True` by the run's own first step in
+`_run_job_isolated`, once it has confirmed it still holds its claim, and `False`
+by a done callback on the dispatched task when it ends before that step, so it is
+always resolved and a run that `stop()` or `cancel()` takes before its first step
+is never reported started (pinned by
+`test_cron_sdk.py::TestOwnedCronManualRun::test_a_stale_cache_cannot_start_another_owners_job`,
+`::test_a_contended_store_does_not_fall_back_to_the_cache`, which bound the
+wait, and `::test_a_run_cancelled_before_its_first_step_is_not_reported_started`).
+A job deleted after the cached ownership check but before the run's store
+refresh is not raised on as absent: the call returns `False`. It claims through `CronService.trigger_run`, the
+one await-free check-and-claim section it shares with the manual-run route, so a
+fix to the section cannot land at one trigger and miss the other —
+`discard_finished_run` first so a claim left by an already-finished task is
+dropped rather than refusing every later run until the reaper sweep, then
+`is_running` returning `False` because a second overlapping run would orphan the
+first task's handle, then `run_job` + `attach_run_task` so `cancel()` can reach a
+run parked in its offloaded store refresh, then a `crons` refresh so an
+app-triggered run shows on the Schedule page like a Run click. Ownership is
+checked twice: `_assert_owned` on the cache-only snapshot before the claim, and
+again by `_run_claimed_manual` on the job it resolves from the refreshed store,
+through the `expected_owner` the SDK passes to `trigger_run`, so a cache that
+trails the store cannot start a job another owner now holds. The first check is
+`_assert_owned` with a SEL-audited
+`cron_run_job` denial, as on the other owned verbs, and both a dispatch and a
+refusal are audited so a refusal is not a silent no-op. The dispatch is audited
+BEFORE the SDK waits for the start, because the run is detached from the caller:
+a caller cancelled during the wait would otherwise leave a run with no
+`cron_run_job` record (pinned by
+`::test_a_caller_cancelled_while_waiting_still_leaves_an_audit`). Nothing awaits the
+dispatched wrapper, so the SDK consumes its exception in a done callback and logs
+it against the app and job instead of leaving asyncio's "Task exception was never
+retrieved" with no owner named. The verb reaches no gate a scheduled fire does
+not: a manual run goes through the same cron callback, so `vet_job_at_fire_time`
+still decides execution and a job owned by a DISABLED app does not run however it
+was triggered. A user-PAUSED job can be run on demand, matching the dashboard's
+Run button on a paused row — pausing stops the schedule, it does not revoke the
+owner's ability to run the job.
+
 ## App Store source selection
 
 Discover's Sources rail filters the catalog shelf by namespaced source identity.

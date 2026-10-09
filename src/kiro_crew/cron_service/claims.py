@@ -35,6 +35,18 @@ async def _manual_run_refused() -> bool:
     return False
 
 
+def _resolve_started(started: asyncio.Future[bool], value: bool, *_: Any) -> None:
+    """Resolve a trigger's ``started`` future once, ignoring later attempts.
+
+    The run resolves it ``True`` when it spawns, and the dispatched task's
+    done callback resolves it ``False`` afterwards; only the first one counts.
+    A future the waiting caller already cancelled is left alone. The trailing
+    positional slot takes the task a done callback passes in.
+    """
+    if not started.done():
+        started.set_result(value)
+
+
 @dataclass(eq=False)
 class _RunClaim:
     """One run's claim on its job: every piece of per-run state, in one object.
