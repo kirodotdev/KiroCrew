@@ -7353,7 +7353,9 @@ class DashboardState:
         if self._knowledge_store is None:
             db_dir = os.path.join(str(config_dir()), "workspace", "knowledge")
             mkdirs_owner_only(db_dir)
-            self._knowledge_store = KnowledgeStore(os.path.join(db_dir, "knowledge.db"))
+            self._knowledge_store = KnowledgeStore.open_recovering(
+                os.path.join(db_dir, "knowledge.db")
+            )
         return self._knowledge_store
 
     def enable_yolo(self, *, from_config: bool = False) -> None:

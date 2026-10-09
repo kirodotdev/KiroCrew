@@ -1093,13 +1093,13 @@ class TestStartDashboardWiring:
 
         loop_thread = threading.get_ident()
         built_on: list[int] = []
-        real_store = _st.KnowledgeStore
+        real_open = _st.KnowledgeStore.open_recovering
 
-        def _recording_store(*args: Any, **kwargs: Any) -> Any:
+        def _recording_open(*args: Any, **kwargs: Any) -> Any:
             built_on.append(threading.get_ident())
-            return real_store(*args, **kwargs)
+            return real_open(*args, **kwargs)
 
-        monkeypatch.setattr(_st, "KnowledgeStore", _recording_store)
+        monkeypatch.setattr(_st.KnowledgeStore, "open_recovering", _recording_open)
         async with _dashboard(tmp_path, monkeypatch) as (_runner, state, _spies):
             assert state._knowledge_store is not None
         assert len(built_on) == 1

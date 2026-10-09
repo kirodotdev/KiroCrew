@@ -20,6 +20,7 @@ from kiro_crew.on_loop_db import STORE_STRICT_ENV, OnLoopDBGuard
 from kiro_crew.owner_only_files import prepare_owner_only_sqlite
 
 from .._sqlite_compat import fts5_cjk_match_groups, fts5_segment_for_index, sqlite3
+from ..sqlite_quarantine import is_damaged_database_error, quarantine_sqlite_file
 
 #: Test-only switch. ``False`` in production: every connection keeps SQLite's
 #: own thread-affinity guard (``check_same_thread=True``), so a caller that
@@ -840,9 +841,48 @@ class KnowledgeStore:
         # `_load_graph()` call sites and every query path stay fully guarded.
         if read_only:
             return
-        with _ON_LOOP_DB_GUARD.allow_on_loop():
-            self._init_schema()
-            self._migrate()
+        try:
+            with _ON_LOOP_DB_GUARD.allow_on_loop():
+                self._init_schema()
+                self._migrate()
+        except BaseException:
+            # The store is never handed out, so its connection would only be
+            # freed by the cyclic collector -- and an open handle keeps the
+            # file from being moved aside on Windows.
+            conn = getattr(self._thread_local, "conn", None)
+            if conn is not None:
+                conn.close()
+                self._thread_local.conn = None
+            raise
+
+    @classmethod
+    def open_recovering(cls, db_path: str) -> "KnowledgeStore":
+        """Open the library, moving a damaged file aside instead of failing.
+
+        The gateway builds its store before the listener binds, so a file SQLite
+        reports as damaged (``file is not a database``, ``database disk image is
+        malformed``) would stop every start. Such a file and its sidecars are
+        renamed to ``knowledge.db.corrupt-<utc>`` and an empty library is
+        created. The old file is kept, never deleted, and one warning names it.
+        Any other error -- a locked, busy, read-only or full database -- is
+        raised unchanged.
+        """
+        try:
+            return cls(db_path)
+        except sqlite3.DatabaseError as exc:
+            if not is_damaged_database_error(exc):
+                raise
+            reason = str(exc)
+        moved = quarantine_sqlite_file(Path(db_path))
+        logger.warning(
+            "knowledge: %s was damaged (%s); moved aside as %s and started an empty library. "
+            "Sources must be added again; documents added inline exist only in the kept copy.%s",
+            db_path,
+            reason,
+            moved.target.name,
+            f" Sidecar(s) left in place: {', '.join(moved.left)}." if moved.left else "",
+        )
+        return cls(db_path)
 
     @classmethod
     def open_read_only(cls, db_path: str) -> "KnowledgeStore":
@@ -896,7 +936,13 @@ class KnowledgeStore:
             conn = sqlite3.connect(self._db_path, **connect_kwargs)
             if test_mode:
                 conn._owner_ident = threading.get_ident()
-            conn.execute("PRAGMA journal_mode=WAL")
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+            except sqlite3.Error:
+                # A file that is not a database fails here; release the handle so
+                # the caller can move the file aside.
+                conn.close()
+                raise
         conn.execute("PRAGMA busy_timeout=10000")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.row_factory = sqlite3.Row

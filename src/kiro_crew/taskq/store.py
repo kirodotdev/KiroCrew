@@ -48,6 +48,7 @@ from kiro_crew import platform_compat
 from kiro_crew.metrics.events import TASKQ_COMPLETIONS, emit_counter
 from kiro_crew.on_loop_db import OnLoopDBGuard
 from kiro_crew.owner_only_files import prepare_owner_only_sqlite
+from kiro_crew.sqlite_quarantine import is_damaged_database_error, quarantine_sqlite_file
 
 from . import lanes as _lanes
 from . import migrate
@@ -184,51 +185,6 @@ _EVENT_REPORTED = "reported"
 
 class _CorruptStore(Exception):
     """Internal: the file is not a usable SQLite database (see ``TaskStore.open``)."""
-
-
-#: SQLite's own verdicts that the FILE is damaged. Exact phrases: a bare
-#: substring such as ``corrupt`` could match a path or a wrapped message.
-#: The ``integrity_check`` verdict is the fourth trigger (``_open_connection``).
-_CORRUPTION_MARKERS = (
-    "file is not a database",
-    "database disk image is malformed",
-    "malformed database schema",
-)
-#: Messages that mean another writer or the host, never the file: keep refusing.
-_TRANSIENT_MARKERS = ("locked", "busy", "disk is full", "database or disk is full", "readonly")
-
-
-def _is_corruption(exc: BaseException) -> bool:
-    """Only SQLite's own damage verdicts count. Anything else that is not a
-    lock / full-disk / read-only condition -- a schema version newer than this
-    build (``migrate.apply_schema``), a permission error -- stays a refusal:
-    quarantining a VALID newer file would be a downgrade destroying data."""
-    if not isinstance(exc, sqlite3.DatabaseError):
-        return False
-    text = str(exc).lower()
-    if any(marker in text for marker in _TRANSIENT_MARKERS):
-        return False
-    return any(marker in text for marker in _CORRUPTION_MARKERS)
-
-
-def _move_without_overwrite(src: Path, dst: Path) -> None:
-    """Rename that FAILS on an existing destination on every platform.
-
-    POSIX ``rename`` replaces silently and Windows refuses, so neither is the
-    portable form. A hard link never replaces anywhere: link, then unlink the
-    source. A filesystem without links gets a rename behind an existence
-    check, which is the best that filesystem offers.
-    """
-    try:
-        os.link(src, dst)
-    except FileExistsError:
-        raise
-    except OSError:
-        if dst.exists():
-            raise FileExistsError(str(dst))
-        src.rename(dst)
-        return
-    src.unlink()
 
 
 class TaskStoreUnavailable(RuntimeError):
@@ -620,86 +576,34 @@ class TaskStore:
         except (sqlite3.Error, OSError) as exc:
             if conn is not None:
                 conn.close()
-            if _is_corruption(exc):
+            if is_damaged_database_error(exc):
                 raise _CorruptStore(str(exc)) from exc
             raise TaskStoreUnavailable(f"cannot open task store {self._path}: {exc}") from exc
         return conn
 
-    #: Sidecars SQLite may leave beside the file: the DELETE-mode rollback
-    #: journal, and the WAL pair. A hot ``-journal`` left beside a recreated
-    #: database would be rolled into it at the next open, so it moves too.
-    _SIDECAR_SUFFIXES = ("-journal", "-wal", "-shm")
-
     def _quarantine_corrupt_file(self, reason: str) -> Path:
-        """Move the corrupt file and its sidecars aside under a name nothing else holds.
+        """Move the corrupt file and its sidecars aside (``sqlite_quarantine``).
 
-        Never overwrites: a crash loop quarantines several times a second, and
-        each copy is recovery evidence. The base name (UTC stamp to the
-        microsecond, pid, then a counter) is RESERVED by exclusive creation
-        before anything moves, so two boots -- or two processes -- cannot pick
-        the same one. The moves are not atomic as a group; they run sidecars
-        first and the database LAST, because the database's absence is what
-        the reopen keys on: a sidecar left behind is logged and reported,
-        never a reason to keep the corrupt database in place or to raise into
-        the reopen path.
+        Never overwrites, and a sidecar left behind is logged and reported,
+        never a reason to keep the corrupt database in place.
         """
-        target = self._reserve_quarantine_name()
-        moved: list[str] = []
-        left: list[str] = []
-        for suffix in self._SIDECAR_SUFFIXES:
-            src = self._path.with_name(self._path.name + suffix)
-            if not src.exists():
-                continue
-            dst = target.with_name(target.name + suffix)
-            try:
-                _move_without_overwrite(src, dst)
-                moved.append(dst.name)
-            except OSError as exc:
-                left.append(f"{src.name} ({exc})")
         try:
-            # Onto the placeholder this call created: the one replace that is
-            # ours to make.
-            os.replace(self._path, target)
-            moved.append(target.name)
+            moved = quarantine_sqlite_file(self._path)
         except OSError as exc:
-            try:
-                target.unlink()
-            except OSError:
-                pass
             raise TaskStoreUnavailable(
                 f"task store {self._path} is corrupt ({reason}) and could not be "
                 f"quarantined: {exc}"
             ) from exc
         message = (
-            f"task store {self._path} was corrupt ({reason}); quarantined as {target.name} "
-            f"({', '.join(moved)}) and recreated empty. Accepted work that "
+            f"task store {self._path} was corrupt ({reason}); quarantined as {moved.target.name} "
+            f"({', '.join(moved.moved)}) and recreated empty. Accepted work that "
             "only lived in the old file is NOT recovered: inspect the quarantined copy."
         )
-        if left:
-            message += f" Sidecar(s) still beside the recreated file: {', '.join(left)}."
+        if moved.left:
+            message += f" Sidecar(s) still beside the recreated file: {', '.join(moved.left)}."
         logger.warning("taskq: %s", message)
         self.warnings.append(message)
-        return target
-
-    def _reserve_quarantine_name(self) -> Path:
-        """Create the quarantine's base path exclusively and return it.
-
-        ``O_EXCL`` is the collision check: an existing name -- an earlier boot
-        in the same microsecond, an operator's copy -- fails the create, and
-        the counter suffix moves on to the next name.
-        """
-        now = time.time()
-        stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime(now))
-        base = f"{self._path.name}.corrupt-{stamp}.{int((now % 1) * 1_000_000):06d}Z-{os.getpid()}"
-        for n in range(10_000):
-            candidate = self._path.with_name(base if n == 0 else f"{base}-{n}")
-            try:
-                fd = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            except FileExistsError:
-                continue
-            os.close(fd)
-            return candidate
-        raise TaskStoreUnavailable(f"task store {self._path} is corrupt; no free quarantine name")
+        return moved.target
 
     def close(self) -> None:
         with self._lock:

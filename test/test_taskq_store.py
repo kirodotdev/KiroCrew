@@ -1017,7 +1017,7 @@ def test_locked_store_still_refuses_instead_of_quarantining(tmp_path: Path, monk
 
 
 def test_is_corruption_classifies_sqlite_errors() -> None:
-    from kiro_crew.taskq.store import _is_corruption
+    from kiro_crew.sqlite_quarantine import is_damaged_database_error as _is_corruption
 
     assert _is_corruption(sqlite3.DatabaseError("file is not a database"))
     assert _is_corruption(sqlite3.DatabaseError("database disk image is malformed"))
