@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Optional
 
 from kiro_crew import platform_compat
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.config.paths import config_dir
 from kiro_crew.execution_context import execution_from_record
 from kiro_crew.pinned_fs import fd_real_path
@@ -151,7 +152,7 @@ class WorkflowRunStore:
         tmp = path.with_suffix(".json.tmp")
         try:
             tmp.write_text(payload, encoding="utf-8")
-            os.replace(tmp, path)  # atomic on POSIX
+            replace_with_retry(tmp, path)
             try:
                 # POSIX tightening only, deliberately still NOT
                 # ``platform_compat.restrict_to_owner``: on POSIX that helper IS

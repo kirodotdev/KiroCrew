@@ -37,6 +37,7 @@ from typing import Any
 
 from kiro_crew.appearance_packs.ids import DEFAULT_PACK, safe_pack_id
 from kiro_crew.appearance_packs.sounds import SOUND_STATES, SOUND_SUFFIXES, sound_body
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.constants import WINDOWS_DEVICE_STEMS
 from kiro_crew.platform_compat import chmod_safe, is_link_or_junction
 
@@ -885,7 +886,7 @@ class AppearanceStore:
             # modes mean nothing (Windows) instead of raising or silently
             # misleading.
             chmod_safe(tmp, 0o600)
-            os.replace(tmp, self._colour_path)
+            replace_with_retry(tmp, self._colour_path)
         finally:
             try:
                 tmp.unlink(missing_ok=True)

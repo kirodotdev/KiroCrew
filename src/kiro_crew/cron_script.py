@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew import platform_compat
 from kiro_crew.agent_discovery import _read_agent_spec
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.config.loader import config_dir, read_local_secret
 from kiro_crew.config.paths import data_home, kiro_agents_dir
 from kiro_crew.env import sanitize_spec_env
@@ -461,7 +462,7 @@ def _write_grant_epochs(path: Path, data: dict[str, Any]) -> None:
             fh.write(json.dumps(data))
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp_name, path)
+        replace_with_retry(tmp_name, path)
     except BaseException:
         try:
             os.unlink(tmp_name)
