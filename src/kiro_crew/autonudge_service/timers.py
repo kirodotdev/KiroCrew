@@ -26,9 +26,12 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew import shutdown_event
 from kiro_crew.autonudge_service.model import (
     _CONSECUTIVE_FAILURE_STANDDOWN_AFTER,
+    _SCHEDULED_MESSAGE_BEAT_SECS,
+    _SCHEDULED_MESSAGE_MAX_ATTEMPTS,
     _START_FAILURE_BACKOFF_AFTER,
     _START_FAILURE_STANDDOWN_AFTER,
     NudgeLoop,
+    is_scheduled_message,
     is_structured_monitor_loop,
 )
 from kiro_crew.monitoring.models import MONITOR_STATE_VERSION, MonitorDispatchResult
@@ -491,6 +494,8 @@ def notify_turn_complete(
     self: AutoNudgeService,
     slot_key: str,
     *,
+    turn_completed: bool = True,
+    turn_task: "asyncio.Task[Any] | None" = None,
     tool_calls: int | None = None,
     reply_text: str | None = None,
     reply_flushed: bool = False,
@@ -530,6 +535,21 @@ def notify_turn_complete(
     _wake_bound_conductor(self, slot_key)
     loop = self._find_by_slot(slot_key)
     if not loop or not loop.active:
+        return
+    if is_scheduled_message(loop):
+        if loop.cycle_count == 0:
+            self._arm_from_deadline(loop)
+            return
+        # The task that RAN the turn. The runner hands it over explicitly because
+        # its tail (the caller of this hook) runs in a task of its own; a caller
+        # outside the runner is the turn itself.
+        turn_task = turn_task if turn_task is not None else asyncio.current_task()
+        if turn_task is None or self._scheduled_delivery_pending.get(loop.id) is not turn_task:
+            return
+        self._scheduled_delivery_pending.pop(loop.id, None)
+        self._scheduled_turn_outcomes[loop.id] = (turn_task, turn_completed)
+        if loop.id not in self._firing:
+            self._schedule_scheduled_settlement(loop.id, turn_task, turn_completed)
         return
     # Before the re-arm and before the mid-fire deferral, because this labels the
     # turn that just ENDED. A deferred re-arm postpones the next tick; the verdict
@@ -635,6 +655,242 @@ def _wake_bound_conductor(svc: AutoNudgeService, slot_key: str) -> None:
             )
 
     task.add_done_callback(_finish)
+
+
+def note_scheduled_delivery_dispatched(self: AutoNudgeService, loop_id: str) -> None:
+    """Reserve a scheduled delivery before its task can run."""
+    self._scheduled_turn_outcomes.pop(loop_id, None)
+    self._scheduled_delivery_pending[loop_id] = None
+
+
+def bind_scheduled_delivery_task(
+    self: AutoNudgeService, loop_id: str, turn_task: asyncio.Task[Any]
+) -> None:
+    """Bind a reserved delivery to the one task allowed to complete it."""
+    if loop_id in self._scheduled_delivery_pending:
+        self._scheduled_delivery_pending[loop_id] = turn_task
+
+
+def _schedule_scheduled_settlement(
+    self: AutoNudgeService,
+    loop_id: str,
+    turn_task: asyncio.Task[Any],
+    completed: bool,
+    *,
+    delay: float = 0.0,
+) -> None:
+    """Supervise and retry one scheduled-message settlement transaction."""
+    from kiro_crew import autonudge as seams  # circular import: facade imports this owner
+
+    async def _run() -> None:
+        if delay > 0:
+            await asyncio.sleep(delay)
+        await self._settle_scheduled_turn(loop_id, turn_task, completed)
+
+    task = asyncio.create_task(_run())
+    self._inflight_adds.add(task)
+
+    def _finish(done: "asyncio.Task[None]") -> None:
+        self._inflight_adds.discard(done)
+        if done.cancelled() or done.exception() is None:
+            return
+        logger.warning(
+            "AutoNudge: scheduled turn settlement failed for %s; retrying",
+            loop_id,
+            exc_info=done.exception(),
+        )
+        loop = self._loops.get(loop_id)
+        if loop is not None and is_scheduled_message(loop) and loop.cycle_count >= 1:
+            self._schedule_scheduled_settlement(
+                loop_id,
+                turn_task,
+                completed,
+                delay=float(seams._OVERDUE_REARM_SECS),
+            )
+
+    task.add_done_callback(_finish)
+
+
+async def settle_unclaimed_scheduled_delivery(self: AutoNudgeService, loop_id: str) -> bool:
+    """Retire a charged one-shot whose local command returned no completion hook."""
+    turn_task = asyncio.current_task()
+    if turn_task is None or self._scheduled_delivery_pending.get(loop_id) is not turn_task:
+        return False
+    self._scheduled_delivery_pending.pop(loop_id, None)
+    self._scheduled_turn_outcomes[loop_id] = (turn_task, True)
+    loop = self._loops.get(loop_id)
+    if loop is None or not is_scheduled_message(loop) or loop.cycle_count < 1:
+        return False
+    await self._settle_scheduled_turn(loop_id, turn_task, completed=True)
+    return True
+
+
+async def _settle_scheduled_turn(
+    self: AutoNudgeService,
+    loop_id: str,
+    turn_task: asyncio.Task[Any],
+    completed: bool,
+) -> None:
+    """Persist completion or replay state for one exact dispatched turn.
+
+    A ``completed`` turn retires the record. A turn that did NOT land is one
+    spent attempt: below ``_SCHEDULED_MESSAGE_MAX_ATTEMPTS`` the record goes back
+    to pending on its own deadline and is replayed; the attempt that reaches the
+    cap retires it instead, through the same provenance-authorized path a
+    delivered turn uses, so the replay a failing slot can earn is finite -- and
+    that stand-down is explained on the owning session with the reason-neutral
+    ``scheduled_message_dropped`` notice, written after the retirement commit and
+    before the row's removal (see :func:`_retire_scheduled_message`).
+    """
+    if self._scheduled_turn_outcomes.get(loop_id) != (turn_task, completed):
+        return
+    loop = self._loops.get(loop_id)
+    if loop is None or not is_scheduled_message(loop) or loop.cycle_count < 1:
+        return
+    exhausted = not completed and loop.scheduled_attempts + 1 >= _SCHEDULED_MESSAGE_MAX_ATTEMPTS
+    if completed or exhausted:
+        # An exhausted settlement is a DROP: the retirement writes the owning
+        # session's loss notice once its commit is durable, so the banner the
+        # removal below takes away is explained, and a commit that fails leaves
+        # no notice behind. A delivered send explains itself.
+        await _retire_scheduled_message(self, loop, charge_attempt=not completed, dropped=exhausted)
+        if exhausted:
+            # After the commit, so a settlement the supervisor retries logs the
+            # stand-down once. Identity only, like every other scheduled-message
+            # line: the composer text lives in the provenance and this row's
+            # ``message`` is agent-writable.
+            logger.warning(
+                "AutoNudge: scheduled message %s on slot %s is standing down — %d "
+                "dispatched turns never landed, which is the attempt cap, so the send "
+                "is dropped rather than replayed again",
+                loop.id,
+                loop.slot_key,
+                loop.scheduled_attempts,
+            )
+        return
+    async with self._lock:
+        current = self._loops.get(loop_id)
+        if current is not loop or not is_scheduled_message(loop) or loop.cycle_count < 1:
+            return
+        previous = (
+            loop.scheduled_attempts,
+            loop.scheduled_completed,
+            loop.cycle_count,
+            loop.last_fire_ts,
+            loop.next_due_ts,
+        )
+        # The charge and the reset that re-opens the dispatch land in ONE write,
+        # so no persisted state can show the replay armed without its cost.
+        loop.scheduled_attempts += 1
+        loop.scheduled_completed = False
+        loop.cycle_count = 0
+        loop.last_fire_ts = 0.0
+        loop.next_due_ts = loop.scheduled_at
+        payload = self._serialize_state()
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, self._write_state, payload)
+        except BaseException:
+            (
+                loop.scheduled_attempts,
+                loop.scheduled_completed,
+                loop.cycle_count,
+                loop.last_fire_ts,
+                loop.next_due_ts,
+            ) = previous
+            raise
+    if loop.active and loop.id in self._loops:
+        self._scheduled_turn_outcomes.pop(loop_id, None)
+        self._arm_from_deadline(loop)
+
+
+async def _retire_scheduled_message(
+    svc: AutoNudgeService, loop: NudgeLoop, *, charge_attempt: bool, dropped: bool = False
+) -> bool:
+    """Durably finish *loop* under its provenance authority, then remove the row.
+
+    The ONE retirement path for a scheduled one-shot, whether it delivered, spent
+    its last attempt in :func:`_settle_scheduled_turn`, or was found already spent
+    by ``_timer``'s pre-dispatch fence (a reload can hand the timer a pending
+    record whose attempts are at the cap). Completion is marked on the
+    process-memory provenance FIRST -- ``cleanup_completed_scheduled_message``
+    refuses without it, which is what keeps a forged ``scheduled_completed`` in the
+    agent-writable store from removing anything -- and the durable write that
+    follows carries the completion mirror and, when ``charge_attempt`` is set, the
+    final attempt in one commit. ``cycle_count`` is held at 1 so the record reads
+    as delivered everywhere a one-shot's finished state is recognised (the timer's
+    cap guard, the reload normaliser); a reload would set it so anyway.
+
+    *dropped* says the message is being stood down rather than delivered. Once
+    the retirement commit is durable -- and only then, so a commit that fails
+    never leaves a notice claiming a drop that did not happen -- the injected
+    ``notify_scheduled_message_dropped`` hook writes the owning session's loss
+    notice, BEFORE the removal that makes the banner disappear. A hook that cannot
+    make the notice durable raises here, so the row stays and the caller's retry
+    cadence (the settlement supervisor, the timer's overdue beat) comes back
+    through this same path; the commit is idempotent and the hook dedupes against
+    its own persisted notice, so a retry charges nothing twice and writes no
+    second notice.
+
+    Returns whether the row was removed. Raises after the removal's second
+    failure, with the overdue beat re-armed so the next tick retries the cleanup.
+    """
+    from kiro_crew import autonudge as seams  # circular import: facade imports this owner
+
+    loop_id = loop.id
+    await svc.mark_scheduled_message_completed(loop)
+    async with svc._lock:
+        current = svc._loops.get(loop_id)
+        if current is not loop or not is_scheduled_message(loop):
+            return False
+        previous = (
+            loop.scheduled_attempts,
+            loop.scheduled_completed,
+            loop.cycle_count,
+            loop.next_due_ts,
+        )
+        if charge_attempt:
+            loop.scheduled_attempts = min(
+                loop.scheduled_attempts + 1, _SCHEDULED_MESSAGE_MAX_ATTEMPTS
+            )
+        loop.scheduled_completed = True
+        loop.cycle_count = max(loop.cycle_count, 1)
+        loop.next_due_ts = 0.0
+        payload = svc._serialize_state()
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, svc._write_state, payload)
+        except BaseException:
+            (
+                loop.scheduled_attempts,
+                loop.scheduled_completed,
+                loop.cycle_count,
+                loop.next_due_ts,
+            ) = previous
+            raise
+    if dropped and svc._notify_scheduled_message_dropped is not None:
+        if not await svc._notify_scheduled_message_dropped(loop):
+            raise RuntimeError(
+                f"scheduled message {loop_id} stood down but its loss notice is not yet "
+                f"durable; the row is kept until the notice lands"
+            )
+    for attempt in range(2):
+        try:
+            removed = await svc.cleanup_completed_scheduled_message(loop_id)
+        except Exception:
+            if attempt == 0:
+                await asyncio.sleep(0)
+                continue
+            current = svc._loops.get(loop_id)
+            if (
+                current is not None
+                and is_scheduled_message(current)
+                and current.scheduled_completed
+            ):
+                svc._arm_timer(current, delay=float(seams._OVERDUE_REARM_SECS))
+            raise
+        if removed:
+            svc._scheduled_turn_outcomes.pop(loop_id, None)
+        return removed
+    return False
 
 
 def notify_user_input(self: AutoNudgeService, slot_key: str, *, human: bool = False) -> None:
@@ -788,6 +1044,18 @@ def _arm_from_deadline(self: AutoNudgeService, loop: NudgeLoop) -> None:
             MONITOR_STATE_VERSION,
         )
         return
+    if is_scheduled_message(loop) and loop.scheduled_completed:
+        # A completed one-shot has no deadline left to honour: the only work its
+        # timer does is the cleanup write that removes the row. That arm must NOT
+        # be immediate. A cleanup whose durable write fails restores the row and
+        # re-arms through THIS path (``_remove_unserialized`` -> rollback ->
+        # ``_arm_from_deadline``), so an instant arm would retry the same failing
+        # write in a hot loop for as long as the store stays wedged. The overdue
+        # beat is the cadence every other failed scheduled settlement already
+        # retries at; a reload or restore simply waits the same short beat before
+        # its first cleanup attempt, and the row is inert in the meantime.
+        self._arm_timer(loop, delay=float(seams._OVERDUE_REARM_SECS))
+        return
     now = time.time()
     if loop.next_due_ts <= 0:
         loop.next_due_ts = now + loop.idle_secs
@@ -797,6 +1065,8 @@ def _arm_from_deadline(self: AutoNudgeService, loop: NudgeLoop) -> None:
     remaining = loop.next_due_ts - now
     if remaining <= 0:
         delay = float(seams._OVERDUE_REARM_SECS)
+    elif is_scheduled_message(loop):
+        delay = min(remaining, float(_SCHEDULED_MESSAGE_BEAT_SECS))
     else:
         delay = min(remaining, float(loop.idle_secs))
     self._arm_timer(loop, delay=delay)

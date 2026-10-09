@@ -1222,17 +1222,59 @@ async def api_cron_update(request: web.Request) -> web.Response:
         kwargs["channel"] = ch
         if ch and (len(ch) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(ch)):
             return web.json_response({"error": "invalid channel ID format"}, status=400)
-    # Schedule: accept cron_expr or every (seconds)
+    # Schedule: accept cron_expr, every (seconds), or the same one-shot
+    # spellings as create. The shared resolver preserves precedence and bounds.
     if "cron" in body:
         kwargs["cron_expr"] = body["cron"]
     if "every" in body:
         kwargs["every_secs"] = body["every"]
-    if "timezone" in body:
+    # Timezone is validated and resolved BEFORE the one-shot resolver runs, in
+    # the same order create uses: it is the zone an `at_time` clock time is READ
+    # in, so resolving first would fix "5pm" to the gateway's zone and then
+    # persist a different zone beside it -- the same body meaning two instants
+    # depending on which door received it. Validating first also means a bad
+    # zone is refused as a bad zone, not as a confusing at_time parse failure.
+    tz_supplied = "timezone" in body
+    tz_val = ""
+    if tz_supplied:
         tz_val = (body["timezone"] or "").strip()
         if tz_val and not is_valid_timezone(tz_val):
             safe_tz, _ = redact_credentials(redact_exfiltration_urls(tz_val)[0])
             return web.json_response({"error": f"invalid timezone: {safe_tz!r}"}, status=400)
         kwargs["timezone"] = tz_val
+    if any(key in body for key in ("at", "delay", "at_time")):
+        at_tz = tz_val
+        if not tz_supplied:
+            # A request that names no zone means the clock on the job being
+            # edited -- its STORED timezone -- not the gateway's. Without this,
+            # retiming a Tokyo job from a UTC gateway silently moves it by the
+            # offset. Read on the retime path only, and unconditionally there
+            # rather than inferring which spelling the resolver will use, so
+            # this cannot drift from the resolver's own at/delay/at_time
+            # precedence.
+            try:
+                existing = await state.crons.get_job_async(job_id)
+            except CronStoreBusy:
+                return web.json_response(
+                    {
+                        "error": "cron store busy, please retry",
+                        "code": "cron_store_busy",
+                        "retryable": True,
+                    },
+                    status=_CRON_BUSY_STATUS,
+                )
+            except CronStoreUnreadable as exc:
+                return _cron_unreadable_response(exc)
+            # A missing job keeps the configured-zone fallback and falls through
+            # to the store call below, which already owns the 404 -- so the
+            # resolver's error ordering for a bad `at` is unchanged, and no
+            # instant resolved here can be written anyway.
+            at_tz = (existing.timezone or "") if existing else ""
+        at_ts, at_err = _resolve_one_shot_at(body, at_tz)
+        if at_err is not None:
+            return at_err
+        if at_ts is not None:
+            kwargs["at_ts"] = at_ts
     if not kwargs:
         return web.json_response({"error": "no fields to update"}, status=400)
     try:
@@ -3319,6 +3361,10 @@ async def api_crons(request: web.Request) -> web.Response:
             )[0],
             "cron_expr": j.schedule.cron_expr if j.schedule.kind == "cron" else None,
             "every_secs": j.schedule.every_secs if j.schedule.kind == "every" else None,
+            # Machine-readable one-shot parity with the two recurring kinds.
+            # The formatted schedule remains display copy; clients edit this
+            # absolute value instead of attempting to parse localized prose.
+            "at_ts": j.schedule.at_ts if j.schedule.kind == "at" else None,
             "created_ts": j.created_ts or None,
             "last_status": j.last_status,
             # The installed app that owns this job, or None for a person-owned

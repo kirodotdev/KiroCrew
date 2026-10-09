@@ -630,11 +630,16 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "(state: 'DashboardState', name: 'str', slot: '_ChatSlot') -> 'bool'",
         ),
         ("_NudgeRetireFailed", "class", ""),
-        ("_retire_slot_nudge_loop", "async function", "(name: 'str') -> \"'NudgeLoop | None'\""),
+        (
+            "_retire_slot_nudge_loop",
+            "async function",
+            "(name: 'str') -> \"'SlotNudgeRetirement | None'\"",
+        ),
         (
             "_restore_slot_nudge_loop",
             "async function",
-            "(loop: \"'NudgeLoop | None'\", admission_check: 'Callable[[], bool]') -> 'None'",
+            "(retirement: \"'NudgeLoop | SlotNudgeRetirement | None'\", "
+            "admission_check: 'Callable[[], bool]') -> 'None'",
         ),
         (
             "api_chat_slot_reset_conversation",

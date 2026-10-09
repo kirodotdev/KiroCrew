@@ -29,7 +29,7 @@ function Host() {
   const [value, setValue] = useState(ORIGINAL)
   return (
     <>
-      <ChatInput value={value} onChange={setValue} onSend={vi.fn()} connected={true} lexicalComposer />
+      <ChatInput value={value} onChange={setValue} onSend={vi.fn()} onUploadFiles={vi.fn()} connected={true} lexicalComposer />
       <output data-testid="value">{value}</output>
     </>
   )
@@ -52,7 +52,9 @@ describe('ChatInput Lexical composer: undo uses the snapshot history', () => {
     renderWithProviders(<Host />)
     const input = await screen.findByRole('textbox', undefined, LAZY_COMPOSER_MOUNT)
     expect(input).toHaveAttribute('data-lexical-composer')
-    fireEvent.click(screen.getByRole('button', { name: 'Optimize prompt' }))
+    // Optimize is hosted by the "+" drop-up, reached by opening the menu first.
+    fireEvent.click(screen.getByRole('button', { name: 'Add files & options' }))
+    fireEvent.click(screen.getByTestId('plus-menu-optimize'))
     await waitFor(() => expect(shown()).toBe(OPTIMIZED))
 
     fireEvent.keyDown(input, { key: 'z', code: 'KeyZ', ctrlKey: true })

@@ -12,9 +12,11 @@ if TYPE_CHECKING:
         _RECIPIENT_LOGGED_CAP,
         CHAT_TYPE_DIRECT,
         SLACK_NAMESPACE,
+        ChannelLink,
         logger,
         parse_session_key,
         sel,
+        slack_mirror_is_paused,
         verify_mirror_admission,
     )
 
@@ -414,20 +416,28 @@ def _resolve_mirror_target(state: Any, session_key: str) -> Any:
     )
 
 
-def cross_surface_withheld(state: Any, slot: Any) -> bool:
-    """Whether *slot*'s turn must NOT publish its reply to a linked channel.
+def cross_surface_withheld(
+    state: Any,
+    slot: Any,
+    *,
+    selected_mirror: Any | None = None,
+) -> bool:
+    """Whether *slot*'s turn must NOT publish across a channel boundary.
 
     True when the containment holding NOW is not the containment an admission this
-    turn rests on was made under -- a peer steered this turn, or this turn was
-    ADMITTED to a session-control verb or a work-ledger route (the caller-side
+    turn rests on was made under -- a peer steered this turn, a deferred scheduled
+    user message carried its scheduling-time snapshot into the runner, or this turn
+    was ADMITTED to a session-control verb or a work-ledger route (the caller-side
     gates record the caller's own containment through
     ``session_control.record_audience_admission``, since what those return -- a
     peer's transcript, a roster, a ledger -- becomes part of the reply). Asked by
     the Slack legs, synchronously with the publication each guards, which is the
     only place the answer cannot go stale: a link bound at any point before this
-    moment is effective, and a reply already sent cannot be recalled. The
-    channel-neutral leg (``_deliver_cross_surface_reply``) does not ask it: that leg
-    resolves its target from one read of the binding and judges THAT row through
+    moment is effective, and a reply already sent cannot be recalled. An egress
+    sink that passes the concrete *selected_mirror* it will send to is judged on
+    exactly that identity, so no later map lookup can substitute a different
+    audience. The channel-neutral leg (``_deliver_cross_surface_reply``) resolves
+    its target from one read of the binding and judges THAT row through
     ``session_control.publication_withheld`` -- the same comparison -- so its
     decision and its delivery cannot straddle a retarget.
 
@@ -447,9 +457,16 @@ def cross_surface_withheld(state: Any, slot: Any) -> bool:
     if not fences:
         return False
     # circular import: session_control imports this package's modules at module level.
-    from kiro_crew.dashboard.session_control import containment_snapshot, newly_held_constraints
+    from kiro_crew.dashboard.session_control import (
+        containment_snapshot,
+        containment_snapshot_for_selected_mirror,
+        newly_held_constraints,
+    )
 
-    now = containment_snapshot(state, slot, on_probe_failure=True)
+    if selected_mirror is None:
+        now = containment_snapshot(state, slot, on_probe_failure=True)
+    else:
+        now = containment_snapshot_for_selected_mirror(slot, selected_mirror)
     return any(newly_held_constraints(now, admission) for admission in fences.values())
 
 
@@ -477,3 +494,44 @@ def slack_publication_withheld(state: Any, slot: Any, channel_id: Any, thread_ts
     from kiro_crew.dashboard.session_control import publication_withheld
 
     return publication_withheld(state, slot, (None, str(thread_ts), str(channel_id)))
+
+
+def _select_slack_mirror_target(
+    state: Any,
+    slot: Any,
+    session_key: str,
+    *,
+    expected: tuple[str | None, str | None] | None = None,
+) -> tuple[str, str] | None:
+    """Select and authorize one exact Slack mirror target for the next send.
+
+    A turn without an audience fence keeps its established stream coordinates,
+    matching the ordinary best-effort behavior. A fenced turn reselects once so
+    an unlink, rebind, or pause is observed, authorizes that concrete identity,
+    and returns the same coordinates the caller must send to.
+    """
+    if slack_mirror_is_paused(state, session_key):
+        return None
+    expected_target: tuple[str, str] | None = None
+    if expected is not None:
+        expected_thread, expected_channel = expected
+        if not expected_thread or not expected_channel:
+            return None
+        expected_target = (expected_thread, expected_channel)
+    sessions = getattr(state, "sessions", None)
+    if sessions is None:
+        return None
+    try:
+        thread_ts, channel_id = sessions.get_slack_link(session_key)
+    except Exception:
+        logger.debug("Failed to select Slack mirror target", exc_info=True)
+        return None
+    if not thread_ts or not channel_id:
+        return None
+    selected = (thread_ts, channel_id)
+    if expected_target is not None and selected != expected_target:
+        return None
+    selected_link = ChannelLink(SLACK_NAMESPACE, channel_id, thread_ts)
+    if cross_surface_withheld(state, slot, selected_mirror=selected_link):
+        return None
+    return selected

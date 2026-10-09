@@ -36,8 +36,12 @@ const setExecCommand = (impl: (...a: unknown[]) => boolean) => {
   ;(document as unknown as { execCommand: (...a: unknown[]) => boolean }).execCommand = impl
 }
 
-const clickOptimize = () =>
-  fireEvent.click(screen.getByRole('button', { name: 'Optimize prompt' }))
+// Optimize is hosted by the "+" drop-up (not the action row), so reaching it
+// means mounting an attach handler and opening the menu first.
+const clickOptimize = () => {
+  fireEvent.click(screen.getByRole('button', { name: 'Add files & options' }))
+  fireEvent.click(screen.getByTestId('plus-menu-optimize'))
+}
 
 describe('ChatInput optimize: the write-back is verified against the DOM', () => {
   beforeEach(() => {
@@ -61,7 +65,7 @@ describe('ChatInput optimize: the write-back is verified against the DOM', () =>
     setExecCommand(vi.fn(() => true)) // claims success, leaves the field alone
 
     renderWithProviders(
-      <ChatInput value={ORIGINAL} onChange={onChange} onSend={vi.fn()} connected={true} />,
+      <ChatInput value={ORIGINAL} onChange={onChange} onSend={vi.fn()} onUploadFiles={vi.fn()} connected={true} />,
     )
     clickOptimize()
 
@@ -74,7 +78,7 @@ describe('ChatInput optimize: the write-back is verified against the DOM', () =>
     delete (document as unknown as { execCommand?: unknown }).execCommand
 
     renderWithProviders(
-      <ChatInput value={ORIGINAL} onChange={onChange} onSend={vi.fn()} connected={true} />,
+      <ChatInput value={ORIGINAL} onChange={onChange} onSend={vi.fn()} onUploadFiles={vi.fn()} connected={true} />,
     )
     clickOptimize()
 
@@ -91,7 +95,7 @@ describe('ChatInput optimize: the write-back is verified against the DOM', () =>
     )
 
     renderWithProviders(
-      <ChatInput value={ORIGINAL} onChange={onChange} onSend={vi.fn()} connected={true} />,
+      <ChatInput value={ORIGINAL} onChange={onChange} onSend={vi.fn()} onUploadFiles={vi.fn()} connected={true} />,
     )
     clickOptimize()
 
@@ -114,7 +118,7 @@ describe('ChatInput optimize: the write-back is verified against the DOM', () =>
     setExecCommand(exec)
 
     renderWithProviders(
-      <ChatInput value={ORIGINAL} onChange={onChange} onSend={vi.fn()} connected={true} />,
+      <ChatInput value={ORIGINAL} onChange={onChange} onSend={vi.fn()} onUploadFiles={vi.fn()} connected={true} />,
     )
     clickOptimize()
 
@@ -142,7 +146,7 @@ describe('ChatInput optimize: the write-back is verified against the DOM', () =>
     )
 
     renderWithProviders(
-      <ChatInput value={ORIGINAL} onChange={onChange} onSend={vi.fn()} connected={true} />,
+      <ChatInput value={ORIGINAL} onChange={onChange} onSend={vi.fn()} onUploadFiles={vi.fn()} connected={true} />,
     )
     clickOptimize()
 
@@ -169,7 +173,7 @@ describe('ChatInput optimize: the write-back is verified against the DOM', () =>
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
     renderWithProviders(
-      <ChatInput value={`${ORIGINAL}   `} onChange={onChange} onSend={vi.fn()} connected={true} />,
+      <ChatInput value={`${ORIGINAL}   `} onChange={onChange} onSend={vi.fn()} onUploadFiles={vi.fn()} connected={true} />,
     )
     clickOptimize()
 

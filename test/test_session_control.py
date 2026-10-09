@@ -2714,20 +2714,22 @@ async def test_the_reply_leg_consults_the_fence_before_publishing(tmp_path):
     # and the delivery would be two reads with the off-loop mirror-link writer free
     # to retarget between them.
     assert "slot=slot" in deliver_calls[0], deliver_calls[0]
-    # EVERY other cross-surface publication asks: Slack is an audience too, and it
-    # resolves its thread owner live. Three sites -- the Slack reply, the mid-turn
-    # tool stream, and the teardown's final task append, which would otherwise
-    # publish a title whose in-progress append was withheld.
-    asks = src.count("cross_surface_withheld(state, slot)")
-    assert asks == 3, f"expected three fenced Slack publication sites, found {asks}"
-    # Each Slack site publishes to the thread it cached at turn start, not to the
-    # live binding, so each ALSO judges that destination as the room it is
-    # (`slack_publication_withheld`): a thread unlinked mid-turn is in neither side
-    # of the live comparison, yet the cached destination still receives the reply.
-    destination_asks = src.count("not slack_publication_withheld(")
-    assert (
-        destination_asks == 3
-    ), f"expected three destination-judged Slack sites, found {destination_asks}"
+    # EVERY cross-surface publication binds authorization to the target it sends:
+    # channel-neutral user delivery, initial reply delivery, and each reply chunk's
+    # post-await revalidation pass the selected link. Slack separately reselects for
+    # auth-error delivery's initial target and exact-target pre-post reauthorization,
+    # the initial user target, post-echo/pre-stream reauthorization, tool updates,
+    # initial reply, each reply chunk, options before and after token minting,
+    # immediately before posting, again after the post returns, and stream cleanup.
+    recipient_src = Path(cr.cross_surface_withheld.__code__.co_filename).read_text(encoding="utf-8")
+    selected_checks = src.count("selected_mirror=") + recipient_src.count("selected_mirror=")
+    slack_selectors = (
+        src.count("_select_slack_mirror_target(")
+        + recipient_src.count("_select_slack_mirror_target(")
+        - 1
+    )
+    assert selected_checks == 4, f"expected four selected-link checks, found {selected_checks}"
+    assert slack_selectors == 12, f"expected twelve Slack selectors, found {slack_selectors}"
 
 
 @pytest.mark.asyncio

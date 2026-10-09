@@ -37,6 +37,16 @@ describe('isHiddenInvisibleAssistantRow', () => {
     expect(isHiddenInvisibleAssistantRow({ role: 'assistant', content: '' })).toBe(true)
   })
 
+  it('keeps an empty system-notice row', () => {
+    expect(
+      isHiddenInvisibleAssistantRow({
+        role: 'assistant',
+        content: '',
+        meta: { kind: 'scheduled_message_dropped' },
+      }),
+    ).toBe(false)
+  })
+
   it('never hides user or streaming rows', () => {
     expect(isHiddenInvisibleAssistantRow({ role: 'user', content: '\u200b' })).toBe(false)
     expect(isHiddenInvisibleAssistantRow({ role: 'streaming', content: '\u200b' })).toBe(false)

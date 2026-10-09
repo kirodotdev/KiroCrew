@@ -173,6 +173,8 @@ _IDENTITY_UNRESOLVED: tuple[str, str] = ("", "__unresolved__")
 
 
 _MAX_HISTORY_CHARS = 8000
+_HISTORY_PERSIST_LOCK_TYPE = type(threading.RLock())
+_HISTORY_PERSIST_LOCK_HELD = threading.local()
 
 
 # Fallback effort levels — used when no ACP session has reported its config
@@ -2223,6 +2225,33 @@ def _save_slot_to_history(
     """
     if not state.conversation_log:
         return True
+    held_slots = getattr(_HISTORY_PERSIST_LOCK_HELD, "slots", None)
+    if held_slots is None:
+        held_slots = set()
+        _HISTORY_PERSIST_LOCK_HELD.slots = held_slots
+    slot_identity = id(slot)
+    if slot_identity not in held_slots:
+        persistence_lock = getattr(slot, "_history_persist_lock", None)
+        if isinstance(persistence_lock, _HISTORY_PERSIST_LOCK_TYPE):
+            with persistence_lock:
+                held_slots.add(slot_identity)
+                try:
+                    return _save_slot_to_history(
+                        state,
+                        slot,
+                        messages,
+                        closed=closed,
+                        closed_at=closed_at,
+                        force=force,
+                        rewrite=rewrite,
+                        expected_history_key=expected_history_key,
+                        expected_disk_older_count=expected_disk_older_count,
+                        expected_slot_name=expected_slot_name,
+                        rows_only=rows_only,
+                        pending_mode_slot=pending_mode_slot,
+                    )
+                finally:
+                    held_slots.discard(slot_identity)
     pending_mode_target = pending_mode_slot or slot
     # An explicit message snapshot always means "this is the full authoritative
     # window state" → rewrite. Edit paths (rewind/regenerate/fork) pass a snapshot.

@@ -440,7 +440,11 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         ),
         ("_resolve_mirror_target", "function", "(state: 'Any', session_key: 'str') -> 'Any'"),
         ("_session_principal", "function", "(session_key: 'str') -> 'str'"),
-        ("cross_surface_withheld", "function", "(state: 'Any', slot: 'Any') -> 'bool'"),
+        (
+            "cross_surface_withheld",
+            "function",
+            "(state: 'Any', slot: 'Any', *, selected_mirror: 'Any | None' = None) -> 'bool'",
+        ),
     ),
     "recovery": (
         (
@@ -805,6 +809,7 @@ def test_run_chat_keeps_its_entry_signature() -> None:
         "_directive_self_wake",
         "_directive_loop_id",
         "_directive_loop_gen",
+        "_audience_containment_admission",
         "_directive_channel_origin",
         "_commands_off",
         "_turn_actor",

@@ -4258,6 +4258,7 @@
       "more_actions": "More actions"
     },
     "chatInput": {
+      "schedule_message_dropped": "This scheduled message was not sent. Re-type the message and schedule it again.",
       "approval_hint_adjust": "Adjust approval mode",
       "approval_hint_question": "Tired of confirming every step?",
       "add_files_options": "Add files & options",
@@ -4619,6 +4620,8 @@
       "channel_id_optional": "Channel ID (optional)",
       "command": "Command",
       "cron_expression": "Cron expression",
+      "run_once": "Run once",
+      "pick_a_time_in_the_future": "Pick a time in the future",
       "days": "days",
       "default": "Default",
       "every_interval": "Every interval",

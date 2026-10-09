@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from aiohttp import web
 
 if TYPE_CHECKING:
+    from kiro_crew.autonudge import SlotNudgeRetirement
     from kiro_crew.dashboard.chat_handlers import (
         _GUARDED_WRITE_WAIT_SECS,
         DashboardState,
@@ -77,8 +78,8 @@ class _NudgeRetireFailed(Exception):
         self.loop = loop
 
 
-async def _retire_slot_nudge_loop(name: str) -> "NudgeLoop | None":
-    """Retire *name*'s auto-nudge loop and return it (None if it had none).
+async def _retire_slot_nudge_loop(name: str) -> "SlotNudgeRetirement | None":
+    """Retire *name*'s auto-nudge loop and return its rollback token.
 
     Retire this slot's loop at the moment the user dismissed the tab.
     "Respect the close" cannot rest on the fire path's rehydrate miss, because
@@ -108,7 +109,7 @@ async def _retire_slot_nudge_loop(name: str) -> "NudgeLoop | None":
     Legacy loops are removed. Structured monitors instead retain their durable
     outcome and clear their timer, so terminal history remains inspectable.
 
-    The returned loop lets the persist-failure path put the clock back (see
+    The returned token lets the persist-failure path put the clock back (see
     :func:`_restore_slot_nudge_loop`).
 
     A removal that FAILS raises :exc:`_NudgeRetireFailed` rather than logging and
@@ -123,6 +124,9 @@ async def _retire_slot_nudge_loop(name: str) -> "NudgeLoop | None":
     """
     try:
         from kiro_crew.autonudge import (
+            ScheduledMessageInFlight,  # circular: autonudge -> dashboard.chat -> chat_handlers
+        )
+        from kiro_crew.autonudge import (
             get_instance as _autonudge_get,  # circular: autonudge -> dashboard.chat -> chat_handlers
         )
 
@@ -136,6 +140,8 @@ async def _retire_slot_nudge_loop(name: str) -> "NudgeLoop | None":
         return None
     try:
         return await svc.remove_by_slot(name)
+    except ScheduledMessageInFlight:
+        raise
     except Exception as exc:
         logger.warning("autonudge loop removal on slot close failed", exc_info=True)
         loop = svc.get_by_slot(name)
@@ -143,7 +149,8 @@ async def _retire_slot_nudge_loop(name: str) -> "NudgeLoop | None":
 
 
 async def _restore_slot_nudge_loop(
-    loop: "NudgeLoop | None", admission_check: Callable[[], bool]
+    retirement: "NudgeLoop | SlotNudgeRetirement | None",
+    admission_check: Callable[[], bool],
 ) -> None:
     """Give a session its clock back after a close that failed to persist.
 
@@ -151,15 +158,18 @@ async def _restore_slot_nudge_loop(
     otherwise leave the restored session live with nothing driving it — an
     unattended babysit abandoned by a disk error, with no trace but a log line.
 
-    The replacement carries the REMAINING budget, never a fresh one. ``add()``
-    mints a new id and a new ``created_ts``, so the spent allowance is subtracted
-    here instead: a failed close must not buy unattended cycles the user never
-    granted. A loop whose cycle cap or wall-clock budget is already spent is not
-    restored at all (it was one tick from terminal), and neither is a paused one
-    — reviving that would override an explicit stop.
+    Scheduled messages restore through their process-local retirement token.
+    Their exact text and deadline come from authenticated provenance, never the
+    redacted mutable loop. Legacy loops carry the REMAINING budget, never a fresh
+    one. A loop whose cycle cap or wall-clock budget is already spent is not
+    restored at all, and neither is a paused one.
     """
-    if loop is None:
+    if retirement is None:
         return
+    from kiro_crew import autonudge  # circular: autonudge -> dashboard.chat -> chat_handlers
+    from kiro_crew.autonudge import SlotNudgeRetirement, is_scheduled_message
+
+    loop = retirement.loop if isinstance(retirement, SlotNudgeRetirement) else retirement
     monitor = getattr(loop, "monitor", None)
     if monitor is not None:
         if (
@@ -168,11 +178,7 @@ async def _restore_slot_nudge_loop(
             and monitor.outcome.value == "session_close"
         ):
             try:
-                from kiro_crew.autonudge import (
-                    get_instance as _autonudge_get,  # circular: autonudge -> dashboard
-                )
-
-                svc = _autonudge_get()
+                svc = autonudge.get_instance()
                 if svc is not None:
                     await svc.restore_monitor_after_failed_session_close(
                         loop.id,
@@ -184,11 +190,28 @@ async def _restore_slot_nudge_loop(
                     exc_info=True,
                 )
         return
+    if is_scheduled_message(loop):
+        # A plain loop reaches this branch only when retirement itself failed;
+        # that transaction already restored its row and provenance. A committed
+        # retirement carries the authenticated snapshot required for an exact
+        # rollback. Missing/invalid authority never becomes a legacy prompt.
+        if isinstance(retirement, SlotNudgeRetirement):
+            try:
+                svc = autonudge.get_instance()
+                if svc is not None:
+                    await svc.restore_scheduled_message_after_failed_session_close(
+                        retirement,
+                        admission_check=admission_check,
+                    )
+            except Exception:
+                logger.warning(
+                    "scheduled message restore after failed slot close failed",
+                    exc_info=True,
+                )
+        return
     if not loop.active:
         return
     try:
-        from kiro_crew import autonudge  # circular: autonudge -> dashboard.chat -> chat_handlers
-
         svc = autonudge.get_instance()
         if svc is None:
             return
@@ -619,11 +642,25 @@ async def _close_slot(
 
     closing_key = effective_session_key(slot)
     closing_execution = read_live_session_execution(closing_key)
+    from kiro_crew.autonudge import (
+        ScheduledMessageInFlight,  # circular: autonudge -> dashboard.chat -> chat_handlers
+    )
+
     # Retire the auto-nudge loop BEFORE the awaits below, so no nudge can expire
     # into the session being closed and resurrect it. See
     # _retire_slot_nudge_loop for why disarming alone does not hold.
     try:
         retired_loop = await _retire_slot_nudge_loop(name)
+    except ScheduledMessageInFlight:
+        # The scheduled turn may already have reached the model. Keep the tab,
+        # row, protected provenance, and exact task correlation together until
+        # its normal completion path can decide cleanup versus replay.
+        _sync_dashboard_slots(state)
+        state.push_slots_update()
+        raise SlotCloseError(
+            "scheduled message turn is still settling",
+            code="scheduled_message_in_flight",
+        )
     except _NudgeRetireFailed as exc:
         # The loop could not be retired, so the close CANNOT proceed: persisting
         # the slot as closed while the registry still lists the loop is what lets
@@ -687,6 +724,24 @@ async def _close_slot(
         # so a later queued arm revalidates against the now-missing slot.
         try:
             late_retired_loop = await _retire_slot_nudge_loop(name)
+        except ScheduledMessageInFlight:
+            from kiro_crew.apps.teardown import (
+                notify_slot_close_undone,  # circular: apps.teardown -> apps.bridges
+            )
+
+            if not await notify_slot_close_undone(slot._app, name):
+                logger.error(
+                    "Could not take back the dismissal for app %r on %r while "
+                    "a scheduled message turn was settling",
+                    slot._app,
+                    name,
+                )
+            _sync_dashboard_slots(state)
+            state.push_slots_update()
+            raise SlotCloseError(
+                "scheduled message turn is still settling",
+                code="scheduled_message_in_flight",
+            )
         except _NudgeRetireFailed as exc:
             await _restore_slot_nudge_loop(exc.loop, lambda: state.get_slot(name) is slot)
             from kiro_crew.apps.teardown import (
@@ -973,11 +1028,11 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
         await close_slot(state, slot, name)
     except SlotCloseError as exc:
         # Every failure `close_slot` raises is a server-side 500 (history write
-        # running / nudge retire / app hook / history save); a literal status keeps
-        # the error-code contract gate able to verify the `code` statically (a
-        # `status=<expr>` would read as an un-verifiable dynamic-status response).
-        # The pre-pop re-check that raises other statuses is session-control's
-        # path, not this handler's.
+        # running / scheduled turn / nudge retire / app hook / history save); a
+        # literal status keeps the error-code contract gate able to verify the
+        # `code` statically (a `status=<expr>` would read as an un-verifiable
+        # dynamic-status response). The pre-pop re-check that raises other
+        # statuses is session-control's path, not this handler's.
         return web.json_response({"error": exc.message, "code": exc.code}, status=500)
     return web.json_response({"ok": True})
 

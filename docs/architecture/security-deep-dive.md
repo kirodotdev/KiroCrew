@@ -147,8 +147,9 @@ Two properties are load-bearing at the architecture level:
 **The crew-home masks do NOT apply on the delegated path, and that is a stated
 residual rather than an oversight.** Kiro Crew's built-in HIDDEN leaves — the
 credential homes, `.env`, `live_target.json`, `inbound-spool`, `whatsapp`,
-`tasks`, `scratch` — are applied by Kiro Crew's OWN launcher (bind mounts on
-Linux, Seatbelt on macOS). A delegated spawn returns before that launcher runs
+`tasks`, `scratch` — are applied by
+Kiro Crew's OWN launcher (bind mounts on Linux, Seatbelt on macOS). A delegated
+spawn returns before that launcher runs
 (`wrap_argv` → `_delegate_to_kiro_internal_sandbox`), so inside a delegated child
 a shell can open any of them. The residual is the same for every leaf and is not
 specific to any one of them; only the caller-supplied `extra_hidden_dirs` /
@@ -737,3 +738,15 @@ userland forward proxy that validates the socket after connect. Choosing the
 mechanism is a per-platform infrastructure decision (macOS vs Linux vs CI, the
 privilege model, and fail-open vs fail-closed when the layer is unavailable), so
 it is tracked as a design item on #17748 rather than shipped here.
+
+**Scheduled-message authorship is process-local.** Exact composer text, slot
+identity, authoritative deadline, and completion state live only in the gateway
+process under a reentrant lock. The agent-writable AutoNudge store persists a
+text-free scheduling shell and cannot mint user input: delivery requires the
+matching process-memory record. Update and completion use exact-value CAS;
+removal captures and deletes memory before committing metadata, and restores it
+before rearming if persistence fails. A gateway restart creates an empty map, so
+load removes stale scheduled metadata and reports the existing restart-cancellation
+warning. No filesystem path, HMAC key, sandbox posture, process generation, or
+process census participates, and Send later has the same support contract on
+Linux, macOS, and Windows.
