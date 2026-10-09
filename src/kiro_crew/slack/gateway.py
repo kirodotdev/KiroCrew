@@ -10925,7 +10925,13 @@ class GatewayOrchestrator:
                 return False
             clean_title, _ = redact_exfiltration_urls(task.title or "")
             clean_title, _ = redact_credentials(clean_title)
-            approval_id = f"task-gate-{task.index}-{uuid.uuid4().hex[:8]}"
+            # The id names the run this gate holds: up to three runs execute
+            # at once and their task indexes overlap, so the index alone
+            # cannot say whose gate it is. A project page reads the run and
+            # index back from it (`task-gate-<run>-<index>-<suffix>`) and
+            # decides each gate by the record's instance. The executor sets
+            # the task's run before it awaits this callback.
+            approval_id = f"task-gate-{task.run_task_id}-{task.index}-{uuid.uuid4().hex[:8]}"
             result = await self.dashboard_state.request_approval(
                 approval_id=approval_id,
                 source="taskrunner",

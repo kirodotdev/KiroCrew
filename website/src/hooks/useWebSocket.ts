@@ -153,13 +153,13 @@ export function useWebSocket() {
    *  non-English locale shows. */
   const syncPendingApprovals = useCallback(async () => {
     try {
-      await approvals.reconcilePending((a, slot) => {
+      await approvals.reconcilePending((a, slot, target) => {
         if (slot) {
           dispatch(sseChatMessage({
             slot, role: 'permission',
             content: `[${a.source || 'agent'}] ${a.tool || 'Unknown'}`,
             ts: String(a.ts || Date.now() / 1000),
-            meta: { tool_input: a.tool_input || '', approval_id: a.id, source: a.source, registry: 'coordinator', ...(a.tool_call_id ? { tool_call_id: a.tool_call_id } : {}) },
+            meta: { tool_input: a.tool_input || '', approval_id: a.id, source: a.source, registry: 'coordinator', approval_target: target, ...(a.tool_call_id ? { tool_call_id: a.tool_call_id } : {}) },
           }))
         }
       })
@@ -354,7 +354,7 @@ export function useWebSocket() {
             // which the command center reads too.
             // The registry, the chime, the feed note and the live banner; the
             // owning slot comes back ('' for an unowned approval).
-            const targetSlot = approvals.onApprovalFrame(data, reconnectingRef.current)
+            const { slot: targetSlot, target } = approvals.onApprovalFrame(data, reconnectingRef.current)
             // Inject inline in the OWNING chat only. An approval with no
             // explicit slot has no owning conversation (an unowned cron /
             // taskrunner command): falling back to activeSlot planted the card
@@ -363,13 +363,15 @@ export function useWebSocket() {
             // 404'd as soon as the short background window elapsed. Unowned
             // approvals live on the global surface (notification feed) only —
             // the feed note above already delivered it there.
-            if (targetSlot) {
+            // A frame that names no request (no instance) raises nothing to
+            // decide: every control below is bound to the target.
+            if (targetSlot && target) {
               dispatch(sseChatMessage({
                 slot: targetSlot,
                 role: 'permission',
                 content: `[${data.source || 'agent'}] ${data.tool || 'Unknown'}`,
                 ts: String(data.ts || Date.now() / 1000),
-                meta: { tool_input: data.tool_input || '', approval_id: data.id, source: data.source, registry: 'coordinator', ...(data.tool_call_id ? { tool_call_id: data.tool_call_id } : {}) },
+                meta: { tool_input: data.tool_input || '', approval_id: data.id, source: data.source, registry: 'coordinator', approval_target: target, ...(data.tool_call_id ? { tool_call_id: data.tool_call_id } : {}) },
               }))
               // For spawn approvals, create a pending subagent entry instead of a toolLog approval.
               // Require an explicit slot from the event: falling back to activeSlot would
@@ -379,10 +381,10 @@ export function useWebSocket() {
               if (rid?.startsWith('spawn:')) {
                 if (data.slot) {
                   const agentId = rid.replace('spawn:', '')
-                  dispatch(sseSubagentPending({ slot: data.slot, id: agentId, task: (data.tool as string || '').replace('spawn_run(', '').replace(/\)$/, ''), approval_id: rid }))
+                  dispatch(sseSubagentPending({ slot: data.slot, id: agentId, task: (data.tool as string || '').replace(/spawn_run\(/, '').replace(/\)$/, ''), approval_id: rid, approval_target: target }))
                 }
               } else if (data.source !== 'subagent') {
-                dispatch(sseActivityEvent({ slot: targetSlot, kind: 'approval', text: data.tool || i18nT('hooks.useWebSocket.unknown'), approval_id: data.id, approval_type: 'chat' }))
+                dispatch(sseActivityEvent({ slot: targetSlot, kind: 'approval', text: data.tool || i18nT('hooks.useWebSocket.unknown'), approval_id: data.id, approval_type: 'chat', approval_target: target }))
               }
             }
             break

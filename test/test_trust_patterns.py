@@ -10,7 +10,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_crew.dashboard.state import DashboardState, _ChatSlot
+from kiro_crew.dashboard.state import DashboardState, _ChatSlot, row_mid
 from kiro_crew.history import ConversationLog
 from kiro_crew.trust_patterns import (
     approval_command,
@@ -1194,6 +1194,60 @@ class TestApproveHandlerTrustCommand:
         assert fut.result() == "approved"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("action", ["approved", "trust"])
+    async def test_strict_native_decide_reaches_the_owner_slot_sharing_the_session(
+        self, tmp_path, action
+    ):
+        """The dashboard's strict native decide (origin + request_mid) finds the
+        owner slot the same way the bare-id route does: a slot sharing the
+        addressed slot's session identity. The row's mid is checked on that
+        owner, so a linked session's approval is still decided from its card."""
+        state = _make_state(tmp_path)
+        state.sessions.set_approval_policy = MagicMock()
+        addressed = _ChatSlot(key="slot-1")
+        state._slots["slot-1"] = addressed
+        owner = _ChatSlot(key="slot-2")
+        owner.linked_session_key = "dashboard:slot-1"
+        state._slots["slot-2"] = owner
+        unrelated = _ChatSlot(key="slot-3")
+        state._slots["slot-3"] = unrelated
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[str] = loop.create_future()
+        row = owner.append("permission", "Running: ls", _trust_meta("req-801", "ls", "ls"))
+        owner.register_approval("req-801", fut, row)
+        foreign: asyncio.Future[str] = loop.create_future()
+        unrelated._approval_futures["req-801"] = foreign
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            stale = await client.post(
+                "/api/chat/slots/slot-1/approve",
+                json={
+                    "action": action,
+                    "request_id": "req-801",
+                    "origin": "native",
+                    "request_mid": "not-this-row",
+                },
+            )
+            assert stale.status == 404
+            assert not fut.done()
+            resp = await client.post(
+                "/api/chat/slots/slot-1/approve",
+                json={
+                    "action": action,
+                    "request_id": "req-801",
+                    "origin": "native",
+                    "request_mid": row_mid(row),
+                },
+            )
+            assert resp.status == 200
+        assert fut.result() == "approved"
+        assert owner._trust is (action == "trust")
+        assert addressed._trust is False
+        # A slot under a different session identity is never the owner.
+        assert not foreign.done()
+
+    @pytest.mark.asyncio
     async def test_trust_policy_keyed_by_linked_session_not_slot_key(self, tmp_path):
         """A linked cron/workflow slot runs under its ``linked_session_key``, so
         'Trust tools' must write the approval policy under THAT key — not
@@ -1451,6 +1505,38 @@ class TestApproveHandlerTrustCommand:
 
         assert state_fut.result() is True
         assert slot._trust is False
+        set_policy.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_state_level_future_trust_reads_approves_once_and_grants_nothing(self, tmp_path):
+        """Trust-reads on a coordinator (state-level) approval is a plain approve.
+
+        The other Trust tiers are refused above; this one resolves the state
+        future as an ordinary approval and leaves no standing grant on the slot,
+        because the state path returns before the slot's trust flags are set.
+        A coordinator approval therefore has no Trust tier that grants anything.
+        """
+        state = _make_state(tmp_path)
+        set_policy = MagicMock()
+        state.sessions.set_approval_policy = set_policy
+        slot = _ChatSlot(key="slot-1")
+        state._slots["slot-1"] = slot
+        loop = asyncio.get_running_loop()
+        state_fut: asyncio.Future[bool] = loop.create_future()
+        state._approval_futures["req-state-reads"] = state_fut
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/slots/slot-1/approve",
+                json={"action": "trust_reads", "request_id": "req-state-reads"},
+            )
+            assert resp.status == 200
+
+        assert state_fut.result() is True
+        assert slot._trust_reads is False
+        assert slot._trust is False
+        assert not slot._trusted_patterns
         set_policy.assert_not_called()
 
 

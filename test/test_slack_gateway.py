@@ -7006,10 +7006,16 @@ class TestTaskApprovalCallback:
         task = MagicMock()
         task.index = 2
         task.title = "Approved task"
+        task.run_task_id = "run-a"
         with patch("kiro_crew.slack.gateway.sel") as mock_sel:
             mock_sel.return_value.log_api_access = MagicMock()
             result = await approval_cb(task)
         assert result is True
+        # The gate's id names its run and task index, so a project page
+        # finds this run's gate in the global listing.
+        kwargs = ds.request_approval.await_args.kwargs
+        assert "task_run" not in kwargs
+        assert kwargs["approval_id"].startswith("task-gate-run-a-2-")
 
 
 # ═══════════════════════════════════════════════════════════════════════════

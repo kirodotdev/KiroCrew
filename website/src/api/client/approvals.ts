@@ -4,11 +4,26 @@
  */
 
 import type { ClientTransport } from './transport'
+import type { ApprovalTarget } from '../../types/approvalTarget'
 
 export function createApprovalsEndpoints({ post, j, jfetch: fetch }: ClientTransport) {
   const requests = {
-    approvals: (): Promise<{ id: string; source?: string; tool?: string; tool_input?: string; tool_purpose?: string; tool_call_id?: string; slot?: string; ts?: number }[]> => fetch('/api/approvals').then(j),
-    resolveApproval: (id: string, action: 'approve' | 'reject' | 'reject_once', target?: { origin: 'coordinator'; slot: string; instance: string }) => post('/api/approvals/' + encodeURIComponent(id) + '/' + action + (target ? '?' + new URLSearchParams(target) : ''), {}).then(j),
+    approvals: (): Promise<{ id: string; instance?: string; source?: string; tool?: string; tool_input?: string; tool_purpose?: string; tool_call_id?: string; slot?: string; ts?: number }[]> => fetch('/api/approvals').then(j),
+    /** Decide the one request *target* names (see types/approvalTarget). This
+     *  is the dashboard client's only decide: there is no bare-id one, because
+     *  an approval id recurs and names no request by itself
+     *  (`approvalBareIdGuard.test.ts` fails if one comes back). A
+     *  coordinator target goes to the decide route bound to its slot and
+     *  instance (minted per record, so it already names what the record
+     *  gates); a native one to its slot's approve route bound to the row's
+     *  mid. Either is refused once another request holds the id. */
+    decideApproval: (target: ApprovalTarget, action: 'approve' | 'reject' | 'reject_once') => target.origin === 'coordinator'
+      ? post('/api/approvals/' + encodeURIComponent(target.id) + '/' + action + '?'
+        + new URLSearchParams({ origin: 'coordinator', slot: target.slot, instance: target.instance }), {}).then(j)
+      : post('/api/chat/slots/' + encodeURIComponent(target.slot) + '/approve', {
+        action: action === 'approve' ? 'approved' : action === 'reject_once' ? 'rejected_once' : 'rejected',
+        origin: 'native', request_id: target.id, request_mid: target.mid,
+      }).then(j),
     /** Question cards still awaiting an answer, for rehydration after a reload or
      *  websocket reconnect (`question_card` is a one-shot broadcast). A blocking
      *  ask carries `ask_id`; a stateless card carries `card_id` instead, and

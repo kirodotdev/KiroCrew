@@ -1,6 +1,9 @@
 import { createSlice, createAsyncThunk, type PayloadAction } from '@reduxjs/toolkit'
 import { api } from '../api/client'
+import { ApiError, isTerminalApprovalRefusal } from '../api/apiError'
 import type { Notification } from '../types'
+import { coordinatorTarget, approvalTargetKey, sameApprovalTarget, type CoordinatorApprovalTarget } from '../types/approvalTarget'
+import { parseTs } from '../utils/notificationTimestamp'
 
 interface NotificationsState {
   items: Notification[]
@@ -25,9 +28,42 @@ interface NotificationsState {
    *  bounded by the same cap and cannot retain stamps for rows the list no
    *  longer holds. */
   ackSeqByTs?: Record<string, number>
+  /** The ts of every approval row that can no longer be decided although it
+   *  is still listed: a decide this tab sent was refused as no longer pending
+   *  (`isTerminalApprovalRefusal`: a 404, or the `no pending approval` 400), so
+   *  the request FAILED and the row says so as an error. An
+   *  `approval_resolved` frame removes a live row instead: only a refused
+   *  press keeps one, to say why. A retired row is also read: it no longer
+   *  asks for anything, so `approvalDecisionSettled` marks it read in this tab and
+   *  it leaves the unread badge. Its Approve/Reject are withdrawn. A dismiss that succeeds
+   *  removes it, and so do a clear-all and a reload. A reconnect refetch keeps
+   *  it (`withLocalApprovalRows`).
+   *  An approval row is this tab's copy of a pending request (the `approval`
+   *  frame and the reconnect reconcile add it; the notification store holds
+   *  none), so a reload drops every one and the reconcile adds back only
+   *  what `/api/approvals` still lists as pending.
+   *  Held here rather than in a component so the page feed, the bell popover
+   *  (which remounts on every open) and the detail panel agree. */
+  retiredApprovals?: Record<string, true>
+  /** ts → the decision this tab has in flight on that approval row. A row's
+   *  decision lifecycle is idle (no entry) -> deciding (an entry) -> settled
+   *  (the entry is gone and the row has left, is retired, or is in
+   *  `dismissFailed`). `inFlight` counts the presses still awaiting a
+   *  response. `ended` records that a frame (resolved, superseded, decided on
+   *  another surface) ended the request while it was deciding: the row stays
+   *  until the response settles, because a refusal must still be shown on
+   *  it, and leaves then if nothing else claimed it. */
+  approvalDecisions?: Record<string, { inFlight: number; ended: boolean }>
+  /** ts → why a stored note the server refused to delete is still listed:
+   *  `dismiss` after its close X, `decided` after a decision on it landed.
+   *  The row stays with the matching notice, its Approve/Reject are
+   *  withdrawn, and its close X (always shown) tries again. */
+  dismissFailed?: Record<string, 'dismiss' | 'decided'>
 }
 
-const initialState: NotificationsState = { items: [], clearSeq: 0, ackSeq: 0, ackSeqByTs: {} }
+const initialState: NotificationsState = {
+  items: [], clearSeq: 0, ackSeq: 0, ackSeqByTs: {}, retiredApprovals: {}, approvalDecisions: {}, dismissFailed: {},
+}
 
 /** Ring-buffer cap on the notifications list. Without it, `items` grows
  *  monotonically for the tab's lifetime (ack only flips a flag) — part of
@@ -37,8 +73,6 @@ const initialState: NotificationsState = { items: [], clearSeq: 0, ackSeq: 0, ac
  *  in the backend notification log. */
 export const NOTIFICATIONS_RING_CAP = 200
 
-const capped = (items: Notification[]): Notification[] =>
-  items.length > NOTIFICATIONS_RING_CAP ? items.slice(items.length - NOTIFICATIONS_RING_CAP) : items
 
 /** True when an attention surface must skip *n*.
  *
@@ -79,12 +113,112 @@ const markAck = (state: NotificationsState, ts: string) => {
  *  is unreachable state that would accumulate for the tab's lifetime, which is
  *  the retention class `NOTIFICATIONS_RING_CAP` exists to close. */
 const pruneAckStamps = (state: NotificationsState) => {
-  const stamps = state.ackSeqByTs
-  if (!stamps) return
   const live = new Set(state.items.map(n => n.ts))
-  for (const ts of Object.keys(stamps)) {
-    if (!live.has(ts)) delete stamps[ts]
+  // The per-row marks go with their row, so a refetch that no longer lists a
+  // row drops its retired mark with it.
+  for (const map of [state.ackSeqByTs, state.retiredApprovals, state.approvalDecisions, state.dismissFailed]) {
+    if (!map) continue
+    for (const ts of Object.keys(map)) {
+      if (!live.has(ts)) delete map[ts]
+    }
   }
+}
+
+/** The one ring cap, used by every path that grows the list. It evicts the
+ *  oldest rows that are not held. A row is held while a decision is in flight
+ *  on it (its response must still land on it), while it shows a notice
+ *  (retired, or a failed DELETE): evicting it would drop that notice unseen,
+ *  and while it is this tab's own undecided approval row: it is a request the
+ *  reader can still decide, and no snapshot or push can bring it back. The
+ *  list can exceed the cap only by held rows, which only this tab's own
+ *  approvals and presses create, and a held row's marks leave with it. */
+const capRows = (state: NotificationsState, items: Notification[]): Notification[] => {
+  let excess = items.length - NOTIFICATIONS_RING_CAP
+  if (excess <= 0) return items
+  const held = (n: Notification) =>
+    isLocalApprovalRow(n)
+    || Object.hasOwn(state.approvalDecisions ?? {}, n.ts)
+    || Object.hasOwn(state.retiredApprovals ?? {}, n.ts)
+    || Object.hasOwn(state.dismissFailed ?? {}, n.ts)
+  return items.filter(n => {
+    if (excess > 0 && !held(n)) { excess -= 1; return false }
+    return true
+  })
+}
+
+/** The key an approval row is matched under across a snapshot: the request it
+ *  names (its owner-bound target), or its ts when it names none. */
+const approvalRowKey = (n: Notification): string => {
+  const target = coordinatorTarget(n.approval_id, n.slot || '', n.approval_instance)
+  // A target key opens with its origin, so it never equals a bare ts.
+  return target ? approvalTargetKey(target) : n.ts
+}
+
+/** A row's position in time. Served rows carry an ISO 8601 ts and locally
+ *  raised approval rows an epoch, so `Number()` reads every served ts as NaN;
+ *  this goes through the feed's own parser, and keeps a bare number for a ts
+ *  that parser rejects. */
+const tsOrder = (ts: string): number => {
+  const at = parseTs(ts).getTime()
+  return Number.isNaN(at) ? Number(ts) : at
+}
+
+/** *served* plus the approval rows this tab holds that the snapshot cannot
+ *  speak for. Approval rows are raised by the `approval` frame and the
+ *  approvals reconcile, never written to the server's notification log, so a
+ *  snapshot that lacks one says nothing about it. Replacing membership
+ *  wholesale would drop a retired row, and the expiry or refusal it explains,
+ *  before the reader dismissed it. Such a row stays until its own Dismiss or a
+ *  Clear all removes it; a served row naming the same request supersedes it.
+ *  Each kept row goes back in ts order. */
+const withLocalApprovalRows = (served: Notification[], local: Notification[]): Notification[] => {
+  const servedTs = new Set(served.map(n => n.ts))
+  const servedKeys = new Set(served.filter(n => n.kind === 'approval' && !!n.approval_id).map(approvalRowKey))
+  const kept = local.filter(n => isLocalApprovalRow(n) && !servedTs.has(n.ts) && !servedKeys.has(approvalRowKey(n)))
+  if (kept.length === 0) return served
+  // The kept rows are held in the ring cap, so the cap `replaceRows` applies
+  // after them takes their room from the served rows, oldest first.
+  const out = [...served]
+  for (const row of kept) {
+    const rowAt = tsOrder(row.ts)
+    const at = out.findIndex(n => tsOrder(n.ts) > rowAt)
+    if (at < 0) out.push(row)
+    else out.splice(at, 0, row)
+  }
+  return out
+}
+
+const removeRow = (state: NotificationsState, ts: string) => {
+  state.items = state.items.filter(n => n.ts !== ts)
+  pruneAckStamps(state)
+}
+
+/** The one way a snapshot or a clear replaces the whole list. A row with a
+ *  decision still in flight survives it, together with its marks, so that
+ *  decision's response can still land on it: a refusal is rendered on the
+ *  row, a landed decision removes it. A clear also ends such a row's request
+ *  for this tab (`ended`), so it leaves once its response settles unless a
+ *  refusal or a failed DELETE claims it. Each kept row goes back right
+ *  after the nearest earlier row the incoming list still holds (ts formats
+ *  differ between stored notes and this tab's own rows, so position, not ts,
+ *  places it). The list is then held to the ring cap by `capRows`. */
+const replaceRows = (state: NotificationsState, incoming: Notification[], { endDeciding }: { endDeciding: boolean }) => {
+  const deciding = state.approvalDecisions ?? {}
+  const listed = new Set(incoming.map(n => n.ts))
+  const prior = state.items
+  const keptAt = prior.flatMap((n, i) => (Object.hasOwn(deciding, n.ts) && !listed.has(n.ts) ? [i] : []))
+  if (endDeciding) for (const i of keptAt) deciding[prior[i].ts].ended = true
+  const next = [...incoming]
+  for (const i of keptAt) {
+    let at = 0
+    for (let j = i - 1; j >= 0; j--) {
+      const anchor = next.findIndex(m => m.ts === prior[j].ts)
+      if (anchor >= 0) { at = anchor + 1; break }
+    }
+    next.splice(at, 0, prior[i])
+  }
+  state.items = capRows(state, next)
+  pruneAckStamps(state)
 }
 
 /**
@@ -243,7 +377,7 @@ const notificationsSlice = createSlice({
     addNotification(state, action: PayloadAction<Notification>) {
       if (!state.items.some(n => n.ts === action.payload.ts)) {
         state.items.push(action.payload)
-        state.items = capped(state.items)
+        state.items = capRows(state, state.items)
         pruneAckStamps(state)
       }
     },
@@ -273,18 +407,67 @@ const notificationsSlice = createSlice({
         markAck(state, n.ts)
       }
     },
+    /** A chat-card decision landed: its feed row goes with it. The row is the
+     *  tab's own copy of the approval (the server keeps no approval note), so
+     *  nothing is sent. */
     removeNotificationByTs(state, action: PayloadAction<string>) {
-      state.items = state.items.filter(n => n.ts !== action.payload)
-      pruneAckStamps(state)
+      removeRow(state, action.payload)
+    },
+    /** A frame ended this approval row's request: it was resolved, replaced
+     *  under the same id, or decided on another surface. An idle row leaves.
+     *  A row whose decision is still in flight is only marked, so the
+     *  response can still land on it (`approvalDecisionSettled`). */
+    endApprovalRow(state, action: PayloadAction<string>) {
+      const decision = state.approvalDecisions?.[action.payload]
+      if (decision) decision.ended = true
+      else removeRow(state, action.payload)
+    },
+    approvalDecisionBegan(state, action: PayloadAction<string>) {
+      const ts = action.payload
+      if (!state.items.some(n => n.ts === ts)) return
+      const map = (state.approvalDecisions ??= {})
+      const d = map[ts]
+      if (d) d.inFlight += 1
+      else map[ts] = { inFlight: 1, ended: false }
+    },
+    /** One press's response settled. `refused` retires the row (the error is
+     *  rendered on it), `dismiss_failed` keeps a decided stored note with its
+     *  controls withdrawn, `failed` (retryable) leaves the row as it was.
+     *  When the last press settles on a row a frame ended meanwhile, the row
+     *  leaves unless a refusal or a failed DELETE claimed it.
+     *  A landed decision whose row was removed needs no settle: removal
+     *  prunes the entry. */
+    approvalDecisionSettled(state, action: PayloadAction<{ ts: string; outcome: 'refused' | 'failed' | 'dismiss_failed' }>) {
+      const { ts, outcome } = action.payload
+      const map = state.approvalDecisions ?? {}
+      const d = map[ts]
+      // The record settles with the last press in flight, so a frame that
+      // lands between two responses still finds the row deciding.
+      if (d && --d.inFlight <= 0) delete map[ts]
+      const row = state.items.find(n => n.ts === ts)
+      if (!row) return
+      if (outcome === 'refused') {
+        ;(state.retiredApprovals ??= {})[ts] = true
+        row.acked = true
+      } else if (outcome === 'dismiss_failed') {
+        ;(state.dismissFailed ??= {})[ts] = 'decided'
+      }
+      const claimed = Object.hasOwn(state.retiredApprovals ?? {}, ts) || Object.hasOwn(state.dismissFailed ?? {}, ts)
+      if (d?.ended && !Object.hasOwn(map, ts) && !claimed) removeRow(state, ts)
+    },
+    dismissFailedSet(state, action: PayloadAction<{ ts: string; failed: boolean }>) {
+      const { ts, failed } = action.payload
+      const map = (state.dismissFailed ??= {})
+      // A note whose decision already landed keeps saying so on a retry.
+      if (failed && state.items.some(n => n.ts === ts)) map[ts] = map[ts] === 'decided' ? 'decided' : 'dismiss'
+      else if (!failed && map[ts] !== 'decided') delete map[ts]
     },
     /** WS `notifications_clear` sync: another view cleared the inbox, so this
      *  view drops its copy too (the bell badge derives from `items`).
      *  Idempotent — clearing an already-empty list is a no-op. */
     clearAllNotifications(state) {
-      state.items = []
       state.clearSeq += 1
-      // No items left to protect, so the stamps only take space.
-      state.ackSeqByTs = {}
+      replaceRows(state, [], { endDeciding: true })
     },
   },
   extraReducers: (builder) => {
@@ -303,13 +486,13 @@ const notificationsSlice = createSlice({
         // server, so this narrows to ack state only.
         const requestAckSeq = action.payload.ackSeq ?? 0
         const stamps = state.ackSeqByTs ?? {}
-        state.items = capped(action.payload.items).map(item => {
+        const served = action.payload.items.map(item => {
           const stamped = stamps[item.ts]
           if (stamped === undefined || stamped <= requestAckSeq) return item
           const local = state.items.find(n => n.ts === item.ts)
           return local ? { ...item, acked: local.acked } : item
         })
-        pruneAckStamps(state)
+        replaceRows(state, withLocalApprovalRows(served, state.items), { endDeciding: false })
       })
       .addCase(clearNotifications.fulfilled, (state, action) => {
         // The generation moved while the request was in flight, so the
@@ -319,13 +502,11 @@ const notificationsSlice = createSlice({
         // This reducer remains the fallback for a view whose socket is down;
         // such a view converges here, and on reconnect via the refetch.
         if (action.payload.seq !== state.clearSeq) return
-        state.items = []
         state.clearSeq += 1
-        state.ackSeqByTs = {}
+        replaceRows(state, [], { endDeciding: true })
       })
       .addCase(deleteNotification.fulfilled, (state, action) => {
-        state.items = state.items.filter(n => n.ts !== action.payload)
-        pruneAckStamps(state)
+        removeRow(state, action.payload)
       })
       // Optimistic: update Redux immediately. The confirmation then re-asserts
       // the value — which matters because a stale fetch can install the
@@ -401,5 +582,128 @@ const notificationsSlice = createSlice({
   },
 })
 
-export const { addNotification, ackNotificationByTs, unackNotificationByTs, removeNotificationByTs, clearAllNotifications } = notificationsSlice.actions
+export const { addNotification, ackNotificationByTs, unackNotificationByTs, removeNotificationByTs, endApprovalRow, clearAllNotifications, approvalDecisionBegan, approvalDecisionSettled } = notificationsSlice.actions
+const { dismissFailedSet } = notificationsSlice.actions
 export default notificationsSlice.reducer
+
+/** True for an approval row this tab raised itself, from an `approval` frame
+ *  or the reconnect reconcile: those carry `_local`, and the notification
+ *  store holds no copy of them. A stored note can carry `kind: "approval"`
+ *  (an app channel named `approval`) and even an `approval_id` from its meta,
+ *  but never `_local` (the bus drops underscore-prefixed meta keys), so it is
+ *  deleted on the server like any other note. */
+export const isLocalApprovalRow = (n: Pick<Notification, 'kind' | '_local'>): boolean =>
+  n.kind === 'approval' && n._local === true
+
+/** The action that takes a row out of the feed: a local approval row leaves
+ *  this tab only, and every other row is deleted on the server. */
+export const dropNotificationRow = (n: Pick<Notification, 'kind' | '_local' | 'ts'>) =>
+  isLocalApprovalRow(n) ? removeNotificationByTs(n.ts) : deleteNotification(n.ts)
+
+/** Takes a row out of the feed through its close X or a retired panel's
+ *  Close: a stored note the server refuses to delete stays, marked
+ *  `dismissFailed`. A local approval row ends the same way a frame ends it
+ *  (`endApprovalRow`), so while its decision is in flight it stays until the
+ *  response settles and a refusal still shows on it. Resolves true when the
+ *  row left. */
+export const dismissNotificationRow = createAsyncThunk(
+  'notifications/dismissRow',
+  async (n: Pick<Notification, 'kind' | '_local' | 'ts'>, { dispatch, getState }) => {
+    if (isLocalApprovalRow(n)) {
+      dispatch(endApprovalRow(n.ts))
+      const { items } = (getState() as { notifications: NotificationsState }).notifications
+      return !items.some(i => i.ts === n.ts)
+    }
+    dispatch(dismissFailedSet({ ts: n.ts, failed: false }))
+    const result = await dispatch(deleteNotification(n.ts))
+    const failed = deleteNotification.rejected.match(result)
+    if (failed) dispatch(dismissFailedSet({ ts: n.ts, failed: true }))
+    return !failed
+  },
+)
+
+/** The request an approval row was raised for, or null when the row cannot
+ *  name one. Feed rows are only ever raised by the coordinator, so the target
+ *  is the row's id, its owning slot ('' for a slotless approval, such as a cron
+ *  job's) and the server-issued instance. A row with no instance (written by an
+ *  older build) names no request, and nothing decides it. */
+export const approvalDecideTarget = (
+  n: Pick<Notification, 'approval_id' | 'approval_instance' | 'slot'>,
+): CoordinatorApprovalTarget | null => coordinatorTarget(n.approval_id, n.slot || '', n.approval_instance)
+
+/** The key a decide is claimed under: the request the row names, so a claim
+ *  for one request under a recurring id never holds back another's (the row's
+ *  ts when it names none). */
+export const approvalDecisionKey = (n: Pick<Notification, 'approval_id' | 'approval_instance' | 'slot' | 'ts'>): string => {
+  const target = approvalDecideTarget(n)
+  return target ? approvalTargetKey(target) : n.ts
+}
+
+/** Every listed row raised for *target*, retired or not. */
+export const approvalRowsFor = (notifications: NotificationsState, target: CoordinatorApprovalTarget): Notification[] =>
+  notifications.items.filter(n => sameApprovalTarget(approvalDecideTarget(n), target))
+
+/** The listed rows raised for *target* that can still be decided. */
+export const liveApprovalRows = (notifications: NotificationsState, target: CoordinatorApprovalTarget): Notification[] => {
+  const retired = notifications.retiredApprovals ?? {}
+  const decided = notifications.dismissFailed ?? {}
+  return notifications.items.filter(n =>
+    !Object.hasOwn(retired, n.ts) && !Object.hasOwn(decided, n.ts) && sameApprovalTarget(approvalDecideTarget(n), target))
+}
+
+/** What one Approve/Reject press on a feed row or the detail panel came to. */
+export type ApprovalDecisionOutcome =
+  | { kind: 'landed' }
+  | { kind: 'refused' }
+  | { kind: 'failed'; reason: string }
+  | { kind: 'dismiss_failed' }
+
+/** The reason a failed decide quotes on the row. The decide route's own
+ *  refusals (4xx) carry a sentence written for the user, so it is quoted. A
+ *  429 or a 5xx comes from whatever sits between the tab and the route, in
+ *  that layer's words, so it gets `''` and the row shows the plain
+ *  "may not have been recorded" copy instead. */
+export const plainDecisionReason = (e: unknown): string =>
+  e instanceof ApiError && e.status < 500 && e.status !== 429 && e.message ? e.message : ''
+
+/** Sends a decision for an approval row and settles that row's decision
+ *  lifecycle (`approvalDecisions`) on the response, so a frame that ends the
+ *  request meanwhile cannot remove the row the refusal belongs to. A decision
+ *  that lands removes the row, awaiting the server DELETE for a stored note;
+ *  a DELETE that fails settles as `dismiss_failed`. The one decide path for
+ *  the feed and the detail panel. */
+export const decideApprovalRow = createAsyncThunk<
+  ApprovalDecisionOutcome,
+  { n: Notification; action: 'approve' | 'reject' }
+>(
+  'notifications/decideApprovalRow',
+  async ({ n, action }, { dispatch }) => {
+    // Bound to the request this row showed: the id recurs, so only the row's
+    // own target may be decided. A row that names none has nothing to decide,
+    // and settles as refused with nothing sent.
+    const target = approvalDecideTarget(n)
+    dispatch(approvalDecisionBegan(n.ts))
+    if (!target) {
+      dispatch(approvalDecisionSettled({ ts: n.ts, outcome: 'refused' }))
+      return { kind: 'refused' }
+    }
+    try {
+      await api.decideApproval(target, action)
+    } catch (e) {
+      if (isTerminalApprovalRefusal(e)) {
+        dispatch(approvalDecisionSettled({ ts: n.ts, outcome: 'refused' }))
+        return { kind: 'refused' }
+      }
+      // eslint-disable-next-line no-console -- keep the raw failure for diagnosis
+      console.error(`Approval ${action} failed`, e)
+      dispatch(approvalDecisionSettled({ ts: n.ts, outcome: 'failed' }))
+      return { kind: 'failed', reason: plainDecisionReason(e) }
+    }
+    const result = await dispatch(dropNotificationRow(n))
+    if (deleteNotification.rejected.match(result)) {
+      dispatch(approvalDecisionSettled({ ts: n.ts, outcome: 'dismiss_failed' }))
+      return { kind: 'dismiss_failed' }
+    }
+    return { kind: 'landed' }
+  },
+)

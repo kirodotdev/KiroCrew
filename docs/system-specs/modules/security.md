@@ -2958,15 +2958,24 @@ upstream sync.
 and request ID. The coordinator endpoint's optional
 `origin=coordinator&slot=…&instance=…` selector checks the exact inventory slot
 and the record's instance, and resolves only its live state future, without
-yielding between check and resolution. The instance is minted by the coordinator
+yielding between check and resolution. `slot` must be present but may be empty:
+a coordinator approval raised with no owning slot (a cron job's) is bound by its
+instance alone, and the record's own empty slot must still match. The instance is minted by the coordinator
 once per request and carried on the record; the request ID is the caller's and
 can recur in the same slot, so a card rendered from an expired record cannot
 resolve the request that replaced it. An earlier wait's exit removes only its own
 record and future, judged by the future it created, so a replacement registered
 under the same ID stays resolvable. A selector naming no instance is malformed
-and returns 400. The native slot endpoint's optional
+and returns 400. A task gate's ID names its run as well as its task
+(`task-gate-<run>-<index>-<suffix>`), because up to three runs execute at once
+and their task indexes overlap. The project page, which reads the global
+listing, finds its own run's gate and the task index from the ID; the decide
+does not carry either, because the instance is minted per record and already
+names that record. The native slot endpoint's optional
 `origin: native` body selector requires an explicit request ID, `request_mid`
-and one-shot action. The host permission row's existing `meta.mid` is associated
+and a one-shot or pending-card trust action (`trust`, `trust_reads`,
+`trust_command`, `trust_base`; never `yolo`), so a standing grant is bound to
+the exact request the card showed. The host permission row's existing `meta.mid` is associated
 with the exact registered future; projection and submission both verify that
 association, so ACP reconnect ID reuse cannot transfer old consent. Cleanup
 only removes the future and association it owns and never broadcasts a stale

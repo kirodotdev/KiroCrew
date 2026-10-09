@@ -14,7 +14,6 @@ import { SETTINGS_DEFAULT_MODEL_ID } from '../hooks/useSettingHighlight'
 import { settingsPath } from '../components/settingsPath'
 import { isTouchDevice } from '../utils/isTouchDevice'
 import { agentOrDefaultLabel } from '../utils/agentLabel'
-import { toApiDecision } from '../utils/approvalDecision'
 import { isHiddenInvisibleAssistantRow } from '../utils/invisibleText'
 import { mergeRenderers, resolveRenderer, type MessageRenderer, type MessageRenderContext } from '../app-sdk/messageRenderers'
 import { createTranscriptRenderers } from './chat/transcriptRenderers'
@@ -25,7 +24,7 @@ import { queuedSendStash } from '../hooks/useQueuedMessageActions'
 import { useChatPopouts } from '../hooks/useChatPopouts'
 import {
   switchSlot, createSlot, deleteSlot, loadOlderMessages, abortActiveOlderFetch, isSupersededPagingRejection, appendMessage, appendSlotMessage, endLocalTurn, forkSlot,
-  setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, stageToMainComposer, setAgentSwitchNotice, resolveByApprovalId, selectComposerBusy, selectSendConfirmed,
+  setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, stageToMainComposer, setAgentSwitchNotice, selectComposerBusy, selectSendConfirmed,
   setVoiceAudio,
   toggleActivity, openActivityPanel, openActivityToTab,
   selectSubagent,
@@ -44,13 +43,14 @@ import { useMessageQuote } from '../chat-core/composer/useMessageQuote'
 import { stripQuoteBlock, type MessageQuote } from '../chat-core/composer/messageQuote'
 import { buildOutgoingTurn, isEmptyTurn } from '../chat-core/composer/outgoingTurn'
 import { storeSentPastes } from '../chat-core/composer/composerPastes'
-import { addNotification, removeNotificationByTs } from '../store/notificationsSlice'
+import { addNotification } from '../store/notificationsSlice'
 import { useDeleteTerminalSession } from '../components/CliPanel'
 import { interceptSlashCommand, isInterceptedSlashCommand } from './chat/ChatInput'
 import { updateSlot, slotIsRemoteBound } from '../store/dashboardSlice'
 import { inFlightSlotSwitchOutcome, performSlotSwitch, stagedSlotSwitchTarget } from '../lib/slotSwitch'
 import { performAgentSlotSwitch } from '../lib/agentSwitch'
 import { api } from '../api/client'
+import { decidePermissionRow } from '../lib/decidePermissionRow'
 import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
 import type { PlanStepInput } from '../api/client'
 import { useProvider } from '../providers'
@@ -2598,17 +2598,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // widget action's prefill.
   useAutoSendIntake({ connected, send, autoSendTick, autoSendRef, appLaunchSendRef, widgetPrefillRef, setInput, raisePrefillHint })
 
-  const approve = useCallback(async (action: string) => { if (activeSlot) await api.approveChatSlot(activeSlot, action) }, [activeSlot])
-  // Approvals dismissed through the CollapsibleToolGroup mounts resolve via the
-  // ONE-SHOT `api.resolveApproval` endpoint, which has no trust verb. The shared
-  // `toApiDecision` (utils/approvalDecision.ts) is fail-closed and is the only
-  // place that mapping is spelled — a Trust affordance on this path would claim
-  // a standing grant the backend never records (#5400, #5434).
-  const dismissApproval = useCallback((aid: string, decision?: string) => {
-    dispatch(resolveByApprovalId({ id: aid, slot: activeSlot || undefined, decision }))
-    const n = store.getState().notifications.items.find(x => x.approval_id === aid)
-    if (n) dispatch(removeNotificationByTs(n.ts))
-  }, [activeSlot, dispatch])
+  // The collapsed tool groups decide their pending row bound to the request
+  // it names (see lib/decidePermissionRow). A row that names none, including a
+  // group with no pending row, is refused as no longer pending with nothing
+  // sent: a bare slot decide would answer whatever is pending there now.
+  const decideRow = useCallback((meta: Record<string, unknown> | undefined, action: string) =>
+    dispatch(decidePermissionRow(meta, activeSlot, action)), [activeSlot, dispatch])
   const switchAgent = useCallback(async (agentName: string, kind?: 'member' | 'template') => {
     if (!activeSlot) {
       setPendingAgent(agentName, kind)
@@ -4554,16 +4549,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           permissionMeta={unresolvedPerms.at(-1)?.meta as Record<string, unknown> | undefined}
           pendingPermCount={unresolvedPerms.length}
           onApprove={(() => {
-            const aid = unresolvedPerms.at(-1)?.meta?.approval_id as string | undefined
-            if (!aid) return approve
-            return async (action: string) => { await api.resolveApproval(aid, toApiDecision(action)); dismissApproval(aid) }
+            const meta = unresolvedPerms.at(-1)?.meta as Record<string, unknown> | undefined
+            return (action: string) => decideRow(meta, action)
           })()}
           onViewActivity={toggleAct}
           activityOpen={activityOpen}
         >{it.msgs.map((m, j) => <div key={msgIdentityKey(m, stableMsgKey)}>{renderMessage(it.startIdx + j, m)}</div>)}</CollapsibleToolGroup>)
       })() : renderMessage(it.idx, it.msg)}
     </div>
-  }, [stableMsgKey, renderMessage, approve, dismissApproval, toggleAct, activityOpen])
+  }, [stableMsgKey, renderMessage, decideRow, toggleAct, activityOpen])
 
   // ---- Measure-farm wiring ----
   // The farm's renderItem must reproduce the transcript row wrappers EXACTLY
@@ -4589,7 +4583,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               isRunning={false}
               permissionMeta={undefined}
               pendingPermCount={0}
-              onApprove={approve}
+              onApprove={action => decideRow(undefined, action)}
               onViewActivity={toggleAct}
               activityOpen={false}
             >{item.msgs.map((m, j) => <div key={msgIdentityKey(m, stableMsgKey)}>{renderMessage(item.startIdx + j, m)}</div>)}</CollapsibleToolGroup>
@@ -4597,7 +4591,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         })() : renderMessage(item.idx, item.msg)}
       </div>
     )
-  }, [renderedDisplayItems, renderTurnItem, chatConfig.collapseAllSteps, appToolCallIds, approve, toggleAct, stableMsgKey, renderMessage])
+  }, [renderedDisplayItems, renderTurnItem, chatConfig.collapseAllSteps, appToolCallIds, decideRow, toggleAct, stableMsgKey, renderMessage])
   const renderFarmItem = useCallback((i: number): React.ReactNode => {
     farmPassRef.current = true
     try { return buildFarmItem(i) } finally { farmPassRef.current = false }
@@ -6135,12 +6129,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   permissionMeta={unresolvedGroupPerms.at(-1)?.meta as Record<string, unknown> | undefined}
                   pendingPermCount={unresolvedGroupPerms.length}
                   onApprove={(() => {
-                    const aid = unresolvedGroupPerms.at(-1)?.meta?.approval_id as string | undefined
-                    if (!aid) return approve
-                    return async (action: string) => {
-                      await api.resolveApproval(aid, toApiDecision(action))
-                      dismissApproval(aid)
-                    }
+                    const meta = unresolvedGroupPerms.at(-1)?.meta as Record<string, unknown> | undefined
+                    return (action: string) => decideRow(meta, action)
                   })()}
                   onViewActivity={toggleAct}
                   activityOpen={activityOpen}

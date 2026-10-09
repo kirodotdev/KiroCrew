@@ -602,7 +602,10 @@ function connect(): void {
       return
     }
     if (msg.type === 'approval_resolved') {
-      reportPetEvent(data.approved ? 'approval_granted' : 'approval_rejected')
+      // A takeover ends the replaced request unanswered: nobody rejected it,
+      // and the replacement's own `approval` frame follows, so the pet reacts
+      // to that one instead.
+      if (data.decision !== 'superseded') reportPetEvent(data.approved ? 'approval_granted' : 'approval_rejected')
       for (const cb of approvalResolvedListeners) cb(data)
       return
     }

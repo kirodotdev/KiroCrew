@@ -69,6 +69,10 @@ class Task:
     created_at: float = 0.0
     started_at: float = 0.0
     finished_at: float = 0.0
+    # The ``task_id`` of the run this task belongs to, set by the executor
+    # before it asks ``on_approval(task)``: up to three runs execute at once
+    # and their task indexes overlap, so a gate names its run from here.
+    run_task_id: str = ""
 
 
 @dataclass

@@ -6,6 +6,7 @@
 import { createSelector, type PayloadAction } from '@reduxjs/toolkit'
 import type { RootState } from '../index'
 import type { SubagentActivity } from '../../types'
+import { sameApprovalTarget, type CoordinatorApprovalTarget } from '../../types/approvalTarget'
 import { parseSubagentQueuedReason, type SubagentQueuedEvent } from '../../pages/chat/subagentQueuedReason'
 import { i18nT } from '../../i18n/t'
 import type { ChatState } from './state'
@@ -342,12 +343,13 @@ export const subagentReducers = {
       }
     }
   },
-  sseSubagentPending(state: ChatState, action: PayloadAction<{ slot: string; id: string; task: string; approval_id: string }>) {
+  sseSubagentPending(state: ChatState, action: PayloadAction<{ slot: string; id: string; task: string; approval_id: string; approval_target?: CoordinatorApprovalTarget }>) {
     if (isUnsafeKey(action.payload.slot) || isUnsafeKey(action.payload.id)) return
     const entry: SubagentActivity = {
       id: action.payload.id, task: action.payload.task, agent: '',
       status: 'pending', streaming: '', lastTool: '', startedAt: Date.now(), elapsed: 0,
       approval_id: action.payload.approval_id,
+      ...(action.payload.approval_target ? { approval_target: action.payload.approval_target } : {}),
     }
     if (action.payload.slot !== state.activeSlot) {
       const c = state.slotActivity[safeKey(action.payload.slot)] ??= { toolLog: [], subagents: {} }
@@ -355,6 +357,27 @@ export const subagentReducers = {
       return
     }
     state.subagents[safeKey(action.payload.id)] = entry
+  },
+  /** A spawn approval this tab pressed was refused as no longer pending, or
+   *  its card names no request. Ends the card only while it is still the
+   *  pending one that press was for: the same request (`target`, null when
+   *  the card named none) and still `pending`. Another surface can win the
+   *  decision first, its frame marks the card running, and this tab's late
+   *  refusal must then leave the running spawn and its stream alone. */
+  endGoneSpawnApproval(state: ChatState, action: PayloadAction<{ slot: string; id: string; target: CoordinatorApprovalTarget | null; error: string }>) {
+    const { slot, id, target, error } = action.payload
+    if (isUnsafeKey(slot) || isUnsafeKey(id)) return
+    const subs = slot !== state.activeSlot ? state.slotActivity[safeKey(slot)]?.subagents : state.subagents
+    const a = subs?.[id]
+    if (!a || a.status !== 'pending') return
+    const same = target ? sameApprovalTarget(a.approval_target, target) : !a.approval_target
+    if (!same) return
+    a.status = 'error'
+    a.error = error
+    a.approving = false
+    a.retrying = false
+    a.elapsed = 0
+    a.streaming = ''
   },
   markSubagentApproving(state: ChatState, action: PayloadAction<{ id: string; approving: boolean }>) {
     if (isUnsafeKey(action.payload.id)) return
@@ -620,7 +643,7 @@ export const subagentReducers = {
       // A snapshot never turns retrying ON (it has no attempt field); it only
       // preserves what a live frame already set.
       retrying: existing?.retrying,
-      approval_id: existing?.approval_id, approving: existing?.approving,
+      approval_id: existing?.approval_id, approval_target: existing?.approval_target, approving: existing?.approving,
     }
   },
 }

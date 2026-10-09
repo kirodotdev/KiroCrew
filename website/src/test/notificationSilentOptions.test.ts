@@ -108,7 +108,7 @@ describe('native notification toasts are silent (WebAudio is the only sound)', (
     act(() => {
       ws.simulateMessage({
         type: 'approval',
-        data: { id: 'ap-silent-1', source: 'cron', tool: 'Bash', tool_input: '{}', ts: 1.0 },
+        data: { id: 'ap-silent-1', instance: 'inst-ap-silent-1', source: 'cron', tool: 'Bash', tool_input: '{}', ts: 1.0 },
       })
     })
 

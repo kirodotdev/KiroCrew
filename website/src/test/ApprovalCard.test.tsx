@@ -5,6 +5,7 @@ vi.mock("@radix-ui/react-dropdown-menu", async () => await import("./__mocks__/@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import ApprovalCard from '../components/ApprovalCard'
 import { ApiError } from '../api/client'
+import { i18nT } from '../i18n/t'
 
 describe('ApprovalCard', () => {
   it('renders tool title when no toolInput', () => {
@@ -204,7 +205,7 @@ describe('ApprovalCard', () => {
     render(<ApprovalCard title="ls" toolInput="" showButtons onApprove={onApprove} />)
     fireEvent.click(screen.getByText('Approve'))
     const alert = await screen.findByRole('alert')
-    expect(alert.textContent).toContain('no longer waiting')
+    expect(alert).toHaveTextContent(i18nT('components.approvalCard.approval_no_longer_pending'))
     expect(screen.queryByText('Approve')).not.toBeInTheDocument()
     expect(screen.queryByText('Reject')).not.toBeInTheDocument()
   })
@@ -268,7 +269,7 @@ describe('ApprovalCard', () => {
     fireEvent.click(screen.getByText('Trust'))
     fireEvent.click(screen.getByText('Trust all tools for this session'))
     await waitFor(() => expect(screen.queryByText(/auto-approving future calls/)).not.toBeInTheDocument())
-    expect(screen.getByRole('alert').textContent).toContain('no longer waiting')
+    expect(screen.getByRole('alert')).toHaveTextContent(i18nT('components.approvalCard.approval_no_longer_pending'))
   })
 
   it('shows a generic failure message when the rejection carries no message', async () => {

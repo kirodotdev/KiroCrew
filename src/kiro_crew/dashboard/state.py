@@ -7404,8 +7404,17 @@ class DashboardState:
         approval_id: str,
         approved: bool,
         decision: str = "",
+        *,
+        origin: str = "",
+        instance: str = "",
+        mid: str = "",
     ) -> None:
-        """Audit and broadcast one approval decision."""
+        """Audit and broadcast one approval decision.
+
+        *origin* (``coordinator`` or ``native``) names the registry that held
+        the request; the frame carries it so a client settles only that
+        registry's rows.
+        """
         _approvals_for(self).audit_and_broadcast(
             self,
             session_key,
@@ -7413,6 +7422,9 @@ class DashboardState:
             approved,
             decision,
             audit_provider=sel,
+            origin=origin,
+            instance=instance,
+            mid=mid,
         )
 
     def _audit_approval(
@@ -7434,7 +7446,13 @@ class DashboardState:
         *,
         rejected_once: bool = False,
     ) -> bool:
-        """Resolve one state- or slot-level approval without widening authority."""
+        """Resolve one state- or slot-level approval without widening authority.
+
+        By bare id, for callers that hold their own link to the request (a
+        channel button, a bulk sweep). A dashboard control decides through an
+        owner-bound target instead (the decide route's coordinator target, or
+        a native target on the slot approve route).
+        """
         return _approvals_for(self).resolve(
             self,
             approval_id,

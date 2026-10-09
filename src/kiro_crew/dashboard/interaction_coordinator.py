@@ -15,7 +15,9 @@ _Redactor = Callable[[str], tuple[str, object]]
 #: rides in the ``approval_resolved`` payload: without it an expired card
 #: renders as a rejection.
 _EXPIRED_DECISION = "expired"
-#: The audit outcome of a wait whose id a later same-id request took over.
+#: The outcome of a wait whose id a later same-id request took over. It rides
+#: in the ``approval_resolved`` frame the takeover broadcasts, so a client
+#: retires the replaced request's card without inferring the takeover itself.
 _SUPERSEDED_DECISION = "superseded"
 
 
@@ -23,6 +25,57 @@ def _redact(text: object, redact_url: _Redactor, redact_secret: _Redactor) -> st
     value, _ = redact_url(str(text or ""))
     value, _ = redact_secret(value)
     return value
+
+
+def _instance_of(state: Any, approval_id: str) -> str:
+    """The ``instance`` of the coordinator record currently held under *approval_id*."""
+    record = state._pending_approvals.get(approval_id)
+    instance = record.get("instance") if isinstance(record, dict) else ""
+    return instance if isinstance(instance, str) else ""
+
+
+def _broadcast_superseded(state: Any, approval_id: str) -> None:
+    """Retire the live request a same-id request is about to replace.
+
+    The replaced wait stays open until its own exit, and that exit only audits:
+    without this frame every client keeps the replaced request's card live, and
+    its press settles the replacement. Sent before the replacement's
+    ``approval`` frame, naming the replaced record's ``instance``, so a client
+    that applies frames in order settles exactly that card.
+    """
+    record = state._pending_approvals.get(approval_id)
+    future = state._approval_futures.get(approval_id)
+    if not isinstance(record, dict) or future is None or future.done():
+        return
+    try:
+        payload: dict = {
+            "id": approval_id,
+            "approved": False,
+            "origin": "coordinator",
+            "decision": _SUPERSEDED_DECISION,
+        }
+        slot = record.get("slot")
+        if isinstance(slot, str) and slot:
+            payload["slot"] = slot
+        instance = record.get("instance")
+        if isinstance(instance, str) and instance:
+            payload["instance"] = instance
+        state.broadcast_ws("approval_resolved", payload)
+    except Exception:
+        state._log.warning(
+            "WS broadcast failed for superseded approval %s", approval_id, exc_info=True
+        )
+
+
+def native_resolution_target(mid: str | None) -> dict[str, str]:
+    """The fields naming a chat runner's resolved request on ``approval_resolved``.
+
+    ``origin`` tells a client the frame is the runner's own, so it never
+    settles a coordinator row under a colliding id; ``mid`` (the permission
+    row's delivery identity, when it has one) names the row. Every producer of
+    a native resolution frame spells it through here.
+    """
+    return {"origin": "native", **({"mid": mid} if mid else {})}
 
 
 def _push_slots(state: Any) -> None:
@@ -67,8 +120,9 @@ class ApprovalCoordinator:
     ) -> bool:
         loop = asyncio.get_running_loop()
         future: asyncio.Future[bool] = loop.create_future()
+        _broadcast_superseded(state, approval_id)
         state._approval_futures[approval_id] = future
-        state._pending_approvals[approval_id] = {
+        record: dict[str, Any] = {
             "id": approval_id,
             # The request id is the caller's and can recur; this names THIS
             # request, so a card rendered from an earlier record with the same
@@ -83,6 +137,7 @@ class ApprovalCoordinator:
             "slot": slot,
             "ts": time.time(),
         }
+        state._pending_approvals[approval_id] = record
         state.broadcast_ws("approval", state._pending_approvals[approval_id])
         # The record names its owning slot, and the slot projection reads the
         # live records through ``pending_coordinator_approvals``: this push is
@@ -120,7 +175,8 @@ class ApprovalCoordinator:
                 _push_slots(state)
             elif future.cancelled() or not future.done():
                 # Superseded by a same-id request: its frame, record and slot
-                # lane now belong to the replacement and are left alone, but
+                # lane now belong to the replacement and are left alone (the
+                # takeover already broadcast this request's retirement), but
                 # this wait still ended undecided and the audit trail says so,
                 # under its own outcome so the replacement's rows stay distinct.
                 state._audit_approval(slot or "state", approval_id, False, _SUPERSEDED_DECISION)
@@ -139,7 +195,14 @@ class ApprovalCoordinator:
         decision = _EXPIRED_DECISION
         session_key = slot_key if slot_key else "state"
         try:
-            state._audit_and_broadcast_approval(session_key, approval_id, False, decision)
+            state._audit_and_broadcast_approval(
+                session_key,
+                approval_id,
+                False,
+                decision,
+                origin="coordinator",
+                instance=_instance_of(state, approval_id),
+            )
         except Exception:
             state._log.warning(
                 "audit/broadcast failed for expired approval %s", approval_id, exc_info=True
@@ -176,6 +239,9 @@ class ApprovalCoordinator:
         decision: str,
         *,
         audit_provider: Callable[[], Any],
+        origin: str = "",
+        instance: str = "",
+        mid: str = "",
     ) -> None:
         ApprovalCoordinator.audit(
             state, session_key, approval_id, approved, decision, audit_provider=audit_provider
@@ -184,6 +250,19 @@ class ApprovalCoordinator:
             payload: dict = {"id": approval_id, "approved": approved}
             if session_key and session_key != "state":
                 payload["slot"] = session_key
+            # Names WHICH request was resolved, so a client settles the rows
+            # raised for that request and no other. A coordinator resolution
+            # carries the record's instance (the id recurs); a chat runner's
+            # carries the mid of its permission row. ``origin`` says which
+            # registry, so a frame from one never settles the other's row
+            # under a colliding id. The caller names it: a coordinator record
+            # with no instance is still a coordinator resolution.
+            if origin == "coordinator":
+                payload["origin"] = "coordinator"
+                if instance:
+                    payload["instance"] = instance
+            elif origin == "native":
+                payload.update(native_resolution_target(mid))
             # A decided approval's payload stays as it is: approved/rejected
             # is derivable from ``approved``, and the client renders it so.
             if decision == _EXPIRED_DECISION:
@@ -197,7 +276,13 @@ class ApprovalCoordinator:
         future = state._approval_futures.get(approval_id)
         if future and not future.done():
             future.set_result(approved)
-            state._audit_and_broadcast_approval("state", approval_id, approved)
+            state._audit_and_broadcast_approval(
+                "state",
+                approval_id,
+                approved,
+                origin="coordinator",
+                instance=_instance_of(state, approval_id),
+            )
             return True
         return False
 
@@ -253,12 +338,17 @@ class ApprovalCoordinator:
         if expected_future is not None and future is not expected_future:
             return False
         decision = _slot_decision(approved, rejected_once)
+        # Read before the result lands: the row's mid is reported only while
+        # its request is pending.
+        mid = slot.approval_instance(approval_id) or ""
         future.set_result(decision)
         if permission_marker(slot.messages, approval_id, decision):
             # The periodic flush skips clean slots; the resolved marker
             # must become durable before its future disappears.
             slot._dirty = True
-        state._audit_and_broadcast_approval(slot.key, approval_id, approved, decision)
+        state._audit_and_broadcast_approval(
+            slot.key, approval_id, approved, decision, origin="native", mid=mid
+        )
         state.push_slots_update()
         return True
 

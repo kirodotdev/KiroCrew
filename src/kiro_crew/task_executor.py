@@ -359,6 +359,10 @@ async def execute_single_task(
             run=run,
         )
         if on_approval:
+            # The callback keeps its one-argument contract; the task names
+            # its run, so a gate can say WHICH run's task it holds (up to three
+            # runs execute at once and their task indexes overlap).
+            task.run_task_id = run.task_id
             approved = await on_approval(task)
             if approved and task.force_approval:
                 sel().log_api_access(

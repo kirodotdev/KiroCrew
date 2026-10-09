@@ -511,6 +511,17 @@ describe('panelBridge WebSocket dispatcher', () => {
     expect(events).toContain('approval_rejected')
   })
 
+  it('plays no rejection for a request a takeover replaced', async () => {
+    const bridge = await loadBridge()
+    const seen: Record<string, unknown>[] = []
+    bridge.onApprovalResolvedExternal((r) => seen.push(r))
+    emit({ type: 'approval_resolved', data: { id: 'req-7', approved: false, decision: 'superseded', instance: 'inst-a' } })
+    await settle()
+    // The listener still hears it, so the panel drops the replaced card.
+    expect(seen.map((r) => r.id)).toEqual(['req-7'])
+    expect(calls('/pet-event').map((c) => bodyOf(c).event)).not.toContain('approval_rejected')
+  })
+
   it('streams chunks and completes the turn', async () => {
     const bridge = await loadBridge()
     const chunks: string[] = []

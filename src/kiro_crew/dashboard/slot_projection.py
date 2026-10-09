@@ -346,6 +346,10 @@ class SlotProjection:
                 "tool_input": redact(str(record.get("tool_input") or "")),
                 "tool_kind": "spawn" if approval_id.startswith("spawn:") else "",
                 "request_id": redact(approval_id),
+                # The server-issued request instance: with the slot it is the
+                # owner-bound target a client decides through, since the id
+                # alone recurs and names no request.
+                "request_instance": str(record.get("instance") or ""),
             }
             if record.get("tool_purpose"):
                 # Import after state initialization: chat_utils itself imports state.

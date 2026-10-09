@@ -82,9 +82,23 @@ def test_projection_reads_coordinator_record_for_this_slot() -> None:
         "tool_input": "task text",
         "tool_kind": "spawn",
         "request_id": "spawn:a1",
+        "request_instance": "",
     }
     # A parked slot is not "waiting for input": the user has a decision, not a turn.
     assert payload["waiting_for_input"] is False
+
+
+def test_projection_names_the_coordinator_request_instance() -> None:
+    # The id is the caller's and recurs; a client decides through the slot and
+    # this instance, so a stale card cannot decide a later request under the id.
+    slot = _ChatSlot("parent")
+    slot._coordinator_approvals = lambda key: [{**_record("req-7", key), "instance": "inst-7"}]
+
+    info = slot.to_dict()["pending_approval_info"]
+
+    assert info["origin"] == "coordinator"
+    assert info["request_id"] == "req-7"
+    assert info["request_instance"] == "inst-7"
 
 
 def test_projection_without_coordinator_records_is_unchanged() -> None:
@@ -390,9 +404,9 @@ async def test_expired_spawn_approval_clears_the_lane_and_pushes(tmp_path, monke
 async def test_expired_older_request_leaves_its_same_id_replacement_live(tmp_path, monkeypatch):
     """A caller's id can recur while an earlier wait on it is open. The earlier
     wait's exit removes only its own record and future: the replacement keeps
-    both, stays in the lane, and its buttons still resolve it. Nothing is
-    broadcast for the earlier wait, whose card the replacement's frame already
-    took over, but its undecided end is still audited. Negative control: a wait
+    both, stays in the lane, and its buttons still resolve it. The earlier
+    wait's exit broadcasts nothing (the takeover already retired its card),
+    but its undecided end is still audited. Negative control: a wait
     that is not replaced retires and clears the lane on expiry as before.
 
     The earlier wait ends by cancellation, a named point, not by racing a short
@@ -437,6 +451,51 @@ async def test_expired_older_request_leaves_its_same_id_replacement_live(tmp_pat
     assert "lone" not in state._approval_futures
     assert any(a[1] == "lone" for a in resolved)
     assert state.serialize_slot(parent)["pending_approval"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("slot_key", ["parent", ""])
+async def test_a_same_id_takeover_retires_the_replaced_request_first(tmp_path, slot_key):
+    """A request that takes over a live request's id broadcasts that request's
+    retirement, naming its instance, BEFORE its own ``approval`` frame: a
+    client applying frames in order settles the replaced card and then raises
+    the new one, so no card left on screen decides the replacement. Negative
+    control: an id whose earlier request already ended broadcasts no
+    retirement on reuse."""
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("parent").key if slot_key else ""
+
+    older = await _register(state, "same", slot)
+    older_instance = state._pending_approvals["same"]["instance"]
+    state.broadcast_ws.reset_mock()
+    replacement = await _register(state, "same", slot)
+    deadline = asyncio.get_running_loop().time() + _WAIT_SECS
+    while state._pending_approvals["same"]["instance"] == older_instance:
+        assert asyncio.get_running_loop().time() < deadline, "replacement never registered"
+        await asyncio.sleep(_POLL_SECS)
+    new_instance = state._pending_approvals["same"]["instance"]
+
+    frames = [(c.args[0], c.args[1]) for c in state.broadcast_ws.call_args_list]
+    retired = {"id": "same", "approved": False, "origin": "coordinator", "decision": "superseded"}
+    if slot:
+        retired["slot"] = slot
+    retired["instance"] = older_instance
+    assert frames[0] == ("approval_resolved", retired)
+    assert frames[1][0] == "approval" and frames[1][1]["instance"] == new_instance
+    assert len(frames) == 2
+
+    older.cancel()
+    assert await asyncio.wait_for(older, _WAIT_SECS) is False
+    assert len(state.broadcast_ws.call_args_list) == 2
+    assert state.resolve_state_approval("same", True) is True
+    assert await asyncio.wait_for(replacement, _WAIT_SECS) is True
+
+    state.broadcast_ws.reset_mock()
+    reused = await _register(state, "same", slot)
+    kinds = [c.args[0] for c in state.broadcast_ws.call_args_list]
+    assert "approval_resolved" not in kinds
+    reused.cancel()
+    await asyncio.wait_for(reused, _WAIT_SECS)
 
 
 @pytest.mark.asyncio

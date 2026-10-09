@@ -11,6 +11,9 @@ const jev = vi.hoisted(() => ({ consented: false }))
 vi.mock('../pages/chat/useJevAutoSend', () => ({ useJevAutoSend: () => jev.consented }))
 
 const approval: AttentionItem = { id: 'approval:child:r1', kind: 'approval', slot: 'child', native: true, approvalMode: 'normal', approval: { id: 'r1', instance: 'inst-r1', request_mid: 'row-r1', slot: 'dashboard:child', tool: 'shell', tool_input: 'git status' } }
+/** The two requests the fixture can name: the runner's own row, or the coordinator record. */
+const NATIVE_R1 = { origin: 'native', id: 'r1', slot: 'child', mid: 'row-r1' }
+const COORDINATOR_R1 = { origin: 'coordinator', id: 'r1', slot: 'dashboard:child', instance: 'inst-r1' }
 const question: AttentionItem = { id: 'question:q1', kind: 'question', slot: 'child', question: { slot: 'child', ask_id: 'q1', questions: [{ question: 'Which scope?', options: [{ label: 'Backend' }, { label: 'Frontend' }] }] } }
 
 describe('task dashboard input routing', () => {
@@ -44,81 +47,79 @@ describe('task dashboard input routing', () => {
   })
 
   it('does not auto-approve in Normal mode and routes one explicit click to the exact slot/request', async () => {
-    const approve = vi.spyOn(api, 'approveChatSlot').mockResolvedValue({ ok: true })
-    const resolve = vi.spyOn(api, 'resolveApproval').mockResolvedValue({ ok: true })
+    const decide = vi.spyOn(api, 'decideApproval').mockResolvedValue({ ok: true })
     renderWithProviders(<AttentionCard item={approval} title="Backend worker" />)
-    expect(approve).not.toHaveBeenCalled()
+    expect(decide).not.toHaveBeenCalled()
     expect(screen.getByText(/Approval required/)).toHaveTextContent('Normal')
     fireEvent.click(screen.getByRole('button', { name: 'Approve once' }))
-    await waitFor(() => expect(approve).toHaveBeenCalledWith('child', 'approved', { request_id: 'r1', request_mid: 'row-r1', origin: 'native' }))
-    expect(resolve).not.toHaveBeenCalled()
+    await waitFor(() => expect(decide).toHaveBeenCalledWith(NATIVE_R1, 'approve'))
+    expect(decide).toHaveBeenCalledTimes(1)
     expect(await screen.findByText('Your response was recorded.')).toBeInTheDocument()
   })
 
   it.each([true, false])('rejects only this request without changing permission mode (native=%s)', async (native) => {
-    const resolve = vi.spyOn(api, 'resolveApproval').mockResolvedValue({ ok: true })
-    const approve = vi.spyOn(api, 'approveChatSlot').mockResolvedValue({ ok: true })
+    const decide = vi.spyOn(api, 'decideApproval').mockResolvedValue({ ok: true })
     renderWithProviders(<AttentionCard item={{ ...approval, native }} title="Worker" />)
     fireEvent.click(screen.getByRole('button', { name: 'Reject once' }))
-    if (native) {
-      await waitFor(() => expect(approve).toHaveBeenCalledWith('child', 'rejected_once', { request_id: 'r1', request_mid: 'row-r1', origin: 'native' }))
-      expect(resolve).not.toHaveBeenCalled()
-    } else {
-      await waitFor(() => expect(resolve).toHaveBeenCalledWith('r1', 'reject_once', { origin: 'coordinator', slot: 'dashboard:child', instance: 'inst-r1' }))
-      expect(approve).not.toHaveBeenCalled()
-    }
+    await waitFor(() => expect(decide).toHaveBeenCalledWith(native ? NATIVE_R1 : COORDINATOR_R1, 'reject_once'))
+    expect(decide).toHaveBeenCalledTimes(1)
   })
 
   it('approves only the coordinator origin and recorded slot, not a normalized native identity', async () => {
-    const resolve = vi.spyOn(api, 'resolveApproval').mockResolvedValue({ ok: true })
-    const approve = vi.spyOn(api, 'approveChatSlot')
+    const decide = vi.spyOn(api, 'decideApproval').mockResolvedValue({ ok: true })
     renderWithProviders(<AttentionCard item={{ ...approval, native: false }} title="Worker" />)
     fireEvent.click(screen.getByRole('button', { name: 'Approve once' }))
-    await waitFor(() => expect(resolve).toHaveBeenCalledWith('r1', 'approve', { origin: 'coordinator', slot: 'dashboard:child', instance: 'inst-r1' }))
-    expect(approve).not.toHaveBeenCalled()
+    await waitFor(() => expect(decide).toHaveBeenCalledWith(COORDINATOR_R1, 'approve'))
+    expect(decide).toHaveBeenCalledTimes(1)
   })
 
   it.each([true, false])('retires stale origin-bound approvals without falling back (native=%s)', async native => {
-    const resolve = vi.spyOn(api, 'resolveApproval').mockRejectedValue(new ApiError(404, 'expired'))
-    const approve = vi.spyOn(api, 'approveChatSlot').mockRejectedValue(new ApiError(404, 'expired'))
+    const decide = vi.spyOn(api, 'decideApproval').mockRejectedValue(new ApiError(404, 'expired'))
     renderWithProviders(<AttentionCard item={{ ...approval, native }} title="Worker" />)
     fireEvent.click(screen.getByRole('button', { name: 'Approve once' }))
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Approve once' })).not.toBeInTheDocument())
-    expect(native ? resolve : approve).not.toHaveBeenCalled()
+    // One decide, on the card's own origin: a refusal never retries the other.
+    expect(decide).toHaveBeenCalledTimes(1)
+    expect(decide).toHaveBeenCalledWith(native ? NATIVE_R1 : COORDINATOR_R1, 'approve')
     expect(screen.queryByText('Your response was recorded.')).not.toBeInTheDocument()
   })
 
-  it('serializes origin/session/request selectors and leaves legacy resolution unchanged', async () => {
+  it('refuses a card whose request cannot be named, sending nothing', async () => {
+    const decide = vi.spyOn(api, 'decideApproval')
+    renderWithProviders(<AttentionCard item={{ ...approval, native: false, approval: { ...approval.approval!, instance: undefined } }} title="Worker" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Approve once' }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Approve once' })).not.toBeInTheDocument())
+    expect(decide).not.toHaveBeenCalled()
+  })
+
+  it('serializes each target onto its own route', async () => {
     const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
-    await api.resolveApproval('request/id', 'approve', { origin: 'coordinator', slot: 'slack:thread/id', instance: 'inst-1' })
+    await api.decideApproval({ origin: 'coordinator', id: 'request/id', slot: 'slack:thread/id', instance: 'inst-1' }, 'approve')
     let [url, init] = fetch.mock.calls[0] as [string, RequestInit]
     expect(url).toBe('/api/approvals/request%2Fid/approve?origin=coordinator&slot=slack%3Athread%2Fid&instance=inst-1')
     expect(init.method).toBe('POST')
-    await api.resolveApproval('legacy', 'reject_once')
-    expect(fetch.mock.calls[1][0]).toBe('/api/approvals/legacy/reject_once')
-    await api.approveChatSlot('slot/id', 'rejected_once', { request_id: 'request/id', request_mid: 'row-wire', origin: 'native' })
-    ;[url, init] = fetch.mock.calls[2] as [string, RequestInit]
+    await api.decideApproval({ origin: 'native', id: 'request/id', slot: 'slot/id', mid: 'row-wire' }, 'reject_once')
+    ;[url, init] = fetch.mock.calls[1] as [string, RequestInit]
     expect(url).toBe('/api/chat/slots/slot%2Fid/approve')
     expect(JSON.parse(init.body as string)).toEqual({ action: 'rejected_once', request_id: 'request/id', request_mid: 'row-wire', origin: 'native' })
   })
 
   it('keeps a generic conflict retryable without switching origin or claiming success', async () => {
-    const resolve = vi.spyOn(api, 'resolveApproval').mockRejectedValue(new ApiError(409, 'Conflict'))
-    const approve = vi.spyOn(api, 'approveChatSlot')
+    const decide = vi.spyOn(api, 'decideApproval').mockRejectedValue(new ApiError(409, 'Conflict'))
     renderWithProviders(<AttentionCard item={{ ...approval, native: false }} title="Worker" />)
     fireEvent.click(screen.getByRole('button', { name: 'Approve once' }))
     await screen.findByText('Conflict')
     expect(screen.getByRole('button', { name: 'Approve once' })).toBeEnabled()
-    expect(resolve).toHaveBeenCalledTimes(1)
-    expect(approve).not.toHaveBeenCalled()
+    expect(decide).toHaveBeenCalledTimes(1)
+    expect(decide).toHaveBeenCalledWith(COORDINATOR_R1, 'approve')
     expect(screen.queryByText('Your response was recorded.')).not.toBeInTheDocument()
   })
 
   it.each(['recorded', 'expired'])('keeps a colliding native command actionable after the coordinator is %s', async outcome => {
-    const resolve = vi.spyOn(api, 'resolveApproval')
-    if (outcome === 'recorded') resolve.mockResolvedValue({ ok: true })
-    else resolve.mockRejectedValue(new ApiError(404, 'expired'))
-    const approve = vi.spyOn(api, 'approveChatSlot').mockResolvedValue({ ok: true })
+    const decide = vi.spyOn(api, 'decideApproval').mockImplementation(async target => {
+      if (target.origin === 'coordinator' && outcome === 'expired') throw new ApiError(404, 'expired')
+      return { ok: true }
+    })
     const card = (coordinator: boolean) => {
       const item = buildCommandCenter({ root: 'child',
         slots: [{ key: 'child', messages: 0, running: true, pending_approval: true, pending_approval_info: { origin: coordinator ? 'coordinator' : 'native', request_mid: 'row-same', request_id: 'same', tool: 'shell', tool_input: 'native command', tool_kind: 'execute' } }],
@@ -136,12 +137,13 @@ describe('task dashboard input routing', () => {
     rerender(card(false))
     expect(screen.getByRole('region', { name: 'Approval required' })).toHaveTextContent('native command')
     fireEvent.click(screen.getByRole('button', { name: 'Approve once' }))
-    await waitFor(() => expect(approve).toHaveBeenCalledWith('child', 'approved', { request_id: 'same', request_mid: 'row-same', origin: 'native' }))
-    expect(resolve).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(decide).toHaveBeenLastCalledWith({ origin: 'native', id: 'same', slot: 'child', mid: 'row-same' }, 'approve'))
+    expect(decide).toHaveBeenCalledTimes(2)
+    expect(decide.mock.calls[0][0]).toEqual({ origin: 'coordinator', id: 'same', slot: 'dashboard:child', instance: 'inst-same' })
   })
 
   it('does not carry a delivered state into a reused native request ID', async () => {
-    const approve = vi.spyOn(api, 'approveChatSlot').mockResolvedValue({ ok: true })
+    const decide = vi.spyOn(api, 'decideApproval').mockResolvedValue({ ok: true })
     const card = (request_mid: string) => {
       const [item] = buildCommandCenter({ root: 'child', slots: [{ key: 'child', messages: 0, running: true, pending_approval: true,
         pending_approval_info: { origin: 'native', request_id: 'same', request_mid, tool: 'shell', tool_input: 'pwd', tool_kind: 'execute' } }],
@@ -153,13 +155,12 @@ describe('task dashboard input routing', () => {
     await screen.findByText('Your response was recorded.')
     rerender(card('replacement-row'))
     fireEvent.click(screen.getByRole('button', { name: 'Reject once' }))
-    await waitFor(() => expect(approve).toHaveBeenLastCalledWith('child', 'rejected_once', { request_id: 'same', request_mid: 'replacement-row', origin: 'native' }))
-    expect(approve).toHaveBeenCalledTimes(2)
+    await waitFor(() => expect(decide).toHaveBeenLastCalledWith({ origin: 'native', id: 'same', slot: 'child', mid: 'replacement-row' }, 'reject_once'))
+    expect(decide).toHaveBeenCalledTimes(2)
   })
 
   it('renders simultaneous colliding origins and routes each button to its own registry', async () => {
-    const resolve = vi.spyOn(api, 'resolveApproval').mockResolvedValue({ ok: true })
-    const approve = vi.spyOn(api, 'approveChatSlot').mockResolvedValue({ ok: true })
+    const decide = vi.spyOn(api, 'decideApproval').mockResolvedValue({ ok: true })
     const items = buildCommandCenter({ root: 'child',
       slots: [{ key: 'child', messages: 0, running: true, pending_approval: true, pending_approval_info: { origin: 'native', request_mid: 'row-same', request_id: 'same', tool: 'native tool', tool_input: 'native command', tool_kind: 'execute' } }],
       subagents: {}, workflows: [], questions: [],
@@ -170,17 +171,16 @@ describe('task dashboard input routing', () => {
     const nativeCard = screen.getByText('native command').closest('section')!
     const coordinatorCard = screen.getByText('coordinator command').closest('section')!
     fireEvent.click(within(nativeCard).getByRole('button', { name: 'Approve once' }))
-    await waitFor(() => expect(approve).toHaveBeenCalledWith('child', 'approved', { request_id: 'same', request_mid: 'row-same', origin: 'native' }))
-    expect(resolve).not.toHaveBeenCalled()
+    await waitFor(() => expect(decide).toHaveBeenCalledWith({ origin: 'native', id: 'same', slot: 'child', mid: 'row-same' }, 'approve'))
+    expect(decide).toHaveBeenCalledTimes(1)
     expect(within(coordinatorCard).getByRole('button', { name: 'Reject once' })).toBeEnabled()
     fireEvent.click(within(coordinatorCard).getByRole('button', { name: 'Reject once' }))
-    await waitFor(() => expect(resolve).toHaveBeenCalledWith('same', 'reject_once', { origin: 'coordinator', slot: 'dashboard:child', instance: 'inst-same' }))
-    expect(approve).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(decide).toHaveBeenCalledWith({ origin: 'coordinator', id: 'same', slot: 'dashboard:child', instance: 'inst-same' }, 'reject_once'))
+    expect(decide).toHaveBeenCalledTimes(2)
   })
 
   it.each([[undefined, false], ['coordinator', false], [undefined, true], ['native', false]] as const)('offers Open session without guessed permission buttons for origin=%s, inventory=%s', (origin, inventory) => {
-    const approve = vi.spyOn(api, 'approveChatSlot')
-    const resolve = vi.spyOn(api, 'resolveApproval')
+    const decide = vi.spyOn(api, 'decideApproval')
     const [item] = buildCommandCenter({ root: 'child',
       slots: [{ key: 'child', messages: 0, running: true, pending_approval: true, pending_approval_info: { origin, request_id: 'same', tool: 'shell', tool_input: 'command', tool_kind: 'execute' } }],
       subagents: {}, workflows: [], questions: [], approvals: inventory ? [{ id: 'same', slot: 'dashboard:child' }] : [],
@@ -191,8 +191,7 @@ describe('task dashboard input routing', () => {
     expect(screen.queryByRole('button', { name: 'Reject once' })).not.toBeInTheDocument()
     expect(screen.getByText('This view cannot verify the request. Open the session to review and respond.')).toBeVisible()
     expect(screen.queryByText(/Approval required|Permission mode:|Normal asks before tools|Only your explicit submission/)).not.toBeInTheDocument()
-    expect(approve).not.toHaveBeenCalled()
-    expect(resolve).not.toHaveBeenCalled()
+    expect(decide).not.toHaveBeenCalled()
   })
 
   it('keeps the complete approval command verbatim in a focusable scrolling preview', () => {
@@ -207,7 +206,7 @@ describe('task dashboard input routing', () => {
 
   it('locks a double click and keeps a failed approval retryable', async () => {
     let reject!: (error: Error) => void
-    const approve = vi.spyOn(api, 'approveChatSlot').mockReturnValue(new Promise((_resolve, no) => { reject = no }))
+    const approve = vi.spyOn(api, 'decideApproval').mockReturnValue(new Promise((_resolve, no) => { reject = no }))
     renderWithProviders(<AttentionCard item={approval} title="Worker" />)
     const button = screen.getByRole('button', { name: 'Approve once' })
     fireEvent.click(button)
@@ -232,11 +231,13 @@ describe('task dashboard input routing', () => {
   })
 
   it('retires an expired approval without claiming it was approved or offering another submission', async () => {
-    vi.spyOn(api, 'approveChatSlot').mockRejectedValue(new ApiError(404, 'expired'))
+    vi.spyOn(api, 'decideApproval').mockRejectedValue(new ApiError(404, 'expired'))
     renderWithProviders(<AttentionCard item={approval} title="Worker" />)
     fireEvent.click(screen.getByRole('button', { name: 'Approve once' }))
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Approve once' })).not.toBeInTheDocument())
     expect(screen.queryByText('Your response was recorded.')).not.toBeInTheDocument()
+    // The refused press reads as one, in the sentence every approval surface uses.
+    expect(screen.getByRole('alert')).toHaveTextContent('This approval has expired or was already decided')
     expect(screen.getByRole('link', { name: 'Open session' })).toHaveAttribute('href', '/chat?sid=child')
   })
 

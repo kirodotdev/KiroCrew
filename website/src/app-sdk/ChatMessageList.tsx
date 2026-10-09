@@ -58,7 +58,7 @@ export interface ChatMessageListProps {
   /** Offer the standing-trust tier on pending-approval rows. FAIL-CLOSED: set it
    *  only when `onApprove` routes to an endpoint that RECORDS standing trust
    *  (the slot approve endpoint carries the decision verbatim). Hosts resolving
-   *  through the one-shot `resolveApproval` endpoint must leave it unset — that
+   *  through the one-shot `/api/approvals/{id}/{action}` endpoint must leave it unset — that
    *  path has no trust verb, so a Trust offer there overstates the grant
    *  (#5400, #5434). */
   canTrust?: boolean

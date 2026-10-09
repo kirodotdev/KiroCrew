@@ -3351,6 +3351,36 @@ class TestApprovalGates:
         assert success is True
         assert step.status == StepStatus.PASSED
 
+    @pytest.mark.asyncio
+    async def test_one_argument_callback_reads_its_run_from_the_task(self, tmp_path: Path) -> None:
+        """``on_approval(task)`` keeps its one-argument contract.
+
+        The task the callback receives names its run, so a gate can say which
+        run it holds.
+        """
+        sessions = _make_mock_sessions()
+        provider = _make_mock_provider("done")
+        sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
+        seen: list[str] = []
+
+        async def _approve(step: Step) -> bool:
+            seen.append(step.run_task_id)
+            return True
+
+        runner = TaskRunner(
+            sessions=sessions, auto_test=False, on_approval=_approve, work_dir=tmp_path
+        )
+        run = TaskRun(spec_path=str(tmp_path / "t.md"), spec_content="s", status="running")
+        run.task_id = "run-a"
+        step = Step(index=1, title="Delete DB", description="d", requires_approval=True)
+        run.tasks = [step]
+
+        with patch.object(runner, "self_review", return_value=True):
+            success = await runner._execute_single_task(run, step, "key")
+
+        assert success is True
+        assert seen == ["run-a"]
+
 
 # ── Phase 12.2: Active Stall Recovery ──
 
