@@ -5370,4 +5370,54 @@ describe('MembersPage warm greeting (a return in the middle of a goal)', () => {
     expect(api.crewBoard).not.toHaveBeenCalled()
     expect(screen.queryByTestId('member-resume-card')).toBeNull()
   })
+
+  // A conductor's monitor loop wakes it every few minutes. Those patrol turns
+  // are not a reply to the user, so they neither skip nor take down the card.
+  const TURN_TEXT = { nudge: '[auto-nudge cycle 2] Checking on round 3', subagent: 'Worker K finished: CODED', user: 'how is it going?' }
+  const turnStarts = (store: { dispatch: (a: unknown) => unknown }, role: 'nudge' | 'subagent' | 'user') => {
+    store.dispatch(sseChatMessage({ slot: 'member-oncall', role, content: TURN_TEXT[role] }))
+    store.dispatch(sseSlots([{ key: 'member-oncall', mode: 'member', running: true, messages: 2 }] as never))
+  }
+
+  it('a patrol turn starting keeps the card up; a turn the user starts takes it down', async () => {
+    vi.mocked(api.crewBoard).mockResolvedValue(midGoal as never)
+    const { store } = await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    await screen.findByTestId('member-resume-card', undefined, PANE_READY)
+    act(() => { turnStarts(store, 'nudge') })
+    expect(screen.getByTestId('member-resume-card')).toBeInTheDocument()
+    act(() => { turnStarts(store, 'user') })
+    expect(screen.queryByTestId('member-resume-card')).toBeNull()
+  })
+
+  it('a worker finishing after the user\'s turn wakes the crewmate in the background: the card stays up', async () => {
+    vi.mocked(api.crewBoard).mockResolvedValue(midGoal as never)
+    const { store } = await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    act(() => { store.dispatch(sseChatMessage({ slot: 'member-oncall', role: 'user', content: TURN_TEXT.user })) })
+    fireEvent.click(await rosterRow('oncall'))
+    await screen.findByTestId('member-resume-card', undefined, PANE_READY)
+    act(() => { turnStarts(store, 'subagent') })
+    expect(screen.getByTestId('member-resume-card')).toBeInTheDocument()
+  })
+
+  it('a crewmate opened during a patrol turn still greets with where its goal stands', async () => {
+    vi.mocked(api.crewBoard).mockResolvedValue(midGoal as never)
+    const { store } = await renderPage([row()])
+    // The patrol turn runs before the roster lands; the page then opens its
+    // only crewmate on its own (a click now would be a re-click repair).
+    act(() => { turnStarts(store, 'nudge') })
+    await screen.findByTestId('member-resume-card', undefined, PANE_READY)
+    expect(api.crewBoard).toHaveBeenCalledExactlyOnceWith('member-oncall')
+  })
+
+  it('a running crewmate whose transcript lands after the open is judged by it: a patrol still greets', async () => {
+    vi.mocked(api.crewBoard).mockResolvedValue(midGoal as never)
+    const { store } = await renderPage([row()])
+    act(() => { store.dispatch(sseSlots([{ key: 'member-oncall', mode: 'member', running: true, messages: 1 }] as never)) })
+    await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
+    expect(api.crewBoard).not.toHaveBeenCalled()
+    act(() => { store.dispatch(sseChatMessage({ slot: 'member-oncall', role: 'nudge', content: '[auto-nudge cycle 2] Checking on round 3' })) })
+    await screen.findByTestId('member-resume-card', undefined, PANE_READY)
+    expect(api.crewBoard).toHaveBeenCalledExactlyOnceWith('member-oncall')
+  })
 })

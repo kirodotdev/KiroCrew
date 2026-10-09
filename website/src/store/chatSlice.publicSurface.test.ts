@@ -81,7 +81,7 @@ const FUNCTIONS = [
   'selectSlotMessages', 'selectSlotPendingApproval', 'selectSlotPendingSpawnApprovals',
   'selectSlotRunEpoch', 'selectSlotStreamState', 'selectSlotSubagents',
   'selectSlotSubagentsActive', 'selectSlotToolLog', 'selectSubagentActivityCount', 'selectTrailingSendUnconfirmed',
-  'selectTurnInterrupted', 'shouldResolveAskOnSend', 'slotCoverageShortfall',
+  'selectSlotTurnFromWake', 'selectTurnInterrupted', 'shouldResolveAskOnSend', 'slotCoverageShortfall',
   'slotSwitchFetchLimit', 'snapshotChunkGen', 'snapshotChunkSeq', 'switchSlotNoticeCopy',
   'transcriptTsMs',
 ]

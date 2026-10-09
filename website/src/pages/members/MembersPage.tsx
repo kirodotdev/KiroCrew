@@ -99,7 +99,7 @@ import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { usePersistedString } from '../../hooks/usePersistedString'
 import { findReport, reportForError, type ErrorReport } from '../../utils/errorReport'
 import { useAppDispatch, useAppSelector } from '../../store'
-import { selectSidebarAutomationRunningKeys, selectSlotStreamState } from '../../store/chatSlice'
+import { selectSidebarAutomationRunningKeys, selectSlotMessages, selectSlotStreamState, selectSlotTurnFromWake } from '../../store/chatSlice'
 import { useLanguage } from '../../i18n/LanguageProvider'
 import { markSlotRead } from '../../store/dashboardSlice'
 import { emitSlotRead, flushSlotRead } from '../../lib/slotReadRelay'
@@ -2535,10 +2535,18 @@ export default function MembersPage() {
   // The greeting the open chat starts on (cold welcome or warm resume), read
   // once per open of a confirmed thread. Mid-turn means the crewmate's OWN
   // turn: workers it runs do not count, since a goal in flight is the very case
-  // the resume speaks to.
+  // the resume speaks to. Nor does a background wake (a monitor loop's cycle,
+  // a worker's completion): a conductor is woken every few minutes, so
+  // counting those turns took the card down within a minute and skipped every
+  // open that met one.
+  // Who opened a running turn is read off the transcript, so a busy slot's
+  // open waits for it: the thread confirms before the transcript lands.
+  const pillLoopTurn = useAppSelector((s) => (pillSlotKey ? selectSlotTurnFromWake(s, pillSlotKey) : false))
+  const pillTranscriptKnown = useAppSelector((s) => (pillSlotKey ? selectSlotMessages(s, pillSlotKey).length > 0 : false))
+  const greetingIdle = pillLoopTurn || (pillStreamState === 'idle' && !pillLiveSlot?.running)
   const { greeting: mateGreeting, failure: mateGreetingFailure, dismiss: dismissMateGreeting } = useMateGreeting(
-    confirmedSlot,
-    pillStreamState === 'idle' && !pillLiveSlot?.running,
+    greetingIdle || pillTranscriptKnown ? confirmedSlot : '',
+    greetingIdle,
     activeView ? { slug: activeView.slug, member: activeView.name, lastActiveTs: activeView.last_active_ts ?? 0 } : null,
   )
   const pillLastActive = (activeView ?? active)?.last_active_ts
