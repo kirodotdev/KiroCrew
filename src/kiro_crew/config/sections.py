@@ -3047,8 +3047,9 @@ class DashboardConfig:
             "task is not interrupted by the machine going to sleep. Off by default. "
             "Uses caffeinate on macOS, systemd-inhibit on Linux, and "
             "SetThreadExecutionState on Windows; on a host with no keep-awake "
-            "backend it is a no-op. On a Windows laptop with Modern Standby, "
-            "locking the screen can still let it sleep.",
+            "backend it is a no-op. On some Windows laptops (Modern Standby), "
+            "locking the screen can still let it sleep, so keep the screen "
+            "unlocked for long tasks.",
         ),
     )
     quick_send: bool = field(

@@ -19,9 +19,9 @@ caller — the machine simply keeps its normal sleep behavior):
 * **Windows** — ``SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)``
   via ctypes on engage and ``ES_CONTINUOUS`` alone to release. The OS clears the
   request automatically when the process exits, so there is nothing to leak.
-  On a Modern Standby (S0 low power idle) host this request does not keep the
+  On a Modern Standby (S0 low power idle) laptop this request does not keep the
   machine out of standby once the display turns off, for example after the
-  screen is locked; engaging there logs a warning that says so.
+  screen is locked.
 
 The inhibitor is idempotent: ``set_active(True)`` twice engages once, and it
 re-spawns a POSIX helper that has died so a long task cannot silently start
@@ -46,15 +46,6 @@ logger = logging.getLogger(__name__)
 # match caffeinate -i / systemd-inhibit idle:sleep).
 _ES_CONTINUOUS = 0x80000000
 _ES_SYSTEM_REQUIRED = 0x00000001
-
-# CallNtPowerInformation(SystemPowerCapabilities) fills a SYSTEM_POWER_CAPABILITIES
-# struct (winnt.h, 76 bytes). Its AoAc BOOLEAN at byte 20 is set on a Modern
-# Standby (S0 low power idle) host, where Windows can still enter standby once
-# the display turns off -- for example on the lock screen -- even while the
-# ES_SYSTEM_REQUIRED request above is held.
-_SYSTEM_POWER_CAPABILITIES_LEVEL = 4
-_SYSTEM_POWER_CAPABILITIES_SIZE = 76
-_AOAC_OFFSET = 20
 
 # How often the Linux PID-watch child checks that the gateway is still alive.
 # Short enough that the inhibitor lock is released promptly after a crash, long
@@ -197,27 +188,6 @@ def _set_windows_execution_state(keep_awake: bool) -> bool:
         return False
 
 
-def _aoac_from_capabilities(buf: bytes) -> bool:
-    """Return the AoAc (Modern Standby) flag from a SYSTEM_POWER_CAPABILITIES buffer."""
-    return len(buf) > _AOAC_OFFSET and buf[_AOAC_OFFSET] != 0
-
-
-def _windows_is_modern_standby() -> Optional[bool]:
-    """Whether this Windows host uses Modern Standby, or None when it cannot be read."""
-    try:
-        powrprof = ctypes.WinDLL("powrprof")  # type: ignore[attr-defined]
-        buf = ctypes.create_string_buffer(_SYSTEM_POWER_CAPABILITIES_SIZE)
-        status = powrprof.CallNtPowerInformation(
-            _SYSTEM_POWER_CAPABILITIES_LEVEL, None, 0, buf, _SYSTEM_POWER_CAPABILITIES_SIZE
-        )
-        if status != 0:
-            return None
-        return _aoac_from_capabilities(buf.raw)
-    except Exception:
-        logger.debug("CallNtPowerInformation(SystemPowerCapabilities) failed", exc_info=True)
-        return None
-
-
 class SleepInhibitor:
     """Idempotent OS sleep block. Call :meth:`set_active` to engage/release.
 
@@ -233,7 +203,6 @@ class SleepInhibitor:
         self._proc: Optional["subprocess.Popen[bytes]"] = None  # POSIX helper
         self._win_applied = False  # whether the Windows request is currently set
         self._warned_no_backend = False  # log the "no backend" notice only once
-        self._warned_modern_standby = False  # log the S0 limit only once
         self._consecutive_deaths = 0  # POSIX helper immediate-exit streak
         # Give up engaging until the next release (idle boundary). Set when the
         # POSIX helper keeps dying immediately or no backend binary exists, so a
@@ -314,17 +283,6 @@ class SleepInhibitor:
         if ok:
             self._active = True
             logger.info("Sleep prevention engaged (%s)", backend_name())
-            if (
-                platform_compat.IS_WINDOWS
-                and not self._warned_modern_standby
-                and _windows_is_modern_standby()
-            ):
-                self._warned_modern_standby = True
-                logger.warning(
-                    "This Windows host uses Modern Standby: it can still enter standby "
-                    "once the display turns off (for example after the screen is "
-                    "locked), even with sleep prevention engaged"
-                )
         elif not self._warned_no_backend:
             self._warned_no_backend = True
             logger.info(

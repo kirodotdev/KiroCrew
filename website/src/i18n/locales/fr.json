@@ -15453,7 +15453,7 @@
         "immediate": "Immédiat",
         "immediate_mode_shows_raw_chunks_as_they_arrive_s": "Le mode immédiat affiche les fragments bruts dès leur arrivée. Le mode fluide les met en tampon et fait apparaître le texte à un rythme régulier.",
         "it_ops": "IT / Exploitation",
-        "keep_your_computer_awake_while_a_task_is_running": "Gardez votre ordinateur actif pendant l'exécution d'une tâche. Sur un ordinateur portable Windows avec Modern Standby, verrouiller l'écran peut quand même le laisser se mettre en veille.",
+        "keep_your_computer_awake_while_a_task_is_running": "Garde ton ordinateur actif pendant l'exécution d'une tâche. Sur certains portables Windows (Modern Standby), verrouiller l'écran peut quand même le mettre en veille, donc laisse l'écran déverrouillé pour les longues tâches.",
         "kiro_matches_vocabulary_and_examples_to_your_pro": "Kiro adapte le vocabulaire et les exemples à votre profil professionnel",
         "kiro_quotes_this_back_to_itself_when_calibrating": "Kiro utilise cette description pour adapter le vocabulaire et les exemples à ton rôle.",
         "knowledge_library": "Bibliothèque de connaissances",

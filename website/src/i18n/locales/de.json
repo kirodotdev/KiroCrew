@@ -15217,7 +15217,7 @@
         "immediate": "Sofort",
         "immediate_mode_shows_raw_chunks_as_they_arrive_s": "Der Sofortmodus zeigt rohe Blöcke, sobald sie eintreffen. Der geglättete Modus puffert und blendet Text in gleichmäßigem Tempo ein.",
         "it_ops": "IT / Betrieb",
-        "keep_your_computer_awake_while_a_task_is_running": "Halte den Computer wach, während eine Aufgabe ausgeführt wird. Auf einem Windows-Laptop mit Modern Standby kann das Sperren des Bildschirms ihn trotzdem in den Ruhezustand versetzen.",
+        "keep_your_computer_awake_while_a_task_is_running": "Halte den Computer wach, während eine Aufgabe ausgeführt wird. Auf manchen Windows-Laptops (Modern Standby) kann er trotzdem in den Ruhezustand wechseln, wenn du den Bildschirm sperrst. Lass den Bildschirm bei langen Aufgaben daher entsperrt.",
         "kiro_matches_vocabulary_and_examples_to_your_pro": "Kiro passt Wortwahl und Beispiele an Ihren beruflichen Hintergrund an",
         "kiro_quotes_this_back_to_itself_when_calibrating": "Kiro verwendet diese Beschreibung, um Wortschatz und Beispiele an deine Rolle anzupassen.",
         "knowledge_library": "Wissensbibliothek",

@@ -654,7 +654,7 @@
       "label": "Prevent sleep while running",
       "tab": "chat",
       "route": "/settings/chat/advanced?highlight=key%3Adashboard.prevent_sleep",
-      "description": "Keep your computer awake while a task is running. On a Windows laptop with Modern Standby, locking the screen can still let it sleep.",
+      "description": "Keep your computer awake while a task is running. On some Windows laptops (Modern Standby), locking the screen can still let it sleep, so keep the screen unlocked for long tasks.",
       "configKey": "dashboard.prevent_sleep"
     },
     {

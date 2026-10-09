@@ -14981,7 +14981,7 @@
         "immediate": "立即",
         "immediate_mode_shows_raw_chunks_as_they_arrive_s": "即时模式在数据块到达时直接显示。平滑模式会缓冲并以稳定速度淡入文本。",
         "it_ops": "IT / 运维",
-        "keep_your_computer_awake_while_a_task_is_running": "在任务运行时保持电脑唤醒。在支持 Modern Standby 的 Windows 笔记本上，锁屏后电脑仍可能进入睡眠。",
+        "keep_your_computer_awake_while_a_task_is_running": "在任务运行时保持电脑唤醒。部分 Windows 笔记本（Modern Standby）锁屏后仍可能进入睡眠，运行长任务时请保持屏幕解锁。",
         "kiro_matches_vocabulary_and_examples_to_your_pro": "Kiro 会根据你的专业背景调整用词与示例",
         "kiro_quotes_this_back_to_itself_when_calibrating": "Kiro 会使用此描述，根据你的角色调整词汇和示例。",
         "knowledge_library": "知识库",

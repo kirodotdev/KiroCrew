@@ -15217,7 +15217,7 @@
         "immediate": "তাৎক্ষণিক",
         "immediate_mode_shows_raw_chunks_as_they_arrive_s": "ইমিডিয়েট মোড চাঙ্কগুলি আসার সঙ্গে সঙ্গে কাঁচা অবস্থায় দেখায়। স্মুথ মোড বাফার করে সমান গতিতে টেক্সট ফেড-ইন করে।",
         "it_ops": "IT / অপারেশন",
-        "keep_your_computer_awake_while_a_task_is_running": "একটি কাজ চলাকালীন আপনার কম্পিউটার সজাগ রাখুন। Modern Standby থাকা Windows ল্যাপটপে স্ক্রিন লক করলে এটি তবুও স্লিপে যেতে পারে।",
+        "keep_your_computer_awake_while_a_task_is_running": "কোনো কাজ চলার সময় তোমার কম্পিউটার সজাগ রাখো। কিছু Windows ল্যাপটপে (Modern Standby) স্ক্রিন লক করলে এটি তবুও স্লিপে যেতে পারে, তাই দীর্ঘ কাজের সময় স্ক্রিন আনলক রাখো।",
         "kiro_matches_vocabulary_and_examples_to_your_pro": "Kiro আপনার পেশাগত পটভূমির সঙ্গে শব্দচয়ন ও উদাহরণ মিলিয়ে নেয়",
         "kiro_quotes_this_back_to_itself_when_calibrating": "তোমার ভূমিকার সঙ্গে শব্দচয়ন ও উদাহরণ মানিয়ে নিতে Kiro এই বিবরণ ব্যবহার করে।",
         "knowledge_library": "জ্ঞানভাণ্ডার",

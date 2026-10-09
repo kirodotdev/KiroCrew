@@ -8786,7 +8786,7 @@
         "how_long_to_wait_for_the_agent_to_honor_a_stop_p": "How long to wait for the agent to honor a Stop press before forcefully killing the session. Longer budgets preserve session state more often but make stops feel laggy when agents are stuck in long tool calls.",
         "how_much_an_automatically_registered_source_may_i": "How much an automatically-registered source may take in one pass. Each piece of a document costs one extraction call, so this is what bounds the cost; newest documents land first and the rest follow on later passes. 0 removes the bound. Default {{count}}.",
         "immediate_mode_shows_raw_chunks_as_they_arrive_s": "Immediate mode shows raw chunks as they arrive. Smooth mode buffers and fades text in at a steady pace.",
-        "keep_your_computer_awake_while_a_task_is_running": "Keep your computer awake while a task is running. On a Windows laptop with Modern Standby, locking the screen can still let it sleep.",
+        "keep_your_computer_awake_while_a_task_is_running": "Keep your computer awake while a task is running. On some Windows laptops (Modern Standby), locking the screen can still let it sleep, so keep the screen unlocked for long tasks.",
         "kiro_matches_vocabulary_and_examples_to_your_pro": "Kiro matches vocabulary and examples to your professional background",
         "kiro_quotes_this_back_to_itself_when_calibrating": "Kiro uses this description to adapt vocabulary and examples to your role.",
         "knowledge_library": "Knowledge Library",

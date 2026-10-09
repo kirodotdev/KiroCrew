@@ -15689,7 +15689,7 @@
         "immediate": "Сразу",
         "immediate_mode_shows_raw_chunks_as_they_arrive_s": "Мгновенный режим показывает фрагменты сразу по получении. Плавный режим буферизует текст и проявляет его с равномерной скоростью.",
         "it_ops": "IT / эксплуатация",
-        "keep_your_computer_awake_while_a_task_is_running": "Не давайте компьютеру засыпать, пока выполняется задача. На ноутбуке с Windows и Modern Standby блокировка экрана всё равно может перевести его в сон.",
+        "keep_your_computer_awake_while_a_task_is_running": "Не давай компьютеру засыпать, пока выполняется задача. На некоторых ноутбуках с Windows (Modern Standby) блокировка экрана всё равно может перевести его в сон, поэтому для долгих задач не блокируй экран.",
         "kiro_matches_vocabulary_and_examples_to_your_pro": "Kiro подбирает лексику и примеры под ваш профессиональный опыт",
         "kiro_quotes_this_back_to_itself_when_calibrating": "Kiro использует это описание, чтобы подбирать лексику и примеры под твою роль.",
         "knowledge_library": "База знаний",

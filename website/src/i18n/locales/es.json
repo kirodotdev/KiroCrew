@@ -15453,7 +15453,7 @@
         "immediate": "Inmediato",
         "immediate_mode_shows_raw_chunks_as_they_arrive_s": "El modo inmediato muestra los fragmentos sin procesar a medida que llegan. El modo suave los almacena en búfer y muestra el texto a un ritmo constante.",
         "it_ops": "TI / Operaciones",
-        "keep_your_computer_awake_while_a_task_is_running": "Mantén el ordenador activo mientras se ejecuta una tarea. En un portátil con Windows y Modern Standby, bloquear la pantalla puede seguir dejando que entre en suspensión.",
+        "keep_your_computer_awake_while_a_task_is_running": "Mantén el ordenador activo mientras se ejecuta una tarea. En algunos portátiles con Windows (Modern Standby), bloquear la pantalla puede seguir dejando que entre en suspensión, así que deja la pantalla desbloqueada en las tareas largas.",
         "kiro_matches_vocabulary_and_examples_to_your_pro": "Kiro adapta el vocabulario y los ejemplos a tu perfil profesional",
         "kiro_quotes_this_back_to_itself_when_calibrating": "Kiro usa esta descripción para adaptar el vocabulario y los ejemplos a tu rol.",
         "knowledge_library": "Biblioteca de conocimiento",

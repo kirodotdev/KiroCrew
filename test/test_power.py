@@ -179,59 +179,6 @@ def test_windows_uses_execution_state(monkeypatch):  # type: ignore[no-untyped-d
     assert inh.active is False
 
 
-def _force_windows_engage_ok(monkeypatch, modern_standby):  # type: ignore[no-untyped-def]
-    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
-    monkeypatch.setattr(platform_compat, "IS_POSIX", False)
-    monkeypatch.setattr(power, "_set_windows_execution_state", lambda keep_awake: True)
-    monkeypatch.setattr(power, "_windows_is_modern_standby", lambda: modern_standby)
-
-
-def _standby_warnings(caplog):  # type: ignore[no-untyped-def]
-    return [
-        r
-        for r in caplog.records
-        if r.name == "kiro_crew.power"
-        and r.levelname == "WARNING"
-        and "Modern Standby" in r.getMessage()
-    ]
-
-
-def test_windows_modern_standby_host_warns_once(monkeypatch, caplog):  # type: ignore[no-untyped-def]
-    _force_windows_engage_ok(monkeypatch, modern_standby=True)
-    caplog.set_level("INFO", logger="kiro_crew.power")
-
-    inh = SleepInhibitor()
-    inh.set_active(True)
-    inh.set_active(False)
-    inh.set_active(True)
-
-    assert inh.active is True
-    assert len(_standby_warnings(caplog)) == 1
-
-
-@pytest.mark.parametrize("modern_standby", [False, None])
-def test_windows_without_modern_standby_does_not_warn(monkeypatch, caplog, modern_standby):  # type: ignore[no-untyped-def]
-    _force_windows_engage_ok(monkeypatch, modern_standby=modern_standby)
-    caplog.set_level("INFO", logger="kiro_crew.power")
-
-    SleepInhibitor().set_active(True)
-
-    assert _standby_warnings(caplog) == []
-
-
-def test_aoac_flag_is_read_from_byte_20():  # type: ignore[no-untyped-def]
-    # SYSTEM_POWER_CAPABILITIES (winnt.h): 15 BOOLEANs, two BYTE throttles,
-    # FastSystemS4, Hiberboot, WakeAlarmPresent, then AoAc at byte 20.
-    caps = bytearray(76)
-    assert power._aoac_from_capabilities(bytes(caps)) is False
-    caps[20] = 1
-    assert power._aoac_from_capabilities(bytes(caps)) is True
-    caps[19] = 1
-    caps[20] = 0
-    assert power._aoac_from_capabilities(bytes(caps)) is False
-    assert power._aoac_from_capabilities(b"") is False
-
-
 def test_respawn_when_posix_helper_dies(monkeypatch, force_posix):  # type: ignore[no-untyped-def]
     _force_macos(monkeypatch)
     procs: list[_FakeProc] = []

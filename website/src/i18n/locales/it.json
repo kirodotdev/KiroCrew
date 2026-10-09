@@ -15453,7 +15453,7 @@
         "immediate": "Immediato",
         "immediate_mode_shows_raw_chunks_as_they_arrive_s": "La modalità immediata mostra i blocchi grezzi appena arrivano. La modalità fluida li mette in buffer e fa comparire il testo con un ritmo costante.",
         "it_ops": "IT / Ops",
-        "keep_your_computer_awake_while_a_task_is_running": "Mantieni il computer attivo mentre è in esecuzione un'attività. Su un portatile Windows con Modern Standby, bloccare lo schermo può comunque mandarlo in sospensione.",
+        "keep_your_computer_awake_while_a_task_is_running": "Mantieni il computer attivo mentre è in esecuzione un'attività. Su alcuni portatili Windows (Modern Standby), bloccare lo schermo può comunque mandarlo in sospensione, quindi lascia lo schermo sbloccato per le attività lunghe.",
         "kiro_matches_vocabulary_and_examples_to_your_pro": "Kiro adatta il vocabolario e gli esempi al tuo background professionale",
         "kiro_quotes_this_back_to_itself_when_calibrating": "Kiro usa questa descrizione per adattare vocabolario ed esempi al tuo ruolo.",
         "knowledge_library": "Libreria delle conoscenze",
