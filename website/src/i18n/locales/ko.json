@@ -5689,7 +5689,6 @@
       "your_selected_setup_is_ready_in_kiro_crew": "선택한 설정이 {{productName}}에 준비되었습니다."
     },
     "agentSelector": {
-      "agent_id_tooltip": "{{name}} — 에이전트 ID입니다. 크론, 스폰 매개변수, CLI는 라벨이 아닌 이 ID를 사용합니다.",
       "agent_list": "에이전트 목록",
       "default": "기본값",
       "filter_agents": "에이전트 필터",

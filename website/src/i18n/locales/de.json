@@ -5810,7 +5810,6 @@
       "your_selected_setup_is_ready_in_kiro_crew": "Deine ausgewählte Konfiguration ist in {{productName}} bereit."
     },
     "agentSelector": {
-      "agent_id_tooltip": "{{name}} — die Agent-ID. Crons, Spawn-Parameter und die CLI verwenden diese ID, nie das Label.",
       "agent_list": "Agenten-Liste",
       "default": "Standard",
       "filter_agents": "Agenten filtern",

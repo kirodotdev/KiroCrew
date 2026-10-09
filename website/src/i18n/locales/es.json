@@ -5901,7 +5901,6 @@
       "your_selected_setup_is_ready_in_kiro_crew": "La configuración que seleccionaste ya está lista en {{productName}}."
     },
     "agentSelector": {
-      "agent_id_tooltip": "{{name}} — el ID del agente. Los crons, los parámetros de spawn y la CLI usan este ID, nunca la etiqueta.",
       "agent_list": "Lista de agentes",
       "default": "predeterminado",
       "filter_agents": "Filtrar agentes",

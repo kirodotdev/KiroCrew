@@ -276,12 +276,6 @@ export default function AgentSelector({ agents, defaultAgent, value, onChange, m
         <div className="flex flex-col min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
             <span className={`text-[13px] font-mono font-semibold truncate ${isCurrent ? 'text-accent' : 'text-text'}`}>{crewDisplayName(a)}</span>
-            {/* The ID stays visible when a label covers it: `agent=` in
-                spawn params, crons and the CLI all address the ID, so a
-                picker that hid it would strand anyone wiring those up. */}
-            {crewDisplayName(a) !== a.name && (
-              <span className="text-[11px] font-mono text-muted truncate max-w-[9rem]" title={i18nT('components.agentSelector.agent_id_tooltip', { name: a.name })}>{a.name}</span>
-            )}
             {isDefault && <span className="px-1.5 py-[1px] rounded-full text-[10px] font-bold bg-accent-subtle text-accent border border-accent/30 shrink-0">{i18nT('components.agentSelector.default')}</span>}
             {a.source && (
               <SourceBadge source={a.source} className="shrink-0">

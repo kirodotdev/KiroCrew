@@ -5810,7 +5810,6 @@
       "your_selected_setup_is_ready_in_kiro_crew": "चुना हुआ सेटअप {{productName}} में तैयार है।"
     },
     "agentSelector": {
-      "agent_id_tooltip": "{{name}} — एजेंट ID। क्रॉन, spawn पैरामीटर और CLI इसी ID का इस्तेमाल करते हैं, लेबल का नहीं।",
       "agent_list": "एजेंट सूची",
       "default": "डिफ़ॉल्ट",
       "filter_agents": "एजेंट फ़िल्टर करें",

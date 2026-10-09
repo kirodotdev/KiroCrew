@@ -756,11 +756,6 @@ function CrewCard({ agent, isDefault, shared, onOpen }: {
               badges hold their size, so the row can never wrap. */}
           <div className="flex items-center gap-2 min-w-0">
             <span className="min-w-[3rem] flex-1 truncate font-mono text-[14px] font-semibold text-text-strong">{crewDisplayName(agent)}</span>
-            {/* The ID stays discoverable when a label covers it — crons, spawn
-                params and the CLI address the ID, never the label. */}
-            {crewDisplayName(agent) !== agent.name && (
-              <span className="truncate font-mono text-[11px] text-muted max-w-[14rem]" title={i18nT('components.agentSelector.agent_id_tooltip', { name: agent.name })}>{agent.name}</span>
-            )}
             {isDefault && <DefaultBadge />}
             {showsCrewSourceBadge(agent.source) && <CrewSourceBadge source={agent.source} />}
           </div>

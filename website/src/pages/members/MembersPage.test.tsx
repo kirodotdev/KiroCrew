@@ -1532,7 +1532,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(await screen.findByTestId('crewmate-switcher-needs-you')).toBeInTheDocument()
   })
 
-  it('the identity pill withholds an ID that differs from the label only in case, keeping it in the tooltip', async () => {
+  it('the identity pill shows only the display name, never the ID', async () => {
     await renderPage([
       row({ name: 'kiro', slug: 'kiro', display_name: 'Kiro', bound: true, slot_key: 'member-kiro' }),
       row({ name: 'oncall', slug: 'oncall', display_name: 'Oncall Sentinel', bound: true, slot_key: 'member-oncall' }),
@@ -1540,14 +1540,11 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     fireEvent.click(await rosterRow('Kiro'))
     const pill = await screen.findByTestId('member-identity-pill')
     expect(within(pill).getByTestId('member-pill-name')).toHaveTextContent('Kiro')
-    // "Kiro kiro" said the same thing twice; the ID still rides the name's title.
     expect(within(pill).queryByTestId('member-pill-id')).toBeNull()
-    expect(within(pill).getByTestId('member-pill-name')).toHaveAttribute('title', expect.stringContaining('kiro'))
-    // A label that COVERS the ID keeps the ID line: routes and crons address it.
     fireEvent.click(await rosterRow('Oncall Sentinel'))
     await waitFor(() => expect(screen.getByTestId('member-identity-pill')).toHaveTextContent('Oncall Sentinel'))
-    expect(within(screen.getByTestId('member-identity-pill')).getByTestId('member-pill-id')).toHaveTextContent('oncall')
-    expect(within(screen.getByTestId('member-identity-pill')).getByTestId('member-pill-name')).not.toHaveAttribute('title')
+    expect(within(screen.getByTestId('member-identity-pill')).queryByTestId('member-pill-id')).toBeNull()
+    expect(screen.getByTestId('member-identity-pill')).not.toHaveTextContent(/\boncall\b/)
   })
 
   it('the profile pencil opens the existing editor for the exact crewmate', async () => {
@@ -4393,7 +4390,7 @@ describe('New crewmate dialog', () => {
 })
 
 describe('Mate in the header', () => {
-  it('the Assistant\'s header shows its label without the raw `mate` ID; a labelled crewmate still shows its ID', async () => {
+  it('the header shows only the display name, for Mate and for any labelled crewmate', async () => {
     const utils = await renderPage([defaultRow(), assistantRow(), row({ name: 'oncall', slug: 'oncall', display_name: 'Oncall Sentinel' })])
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-mate')
     const title = screen.getByTestId('member-title-row')
@@ -4403,7 +4400,8 @@ describe('Mate in the header', () => {
     utils.unmount()
     await renderPage([defaultRow(), assistantRow(), row({ name: 'oncall', slug: 'oncall', display_name: 'Oncall Sentinel' })], 'kirocrew', { route: '/members?member=oncall' })
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
-    expect(within(screen.getByTestId('member-title-row')).getByTestId('member-pill-id')).toHaveTextContent('oncall')
+    expect(screen.getByTestId('member-title-row')).toHaveTextContent('Oncall Sentinel')
+    expect(within(screen.getByTestId('member-title-row')).queryByTestId('member-pill-id')).toBeNull()
   })
 })
 describe('resolveDefaultMember', () => {

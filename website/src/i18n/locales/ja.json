@@ -5689,7 +5689,6 @@
       "your_selected_setup_is_ready_in_kiro_crew": "選択されたセットアップは {{productName}} で準備ができています。"
     },
     "agentSelector": {
-      "agent_id_tooltip": "{{name}} — エージェントID。cron、spawnパラメータ、CLIはラベルではなくこのIDを使用します。",
       "agent_list": "エージェントリスト",
       "default": "デフォルト",
       "filter_agents": "エージェントをフィルター",

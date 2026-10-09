@@ -5992,7 +5992,6 @@
       "your_selected_setup_is_ready_in_kiro_crew": "Выбранная конфигурация готова в {{productName}}."
     },
     "agentSelector": {
-      "agent_id_tooltip": "{{name}} — ID агента. Кроны, параметры запуска и CLI используют этот ID, а не подпись.",
       "agent_list": "Список агентов",
       "default": "по умолчанию",
       "filter_agents": "Фильтр агентов",

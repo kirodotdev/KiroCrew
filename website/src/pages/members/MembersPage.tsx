@@ -4060,32 +4060,12 @@ export default function MembersPage() {
                   <CrewLoopIndicator on={isLoopOn(active)} testId="member-pill-loop-indicator" />
                 </span>
                 <div className="min-w-0 leading-tight">
-                  {/* Title row = name (+ the ID when a label covers it). */}
+                  {/* Title row = the crewmate's display name; the ID is not shown. */}
                   <div className="min-w-0 flex items-center gap-1.5" data-testid="member-title-row">
-                    {/* The ID stays visible when a label covers it — routes, crons
-                        and spawn params address the ID, never the label. A label
-                        that differs from the ID only in case ("Kiro" over "kiro")
-                        covers nothing, so the line is withheld and the ID rides
-                        the name's tooltip instead. */}
-                    {(() => {
-                      const label = crewDisplayName(active)
-                      // The built-in Assistant's ID beside its label reads as
-                      // noise; it is still shown in Settings.
-                      const idShown = !isAssistantMember(active) && label.toLowerCase() !== active.name.toLowerCase()
-                      const idTip = t('components.agentSelector.agent_id_tooltip', { name: active.name })
-                      return (
-                        <>
-                          <div
-                            className="text-[13.5px] font-semibold truncate max-w-[24rem]"
-                            title={!idShown && label !== active.name ? idTip : undefined}
-                            data-testid="member-pill-name"
-                          >{label}</div>
-                          {idShown && (
-                            <div className="text-[11px] font-mono text-muted truncate max-w-[11rem]" title={idTip} data-testid="member-pill-id">{active.name}</div>
-                          )}
-                        </>
-                      )
-                    })()}
+                    <div
+                      className="text-[13.5px] font-semibold truncate max-w-[24rem]"
+                      data-testid="member-pill-name"
+                    >{crewDisplayName(active)}</div>
                   </div>
                   {/* Activity line — what the crewmate is doing right now, text
                       only (the face above already carries presence, so no dot

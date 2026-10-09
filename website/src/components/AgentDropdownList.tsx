@@ -24,7 +24,7 @@ export interface AgentItem {
    *  wears no face. */
   avatar?: unknown
   /** A member row's label, when its owner set one; the row shows it in place
-   *  of the name, with the name beside it. */
+   *  of the name. */
   display_name?: string
 }
 
@@ -75,11 +75,6 @@ function AgentButton({ a, active, isDefault, showSource, activeRef, onSelect, fi
         <span className={`text-[13px] font-mono font-semibold truncate ${active ? 'text-accent' : 'text-text'}`}>
           {highlight(label)}
         </span>
-        {/* The ID stays visible beside a label: crons, spawn params and the
-            CLI address the ID. */}
-        {label !== a.name && (
-          <span className="text-[11px] font-mono text-muted truncate max-w-[9rem]">{highlight(a.name)}</span>
-        )}
         {isDefault ? (
           <span className="shrink-0 inline-flex items-center gap-1 px-1.5 py-[1px] rounded-full text-[11px] font-semibold bg-warn-subtle text-warn" title={i18nT('components.agentDropdownList.new_sessions_start_with_this_agent')}>
             <Star className="lucide-inline" />{i18nT('components.agentDropdownList.default')}

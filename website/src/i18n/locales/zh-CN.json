@@ -5719,7 +5719,6 @@
       "your_selected_setup_is_ready_in_kiro_crew": "你所选的配置已在 {{productName}} 中就绪。"
     },
     "agentSelector": {
-      "agent_id_tooltip": "{{name}} — 代理 ID。定时任务、spawn 参数和 CLI 使用此 ID，而不是标签。",
       "agent_list": "代理列表",
       "default": "默认",
       "filter_agents": "筛选代理",
