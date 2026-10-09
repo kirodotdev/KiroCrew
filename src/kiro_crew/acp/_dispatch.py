@@ -2406,6 +2406,13 @@ def build_permission_event(
         tool_name=_tool_name,
         mcp_identity_trusted=_mcp_identity_trusted,
         mcp_identity_unreadable=_mcp_identity_unreadable,
+        # The unreadable-identity store is handed to this parser only for a
+        # member of ``ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL`` (KAS; the
+        # handle's ``_identity_unreadable_cache_for_wire`` and the client gate
+        # it on that set), so it is also the one signal that a bare built-in
+        # ``tool_name`` here is a KAS id the gate may read under its kiro-cli
+        # policy name. Every other harness is handed ``None`` and gets no fold.
+        kas_builtin_ids=identity_unreadable_cache is not None,
         diff_path=_diff_path,
         spawn_target=_spawn_target,
         harness_tool_id=_harness_tool_id,

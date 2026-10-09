@@ -79,12 +79,9 @@ def kas_vocabulary_drift(version: tuple[int, int, int] | None) -> str:
     ``"older"`` below the earliest verified release, ``"newer"`` above the
     latest, ``"unverified"`` for a release between two verified ones that was
     itself never measured; ``"unknown"`` when no version could be established.
-    ONE comparison shared by ``kirocrew doctor`` (its advisory row) and the KAS
-    session start (a once-per-process warning), so the two surfaces cannot
-    disagree on what counts as drift. An unverified release ships a KAS that
-    may rename, add or lack a built-in; the mount direction then fails silent
-    and the policy direction fails permissive, which is why drift is worth
-    saying where an operator will see it without running a command.
+    The comparison ``kirocrew doctor`` reports as its advisory row. An
+    unverified release ships a KAS that may rename, add or lack a built-in; the
+    mount direction then fails silent and the policy direction fails permissive.
     """
     if version is None:
         return "unknown"

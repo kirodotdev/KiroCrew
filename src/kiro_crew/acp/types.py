@@ -950,6 +950,12 @@ class AcpEvent:
     #: deny that name is under cannot be checked, and every site that answers a
     #: permission request refuses it outright instead of judging it by title.
     mcp_identity_unreadable: bool = False
+    #: kas_builtin_ids: this permission event was built for a member of
+    #: ``ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL`` (KAS), so a bare built-in
+    #: ``tool_name`` is a KAS id (``read_file``) that ``platform.tool_names``
+    #: maps to its kiro-cli policy name. False on every other harness, whose
+    #: bare ids the gate reads under their own name only.
+    kas_builtin_ids: bool = False
     # Canonical, NON-model-authored tool identity from adapter-authored
     # ``_meta.kiro`` or ``_meta.goose`` (see ``_dispatch._kiro_tool_name``).
     # ``title`` is LLM-authored prose — for shell tools ``select_tool_title``

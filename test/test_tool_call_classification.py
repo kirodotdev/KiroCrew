@@ -516,6 +516,7 @@ def _kas_builtin_flow(
     tool_call_meta: dict | None = None,
     raw_input: dict | None = None,
     with_kind_cache: bool = True,
+    on_kas: bool = True,
 ) -> AcpEvent:
     """A KAS built-in as the wire carries it (captured live, kiro-cli 2.24.0):
     the tool_call frame has a display title, a kind and ``_meta.kiro.toolOrigin``
@@ -528,6 +529,10 @@ def _kas_builtin_flow(
         "mcp_server_name_cache": {},
         "tool_name_cache": {},
     }
+    if on_kas:
+        # The KAS harness is handed this store (and only KAS is), which is also
+        # what marks the permission event's bare built-in id as a KAS id.
+        caches["identity_unreadable_cache"] = {}
     if with_kind_cache:
         caches["tool_kind_cache"] = {}
     parse_session_update(
@@ -1512,25 +1517,6 @@ class TestTheProvenanceCachesShareOneBound:
         assert await handle._refuse_unretained_provenance(msg, event) is False
         assert sent == []
 
-    def test_the_liveness_map_holds_only_admitted_calls(self) -> None:
-        """The liveness map and the provenance caches bound one population: a
-        frame the admission refused (its permission request will be rejected as
-        unverifiable) is not attributed in the map, so it can never evict an
-        admitted call that may still be running. The frame before the cap is
-        the one the oracle keeps tracking."""
-        from kiro_crew.acp._dispatch import TOOL_CALL_CACHE_MAX_ENTRIES
-
-        handle, _ = self._handle()
-        for i in range(TOOL_CALL_CACHE_MAX_ENTRIES + 1):
-            handle._handle_update(self._frame(self._call(i, rawInput={"targetFile": f"/tmp/{i}"})))
-        last = f"tc-{TOOL_CALL_CACHE_MAX_ENTRIES}"
-        assert f"s-1|{last}" not in handle._tool_call_tool_name, "the admission refused it"
-        assert last not in handle._active_tool_calls
-        assert len(handle._active_tool_calls) == TOOL_CALL_CACHE_MAX_ENTRIES
-        assert handle._tool_tracker.evicted is False
-        assert handle._inflight_tool_call_id == f"tc-{TOOL_CALL_CACHE_MAX_ENTRIES - 1}"
-        assert "tc-0" in handle._active_tool_calls, "no admitted call was evicted"
-
     def test_the_release_runs_after_the_tripwire_and_at_every_parse_site(self) -> None:
         """Pin by source: the main route releases inside the same loop as the
         spec-disabled tripwire and AFTER it (the tripwire reads ``raw_params``
@@ -2014,150 +2000,6 @@ class TestTheKindCarryOverIsKasOnly:
         assert flow(with_cache=True).tool_kind == "edit"
 
 
-class TestKasSessionStartWarnsOnVocabularyDrift:
-    """The policy fold fails permissive on engine drift, so the kas backend says
-    once per engine release at session start -- where an operator sees it
-    without running ``kirocrew doctor`` -- that the installed kiro-cli is not
-    the one the tables were measured on. Same comparison as the doctor row."""
-
-    @staticmethod
-    def _runtime(backend: str):
-        from kiro_crew.acp.runtime import AcpRuntime
-
-        rt = object.__new__(AcpRuntime)
-        rt._acp_backend = backend
-        return rt
-
-    def test_a_different_engine_release_is_logged_once_per_process(self, caplog) -> None:
-        import logging
-
-        from kiro_crew.acp import runtime as runtime_mod
-        from kiro_crew.acp.types import ACP_BACKEND_KAS
-        from kiro_crew.platform.tool_names import KAS_TOOL_IDS_VERIFIED_ON_KIRO_CLI
-
-        newer = ".".join(str(p) for p in (*KAS_TOOL_IDS_VERIFIED_ON_KIRO_CLI[-1][:2], 99))
-        runtime_mod._KAS_DRIFT_WARNED.discard(newer)
-        rt = self._runtime(ACP_BACKEND_KAS)
-        with caplog.at_level(logging.WARNING, logger="kiro_crew.acp.runtime"):
-            rt._warn_kas_vocabulary_drift(newer)
-            rt._warn_kas_vocabulary_drift(newer)
-            self._runtime(ACP_BACKEND_KAS)._warn_kas_vocabulary_drift(newer)
-        hits = [r for r in caplog.records if "tool-name tables" in r.getMessage()]
-        assert len(hits) == 1
-        assert newer in hits[0].getMessage() and "newer" in hits[0].getMessage()
-
-    def test_the_warn_once_set_is_count_bounded(self, caplog, monkeypatch) -> None:
-        """The key is harness-written and the set lives for the process, so the
-        bound is on the count as well as the string: at the cap no further
-        version is retained, the overflow is said once, and the set stays at
-        the cap."""
-        import logging
-
-        from kiro_crew.acp import runtime as runtime_mod
-        from kiro_crew.acp.types import ACP_BACKEND_KAS
-
-        monkeypatch.setattr(runtime_mod, "_KAS_DRIFT_WARNED", set())
-        monkeypatch.setattr(runtime_mod, "_KAS_DRIFT_WARNED_OVERFLOWED", False)
-        cap = runtime_mod._KAS_DRIFT_WARNED_MAX
-        assert isinstance(cap, int) and 0 < cap <= 256
-        rt = self._runtime(ACP_BACKEND_KAS)
-        with caplog.at_level(logging.WARNING, logger="kiro_crew.acp.runtime"):
-            for i in range(cap + 3):
-                rt._warn_kas_vocabulary_drift(f"9.{i}.0")
-                rt._warn_kas_vocabulary_drift(f"9.{i}.0")
-        drift = [r for r in caplog.records if "tool-name tables" in r.getMessage()]
-        overflow = [r for r in caplog.records if "its bound" in r.getMessage()]
-        assert len(drift) == cap
-        assert len(overflow) == 1 and str(cap) in overflow[0].getMessage()
-        assert len(runtime_mod._KAS_DRIFT_WARNED) == cap
-        assert f"9.{cap}.0" not in runtime_mod._KAS_DRIFT_WARNED
-        # A version already retained is still deduplicated at the cap.
-        caplog.clear()
-        with caplog.at_level(logging.WARNING, logger="kiro_crew.acp.runtime"):
-            rt._warn_kas_vocabulary_drift("9.0.0")
-        assert not caplog.records
-
-    def test_the_measured_release_and_an_unparseable_version_are_silent(self, caplog) -> None:
-        import logging
-
-        from kiro_crew.acp.types import ACP_BACKEND_KAS
-        from kiro_crew.platform.tool_names import KAS_TOOL_IDS_VERIFIED_ON_KIRO_CLI
-
-        rt = self._runtime(ACP_BACKEND_KAS)
-        with caplog.at_level(logging.WARNING, logger="kiro_crew.acp.runtime"):
-            rt._warn_kas_vocabulary_drift(
-                ".".join(str(p) for p in KAS_TOOL_IDS_VERIFIED_ON_KIRO_CLI[0])
-            )
-            rt._warn_kas_vocabulary_drift("")
-            rt._warn_kas_vocabulary_drift("not-a-version")
-            # Bounded before parsing: a component past CPython's int digit limit
-            # would otherwise raise inside the handshake guard.
-            rt._warn_kas_vocabulary_drift("9" * 5000 + ".0.0")
-        assert not [r for r in caplog.records if "tool-name tables" in r.getMessage()]
-
-    @pytest.mark.parametrize("backend", ["", "claude", "codex"])
-    def test_other_harnesses_never_warn(self, backend: str, caplog) -> None:
-        import logging
-
-        from kiro_crew.acp import runtime as runtime_mod
-
-        runtime_mod._KAS_DRIFT_WARNED.discard("9.9.9")
-        with caplog.at_level(logging.WARNING, logger="kiro_crew.acp.runtime"):
-            self._runtime(backend)._warn_kas_vocabulary_drift("9.9.9")
-        assert not [r for r in caplog.records if "tool-name tables" in r.getMessage()]
-
-    @pytest.mark.asyncio
-    async def test_the_compared_version_falls_back_to_the_pinned_binary(self, monkeypatch) -> None:
-        """KAS's ``initialize`` carries no ``agentInfo`` (the recorded fixture
-        says so), so a warning fed only the handshake's version would never fire
-        on the harness it exists for. An empty handshake version falls back to
-        the pinned kiro-cli's own ``--version`` -- the doctor row's reading; a
-        reported version is preferred and does not probe; a non-member harness
-        compares nothing and never probes."""
-        from kiro_crew.acp import runtime as runtime_mod
-        from kiro_crew.acp.types import ACP_BACKEND_KAS
-
-        probes: list[int] = []
-
-        def _installed():
-            probes.append(1)
-            return (2, 30, 1)
-
-        monkeypatch.setattr(runtime_mod, "installed_kiro_cli_version", _installed)
-        rt = self._runtime(ACP_BACKEND_KAS)
-        rt._agent_version = ""
-        assert await rt._kas_drift_version() == "2.30.1"
-        assert probes == [1]
-        rt._agent_version = "2.24.1"
-        assert await rt._kas_drift_version() == "2.24.1"
-        assert probes == [1], "a reported version is not re-probed"
-        for backend in ("", "claude", "codex"):
-            other = self._runtime(backend)
-            other._agent_version = ""
-            assert await other._kas_drift_version() == ""
-        assert probes == [1], "a non-member harness never probes"
-        # An unanswerable probe is unknown, and unknown is silent.
-        monkeypatch.setattr(runtime_mod, "installed_kiro_cli_version", lambda: None)
-        rt._agent_version = ""
-        assert await rt._kas_drift_version() == ""
-
-    def test_the_handshake_hands_the_fallback_version_to_the_warning(self) -> None:
-        """Pin by source: the handshake feeds the warning ``_kas_drift_version()``,
-        not the raw ``agentInfo.version`` it also records."""
-        import inspect
-
-        from kiro_crew.acp.runtime import AcpRuntime
-
-        src = inspect.getsource(AcpRuntime)
-        assert "self._warn_kas_vocabulary_drift(await self._kas_drift_version())" in src
-        assert "self._warn_kas_vocabulary_drift(self._agent_version)" not in src
-        # And positively gated on the KAS set at the call site (H13): the
-        # first-class harness's handshake awaits nothing for this.
-        gate = "if self._acp_backend in ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL:"
-        call = "self._warn_kas_vocabulary_drift(await self._kas_drift_version())"
-        assert src.index(gate, src.index("agent_version_from_init(init_resp)")) < src.index(call)
-
-
 class TestKasPermissionFrameCarriesTheBuiltinId:
     def test_tool_id_on_the_permission_frame_becomes_the_tool_name(self) -> None:
         """Without this the only identity the gate sees for a KAS built-in is the
@@ -2265,10 +2107,35 @@ class TestKasPermissionFrameCarriesTheBuiltinId:
             event.title,
             mcp_server_name=event.mcp_server_name,
             mcp_tool_name=event.tool_name,
+            kas_builtin_ids=event.kas_builtin_ids,
             tool_kind=event.tool_kind,
             raw_params=event.raw_tool_params,
         )
         assert decision.action == TOOL_DENY
+
+    def test_the_same_frame_off_kas_is_marked_and_judged_as_a_bare_id(self) -> None:
+        """A harness that is not handed the KAS store builds the same event
+        with ``kas_builtin_ids`` False, so the kiro-cli rule does not fold onto
+        its bare ``read_file`` and the read is not proven read-only."""
+        from kiro_crew.hooks import TOOL_AUTO_APPROVE, HooksConfig, hook_gate_kwargs
+
+        on_kas = _kas_builtin_flow("read_file")
+        off_kas = _kas_builtin_flow("read_file", on_kas=False)
+        assert on_kas.kas_builtin_ids is True
+        assert off_kas.kas_builtin_ids is False
+        assert off_kas.tool_name == on_kas.tool_name == "read_file"
+        deny_fs_read = HookManager(HooksConfig(auto_deny_tools=["fs_read"]))
+        assert (
+            deny_fs_read.on_tool_call(off_kas.title, **hook_gate_kwargs(off_kas)).action
+            != TOOL_DENY
+        )
+        assert (
+            deny_fs_read.on_tool_call(on_kas.title, **hook_gate_kwargs(on_kas)).action == TOOL_DENY
+        )
+        r = HookManager().on_tool_call(
+            off_kas.title, classifier_only=True, **hook_gate_kwargs(off_kas)
+        )
+        assert r.action != TOOL_AUTO_APPROVE
 
 
 class TestKasMcpServedIdentity:

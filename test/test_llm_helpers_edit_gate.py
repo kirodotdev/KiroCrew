@@ -24,6 +24,11 @@ from kiro_crew import llm_helpers
 from kiro_crew.llm_helpers import ToolApprovalPolicy, _resolve_permission
 from kiro_crew.providers.base import EVENT_PERMISSION_REQUEST, LLMEvent
 
+#: An absolute delete target on this host. A delete's one params spelling is
+#: anchored only with a drive on Windows (``tool_paths._is_anchored``), so a
+#: POSIX ``/tmp/...`` would read as drive-relative there.
+_DELETE_ROOT = "C:\\tmp" if os.name == "nt" else "/tmp"
+
 _PROSE = (
     "# Sandbox notes\n\n"
     "The sandbox masks ~/.ssh and ~/.aws for the child process.\n"
@@ -705,7 +710,9 @@ class TestADeleteIsGatedOnItsTarget:
 
     @pytest.mark.asyncio
     async def test_deleting_an_ordinary_file_is_allowed(self) -> None:
-        approved, _provider, rows = await _resolve(_delete_event("/tmp/proj/old-notes.md"))
+        approved, _provider, rows = await _resolve(
+            _delete_event(os.path.join(_DELETE_ROOT, "proj", "old-notes.md"))
+        )
         assert approved is True, _error(rows)
 
     @pytest.mark.asyncio
@@ -715,7 +722,7 @@ class TestADeleteIsGatedOnItsTarget:
         does not enter the target gate on a kind it asserted itself."""
         with patch.object(llm_helpers, "_edit_target_denial", side_effect=AssertionError("gated")):
             approved, _provider, _rows = await _resolve(
-                _delete_event("/tmp/proj/old-notes.md", trusted=False)
+                _delete_event(os.path.join(_DELETE_ROOT, "proj", "old-notes.md"), trusted=False)
             )
         assert approved is True
 
@@ -726,4 +733,4 @@ class TestADeleteIsGatedOnItsTarget:
             llm_helpers, "_first_tool_input_denial", side_effect=AssertionError("scanned")
         ):
             with pytest.raises(AssertionError, match="scanned"):
-                await _resolve(_delete_event("/tmp/proj/old-notes.md"))
+                await _resolve(_delete_event(os.path.join(_DELETE_ROOT, "proj", "old-notes.md")))

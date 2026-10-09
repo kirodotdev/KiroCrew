@@ -1171,58 +1171,12 @@ def non_interactive_hint(command: str) -> str:
     return classify_interactive_command(command).hint
 
 
-#: Longest ``title`` / ``command`` a :class:`ToolCallState` retains. Both are
-#: backend-authored strings bounded on the wire only by the transport's frame
-#: cap, and the handle keeps up to ``MAX_ACTIVE_TOOL_CALLS`` states for a turn.
-#: ``title`` is display text, so its head is kept. ``command`` has readers at
-#: both ends: ``parse_wait_seconds``, ``first_program`` and ``match_fragment``
-#: read its head, and the stall-recovery nudge's log-redirect hint
-#: (``extract_log_redirect_target``) reads the ``> file`` a long shell command
-#: typically ends with -- so a command over the bound keeps its first
-#: ``MAX_RETAINED_COMMAND_CHARS - MAX_RETAINED_COMMAND_TAIL_CHARS`` characters
-#: and its last ``MAX_RETAINED_COMMAND_TAIL_CHARS``, joined by a marker, on
-#: every harness alike. The residual is a redirect buried in the middle of a
-#: command longer than four kilobytes.
-MAX_RETAINED_TITLE_CHARS = 512
-MAX_RETAINED_COMMAND_CHARS = 4096
-MAX_RETAINED_COMMAND_TAIL_CHARS = 512
-_COMMAND_ELISION = " ...[elided]... "
-#: Longest ``tool_name`` / ``mcp_server_name`` a state retains -- the bound
-#: Crew's own MCP tool surface places on a name, so a name the surface would
-#: list is kept whole and a longer one is a head.
-MAX_RETAINED_NAME_CHARS = 512
-
-
 @dataclass
 class ToolCallState:
-    """Snapshot of the in-flight tool call the oracle reasons about.
-
-    ``title`` and ``command`` are bounded at construction (the point of
-    retention) by ``MAX_RETAINED_TITLE_CHARS`` / ``MAX_RETAINED_COMMAND_CHARS``:
-    a state is held until the call's terminal result, and a turn may hold many,
-    so an unbounded backend string here would be an unbounded row.
-    """
+    """Snapshot of the in-flight tool call the oracle reasons about."""
 
     title: str = ""
     command: str = ""  # redacted cached tool input
-
-    def __post_init__(self) -> None:
-        if len(self.title) > MAX_RETAINED_TITLE_CHARS:
-            self.title = self.title[:MAX_RETAINED_TITLE_CHARS]
-        if len(self.command) > MAX_RETAINED_COMMAND_CHARS:
-            head = (
-                MAX_RETAINED_COMMAND_CHARS - MAX_RETAINED_COMMAND_TAIL_CHARS - len(_COMMAND_ELISION)
-            )
-            self.command = (
-                self.command[:head]
-                + _COMMAND_ELISION
-                + self.command[-MAX_RETAINED_COMMAND_TAIL_CHARS:]
-            )
-        if len(self.tool_name) > MAX_RETAINED_NAME_CHARS:
-            self.tool_name = self.tool_name[:MAX_RETAINED_NAME_CHARS]
-        if len(self.mcp_server_name) > MAX_RETAINED_NAME_CHARS:
-            self.mcp_server_name = self.mcp_server_name[:MAX_RETAINED_NAME_CHARS]
-
     dispatch_ts: float = 0.0  # time.monotonic() at EVENT_TOOL_CALL
     is_shell: bool = False
     # ``boottime_now()`` at EVENT_TOOL_CALL — the SAME clock /proc dates process
@@ -1366,9 +1320,9 @@ class InFlightToolTracker:
     there, and the sub-agent carries ``None``. The tracker never reads it.
     """
 
-    __slots__ = ("_calls", "_current_id", "_evicted", "_idless", "_max_calls")
+    __slots__ = ("_calls", "_current_id", "_idless")
 
-    def __init__(self, max_calls: int | None = None) -> None:
+    def __init__(self) -> None:
         # Insertion order IS dispatch order, so the newest remaining call is
         # ``next(reversed(...))`` — the main agent's parallel calls can finish in
         # any order and the judged call must fall back to the most recent one
@@ -1383,15 +1337,6 @@ class InFlightToolTracker:
         # dispatch simply overwrites this slot. ``_current_id == ""`` with a
         # non-None ``_idless`` is exactly the id-less-judged state.
         self._idless: tuple[ToolCallState, object] | None = None
-        # Most stored calls at once (``None``: unbounded). A backend that emits
-        # distinct tool_call frames whose results never report a terminal status
-        # would otherwise grow the map for the length of the turn. At the cap the
-        # OLDEST call is evicted -- the one most likely never to get a terminal --
-        # and the call just dispatched is always kept, so the judged call stays
-        # the one actually in flight. ``_evicted`` records that this turn lost a
-        # row, so an emptied map does not prove that nothing is running.
-        self._max_calls = max_calls
-        self._evicted = False
 
     @property
     def current(self) -> ToolCallState | None:
@@ -1425,15 +1370,6 @@ class InFlightToolTracker:
         return bool(self._calls)
 
     @property
-    def evicted(self) -> bool:
-        """Whether a dispatch evicted a stored call since the last :meth:`clear`.
-
-        Once set, an empty running set does not prove that no call is running:
-        the evicted call may still be live.
-        """
-        return self._evicted
-
-    @property
     def active_calls(self) -> dict[str, tuple[ToolCallState, object]]:
         """The live ``{toolCallId: (state, aux)}`` map, read-only by convention.
 
@@ -1456,13 +1392,6 @@ class InFlightToolTracker:
         self._current_id = call_id or ""
         if call_id:
             self._idless = None
-            if (
-                self._max_calls is not None
-                and call_id not in self._calls
-                and len(self._calls) >= self._max_calls
-            ):
-                self._calls.pop(next(iter(self._calls)), None)
-                self._evicted = True
             self._calls[call_id] = (state, aux)
         else:
             self._idless = (state, aux)
@@ -1508,7 +1437,6 @@ class InFlightToolTracker:
         self._calls.clear()
         self._current_id = ""
         self._idless = None
-        self._evicted = False
         return had
 
 

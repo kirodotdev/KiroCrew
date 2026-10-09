@@ -20,7 +20,6 @@ working.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import time
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
@@ -32,7 +31,6 @@ from kiro_crew.acp import kas_wire
 from kiro_crew.acp._dispatch import (
     DRAIN_YIELD_AFTER_S,
     TOOL_CALL_CACHE_MAX_ENTRIES,
-    TOOL_CALL_CACHE_MAX_KEY_CHARS,
     TOOL_CALL_CACHE_MAX_PAYLOAD_CHARS,
     build_permission_event,
     classify_notification,
@@ -197,35 +195,6 @@ from kiro_crew.sel import sel
 from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN
 
 logger = logging.getLogger(__name__)
-
-#: Most tool calls the liveness attribution map (``_active_tool_calls``) holds
-#: at once. It is the provenance caches' count bound by name, not a second
-#: literal: both bound the same population -- the calls of one turn with no
-#: terminal result yet -- and a turn cannot legitimately have this many open.
-#: Past it the oldest attribution is evicted (see the map's note in
-#: ``__init__``). Each retained row is itself bounded: ``ToolCallState`` cuts
-#: its ``title`` and ``command`` at construction.
-MAX_ACTIVE_TOOL_CALLS = TOOL_CALL_CACHE_MAX_ENTRIES
-
-
-def _liveness_key(tool_call_id: object) -> str:
-    """The key the liveness map and the output-seen set hold for a call.
-
-    A ``toolCallId`` is backend-authored and bounded on the wire only by the
-    transport frame cap. An id within the provenance caches' key bound is kept
-    as it is; a longer one is held as its digest, so the key is bounded without
-    the two ids a long key could collide on being conflated -- the same id maps
-    to the same digest at dispatch, at its streamed output and at its terminal.
-    A value that is not a string (a JSON number, ``None``) is no key: the
-    result parser hands the frame's ``toolCallId`` through as it arrived, and a
-    harness that spells one as a number must not crash the turn here.
-    """
-    if not isinstance(tool_call_id, str):
-        return ""
-    if len(tool_call_id) <= TOOL_CALL_CACHE_MAX_KEY_CHARS:
-        return tool_call_id
-    return "sha256:" + hashlib.sha256(tool_call_id.encode("utf-8", "surrogatepass")).hexdigest()
-
 
 #: Hook executions one session may have running at once. A hook runs for up to
 #: its own timeout, so this bounds the processes a peer can hold open.
@@ -1165,13 +1134,7 @@ class AcpSessionHandle:
         # tracker's aux payload (``None`` for a non-shell tool). ``ToolCallState``
         # does not carry the id, and the ``waiting_input`` status must name the
         # call, so the tracker keeps it too (``_inflight_tool_call_id`` below).
-        # Bounded by ``MAX_ACTIVE_TOOL_CALLS``: a backend that emits distinct
-        # tool_call frames whose results never report a terminal status would
-        # otherwise grow the tracker for the length of the turn. At the cap the
-        # OLDEST attribution is evicted and the call just dispatched is always
-        # kept, so the oracle keeps reporting the tool actually in flight rather
-        # than failing permissive on stall detection.
-        self._tool_tracker = InFlightToolTracker(max_calls=MAX_ACTIVE_TOOL_CALLS)
+        self._tool_tracker = InFlightToolTracker()
         # toolCallIds that streamed output (a non-final tool_call_update with
         # content) this turn. A command that already produced output may have
         # already acted, so a non-interactive retry of it is never ``safe_retry``.
@@ -2485,20 +2448,6 @@ class AcpSessionHandle:
         )
         await self.reject_tool(event.request_id)
         return True
-
-    def _no_tool_in_flight(self) -> bool:
-        """Whether the turn provably has no tool call running.
-
-        An empty attribution map proves it only while the map has never
-        evicted this turn: once the tracker's ``evicted`` is set, a call
-        whose row was evicted at the cap may still be running, and reading the
-        emptied map as "nothing in flight" would arm the stale clock against
-        it -- the cancel-probe would then stop a live call as a wedge that did
-        not exist. After an eviction the turn is treated as having a tool in
-        flight until its ``clear()``; the stale clock gives up nothing it
-        could prove.
-        """
-        return not self._tool_tracker.any_active and not self._tool_tracker.evicted
 
     def _release_settled_tool_call(self, update: object, scope: str) -> None:
         """Drop a settled call's provenance rows once its result frame reports a
@@ -7205,7 +7154,7 @@ class AcpSessionHandle:
             filtered_events.append(ev)
             if ev.kind == EVENT_TEXT_CHUNK:
                 self.last_prompt_stats.text_chunks += 1
-                self._stale_eligible = self._no_tool_in_flight()
+                self._stale_eligible = not self._tool_tracker.any_active
                 self._prompt_or_tool_seen = True
             elif ev.kind == EVENT_TOOL_CALL:
                 self._stale_eligible = False
@@ -7219,26 +7168,6 @@ class AcpSessionHandle:
                 # overwrite the verdict, and the turn's consumer would re-issue a
                 # call whose refusal an intervening call had already superseded.
                 self.last_infra_error = None
-                # The liveness map holds only calls the provenance caches
-                # ADMITTED, so the two bounds act on one population and the
-                # map never evicts an admitted, possibly live call to make room
-                # for a frame whose permission request is about to be refused
-                # as unverifiable. Admission is read off the identity store it
-                # writes a row into for every admitted frame -- a store every
-                # harness fills, so no harness is conditioned on here (H13): a
-                # harness handed no admission record admits every frame, and
-                # the only frames absent are the ones the KAS bound refused. A
-                # frame with no id was never cached and is tracked as before.
-                if ev.tool_call_id and (
-                    scoped_tool_cache_key(self._session_id, ev.tool_call_id)
-                    not in self._tool_call_tool_name
-                ):
-                    logger.debug(
-                        "liveness map skips a tool call the provenance caches refused "
-                        "[session=%s]",
-                        self._session_id,
-                    )
-                    continue
                 # Pre-dispatch interactive classification (RFC §14.6): a TABLE
                 # verdict on the trusted shell command (never the LLM-authored
                 # title), carried on the oracle's tool state so the window
@@ -7286,42 +7215,22 @@ class AcpSessionHandle:
                 # judged one (the interactive classification rides as the aux
                 # payload, read back via ``_inflight_interactive``). A dispatch
                 # always changes the judged call, so retire the oracle.
-                _was_evicted = self._tool_tracker.evicted
-                self._tool_tracker.dispatch(
-                    _liveness_key(ev.tool_call_id or ""), inflight_tool, interactive
-                )
-                if self._tool_tracker.evicted and not _was_evicted:
-                    logger.warning(
-                        "tool-call liveness map reached its bound (%d calls with no terminal "
-                        "result this turn); evicting the oldest attribution so the call in "
-                        "flight stays tracked [session=%s]",
-                        MAX_ACTIVE_TOOL_CALLS,
-                        self._session_id,
-                    )
+                self._tool_tracker.dispatch(ev.tool_call_id or "", inflight_tool, interactive)
                 self._retire_liveness_state()
             elif ev.kind == EVENT_TOOL_RESULT:
                 if not ev.tool_final and ev.tool_call_id:
                     # Streamed partial output: the command has acted, so any
                     # later non-interactive retry of it is not a safe replay.
-                    # Bounded like the map: the key is the liveness key, and at
-                    # the map's cap the set is pruned to the calls still in
-                    # flight -- an id only matters here while its call is one.
-                    _seen_key = _liveness_key(ev.tool_call_id)
-                    if _seen_key:
-                        if len(self._tool_output_seen) >= MAX_ACTIVE_TOOL_CALLS:
-                            self._tool_output_seen &= set(self._active_tool_calls)
-                        self._tool_output_seen.add(_seen_key)
+                    self._tool_output_seen.add(ev.tool_call_id)
                 if ev.tool_status in TERMINAL_TOOL_STATUSES:
                     # The shared hand-off rule drops the finished call and, when
                     # it was the judged one, re-points to the newest remaining
                     # dispatch (or clears). It returns whether the judged call
                     # changed — only then is the oracle retired and the input
                     # wait reset.
-                    judged_changed = self._tool_tracker.result(
-                        _liveness_key(ev.tool_call_id or ""), terminal=True
-                    )
-                    self._tool_dispatched = not self._no_tool_in_flight()
-                    self._stale_eligible = self._no_tool_in_flight()
+                    judged_changed = self._tool_tracker.result(ev.tool_call_id or "", terminal=True)
+                    self._tool_dispatched = self._tool_tracker.any_active
+                    self._stale_eligible = not self._tool_tracker.any_active
                     if judged_changed:
                         self._input_wait_emitted = False
                         self._retire_liveness_state()

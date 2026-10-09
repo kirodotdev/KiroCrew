@@ -2447,3 +2447,93 @@ class TestGateDecisionAliasGroups:
         assert resolve(c, None, "tools", "x").explicit_deny is True
         p = Profile(name="p", controls={"tools": allow})
         assert resolve(None, p, "tools", "x").explicit_deny is False
+
+    # ── The read pair: a deny on ``fs_read`` beside an allow on ``read_file`` ──
+    # A KAS ``read_file`` is one identity with two spellings (``read_file`` and
+    # its kiro-cli policy name ``fs_read``). Within one ``ScopedRuleset`` the
+    # live half is the mode's (Rule 1: allow-mode ignores ``deny``, deny-mode
+    # ignores ``allow``), so a layer that names ``deny: [fs_read]`` alongside
+    # ``allow: [read_file]`` in deny mode must refuse the KAS read, at every
+    # layer and through every fold.
+
+    _READ_GROUP = (("read_file", "fs_read"),)
+
+    def _read_pair(self) -> ScopedRuleset:
+        return ScopedRuleset(MODE_DENY, ("Read File", "read_file"), deny=("fs_read",))
+
+    def test_read_pair_in_one_profile_layer_denies_the_kas_read(self):
+        d = governance.gate_decision(
+            None, self._profile(self._read_pair()), "Read File", alias_groups=self._READ_GROUP
+        )
+        assert not d.permitted
+        assert d.item == "fs_read"
+        assert d.explicit_deny is True
+        assert d.layer == "profile"
+
+    def test_read_pair_in_one_ceiling_layer_denies_the_kas_read(self):
+        c = GovernanceCeiling(
+            version=1,
+            boot=parse_policy(_policy_body()).boot,
+            controls={"tools": self._read_pair()},
+        )
+        d = governance.gate_decision(c, None, "Read File", alias_groups=self._READ_GROUP)
+        assert not d.permitted
+        assert d.item == "fs_read"
+        assert d.explicit_deny is True
+        assert d.layer == "policy"
+
+    @pytest.mark.parametrize("outer_first", [True, False])
+    def test_read_pair_split_across_a_fold_still_denies_the_kas_read(self, outer_first):
+        """An allow on ``read_file`` in one tier, a deny on ``fs_read`` in the
+        other, composed in either order: the deny binds."""
+        allow = ScopedRuleset(MODE_ALLOW, ("Read File", "read_file"))
+        deny = ScopedRuleset(MODE_DENY, deny=("fs_read",))
+        composed = allow.compose(deny) if outer_first else deny.compose(allow)
+        c = GovernanceCeiling(
+            version=1, boot=parse_policy(_policy_body()).boot, controls={"tools": composed}
+        )
+        d = governance.gate_decision(c, None, "Read File", alias_groups=self._READ_GROUP)
+        assert not d.permitted
+        assert d.item == "fs_read"
+        assert d.explicit_deny is True
+
+    @pytest.mark.parametrize(
+        ("parent_tools", "child_tools"),
+        [
+            (
+                {"mode": "deny", "deny": ["fs_read"]},
+                {"mode": "allow", "allow": ["Read File", "read_file"]},
+            ),
+            (
+                {"mode": "allow", "allow": ["Read File", "read_file"]},
+                {"mode": "deny", "deny": ["fs_read"]},
+            ),
+        ],
+        ids=["parent-denies", "child-denies"],
+    )
+    def test_a_profile_extends_fold_keeps_a_kiro_cli_deny_on_the_kas_read(
+        self, parent_tools, child_tools
+    ):
+        """``compose_profiles`` (the ``extends`` fold) puts both links in ONE
+        composed control. A deny on ``fs_read`` in either link refuses the KAS
+        ``read_file`` the other link allows."""
+        parent = parse_profile({"name": "base", "tools": parent_tools})
+        child = parse_profile({"name": "child", "extends": "base", "tools": child_tools})
+        merged = compose_profiles(parent, child)
+        d = governance.gate_decision(None, merged, "Read File", alias_groups=self._READ_GROUP)
+        assert not d.permitted
+        assert d.item == "fs_read"
+        assert d.explicit_deny is True
+
+    def test_a_profile_extends_fold_keeps_a_kiro_cli_write_deny_on_the_kas_write(self):
+        parent = parse_profile({"name": "base", "tools": {"mode": "allow", "allow": ["fs_write"]}})
+        child = parse_profile(
+            {"name": "child", "extends": "base", "tools": {"mode": "deny", "deny": ["str_replace"]}}
+        )
+        merged = compose_profiles(parent, child)
+        d = governance.gate_decision(
+            None, merged, "str_replace", alias_groups=(("str_replace", "fs_write"),)
+        )
+        assert not d.permitted
+        assert d.item == "str_replace"
+        assert d.explicit_deny is True

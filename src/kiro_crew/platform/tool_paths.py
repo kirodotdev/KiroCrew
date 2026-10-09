@@ -17,10 +17,11 @@ itself is identical and must not drift between them.
 
 from __future__ import annotations
 
+import ntpath
 import os
 import re
 from collections.abc import Mapping
-from types import MappingProxyType
+from types import MappingProxyType, ModuleType
 
 #: EVERY argument name a tool may carry its target file path under. Public because
 #: it is shared with the consent prompt in ``cli_chat``: a prompt that disclosed a
@@ -355,7 +356,7 @@ def edit_target_candidates(
     else:
         candidates = TargetPaths()
         for path in collected:
-            if _is_anchored(path):
+            if _is_anchored(path, require_drive=True):
                 candidates.append(path)
             else:
                 # Withheld, not appended: the delete's only target spelling
@@ -380,11 +381,25 @@ def edit_target_candidates(
     return candidates
 
 
-def _is_anchored(path: str) -> bool:
+def _is_anchored(path: str, *, require_drive: bool = False, pathmod: ModuleType = os.path) -> bool:
     """Whether *path* names a file independently of the process CWD: absolute
     after ``~``/env expansion. The expansion mirrors what the sensitive-path
-    resolvers apply, so ``~/x`` is anchored and ``../x`` is not."""
-    return os.path.isabs(os.path.expanduser(os.path.expandvars(path)))
+    resolvers apply, so ``~/x`` is anchored and ``../x`` is not.
+
+    *require_drive* is set for a delete's params target, its whole target
+    spelling: on Windows a rooted path with no drive (``\\foo``) is relative to
+    the process's CURRENT drive, so the gateway and the engine can read it as two
+    different files, and it is not anchored there. ``pathmod`` is the path module
+    the check reads (``os.path`` in production; a test passes ``ntpath`` to pin
+    the Windows reading on any host).
+    """
+    expanded = pathmod.expanduser(pathmod.expandvars(path))
+    if not pathmod.isabs(expanded):
+        return False
+    if require_drive and pathmod is ntpath:
+        drive, _ = ntpath.splitdrive(expanded)
+        return bool(drive)
+    return True
 
 
 #: Argument names under which a NON-shell tool carries a document BODY: the

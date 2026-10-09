@@ -2481,6 +2481,7 @@ class AcpProvider(LLMProvider):
             tool_identity_trusted=e.tool_identity_trusted,
             mcp_identity_trusted=e.mcp_identity_trusted,
             mcp_identity_unreadable=e.mcp_identity_unreadable,
+            kas_builtin_ids=e.kas_builtin_ids,
             server_name=e.server_name,
             oauth_url=e.oauth_url,
             subagents=e.subagents,

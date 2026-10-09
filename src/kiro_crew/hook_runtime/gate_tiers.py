@@ -322,9 +322,14 @@ class GateFacts:
         for a built-in to a server they never named. kiro-cli stamps
         ``mcpServerName`` on every MCP-served call, so a non-empty server is the
         discriminator; an MCP call keeps exactly the targets it had.
+
+        KAS ONLY. The ids are KAS's (``ToolCall.kas_builtin_ids``, set for a
+        member of ``ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL``); another
+        harness that stamps a bare ``read_file`` or ``run_command`` is judged
+        under that id alone, as on main.
         """
         call = self.call
-        if call.mcp_tool and not call.mcp_server:
+        if call.kas_builtin_ids and call.mcp_tool and not call.mcp_server:
             return policy_aliases(call.mcp_tool)
         return ()
 
@@ -977,7 +982,10 @@ def _tier_read_only(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
         if kind and kind not in _READ_ONLY_TOOL_KINDS:
             return ToolHookResult.allow()
         if _is_host_read_only_builtin(
-            call.mcp_tool, call.mcp_server, mcp_identity_trusted=call.identity_trusted
+            call.mcp_tool,
+            call.mcp_server,
+            mcp_identity_trusted=call.identity_trusted,
+            kas_builtin_ids=call.kas_builtin_ids,
         ):
             return ToolHookResult.auto_approve(read_only=True)
         return ToolHookResult.allow()

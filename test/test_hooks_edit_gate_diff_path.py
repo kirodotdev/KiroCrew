@@ -22,6 +22,11 @@ import pytest
 
 from kiro_crew.hooks import TOOL_DENY, HookManager, HooksConfig
 
+#: An absolute delete target on this host. A delete's one params spelling is
+#: anchored only with a drive on Windows (``tool_paths._is_anchored``), so a
+#: POSIX ``/tmp/...`` would read as drive-relative there.
+_DELETE_ROOT = "C:\\tmp" if os.name == "nt" else "/tmp"
+
 #: In the write-only tier: reads pass the sensitive-path keystone, edits are
 #: denied by the write-protected branch. This is what makes the read-allowance
 #: regression guard meaningful — a read+write floor path would be denied by the
@@ -485,7 +490,10 @@ class TestARelativeParamsPathIsUnverifiableOnlyWhereItIsTheWholeTarget:
         assert "relative target path" in hit[1]
 
     def test_absolute_delete_target_is_judged_on_its_merits(self) -> None:
-        decision = _call(raw_params={"targetFile": "/tmp/scratch/old.log"}, tool_kind="delete")
+        decision = _call(
+            raw_params={"targetFile": os.path.join(_DELETE_ROOT, "scratch", "old.log")},
+            tool_kind="delete",
+        )
         assert decision.action != TOOL_DENY
 
     def test_relative_path_on_an_ordinary_edit_is_not_refused(self) -> None:
@@ -517,16 +525,17 @@ class TestARelativeParamsPathIsUnverifiableOnlyWhereItIsTheWholeTarget:
         from kiro_crew.platform.tool_paths import PARAMS_ONLY_TARGET_KINDS, edit_target_candidates
 
         assert PARAMS_ONLY_TARGET_KINDS == frozenset({"delete"})
-        params = {"path": "/tmp/ok.md", "targetFile": "../x"}
+        ok = os.path.join(_DELETE_ROOT, "ok.md")
+        params = {"path": ok, "targetFile": "../x"}
         as_delete = edit_target_candidates(params, "", tool_kind="delete")
         assert as_delete.unanchored is True
-        assert list(as_delete) == ["/tmp/ok.md"]
+        assert list(as_delete) == [ok]
         as_edit = edit_target_candidates(params, "", tool_kind="edit")
         assert as_edit.unanchored is False
-        assert list(as_edit) == ["/tmp/ok.md", "../x"]
+        assert list(as_edit) == [ok, "../x"]
         unknown = edit_target_candidates(params, "")
         assert unknown.unanchored is False
-        assert list(unknown) == ["/tmp/ok.md", "../x"]
+        assert list(unknown) == [ok, "../x"]
 
     def test_governance_emits_the_never_permittable_marker_for_a_delete(self) -> None:
         from kiro_crew.platform.governance import (
@@ -540,6 +549,46 @@ class TestARelativeParamsPathIsUnverifiableOnlyWhereItIsTheWholeTarget:
         edit_pairs = classify_tool_args("edit", {"path": "notes/plan.md"})
         assert ("filesystem.write", _UNANCHORED_TARGET_ITEM) not in edit_pairs
         assert ("filesystem.write", "notes/plan.md") in edit_pairs
+
+    @pytest.mark.parametrize(
+        ("path", "anchored"),
+        [
+            ("\\Users\\me\\config.json", False),  # rooted, no drive: current drive
+            ("/Users/me/config.json", False),  # the same, forward slashes
+            ("C:\\Users\\me\\config.json", True),
+            ("C:/Users/me/config.json", True),
+            ("\\\\server\\share\\config.json", True),  # UNC names its share
+            ("C:config.json", False),  # drive-relative: that drive's CWD
+            ("..\\config.json", False),
+        ],
+    )
+    def test_a_windows_target_is_anchored_only_with_a_drive(self, path, anchored) -> None:
+        """On Windows a rooted path with no drive resolves against the process's
+        current drive, so the gateway and the engine can read it as two
+        different files; it is unanchored like a relative path."""
+        import ntpath
+
+        from kiro_crew.platform.tool_paths import _is_anchored
+
+        assert _is_anchored(path, require_drive=True, pathmod=ntpath) is anchored, path
+
+    def test_the_posix_reading_is_unchanged(self) -> None:
+        import posixpath
+
+        from kiro_crew.platform.tool_paths import _is_anchored
+
+        assert _is_anchored("/tmp/x", pathmod=posixpath) is True
+        assert _is_anchored("../x", pathmod=posixpath) is False
+        assert _is_anchored("\\foo", require_drive=True, pathmod=posixpath) is False
+
+    def test_an_edit_diff_path_keeps_the_plain_absolute_reading(self) -> None:
+        """The drive check is for a delete's params target only; an edit's
+        diff-block path is read as before on Windows."""
+        import ntpath
+
+        from kiro_crew.platform.tool_paths import _is_anchored
+
+        assert _is_anchored("/Users/me/notes.md", pathmod=ntpath) is True
 
 
 class TestGovernanceClassifiesTheDiffBlockPath:
@@ -664,7 +713,10 @@ class TestADeleteIsOnTheWritePlane:
         assert decision.action == TOOL_DENY
 
     def test_deleting_an_ordinary_file_is_not_denied(self) -> None:
-        decision = _call(tool_kind="delete", raw_params={"targetFile": "/tmp/notes.md"})
+        decision = _call(
+            tool_kind="delete",
+            raw_params={"targetFile": os.path.join(_DELETE_ROOT, "notes.md")},
+        )
         assert decision.action != TOOL_DENY
 
     def test_a_delete_naming_no_target_is_denied(self) -> None:

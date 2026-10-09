@@ -1901,7 +1901,13 @@ read-your-writes should add it deliberately, with its own tests.
   every first-class harness; `HookManager.on_tool_call` fills them from the KAS
   vocabulary tables (`platform/tool_names.py`, `policy_aliases` /
   `policy_alias_split`) only for a server-less trusted identity those tables
-  know -- an MCP-served call keeps exactly the targets it had. Because this
+  know, on a permission event the KAS harness built (`kas_builtin_ids`) -- an
+  MCP-served call keeps exactly the targets it had, and another harness that
+  stamps the same bare id is asked under that id alone. This admits more than
+  asking the raw id by itself did: an allow-mode `tools: ["fs_write"]` now
+  permits a KAS `str_replace` / `fs_append` (and `fs_read` / `grep` / `glob`
+  permit the KAS read and search ids), which is the kiro-cli parity the table
+  exists for; `delete_file` is not admitted by `fs_write`. Because this
   enforcement is
   on the common path, the first-party app-own auto-approve below does **not**
   repeat it; what remains load-bearing there is the identity requirement itself
