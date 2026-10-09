@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from chat_test_helpers import _make_state
@@ -895,6 +895,241 @@ async def test_a_requeued_channel_steer_carries_the_drop_notice_address(tmp_path
 
     transport.send_message.assert_awaited_once()
     assert "steer that the turn never took" in transport.send_message.await_args.args[1]
+
+
+def _dying_turn(state, monkeypatch) -> None:
+    """The slot's next turn dies before any output, and nothing drains after it."""
+    from kiro_crew.acp.client import AcpError
+
+    state.broadcast_ws = MagicMock()
+    state.push_slots_update = MagicMock()
+    state.context_builder = None
+    state.consolidator = None
+    state._hook_store = None
+    state._yolo = False
+    acp = MagicMock()
+    acp.context_usage_pct = MagicMock(return_value=10.0)
+
+    async def _die(_msg):
+        raise AcpError("ACP process exited (code=-15)")
+        yield  # an async generator
+
+    acp.stream = _die
+    acp.stream_command = _die
+    acp.shutdown = AsyncMock()
+    state.sessions.get_or_create = AsyncMock(return_value=(acp, True, False))
+    state.sessions.reset = AsyncMock()
+
+    async def _no_drain(_state, _slot, **_kwargs) -> bool:
+        return False
+
+    monkeypatch.setattr(cr, "_start_next_queued_turn", _no_drain)
+
+
+async def _replay_queued_dm_through_recovery(
+    tmp_path, monkeypatch, *, hand_row: bool, run_prefix: str = ""
+):
+    """Queue a DM message on the busy slot, drain it, and let its turn die.
+
+    The drain's hand-over is reproduced: the entry leaves the queue and becomes
+    the turn's row with the entry's meta, under the channel's provenance. With
+    *hand_row* False the runner gets no row and finds the triggering row by
+    scanning the transcript instead. A *run_prefix* is runner text in front of
+    the row's words, the shape the turn's text has once the runner prepends
+    context or failure notes before streaming. Returns the state, slot,
+    transport, text and the recovery's requeued entry.
+    """
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    dispatcher, client, sessions, state, slot, _ = await _bound_to_busy_dashboard(
+        tmp_path, steer_client=None
+    )
+    transport = _discord_transport()
+    state.register_channel_transport(transport)
+    text = "queued, replayed, then dropped"
+    await dispatcher.handle_message(_message(text))
+    (entry,) = slot._queue
+    slot.queue_remove_by_id(entry["id"])
+    slot.task = None
+    row = slot.append("user", text, "msg msg-user", meta=dict(entry["meta"]))
+    _dying_turn(state, monkeypatch)
+
+    await cr._run_chat(
+        state,
+        slot,
+        run_prefix + text,
+        _directive_user_origin=True,
+        _directive_channel_origin=True,
+        _commands_off=True,
+        _current_message=row if hand_row else None,
+    )
+
+    (requeued,) = [q for q in slot._queue if text in (q.get("content") or "")]
+    return state, slot, transport, text, requeued
+
+
+@pytest.mark.asyncio
+async def test_a_recovery_replayed_channel_entry_keeps_the_drop_notice_address(
+    tmp_path, monkeypatch
+) -> None:
+    """A queued DM message whose turn dies before output is requeued verbatim by
+    the runner's recovery. The requeued entry still names the DM, so when the
+    retry's drain drops it the DM is told, exactly as for the first queueing."""
+    state, slot, transport, text, requeued = await _replay_queued_dm_through_recovery(
+        tmp_path, monkeypatch, hand_row=True
+    )
+    assert (requeued.get("meta") or {}).get(sc.CHANNEL_RECIPIENT_META_KEY) == {
+        "channel_type": "discord",
+        "conversation_id": "c1",
+        "principal": "u1",
+    }
+
+    state.sessions.set_mirror_link("dashboard:chat-1", "C0FFEE", "1758.0004")
+    cr._drop_stale_admissions(state, slot)
+    await _settle_background(state)
+
+    assert [q for q in slot._queue if q.get("content") == text] == []
+    transport.send_message.assert_awaited_once()
+    conversation, notice = transport.send_message.await_args.args
+    assert conversation == "c1"
+    assert "dropped before it ran" in notice and text in notice
+
+
+@pytest.mark.asyncio
+async def test_a_recovery_takes_no_drop_notice_address_from_a_scanned_row(
+    tmp_path, monkeypatch
+) -> None:
+    """A row the runner finds by scanning the transcript may have been restored
+    from disk, so it is never the source of a write target: the requeue carries
+    no recipient, and a later drop reports nothing to any channel."""
+    state, slot, transport, text, requeued = await _replay_queued_dm_through_recovery(
+        tmp_path, monkeypatch, hand_row=False
+    )
+    assert sc.CHANNEL_RECIPIENT_META_KEY not in (requeued.get("meta") or {})
+
+    state.sessions.set_mirror_link("dashboard:chat-1", "C0FFEE", "1758.0004")
+    cr._drop_stale_admissions(state, slot)
+    await _settle_background(state)
+
+    transport.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_recovery_of_runner_prefixed_text_takes_no_drop_notice_address(
+    tmp_path, monkeypatch
+) -> None:
+    """The runner can put its own text in front of the turn's words before it
+    streams, and recovery requeues that longer text. That text is not the DM's
+    own words, so the requeue names no recipient and a drop quotes nothing to
+    the DM."""
+    note = "[a background task failed; read its result from disk]\n\n"
+    state, slot, transport, text, requeued = await _replay_queued_dm_through_recovery(
+        tmp_path, monkeypatch, hand_row=True, run_prefix=note
+    )
+    assert note in requeued["content"] and requeued["content"] != text
+    assert sc.CHANNEL_RECIPIENT_META_KEY not in (requeued.get("meta") or {})
+
+    state.sessions.set_mirror_link("dashboard:chat-1", "C0FFEE", "1758.0004")
+    cr._drop_stale_admissions(state, slot)
+    await _settle_background(state)
+
+    transport.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_auth_retry_of_changed_text_takes_no_address_from_the_row_meta(
+    tmp_path, monkeypatch
+) -> None:
+    """An auth-retry requeue hands the row's whole meta to the recovery as
+    extra meta. When the turn's text differs from the row's, the addresses in
+    that meta are not carried: only the row comparison may write them."""
+    from kiro_crew.acp.client import AcpAuthRequired
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("chat-1")
+    dm = sc.channel_recipient_meta("discord", "c1", "u1")
+    text = "a completion the DM's session queued"
+    row = slot.append("subagent", text, "msg msg-subagent", meta=dict(dm))
+    _dying_turn(state, monkeypatch)
+
+    async def _needs_login(_msg):
+        raise AcpAuthRequired("login required")
+        yield  # an async generator
+
+    acp, _, _ = await state.sessions.get_or_create()
+    acp.stream = _needs_login
+    acp.stream_command = _needs_login
+
+    prefixed = "[runner note]\n\n" + text
+    await cr._run_chat(state, slot, prefixed, _turn_actor="subagent", _current_message=row)
+
+    requeued = [q for q in slot._queue if q.get("content") == prefixed]
+    assert requeued, f"expected the auth-retry requeue, queue={slot._queue}"
+    assert sc.CHANNEL_RECIPIENT_META_KEY not in (requeued[0].get("meta") or {})
+
+
+@pytest.mark.asyncio
+async def test_a_recovery_replayed_cross_session_delivery_keeps_its_sender(
+    tmp_path, monkeypatch
+) -> None:
+    """The sending-session stamp is the other drop-notice address on a queued
+    entry, and a verbatim recovery requeue keeps it the same way."""
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _make_state(tmp_path)
+    sender = state.get_or_create_slot("sender-1")
+    slot = state.get_or_create_slot("target-1")
+    origin = sc.send_origin_meta(state, sender.key)
+    assert origin, "the sender has a tab identity to stamp"
+    text = "a delivery from another session"
+    row = slot.append("user", text, "msg msg-user", meta=dict(origin))
+    _dying_turn(state, monkeypatch)
+
+    await cr._run_chat(state, slot, text, _current_message=row)
+
+    (requeued,) = [q for q in slot._queue if q.get("content") == text]
+    assert (requeued.get("meta") or {}).get(sc.SEND_ORIGIN_META_KEY) == origin[
+        sc.SEND_ORIGIN_META_KEY
+    ]
+
+
+@pytest.mark.parametrize("second_sender", ["dashboard", "same-dm"])
+@pytest.mark.asyncio
+async def test_a_merged_row_keeps_an_address_only_its_every_entry_shares(
+    tmp_path, monkeypatch, second_sender
+) -> None:
+    """A merged row's text is every entry's, and a drop notice quotes that text
+    to the row's address. So a DM entry merged with a dashboard entry leaves the
+    row with no address, while two entries from the same DM keep it."""
+    from kiro_crew.dashboard.chat_delivery import queue_for_next_turn
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _make_state(tmp_path)
+    state.broadcast_ws = MagicMock()
+    state.subagents = None
+    slot = state.get_or_create_slot("busy-chat")
+    dm = sc.channel_recipient_meta("discord", "c1", "u1")[sc.CHANNEL_RECIPIENT_META_KEY]
+
+    queue_for_next_turn(state, slot, "from the DM", channel_recipient=dm)
+    queue_for_next_turn(
+        state,
+        slot,
+        "second message",
+        channel_recipient=dm if second_sender == "same-dm" else None,
+    )
+
+    cfg = MagicMock()
+    cfg.load.return_value.dashboard.merge_queued_messages = True
+    monkeypatch.setattr(cr, "KiroCrewConfig", cfg)
+    with (
+        patch.object(cr, "spawn_guarded_turn", return_value=MagicMock()),
+        patch.object(cr, "_run_chat", return_value=MagicMock()),
+    ):
+        assert await cr._start_next_queued_turn(state, slot) is True
+
+    row = [m for m in slot.messages if m.get("role") in ("user", "inject")][-1]
+    assert "2 queued messages merged" in row.get("content", "")
+    kept = (row.get("meta") or {}).get(sc.CHANNEL_RECIPIENT_META_KEY)
+    assert kept == (dm if second_sender == "same-dm" else None)
 
 
 @pytest.mark.asyncio

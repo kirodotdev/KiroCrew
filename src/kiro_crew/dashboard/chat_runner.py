@@ -7093,7 +7093,9 @@ async def _start_next_queued_turn(
     _drained_send_ids: list[str] = []
     # circular import: session_control imports this package's modules at module level.
     from kiro_crew.dashboard.session_control import (
+        CHANNEL_RECIPIENT_META_KEY,
         QUEUED_CONTAINMENT_META_KEY,
+        SEND_ORIGIN_META_KEY,
         audit_queued_allow,
     )
 
@@ -7128,6 +7130,21 @@ async def _start_next_queued_turn(
             _drained_meta.update(
                 (k, v) for k, v in _item_meta.items() if k != QUEUED_CONTAINMENT_META_KEY
             )
+    # A drop-notice address names the one sender whose text the notice quotes.
+    # A merged row's text is every entry's, so the row keeps an address only
+    # when every consumed entry carries that same address; otherwise the union's
+    # last writer would be quoted another sender's words.
+    for _address_key in (CHANNEL_RECIPIENT_META_KEY, SEND_ORIGIN_META_KEY):
+        _addresses = [
+            (
+                (item.get("meta") or {}).get(_address_key)
+                if isinstance(item.get("meta"), dict)
+                else None
+            )
+            for item in consumed
+        ]
+        if any(_address != _addresses[0] for _address in _addresses):
+            _drained_meta.pop(_address_key, None)
     # Model input only: the row keeps the user's text as typed.
     _possibly_delivered_steer = bool(_drained_meta.pop(STEER_POSSIBLY_DELIVERED_META, False))
     # Queue plumbing like the steer mark above, read the way the channel origin is:
@@ -9058,14 +9075,38 @@ async def _run_chat(
         channel-born session (fail-closed). The requeue is the moment its
         admission is re-affirmed, and the turn's directive provenance rides
         along so the audience exemption follows the original author.
+
+        A requeue of the sender's own text, unchanged, also keeps the sender's
+        drop-notice addresses (the channel conversation or the sending session),
+        so a retry the drain drops is reported to the same sender the first
+        queueing would have told. The text is compared with the row the drain
+        handed this turn, never with ``message``: the runner prepends context
+        and failure notes to ``message`` before streaming, and a notice quoting
+        that text would show the sender words that are not theirs. The
+        addresses are read only off that handed row, which this process
+        admitted; a row found by scanning the transcript may have been restored
+        from disk, and a write target is never taken from there.
         """
         # circular import: session_control imports this package's modules at module level.
-        from kiro_crew.dashboard.session_control import containment_meta
+        from kiro_crew.dashboard.session_control import (
+            CHANNEL_RECIPIENT_META_KEY,
+            SEND_ORIGIN_META_KEY,
+            containment_meta,
+        )
 
-        _recovery_meta = {
-            **containment_meta(state, slot),
-            **(extra_meta or {}),
-        }
+        _address_keys = (CHANNEL_RECIPIENT_META_KEY, SEND_ORIGIN_META_KEY)
+        _recovery_meta = containment_meta(state, slot)
+        # A caller's extra meta can be the handed row's whole meta, so its
+        # addresses are dropped here: the comparison below is their one writer.
+        _recovery_meta.update(
+            (k, v) for k, v in (extra_meta or {}).items() if k not in _address_keys
+        )
+        if isinstance(_current_message, dict) and content == _current_message.get("content"):
+            _row_meta = _current_message.get("meta")
+            if isinstance(_row_meta, dict):
+                for _key in _address_keys:
+                    if _key in _row_meta:
+                        _recovery_meta[_key] = _row_meta[_key]
         if _commands_off:
             # A recovery is a second turn of the SAME message: a channel entry that
             # arrived as turn content stays turn content when its retry drains, or
