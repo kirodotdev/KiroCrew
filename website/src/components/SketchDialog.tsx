@@ -9,6 +9,7 @@ import ErrorBoundary from './ErrorBoundary'
 import ErrorNotice from './ErrorNotice'
 import { i18nT } from '../i18n/t'
 import { useLanguage } from '../i18n/LanguageProvider'
+import { withBase } from '@/lib/basePath'
 
 /**
  * Sketch pad: an Excalidraw whiteboard in a modal, opened from the composer's
@@ -52,7 +53,7 @@ function loadExcalidraw(): Promise<typeof ExcalidrawModuleType> {
   // falls back to a third-party CDN (esm.sh) — which an air-gapped dashboard
   // can't reach and a private one shouldn't. The path is emitted into the
   // built dist (and served in dev) by vite.config's excalidrawFontsPlugin.
-  ;(window as { EXCALIDRAW_ASSET_PATH?: string }).EXCALIDRAW_ASSET_PATH = '/vendor/excalidraw/'
+  ;(window as { EXCALIDRAW_ASSET_PATH?: string }).EXCALIDRAW_ASSET_PATH = withBase('/vendor/excalidraw/')
   loadInFlight = Promise.all([
     import('@excalidraw/excalidraw'),
     // Vite splits the stylesheet into the same lazy chunk group; Excalidraw

@@ -23,6 +23,7 @@ import {
 import { precompressPlugin } from './scripts/precompress.mjs'
 import { atomicPublishPlugin } from './scripts/publish-dist.mjs'
 import { CONTEXT_SINGLETON_DEDUPE } from './vite.shared'
+import { resolveBuildBase, vendorImportMap } from './scripts/lib/basePath.mjs'
 import {
   parseBrandingConfig,
   applyBrandingToHtml,
@@ -82,25 +83,17 @@ function tokenProxyPlugin(): Plugin {
  * so exports are never renamed or tree-shaken.
  */
 function appImportMapPlugin(): Plugin {
+  let base = '/'
   return {
     name: 'kirocrew-app-importmap',
     enforce: 'post',
+    configResolved(config) {
+      base = config.base
+    },
     transformIndexHtml: {
       order: 'post',
       handler(html) {
-        const importMap = {
-          imports: {
-            'react': '/vendor/react.mjs',
-            'react-dom': '/vendor/react-dom.mjs',
-            'react-dom/client': '/vendor/react-dom-client.mjs',
-            'react/jsx-runtime': '/vendor/react-jsx-runtime.mjs',
-            '@kirocrew/app-sdk': '/vendor/kirocrew-app-sdk.mjs',
-            '@kirocrew/app-sdk/ui': '/vendor/kirocrew-ui.mjs',
-            '@tanstack/react-query': '/vendor/tanstack-react-query.mjs',
-            'lucide-react': '/vendor/lucide-react.mjs',
-          },
-        }
-        const tag = `<script type="importmap">${JSON.stringify(importMap)}</script>`
+        const tag = `<script type="importmap">${JSON.stringify(vendorImportMap(base))}</script>`
         return html.replace('<head>', `<head>\n  ${tag}`)
       },
     },
@@ -687,6 +680,9 @@ function appWindowUrls(): Plugin {
 }
 
 export default defineConfig({
+  // Sub-path deployments (behind a reverse proxy) are a separate build:
+  // `KIROCREW_BASE_PATH=/proxy/kirocrew npm run build`. Unset builds for `/`.
+  base: resolveBuildBase(process.env.KIROCREW_BASE_PATH),
   // `editionExtensionPlugin()` precedes `tailwindcss()` on purpose: both run
   // `enforce: 'pre'` transforms, and the edition `@source` must be spliced into
   // index.css before Tailwind compiles it (see the plugin's `transform`).

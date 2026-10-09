@@ -790,6 +790,28 @@ fi
 open "$URL"
 ```
 
+### Behind a reverse proxy at a sub-path
+
+The stock dashboard expects to sit at the root of its origin. To serve it under
+a prefix such as `https://gateway.example.com/proxy/kirocrew/`, build the
+frontend for that prefix:
+
+```bash
+cd website
+KIROCREW_BASE_PATH=/proxy/kirocrew npm run build
+cd .. && PYTHONPATH=src python -m kiro_crew.frontend stage .
+```
+
+`KIROCREW_BASE_PATH` is read only at build time. It becomes the prefix of every
+asset URL, the router base, and the path of the dashboard's own API, stream and
+WebSocket calls. The gateway serves the built page unchanged and does not read
+the variable, so a sub-path deployment is its own build. Unset, or `/`, builds
+the stock root dashboard. A value with a scheme, a host, a query, or a `.`/`..`
+segment stops the build.
+
+The proxy strips the prefix before forwarding, relays cookies, and rewrites
+`Location` headers on redirects. It no longer needs to rewrite the JavaScript.
+
 ---
 
 ## 3. Keep it alive as a service

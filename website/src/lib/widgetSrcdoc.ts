@@ -41,7 +41,10 @@
 // - ArtifactDetailPage.tsx (full-screen artifact view at /artifacts/<slug>)
 
 import { parseCssColor, relativeLuminance } from './iconContrast'
-import { TAILWIND_RUNTIME_PATH } from './vendorPaths'
+import { TAILWIND_RUNTIME_PATH as TAILWIND_RUNTIME_PATH_ROOT } from './vendorPaths'
+import { withBase } from './basePath'
+/** The runtime's served path under this build's base (the bare path in the stock build). */
+const TAILWIND_RUNTIME_PATH = withBase(TAILWIND_RUNTIME_PATH_ROOT)
 import { sanitizeCssValue } from './cssSanitize'
 
 /** CSS custom properties the parent app exposes to widgets. Resolved against

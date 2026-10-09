@@ -40,6 +40,7 @@
 import { useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { refreshOnce } from '../api/refreshOnce'
+import { withBase } from '@/lib/basePath'
 
 // Refresh `LEAD_MS` before the access cookie's session_exp.
 const LEAD_MS = 60 * 60 * 1000  // 1 hour
@@ -127,7 +128,7 @@ export function useRefreshScheduler(opts: UseRefreshSchedulerOptions = {}): void
         console.warn('[refresh] chain revoked; re-auth required')
         const cb = onChainRevokedRef.current
         if (cb) cb()
-        else window.location.assign('/')
+        else window.location.assign(withBase('/'))
         return
       }
       // Transient (5xx / no_refresh_cookie / network) — exponential backoff.

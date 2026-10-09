@@ -4,6 +4,7 @@ import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
 } from './ui/dropdown-menu'
 import { i18nT } from '../i18n/t'
+import { withBase } from '@/lib/basePath'
 
 /**
  * Split button for creating a job: primary half starts blank, the ▾ half offers
@@ -58,7 +59,7 @@ export default function AddJobSplitButton({ onBlank, onBrowseTemplates }: {
               "you can also create schedules by chatting" banner carried. A menu
               item is one text unit, unlike the subtitle sentence it replaced,
               which the i18n render gate flagged as assembled from two keys. */}
-          <DropdownMenuItem onSelect={() => { window.location.href = '/chat' }}>
+          <DropdownMenuItem onSelect={() => { window.location.href = withBase('/chat') }}>
             <MessageSquare size={13} className="shrink-0 text-muted" />
             <span>{i18nT('pages.schedulePage.open_chat')}</span>
           </DropdownMenuItem>

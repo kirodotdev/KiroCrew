@@ -30,6 +30,7 @@
 
 import { safeSetSessionItem } from './safeStorage'
 import { errMessage } from './thunkError'
+import { withBase } from '@/lib/basePath'
 
 /** Where the error was observed. */
 export type ErrorSource =
@@ -713,7 +714,7 @@ export function sendErrorToChat(prompt: string, opts: { hard?: boolean; leaveGra
     softNavigate('/chat')
     return true
   }
-  try { window.location.assign('/chat') } catch { /* nothing left to try */ }
+  try { window.location.assign(withBase('/chat')) } catch { /* nothing left to try */ }
   return true
 }
 
