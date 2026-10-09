@@ -2861,11 +2861,14 @@ drain as `mcp_gateway/backend.py::run_stdout_pump`, where a plain `read(n)` woul
 eat into the *next* frame. Draining the whole line rather than one prefix at a
 time is load-bearing, not tidiness: the unterminated branch's discard boundary is
 an arbitrary byte offset (`consumed = len(buffer)`), so surfacing the remainder as
-a line hands the parser a byte-slice that can start mid-character. `json.loads`
-then raises `UnicodeDecodeError`, which is **not** a `json.JSONDecodeError` — it
-escapes the loop's non-JSON guard into its crash handler and kills every
-multiplexed session, the very outcome this replaces. Any oversize frame carrying
-CJK or emoji reaches it whenever the final remainder falls under the reader limit.
+a line hands the parser a byte-slice that can start mid-character. The parse step
+skips such a slice: it reads every line through
+`kiro_crew.json_line.parse_json_object_line` with replacement decoding, so a line
+that is not a JSON object (undecodable bytes, a bare scalar or array, nesting past
+the decoder's ceiling, an integer past the int-string digit limit) is dropped with
+a debug log and never reaches the loop's crash handler, which would kill every
+multiplexed session. Draining through the newline keeps the reader on a frame
+boundary, so the next frame parses whole.
 
 A dropped frame can be the reply to an awaited request -- a `session/new` or
 `session/load` reply lists every agent in `~/.kiro/agents` with its description

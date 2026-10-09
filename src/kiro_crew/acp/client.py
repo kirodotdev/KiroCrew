@@ -7965,12 +7965,16 @@ class AcpClient:
 
         self._last_activity = time.monotonic()
 
-        try:
-            data = json.loads(text)
-        except json.JSONDecodeError:
+        # Only a JSON object is a frame. Every other line costs that line, not
+        # the caller's handshake or turn: text that is not JSON, a bare scalar
+        # or array (`123`, `[...]`, `null`), nesting past the decoder's ceiling
+        # (RecursionError) and an integer past the int-string digit limit.
+        parsed = parse_json_object_line(text)
+        if parsed is None:
             if self.memory_mode == "persistent":
-                logger.debug("Skipping non-JSON line from ACP: %.100s", text)
+                logger.debug("Skipping a line from ACP that is not a JSON object: %.100s", text)
             return None
+        data: dict[str, Any] = parsed
 
         # Opt-in raw-frame recording for the replay corpus. A no-op unless
         # KIROCREW_ACP_RECORD_FRAMES names a directory, and the write is
@@ -7978,11 +7982,11 @@ class AcpClient:
         # kiro_crew.acp._frame_record. Placed after the buffer early-return
         # above so a frame is recorded once, when it comes off the wire, not
         # again when a turn loop replays it out of _buffer.
-        if isinstance(data, dict) and self.memory_mode == "persistent":
+        if self.memory_mode == "persistent":
             await record_frame(self.backend, data, len(line))
 
         projection = getattr(self, "_native_skill_projection", None)
-        if projection is not None and isinstance(data, dict):
+        if projection is not None:
             data = projection.frame(data)
         return JsonRpcMessage(
             id=data.get("id"),

@@ -176,6 +176,7 @@ from kiro_crew.constants import (
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
 from kiro_crew.env import augmented_path, resolve_krb5_ccname
 from kiro_crew.executors import subprocess_executor
+from kiro_crew.json_line import parse_json_object_line
 from kiro_crew.mcp_gateway.claim import mint_stub_session_token, send_claim
 from kiro_crew.mcp_gateway.session_servers import (
     attach_stub_session_token,
@@ -3857,23 +3858,21 @@ class AcpRuntime:
 
                 self._last_activity = time.monotonic()
 
-                try:
-                    data = json.loads(line)
-                except json.JSONDecodeError:
+                # Only a JSON object is a frame. Every other line is skipped here
+                # and never reaches the crash arm below, which would mark this
+                # single-owner reader dead and end EVERY multiplexed session:
+                # text that is not JSON, a bare scalar or array (`123`, `"foo"`,
+                # `[1,2]`, `null`), nesting past the decoder's ceiling
+                # (RecursionError), and an integer past the int-string digit
+                # limit. Bytes that are not UTF-8 decode with replacement, as in
+                # AcpClient._read_message, so one bad byte inside a string costs
+                # that character, not the frame.
+                parsed = parse_json_object_line(line, errors="replace")
+                if parsed is None:
                     if self.recording_allowed:
-                        logger.debug("non-JSON stdout line: %s", line[:200])
+                        logger.debug("stdout line that is not a JSON object: %s", line[:200])
                     continue
-
-                # Valid JSON is not necessarily a JSON-RPC object: a bare scalar
-                # or array (e.g. `123`, `"foo"`, `[1,2]`, `true`, `null`) would
-                # make JsonRpcMessage.from_dict -> data.get(...) raise
-                # AttributeError, crashing this single-owner reader and tearing
-                # down EVERY multiplexed session. Skip anything that isn't an
-                # object so one stray line can't kill the demux.
-                if not isinstance(data, dict):
-                    if self.recording_allowed:
-                        logger.debug("non-object JSON stdout line: %s", line[:200])
-                    continue
+                data: dict[str, Any] = parsed
 
                 # Opt-in raw-frame recording for the replay corpus. A no-op
                 # unless KIROCREW_ACP_RECORD_FRAMES names a directory: it

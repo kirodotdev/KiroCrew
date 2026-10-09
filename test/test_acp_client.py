@@ -2753,6 +2753,52 @@ class TestAcpClientReadMessage:
         assert msg is None
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "line",
+        [
+            pytest.param(b"42\n", id="int"),
+            pytest.param(b'"progress"\n', id="string"),
+            pytest.param(b"null\n", id="null"),
+            pytest.param(b"true\n", id="bool"),
+            pytest.param(b"[]\n", id="empty-array"),
+            pytest.param(b'[{"jsonrpc":"2.0","id":7,"result":{}}]\n', id="batch-array"),
+            pytest.param(b"[" * 30_000 + b"]" * 30_000 + b"\n", id="nested-past-decoder-ceiling"),
+            pytest.param(b"1" * 5_000 + b"\n", id="integer-past-digit-limit"),
+        ],
+    )
+    async def test_read_line_that_is_not_a_json_object_skipped(self, tmp_path, line):
+        """Valid JSON that is not an object, and JSON ``json.loads`` rejects with
+        ``RecursionError`` or a plain ``ValueError``, is skipped like non-JSON."""
+        client = AcpClient(work_dir=tmp_path)
+
+        mock_process = MagicMock()
+        mock_stdout = AsyncMock()
+        mock_stdout.readline = AsyncMock(return_value=line)
+        mock_process.stdout = mock_stdout
+        mock_process.returncode = None
+        client._process = mock_process
+
+        msg = await client._read_message(timeout=1.0)
+        assert msg is None
+
+    @pytest.mark.asyncio
+    async def test_wait_for_response_reads_past_a_stray_scalar_line(self, tmp_path):
+        """A stray non-object line before the awaited reply costs that line only;
+        the initialize wait still returns the reply."""
+        client = AcpClient(work_dir=tmp_path)
+        reply = json.dumps({"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": 1}})
+
+        mock_process = MagicMock()
+        mock_stdout = AsyncMock()
+        mock_stdout.readline = AsyncMock(side_effect=[b"123\n", (reply + "\n").encode()])
+        mock_process.stdout = mock_stdout
+        mock_process.returncode = None
+        client._process = mock_process
+
+        result = await client._wait_for_response(1, timeout=2.0, method="initialize")
+        assert result == {"protocolVersion": 1}
+
+    @pytest.mark.asyncio
     async def test_read_empty_line(self, tmp_path):
         client = AcpClient(work_dir=tmp_path)
 
