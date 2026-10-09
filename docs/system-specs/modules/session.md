@@ -4584,7 +4584,7 @@ adds evidence to a running slot and is the sole source only when no state
 objects are reachable; it never overrides a structured wait.
 
 Payload: `{generated_at, stalled{slot: {reason, since_ts, evidence, age_secs}},
-slots{slot: {classification, evidence, age_secs, since_ts, source}},
+slots{slot: {classification, evidence, age_secs, since_ts, source, native_children?}},
 waiting[{kind: slot|task, ..., reason}], recovering[...], queued{available,
 count, oldest_wait_secs, by_state}, effective_caps{lane_kind: {effective, ...}},
 uncharged{kind: count}, degrade_reason, counts{running, queued, waiting, recovering, stalled},
@@ -4613,15 +4613,26 @@ signalled, broadcasts the WS frame `session_health_changed` with the payload
 classification. The frame says only THAT the verdict moved; a subscriber
 entitled to `GET /api/sessions/health` re-reads it, and a frontend-only app whose
 manifest does not list that path refreshes the surfaces it can already read
-instead of polling an endpoint that answers it with a denial. The digest
-excludes every age, timestamp and monotonic reading (a quiet resample is not a
-change) and folds everything else in BY IDENTITY, never only by count: each
-slot's classification and `native_children`, which slots are stalled, each
-waiting and recovering row's identity and state, the queue's `by_state`
-tallies, `effective_caps`, the `uncharged` per-kind tally and
-`degrade_reason` -- so one row leaving a state as another enters it is a change
-even though every count stands still. The first computation after process start
-seeds the baseline silently rather than firing a refresh at every subscriber on
+instead of polling an endpoint that answers it with a denial. Two rules decide
+what the digest hashes. Every stable field is folded in BY IDENTITY, never only
+by count: each slot's classification and `native_children` (written only when
+non-zero, so absent and 0 digest alike), which slots are stalled, each waiting
+and recovering row's identity and state, the queue's `by_state` tallies,
+`effective_caps`, the `uncharged` per-kind tally and `degrade_reason` -- so one
+row leaving a state as another enters it is a change even though every count
+stands still. Every time-derived reading (`generated_at`, each `age_secs` /
+`since_ts` / `oldest_wait_secs`, and the `evidence` strings, which embed ages)
+and every detector-provenance field (`sources`, a slot's `source`, a stall's
+`reason` label) is left out: a quiet resample is not a change, and which
+detector fired is not a different verdict. `stall_after_secs` is a per-monitor
+constant whose change surfaces through `stalled`.
+`test_session_health_signal.py::TestFingerprintCoverage` records which side of
+that line every top-level key and every slot-entry field falls on, pins those
+keys to a payload the real `compute` produced, and checks each by mutation, so a
+field added to the payload fails a test until someone places it rather than
+silently falling outside the digest. The first
+computation after process start seeds the baseline silently rather than firing
+a refresh at every subscriber on
 every gateway restart; a broadcast that fails leaves the digest uncommitted so
 the change is retried on the next computation. The frame rides the pre-existing
 `sessions` event declaration in `ws_event_scope._GLOBAL_EVENT_DECLARATIONS`

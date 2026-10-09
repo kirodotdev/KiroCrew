@@ -912,16 +912,22 @@ def compute_session_health(
 def health_verdict_fingerprint(health: Mapping[str, Any] | None) -> str:
     """A stable digest of the health VERDICT -- what a refresh must react to.
 
-    Deliberately excludes every age, timestamp and monotonic reading. Those move
-    on every sample, so folding them in would make each computation look like a
-    change and turn a periodic refresh into a periodic broadcast. Everything else
-    the payload says is folded in BY IDENTITY, never only by count: which
-    classification each slot holds and its harness-native child count, which
-    slots are stalled, which slot and task rows are waiting or recovering and in
-    which state, the queue's per-state tallies, the effective caps per lane, the
-    uncharged-residency tally per kind, and the degrade reason. A count alone
-    is not enough -- one row leaving a state as another enters it keeps every
-    count still while the rows a subscriber holds are wrong.
+    Two rules decide what is hashed. Every STABLE field -- one that moves only
+    when the state it reports moves -- is folded in BY IDENTITY, never only by
+    count: a count alone lets one row leave a state as another enters it with
+    every count still while the rows a subscriber holds are wrong. Every
+    TIME-DERIVED reading (ages, timestamps, monotonic readings, the ``evidence``
+    strings that embed them) and every DETECTOR-PROVENANCE field (``sources``, a
+    slot's ``source``, a stall's ``reason`` label) is left out: the former move on
+    every sample and would turn a periodic refresh into a periodic broadcast; the
+    latter say which detector produced a verdict the folded fields already
+    identify.
+
+    ``test_session_health_signal.py::TestFingerprintCoverage`` records which side
+    of that line every top-level key and every slot-entry field falls on, pins
+    those keys to a payload the real ``compute`` produced, and checks each by
+    mutation, so a field added to the payload fails a test until it is placed
+    rather than silently falling outside the digest.
 
     The digest is process-internal. Only the bare signal is broadcast, so the slot
     keys and task ids hashed here are compared and never published.

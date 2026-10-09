@@ -23,6 +23,7 @@ mechanism safe to ship:
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import time
 from unittest.mock import MagicMock, patch
@@ -246,6 +247,133 @@ class TestVerdictFingerprint:
     def test_survives_a_missing_or_malformed_health_dict(self):
         for bad in (None, {}, {"counts": None, "stalled": 7, "degrade_reason": None}):
             assert isinstance(session_health.health_verdict_fingerprint(bad), str)
+
+
+# --- the digest covers the payload ------------------------------------------
+
+
+def _real_payload(monkeypatch) -> dict:
+    """A payload from the REAL ``compute``, so the key census is read off the record.
+
+    A hand-typed dict would pin whatever its author remembered the payload to be,
+    which is the failure this section exists to catch. The slot carries children so
+    the optional ``native_children`` key is present, and the mirror is a fresh
+    instance patched into the defining module (``compute`` reads the global at call
+    time), so the process-wide one is never touched.
+    """
+    mirror = session_health.UnchargedMirror()
+    mirror.report_uncharged("native_children", 2, label="sid-1")
+    monkeypatch.setattr(session_health, "_UNCHARGED_MIRROR", mirror)
+    mon = session_health.SessionHealthMonitor(include_log_scan=False)
+    snap = session_health.HealthSnapshot(
+        slots=[
+            session_health.SlotSnapshot(
+                key="chat-1-1",
+                running=True,
+                native_children=2,
+                progress_marker=(1, "t0", 5, 2, None),
+            )
+        ],
+        wall_now=1_700_000_000.0,
+        mono_now=1000.0,
+    )
+    return mon.compute(snap, taskq=None)
+
+
+FOLDED, EXCLUDED = True, False
+
+# Every top-level payload key, whether the digest folds it, and one STABLE mutation
+# of it (never an age). This table IS the partition: its key set is pinned to a real
+# payload's, so a key added to the payload fails until it gets a row here, and each
+# row first proves its mutation changed the payload, so no row passes vacuously. A
+# folded key's row checks its identity-and-state projection, never an age inside it.
+_TOP_LEVEL = {
+    "counts": (FOLDED, lambda p: p["counts"].update(running=p["counts"]["running"] + 1)),
+    "slots": (FOLDED, lambda p: p["slots"]["chat-1-1"].update(classification="waiting_input")),
+    "stalled": (FOLDED, lambda p: p["stalled"].update({"chat-9-9": {"reason": "no_progress"}})),
+    "waiting": (
+        FOLDED,
+        lambda p: p["waiting"].append(
+            {"kind": "task", "id": "t-1", "state": "waiting_input", "reason": "waiting_input"}
+        ),
+    ),
+    "recovering": (
+        FOLDED,
+        lambda p: p["recovering"].append({"kind": "task", "id": "t-2", "state": "recovering"}),
+    ),
+    "queued": (FOLDED, lambda p: p["queued"].update(by_state={"queued": 2})),
+    "effective_caps": (
+        FOLDED,
+        lambda p: p.update(effective_caps={"subagents": {"effective": 2}}),
+    ),
+    "degrade_reason": (FOLDED, lambda p: p.update(degrade_reason="paused")),
+    "uncharged": (FOLDED, lambda p: p.update(uncharged={"native_children": 9})),
+    # Wall clock: moves on every sample.
+    "generated_at": (EXCLUDED, lambda p: p.update(generated_at=p["generated_at"] + 60.0)),
+    # Constant per monitor; a change surfaces through ``stalled``.
+    "stall_after_secs": (EXCLUDED, lambda p: p.update(stall_after_secs=30.0)),
+    # Which inputs were reachable, not what they said; a flip surfaces through the
+    # sections it empties.
+    "sources": (EXCLUDED, lambda p: p["sources"].update(taskq=True)),
+}
+# The same for one slot entry, where ``native_children`` lives.
+_SLOT_FIELDS = {
+    "classification": (FOLDED, lambda e: e.update(classification="waiting_input")),
+    "native_children": (
+        FOLDED,
+        lambda e: e.update(native_children=e["native_children"] + 1),
+    ),
+    # Identity comes from the ``slots`` mapping key, never from this duplicate.
+    "key": (EXCLUDED, lambda e: e.update(key="chat-9-9")),
+    # The evidence strings embed ages.
+    "evidence": (EXCLUDED, lambda e: e.update(evidence=["something else"])),
+    "age_secs": (EXCLUDED, lambda e: e.update(age_secs=e["age_secs"] + 600.0)),
+    "since_ts": (EXCLUDED, lambda e: e.update(since_ts=123.0)),
+    # Names the detector that produced the verdict: the per-slot form of ``sources``.
+    "source": (EXCLUDED, lambda e: e.update(source="log")),
+}
+
+
+class TestFingerprintCoverage:
+    """Every key the payload carries has a row saying whether the digest folds it,
+    and each row's answer is checked by mutation rather than taken on trust.
+
+    The digest is a hand-maintained canonical string, so a stable field can fall
+    outside it with nothing failing. A key added to the payload fails the key-set
+    pin until it gets a row, and a row with the wrong answer fails its mutation.
+    """
+
+    def test_every_top_level_key_has_a_row(self, monkeypatch):
+        payload = _real_payload(monkeypatch)
+        assert payload, "compute() returned nothing; the pin below would be vacuous"
+        assert set(payload) == set(_TOP_LEVEL)
+
+    def test_every_slot_entry_field_has_a_row(self, monkeypatch):
+        """Pinned one level down too: ``native_children`` is a per-slot field, and a
+        top-level-only pin would have reported ``slots`` as covered and missed it."""
+        entry = _real_payload(monkeypatch)["slots"]["chat-1-1"]
+        assert entry["native_children"] == 2, "the optional key must be present to be pinned"
+        assert set(entry) == set(_SLOT_FIELDS)
+
+    @pytest.mark.parametrize("key", sorted(_TOP_LEVEL))
+    def test_a_top_level_key_moves_the_digest_iff_it_is_folded(self, key, monkeypatch):
+        folded, mutate = _TOP_LEVEL[key]
+        base = _real_payload(monkeypatch)
+        mutated = copy.deepcopy(base)
+        mutate(mutated)
+        assert mutated != base, f"the {key!r} mutation changed nothing; the row is vacuous"
+        fp = session_health.health_verdict_fingerprint
+        assert (fp(mutated) != fp(base)) is folded
+
+    @pytest.mark.parametrize("field", sorted(_SLOT_FIELDS))
+    def test_a_slot_field_moves_the_digest_iff_it_is_folded(self, field, monkeypatch):
+        folded, mutate = _SLOT_FIELDS[field]
+        base = _real_payload(monkeypatch)
+        mutated = copy.deepcopy(base)
+        mutate(mutated["slots"]["chat-1-1"])
+        assert mutated != base, f"the {field!r} mutation changed nothing; the row is vacuous"
+        fp = session_health.health_verdict_fingerprint
+        assert (fp(mutated) != fp(base)) is folded
 
 
 # --- when the signal fires -----------------------------------------------
