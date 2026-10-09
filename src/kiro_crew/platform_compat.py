@@ -286,10 +286,14 @@ async def exit_after_failed_restart_exec(target: str | None) -> None:
     wedged disk must delay this exit, never hold it" true of the wait and not only of
     the work.
 
-    The ``gateway.log`` tail is not spelled out again here.
-    :func:`kiro_crew.cli.drain_log_queue_before_hard_exit` is the shared async
-    hard-exit drain for that queue -- same pool, its own outer deadline, and it never
-    raises -- so every hard-exit path keeps one spelling and one ceiling for it.
+    The queued SEL audit tail is drained first, then the ``gateway.log`` tail --
+    the order :mod:`kiro_crew.slack.events` uses, so a SEL write failure's own log
+    line still reaches a live listener. Neither is spelled out again here:
+    :func:`kiro_crew.sel.flush_audit_queue_before_hard_exit` and
+    :func:`kiro_crew.cli.drain_log_queue_before_hard_exit` are the shared async
+    hard-exit drains for those two queues -- same pool, each its own outer
+    deadline, and neither raises -- so every hard-exit path keeps one spelling and
+    one ceiling for each.
     """
     logger.critical(
         "Gateway restart could not replace this process (target %r); exiting instead of "
@@ -299,6 +303,7 @@ async def exit_after_failed_restart_exec(target: str | None) -> None:
         exc_info=True,
     )
     from kiro_crew.cli import drain_log_queue_before_hard_exit
+    from kiro_crew.sel import flush_audit_queue_before_hard_exit
 
     try:
         await asyncio.wait_for(
@@ -311,6 +316,15 @@ async def exit_after_failed_restart_exec(target: str | None) -> None:
         # Also the deadline: TimeoutError is an Exception, and a fatal exit must never
         # be blocked by bookkeeping or logging.
         pass
+    # The queued SEL audit tail -- the restart's own security-of-record event among
+    # it -- dies with the os._exit below unless it is drained first. This is a gateway
+    # hard exit like the signal force-exit and the normal shutdown, so it drains SEL
+    # the same bounded way. Flush SEL BEFORE the gateway.log tail (the order
+    # ``slack/events.py`` already uses): a SEL write failure logs its "dropped N events"
+    # line, and draining gateway.log first would stop the listener that line needs, so
+    # the audit loss would leave no trace. The shared helper offloads to this pool under
+    # its own deadline and never raises.
+    await flush_audit_queue_before_hard_exit()
     # The gateway.log tail has its own async hard-exit drain, which already offloads to
     # this pool under its own deadline and already never raises. Calling it keeps one
     # spelling and one ceiling for that queue across every hard-exit path.

@@ -1104,6 +1104,12 @@ class _CliLogQueueHandler(QueueHandler):
 _LONG_LIVED_COMMANDS = {"serve", "gateway", "chat", None}
 
 _LOG_QUEUE_LISTENER: QueueListener | None = None
+#: The listener a caller is stopping right now. A second caller that finds
+#: ``_LOG_QUEUE_LISTENER`` already cleared waits on this one's thread instead of
+#: returning at once: otherwise it would hard-exit while the first caller is
+#: still writing the tail (a repeat force-exit signal, or a force exit racing
+#: the normal shutdown's drain).
+_LOG_QUEUE_STOPPING: QueueListener | None = None
 
 
 def _stop_log_queue_listener(timeout: float | None = None) -> None:
@@ -1112,7 +1118,8 @@ def _stop_log_queue_listener(timeout: float | None = None) -> None:
     Idempotent — registered via ``atexit`` so process shutdown flushes the
     queued tail. Also the deterministic drain point for tests: after this
     returns, every record logged before the call has been written by the
-    file handler.
+    file handler. That holds for a concurrent second call too: it waits, under
+    its own ``timeout``, for the first call's drain to finish.
 
     ``timeout`` bounds the drain for force-exit paths (a second SIGINT/
     SIGTERM hard-exits via ``os._exit``, which skips atexit): the sentinel
@@ -1121,10 +1128,15 @@ def _stop_log_queue_listener(timeout: float | None = None) -> None:
     in time, flush/close are skipped — they would block on the same wedged
     handler.
     """
-    global _LOG_QUEUE_LISTENER
+    global _LOG_QUEUE_LISTENER, _LOG_QUEUE_STOPPING
     listener, _LOG_QUEUE_LISTENER = _LOG_QUEUE_LISTENER, None
     if listener is None:
+        in_flight = _LOG_QUEUE_STOPPING
+        thread = getattr(in_flight, "_thread", None) if in_flight is not None else None
+        if thread is not None:
+            thread.join(timeout)
         return
+    _LOG_QUEUE_STOPPING = listener
     try:
         if timeout is None:
             listener.stop()
