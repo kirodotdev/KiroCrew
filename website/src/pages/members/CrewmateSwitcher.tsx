@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { Check, ChevronDown, PanelLeft, Plus, Search } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { MemberRosterRow } from '../../api/client'
@@ -69,8 +69,7 @@ export default function CrewmateSwitcher({
   activeName,
   onPick,
   onCreate,
-  rosterShown = false,
-  onToggleRoster,
+  onShowRoster,
   signals = rowOnlySignals,
   className,
 }: {
@@ -87,12 +86,11 @@ export default function CrewmateSwitcher({
   onPick: (name: string) => void
   /** Opens the New crewmate dialog. Omitted while creation is held. */
   onCreate?: () => void
-  /** Whether the roster column is currently showing beside the thread; names
-   *  the footer action (show / hide). */
-  rosterShown?: boolean
-  /** Shows or hides the roster column beside the thread. Omitted, the footer
-   *  action is not drawn. */
-  onToggleRoster?: () => void
+  /** Pins the roster column back beside the thread. The page hides this chip
+   *  while the column is open (it is the list the chip folds), so the action
+   *  only ever shows; the column's own close lifts the pin. Omitted, the
+   *  footer action is not drawn. */
+  onShowRoster?: () => void
   /** The page's per-row live facts — the same resolver its roster filters
    *  read, so the dot here can never disagree with the filter that counts it.
    *  Omitted, a row shows only its own `running`. */
@@ -102,6 +100,9 @@ export default function CrewmateSwitcher({
   const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
+  // Set by the footer's roster action: the page moves focus into the column it
+  // opens, so the popover must not hand focus back to this (now hidden) chip.
+  const toRosterRef = useRef(false)
   const q = query.trim().toLowerCase()
   // The rows the roster is ABOUT, through the column's own rule: created and
   // chatted-with crewmates, the starred, the default crew, plus whichever one is
@@ -206,6 +207,7 @@ export default function CrewmateSwitcher({
         variant="list"
         className="w-80"
         aria-label={t('pages.membersPage.title')}
+        onCloseAutoFocus={(e) => { if (toRosterRef.current) { toRosterRef.current = false; e.preventDefault() } }}
         data-testid="crewmate-switcher-list"
       >
         <label className="flex items-center gap-2 h-9 px-3 mx-0.5 mt-0.5 mb-1.5 rounded-xl bg-bg border border-border text-muted focus-within:border-accent">
@@ -308,7 +310,7 @@ export default function CrewmateSwitcher({
             })
           )}
         </div>
-        {(onCreate || onToggleRoster) && (
+        {(onCreate || onShowRoster) && (
           <div className="mt-1 pt-1 border-t border-border">
             {onCreate && (
               <button
@@ -327,22 +329,22 @@ export default function CrewmateSwitcher({
                 {t('pages.membersPage.add_member')}
               </button>
             )}
-            {onToggleRoster && (
+            {onShowRoster && (
               <button
                 type="button"
                 onClick={() => {
+                  toRosterRef.current = true
                   setOpen(false)
-                  onToggleRoster()
+                  onShowRoster()
                 }}
                 className="flex items-center gap-2.5 w-full px-2.5 py-2 rounded-xl text-left text-[13px] font-semibold text-text hover:bg-bg-hover cursor-pointer"
-                aria-pressed={rosterShown}
                 data-testid="crewmate-switcher-roster"
                 {...uiLocation('members.switcher.show-roster')}
               >
                 <span className="w-8 h-8 rounded-full bg-bg-hover grid place-items-center text-muted" aria-hidden="true">
                   <PanelLeft size={15} />
                 </span>
-                {rosterShown ? t('pages.membersPage.roster_hide') : t('pages.membersPage.roster_show')}
+                {t('pages.membersPage.roster_show')}
               </button>
             )}
           </div>

@@ -1222,11 +1222,14 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     // Still folded below md: the back control is the phone's way to the roster.
     expect(classes()).toContain('hidden')
     expect(screen.getByTestId('member-roster-hide')).toHaveAccessibleName('Hide the roster')
-    // Reopened, the action now offers to fold it again.
-    fireEvent.click(screen.getByTestId('crewmate-switcher'))
-    expect(await screen.findByTestId('crewmate-switcher-roster')).toHaveTextContent('Hide the roster')
-    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' })
-    await waitFor(() => expect(screen.queryByTestId('crewmate-switcher-list')).toBeNull())
+    // The open column IS the list the chip folds, so the chip fades out in
+    // place while the pin holds; the identity pill stays.
+    const slotClasses = () => screen.getByTestId('crewmate-switcher-slot').className.split(/\s+/)
+    await waitFor(() => expect(slotClasses()).toContain('invisible'))
+    expect(slotClasses()).toContain('opacity-0')
+    expect(screen.getByTestId('member-identity-pill')).toBeVisible()
+    // Keyboard focus follows into the column's search, not onto the page body.
+    await waitFor(() => expect(screen.getByTestId('member-search')).toHaveFocus())
 
     // The pinned roster's "+" offers the crewmate door and nothing else:
     // team creation is hidden for the phase.
@@ -1255,10 +1258,17 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     fireEvent.click(await rosterRow('research'))
     await waitFor(() => expect(screen.getByTestId('member-identity-pill')).toHaveTextContent('research'))
     expect(classes()).toContain('md:flex')
+    // A keyboard press: focus sits on the X, which the close unmounts.
+    screen.getByTestId('member-roster-hide').focus()
     fireEvent.click(screen.getByTestId('member-roster-hide'))
     await waitFor(() => expect(classes()).not.toContain('md:flex'))
     expect(classes()).toContain('hidden')
     expect(screen.queryByTestId('member-roster-hide')).toBeNull()
+    // The column closed, the chip is back, and focus returns to it from the
+    // X that just unmounted.
+    expect(slotClasses()).toContain('visible')
+    expect(slotClasses()).not.toContain('invisible')
+    await waitFor(() => expect(screen.getByTestId('crewmate-switcher')).toHaveFocus())
   })
 
   it('a team view keeps the roster column beside it on desktop, pinned or not — it is the only way back', async () => {

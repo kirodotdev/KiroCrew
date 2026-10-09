@@ -1166,11 +1166,16 @@ full roster** (`roster_show`) pins the roster column back beside the thread —
 page state (`rosterPinned`), not persisted, since the folded roster is the
 desktop norm and a pin is a detour from it. While pinned the aside is `hidden
 md:flex` (still folded below `md`, where Back is the way), it reserves its width
-again for `panelSitsBeside`, its resize handle returns, and the same footer
-action reads **Hide the roster** (`roster_hide`). Picking a row from the pinned
-roster switches the thread and keeps the pin, and the roster header carries its
-own close control (`member-roster-hide`, `md+` only, shown only while pinned
-beside a thread) that lifts it. A TEAM view is not folded: `TeamView` draws no
+again for `panelSitsBeside`, and its resize handle returns. The switcher chip
+fades out in place (`opacity-0 invisible`, 200ms, a cut under reduced motion)
+while the pin holds: the open column is the list it folds, so a second copy
+beside the identity pill only repeated it, and its kept box holds the identity
+pill where it was. The chip's footer therefore only ever offers **Show the full
+roster**. Picking a row from the pinned roster switches the thread and keeps the
+pin, and the roster header carries its own close control (`member-roster-hide`,
+`md+` only, shown only while pinned beside a thread) that lifts it and fades the
+chip back. Each of those two controls disappears under its own press, so focus
+moves to what replaced it: the column's search on pin, the chip on close. A TEAM view is not folded: `TeamView` draws no
 switcher and its Back is `md:hidden`, so on desktop the roster column is the only
 way out of `/members?team=<id>`, and the aside is `hidden md:flex` there whether
 or not the pin is set (the pre-switcher behaviour); the pin's close is withheld in
