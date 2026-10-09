@@ -678,6 +678,62 @@ class TranscriptReadProjection:
             rows.extend(self.read_rotated_messages(chained_key))
         return rows
 
+    def has_rotated_messages_chained(self, key: str) -> bool:
+        """Return whether any member of *key*'s tab chain has rotated rows."""
+        metadata = self._log.get_metadata(key)
+        tab_id = metadata.get("tab_id")
+        keys: list[str] = []
+        if tab_id:
+            with self._log._lock:
+                if self._log._tab_id_index is None:
+                    self._log._rebuild_tab_id_index()
+                index = self._log._tab_id_index or {}
+                keys = list(index.get(tab_id, []))
+        if not keys:
+            keys = [key]
+
+        facade = _history_facade()
+        adir = facade._archive_dir(self._log._dir)
+        for chained_key in keys:
+            stem = facade._safe_key(chained_key) + facade.ARCHIVE_SEGMENT_DELIMITER
+            try:
+                segments = list(adir.glob(f"{stem}*.jsonl"))
+            except OSError as exc:
+                raise OSError(f"rotated archive for {chained_key} could not be enumerated") from exc
+            for segment in segments:
+                try:
+                    with segment.open("rb") as archive:
+                        header_line = archive.readline(64 * 1024)
+                except OSError as exc:
+                    raise OSError(f"rotated segment {segment.name} could not be read") from exc
+                if not header_line:
+                    continue
+                # A damaged header is permanent, so raising here would turn one
+                # corrupt segment into a "please retry" that never succeeds. The
+                # question is only whether older rows may exist, and a segment
+                # nobody can classify may hold them: answer yes, which shows the
+                # "most recent part" notice and nothing worse.
+                try:
+                    header = json.loads(header_line.decode("utf-8"))
+                except (UnicodeDecodeError, ValueError):
+                    _HISTORY_LOGGER.warning("rotated segment header undecodable: %s", segment.name)
+                    return True
+                if not isinstance(header, dict):
+                    _HISTORY_LOGGER.warning(
+                        "rotated segment header is not an object: %s", segment.name
+                    )
+                    return True
+                if header.get("reason") != "rotate":
+                    continue
+                count = header.get("count")
+                if isinstance(count, int) and not isinstance(count, bool):
+                    if count > 0:
+                        return True
+                    if count == 0:
+                        continue
+                return True
+        return False
+
     def chain_mid_rotation(self, key: str) -> bool:
         """True when any chain member AFTER the first has archive segments.
 
@@ -963,6 +1019,40 @@ class TranscriptReadProjection:
                 start = max(0, end - limit)
                 return TranscriptPage(messages[start:end], total, start, start > 0, revision)
         raise TranscriptRevisionChanged("chained transcript changed during full-read fallback")
+
+    def _stamp_revision(self, keys: list[str]) -> ChainRevision:
+        """The chain's revision from file stamps alone, without a row index."""
+        return tuple(
+            (
+                chained_key,
+                self._file_stamp(self._log._path(chained_key)),
+                self._log._cache_gen(chained_key),
+            )
+            for chained_key in keys
+        )
+
+    def read_messages_chained_full_page(self, key: str, *, limit: int) -> TranscriptPage:
+        """The newest ``limit`` rows of the archive-including full reader.
+
+        The fallback for a chain the indexed page reader refuses with
+        :class:`OversizedRecord` or :class:`SplitlinesBoundaryRecord`. Both are
+        deterministic for the bytes on disk, so retrying the indexed reader (or
+        its ``limit=0`` revision probe, which builds the same index) meets the
+        same refusal. This builds no row index: the revision is the chain
+        membership plus each file's stamp and cache generation, taken before and
+        after the full read, and the page is served only when they agree.
+        """
+        if limit < 0:
+            raise ValueError("limit must be >= 0")
+        for _attempt in range(_TRANSCRIPT_PAGE_READ_ATTEMPTS):
+            keys = self._chain_keys(key)
+            revision = self._stamp_revision(keys)
+            messages = self.read_messages_chained_full(key)
+            if self._chain_keys(key) == keys and self._stamp_revision(keys) == revision:
+                total = len(messages)
+                start = max(0, total - limit)
+                return TranscriptPage(messages[start:], total, start, start > 0, revision)
+        raise TranscriptRevisionChanged("chained transcript changed during full-reader page")
 
     def _rebuild_tab_id_index(self) -> None:
         """Rebuild the tab-id chain index while the owner lock is held."""

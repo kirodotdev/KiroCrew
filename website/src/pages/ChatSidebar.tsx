@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, memo, useMemo, useCallback, useId, useContext, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
-import { Plus, X, Pin, Monitor, ArrowUpDown, Eye, EyeOff, VenetianMask, Ghost, FolderPlus, FolderX, MessageSquare, MessageSquarePlus, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, CornerDownRight, GripVertical, Check, GitFork, List, ListTree, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Server, Pause, Play, Hourglass } from 'lucide-react'
+import { Plus, X, Pin, Monitor, ArrowUpDown, Eye, EyeOff, VenetianMask, Ghost, FolderPlus, FolderX, MessageSquare, MessageSquarePlus, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, CornerDownRight, GripVertical, Check, GitFork, List, ListTree, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Server, Pause, Play, Hourglass, ArchiveRestore } from 'lucide-react'
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import { FolderBody } from '../components/FolderBody'
@@ -115,6 +115,7 @@ import { useSessionRename, useSessionAutoTitle, useFolderRename } from './chat-s
 import { useSlotTitleGenerating } from '../hooks/slotTitleGeneration'
 import { useSidebarLane, useLaneCycle, renderedLane } from './chat-sidebar/lanes'
 import { useHistoryPane } from './chat-sidebar/history'
+import HistoryPreviewModal, { type HistoryPreviewTarget } from './chat-sidebar/HistoryPreviewModal'
 import { usePinnedSessionOrder, usePinnedOrderAuthority, usePinnedKeyboardReorder } from './chat-sidebar/pinnedOrder'
 import { useStaleCollapse, useStaleMoveWatcher, useStaleNarrowBridge } from './chat-sidebar/stale'
 import { useFolderSort, useFolderVisibility, useFolderFilterReveal, useFolderFilterRows, useFolderMutations, useFolderTree, useRootFolderLanes } from './chat-sidebar/folders'
@@ -2509,6 +2510,16 @@ function ChatSidebar({
   const {
     historyOpen, setHistoryOpen, openHistoryPane, historyHeight, historyDragging, historyResize,
   } = useHistoryPane({ setHistoryFilter, slotFilter, dispatch })
+  // The Older Sessions row being previewed read-only (null: no preview open).
+  const [historyPreview, setHistoryPreview] = useState<HistoryPreviewTarget | null>(null)
+  // The one explicit reopen for an Older Sessions row, shared by the row's
+  // Resume control and the preview's Resume button. No post-resolve check here:
+  // `resumeFromHistory` itself records an undisplayable-surface answer on the
+  // slice (#5925), which is what ChatPage's notice renders.
+  const resumeHistoryRow = useCallback((row: HistoryPreviewTarget) => {
+    setHistoryPreview(null)
+    dispatch(resumeFromHistory({ key: row.key, title: row.title }))
+  }, [dispatch])
   const [cleanupOpen, setCleanupOpen] = useState(false)
   const [folderCleanupOpen, setFolderCleanupOpen] = useState(false)  // header ⋮ → "Clean up empty folders" panel
   const [manageTagsOpen, setManageTagsOpen] = useState(false)  // header ⋮ → "Manage tags…" panel (list-view tag CRUD)
@@ -6682,17 +6693,16 @@ function ChatSidebar({
                     // A remote row never resumes here, so it can never produce the
                     // unresumable notice above — the pane switch IS its outcome.
                     if (remoteInstanceId) { selectInstance(remoteInstanceId); return }
-                    // No post-resolve check here: `resumeFromHistory` itself
-                    // records an undisplayable-surface answer on the slice
-                    // (#5925), which is what the notice above renders. Keeping
-                    // a second copy of that predicate per call site is how the
-                    // four sibling entry points ended up giving no feedback at
-                    // all while this one did.
-                    dispatch(resumeFromHistory({ key: s.key, title: s.title || s.key }))
+                    // Activating a row PREVIEWS it. Resuming clears the
+                    // transcript's `closed` flag and publishes a live tab, so
+                    // reviewing old sessions must not resume them. Reopening is
+                    // the preview's Resume button or the row's own Resume
+                    // control (`resumeHistoryRow`).
+                    setHistoryPreview({ key: s.key, title: s.title || s.key })
                   }
                   return (
-                    <div className={`group relative flex items-start gap-2.5 pr-4 py-2 rounded-md text-sm transition-all select-none ${remoteInstanceId ? '' : '[@media(hover:none)]:pr-10 '}${!connected ? 'text-muted opacity-50 cursor-not-allowed' : 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer'}`} style={{ paddingLeft: '10px' }} title={s.title || s.key} {...offlineProps(connected, 'resume sessions')} role="button" tabIndex={0} aria-disabled={!connected} onKeyDown={e => {
-                      // WCAG 2.1.1: history rows must be resumable via keyboard.
+                    <div className={`group relative flex items-start gap-2.5 pr-4 py-2 rounded-md text-sm transition-all select-none ${remoteInstanceId ? '' : '[@media(hover:none)]:pr-[4.5rem] '}${!connected ? 'text-muted opacity-50 cursor-not-allowed' : 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer'}`} style={{ paddingLeft: '10px' }} title={s.title || s.key} {...offlineProps(connected, 'preview sessions')} role="button" tabIndex={0} aria-disabled={!connected} onKeyDown={e => {
+                      // WCAG 2.1.1: history rows must be previewable via keyboard.
                       if (e.key !== 'Enter' && e.key !== ' ') return
                       if ((e.target as HTMLElement) !== e.currentTarget) return
                       e.preventDefault()
@@ -6757,6 +6767,8 @@ function ChatSidebar({
                           LOCAL session file, which for a remote row is at best a
                           same-keyed unrelated conversation. */}
                       {!remoteInstanceId && <div className="absolute top-1/2 -translate-y-1/2 right-1.5 opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 group-focus-within:opacity-100 focus-within:opacity-100 transition-all flex items-center gap-0.5 rounded-md p-1 bg-card border border-border shadow-sm">
+                        <Btn type="button" title={i18nT('pages.chatSidebar.resume_session')} aria-label={i18nT('pages.chatSidebar.resume_session')} disabled={!connected} className="gap-1 text-[11px] font-medium text-muted px-1.5 py-[3px] rounded border-transparent hover:border-transparent hover:text-text hover:bg-bg-hover disabled:opacity-50" onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); if (connected) resumeHistoryRow({ key: s.key, title: s.title || s.key }) }}><ArchiveRestore size={12} aria-hidden="true" /><span className="[@media(hover:none)]:hidden">{i18nT('pages.chatSidebar.resume_short')}</span></Btn>
+                        <span aria-hidden="true" className="w-px h-3 bg-border mx-1" />
                         <button type="button" title={i18nT('pages.chatSidebar.delete_history_session')} aria-label={i18nT('pages.chatSidebar.delete_history_session')} className="text-[12px] text-muted cursor-pointer p-[4px] rounded hover:text-danger hover:bg-danger-subtle transition-all bg-transparent border-none" onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); if (confirm(i18nT('pages.chatSidebar.are_you_sure_you_want_to_delete_this_history_ses'))) dispatch(deleteHistorySession(s.key)) }}><X size={12} /></button>
                       </div>}
                     </div>
@@ -6816,6 +6828,19 @@ function ChatSidebar({
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Read-only preview of the Older Sessions row the user activated. Kept
+       *  outside the pane so collapsing the pane does not tear down an open
+       *  preview, and mounted only while one is open so its fetch never runs
+       *  for a sidebar nobody is reading. */}
+      {historyPreview && (
+        <HistoryPreviewModal
+          target={historyPreview}
+          onClose={() => setHistoryPreview(null)}
+          onResume={resumeHistoryRow}
+          resumeDisabled={!connected}
+        />
+      )}
 
       {/* One folder create/settings modal for the whole sidebar. Rendered here
        *  rather than per-row so a folder shown in several board columns can only

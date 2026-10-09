@@ -96,7 +96,7 @@ async def test_an_incognito_chat_survives_a_restart_in_history(gateway_boot) -> 
         # The chat itself is kept: listed in History with its mode, its rows readable.
         listed = {s["key"]: s for s in (await gw.get_json("/api/sessions"))["sessions"]}
         assert listed[history_key]["memory_mode"] == "incognito"
-        rows = await gw.get_json(f"/api/sessions/{history_key}")
+        rows = (await gw.get_json(f"/api/sessions/{history_key}"))["messages"]
         assert [r["role"] for r in rows] == ["user", "assistant"]
         assert rows[0]["content"] == "hello from an incognito tab"
 

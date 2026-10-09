@@ -67,6 +67,7 @@ const mocks = vi.hoisted(() => ({
   clearSessions: vi.fn(),
   deleteSession: vi.fn(),
   resumeChatSlot: vi.fn(),
+  sessionDetail: vi.fn(),
   sessions: vi.fn(),
   sessionsSearch: vi.fn(),
   createTagColumn: vi.fn(),
@@ -217,6 +218,14 @@ async function openHeaderPanel(itemText: string) {
   fireEvent.click(await screen.findByText(itemText))
 }
 
+/** A whole pointer press on a row: activation lives on mousedown, and the
+ *  mouseup lets the sidebar's drag sensor settle before the next click. */
+function pressRow(row: HTMLElement) {
+  fireEvent.mouseDown(row)
+  fireEvent.mouseUp(row)
+  fireEvent.click(row)
+}
+
 /** Expand the Older Sessions pane. */
 function openHistory() {
   fireEvent.click(screen.getByLabelText('Older sessions'))
@@ -230,6 +239,10 @@ beforeEach(() => {
   mocks.clearSessions.mockResolvedValue({ ok: true })
   mocks.deleteSession.mockResolvedValue({ ok: true })
   mocks.resumeChatSlot.mockResolvedValue({ ok: true, key: 'h1', messages: [], mode: '', memory_mode: 'persistent' })
+  mocks.sessionDetail.mockResolvedValue({
+    key: 'h1', title: 'Fresh history', has_more: false,
+    messages: [{ role: 'user', content: 'older question' }, { role: 'assistant', content: 'older reply' }],
+  })
   mocks.sessions.mockResolvedValue({ sessions: [], has_more: false })
   mocks.sessionsSearch.mockResolvedValue({ sessions: [] })
   mocks.createTagColumn.mockResolvedValue({ id: 'col-new' })
@@ -627,14 +640,58 @@ describe('ChatSidebar — Older Sessions pane', () => {
     expect(screen.queryByPlaceholderText('Search older sessions…')).toBeNull()
   })
 
-  it('resumes a session by pointer and by keyboard', async () => {
+  // The test file renders framer-motion as plain DOM through a Proxy that mints
+  // a fresh component per access, so every re-render remounts the dialog's
+  // subtree. Query dialog controls synchronously, right before using them.
+  const previewDialog = (name = 'Fresh history') => screen.getByRole('dialog', { name: `Preview of ${name}` })
+
+  it('previews a session by pointer and by keyboard without reopening it', async () => {
+    // Regression: activating an Older Sessions row must not call resume, which
+    // clears the transcript's `closed` flag and publishes a live tab. Activation
+    // only reads.
     renderSidebar({ history: HISTORY })
     openHistory()
-    fireEvent.mouseDown(screen.getByTitle('Fresh history'))
-    await waitFor(() => expect(mocks.resumeChatSlot).toHaveBeenCalledWith('h1', 'Fresh history'))
-    mocks.resumeChatSlot.mockClear()
+    pressRow(screen.getByTitle('Fresh history'))
+    await waitFor(() => expect(mocks.sessionDetail).toHaveBeenCalledWith('h1'))
+    expect(await screen.findByText('older reply')).toBeTruthy()
+    expect(within(previewDialog()).getByText('older question')).toBeTruthy()
+    fireEvent.click(within(previewDialog()).getAllByRole('button', { name: 'Close' }).at(-1)!)
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     fireEvent.keyDown(screen.getByTitle('Week history'), { key: 'Enter' })
-    await waitFor(() => expect(mocks.resumeChatSlot).toHaveBeenCalledWith('h3', 'Week history'))
+    await waitFor(() => expect(mocks.sessionDetail).toHaveBeenCalledWith('h3'))
+    expect(mocks.resumeChatSlot).not.toHaveBeenCalled()
+    // Still listed: a preview does not move the row out of Older Sessions.
+    expect(screen.getByTitle('Fresh history')).toBeTruthy()
+  })
+
+  it('resumes only from the explicit Resume button in the preview', async () => {
+    renderSidebar({ history: HISTORY })
+    openHistory()
+    pressRow(screen.getByTitle('Fresh history'))
+    expect(await screen.findByText('older reply')).toBeTruthy()
+    expect(mocks.resumeChatSlot).not.toHaveBeenCalled()
+    fireEvent.click(within(previewDialog()).getByRole('button', { name: 'Resume session' }))
+    await waitFor(() => expect(mocks.resumeChatSlot).toHaveBeenCalledWith('h1', 'Fresh history'))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+
+  it('resumes directly from the row Resume control without opening a preview', async () => {
+    renderSidebar({ history: HISTORY })
+    openHistory()
+    fireEvent.click(screen.getAllByRole('button', { name: 'Resume session' })[0])
+    await waitFor(() => expect(mocks.resumeChatSlot).toHaveBeenCalledWith('h1', 'Fresh history'))
+    expect(mocks.sessionDetail).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('says so when the preview cannot load, and still offers Resume', async () => {
+    mocks.sessionDetail.mockRejectedValue(new Error('boom'))
+    renderSidebar({ history: HISTORY })
+    openHistory()
+    pressRow(screen.getByTitle('Fresh history'))
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't load this transcript.")
+    expect(within(previewDialog('Transcript')).getByRole('button', { name: 'Resume session' })).toBeTruthy()
+    expect(mocks.resumeChatSlot).not.toHaveBeenCalled()
   })
 
   it('deletes one history session behind a confirmation', async () => {

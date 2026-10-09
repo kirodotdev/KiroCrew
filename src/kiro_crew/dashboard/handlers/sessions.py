@@ -52,7 +52,10 @@ from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable, cron_owner_matches
 from kiro_crew.dashboard import directive_queue
 from kiro_crew.dashboard.chat_utils import (
+    _prepare_messages,
+    _redact_for_display,
     effective_session_key,
+    history_corpus_unreadable,
     slot_history_key,
 )
 from kiro_crew.dashboard.handlers import kiro_usage_api
@@ -81,6 +84,8 @@ from kiro_crew.history import (
     transcript_stems,
     transcript_withholds_derivation,
 )
+from kiro_crew.history_projection import TranscriptPage, TranscriptRevisionChanged
+from kiro_crew.jsonl_util import OversizedRecord, SplitlinesBoundaryRecord
 from kiro_crew.kiro_prerequisite import spawn_supervised_oneshot
 from kiro_crew.label_guard import PROSE_OPENERS, is_verdict_reply, looks_like_prose
 from kiro_crew.llm_helpers import run_bg_oneliner
@@ -2118,15 +2123,102 @@ async def api_sessions_search(request: web.Request) -> web.Response:
     return web.json_response({"sessions": sessions})
 
 
+#: Rows a history preview shows: the newest page, the same size the resume
+#: endpoint hydrates, so a preview and the tab it would become start alike.
+SESSION_PREVIEW_LIMIT = 200
+_SESSION_PREVIEW_READ_ATTEMPTS = 2
+
+
+def _indexed_preview_page(log: ConversationLog, key: str) -> tuple[TranscriptPage, bool]:
+    """The newest preview page from the indexed reader, and whether rows rotated out.
+
+    Raises :class:`OversizedRecord` or :class:`SplitlinesBoundaryRecord` when the
+    chain holds a row the index cannot frame; the caller falls back to the
+    full reader for those.
+    """
+    for _attempt in range(_SESSION_PREVIEW_READ_ATTEMPTS):
+        page = log.read_messages_chained_page(key, limit=SESSION_PREVIEW_LIMIT)
+        # `read_messages_chained_page` indexes the LIVE tab chain only. A size
+        # rotation moves this transcript's head into archive/, where that index
+        # cannot see it, so on a rotated session `page.has_more` can read false and
+        # the preview would hide the "most recent part" notice. Each archive
+        # segment's one-line header says whether it holds rotated rows, so the
+        # probe reads those headers and never parses the archived rows.
+        #
+        # Probed AFTER the page read, which is the direction the race fails
+        # safely in: a rotation landing between the two reads archives rows the
+        # page already holds, so the worst outcome is `has_more` true, which is
+        # what a rotated transcript wants anyway. Archive-first would miss them
+        # in both reads and report a transcript shorter than it is.
+        rotated = log.has_rotated_messages_chained(key)
+        revision = log.read_messages_chained_page(key, limit=0).revision
+        if revision == page.revision:
+            return page, rotated
+    raise TranscriptRevisionChanged("transcript changed during preview composition")
+
+
+def _session_preview_payload(log: ConversationLog, key: str) -> dict[str, Any]:
+    """The newest page of ``key``'s transcript, prepared for display.
+
+    Runs in a worker thread: the page read and the display redaction are both
+    blocking. ``_prepare_messages`` is the same render the resume and slot-detail
+    endpoints use, so the preview carries the display redaction, the blocked-link
+    records and the wire-string invariant a resumed tab would show. ``live_child``
+    is empty because a closed session has no ACP child, which also withdraws any
+    OAuth banner the transcript recorded for a child that is gone.
+    """
+    try:
+        page, rotated = _indexed_preview_page(log, key)
+    except (OversizedRecord, SplitlinesBoundaryRecord):
+        # Deterministic for the bytes on disk: a row over the index cap, or one
+        # holding a boundary only the full reader's splitlines() honours. The
+        # slot-detail page answers the same refusal with the full reader, so the
+        # preview does too, keeping the newest-page limit. The full reader
+        # includes the rotated archive, so its total already says whether
+        # older rows exist.
+        logger.debug("session preview hit an unframeable row for %s", key)
+        page = log.read_messages_chained_full_page(key, limit=SESSION_PREVIEW_LIMIT)
+        rotated = False
+    meta = log.get_metadata(key)
+
+    workspace = meta.get("workspace")
+    messages = _prepare_messages(
+        page.messages,
+        False,
+        live_child="",
+        workspace=workspace if isinstance(workspace, str) and workspace else None,
+    )
+    title = meta.get("title")
+    return {
+        "key": key,
+        # A stored title is LLM-generated text, so it carries the same display
+        # redaction the messages beside it carry and the slot-detail title uses.
+        "title": _redact_for_display(title) if isinstance(title, str) else "",
+        "messages": messages,
+        "has_more": page.has_more or bool(rotated),
+    }
+
+
 async def api_session_detail(request: web.Request) -> web.Response:
-    """GET /api/sessions/{key} — return messages for a session."""
+    """GET /api/sessions/{key} — read a stored session without reopening it.
+
+    The Older Sessions preview reads this rather than ``POST
+    /api/chat/slots/{slot}/resume``: resuming clears the transcript's ``closed``
+    flag and publishes a live tab, which would turn inspecting an old
+    conversation into reopening it. This endpoint only reads. It writes no
+    metadata, creates no slot and starts no process; reopening stays an explicit
+    Resume. The answer is the newest page, display-rendered, so it never carries
+    the raw stored bytes the chat view redacts.
+    """
     state: DashboardState = request.app["state"]
     key = request.match_info["key"]
     refusal = await _app_transcript_refusal(request, state, key, "session_detail")
     if refusal is not None:
         return refusal
     if not state.conversation_log:
-        return web.json_response([])
+        return web.json_response(
+            {"error": "no conversation log", "code": "no_conversation_log"}, status=400
+        )
     log = state.conversation_log
     request_app = str(request.get("app") or "")
     if request_app:
@@ -2142,13 +2234,54 @@ async def api_session_detail(request: web.Request) -> web.Response:
             )
         _audit_app_allow(request_app, "session_detail", f"session={key}")
         return web.json_response(messages)
-    # read_messages() opens and parses the transcript on a cache miss, which for
-    # the multi-MB sessions a long-lived store accumulates is 100-300 ms of
-    # blocking file IO — on the event loop, stalling every other request. Off the
-    # loop, like every other conversation_log read in this module (list_sessions,
-    # get_metadata, session_mtime, search_sessions, delete_session).
-    messages = await asyncio.to_thread(state.conversation_log.read_messages, key)
-    return web.json_response(messages)
+    if not await asyncio.to_thread(log.has_log, key):
+        return web.json_response(
+            {"error": "session not found", "code": "session_not_found"}, status=404
+        )
+    try:
+        payload = await asyncio.to_thread(_session_preview_payload, log, key)
+    except FileNotFoundError:
+        # A delete can race the has_log check and unlink the transcript while
+        # the worker thread is composing its page.
+        return web.json_response(
+            {"error": "session not found", "code": "session_not_found"}, status=404
+        )
+    except TranscriptRevisionChanged:
+        # The transcript changed under every bounded retry of the page read.
+        # Nothing was read, so say "try again" rather than render a torn page.
+        return web.json_response(
+            {"error": "transcript changed while reading", "code": "transcript_changed"},
+            status=503,
+        )
+    except UnicodeDecodeError:
+        # Same posture as the slot detail's strict text-mode read: undecodable
+        # transcript bytes are not a page to serve.
+        logger.warning("session preview is not valid UTF-8 for %s", key, exc_info=True)
+        return history_corpus_unreadable()
+    except RecursionError:
+        # A row nested past the parser's depth is a corrupt corpus, not a page.
+        logger.warning("session preview row exceeds JSON depth for %s", key, exc_info=True)
+        return history_corpus_unreadable()
+    except ValueError:
+        # ``json.loads`` can refuse a row for reasons other than malformed JSON,
+        # such as an integer literal past the interpreter's digit limit.
+        logger.warning("session preview row is not decodable for %s", key, exc_info=True)
+        return history_corpus_unreadable()
+    except OSError:
+        # The rotated-archive probe could not enumerate or read the archive, so
+        # whether archived rows exist is unknown. Answering with the live page
+        # alone would report a transcript shorter than it is and suppress the
+        # "most recent part" notice, with nothing for the reader to retry. This
+        # is the same corpus read failure `api_chat_slot_detail` meets, so it
+        # gets the same retryable 503.
+        logger.warning("session preview corpus read failed for %s", key, exc_info=True)
+        return history_corpus_unreadable()
+    if not await asyncio.to_thread(log.has_log, key):
+        # A delete can complete after the page reader returns without raising.
+        return web.json_response(
+            {"error": "session not found", "code": "session_not_found"}, status=404
+        )
+    return web.json_response(payload)
 
 
 async def _owner_keys_bound_to_transcript(crons: Any, keys: Collection[str]) -> dict[str, set[str]]:

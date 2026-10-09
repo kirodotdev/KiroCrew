@@ -9,6 +9,15 @@ import type { CrewBoardAction, CrewBoardActionResult, WorkBoardResponse } from '
 
 export const SEARCH_MIN_CHARS = 2  // backend session search threshold (must match kiro_crew.history.SEARCH_MIN_CHARS)
 
+/** `GET /api/sessions/{key}`: the newest rows of a stored session. */
+export interface SessionPreview {
+  key: string
+  title: string
+  /** At most the newest page of the transcript; `has_more` says whether older rows exist. */
+  messages: { role: string; content: string; meta?: Record<string, unknown> }[]
+  has_more: boolean
+}
+
 export function createSessionsEndpoints({ get, post, del, j, jfetch: fetch, jCrewBoard }: ClientTransport) {
   const runtimes = {
     restartSessions: () =>
@@ -85,7 +94,11 @@ export function createSessionsEndpoints({ get, post, del, j, jfetch: fetch, jCre
   }
 
   const historyDetail = {
-    sessionDetail: (key: string) => fetch('/api/sessions/' + encodeURIComponent(key)).then(j),
+    /** The newest page of a stored session's transcript, display-rendered, read
+     *  WITHOUT reopening it: no `closed` flag cleared, no slot created. The
+     *  Older Sessions preview reads this; reopening stays `resumeChatSlot`. */
+    sessionDetail: (key: string) =>
+      fetch('/api/sessions/' + encodeURIComponent(key)).then(j) as Promise<SessionPreview>,
     deleteSession: (key: string) => del('/api/sessions/' + encodeURIComponent(key)).then(j),
     clearSessions: () => del('/api/sessions').then(j),
   }

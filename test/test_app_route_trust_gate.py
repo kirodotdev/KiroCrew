@@ -1027,7 +1027,10 @@ async def test_dashboard_user_still_reaches_every_transcript(state):
         resp = await client.get("/api/sessions/search", params={**_q(), "q": "needle"})
         assert _keys((await resp.json())["sessions"]) == every
         resp = await client.get("/api/sessions/dashboard:other-chat", params=_q())
-        assert [m["content"] for m in await resp.json()] == ["other needle note", "noted"]
+        assert [m["content"] for m in (await resp.json())["messages"]] == [
+            "other needle note",
+            "noted",
+        ]
         resp = await client.delete("/api/sessions/dashboard:user-chat", params=_q())
         assert (resp.status, await resp.json()) == (200, {"ok": True})
         assert not state.conversation_log.has_log("dashboard:user-chat")

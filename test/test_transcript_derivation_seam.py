@@ -98,8 +98,8 @@ PLUMBING: frozenset[tuple[str, str]] = frozenset(
         ("kiro_crew/dashboard/handlers/core.py", "recent"),
         ("kiro_crew/dashboard/handlers/cron.py", "read_messages"),
         ("kiro_crew/dashboard/handlers/session_control.py", "read_messages"),
-        # The History browser showing the user their own transcript. Its
-        # list_sessions(summarize=true) leg goes through the seam (derive_recent).
+        # An app reading a transcript it owns gets that transcript back
+        # (`_app_owned_messages`); the dashboard preview reads a page instead.
         ("kiro_crew/dashboard/handlers/sessions.py", "read_messages"),
         ("kiro_crew/decisions/points/compaction_keep.py", "read_messages"),
         # Thread diagnostics probe `recent`, not a transcript.
@@ -125,6 +125,9 @@ PLUMBING: frozenset[tuple[str, str]] = frozenset(
         ("kiro_crew/history_projection.py", "_read_messages_locked"),
         ("kiro_crew/history_projection.py", "_recent_via_tail"),
         ("kiro_crew/history_projection.py", "read_messages_chained"),
+        # The full-reader preview page, served when the row index refuses a
+        # record; same rows `read_messages_chained_page` would hand back.
+        ("kiro_crew/history_projection.py", "read_messages_chained_full"),
         ("kiro_crew/slack/gateway.py", "read_messages"),
         # A yes/no "does this session already have turns" check on its OWN
         # transcript, gating a write to that transcript; no rows leave.

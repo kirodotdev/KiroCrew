@@ -3625,6 +3625,9 @@ class ConversationLog:
     def read_rotated_messages_chained(self, key: str) -> list[dict]:
         return self._read_projection.read_rotated_messages_chained(key)
 
+    def has_rotated_messages_chained(self, key: str) -> bool:
+        return self._read_projection.has_rotated_messages_chained(key)
+
     def chain_mid_rotation(self, key: str) -> bool:
         """See ``HistoryReadProjection.chain_mid_rotation``."""
         return self._read_projection.chain_mid_rotation(key)
@@ -3643,6 +3646,10 @@ class ConversationLog:
             before=before,
             expected_revision=expected_revision,
         )
+
+    def read_messages_chained_full_page(self, key: str, *, limit: int) -> TranscriptPage:
+        """See ``HistoryReadProjection.read_messages_chained_full_page``."""
+        return self._read_projection.read_messages_chained_full_page(key, limit=limit)
 
     def _rebuild_tab_id_index(self) -> None:
         self._read_projection._rebuild_tab_id_index()

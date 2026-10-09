@@ -243,6 +243,14 @@ temporary session is listed, searched and filtered like any other (see
 The row reads memory mode only to draw its incognito or temporary glyph, and a
 restricted session cannot be dropped into the composer as a reference.
 
+Activating an Older Sessions row (click or Enter) opens a read-only preview
+(`chat-sidebar/HistoryPreviewModal.tsx`) and does not reopen the session. The
+preview reads `GET /api/sessions/{key}`, which returns the newest page of
+the transcript through the same `_prepare_messages` render a resumed tab gets and
+writes nothing: the `closed` flag stays set and no slot is created. Reopening is a
+separate, explicit action: the preview's Resume session button or the row's own
+Resume control, both of which dispatch `resumeFromHistory`.
+
 `ChatSidebar.tsx` is a facade over owners that each hold one responsibility. It
 calls each owner hook where that block used to sit, so React runs the effects in
 the same order as before. `ChatSidebar.ownerComposition.test.ts` pins that call
