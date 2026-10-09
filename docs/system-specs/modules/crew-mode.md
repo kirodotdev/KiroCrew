@@ -1156,16 +1156,15 @@ page colour before they reach the chips, so the chips sit on half-faded ground
 while the pane's top edge stays glass. The pane pays for the band with its
 scroller's top padding — `ChatPane`'s `topInset`, the header's measured height
 (`useMeasuredHeight`, never a constant) plus the pane's own 12px — so at scroll
-top nothing hides under the pill; the pinned-prompt band hangs under it by the
-same offset. Whatever can sit between the header and the pane (notices, the
+top nothing hides under the pill (a crewmate's chat draws no pinned-prompt band,
+#18346, so nothing else hangs under it). Whatever can sit between the header and the pane (notices, the
 greeting cards) stays in flow in one `empty:hidden` box padded below the header
 by that height, and while that box has a height the pane's inset is 0: a card
 with controls is never under the glass, and the pane is under the header only
 when it is the thing directly below it. The row and its cells pass input through
 (`pointer-events-none`); only the controls catch it, so a wheel beside the pill
-reaches the transcript. It sits at z-20 — above the pane's own chrome (its dock
-and pinned prompt), below the floating Profile card (z-30), whose scrim covers
-it. No hairline under it (#9425).
+reaches the transcript. It sits at z-20 — above the pane's own chrome (its
+dock), below the floating Profile card (z-30), whose scrim covers it. No hairline under it (#9425).
 
 The centred identity pill opens `CrewProfilePanel`, not the editor. It ends in a
 small `ChevronRight` (decorative, `aria-hidden`): the one visible sign that this
@@ -1735,7 +1734,15 @@ addresses the crewmate by name ("Message <name>…"), not the product. The
 composer floats over the transcript like the main chat's (#18279; the dock
 layout in
 [page-layout](../../../website/docs/page-layout.md#decided-the-transcript-scrolls-under-the-composer-glass)),
-so the conversation scrolls under the glass. The roster row
+so the conversation scrolls under the glass. The
+pinned-prompt banner (Settings → Chat → pin last prompt) is never drawn in a
+crewmate's chat (#18346): `ChatPane` turns the pin off when handed a `crewmate`,
+whatever the setting says. The banner exists for long agent runs in the main
+chat, where the question scrolls out of sight while the answer streams; a DM
+with a colleague has short turns, the user's bubble is one row back, the
+crewmate's status line already says what it is doing, and a second floating
+card under the floating glass header read as clutter (owner decision,
+2026-10-09). Ordinary chats and split panes keep it. The roster row
 beside the chat quotes the same thing the chat draws: its `last_message` is
 SPEECH only (`last_speech_info` on the cold read, a
 `member/message` event without `preview` for a machinery row on the live path —

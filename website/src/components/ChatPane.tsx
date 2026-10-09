@@ -624,11 +624,16 @@ export default function ChatPane({
   }, [])
   // Same enablement the main chat honours (Settings → Chat → pin last prompt),
   // read through the hook's ref so the scroll recompute never closes over a
-  // stale config.
+  // stale config. Never in a crewmate's chat (#18346): the banner is for long
+  // agent runs where the question scrolls away while the answer streams; a DM
+  // with a colleague has short turns, the user's bubble is one row back, and
+  // under the floating glass header (#18325) a second floating card read as
+  // clutter. Ordinary chats and split panes keep it.
+  const pinOn = chatConfig.pinLastPrompt && !crewmate
   useEffect(() => {
-    pin.pinEnabledRef.current = chatConfig.pinLastPrompt
-    if (!chatConfig.pinLastPrompt) setPinned(null)
-  }, [chatConfig.pinLastPrompt, pin.pinEnabledRef, setPinned])
+    pin.pinEnabledRef.current = pinOn
+    if (!pinOn) setPinned(null)
+  }, [pinOn, pin.pinEnabledRef, setPinned])
   // The transcript row whose bubble the banner is standing in for. The list
   // hides it (ts-keyed, index fallback — see ChatMessageList.hiddenRow);
   // memoised so the memo'd list does not re-render on every pane render.

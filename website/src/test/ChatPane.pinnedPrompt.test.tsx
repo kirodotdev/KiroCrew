@@ -85,7 +85,7 @@ function makeStore() {
   })
 }
 
-function renderPane(props: { frameless?: boolean } = {}) {
+function renderPane(props: { frameless?: boolean; crewmate?: { name: string } } = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const store = makeStore()
   const view = render(
@@ -221,6 +221,20 @@ describe('ChatPane pinned prompt (chat-core P5-d)', () => {
     const root = container.querySelector('[data-chat-pane]') as HTMLElement
     expect(root.contains(card)).toBe(true)
     expect(card.compareDocumentPosition(geom.scroller) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it("a crewmate's chat never pins, whatever the setting says (#18346)", () => {
+    // The banner is for long agent runs in the main chat; in a DM with a
+    // colleague the user's bubble is one row back and a floating card under
+    // the floating glass header read as clutter. Setting on, pane frameless,
+    // same fixture and scroll as the pinning case above: no card, no hidden row.
+    localStorage.setItem('mc-chat-config', JSON.stringify({ pinLastPrompt: true }))
+    const { container } = renderPane({ frameless: true, crewmate: { name: 'Radar' } })
+    const geom = layOut(container)
+    act(() => { geom.scroller.dispatchEvent(new Event('scroll')) })
+    flushFrames()
+    expect(screen.queryByTestId('pinned-prompt')).toBeNull()
+    expect(geom.rows[2].style.visibility).toBe('')
   })
 
   it('starts an estimate-steered jump when the pinned row is unmounted', () => {
