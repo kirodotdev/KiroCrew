@@ -8836,9 +8836,7 @@
       "loading": "読み込み中…",
       "not_a_repository": "Git リポジトリではありません",
       "not_a_repository_help": "このプロジェクトフォルダーは Git リポジトリではありません。リポジトリがサブフォルダーにある場合は、メッセージボックスの下にあるフォルダー名をクリックしてください。",
-      "no_project": "このセッションにはプロジェクトフォルダーが設定されていません。",
       "refresh": "更新",
-      "title": "Git",
       "uncommitted": "{{count}} 件の未コミット",
       "branch_unavailable": "ブランチを利用できません",
       "status_failed": "リポジトリの状態を読み取れませんでした。コミット履歴が古い可能性があります。",
@@ -8856,7 +8854,16 @@
       "filter_refused_title_unreadable_changes": "Kiro は現在、変更を表示できません",
       "filter_refused_title_unreadable_history": "Kiro は現在、履歴を表示できません",
       "ask_agent_changes": "変更についてエージェントに質問",
-      "ask_agent_history": "履歴についてエージェントに質問"
+      "ask_agent_history": "履歴についてエージェントに質問",
+      "repos_empty": "Git リポジトリはまだありません。エージェントがリポジトリ内でファイルを編集するかコマンドを実行すると、ここに表示されます。",
+      "source_project": "プロジェクト",
+      "repos_failed": "このチャットのリポジトリを一覧表示できませんでした。",
+      "repos_loading": "このチャットのリポジトリを読み込んでいます…",
+      "repos_omitted_other": "最近使用した {{formattedLimit}} 件のリポジトリを表示しています。他に {{formattedCount}} 件は一覧にありません。",
+      "source_project_help": "このチャットを開始したフォルダーです。他のリポジトリは、エージェントが作業したものです。",
+      "repos_caption_agent": "このチャットでエージェントが作業したリポジトリです。",
+      "repos_caption_project": "このチャットのプロジェクトフォルダー（{{tag}}）と、エージェントが作業したリポジトリです。",
+      "repos_retry": "再試行"
     },
     "workspaceTree": {
       "status_failed": "リポジトリの状態を読み取れませんでした。",

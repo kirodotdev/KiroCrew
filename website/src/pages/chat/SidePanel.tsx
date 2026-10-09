@@ -1402,7 +1402,7 @@ export default function SidePanel({
                   onArtifactOpen={onArtifactOpen}
                   pins={pins} pinsLoading={pinsLoading} onJumpToPin={onJumpToPin} onUnpin={onUnpin}
                   slotTitle={slotTitle} chatMode={chatMode}
-                  projectDir={projectDir} navLinks={navLinks} navResolving={navResolving}
+                  navLinks={navLinks} navResolving={navResolving}
                 />
               </div>
             )

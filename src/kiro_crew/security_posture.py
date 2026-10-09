@@ -1333,6 +1333,12 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "_redact_project_path, which the Git panel and the file tree share.",
     ),
     (
+        "Git tab repository list",
+        "dashboard/file_api/project_dirs.py",
+        "The repository paths the Git tab's listing (api_project_git_repos) "
+        "returns go through _redact_project_path.",
+    ),
+    (
         "Git panel status and log",
         "dashboard/file_api/git_panel.py",
         "The branch, file paths, commit messages and authors the Git panel's "

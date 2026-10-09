@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { i18next, initI18n } from '../i18n/all'
@@ -25,7 +25,10 @@ import { namedCeiling } from './namedCeiling'
 
 const PROJECT = '/workspace/project'
 
-function mount() {
+/** One open section, as the Git tab's list renders a repository the user is
+ *  looking at. `defaultOpen` so the body (notices, changes, commits) is on
+ *  screen without a toggle; every GitPanel is a list section now. */
+function mount(defaultOpen = true) {
   // GitPanel's reads set `retry: 1` themselves, which outranks the `retry` here,
   // so a rejected route is asked twice before it surfaces. `retryDelay: 0` (they
   // set none) makes that second ask immediate instead of React Query's real
@@ -33,7 +36,7 @@ function mount() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } })
   return render(
     <QueryClientProvider client={queryClient}>
-      <GitPanel projectDir={PROJECT} onClose={vi.fn()} />
+      <GitPanel projectDir={PROJECT} section={{ label: PROJECT, defaultOpen }} />
     </QueryClientProvider>,
   )
 }
@@ -810,5 +813,123 @@ describe('GitPanel log route outage', () => {
       i18next.t('components.gitPanel.log_failed'),
     )
     expect(notice).toHaveTextContent('LOG-DETAIL')
+  })
+})
+
+describe('GitPanel collapsed request failures', () => {
+  it.each(['status', 'log', 'both'] as const)(
+    'keeps %s Refresh failures and their hand-offs visible after the user collapses a clean section',
+    async failedQuery => {
+      mount()
+      await screen.findByText('No changes or commits to display.')
+      await waitFor(() => expect(H.api.projectGitLog).toHaveBeenCalledTimes(1))
+      fireEvent.click(screen.getByTestId('git-repo-toggle'))
+      expect(screen.getByTestId('git-repo-toggle')).toHaveAttribute('aria-expanded', 'false')
+
+      if (failedQuery !== 'log') {
+        H.api.projectGitStatus.mockRejectedValue(new Error('STATUS-REFRESH-FAILED'))
+      }
+      if (failedQuery !== 'status') {
+        const message = 'LOG-REFRESH-FAILED'
+        H.api.projectGitLog.mockRejectedValue(Object.assign(new Error(message), {
+          body: JSON.stringify({ error: message, code: 'git_log_unavailable' }),
+        }))
+        recordError({
+          source: 'api', message, status: 503, code: 'git_log_unavailable',
+          endpoint: '/api/project/git/log',
+        })
+      }
+      fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+
+      if (failedQuery !== 'log') {
+        const notice = await screen.findByTestId('git-panel-status-error')
+        expect(notice).toBeVisible()
+        expect(within(notice).getByRole('button', {
+          name: i18next.t('components.gitPanel.ask_agent_changes'),
+        })).toBeVisible()
+      }
+      if (failedQuery !== 'status') {
+        const notice = await screen.findByTestId('git-panel-log-error')
+        expect(notice).toBeVisible()
+        await userEvent.click(within(notice).getByRole('button', {
+          name: i18next.t('components.gitPanel.ask_agent_history'),
+        }))
+        expect(consumeChatHandoff()).toContain('- Request: /api/project/git/log -> HTTP 503')
+      }
+      expect(screen.getByTestId('git-repo-toggle')).toHaveAttribute('aria-expanded', 'false')
+    },
+  )
+
+  it('shows a history Refresh failure in a section that starts collapsed', async () => {
+    mount(false)
+    await screen.findByText('main')
+    expect(H.api.projectGitLog).not.toHaveBeenCalled()
+    H.api.projectGitLog.mockRejectedValue(new Error('LOG-REFRESH-FAILED'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+
+    expect(await screen.findByTestId('git-panel-log-error')).toBeVisible()
+    expect(screen.getByTestId('git-repo-toggle')).toHaveAttribute('aria-expanded', 'false')
+  })
+})
+
+describe('GitPanel list-section status polling', () => {
+  /** One status poll interval plus slack, so a timer that fires would have fired. */
+  const POLL_WINDOW_MS = 5000 * 2 + 500
+
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('fetches a collapsed section once and does not poll it on the interval', async () => {
+    const { unmount } = mount(false)
+    await waitFor(() => expect(H.api.projectGitStatus).toHaveBeenCalledTimes(1))
+    // The header still shows what the one fetch returned.
+    expect(screen.getByText('main')).toBeInTheDocument()
+    expect(screen.getByTestId('git-repo-toggle')).toHaveAttribute('aria-expanded', 'false')
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(POLL_WINDOW_MS) })
+
+    // Up to MAX_SLOT_GIT_REPOS sections each run several git subprocesses per
+    // poll; a collapsed one must not add to that.
+    expect(H.api.projectGitStatus).toHaveBeenCalledTimes(1)
+    unmount()
+  })
+
+  it('starts polling when the user opens the section and stops when they close it', async () => {
+    const { unmount } = mount(false)
+    await waitFor(() => expect(H.api.projectGitStatus).toHaveBeenCalledTimes(1))
+
+    fireEvent.click(screen.getByTestId('git-repo-toggle'))
+    expect(screen.getByTestId('git-repo-toggle')).toHaveAttribute('aria-expanded', 'true')
+    await act(async () => { await vi.advanceTimersByTimeAsync(POLL_WINDOW_MS) })
+    await waitFor(() => expect(H.api.projectGitStatus.mock.calls.length).toBeGreaterThan(1))
+
+    fireEvent.click(screen.getByTestId('git-repo-toggle'))
+    expect(screen.getByTestId('git-repo-toggle')).toHaveAttribute('aria-expanded', 'false')
+    // Let any poll already in flight settle before counting.
+    await waitFor(() => expect(screen.getByText('main')).toBeInTheDocument())
+    const afterClose = H.api.projectGitStatus.mock.calls.length
+    await act(async () => { await vi.advanceTimersByTimeAsync(POLL_WINDOW_MS) })
+    expect(H.api.projectGitStatus).toHaveBeenCalledTimes(afterClose)
+    unmount()
+  })
+
+  it('keeps polling a section that opened itself', async () => {
+    H.api.projectGitStatus.mockResolvedValue({
+      repo: true,
+      repoRoot: PROJECT,
+      branch: 'main',
+      files: [{ path: 'a.txt', status: 'M', staged: false }],
+    })
+    const dirty = mount(false)
+    await waitFor(() => expect(screen.getByTestId('git-repo-toggle')).toHaveAttribute('aria-expanded', 'true'))
+    await act(async () => { await vi.advanceTimersByTimeAsync(POLL_WINDOW_MS) })
+    await waitFor(() => expect(H.api.projectGitStatus.mock.calls.length).toBeGreaterThan(1))
+    dirty.unmount()
   })
 })

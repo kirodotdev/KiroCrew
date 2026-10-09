@@ -8961,9 +8961,7 @@
       "loading": "wird geladen...",
       "not_a_repository": "Kein Git-Repository",
       "not_a_repository_help": "Dieser Projektordner ist kein Git-Repository. Wenn sich das Repository in einem Unterordner befindet, klicken Sie auf den Ordnernamen unter dem Nachrichtenfeld.",
-      "no_project": "Kein Projektordner für diese Sitzung festgelegt.",
       "refresh": "Aktualisieren",
-      "title": "Git",
       "uncommitted": "{{count}} nicht committet",
       "branch_unavailable": "Branch nicht verfügbar",
       "status_failed": "Der Repository-Status konnte nicht gelesen werden. Der Commit-Verlauf ist möglicherweise veraltet.",
@@ -8981,7 +8979,17 @@
       "filter_refused_title_unreadable_changes": "Kiro kann die Änderungen derzeit nicht anzeigen",
       "filter_refused_title_unreadable_history": "Kiro kann den Verlauf derzeit nicht anzeigen",
       "ask_agent_changes": "Agent zu den Änderungen fragen",
-      "ask_agent_history": "Agent zum Verlauf fragen"
+      "ask_agent_history": "Agent zum Verlauf fragen",
+      "repos_empty": "Noch keine Git-Repositorys. Sie erscheinen hier, sobald der Agent in einem Dateien bearbeitet oder Befehle ausführt.",
+      "source_project": "Projekt",
+      "repos_failed": "Die Repositorys dieses Chats konnten nicht aufgelistet werden.",
+      "repos_loading": "Repositorys dieses Chats werden geladen...",
+      "repos_omitted_one": "Die {{formattedLimit}} zuletzt verwendeten Repositorys werden angezeigt. {{formattedCount}} weiteres ist nicht aufgeführt.",
+      "repos_omitted_other": "Die {{formattedLimit}} zuletzt verwendeten Repositorys werden angezeigt. {{formattedCount}} weitere sind nicht aufgeführt.",
+      "source_project_help": "Der Ordner, in dem dieser Chat gestartet wurde. Die anderen Repositorys sind die, in denen der Agent gearbeitet hat.",
+      "repos_caption_agent": "Repositorys, in denen der Agent in diesem Chat gearbeitet hat.",
+      "repos_caption_project": "Der Projektordner dieses Chats ({{tag}}) und die Repositorys, in denen der Agent gearbeitet hat.",
+      "repos_retry": "Erneut versuchen"
     },
     "workspaceTree": {
       "status_failed": "Der Repository-Status konnte nicht gelesen werden.",

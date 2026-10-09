@@ -1,4 +1,5 @@
 [
+  "components.gitPanel.repos_omitted",
   "components.redaction.coach_title",
   "pages.overview.vectorMemoryCard.repair_deferred",
   "pages.overview.vectorMemoryCard.repair_invalidation",

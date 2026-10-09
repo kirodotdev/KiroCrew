@@ -12,16 +12,19 @@ from aiohttp import web
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.files import (
-        _GIT_ROOT_WALK_LIMIT,
         _HEAD_READ_LIMIT,
         _MACOS_TEMP_PROJECT_PREFIX_RE,
         DashboardState,
+        _git_repo_touches,
         _sel,
+        app_owns_slot_session,
         config_dir,
+        deny_app_slot_session_access,
         is_sensitive_path,
         platform_compat,
         redact,
         safe_read_prefix,
+        slot_not_found,
     )
 
 
@@ -78,6 +81,107 @@ def _slot_project_snapshot(state: DashboardState) -> list[str]:
         if proj:
             dirs.append(proj)
     return dirs
+
+
+def _slot_git_repo_snapshot(state: DashboardState, request_app: str = "") -> list[str]:
+    """Every live slot's project dir plus the git roots its tool calls touched.
+
+    The allow-list for the Git panel routes. The touched roots are derived on
+    the server from each session's own tool calls (``git_repo_touches``), never
+    from a request, so they carry the same trust as a project directory the
+    agent set itself. An app caller (*request_app*) gets only the touched roots
+    of the slots it owns, by the same predicate the slot checkpoint applies
+    (``app_owns_slot_session``): another session's repositories are not its to
+    read. Event loop only, pure in-memory, like :func:`_slot_project_snapshot`.
+    """
+    dirs = _slot_project_snapshot(state)
+    for slot in list(getattr(state, "_slots", {}).values()):
+        if request_app and not app_owns_slot_session(request_app, slot):
+            continue
+        dirs.extend(r for r in (getattr(slot, "_git_repos", None) or []) if r)
+    return dirs
+
+
+def _git_repo_listing(
+    project: str, touched: list[str], seed_paths: list[str]
+) -> tuple[str, list[str], list[str]]:
+    """Resolve the Git tab's repositories for one slot. Worker thread only.
+
+    Returns ``(project_root, seed_roots, live_touched)``: the real root of the
+    repository holding *project* (``""`` when it holds none), the roots the
+    transcript's file-change *seed_paths* resolve to, and the subset of
+    *touched* that is still a repository on disk (a deleted worktree drops
+    out instead of listing as an error).
+    """
+    project_root = ""
+    if project:
+        roots = _git_repo_touches.resolve_repo_roots([project])
+        if roots:
+            project_root = roots[0]
+    seed_roots = _git_repo_touches.resolve_repo_roots(seed_paths, project) if seed_paths else []
+    live = [root for root in touched if os.path.exists(os.path.join(root, ".git"))]
+    return project_root, seed_roots, live
+
+
+async def api_project_git_repos(request: web.Request) -> web.Response:
+    """GET /api/project/git/repos?slot=... -- the repositories the Git tab lists.
+
+    The session's project directory first, when it sits in a repository, then
+    every repository the session's tool calls worked in, most recent first. Each
+    ``path`` is the value the status and log routes accept for that row, except
+    a path the credential redactor masks: that row is refused rather than the
+    unmasked path being sent to the client. ``limit`` is the cap the list is
+    held to (``MAX_SLOT_GIT_REPOS``), sent so the client's capacity notice
+    states the rule from the one constant that enforces it.
+    """
+    state: DashboardState = request.app["state"]
+    caller = request.get("user", "dashboard")
+    key = request.query.get("slot", "").strip()
+    if not key:
+        return web.json_response({"error": "slot required", "code": "slot_required"}, status=400)
+    slot = state.get_slot(key)
+    # An app token reaches only a slot it owns, on its own session and
+    # transcript (the transcript seeds the list); every refusal is the
+    # checkpoint's uniform 404, audited when the slot exists.
+    denied = deny_app_slot_session_access(request.get("app", ""), slot, key, "project_git_repos")
+    if denied is not None:
+        return denied
+    if slot is None:
+        return slot_not_found()
+
+    project = slot.project or ""
+    touched = list(getattr(slot, "_git_repos", None) or [])
+    omitted = _git_repo_touches.omitted_repo_count(slot)
+    seeded = bool(getattr(slot, "_git_repos_seeded", False))
+    seed_paths = [] if seeded else _git_repo_touches.transcript_change_paths(slot.messages)
+    project_root, seed_roots, live = await asyncio.to_thread(
+        _git_repo_listing, project, touched, seed_paths
+    )
+    if not seeded:
+        # Back on the loop: fold the transcript's repositories in once, behind
+        # anything a live tool call noticed while the walk ran.
+        _git_repo_touches.record_repo_roots(slot, seed_roots, newest=False)
+        slot._git_repos_seeded = True
+        present = set(live) | set(seed_roots)
+        live = [r for r in slot._git_repos if r in present]
+        omitted = _git_repo_touches.omitted_repo_count(slot)
+    _sel().log_api_access(
+        caller=caller,
+        operation="project_git_repos",
+        outcome="allowed",
+        resources=f"slot={key}",
+    )
+
+    repos: list[dict] = []
+    if project_root:
+        repos.append({"path": _redact_project_path(project), "source": "project"})
+    for root in reversed(live):
+        if root == project_root:
+            continue
+        repos.append({"path": _redact_project_path(root), "source": "agent"})
+    return web.json_response(
+        {"repos": repos, "omitted": omitted, "limit": _git_repo_touches.MAX_SLOT_GIT_REPOS}
+    )
 
 
 def _known_project_dirs(slot_projects: list[str]) -> list[str]:
@@ -198,23 +302,14 @@ def _redact_project_path(path: str) -> str:
 def _project_git_branch(base: str) -> dict:
     """Resolve the checked-out branch for ``base``.
 
-    Returns ``{"repo": False}`` when ``base`` is not inside a git repository.
-    For a repository, returns the repo root plus either a ``branch`` name or,
-    on a detached HEAD, ``detached: True`` with the short commit in ``head``.
+    Returns ``{"repo": False}`` when ``base`` is not inside a git repository,
+    by the dashboard's one in-process discovery walk (``find_git_root``: a
+    linked worktree's ``.git`` file counts, ``GIT_CEILING_DIRECTORIES`` stops it
+    as it stops git, and the depth is bounded). For a repository, returns the
+    repo root plus either a ``branch`` name or, on a detached HEAD,
+    ``detached: True`` with the short commit in ``head``.
     """
-    root: str | None = None
-    cur = base
-    for _ in range(_GIT_ROOT_WALK_LIMIT):
-        # A worktree's .git is a FILE (a gitdir pointer), not a directory, so
-        # probe for existence rather than is_dir() — otherwise every Kiro Crew
-        # worktree reports as not-a-repo.
-        if os.path.exists(os.path.join(cur, ".git")):
-            root = cur
-            break
-        parent = os.path.dirname(cur)
-        if parent == cur:
-            break
-        cur = parent
+    root = _git_repo_touches.find_git_root(base)
     if root is None:
         return {"repo": False}
     # ``root`` is derived from an allow-listed project directory, but a directory

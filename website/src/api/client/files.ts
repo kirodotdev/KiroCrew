@@ -102,6 +102,11 @@ export function createFilesEndpoints({ post, put, del, j, jfetch: fetch, checkSe
     projectGit: (path: string) => fetch('/api/project/git?path=' + encodeURIComponent(path)).then(j) as Promise<{ path: string; repo: boolean; repoRoot?: string; branch?: string; detached?: boolean; head?: string }>,
     projectGitStatus: (path: string) => fetch('/api/project/git/status?path=' + encodeURIComponent(path)).then(j) as Promise<{ repo: boolean; repoRoot?: string; branch?: string; ahead?: number; behind?: number; truncated?: boolean; files: { path: string; status: string; staged: boolean; additions?: number; deletions?: number }[] }>,
     projectGitLog: (path: string, limit = 20) => fetch('/api/project/git/log?path=' + encodeURIComponent(path) + '&limit=' + limit).then(j) as Promise<{ repo: boolean; commits: { sha: string; message: string; author: string; date: string; isHead: boolean }[] }>,
+    /** The repositories the Git tab lists for one chat: its project (when that
+     *  is in a repository) first, then every repository its tool calls worked
+     *  in, most recent first. Each `path` is accepted by the status/log routes.
+     *  `limit` is the server's cap on the list, which `omitted` counts past. */
+    projectGitRepos: (slot: string) => fetch('/api/project/git/repos?slot=' + encodeURIComponent(slot)).then(j) as Promise<{ repos: { path: string; source: 'project' | 'agent' }[]; omitted: number; limit: number }>,
     projectTree: (path: string) => withJournaledDeadline(FILE_SEARCH_TIMEOUT_MS, undefined, '/api/project/tree', s =>
       fetch('/api/project/tree?path=' + encodeURIComponent(path), { signal: s }).then(j)) as Promise<{ root: string; paths: string[]; directories?: string[]; repo: boolean; truncated?: boolean; truncatedDirectories?: string[]; hiddenOnlyDirectories?: string[]; unreadableDirectories?: string[]; linkedDirectories?: string[] }>,
     workspaces: () => fetch('/api/workspaces').then(j),
