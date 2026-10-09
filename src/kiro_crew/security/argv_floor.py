@@ -1143,13 +1143,19 @@ def _self_program_index(tokens: "list[str]", i: int, scan: "_SelfModuleScan") ->
     return None
 
 
-def _matches_self_subcommand(text_lower: str, spec: "tuple[object, ...]") -> bool:
+def _matches_self_subcommand(
+    text_lower: str, spec: "tuple[object, ...]", *, help_exempt: bool = False
+) -> bool:
     """True if the product CLI is invoked with leading operand words *spec*.
 
     Covers the direct form (``kirocrew`` as the argv program) and the module form
     (``python -m kiro_crew``), collecting operands after the CLI/module so the same
     shell de-escaping the regex tier cannot see is caught for both -- e.g.
     ``python -m kiro_crew -\\v restart``, which the interpreter-position regex misses.
+    With *help_exempt*, a frame whose words after the CLI are exactly *spec* and one
+    ``-h``/``--help`` does not match: the parser prints the usage and exits. Anything else
+    there -- an operand, another flag, ``--``, a substitution, a redirection, a following
+    command -- keeps the match, because each can leave the flag inert or not an argv word.
     """
     if not _self_floor_can_fire(text_lower):
         return False
@@ -1176,6 +1182,8 @@ def _matches_self_subcommand(text_lower: str, spec: "tuple[object, ...]") -> boo
             ):
                 continue
             if _operands_lead_with(_self_cli_operands(tokens, prog_idx), spec):
+                if help_exempt and scan.norm[prog_idx + 1 :] in ([*spec, "--help"], [*spec, "-h"]):
+                    continue
                 return True
     return False
 
@@ -1203,6 +1211,11 @@ def _is_self_gateway_restart(text_lower: str) -> bool:
 def _is_self_cloud_destructive(text_lower: str) -> bool:
     """``kirocrew cloud <destructive>`` behind any shell dressing of interposed flags."""
     return _matches_self_subcommand(text_lower, ("cloud", _SELF_CLOUD_DESTRUCTIVE_VERBS))
+
+
+def _is_self_skills_authority_retire(text_lower: str) -> bool:
+    """``kirocrew skills authority-retire``; exactly ``... --help`` or ``-h`` only prints usage."""
+    return _matches_self_subcommand(text_lower, ("skills", "authority-retire"), help_exempt=True)
 
 
 _DEV_MODE_CONFIRM_FLAG = "--confirm-out-of-install-root"

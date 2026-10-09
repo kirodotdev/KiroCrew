@@ -339,6 +339,13 @@
     },
     {
       "kind": "shell",
+      "surface": "self-health",
+      "command_or_flow": "kirocrew skills authority-retire --help",
+      "platform": "any",
+      "reason": "An agent asked about the operator-only recovery reads its usage to tell the operator what to run in their own terminal. The help request prints the usage and retires nothing, so the floor that refuses the recovery itself must let it through."
+    },
+    {
+      "kind": "shell",
       "surface": "fs-read",
       "command_or_flow": "ls -la src/kiro_crew/security",
       "platform": "posix",
