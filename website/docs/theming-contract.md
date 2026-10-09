@@ -85,7 +85,8 @@ the page is not a hover at all in this theme; hover states use `bg-bg-hover`.
 
 **Polarity-fixed variables are not roles.** A few `index.css` variables are read
 from `data-mode` (the polarity `useTheme` paints), not from the theme, and a pack
-cannot override them: `--glass-tint`, `--glass-band`,
+cannot override them: `--glass-tint`, `--glass-band` (and its plain base
+`--glass-band-plain`),
 `--glass-edge` and `--glass-hairline` — the fill, the top/bottom light bands, the
 side-line / in-pane-divider hairline, and the half-pixel dark sliver outside each
 lit band (none has a focus form: a pane looks the same whether or not a control
@@ -108,6 +109,10 @@ rises. The hue modifiers `glass-accent` / `glass-warn` / `glass-danger` /
 `glass-hover` / `glass-faded` (the picked chip, the incognito chip, the offline
 readout capsule, a hovered pane, a receding row) mix into `--glass-tint-step` on
 the host, so they land on the pane's own thickness and follow the polarity too.
+The three hue modifiers also mix the same hue, at the same share, into
+`--glass-band-plain` (the polarity's plain band) and set `--glass-band`, so the
+lit top and bottom edges of a tinted pane are lit in its hue; a white band on
+an accent pane read as a white frame in light mode and a grey edge in dark.
 And
 the `--tile-*` set behind the Settings section icons. They are fixed on purpose —
 the glass must read as a lit pane on any light palette and as smoked glass on any

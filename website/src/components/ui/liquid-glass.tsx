@@ -40,7 +40,8 @@
  * The host carries the stable `liquid-glass` class so index.css can solidify it
  * under prefers-reduced-transparency / prefers-contrast / no backdrop-filter;
  * `glass-accent` / `glass-warn` / `glass-hover` (index.css) swap `--glass-tint`
- * on the host for a hue-mixed step, so a picked chip or a pending approval
+ * on the host for a hue-mixed step (the hue ones swap `--glass-band` too, so the
+ * lit edges carry the hue), so a picked chip or a pending approval
  * stays the same material. Which tint and which `frost` a pane gets is the
  * thickness ladder in components/Glass.tsx (`glass-<step>` on the host picks the
  * tint, `frost` carries the matching blur); this primitive only paints what it

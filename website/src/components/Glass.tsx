@@ -58,7 +58,8 @@
  * (picked chip, tip card), `glass-warn` (incognito chip) or `glass-danger` (the
  * offline readout capsule), and `glass-hover`
  * brightens an interactive pane a step on hover — all four swap `--glass-tint`
- * on the host (index.css), so the pane stays the same material. Focus changes
+ * on the host (index.css), so the pane stays the same material; the three hue
+ * modifiers swap `--glass-band` as well, so the lit edges carry the hue. Focus changes
  * NOTHING on the pane — no theme colour, no brighter tint, no darker side
  * lines, no deeper shadow (maintainer decision): a focused pane is the same
  * glass as a resting one, and the focus indicator is the caret, or the app's

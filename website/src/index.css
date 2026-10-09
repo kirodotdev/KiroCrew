@@ -3296,7 +3296,11 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
  * anchored on `--bg` (#12141a) in dark and on white in light. `--glass-tint`
  * itself is the step the host wears (`.glass-<step>` below, `thin` on :root), and
  * the modifier steps further down mix INTO `--glass-tint-step`, the host's own
- * plain step tint, so an accent chip on a thick pane is a thick accent. */
+ * plain step tint, so an accent chip on a thick pane is a thick accent.
+ * `--glass-band-plain` is the band's own plain value for the same reason: the
+ * hue modifiers mix into it and set `--glass-band`, so the lit edges of a
+ * tinted pane are lit in the pane's hue. A white band on a purple pane read as
+ * a white frame around it, not as light (issue #18314). */
 :root {
   --glass-tint-ultrathin: rgba(34, 33, 37, 0.30);
   --glass-tint-thin: rgba(30, 30, 34, 0.40);
@@ -3305,7 +3309,7 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
   --glass-tint-ultrathick: rgba(24, 25, 30, 0.78);
   --glass-tint-step: var(--glass-tint-thin);
   --glass-tint: var(--glass-tint-thin);
-  --glass-band: rgba(255, 255, 255, 0.22); --glass-edge: rgba(255, 255, 255, 0.14); --glass-hairline: rgba(0, 0, 0, 0.50);
+  --glass-band-plain: rgba(255, 255, 255, 0.22); --glass-band: var(--glass-band-plain); --glass-edge: rgba(255, 255, 255, 0.14); --glass-hairline: rgba(0, 0, 0, 0.50);
 }
 [data-mode="light"] {
   --glass-tint-ultrathin: rgba(236, 236, 236, 0.35);
@@ -3313,7 +3317,7 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
   --glass-tint-regular: rgba(243, 243, 243, 0.55);
   --glass-tint-thick: rgba(245, 245, 245, 0.65);
   --glass-tint-ultrathick: rgba(247, 247, 247, 0.82);
-  --glass-band: rgba(255, 255, 255, 1); --glass-edge: rgba(0, 0, 0, 0.24); --glass-hairline: rgba(0, 0, 0, 0.20);
+  --glass-band-plain: rgba(255, 255, 255, 1); --glass-band: var(--glass-band-plain); --glass-edge: rgba(0, 0, 0, 0.24); --glass-hairline: rgba(0, 0, 0, 0.20);
 }
 /* The step a pane wears, set on the host by Glass.tsx. Both tokens are set so a
  * modifier below (also on the host) can mix into `--glass-tint-step` while
@@ -3348,11 +3352,19 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
  * `thin` on :root) -- so the hue lands on the pane's own thickness, and a
  * property reads a sibling token rather than itself. These rules follow the
  * step classes so that, at equal specificity, the modifier's `--glass-tint`
- * wins on a host carrying both. */
-.glass-accent { --glass-tint: color-mix(in srgb, var(--accent) 14%, var(--glass-tint-step)); }
+ * wins on a host carrying both.
+ *
+ * A HUE modifier also tints the light bands: the same hue at the same share,
+ * mixed into `--glass-band-plain` (the polarity's plain band) and set as
+ * `--glass-band`, which the primitive paints as the 1px crisp core and the
+ * specular gradient along the top and bottom edges. Light through tinted
+ * glass carries the tint; a band left pure white framed an accent pane in a
+ * white line in light mode and washed its edge grey in dark (issue #18314).
+ * The neutral steps (`glass-hover`, `glass-faded`) leave the band alone. */
+.glass-accent { --glass-tint: color-mix(in srgb, var(--accent) 14%, var(--glass-tint-step)); --glass-band: color-mix(in srgb, var(--accent) 14%, var(--glass-band-plain)); }
 .glass-faded { --glass-tint: color-mix(in srgb, var(--glass-tint-step) 55%, transparent); }
-.glass-warn { --glass-tint: color-mix(in srgb, var(--warn) 12%, var(--glass-tint-step)); }
-.glass-danger { --glass-tint: color-mix(in srgb, var(--danger) 12%, var(--glass-tint-step)); }
+.glass-warn { --glass-tint: color-mix(in srgb, var(--warn) 12%, var(--glass-tint-step)); --glass-band: color-mix(in srgb, var(--warn) 12%, var(--glass-band-plain)); }
+.glass-danger { --glass-tint: color-mix(in srgb, var(--danger) 12%, var(--glass-tint-step)); --glass-band: color-mix(in srgb, var(--danger) 12%, var(--glass-band-plain)); }
 .glass-hover:hover { --glass-tint: color-mix(in srgb, var(--text) 8%, var(--glass-tint-step)); }
 
 /* The context shelf (agent, project, branch, model chips) sits BELOW the glass
