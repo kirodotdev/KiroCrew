@@ -1258,9 +1258,8 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
 crewmate can read and act on; a browser-local list it never sees would promise
 the opposite, so none is offered until that record exists.
 
-The chat SidePanel has three standing entries on this page: the leading
-**Dashboard** tab and the chat panel's two pinned views, **Files** and
-**Artifacts**. Dashboard is the crewmate's generated HTML
+The chat SidePanel has two standing entries on this page: the leading
+**Dashboard** tab and pinned **Files**. Dashboard is the crewmate's generated HTML
 report (`GET /api/members/{slug}/panel?member=<exact-name>`) rendered by
 `CrewDashboardFrame`: the full document fills the tab, minted on mount, with no
 summary card, Contained bar, Expand control, identity row or Command Center
@@ -1288,22 +1287,22 @@ set-up control. That sentence names the crewmate by its display name
 (`displayName`, the page's `crewDisplayName`), falling back to the exact
 `member`; the read itself stays keyed on the raw `member`, so a crewmate shown as
 "Atlas" is not told "atlas has not published". Files is the standard SidePanel browser scoped
-to the workspace rule above. Artifacts is the standard SidePanel artifact list
-fed by the DM slot (`session-artifact-records`): what the crewmate saved or
-emitted as a widget in this thread, plus the library section. It was withheld
-by #16317 to keep the standing set at Dashboard + Files, but `SidePanel`
-folds a document tab into its parent view (`isWithheld`: an `artifact` tab is
-withheld when `artifacts` is), so that choice also made every artifact
-document tab unrenderable here — a crewmate's artifacts could be opened from
-nowhere on this page (#18320). A crewmate's output is largely artifacts, so
-the view stands. Dashboard, Files and Artifacts are the only STANDING tabs.
+to the workspace rule above. Dashboard and Files are the only STANDING tabs.
 Side Chat remains available dynamically through selection Ask and the plus
 menu; it is not a standing entry — and the plus menu keeps every other dynamic
 view the chat page offers (Terminal, Browser, Git, Subagents, Workflows, the
 Developer-Mode Logs / Context / Crew log, app-contributed tabs), bound to the
 member's slot once the thread is confirmed. Withheld outright are the
 transcript-fed views (Changes / Issues / Links / Pins, plus the session
-Summary) and the chat page's Command Center (`MEMBERS_WITHHELD_VIEWS`).
+Summary), the chat page's Command Center, and Artifacts — a pinned standing
+tab on the chat page that has no place in this page's Dashboard + Files set
+(`MEMBERS_WITHHELD_VIEWS`). Withholding that LIST does not withhold an
+artifact DOCUMENT: `SidePanel.isWithheld` ties every document tab (file, diff,
+folder, artifact) to `'files'`, which this page withholds only while the
+thread is unconfirmed, so an artifact opened from a reply link gets its own
+tab here while the Artifacts list stays off the strip (#18320; before that
+rule an artifact tab was keyed to `'artifacts'` and so appeared and vanished
+in one frame).
 
 SidePanel's resting width on this page is 60% of the row after the live navigation
 rail, clamped so `CHAT_PANE_MIN_W` remains; a persisted user drag wins. The shared

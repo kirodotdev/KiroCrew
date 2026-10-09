@@ -581,13 +581,17 @@ export default function SidePanel({
     if (!hiddenViews) return false
     if (kind === 'terminal') return hiddenViews.has('terminal')
     if (kind === 'app' || isPanelTabKind(kind)) return hiddenViews.has('app')
-    // Document tabs are not views themselves but belong to one: a file, diff
-    // or folder editor is opened FROM the Files view (and reads the same slot),
-    // an artifact preview from Artifacts. Withholding the parent view withholds
-    // its documents, or a persisted file tab would stay on the strip — and stay
-    // ACTIVE — while every slot-bound view is withdrawn.
-    if (kind === 'file' || kind === 'diff' || kind === 'folder') return hiddenViews.has('files')
-    if (kind === 'artifact') return hiddenViews.has('artifacts')
+    // Document tabs are not views themselves. Every one of them — a file, diff
+    // or folder editor, an artifact preview — is slot-bound, so all of them are
+    // withheld together, keyed on 'files': a host that withholds the Files view
+    // is withholding slot-bound content as such (the Crewmates page's
+    // unconfirmed window), and a persisted document tab must not stay on the
+    // strip — and stay ACTIVE — while every slot-bound view is withdrawn.
+    // Deliberately NOT keyed on the document's own LIST view: a host may
+    // withdraw the Artifacts list and still open one artifact from a reply
+    // link (the Crewmates page, #18320); tying the document to the list made
+    // that tab appear and vanish in the same frame.
+    if (kind === 'file' || kind === 'diff' || kind === 'folder' || kind === 'artifact') return hiddenViews.has('files')
     return hiddenViews.has(kind)
   }, [hiddenViews])
   // Restored terminal chips wait for the liveness ruling too, as the dock's do.

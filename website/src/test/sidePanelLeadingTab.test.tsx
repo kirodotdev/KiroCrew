@@ -266,7 +266,7 @@ describe('SidePanel leading tab', () => {
     expect(shown).toBe(LEADING_ID)
   })
 
-  it('a document tab follows its parent view: withholding Files withdraws a persisted file editor, Artifacts an artifact preview', () => {
+  it("every document tab follows 'files': withholding it withdraws a persisted file editor AND an artifact preview; withholding only the Artifacts list leaves the preview", () => {
     // A file opened on the chat page (kind 'file', not a ViewKind) is left
     // focused; the Members page then withholds every slot-bound view because
     // the slot is unconfirmed. A document tab that ignored the withdrawal would
@@ -287,12 +287,23 @@ describe('SidePanel leading tab', () => {
     expect(shown).toBe(LEADING_ID)
     // Stored, not deleted — same contract as any withheld view.
     expect(ctl?.tabs.some(t => t.id === 'file:/srv/notes.md')).toBe(true)
-    // Withholding Files alone leaves the artifact preview in place: the mapping
-    // is per parent view, not a blanket "no documents".
+    // 'files' alone withholds the artifact preview too: documents are
+    // slot-bound content as such, keyed together, not per list view.
     cleanup()
     renderPanel({ closable: false, hidden: new Set<SidePanelWithholdable>(['files']) })
     expect(screen.queryByRole('tab', { name: /notes\.md/ })).toBeNull()
-    expect(screen.getByRole('tab', { name: /plan/ })).toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: /plan/ })).toBeNull()
+    // Withholding only the Artifacts LIST leaves the preview in place: the
+    // Crewmates page keeps its strip at Dashboard + Files and still opens one
+    // artifact from a reply link into its own tab (#18320). Before, the preview
+    // was keyed to 'artifacts' and so appeared and vanished in one frame.
+    cleanup()
+    renderPanel({ closable: false, hidden: new Set<SidePanelWithholdable>(['artifacts']) })
+    expect(chips().map(nameOf)).toEqual(['Notes', 'Changes', 'Files', 'plan', 'notes.md'])
+    act(() => { ctl!.openArtifact({ slug: 'queue-badge', kind: 'html' }, '', 'member-radar') })
+    expect(screen.getByRole('tab', { name: /queue-badge/ })).toBeInTheDocument()
+    expect(ctl?.activeId).toBe('artifact:queue-badge')
+    expect(shown).toBe('artifact:queue-badge')
   })
 
   it('a focus on the leading tab survives persistence: reload restores it, not the last stored tab', async () => {
