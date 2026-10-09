@@ -294,6 +294,12 @@ _ENSURE_BACKEND_TIMEOUT_SECS = 25.0
 # figure this stub already promises to hold kiro-cli's transport open for.
 _SPAWN_QUEUE_SILENCE_SECS = _ENSURE_BACKEND_TIMEOUT_SECS
 _SPAWN_QUEUE_WAIT_BUDGET_SECS = _RECONNECT_TOTAL_BUDGET_SECS
+_SPAWN_HANDSHAKE_BUDGET_SECS = 15.0
+_SPAWN_RETRIABLE_PREFIXES = (
+    "connect failed",
+    "register io failed",
+    "gateway closed during handshake",
+)
 # Daemon->stub control frame while queued behind the spawn gate. Consumed by
 # the pre-flight, the reconnect replay and the bridge; never forwarded.
 _SPAWN_QUEUED_TYPE = "queued"
@@ -2474,6 +2480,7 @@ def log_fallback(
     args: argparse.Namespace,
     *,
     terminal: bool = False,
+    attempts: Optional[int] = None,
 ) -> None:
     """Append one JSON record to the fallback audit log. OS errors are
     swallowed — logging failure must never block the exec that keeps
@@ -2508,6 +2515,8 @@ def log_fallback(
             "channel_id": args.channel_id or "",
             "target_command": args.target_command,
         }
+        if attempts is not None:
+            record["attempts"] = int(attempts)
         # Rotation (shared helper): O(1) rotate-by-rename at the cap, guarded
         # by a non-blocking try-lock so two stubs hitting the cap together
         # cannot both rotate, and a loser never waits — no log_fallback call
@@ -2659,6 +2668,47 @@ async def _reconnect_while_draining(
         # what would reorder the stream.
 
 
+async def _spawn_handshake(
+    socket_path: str,
+    payload: dict,
+    stop_event: asyncio.Event,
+    pool_label: str,
+) -> tuple[
+    Optional[tuple[asyncio.StreamReader, asyncio.StreamWriter, str, dict]],
+    dict,
+    str,
+    int,
+]:
+    deadline = _reconnect_now() + _SPAWN_HANDSHAKE_BUDGET_SECS
+    delay = _RECONNECT_BACKOFF_START_SECS
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            result = await asyncio.wait_for(
+                handshake(socket_path, payload), timeout=_HANDSHAKE_TIMEOUT_SECS
+            )
+            return result, payload, "", attempts
+        except asyncio.TimeoutError:
+            reason = "handshake_timeout"
+        except FallbackRequestedError as exc:
+            reason = exc.reason
+            if not reason.startswith(_SPAWN_RETRIABLE_PREFIXES):
+                return None, payload, reason, attempts
+        if stop_event.is_set() or _reconnect_now() + delay > deadline:
+            return None, payload, reason, attempts
+        logger.info(
+            "spawn handshake: gateway not up yet (%s) attempt=%d; retrying pool=%s",
+            reason,
+            attempts,
+            pool_label,
+        )
+        if not await _reconnect_wait(stop_event, delay):
+            return None, payload, reason, attempts
+        delay = min(delay * 2, _RECONNECT_BACKOFF_MAX_SECS)
+        payload = {**payload, "stub_uuid": str(uuid.uuid4())}
+
+
 async def alog_fallback(
     reason: str,
     stub_uuid: str,
@@ -2666,6 +2716,7 @@ async def alog_fallback(
     args: argparse.Namespace,
     *,
     terminal: bool = False,
+    attempts: Optional[int] = None,
 ) -> None:
     """Run :func:`log_fallback` in a worker thread.
 
@@ -2676,7 +2727,13 @@ async def alog_fallback(
     process image and would otherwise race the write)."""
     await asyncio.to_thread(
         functools.partial(
-            log_fallback, reason, stub_uuid, pool_label, args, terminal=terminal
+            log_fallback,
+            reason,
+            stub_uuid,
+            pool_label,
+            args,
+            terminal=terminal,
+            attempts=attempts,
         )
     )
 
@@ -3060,21 +3117,24 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
     stop_event = asyncio.Event()
     _install_signal_handlers(asyncio.get_running_loop(), stop_event)
 
-    try:
-        reader, writer, stub_uuid, registered = await asyncio.wait_for(
-            handshake(args.socket, payload),
-            timeout=_HANDSHAKE_TIMEOUT_SECS,
+    result, payload, fail_reason, attempts = await _spawn_handshake(
+        args.socket, payload, stop_event, pool_label
+    )
+    if result is None:
+        if stop_event.is_set():
+            return 0
+        await alog_fallback(
+            fail_reason, payload["stub_uuid"], pool_label, args, attempts=attempts
         )
-    except asyncio.TimeoutError:
-        await alog_fallback("handshake_timeout", payload["stub_uuid"], pool_label, args)
-        logger.warning("handshake timed out; falling back pool=%s", pool_label)
+        logger.warning(
+            "handshake failed after %d attempt(s) (%s); falling back pool=%s",
+            attempts,
+            fail_reason,
+            pool_label,
+        )
         fallback_exec(args)
         return 1  # unreachable
-    except FallbackRequestedError as exc:
-        await alog_fallback(exc.reason, payload["stub_uuid"], pool_label, args)
-        logger.warning("handshake failed (%s); falling back pool=%s", exc.reason, pool_label)
-        fallback_exec(args)
-        return 1  # unreachable
+    reader, writer, stub_uuid, registered = result
     logger.info("registered stub_uuid=%s pool=%s", stub_uuid, pool_label)
 
     capabilities = registered.get("capabilities") if isinstance(registered, dict) else None
