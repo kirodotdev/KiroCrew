@@ -2188,39 +2188,59 @@ def _session_meta_row(log: ConversationLog, request_app: str, key: str) -> dict 
 
     *key* may be a transcript stem (``dashboard_chat-7-<ts>``) or the slot key a
     chat link carries (``chat-7-<ts>``), whose transcript lives under its
-    ``dashboard:`` key. Each spelling is checked directly: no directory scan and
-    no transcript read, only a stat and the cached first line. An app caller sees
+    ``dashboard:`` key. Each spelling is checked directly, with no directory
+    scan: a stat and the cached first line, plus, for a transcript with no
+    title on that line, the bounded title fallback ``list_sessions`` reads (its
+    first 20 lines). The rest of the transcript is never read. An app caller sees
     only a transcript it owns, the same rule every other ``/api/sessions*`` read
-    applies. Blocking file IO; call it off the event loop.
+    applies, and the verdict and the row are read under one hold of that
+    transcript's lock, so a same-key delete and recreate cannot land between
+    them. Blocking file IO; call it off the event loop. A lock timeout raises
+    ``HistoryLockTimeout``.
     """
     from kiro_crew.dashboard.chat_utils import slot_transcript_key
 
     for candidate in dict.fromkeys((key, slot_transcript_key(key))):
         if not log.has_log(candidate):
             continue
-        if request_app and not _app_owns_transcript(log, request_app, candidate):
+        if not request_app:
+            rows = log.list_sessions(keys=(candidate,))
+            if rows:
+                return rows[0]
             continue
-        rows = log.list_sessions(keys=(candidate,))
+        # Unlocked first, so no lock sidecar is created for a key the app has no
+        # claim on; then again with the read, under the lock.
+        if not _app_owns_transcript(log, request_app, candidate):
+            continue
+        with log._locked(candidate):
+            if not _app_owns_transcript(log, request_app, candidate):
+                continue
+            rows = log.list_sessions(keys=(candidate,))
         if rows:
             return rows[0]
     return None
 
 
 async def api_session_meta(request: web.Request) -> web.Response:
-    """GET /api/sessions/{key}/meta — one session's list row, or 404 when it has none.
+    """GET /api/sessions/{key}/meta: one session's key and title, or 404 when it has none.
 
     The cheap per-key probe a chat link needs to tell "this session exists on
     disk" from "no such session" without paging the whole list or reading the
-    transcript. The body is the same row ``GET /api/sessions`` returns for that
-    session; ``key`` in it is the transcript stem, which is what a resume takes.
-    A missing key, and for an app caller a transcript it does not own, both get
-    the uniform 404, so the answer reveals nothing beyond what the list does.
+    whole transcript (see :func:`_session_meta_row` for what it reads). ``key`` in the body is the transcript stem, which is what a
+    resume takes. A missing key, and for an app caller a transcript it does not
+    own, both get the uniform 404, so the answer reveals nothing beyond what
+    ``GET /api/sessions`` does.
     """
     state: DashboardState = request.app["state"]
     key = request.match_info["key"]
     request_app = str(request.get("app") or "")
     log = state.conversation_log
-    row = await asyncio.to_thread(_session_meta_row, log, request_app, key) if log else None
+    row = None
+    if log is not None:
+        try:
+            row = await asyncio.to_thread(_session_meta_row, log, request_app, key)
+        except HistoryLockTimeout:
+            return _app_transcript_busy()
     if row is None:
         if request_app:
             return _app_not_found(
@@ -2231,14 +2251,7 @@ async def api_session_meta(request: web.Request) -> web.Response:
         return _slot_not_found()
     if request_app:
         _audit_app_allow(request_app, "session_meta", f"session={key}")
-    return web.json_response(
-        {
-            "key": row.get("key", key),
-            "title": row.get("title", key),
-            "modified": row.get("modified"),
-            "memory_mode": row.get("memory_mode", "persistent"),
-        }
-    )
+    return web.json_response({"key": row.get("key", key), "title": row.get("title", key)})
 
 
 async def _owner_keys_bound_to_transcript(crons: Any, keys: Collection[str]) -> dict[str, set[str]]:

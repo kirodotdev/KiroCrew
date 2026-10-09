@@ -85,6 +85,7 @@ import {
 } from './markdown/contexts'
 import { artifactSlugFromHref, soleLinkInParagraph, useSessionChip, useUnfurlHref } from './markdown/linkTargets'
 import { dashboardPreviewRef, dashboardPreviewSlugFromHref } from '../utils/dashboardPreview'
+import { ClosedSessionNotice } from './markdown/ClosedSessionNotice'
 import { activatePath, usePathResolution } from './markdown/pathReferences'
 import { ELEMENT_OVERRIDES, sp } from './markdown/elements'
 import { InlineCode } from './markdown/InlineCode'
@@ -345,7 +346,7 @@ function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAncho
       // active session's own key) is intercepted and declined rather than left to
       // navigate the browser to a dead `?sid=` view (#9914) or a duplicate tab.
       onClick={sessionHrefNamesSession ? onSessionClick : (pathResolution.candidate ? onPathClick : undefined)}
-      title={sessionLink
+      title={sessionLink && !sessionLink.failure
         ? `${sessionLink.title}\n${i18nT('components.markdownRenderer.click_to_switch_to_this_session')}`
         : undefined}
       {...(ext ? {} : { target: '_blank', rel: 'noopener noreferrer' })}
@@ -362,6 +363,7 @@ function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAncho
     >
       <InsideLinkCtx.Provider value={true}>{children}</InsideLinkCtx.Provider>
     </a>
+    <ClosedSessionNotice failure={sessionLink?.failure} name={sessionLink?.key ?? ''} />
     {reveal.error && (
       <ErrorNotice variant="inline" className="ml-1.5 align-baseline" message={reveal.error} askAgent onDismiss={reveal.clear} testId="md-link-reveal-error" />
     )}

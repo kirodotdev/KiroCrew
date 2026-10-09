@@ -27,6 +27,7 @@ from chat_test_helpers import _make_state
 from kiro_crew.apps.manifest import AppManifest
 from kiro_crew.dashboard import revocation_gen, token_auth
 from kiro_crew.dashboard.routes import register_all
+from kiro_crew.history import HistoryLockTimeout
 
 _NOT_FOUND = {"error": "not found", "code": "slot_not_found"}
 _APP = "meta-app"
@@ -99,10 +100,7 @@ async def test_closed_session_answers_its_row_by_slot_key_or_stem(state, asked):
         resp = await client.get(f"/api/sessions/{asked}/meta", params=_q())
         assert resp.status == 200
         body = await resp.json()
-    assert body["key"] == "dashboard_chat-7-1784661951"
-    assert body["title"] == "Earlier work"
-    assert body["memory_mode"] == "persistent"
-    assert isinstance(body["modified"], float)
+    assert body == {"key": "dashboard_chat-7-1784661951", "title": "Earlier work"}
 
 
 @pytest.mark.asyncio
@@ -150,3 +148,41 @@ async def test_app_probes_its_own_transcript(state):
         resp = await client.get("/api/sessions/chat-7-1784661951/meta", params=_q(_APP))
         assert resp.status == 200
         assert (await resp.json())["title"] == "Mine"
+
+
+@pytest.mark.asyncio
+async def test_app_ownership_is_rechecked_under_the_transcript_lock(state, monkeypatch):
+    """A recreate by another owner between the first check and the read is refused."""
+    key = "dashboard:chat-7-1784661951"
+    _transcript(state, key, "Mine", _APP)
+    log = state.conversation_log
+    real_locked = log._locked
+    taken_over: list[bool] = []
+
+    @contextlib.contextmanager
+    def _locked_after_takeover(k):
+        # The transcript changes hands just as the probe takes the lock. The
+        # takeover's own write takes the lock too, so it runs on the real one.
+        if not taken_over:
+            taken_over.append(True)
+            monkeypatch.setattr(log, "_locked", real_locked)
+            log.update_metadata(key, {"app": _OTHER, "title": "Not yours"})
+        with real_locked(k):
+            yield
+
+    monkeypatch.setattr(log, "_locked", _locked_after_takeover)
+    async with _serve(state) as client:
+        resp = await client.get("/api/sessions/chat-7-1784661951/meta", params=_q(_APP))
+        assert (resp.status, await resp.json()) == (404, _NOT_FOUND)
+
+
+@pytest.mark.asyncio
+async def test_app_probe_answers_busy_on_a_lock_timeout(state, monkeypatch):
+    _transcript(state, "dashboard:chat-7-1784661951", "Mine", _APP)
+    monkeypatch.setattr(
+        state.conversation_log, "_locked", MagicMock(side_effect=HistoryLockTimeout("busy"))
+    )
+    async with _serve(state) as client:
+        resp = await client.get("/api/sessions/chat-7-1784661951/meta", params=_q(_APP))
+        assert resp.status == 503
+        assert (await resp.json())["code"] == "session_busy"

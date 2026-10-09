@@ -11,6 +11,7 @@ import { i18nT } from '../../i18n/t'
 import { InsideLinkCtx, PathActionCtx, PathProbeCtx, SessionActionCtx, SidebarFolderCtx } from './contexts'
 import { activatePath, basenameOf, usePathResolution } from './pathReferences'
 import { folderSegmentsOf, resolveFolderChip, useSessionChip } from './linkTargets'
+import { ClosedSessionNotice } from './ClosedSessionNotice'
 import { CopyFailedNotice, useCopiedFlash, useTitleCuedCopy } from './copyFeedback'
 import { ELEMENT_OVERRIDES, isElementWithProps } from './elements'
 
@@ -539,13 +540,16 @@ export function InlineCode({ children, ...props }: { children?: React.ReactNode 
     const session = sessionTarget
     if (session) {
       return (
-        <SessionChip
-          sessionKey={session.key}
-          sessionTitle={session.title}
-          label={raw}
-          safeProps={safeProps}
-          onOpen={session.open}
-        >{children}</SessionChip>
+        <>
+          <SessionChip
+            sessionKey={session.key}
+            sessionTitle={session.title}
+            label={raw}
+            safeProps={safeProps}
+            onOpen={session.open}
+          >{children}</SessionChip>
+          <ClosedSessionNotice failure={session.failure} name={session.key} />
+        </>
       )
     }
     // A sidebar folder named by its full human path. After the session chip (a

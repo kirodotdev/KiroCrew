@@ -4783,12 +4783,30 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // and resume it the way the sidebar's Older-sessions row does (#9915). Only
   // consulted while the open roster is wired, so offline it is off as well.
   const closedSessionActions = useMemo<ClosedSessionActions>(() => ({
+    // Background: a failure leaves the text plain and says nothing, since the
+    // reader did not ask for anything yet.
     lookup: async (key: string) => {
       const row = await api.sessionMeta(key)
       return row ? { key: row.key, title: row.title || row.key } : null
     },
-    open: ({ key, title }) => { void dispatch(resumeFromHistory({ key, title })) },
-  }), [dispatch])
+    // The click: ask again, because the session may have been deleted since
+    // the chip appeared. A failed check is said by the chip itself, inline at
+    // the spot clicked, with a retry (`ClosedSessionNotice`).
+    open: async ({ key, title }) => {
+      let row: Awaited<ReturnType<typeof api.sessionMeta>>
+      try {
+        row = await api.sessionMeta(key)
+      } catch {
+        return 'failed'
+      }
+      if (!row) {
+        showActionError(i18nT('store.chatSlice.session_gone_open_failed_named', { name: title }))
+        return 'gone'
+      }
+      void dispatch(resumeFromHistory({ key: row.key, title: row.title || title }))
+      return 'opened'
+    },
+  }), [dispatch, showActionError])
   const sidebarFolderActions = useMemo<SidebarFolderActions>(() => ({
     folders: chatFolders,
     onFolderReveal: embedMode === 'chat' ? undefined : (folderId: string) => {

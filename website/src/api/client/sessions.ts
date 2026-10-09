@@ -86,11 +86,11 @@ export function createSessionsEndpoints({ get, post, del, j, jfetch: fetch, jCre
 
   const historyDetail = {
     sessionDetail: (key: string) => fetch('/api/sessions/' + encodeURIComponent(key)).then(j),
-    // One session's list row, or null when no transcript exists (the route's
-    // 404). A cheap per-key probe: it reads no transcript body. `key` in the row
-    // is the transcript stem, which is what a resume takes.
+    // One session's key and title, or null when no transcript exists (the
+    // route's 404). A cheap per-key probe: it reads no transcript body. `key` is
+    // the transcript stem, which is what a resume takes.
     sessionMeta: (key: string) => fetch('/api/sessions/' + encodeURIComponent(key) + '/meta')
-      .then(r => (r.status === 404 ? null : j(r))) as Promise<{ key: string; title?: string; modified?: number; memory_mode?: string } | null>,
+      .then(r => (r.status === 404 ? null : j(r))) as Promise<{ key: string; title?: string } | null>,
     deleteSession: (key: string) => del('/api/sessions/' + encodeURIComponent(key)).then(j),
     clearSessions: () => del('/api/sessions').then(j),
   }

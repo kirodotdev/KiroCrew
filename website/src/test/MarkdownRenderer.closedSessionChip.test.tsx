@@ -19,7 +19,7 @@ let onSessionOpen: ReturnType<typeof vi.fn>
 beforeEach(() => {
   resetClosedSessionProbes()
   lookup = vi.fn(async (key: string) => (key === CLOSED ? { key: STEM, title: 'Earlier work' } : null))
-  open = vi.fn()
+  open = vi.fn(async () => 'opened' as const)
   onSessionOpen = vi.fn()
 })
 
@@ -38,7 +38,7 @@ describe('closed-session chip', () => {
     await vi.waitFor(() => expect(screen.getByText(CLOSED)).toHaveAttribute('data-session-key', CLOSED))
     const chip = screen.getByText(CLOSED)
     fireEvent.click(chip)
-    expect(open).toHaveBeenCalledWith({ key: STEM, title: 'Earlier work' })
+    await vi.waitFor(() => expect(open).toHaveBeenCalledWith({ key: STEM, title: 'Earlier work' }))
     expect(onSessionOpen).not.toHaveBeenCalled()
     expect(lookup).toHaveBeenCalledWith(CLOSED)
   })
@@ -48,7 +48,7 @@ describe('closed-session chip', () => {
     const link = screen.getByText('the old run').closest('a')!
     await vi.waitFor(() => expect(link.getAttribute('title')).toContain('Earlier work'))
     fireEvent.click(link)
-    expect(open).toHaveBeenCalledWith({ key: STEM, title: 'Earlier work' })
+    await vi.waitFor(() => expect(open).toHaveBeenCalledWith({ key: STEM, title: 'Earlier work' }))
   })
 
   it('an open session still switches through the roster, with no probe', () => {
@@ -87,5 +87,91 @@ describe('closed-session chip', () => {
     renderWith(`\`${CLOSED}\``)
     expect(screen.getByText(CLOSED)).toHaveAttribute('data-session-key', CLOSED)
     expect(lookup).toHaveBeenCalledTimes(1)
+  })
+
+  it('a session the click finds deleted drops its chip', async () => {
+    renderWith(`Earlier: \`${CLOSED}\`.`)
+    await vi.waitFor(() => expect(screen.getByText(CLOSED)).toHaveAttribute('data-session-key', CLOSED))
+    open.mockResolvedValue('gone')
+    fireEvent.click(screen.getByText(CLOSED))
+    await vi.waitFor(() => expect(screen.getByText(CLOSED)).not.toHaveAttribute('data-session-key'))
+    expect(open).toHaveBeenCalledTimes(1)
+  })
+
+  it('a failed probe raises nothing until the reader clicks', async () => {
+    lookup.mockRejectedValueOnce(new Error('offline'))
+    renderWith(`Earlier: \`${CLOSED}\`.`)
+    await vi.waitFor(() => expect(screen.getByText(CLOSED)).toHaveAttribute('data-session-key', CLOSED))
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByText(`Couldn't open ${CLOSED}.`)).toBeNull()
+  })
+
+  it('a click on a chip whose probe failed shows the inline notice, and retry opens it', async () => {
+    lookup.mockRejectedValueOnce(new Error('offline'))
+    renderWith(`Earlier: \`${CLOSED}\`.`)
+    await vi.waitFor(() => expect(screen.getByText(CLOSED)).toHaveAttribute('data-session-key', CLOSED))
+    fireEvent.click(screen.getByText(CLOSED))
+    expect(screen.getByRole('alert')).toHaveTextContent(`Couldn't open ${CLOSED}.`)
+    expect(open).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    await vi.waitFor(() => expect(open).toHaveBeenCalledWith({ key: STEM, title: 'Earlier work' }))
+    await vi.waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
+    expect(lookup).toHaveBeenCalledTimes(2)
+  })
+
+  it('a retry that fails again keeps the notice up', async () => {
+    lookup.mockRejectedValue(new Error('offline'))
+    renderWith(`Earlier: \`${CLOSED}\`.`)
+    await vi.waitFor(() => expect(screen.getByText(CLOSED)).toHaveAttribute('data-session-key', CLOSED))
+    fireEvent.click(screen.getByText(CLOSED))
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    await vi.waitFor(() => expect(lookup).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Try again' })).not.toBeDisabled())
+    expect(screen.getByRole('alert')).toHaveTextContent(`Couldn't open ${CLOSED}.`)
+    expect(open).not.toHaveBeenCalled()
+  })
+
+  it('a ?sid= link whose probe failed shows the notice beside the link on click', async () => {
+    lookup.mockRejectedValueOnce(new Error('offline'))
+    renderWith(`See [the old run](/chat?sid=${CLOSED}).`)
+    const link = screen.getByText('the old run').closest('a')!
+    // Once the probe has answered (failed), the link is live again, not muted.
+    await vi.waitFor(() => expect(link).not.toHaveClass('text-muted'))
+    expect(screen.queryByRole('alert')).toBeNull()
+    fireEvent.click(link)
+    await vi.waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(`Couldn't open ${CLOSED}.`))
+    expect(open).not.toHaveBeenCalled()
+  })
+
+  it('a click whose own check fails shows the inline notice', async () => {
+    open.mockResolvedValueOnce('failed')
+    renderWith(`Earlier: \`${CLOSED}\`.`)
+    await vi.waitFor(() => expect(screen.getByText(CLOSED)).toHaveAttribute('data-session-key', CLOSED))
+    fireEvent.click(screen.getByText(CLOSED))
+    await vi.waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(`Couldn't open ${CLOSED}.`))
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy()
+  })
+
+  it("one chip's failed click-time check does not drop another chip for the same key", async () => {
+    open.mockResolvedValueOnce('failed')
+    renderWith(`First \`${CLOSED}\` and again \`${CLOSED}\`.`)
+    await vi.waitFor(() => expect(screen.getAllByText(CLOSED).every(el => el.getAttribute('data-session-key') === CLOSED)).toBe(true))
+    const [first, second] = screen.getAllByText(CLOSED)
+    fireEvent.click(first)
+    await vi.waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(`Couldn't open ${CLOSED}.`))
+    expect(screen.getAllByRole('alert')).toHaveLength(1)
+    expect(second).toHaveAttribute('data-session-key', CLOSED)
+    fireEvent.click(second)
+    await vi.waitFor(() => expect(open).toHaveBeenCalledTimes(2))
+  })
+
+  it('the inline notice holds two actions: the hand-off and Try again', async () => {
+    lookup.mockRejectedValueOnce(new Error('offline'))
+    renderWith(`Earlier: \`${CLOSED}\`.`)
+    await vi.waitFor(() => expect(screen.getByText(CLOSED)).toHaveAttribute('data-session-key', CLOSED))
+    fireEvent.click(screen.getByText(CLOSED))
+    const notice = document.querySelector('[data-closed-session-notice]')!
+    expect(notice.querySelectorAll('button')).toHaveLength(2)
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy()
   })
 })
