@@ -87,6 +87,7 @@ from kiro_crew.cron_service.execution import (  # noqa: F401 -- re-exported
     apply_run_record,
     close_run,
     effective_wake_budget,
+    run_parks_one_shot,
 )
 from kiro_crew.cron_service.fields import (  # noqa: F401 -- re-exported
     _CHAT_FOLDER_NEEDS_PERSISTENT,
@@ -4162,8 +4163,9 @@ class CronService:
         # the merge below retains) keeps it discoverable so an operator can
         # re-enable it after a policy loosening. Recurring jobs are untouched:
         # they simply wait for their next scheduled slot and resume on their
-        # own when policy loosens.
-        if job.schedule.kind == "at" and (not job.delete_after_run or job.fire_time_denied):
+        # own when policy loosens. A fire that never started is not parked
+        # (see run_parks_one_shot): nothing ran, so it stays due and retries.
+        if run_parks_one_shot(job):
             job.enabled = False
 
     def _merge_job_result(self, job: CronJob) -> None:
