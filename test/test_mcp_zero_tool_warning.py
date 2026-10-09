@@ -22,6 +22,13 @@ from kiro_crew.acp.mcp_session_report import McpSessionReport, servers_exposing_
 from kiro_crew.providers import acp as acp_provider
 
 
+def _payload(report: McpSessionReport) -> dict[str, Any]:
+    """``report.payload()`` after a session has begun; asserts it is present."""
+    payload = report.payload()
+    assert payload is not None
+    return payload
+
+
 def _mcp(*servers: tuple[str, str, int]) -> dict[str, Any]:
     return {
         "success": True,
@@ -49,6 +56,14 @@ def _tools(*rows: tuple[str, str]) -> dict[str, Any]:
 CLASH_MCP = _mcp(("dup-beta", "running", 1), ("dup-alpha", "running", 1))
 CLASH_TOOLS = _tools(("read", "built-in"), ("echo", "mcp:dup-alpha"))
 SPEC_ALL = {"tools": ["*"], "mcpServers": {"dup-alpha": {}, "dup-beta": {}}}
+
+# The tool_search loader is in /tools exactly when the session is deferring its
+# MCP tools; its presence is how the detector tells deferral from a clash.
+LOADER_ROW = ("tool_search", "native")
+
+
+def _defer_tools(*rows: tuple[str, str]) -> dict[str, Any]:
+    return _tools(LOADER_ROW, *rows)
 
 
 class TestServersExposingNoTools:
@@ -82,6 +97,77 @@ class TestServersExposingNoTools:
         mcp = _mcp(("dup-beta", "loading", 0), ("dup-alpha", "running", 1))
         assert servers_exposing_no_tools(mcp, CLASH_TOOLS, SPEC_ALL) == ()
 
+    def test_a_tool_search_deferred_server_is_not_reported(self):
+        # Default install: the tool_search loader is in /tools, so a running
+        # server absent from /tools (positive toolCount) is deferred, not a
+        # clash victim, and must not be reported.
+        mcp = _mcp(("deferred", "running", 9), ("other", "running", 4))
+        tools = _defer_tools(("read", "built-in"))
+        assert servers_exposing_no_tools(mcp, tools, SPEC_ALL) == ()
+
+    def test_under_deferral_only_a_zero_toolcount_server_is_reported(self):
+        # One server genuinely advertised nothing (toolCount 0); the other is
+        # merely deferred (toolCount 7). Only the empty one is evidence.
+        mcp = _mcp(("empty", "running", 0), ("deferred", "running", 7))
+        tools = _defer_tools(("read", "built-in"))
+        assert servers_exposing_no_tools(mcp, tools, SPEC_ALL) == ("empty",)
+
+    @pytest.mark.parametrize(
+        "row",
+        [
+            ("mystery", "running", -1),
+            ("mystery", "running", "nope"),
+        ],
+    )
+    def test_under_deferral_an_unreadable_toolcount_says_nothing(self, row):
+        name, status, count = row
+        mcp = {
+            "success": True,
+            "data": {
+                "servers": [
+                    {"name": name, "status": status, "toolCount": count},
+                    {"name": "other", "status": "running", "toolCount": 2},
+                ]
+            },
+        }
+        tools = _defer_tools(("read", "built-in"))
+        spec = {"tools": ["*"], "mcpServers": {name: {}, "other": {}}}
+        assert servers_exposing_no_tools(mcp, tools, spec) == ()
+
+    def test_a_missing_toolcount_under_deferral_says_nothing(self):
+        mcp = {
+            "success": True,
+            "data": {
+                "servers": [
+                    {"name": "nocount", "status": "running"},
+                    {"name": "other", "status": "running", "toolCount": 2},
+                ]
+            },
+        }
+        tools = _defer_tools(("read", "built-in"))
+        spec = {"tools": ["*"], "mcpServers": {"nocount": {}, "other": {}}}
+        assert servers_exposing_no_tools(mcp, tools, spec) == ()
+
+    def test_the_clash_is_still_reported_with_tool_search_off(self):
+        # No loader in /tools => nothing is deferred, so absence from /tools is
+        # the clash signal and a positive toolCount does not suppress it.
+        assert servers_exposing_no_tools(CLASH_MCP, CLASH_TOOLS, SPEC_ALL) == ("dup-beta",)
+
+    def test_a_deferred_clash_shape_without_the_loader_is_reported(self):
+        # Same server shapes as the deferral test, but no loader row in /tools:
+        # the detector reads it as a clash and reports both unexposed granted
+        # servers, proving the loader is the signal that suppresses the warning.
+        mcp = _mcp(("deferred", "running", 9), ("other", "running", 4))
+        tools = _tools(("read", "built-in"))
+        assert servers_exposing_no_tools(mcp, tools, SPEC_ALL) == ("deferred", "other")
+
+    def test_an_mcp_tool_named_tool_search_does_not_count_as_the_loader(self):
+        # A server that happens to publish a tool named tool_search is tagged
+        # mcp:<server>, not a built-in loader, so it does not turn deferral on.
+        mcp = _mcp(("srv", "running", 1), ("other", "running", 2))
+        tools = _tools(("tool_search", "mcp:other"))
+        assert servers_exposing_no_tools(mcp, tools, SPEC_ALL) == ("srv",)
+
     @pytest.mark.parametrize(
         "mcp, tools, spec",
         [
@@ -109,7 +195,7 @@ class TestReportBucket:
         r = McpSessionReport()
         r.record_no_tools(["dup-beta"])
         r.begin_session([])
-        assert r.payload()["no_tools"] == []
+        assert _payload(r)["no_tools"] == []
         assert r.problem_summary() == ""
 
     def test_recording_the_same_answer_is_no_change(self):
@@ -127,11 +213,11 @@ class TestReportBucket:
         r = McpSessionReport()
         r.begin_session([])
         r.record_no_tools(names)
-        payload = r.payload()
+        payload = _payload(r)
         assert len(payload["no_tools"]) == 64 and payload["no_tools_omitted"] == 1
         assert "(+1 not listed)" in r.problem_summary()
         r.begin_session([])
-        assert r.payload()["no_tools_omitted"] == 0
+        assert _payload(r)["no_tools_omitted"] == 0
 
 
 class _FakeClient:
@@ -173,7 +259,7 @@ class TestStartWarning:
         client = _FakeClient({"/mcp": CLASH_MCP, "/tools": CLASH_TOOLS})
         with caplog.at_level(logging.WARNING, logger=acp_provider.logger.name):
             asyncio.run(_provider(client)._note_zero_tool_servers())
-        assert client.report.payload()["no_tools"] == ["dup-beta"]
+        assert _payload(client.report)["no_tools"] == ["dup-beta"]
         assert any("dup-beta" in rec.getMessage() for rec in caplog.records)
 
     def test_one_running_server_skips_the_tools_read(self, spec_all, caplog):
@@ -188,3 +274,21 @@ class TestStartWarning:
         client = _FakeClient({"/mcp": RuntimeError("backend gone")})
         asyncio.run(_provider(client)._note_zero_tool_servers())
         assert client.report.no_tools == ()
+
+    def test_under_deferral_a_deferred_clash_shape_is_not_recorded(self, spec_all, caplog):
+        # The default-install path: two running servers, one absent from /tools
+        # but advertising tools (toolCount 1), and the tool_search loader in
+        # /tools. It is deferred, not a clash victim, so nothing is recorded.
+        tools = _defer_tools(("echo", "mcp:dup-alpha"))
+        client = _FakeClient({"/mcp": CLASH_MCP, "/tools": tools})
+        with caplog.at_level(logging.WARNING, logger=acp_provider.logger.name):
+            asyncio.run(_provider(client)._note_zero_tool_servers())
+        assert client.report.no_tools == ()
+        assert not caplog.records
+
+    def test_under_deferral_a_zero_toolcount_server_is_recorded(self, spec_all):
+        mcp = _mcp(("empty", "running", 0), ("dup-alpha", "running", 1))
+        tools = _defer_tools(("echo", "mcp:dup-alpha"))
+        client = _FakeClient({"/mcp": mcp, "/tools": tools})
+        asyncio.run(_provider(client)._note_zero_tool_servers())
+        assert _payload(client.report)["no_tools"] == ["empty"]
