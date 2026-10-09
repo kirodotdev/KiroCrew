@@ -8160,7 +8160,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Crewmates Onboarded",
-      "help": "Whether the user has finished or dismissed the first-run Meet CrewMates flow (the four-step introduction that creates the first crewmate). Server-backed like the other first-run flags so a second machine does not replay it. Also set when the flow is re-run from the Crewmates page.",
+      "help": "Whether the user finished or dismissed the retired first-run Meet CrewMates flow. Kept because it is the record that this user was already introduced to crewmates: while it is true the Crewmates feature intro, which replaced that flow, is not offered.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -8230,7 +8230,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Feature Videos Enabled",
-      "help": "Show short feature-intro clips for features this install has not used yet. Instance-wide kill switch.",
+      "help": "Show short feature-intro clips for features this install has not used yet. Instance-wide switch for the clip library; an intro that stands in for a first-run chapter (the Crewmates intro) is offered either way. Set dashboard.crewmates_onboarded to true to turn the Crewmates intro off.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false

@@ -69,7 +69,7 @@ const PANEL = { template: 'custom', title: 'Campaign dashboard', crew: 'kiro', p
 /** Browser state every context starts from: English, onboarding done, nav rail
  *  collapsed, the side panel CLOSED (the flow starts from the chat alone), one
  *  seeded goal. */
-const STORAGE = { 'mc-lang': 'en', 'mc-crewmates-onboarded': '1', 'mc-crewmates-page-entered': '1', 'mc-nav': '1', 'mc-members-panel-open': '0', 'mc-unread-shared': JSON.stringify({ 'member-scout': '' }) }
+const STORAGE = { 'mc-lang': 'en', 'mc-nav': '1', 'mc-members-panel-open': '0', 'mc-unread-shared': JSON.stringify({ 'member-scout': '' }) }
 
 const JOBS = [
   { id: 'cron-digest', name: 'Daily digest', message: 'Summarise what moved.', enabled: true, schedule: 'At 9:00 AM UTC', agent: 'kirocrew', member_id: 'kiro', last_run_ts: now - 10800, next_run_ts: now + 75600, last_status: 'ok' },

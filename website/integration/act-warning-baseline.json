@@ -26,7 +26,6 @@
   "src/components/InboundLinkChip.cov80.test.tsx",
   "src/components/LinkedSurfacesSection.cov80.test.tsx",
   "src/components/LinkedSurfacesSection.menuKeyboard.test.tsx",
-  "src/components/MeetCrewmatesFlow.test.tsx",
   "src/components/MemoryModeChip.test.tsx",
   "src/components/MigrationBanner.cov80.test.tsx",
   "src/components/PrivacyChapter.test.tsx",

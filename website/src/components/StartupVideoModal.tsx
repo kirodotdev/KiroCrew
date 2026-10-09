@@ -2,6 +2,8 @@ import { lazy, Suspense, useCallback, useEffect, useId, useRef, useState } from 
 import { useQuery } from '@tanstack/react-query'
 import { motion, useReducedMotion } from 'framer-motion'
 import { Share2, X } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { createPortal } from 'react-dom'
 
 import { api, type FeatureVideo, type FeatureVideoNext } from '../api/client'
 import { Badge } from './ui'
@@ -11,6 +13,9 @@ import { i18nT } from '../i18n/t'
 import { useAppSelector } from '../store'
 import { recordError } from '../utils/errorReport'
 import { markStartupVideoHandled } from './startupVideoGate'
+import { getBuiltinSurfaces, surfacePreviewEnabled } from '../surfaces/registry'
+import { deliverFeatureNewTag, landFeatureGhost, type GhostOrigin } from '../utils/featureNewTag'
+import { useGuardedLeave } from './NavigationLeaveGuard'
 
 /**
  * The feature-intro video shown once at startup.
@@ -52,6 +57,23 @@ const LazyShareMessageModal = lazy(() => import('../pages/chat/share/ShareMessag
 /** Fraction of the clip that counts as watched. */
 const SEEN_AT = 0.8
 
+// The catalog's title and description are English. An intro listed here shows
+// the bundle's translated copy instead (literal keys, for the dead-key gate).
+const INTRO_COPY: Record<string, { title: string; description: string }> = {
+  crewmates: {
+    title: 'components.startupVideoModal.crewmates_title',
+    description: 'components.startupVideoModal.crewmates_description',
+  },
+}
+
+// Where the ghost sits in a CTA intro clip, so "Not now" can fly it out of the
+// frame: centred, this share of the video's height, on screen between these seconds
+// (it fades out at the end so the loop restarts on an empty stage).
+// Only the Crewmates clip carries a CTA today; a second one must match or move this into the catalog.
+const CTA_GHOST_HEIGHT = 0.394
+const CTA_GHOST_ARRIVES_AT_S = 2.1
+const CTA_GHOST_LEAVES_AT_S = 7.275
+
 /**
  * Journal classifications for the two ways the pre-open probe ends badly. They go
  * in `code` rather than `detail` because they are a fixed classification, which is
@@ -91,7 +113,12 @@ export default function StartupVideoModal({ shareEnabled = false, onClose }: Sta
     // NOT in the query key: the answer is instance-wide, and re-fetching per slot
     // would break "one request per launch".
     queryKey: ['feature-video-next'],
-    queryFn: () => api.featureVideoNext(sessionKey),
+    queryFn: () => api.featureVideoNext(
+      sessionKey,
+      // Pages behind a preview that is off: the server drops intros whose CTA
+      // lands there before its random pick, so they never cost a launch.
+      getBuiltinSurfaces().filter(s => !surfacePreviewEnabled(s)).map(s => s.route),
+    ),
     // One request per launch. The answer cannot change underneath us: only this
     // component's own verdict retires a clip, and by then it is closing.
     staleTime: Infinity,
@@ -123,7 +150,14 @@ export default function StartupVideoModal({ shareEnabled = false, onClose }: Sta
    * that can never fill, and the client is the side that would be holding it.
    */
   const remoteBlocked = remote && data?.download_enabled !== true
-  const offered = !isError && !!video && data?.enabled === true && !remoteBlocked
+  // A CTA intro for a page this user cannot reach (its rail item is behind a
+  // preview flag that is off) is not offered, and records no verdict, so it
+  // comes back once the preview is turned on.
+  const ctaSurface = video?.cta_route ? getBuiltinSurfaces().find(s => s.route === video.cta_route?.split('?')[0]) : undefined
+  const ctaReachable = !video?.cta_route || (!!ctaSurface && surfacePreviewEnabled(ctaSurface))
+  // No `enabled` check: the server sends a clip only when one may be shown, and
+  // a default-on intro is sent while the kill switch is still at its default.
+  const offered = !isError && !!video && !remoteBlocked && ctaReachable
 
   /**
    * Is a REMOTE clip actually there? `'idle'` until the gate says the dialog
@@ -197,7 +231,7 @@ export default function StartupVideoModal({ shareEnabled = false, onClose }: Sta
     )
   }, [offered, remote, video, sessionKey, failProbe])
 
-  // Nothing is on screen until there is a clip AND the feature is on AND -- for
+  // Nothing is on screen until there is a clip AND its page is reachable AND -- for
   // a streamed clip only -- the probe has seen it. A local clip has nothing left
   // to check, so it opens on the offer alone, exactly as it did before this
   // route existed. The dialog itself lives in its own component below. That component MOUNTS at the moment the dialog appears, which is what
@@ -214,12 +248,13 @@ export default function StartupVideoModal({ shareEnabled = false, onClose }: Sta
       shareEnabled={shareEnabled}
       onClose={onClose}
       sessionKey={sessionKey}
+      ctaNavId={ctaSurface?.navId}
     />
   )
 }
 
 /** The dialog itself. Mounted only while there is a clip to show. */
-function OpenStartupVideoModal({ video, remote, shareEnabled, onClose, sessionKey }: {
+function OpenStartupVideoModal({ video, remote, shareEnabled, onClose, sessionKey, ctaNavId }: {
   video: FeatureVideo
   /** The clip streams from the CDN rather than playing off this machine. Changes
    *  what the player preloads and puts a hint on the card; nothing else. */
@@ -227,9 +262,18 @@ function OpenStartupVideoModal({ video, remote, shareEnabled, onClose, sessionKe
   shareEnabled: boolean
   onClose: () => void
   sessionKey: string | undefined
+  /** Rail item of the page `cta_route` opens, when it is a builtin surface. */
+  ctaNavId: string | undefined
 }) {
   const reduceMotion = useReducedMotion()
+  const navigate = useNavigate()
+  const guardedLeave = useGuardedLeave()
   const dialogRef = useRef<HTMLDivElement | null>(null)
+  const videoRef = useRef<HTMLVideoElement | null>(null)
+  const cta = video.cta_route || ''
+  const copy = INTRO_COPY[video.feature]
+  const title = copy ? i18nT(copy.title) : video.title
+  const description = copy ? i18nT(copy.description) : video.description
   const reactId = useId()
   const titleId = `${reactId}-title`
   const descId = `${reactId}-desc`
@@ -271,6 +315,40 @@ function OpenStartupVideoModal({ video, remote, shareEnabled, onClose, sessionKe
 
   const dismiss = useCallback(() => settle('dismissed'), [settle])
 
+  // Where the clip's ghost sits on screen right now, for the flight out of the modal.
+  const ghostOrigin = useCallback((): GhostOrigin | null => {
+    const el = videoRef.current
+    const v = el?.getBoundingClientRect()
+    return el && v ? {
+      cx: v.left + v.width / 2,
+      top: v.top + v.height * (1 - CTA_GHOST_HEIGHT) / 2,
+      height: v.height * CTA_GHOST_HEIGHT,
+      popIn: el.currentTime > 0 && (el.currentTime < CTA_GHOST_ARRIVES_AT_S || el.currentTime >= CTA_GHOST_LEAVES_AT_S),
+    } : null
+  }, [])
+
+  // "Not now" on a CTA intro: the user looked and chose later, so the verdict is
+  // `seen`, and the ghost carries a "New" tag from the clip to the rail item the
+  // CTA points at. The tag, not the modal, is what brings them back.
+  const notNow = useCallback(() => {
+    const from = ghostOrigin()
+    settle('seen')
+    if (!ctaNavId) return
+    deliverFeatureNewTag(ctaNavId, i18nT('components.startupVideoModal.new_tag'), from, cta)
+  }, [cta, ctaNavId, settle, ghostOrigin])
+
+  // "Try it": the ghost follows the user onto the page and lands in its anchor.
+  const tryIt = useCallback(() => {
+    // Leaving a page with unsaved work asks first, as every other link does; a
+    // refusal leaves the dialog open with no verdict.
+    guardedLeave(() => {
+      const from = ghostOrigin()
+      settle('seen')
+      navigate(cta)
+      if (ctaNavId) landFeatureGhost(ctaNavId, from)
+    }, cta)
+  }, [cta, ctaNavId, settle, navigate, ghostOrigin, guardedLeave])
+
   /**
    * Close and record NOTHING -- the backdrop's behaviour.
    *
@@ -285,9 +363,18 @@ function OpenStartupVideoModal({ video, remote, shareEnabled, onClose, sessionKe
   // Focus in, focus restore on close, Escape, and the Tab/Shift+Tab trap — the
   // shared implementation the other hand-rolled dialogs use. Suspended while the
   // share dialog is up so one Escape does not close both layers.
-  useDialogFocusTrap(dialogRef, dismiss, { enabled: !shareOpen })
+  useDialogFocusTrap(dialogRef, cta ? notNow : dismiss, { enabled: !shareOpen })
+  // A CTA intro opens with focus on its main choice, so the focus ring does not
+  // make "Not now" read as the primary button. Runs after the trap's first focus.
+  const tryItRef = useRef<HTMLButtonElement | null>(null)
+  useEffect(() => {
+    if (cta) tryItRef.current?.focus({ preventScroll: true })
+  }, [cta])
 
   const onTimeUpdate = (e: React.SyntheticEvent<HTMLVideoElement>) => {
+    // A CTA clip autoplays on a loop, so crossing the threshold says nothing about
+    // the user. Its verdict comes only from "Not now", "Try it" or Escape.
+    if (cta) return
     const el = e.currentTarget
     // Prefer the element's own metadata, and fall back to the catalog duration for
     // the frames before it loads (and for a source whose duration never resolves).
@@ -346,14 +433,16 @@ function OpenStartupVideoModal({ video, remote, shareEnabled, onClose, sessionKe
   // is the existing, validated resolver for exactly that field -- it refuses
   // anything that is not a plain `*.md` filename and returns null, so a bad catalog
   // entry drops the link instead of pasting a filename nobody can open.
-  const shareBody = [video.description, tipDocHref(video.doc)].filter(Boolean).join('\n\n')
+  const shareBody = [description, tipDocHref(video.doc)].filter(Boolean).join('\n\n')
   // The post text: title first so a reader knows what the clip is, then the
   // same blurb and link the card shows. One paragraph, because the X composer
   // treats it as a post, not a document. The user can still edit it in the
   // dialog before anything is sent.
-  const shareCaption = [video.title, shareBody].filter(Boolean).join('\n\n')
+  const shareCaption = [title, shareBody].filter(Boolean).join('\n\n')
 
-  return (
+  // Portalled to <body>: mounted in place, the scrim sat inside the main column's
+  // stacking context and the nav rail and sessions column painted over its left edge.
+  return createPortal(
     // Presentation, not a control: an ARIA button may not contain interactive
     // descendants, and focus never lands on the scrim, so a keydown handler here
     // would be unreachable. Escape covers keyboard dismissal -- and unlike this
@@ -393,29 +482,33 @@ function OpenStartupVideoModal({ video, remote, shareEnabled, onClose, sessionKe
           <span className="text-sm font-semibold text-text">
             {i18nT('components.startupVideoModal.feature_intro')}
           </span>
-          <button
+          {/* A CTA intro has "Not now" as its visible way out (Escape does the
+              same), so a second close control would only raise "how do these
+              differ?". */}
+          {!cta && <button
             type="button"
             className="text-muted hover:text-text cursor-pointer bg-transparent border-none"
             onClick={dismiss}
             aria-label={i18nT('components.startupVideoModal.close')}
           >
             <X size={16} />
-          </button>
+          </button>}
         </div>
 
-        {/* eslint-disable-next-line jsx-a11y/media-has-caption -- the contract
-            (`GET /api/feature-videos/next`) carries no captions track, and the
-            placeholder clip has no audio to caption. A narrated clip DOES need
-            one, so the field is a known gap recorded on the PR rather than a
-            guessed-at addition to the API. */}
+        {/* No captions track: the contract (`GET /api/feature-videos/next`)
+            carries none, and the placeholder clip has no audio to caption. A
+            narrated clip DOES need one, so the field is a known gap recorded on
+            the PR rather than a guessed-at addition to the API. (The lint rule
+            no longer reports it because the element carries `muted`.) */}
         <video
+          ref={videoRef}
           data-testid="startup-video"
           className="w-full bg-bg aspect-video"
           src={video.src}
           poster={video.poster}
           // Names the player after the clip it plays, so the control is not an
           // unlabelled surface in the tab order.
-          aria-label={video.title}
+          aria-label={title}
           controls
           playsInline
           // No autoplay and no preload, for either source: the bytes arrive when
@@ -425,15 +518,23 @@ function OpenStartupVideoModal({ video, remote, shareEnabled, onClose, sessionKe
           // discloses a cost the user has not paid yet, and spending CDN bytes to
           // populate the controls would make that disclosure false. The cost is a
           // streamed clip showing no duration until it plays.
-          preload="none"
+          //
+          // A CTA intro is the exception: its clip is the pitch, so it plays muted
+          // on a loop as soon as the dialog opens. Under reduce-motion it stays on
+          // the poster until the user presses play.
+          preload={cta ? 'auto' : 'none'}
+          autoPlay={!!cta && !reduceMotion}
+          loop={!!cta}
+          muted={!!cta}
           onTimeUpdate={onTimeUpdate}
+          // Only a non-CTA clip ends: a CTA clip loops until the user picks.
           onEnded={() => settle('seen')}
           onError={onMediaError}
         />
 
         <div className="px-4 py-3 text-sm text-text">
           <p id={titleId} className="font-semibold text-text-strong flex items-center gap-2">
-            {video.title}
+            {title}
             {/* Says where the bytes come from, next to the thing they belong to.
                 It is information, not a control: pressing play on a streamed clip
                 spends network, and the user is owed that before they press it
@@ -448,7 +549,7 @@ function OpenStartupVideoModal({ video, remote, shareEnabled, onClose, sessionKe
               </Badge>
             )}
           </p>
-          <p id={descId} className="mt-1 text-[13px] text-muted">{video.description}</p>
+          <p id={descId} className="mt-1 text-[13px] text-muted">{description}</p>
         </div>
 
         <div className="flex flex-wrap items-center justify-end gap-2 px-4 py-2.5 border-t border-border bg-bg-elevated">
@@ -456,7 +557,7 @@ function OpenStartupVideoModal({ video, remote, shareEnabled, onClose, sessionKe
               policy has not granted should not be on screen at all, so there is no
               greyed button to explain and nothing on the page that could reach an
               intent URL. */}
-          {shareEnabled && (
+          {shareEnabled && !cta && (
             <button
               type="button"
               data-testid="startup-video-share"
@@ -467,13 +568,35 @@ function OpenStartupVideoModal({ video, remote, shareEnabled, onClose, sessionKe
               {i18nT('components.startupVideoModal.share')}
             </button>
           )}
-          <button
-            type="button"
-            className="px-3 py-1.5 text-sm rounded-md bg-accent text-accent-fg hover:opacity-90 cursor-pointer"
-            onClick={() => settle('seen')}
-          >
-            {i18nT('components.startupVideoModal.got_it')}
-          </button>
+          {cta ? (
+            <>
+              <button
+                type="button"
+                data-testid="startup-video-not-now"
+                className="px-3 py-1.5 text-sm rounded-md border border-border text-text hover:border-border-strong bg-transparent cursor-pointer"
+                onClick={notNow}
+              >
+                {i18nT('components.startupVideoModal.not_now')}
+              </button>
+              <button
+                ref={tryItRef}
+                type="button"
+                data-testid="startup-video-try-it"
+                className="px-3 py-1.5 text-sm rounded-md bg-accent text-accent-fg hover:opacity-90 cursor-pointer"
+                onClick={tryIt}
+              >
+                {i18nT('components.startupVideoModal.try_it')}
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              className="px-3 py-1.5 text-sm rounded-md bg-accent text-accent-fg hover:opacity-90 cursor-pointer"
+              onClick={() => settle('seen')}
+            >
+              {i18nT('components.startupVideoModal.got_it')}
+            </button>
+          )}
         </div>
       </motion.div>
 
@@ -494,7 +617,7 @@ function OpenStartupVideoModal({ video, remote, shareEnabled, onClose, sessionKe
           <LazyShareMessageModal
             onClose={() => setShareOpen(false)}
             messageText={shareBody}
-            prevUserText={video.title}
+            prevUserText={title}
             shareEnabled={shareEnabled}
             // The card's own copy describes a chat reply and a question. Here the
             // subject is a feature clip and its title, so the two strings that name
@@ -514,6 +637,7 @@ function OpenStartupVideoModal({ video, remote, shareEnabled, onClose, sessionKe
           />
         </Suspense>
       )}
-    </div>
+    </div>,
+    document.body,
   )
 }

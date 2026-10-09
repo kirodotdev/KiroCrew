@@ -65,6 +65,16 @@ def _fresh_cache() -> "object":
 
 
 @pytest.fixture(autouse=True)
+def _library_only_catalog(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drop the default-on intro, which joins any manifest's pool.
+
+    These tests are about the hosted library replacing the bundled one; the
+    default-on carry-over has its own test in ``test_feature_videos.py``.
+    """
+    _floor_monkeypatch.setattr(fv, "CATALOG", tuple(e for e in fv.CATALOG if not e.default_on))
+
+
+@pytest.fixture(autouse=True)
 def _no_network(monkeypatch: pytest.MonkeyPatch) -> None:
     """A test that forgets to install a fake must fail, never reach the network."""
 

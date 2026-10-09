@@ -4,7 +4,6 @@ import { useState } from 'react'
 import { screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import { namedCeiling } from '../../test/namedCeiling'
 import { defaultScheduler, notifyManager } from '@tanstack/react-query'
-import { CREWMATES_PAGE_ENTERED_EVENT } from '../../components/MeetCrewmatesFlow'
 import { Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { renderWithProviders } from '../../test/helpers'
 import { NavigationLeaveGuardProvider, useMayLeaveForNavigation } from '../../components/NavigationLeaveGuard'
@@ -587,28 +586,6 @@ describe('MembersPage roster', () => {
     expect(api.memberThread).not.toHaveBeenCalledWith('default')
   })
 
-  it('announces the visit so the host can show Meet CrewMates', async () => {
-    const entered = vi.fn()
-    window.addEventListener(CREWMATES_PAGE_ENTERED_EVENT, entered)
-    try {
-      await renderPage([row({ name: 'default', slug: 'default' })])
-      await waitFor(() => expect(entered).toHaveBeenCalledTimes(1))
-    } finally {
-      window.removeEventListener(CREWMATES_PAGE_ENTERED_EVENT, entered)
-    }
-  })
-
-  it('announces the visit even when a crewmate already exists (the host decides, on whether it was seen)', async () => {
-    const entered = vi.fn()
-    window.addEventListener(CREWMATES_PAGE_ENTERED_EVENT, entered)
-    try {
-      await renderPage([row()])
-      await waitFor(() => expect(entered).toHaveBeenCalledTimes(1))
-    } finally {
-      window.removeEventListener(CREWMATES_PAGE_ENTERED_EVENT, entered)
-    }
-  })
-
   it('shows the load-failure state when the roster call rejects', async () => {
     ;(api.members as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
     renderWithProviders(<MembersPage />)
@@ -1010,6 +987,15 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(screen.getByTestId('member-roster')).toHaveClass('hidden')
     expect(screen.getByTestId('crewmate-switcher')).toBeInTheDocument()
     expect(screen.getByTestId('crewmate-switcher-count')).toHaveTextContent('1')
+  })
+
+  it('puts the Crewmates intro landing spot on the open chat\'s pill avatar', async () => {
+    // A desktop /members auto-opens a chat, so the empty hero (the other
+    // landing spot) is never on screen when the intro's ghost arrives.
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    const pill = await screen.findByTestId('member-identity-pill')
+    expect(pill.querySelector('[data-feature-landing="members"]')).not.toBeNull()
   })
 
   it('the switcher\'s "Show the full roster" pins the roster beside the thread on desktop, where team headers and New team are reachable', async () => {

@@ -2203,6 +2203,8 @@ describe('every api method issues one well-formed /api request', () => {
     // query/record contract and would manufacture undefined URL parameters.
     memoryRecords: ['member-reviewer', { q: 'contact', kind: 'fact' }, 0, 50],
     memoryRecordHistory: ['member-reviewer', { kind: 'fact', id: 'user.contact' }, 25, 0],
+    // `featureVideoNext(sessionKey, blockedRoutes)`: the second argument is a route list.
+    featureVideoNext: ['dashboard:sw-1', ['/members']],
     // `invokeFileMenuItem(item, ctx)`: the URL is `item.endpoint`.
     invokeFileMenuItem: [
       { id: 'send', app: 'doc-store', endpoint: '/api/apps/doc-store/send' },

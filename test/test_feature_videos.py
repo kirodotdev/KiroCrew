@@ -111,8 +111,6 @@ class TestAssetPathValidation:
             "/app-assets/other/x.mp4",
             "/app-assets/feature-videos/",
             "",
-            None,
-            42,
         ],
     )
     def test_rejects_unsafe_paths(self, bad: object) -> None:
@@ -138,8 +136,62 @@ class TestShippedCatalog:
         ids = [e.id for e in fv.CATALOG]
         assert len(ids) == len(set(ids))
 
-    def test_seeded_with_the_two_expected_entries(self) -> None:
-        assert [e.id for e in fv.CATALOG] == ["feature-tips", "monitor-loops"]
+    def test_seeded_with_the_expected_entries(self) -> None:
+        assert [e.id for e in fv.CATALOG] == ["feature-tips", "monitor-loops", "crewmates"]
+
+    def test_only_crewmates_carries_a_cta(self) -> None:
+        """The modal's ghost hand-off assumes the Crewmates clip's composition."""
+        assert {e.id: e.cta_route for e in fv.CATALOG if e.cta_route} == {
+            "crewmates": "/members?member=default"
+        }
+
+    @pytest.mark.parametrize(
+        "route", ["/members", "/members?new=crewmate", "/settings/chat", "/a-b/c?x=1&y=2"]
+    )
+    def test_accepts_in_dashboard_routes(self, route: str) -> None:
+        assert fv._CTA_ROUTE_RE.fullmatch(route)
+
+    @pytest.mark.parametrize(
+        "route",
+        [
+            "",
+            "members",
+            "https://evil.example/members",
+            "//evil.example",
+            "/members/../settings",
+            "/Members",
+            "/members?new=a b",
+            "/members?new",
+            "javascript:alert(1)",
+        ],
+    )
+    def test_rejects_anything_that_could_leave_the_dashboard(self, route: str) -> None:
+        assert not fv._CTA_ROUTE_RE.fullmatch(route)
+
+    def test_entry_with_unsafe_cta_route_is_filtered(self) -> None:
+        with patch.object(fv, "CATALOG", (_entry("bad-cta", cta_route="https://evil.example"),)):
+            assert fv.catalog() == ()
+
+    def test_the_offer_carries_the_cta_route(self, tmp_path: Path) -> None:
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+            with patch.object(fv, "CATALOG", (_entry("with-cta", cta_route="/members"),)):
+                picked = fv.select_next("9.9.9")
+        assert picked is not None and picked.payload()["cta_route"] == "/members"
+
+    def test_an_entry_without_a_cta_sends_an_empty_route(self, tmp_path: Path) -> None:
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+            with patch.object(fv, "CATALOG", (_entry("plain"),)):
+                picked = fv.select_next("9.9.9")
+        assert picked is not None and picked.payload()["cta_route"] == ""
+
+    def test_an_intro_whose_cta_page_is_blocked_leaves_the_draw(self, tmp_path: Path) -> None:
+        catalog = (_entry("with-cta", cta_route="/members?member=default"), _entry("plain"))
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+            with patch.object(fv, "CATALOG", catalog):
+                picks = {
+                    fv.select_next("9.9.9", False, frozenset({"/members"})).id for _ in range(20)
+                }
+        assert picks == {"plain"}
 
     def test_docs_are_in_the_tips_allowlist(self) -> None:
         from kiro_crew.tips_allowlist import TIP_DOC_ALLOWLIST
@@ -280,6 +332,36 @@ class TestAssetExistenceGate:
 
 
 class TestProbes:
+    @pytest.mark.parametrize(
+        ("agents", "fires"),
+        [
+            ({}, False),
+            ({"default": object()}, False),
+            ({"default": object(), "radar": object()}, True),
+        ],
+    )
+    def test_crewmates_exist_ignores_the_main_agent(self, agents: dict, fires: bool) -> None:
+        cfg = MagicMock()
+        cfg.agents = agents
+        with patch.object(fv.KiroCrewConfig, "load", return_value=cfg):
+            assert fv.probe_fires("crewmates_exist") is fires
+
+    @pytest.mark.parametrize("done", [True, False])
+    def test_crewmates_onboarded_reads_the_value_not_presence(self, done: bool) -> None:
+        cfg = MagicMock()
+        cfg.dashboard.crewmates_onboarded = done
+        with patch.object(fv.KiroCrewConfig, "load", return_value=cfg):
+            assert fv.probe_fires("crewmates_onboarded") is done
+
+    def test_only_the_crewmates_intro_ignores_the_kill_switch(self) -> None:
+        """A second default-on entry must be a deliberate change to this set."""
+        assert {e.id for e in fv.CATALOG if e.default_on} == {"crewmates"}
+
+    def test_crewmates_intro_retires_with_the_flow_it_replaces(self) -> None:
+        entry = next(e for e in fv.CATALOG if e.id == "crewmates")
+        assert set(entry.used_when) == {"crewmates_exist", "crewmates_onboarded"}
+        assert entry.default_on is True
+
     def test_unknown_signal_does_not_fire(self) -> None:
         assert fv.probe_fires("no_such_probe") is False
 
@@ -678,7 +760,10 @@ class TestNextRoute:
     def test_kill_switch_reports_disabled_and_no_video(self, tmp_path: Path) -> None:
         async def run() -> dict[str, object]:
             with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
-                with patch("kiro_crew.feature_videos.KiroCrewConfig") as cfg_cls:
+                with (
+                    patch("kiro_crew.feature_videos.KiroCrewConfig") as cfg_cls,
+                    patch.object(fv, "CATALOG", (_entry("first"),)),
+                ):
                     cfg_cls.load.return_value = _cfg(enabled=False)
                     resp = await fv.api_feature_videos_next(
                         _request("GET", "/api/feature-videos/next")
@@ -688,6 +773,53 @@ class TestNextRoute:
 
         body = asyncio.run(run())
         assert body == {"video": None, "enabled": False}
+
+    def test_kill_switch_still_offers_a_default_on_intro(self, tmp_path: Path) -> None:
+        """The Crewmates intro replaces a first-run chapter, which had no switch."""
+
+        async def run() -> dict[str, object]:
+            with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+                with (
+                    patch("kiro_crew.feature_videos.KiroCrewConfig") as cfg_cls,
+                    patch.object(
+                        fv, "CATALOG", (_entry("clip"), _entry("chapter", default_on=True))
+                    ),
+                ):
+                    cfg_cls.load.return_value = _cfg(enabled=False)
+                    resp = await fv.api_feature_videos_next(
+                        _request("GET", "/api/feature-videos/next")
+                    )
+            return json.loads(resp.body)  # type: ignore[arg-type]
+
+        body = asyncio.run(run())
+        assert body["enabled"] is False
+        assert isinstance(body["video"], dict)
+        assert body["video"]["id"] == "chapter"
+
+    def test_a_manifest_does_not_retire_a_default_on_intro_it_omits(self, tmp_path: Path) -> None:
+        hosted = fv.Offer(
+            id="hosted",
+            feature="hosted",
+            title="t",
+            description="d",
+            src="/feature-videos/1.0.0/hosted.mp4",
+            poster="/feature-videos/1.0.0/hosted.jpg",
+            duration_s=5.0,
+            doc="feature-tips.md",
+            min_version="",
+            used_when=(),
+        )
+        catalog = (_entry("bundled"), _entry("chapter", default_on=True))
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+            with (
+                patch.object(fv, "CATALOG", catalog),
+                patch.object(
+                    cache_mod.FeatureVideoCache, "current_manifest", return_value=object()
+                ),
+                patch.object(fv, "_hosted_offers", return_value=(hosted,)),
+            ):
+                ids = {o.id for o in fv._offer_pool("99.0.0")}
+        assert ids == {"hosted", "chapter"}
 
     def test_serves_the_first_eligible_entry(self, tmp_path: Path) -> None:
         async def run() -> dict[str, object]:

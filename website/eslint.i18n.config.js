@@ -100,6 +100,16 @@ export default [
       // to this module will not be reported. Keep it stylesheet-only; anything a
       // person reads belongs in the component with `i18nT`.
       'src/components/fileChangeChipsCss.ts',
+      // The feature-intro "New" tag store and the ghost flight that carries it:
+      // SVG path data, inline style text for the courier, and Web Animations
+      // keyframes (easings, `color-mix()` over theme variables). The one word it
+      // shows, the tag label, arrives as a parameter already translated by its
+      // callers (`StartupVideoModal.tsx`, `App.tsx`), which stay fully covered.
+      //
+      // Stated as a false-negative class, per this file's convention: copy added
+      // to this module will not be reported. It imports neither `i18nT` nor
+      // `useTranslation`; keep it that way.
+      'src/utils/featureNewTag.ts',
       // The Liquid Glass surface: SVG path data, an inline SVG displacement-map
       // document, `url("data:image/svg+xml…")`, `linear-gradient(…)`, `path("…")`
       // and `color-mix(…)` values, every one built as a string and handed to the
