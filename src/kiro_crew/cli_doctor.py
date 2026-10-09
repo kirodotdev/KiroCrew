@@ -1762,6 +1762,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
         features,
         install,
         mcp,
+        render,
         resources,
         services,
         workload,
@@ -1968,7 +1969,10 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     workload._doctor_cron_health(issues)
 
     # ── Durable task queue (silent when no tasks.db exists yet) ──
-    workload._doctor_task_store(issues)
+    with render._unreadable_skips_section(
+        issues, "task store", confined=confinement._doctor_vantage_confined
+    ):
+        workload._doctor_task_store(issues)
 
     # ── Overload resilience: configured bounds + platform liveness evidence ──
     workload._doctor_overload_resilience(cfg)
