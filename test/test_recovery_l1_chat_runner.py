@@ -435,6 +435,9 @@ def _l1_state(tmp_path):
     sessions.get_pid = MagicMock(return_value=None)
     client = AsyncMock()
     sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+    # Every claim here is a fresh session, so no provider is live before it; the
+    # slash-command gates peek liveness with an await.
+    sessions.is_provider_alive = AsyncMock(return_value=False)
     sessions.record_failure = AsyncMock()
     sessions.check_context_usage = MagicMock()
     sessions.stop_generation = MagicMock(return_value=0)
