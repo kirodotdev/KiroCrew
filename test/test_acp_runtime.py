@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import signal
+import sys
 import time
 import weakref
 from pathlib import Path
@@ -2244,9 +2245,11 @@ async def test_runtime_spawn_passes_installed_path_through_exact_wrappers(
     # runtime-owned, so only its presence and shape are pinned here.
     extra_private = wrap_kwargs.pop("extra_private_dirs")
     assert isinstance(extra_private, (list, tuple))
+    # The default tier leaves ~/.ssh readable, so the ssh-agent socket is kept.
     assert wrap_kwargs == {
         "strip_python_env": True,
         "is_kiro_cli": True,
+        **({} if sys.platform == "win32" else {"forward_ssh_auth_sock": True}),
     }
     voice_guard.assert_called_once_with(runtime._work_dir)
     assert strip_spawn_shim(wrapped["spawn_args"]) == (
@@ -9343,12 +9346,18 @@ async def test_runtime_spawn_scrubs_sensitive_env_on_default_auto(monkeypatch):
         "SLACK_BOT_TOKEN",
         "KIROCREW_OWNER_ID",
         "AWS_SECRET_ACCESS_KEY",
-        "SSH_AUTH_SOCK",
         "PYTHONPATH",
         "PYTHONPYCACHEPREFIX",
         "PYTHONDONTWRITEBYTECODE",
     ):
         assert key not in env, f"{key} leaked into runtime child env"
+    # The default tier leaves ~/.ssh readable, so the agent socket is kept:
+    # git-over-SSH works while every other credential above stays scrubbed.
+    if sys.platform == "win32":
+        # Windows has no SSH_AUTH_SOCK (a named-pipe agent): never forwarded.
+        assert "SSH_AUTH_SOCK" not in env, "SSH_AUTH_SOCK leaked into runtime child env"
+    else:
+        assert env.get("SSH_AUTH_SOCK") == "/tmp/fake-agent.sock"
     assert env.get("KIROCREW_UNRELATED_KEEPME") == "keep-this-value"
     assert env.get("AWS_ACCESS_KEY_ID") == "FAKE-akid"
     assert env.get("KIROCREW_RUNTIME_PYTHON") == runtime_mod.sys.executable

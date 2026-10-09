@@ -579,6 +579,7 @@ class _Recording:
         self.factory_argv: list[str] = []
         self.factory_kwargs: dict = {}
         self.socket_env_arg: dict | None = None
+        self.forward_args: tuple | None = None
 
 
 def _launch_tools(
@@ -608,6 +609,10 @@ def _launch_tools(
     def _pod_bundle(argv, *, backend):
         rec.calls.append("apply_pod_bundle_spawn")
         return list(argv), delegate
+
+    def _forward(mode, hidden_dirs):
+        rec.forward_args = (mode, hidden_dirs)
+        return True
 
     async def _wrap_async(argv, **kwargs):
         rec.calls.append("wrap_argv_async")
@@ -652,7 +657,7 @@ def _launch_tools(
         platform_compat=platform,
         agent_scratch=scratch,
         apply_pod_bundle_spawn=_pod_bundle,
-        forward_ssh_auth_sock=lambda: True,
+        forward_ssh_auth_sock=_forward,
         wrap_argv_async=_wrap_async,
         wrap_argv=lambda *a, **k: None,
         wrapped_by_crew_sandbox=lambda argv: argv[:1] == ["sandbox"],
@@ -720,6 +725,9 @@ def test_the_tail_hands_the_plan_mask_and_the_scratch_window_to_the_sandbox(
     # The delegation verdict is the pod bundle step's, passed through unchanged.
     assert rec.wrap_kwargs["is_kiro_cli"] is True
     assert rec.wrap_kwargs["forward_ssh_auth_sock"] is True
+    # The forward is decided from THIS spawn's tier and mask, the same two
+    # inputs the wrap applies, so it cannot judge ~/.ssh by a different sandbox.
+    assert rec.forward_args == ("auto", ("/srv/creds/.aws",))
     assert rec.wrap_kwargs["strip_python_env"] is True
     # What the host keeps from the wrap: the launcher to reclaim, the layer it got.
     assert host._sandbox_cleanup == "/run/launcher.sh"
