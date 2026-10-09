@@ -1,8 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent, waitFor } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import OnboardingFlow from '../components/OnboardingFlow'
 import { api } from '../api/client'
+import { LIQUID_GLASS_STORAGE_KEY } from '../utils/liquidGlass'
 
 // Partial api mock: profile read/write + theme boot. Everything else keeps its
 // real implementation (ThemeProvider's ancillary fetches no-op in jsdom).
@@ -412,6 +413,41 @@ describe('OnboardingFlow — About You step', () => {
     expect(screen.queryByLabelText('Describe your role')).not.toBeInTheDocument()
     fireEvent.click(other) // back on — the answer is still there
     expect(screen.getByLabelText('Describe your role')).toHaveValue('founder')
+  })
+})
+
+describe('OnboardingFlow — Pick your look offers the Translucent panels switch', () => {
+  afterEach(() => {
+    localStorage.removeItem(LIQUID_GLASS_STORAGE_KEY)
+    document.documentElement.removeAttribute('data-reduce-transparency')
+  })
+
+  it('shows the Settings switch, off by default, between the mode row and the theme grid', () => {
+    renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
+    const sw = screen.getByRole('switch', { name: 'Translucent panels' })
+    expect(sw).toHaveAttribute('aria-checked', 'false')
+    // Reads in order: mode row (Dark) -> the switch -> the COLOR THEME heading.
+    const dark = screen.getByRole('button', { name: 'Dark' })
+    const heading = screen.getByText('Color theme')
+    expect(dark.compareDocumentPosition(sw) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(sw.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('flipping it persists the same key and root attribute Settings does, live', () => {
+    renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
+    expect(document.documentElement.dataset.reduceTransparency).toBe('on')
+    fireEvent.click(screen.getByRole('switch', { name: 'Translucent panels' }))
+    expect(screen.getByRole('switch', { name: 'Translucent panels' })).toHaveAttribute('aria-checked', 'true')
+    expect(localStorage.getItem(LIQUID_GLASS_STORAGE_KEY)).toBe('on')
+    expect(document.documentElement.dataset.reduceTransparency).toBe('off')
+    fireEvent.click(screen.getByRole('switch', { name: 'Translucent panels' }))
+    expect(localStorage.getItem(LIQUID_GLASS_STORAGE_KEY)).toBeNull()
+    expect(document.documentElement.dataset.reduceTransparency).toBe('on')
+  })
+
+  it('is a copy of the Settings row, so it carries no deep-link anchor', () => {
+    renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
+    expect(document.querySelector('[data-setting-label="Translucent panels"]')).toBeNull()
   })
 })
 

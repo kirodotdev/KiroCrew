@@ -6,6 +6,8 @@ import { ArrowRight, Check, Monitor, Sun, Moon } from 'lucide-react'
 import { useTheme, type ModePreference, type ColorTheme } from '../hooks/useTheme'
 import { GhostWithArm } from '../assets/onboarding/GhostIcons'
 import { Btn, SendBtn } from './ui'
+import { SettingsToggle } from './settings'
+import { useLiquidGlass } from '../hooks/useLiquidGlass'
 import ErrorNotice from './ErrorNotice'
 import OnboardingChapterShell, { OnboardingShellContext } from './OnboardingChapterShell'
 import { api } from '../api/client'
@@ -148,6 +150,7 @@ export default function OnboardingFlow({
     preference: modePref,
     setTheme: setModePref,
   } = useTheme()
+  const { liquidGlass, setLiquidGlass } = useLiquidGlass()
   const [open, setOpen] = useState(initialOpen)
   const [step, setStep] = useState(1)
   const [coords, setCoords] = useState<{ left: number; top: number } | null>(null)
@@ -530,6 +533,22 @@ export default function OnboardingFlow({
               {m[0].toUpperCase() + m.slice(1)}
             </button>
           ))}
+        </div>
+
+        {/* The same Translucent panels switch as Settings -> Display -> View
+            (`useLiquidGlass`, browser-local `mc-liquid-glass`): the glass/solid
+            choice is part of "the look", so it is offered where the mode and
+            the theme are, and flipping it re-skins the app live the way those
+            chips do. `anchor={false}`: this is a copy of the Settings row, so a
+            deep link to the setting lands on the panel's row, not here. */}
+        <div className="mt-3 rounded-[10px] border border-border px-3">
+          <SettingsToggle
+            anchor={false}
+            label={i18nT('pages.settings.displayPanel.translucent_panels')}
+            hint={i18nT('pages.settings.displayPanel.translucent_panels_desc')}
+            checked={liquidGlass}
+            onChange={setLiquidGlass}
+          />
         </div>
 
         <div className="mt-5 text-[11px] uppercase tracking-wide text-muted mb-1.5">
