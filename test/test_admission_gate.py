@@ -1626,6 +1626,45 @@ class TestSpawnAdmissionGate:
         assert mgr._queue_wait.get("sess-1", {}).get("reason") == "low_memory"
         assert events and events[-1]["reason"] == "low_memory"
 
+    def test_a_durable_row_keeps_the_approval_floor_and_drops_the_grant(self) -> None:
+        """The pump respawns a recovered row from its params verbatim. A dropped
+        ``approval_mode="auto"`` fails closed; a dropped floor would fail open,
+        so the floor is persisted and the grant is not."""
+        mgr = self._mgr()
+        prepared = mgr.prepare_spawn("t", parent_session_key="", approval_floor="interactive")
+        assert prepared is not None and hasattr(prepared, "record")
+        assert prepared.record.params["approval_floor"] == "interactive"
+        rec = mgr._admission.taskq_build_record(
+            "row2",
+            {"task": "t", "parent_session_key": "", "approval_mode": "auto"},
+            parent_session_key="",
+            memory_store="",
+            app="",
+            model="",
+            allowed_tools=None,
+            approval_mode="auto",
+        )
+        assert "approval_mode" not in rec.params
+
+    def test_a_floor_clears_an_auto_grant_on_the_run_it_starts(self) -> None:
+        mgr = self._mgr()
+        mgr._is_yolo = None
+        # Admit on memory so the gate builds the run's own info rather than a
+        # queued placeholder (the host this runs on may be under pressure).
+        with (
+            patch("kiro_crew.subagent.check_memory_available", return_value=(True, 8.0)),
+            patch("kiro_crew.subagent.sel"),
+        ):
+            info = mgr.spawn(
+                "t",
+                parent_session_key="",
+                approval_mode="auto",
+                approval_floor="interactive",
+            )
+        assert info is not None and not info.queued
+        assert info.approval_floor == "interactive"
+        assert info.approval_mode == ""
+
 
 # ── config key ───────────────────────────────────────────────────────────────
 

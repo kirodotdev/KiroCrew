@@ -22,6 +22,7 @@ from ..tool_permission import (
     Ask,
     CallbackResponder,
     ChildRule,
+    DenyOnlyGate,
     HookGate,
     Narrator,
     ParentPolicyAuto,
@@ -105,6 +106,7 @@ if TYPE_CHECKING:
         extract_options,
         failure_name,
         fire_tool_hooks,
+        floored_spec_hooks,
         hook_gate_kwargs,
         invalidate_stale_kas_session,
         is_registered_agent_name,
@@ -660,13 +662,13 @@ class RunEventCoordinator(ManagerComponent):
                 "stalled": a.stalled,
                 "startedAt": a.started,
             }
-            for a in self._manager._agents.values()
+            for a in self._manager.all_agents
             if not a.done and a.parent_session_key == parent_key
         ]
 
     def get_impl(self, agent_id: str) -> SubagentInfo | None:
-        """Get agent info by ID."""
-        return self._manager._agents.get(agent_id)
+        """Get local or remote agent info by ID."""
+        return self._manager._agents.get(agent_id) or self._manager._external_agents.get(agent_id)
 
     def is_queued_impl(self, agent_id: str) -> bool:
         """Whether *agent_id* names a spawn accepted but not yet started.
@@ -1478,6 +1480,10 @@ class RunEventCoordinator(ManagerComponent):
         return (
             self._has_live_parent_run_task(parent_session_key)
             or self._has_live_parent_followup_watcher(parent_session_key)
+            or any(
+                not a.done and a.parent_session_key == parent_session_key
+                for a in self._manager.external_agents
+            )
             or any(a.parent_session_key == parent_session_key for a in self._manager.running)
         )
 
@@ -1492,6 +1498,10 @@ class RunEventCoordinator(ManagerComponent):
         return (
             self._has_live_parent_run_task(parent_session_key)
             or self._has_live_parent_followup_watcher(parent_session_key)
+            or any(
+                not a.done and a.parent_session_key == parent_session_key
+                for a in self._manager.external_agents
+            )
             or any(a.parent_session_key == parent_session_key for a in self._manager.running)
         )
 
@@ -1910,6 +1920,16 @@ class RunEventCoordinator(ManagerComponent):
         manager = self._manager
         rows = SubagentRows(info.id)
         prompt = _ApprovalPrompt(self, info)
+        # An interactive floor from a remote hub outranks every auto-grant on this
+        # gateway, not just the parent's policy: the hook gate keeps its denies
+        # but loses its grant, and each responder is told so it skips its own
+        # non-human shortcuts (per-source auto-approve, yolo, slot trust).
+        floored = info.approval_floor == "interactive"
+
+        def _mark(event: LLMEvent) -> LLMEvent:
+            if floored:
+                event.approval_floor = "interactive"
+            return event
 
         # Each approver is asked only while its responder reports it attached.
         def _factory_approver() -> Callable[[LLMEvent], Awaitable[object]]:
@@ -1917,19 +1937,57 @@ class RunEventCoordinator(ManagerComponent):
                 "Callable[[SubagentInfo], Callable[[LLMEvent], Awaitable[bool]]]",
                 manager._on_tool_approval_factory,
             )
-            return factory(info)
+            approve = factory(info)
+            return lambda event: approve(_mark(event))
 
         def _ask_parent(event: LLMEvent) -> Awaitable[object]:
             approve = cast("ToolApprovalCallback", manager._on_tool_approval)
-            return approve(event, info.parent_session_key)
+            return approve(_mark(event), info.parent_session_key)
 
         def _ask_for_child(event: LLMEvent) -> Awaitable[object]:
             if manager._on_tool_approval_factory:
                 return _factory_approver()(event)
             return _ask_parent(event)
 
+        def _ask_hub(event: LLMEvent) -> Awaitable[object]:
+            from kiro_crew.subagent_manager import hub_approvals
+
+            return hub_approvals.ask_hub(info.id, _mark(event))
+
+        # A floored run's person is in the remote hub's session, not on this
+        # gateway: every request is parked for the hub to relay, and nothing
+        # here (the factory, the gateway callback, a local prompt) answers it.
+        hub = CallbackResponder(lambda: _ask_hub, attended=lambda: True, name="hub", watch=prompt)
+        local_responders = (
+            CallbackResponder(
+                _factory_approver,
+                attended=lambda: bool(manager._on_tool_approval_factory),
+                name="factory",
+                watch=prompt,
+            ),
+            CallbackResponder(
+                lambda: _ask_parent,
+                attended=lambda: bool(manager._on_tool_approval),
+                name="callback",
+                watch=prompt,
+            ),
+        )
+        child_responder = (
+            hub
+            if floored
+            else CallbackResponder(
+                lambda: _ask_for_child,
+                attended=lambda: bool(
+                    manager._on_tool_approval_factory or manager._on_tool_approval is not None
+                ),
+                name="child",
+                watch=prompt,
+                on_error=lambda: log.exception("child approval callback failed"),
+            )
+        )
+
         return Policy(
-            gate=HookGate(consult),
+            gate=DenyOnlyGate(HookGate(consult)) if floored else HookGate(consult),
             audit=SelAudit(rows, on_refusal_failure="answer", sel=sel, log=log),
             otherwise=Refusal.host("headless", _HEADLESS_DENY_REASON, DENY_CAUSE_SURFACE_POLICY),
             floors=(
@@ -1944,20 +2002,7 @@ class RunEventCoordinator(ManagerComponent):
                 ),
             ),
             grants=(GATE_GRANT, ParentPolicyAuto(parent_policy)),
-            responders=(
-                CallbackResponder(
-                    _factory_approver,
-                    attended=lambda: bool(manager._on_tool_approval_factory),
-                    name="factory",
-                    watch=prompt,
-                ),
-                CallbackResponder(
-                    lambda: _ask_parent,
-                    attended=lambda: bool(manager._on_tool_approval),
-                    name="callback",
-                    watch=prompt,
-                ),
-            ),
+            responders=(hub,) if floored else local_responders,
             child=ChildRule.enforce(
                 # For such a child the unconditional grant is tried BEFORE the
                 # gate's (identity-keyed) one.
@@ -1965,19 +2010,49 @@ class RunEventCoordinator(ManagerComponent):
                 unattended=Refusal.host(
                     "child_unattended", _LOW_FIDELITY_DENY_REASON, DENY_CAUSE_SURFACE_POLICY
                 ),
-                responder=CallbackResponder(
-                    lambda: _ask_for_child,
-                    attended=lambda: bool(
-                        manager._on_tool_approval_factory or manager._on_tool_approval is not None
-                    ),
-                    name="child",
-                    watch=prompt,
-                    on_error=lambda: log.exception("child approval callback failed"),
-                ),
+                responder=child_responder,
                 annotate=_unverified_title,
             ),
             narrator=_SubagentNarrator(info, rows, log),
         )
+
+    async def _floored_agent(
+        self, info: SubagentInfo, agent: str, cwd: str
+    ) -> tuple[str, dict[str, Any] | None]:
+        """The agent a floored run launches as: its spec with backend grants emptied.
+
+        The permission ladder only sees the requests kiro-cli raises. A tool on
+        the spec's ``allowedTools`` (or an MCP ``autoApprove`` list, a
+        ``toolsSettings`` grant, a lifecycle hook) is approved by the backend
+        itself and never raises one, so the floor would not reach it. The side
+        surface's derived ``<agent>--readonly`` spec empties exactly those grants
+        and keeps everything else, so every tool call becomes a request the
+        ladder sends to a person. The shared template is not changed. A spec that
+        cannot be derived refuses the run instead of launching the base agent.
+        Returns the derived name and the base spec it was derived from, whose
+        PreToolUse hooks the run is then gated on.
+        """
+        from kiro_crew.dashboard.side_readonly_spec import ReadOnlySpecError, publish_readonly_spec
+        from kiro_crew.subagent_manager.hub_approvals import floor_enforceable
+
+        base = agent or "kirocrew"
+        if not floor_enforceable():
+            # Admission checks this too; the backend can change between the
+            # spawn and the start, and the run must not start without the floor.
+            info.error_code = "approval_floor_unenforceable"
+            raise RuntimeError(
+                "spawn refused: the approval floor needs a backend whose tool grants "
+                "the derived spec controls, and this gateway's backend is not one"
+            )
+        try:
+            published = await asyncio.to_thread(publish_readonly_spec, base, cwd or None)
+        except ReadOnlySpecError as exc:
+            info.error_code = "approval_floor_unenforceable"
+            raise RuntimeError(
+                f"spawn refused: the approval floor requires agent {base!r} without its "
+                f"backend tool grants, and that spec could not be prepared ({exc.code})"
+            ) from exc
+        return published.name, published.base_spec
 
     async def _run_inner_impl(
         self,
@@ -2147,6 +2222,18 @@ class RunEventCoordinator(ManagerComponent):
                     source="subagent",
                     resources=f"subagent_id={info.id}",
                 )
+        if info.approval_floor == "interactive" and parent_policy == "auto":
+            # The spawner's floor outranks every local auto fallback above: a
+            # remote hub whose parent is not auto keeps this run's tools
+            # behind approval even on a gateway that would auto-approve them.
+            parent_policy = ""
+            sel().log_api_access(
+                caller=f"subagent:{info.id}",
+                operation="subagent.approval_floor_applied",
+                outcome="ok",
+                source="subagent",
+                resources=f"subagent_id={info.id}",
+            )
         # Admission captured both memory identity and this invocation's persona
         # before any asynchronous work. A continuation's explicit override is
         # effective only for this turn; its next continuation keeps its lineage.
@@ -2195,6 +2282,12 @@ class RunEventCoordinator(ManagerComponent):
             ),
         )
         turn_execution = replace(execution, template_id=agent)
+        floor_base = ""
+        floor_source: dict[str, Any] | None = None
+        if info.approval_floor == "interactive":
+            floor_base = agent or "kirocrew"
+            agent, floor_source = await self._floored_agent(info, agent, effective_cwd)
+            turn_execution = replace(execution, template_id=agent)
         extra_kwargs: dict[str, Any] = {
             "crew_agent": execution.selection_name if kind == "member" else "",
         }
@@ -2704,6 +2797,10 @@ class RunEventCoordinator(ManagerComponent):
         # On such a backend PreToolUse hooks gate each permission request below;
         # the KAS projection turns every call they cover into one.
         _spec = await turn_spec_hooks(client, agent)
+        if floor_base:
+            # The derived spec carries no hooks, so the template's PreToolUse
+            # denies are fired here, before the hub's person is asked.
+            _spec = await floored_spec_hooks(floor_base, effective_cwd, floor_source)
         # The run's permission ladder. Imported here because this body runs on
         # the facade's globals (bind_component_globals), not this module's.
         from kiro_crew import tool_permission
@@ -3186,6 +3283,13 @@ class RunEventCoordinator(ManagerComponent):
                 # A mid-run mode switch runs a different agent, so ITS spec hooks gate
                 # the permission requests that follow, not the previous agent's. An
                 # unnamed switch falls back to the agent the session recorded for it.
+                if floor_base:
+                    # Another agent brings its own backend grants, which the
+                    # derived spec emptied; the floor cannot follow the switch.
+                    info.error_code = "approval_floor_unenforceable"
+                    raise RuntimeError(
+                        "spawn refused: an approval-floored run cannot switch agents"
+                    )
                 _spec = await turn_spec_hooks(client, event.text or "")
                 _policy = _policy_for(_spec)
                 await refuse_stale_switch(client, event.text or "")

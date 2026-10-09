@@ -79,6 +79,7 @@ from kiro_crew.agent_discovery import (
 from kiro_crew.agent_sdk.capabilities import capabilities_of
 from kiro_crew.agent_sdk.provider_identity import PROVIDER_CLAUDE_CODE
 from kiro_crew.agent_sdk.spec_hooks import (
+    floored_spec_hooks,
     invalidate_stale_kas_session,
     refuse_stale_switch,
     replace_stale_shared_session,
@@ -595,6 +596,45 @@ def _vet_spawn_governance(parent_session_key: str, agent: str, app: str = "") ->
         except Exception:
             logger.debug("governance degrade audit unavailable", exc_info=True)
         return "subagent spawn denied: governance evaluation failed (fail-closed)"
+
+
+def _vet_remote_placement_governance(parent_session_key: str, app: str = "") -> str | None:
+    """Return a denial reason if governance forbids placing a child on a remote crew.
+
+    Resolved like :func:`_vet_spawn_governance` -- against the PARENT surface's
+    ceiling ∩ profile, with the calling app's own profile when *app* is set --
+    and failing closed the same way.
+    """
+    from kiro_crew.platform.context import PlatformCompositionError
+
+    try:
+        from kiro_crew.platform.governance_profiles import governance_permits
+
+        gate = governance_permits(
+            "capabilities.remote_spawn",
+            "",
+            session_key=parent_session_key,
+            app=app,
+            fail_closed=True,
+        )
+        if not getattr(gate, "permitted", False):
+            return getattr(gate, "reason", "remote sub-agent placement disabled by policy")
+        return None
+    except PlatformCompositionError:
+        raise
+    except Exception:
+        try:
+            from kiro_crew.platform.governance_profiles import audit_governance_degraded
+
+            audit_governance_degraded(
+                "subagent_spawn",
+                session_key=parent_session_key,
+                scope="capabilities.remote_spawn",
+                failed_closed=True,
+            )
+        except Exception:
+            logger.debug("governance degrade audit unavailable", exc_info=True)
+        return "remote sub-agent placement denied: governance evaluation failed (fail-closed)"
 
 
 def spawn_allowlist(spec: Mapping[str, Any]) -> tuple[str, ...] | None:
@@ -2640,6 +2680,12 @@ class SubagentInfo:
     # record, and the handler answers 429 from that absence.
     error_code: str = ""
     parent_session_key: str = ""
+    # Execution placement. Local runs keep the defaults; remote shadow records
+    # name the connected instance and the peer-owned run they represent. These
+    # fields carry no credential and are safe to project to the dashboard.
+    executor: str = "local"
+    instance_id: str = ""
+    remote_id: str = ""
     memory_mode: str = field(default="persistent", kw_only=True)
     _memory_mode_ready: bool = field(default=True, init=False, repr=False)
     agent: str = ""
@@ -2650,6 +2696,10 @@ class SubagentInfo:
     # unconstrained by the app scope.
     app: str = ""
     approval_mode: str = ""  # "auto" to skip tool approvals in the subagent session
+    # "interactive": no auto-approval of this run's tools, whatever this
+    # gateway's own yolo / config / hook fallbacks say. Set by a remote hub
+    # whose parent is not auto, so the child keeps the stricter of the two.
+    approval_floor: str = ""
     silent: bool = False  # suppress completion notification (dashboard + Slack)
     turns: int = 0
     last_tool: str = ""
@@ -3265,6 +3315,28 @@ class SpawnApprovalCallback(Protocol):
         pass
 
 
+class ExternalPlacement(Protocol):
+    """The placement service that owns peer-run records (``executor != "local"``).
+
+    Bound once with :meth:`SubagentManager.bind_external_placement`. External
+    records never enter the local task/reaper path, so the manager reaches their
+    owner through these three calls instead:
+
+    * ``cancel`` stops one live peer run;
+    * ``dismiss`` durably records an operator dismissal of a finished one before
+      the manager forgets it;
+    * ``acknowledge_delivered`` is told when results the gateway parked in a wave
+      digest or a busy slot's queue have reached their parent, the only point
+      that knows they did.
+    """
+
+    async def cancel(self, info: SubagentInfo) -> bool: ...
+
+    async def dismiss(self, info: SubagentInfo) -> bool: ...
+
+    async def acknowledge_delivered(self, agent_ids: list[str]) -> None: ...
+
+
 # ── Delivery routing state: enumerated from the PRODUCING side ────────────────
 #
 # Every ``SubagentInfo`` attribute that the four modules owning terminal-outcome
@@ -3479,6 +3551,44 @@ class _AgingIdSet:
         return len(self._marked_at)
 
 
+async def _commit_panel_dismissal(info: SubagentInfo, agent_id: str) -> bool:
+    """Record *agent_id*'s dismissal in the crew log and its folder; True once
+    both halves are durable (see :meth:`SubagentManager.settle_before_delete` for why each is
+    written, and waited on, before the in-memory pop that publishes it)."""
+    from kiro_crew.crew_log import emit as crew_log_emit
+    from kiro_crew.crew_log.resolve import UnitSearchFailed, unit_holding_child
+    from kiro_crew.dashboard.chat_utils import subagent_event_slot
+
+    if crew_log_emit.enabled():
+        try:
+            unit = await asyncio.to_thread(
+                unit_holding_child,
+                subagent_event_slot(info.parent_session_key),
+                agent_id,
+            )
+        except UnitSearchFailed:
+            # The store would not say whether a unit holds this child, which is
+            # not the same as none holding it. Popping here would report a
+            # dismissal that was never even looked for, and the card returns
+            # once the store recovers.
+            logger.debug(
+                "crew log: the unit search for %s failed, so the dismissal is "
+                "left retryable rather than published",
+                agent_id,
+                exc_info=True,
+            )
+            return False
+        if unit and not await crew_log_emit.awaiting_commit(
+            lambda on_settled: crew_log_emit.on_subagent_dismissed(
+                unit, agent_id=agent_id, on_settled=on_settled
+            ),
+            what=f"the panel dismissal for {agent_id}",
+        ):
+            return False
+    outcome = await asyncio.to_thread(record_panel_dismissal_outcome, agent_id)
+    return outcome != DISMISSAL_FAILED
+
+
 class SubagentManager:
     """Spawn and track isolated background agents."""
 
@@ -3654,6 +3764,11 @@ class SubagentManager:
         self._last_spawn_ts: float = 0.0  # monotonic time of the last actual start (stagger gate)
         self.hook_store: Any = None  # Optional ScriptHookStore, set by server.py
         self._agents: dict[str, SubagentInfo] = {}
+        # Remote shadow records are deliberately separate from ``_agents``.
+        # They participate in inventory, parent pending-work and wave settlement,
+        # but never in this host's process count, memory sizing, reaper or task
+        # queue. Their execution lifecycle is owned by RemoteSubagentService.
+        self._external_agents: dict[str, SubagentInfo] = {}
         # Continuable conversations: session_key ("subagent:<conv-id>") →
         # last-used unix ts. Drives the reaper's idle-TTL sweep. Rebuilt from
         # state.json (keep=True runs) on the reaper's first pass after a
@@ -4578,7 +4693,7 @@ class SubagentManager:
         """Settle completion debt and remove a finished run atomically."""
         info = self._agents.get(agent_id)
         if info is None:
-            return "delivered"
+            return await self._settle_external_before_delete(agent_id)
         if info._ending_claimed and not info.done:
             # Claimed its completed ending and still writing its result (a
             # bounded wait): ``cancel()`` declined it as done, but its report
@@ -4627,38 +4742,7 @@ class SubagentManager:
         # whose folder is later reclaimed has only this record, so a pop on an
         # uncommitted append is the same published-too-early failure the folder
         # write above is ordered to avoid.
-        from kiro_crew.crew_log import emit as crew_log_emit
-        from kiro_crew.crew_log.resolve import UnitSearchFailed, unit_holding_child
-        from kiro_crew.dashboard.chat_utils import subagent_event_slot
-
-        if crew_log_emit.enabled():
-            try:
-                unit = await asyncio.to_thread(
-                    unit_holding_child,
-                    subagent_event_slot(info.parent_session_key),
-                    agent_id,
-                )
-            except UnitSearchFailed:
-                # The store would not say whether a unit holds this child, which is
-                # not the same as none holding it. Popping here would report a
-                # dismissal that was never even looked for, and the card returns
-                # once the store recovers.
-                logger.debug(
-                    "crew log: the unit search for %s failed, so the dismissal is "
-                    "left retryable rather than published",
-                    agent_id,
-                    exc_info=True,
-                )
-                return "pending"
-            if unit and not await crew_log_emit.awaiting_commit(
-                lambda on_settled: crew_log_emit.on_subagent_dismissed(
-                    unit, agent_id=agent_id, on_settled=on_settled
-                ),
-                what=f"the panel dismissal for {agent_id}",
-            ):
-                return "pending"
-        outcome = await asyncio.to_thread(record_panel_dismissal_outcome, agent_id)
-        if outcome == DISMISSAL_FAILED:
+        if not await _commit_panel_dismissal(info, agent_id):
             return "pending"
         self._agents.pop(agent_id, None)
         self._tasks.pop(agent_id, None)
@@ -5062,6 +5146,7 @@ class SubagentManager:
         _recovering_row: bool = False,
         _stop_before_memory_read: bool = False,
         _memory_reading: "tuple[float, str] | None" = None,
+        approval_floor: str = "",
     ) -> SubagentInfo | None:
         result = self._admission.spawn_impl(
             task,
@@ -5103,6 +5188,7 @@ class SubagentManager:
             _recovering_row=_recovering_row,
             _stop_before_memory_read=_stop_before_memory_read,
             _memory_reading=_memory_reading,
+            approval_floor=approval_floor,
         )
         assert not isinstance(result, PreparedSpawn)
         # Every synchronous gate return (started, queued, or refused) receives
@@ -5802,8 +5888,112 @@ class SubagentManager:
 
     @property
     def running(self) -> list[SubagentInfo]:
-        """Return currently running (not done) subagents."""
+        """Return locally executing (not done) subagents.
+
+        Remote runs are excluded because this property feeds host capacity,
+        process liveness and adaptive-memory accounting. Use ``all_agents`` or
+        ``external_agents`` for placement-neutral inventory.
+        """
         return [a for a in self._agents.values() if not a.done]
+
+    @property
+    def external_agents(self) -> list[SubagentInfo]:
+        """Return remote shadow records without charging local capacity."""
+        return list(self._external_agents.values())
+
+    def register_external(self, info: SubagentInfo) -> None:
+        """Register a peer-owned run in the local inventory.
+
+        The remote execution service has already obtained a peer run id before
+        calling this method. Registration is synchronous so a completion poll
+        cannot race ahead of visibility in ``spawn_list``.
+        """
+        if info.executor != "remote" or not info.instance_id or not info.remote_id:
+            raise ValueError("external subagent record has an incomplete remote binding")
+        if info.id in self._agents or info.id in self._external_agents:
+            raise ValueError(f"subagent id already registered: {info.id}")
+        self._external_agents[info.id] = info
+        if info.batch_id:
+            submitted = self._batch_submitted.setdefault(
+                info.batch_id, [0, max(0, int(info.batch_total))]
+            )
+            submitted[0] += 1
+            self._batch_progress_ts[info.batch_id] = time.time()
+
+    async def report_external(self, info: SubagentInfo) -> bool:
+        """Deliver one peer-owned terminal result through the normal reporter."""
+        if self._external_agents.get(info.id) is not info:
+            return False
+        if not self._claim_finalize(info):
+            return False
+        return await self._run_terminal_report(
+            info,
+            source="Remote subagent",
+            injection_timeout_reason="remote completion delivery timed out",
+            mark_delivered_on_success=False,
+            settle_digest=True,
+        )
+
+    def forget_external(self, agent_id: str) -> SubagentInfo | None:
+        """Remove one terminal remote shadow record from local inventory."""
+        return self._external_agents.pop(agent_id, None)
+
+    async def _settle_external_before_delete(
+        self, agent_id: str
+    ) -> Literal["delivered", "pending"]:
+        """Dismiss one finished peer-owned record, unless its completion is in flight.
+
+        A record whose report is still running, or that the gateway parked in a
+        wave digest or a busy slot's queue, has not reached the parent: removing
+        it would drop the result the parent is about to read.
+
+        The dismissal is committed before the pop, as for a local run: the
+        panel's crew log and folder through :meth:`_commit_panel_dismissal`, and
+        the placement's own mapping through the bound dismisser, so a restart
+        cannot restore a run the operator dismissed. Either write failing leaves
+        the record in place and answers ``pending`` (retryable).
+        """
+        info = getattr(self, "_external_agents", {}).get(agent_id)
+        if info is None:
+            return "delivered"
+        if not info.done:
+            return "pending"
+        reporting = any(
+            report_info is info or report_info.id == agent_id
+            for report_info in self._report_owners.values()
+        )
+        if reporting or info._digest_held or info._delivery_queued:
+            return "pending"
+        placement = getattr(self, "_external_placement", None)
+        if placement is not None:
+            try:
+                committed = await placement.dismiss(info)
+            except Exception:
+                logger.warning("Could not commit the dismissal of %s", agent_id, exc_info=True)
+                committed = False
+            if not committed:
+                return "pending"
+        if not await _commit_panel_dismissal(info, agent_id):
+            return "pending"
+        self.forget_external(agent_id)
+        return "delivered"
+
+    def bind_external_placement(self, placement: ExternalPlacement | None) -> None:
+        """Bind (or with ``None`` unbind) the service that owns peer-run records."""
+        self._external_placement = placement
+
+    async def cancel_external(self, agent_id: str) -> bool:
+        """Stop one live peer-owned run through its bound placement service."""
+        info = self._external_agents.get(agent_id)
+        if info is None or info.done:
+            return False
+        placement = getattr(self, "_external_placement", None)
+        if placement is None:
+            raise RuntimeError("remote subagent cancellation is unavailable")
+        cancelled = await placement.cancel(info)
+        if cancelled:
+            info.user_stopped = True
+        return cancelled
 
     def has_live_shared_session(self, session_key: str) -> bool:
         """Recognize a shared child only while its exact runtime handle is live.
@@ -5830,8 +6020,8 @@ class SubagentManager:
 
     @property
     def all_agents(self) -> list[SubagentInfo]:
-        """Return all tracked subagents (running and done)."""
-        return list(self._agents.values())
+        """Return every tracked local and remote subagent."""
+        return [*self._agents.values(), *self._external_agents.values()]
 
     def batch_members_pending(self, batch_id: str) -> bool:
         return self._waves.batch_members_pending_impl(batch_id)
@@ -5883,10 +6073,40 @@ class SubagentManager:
         return await self._waves._announce_digest_flush_impl(info)
 
     async def settle_queued_delivery(self, deliveries: list[SubagentDelivery]) -> None:
-        return await self._waves.settle_queued_delivery_impl(deliveries)
+        external = self._external_ids_in(deliveries)
+        await self._waves.settle_queued_delivery_impl(deliveries)
+        await self._notify_external_delivered(external)
 
     async def _settle_digest_holds(self, info: SubagentInfo) -> None:
-        return await self._waves._settle_digest_holds_impl(info)
+        # Read before the impl: it detaches the held deliveries from ``info``.
+        external = (
+            []
+            if info._report_undelivered
+            else self._external_ids_in(info._digest_settle_deliveries)
+        )
+        await self._waves._settle_digest_holds_impl(info)
+        await self._notify_external_delivered(external)
+
+    def _external_ids_in(self, deliveries: Iterable[SubagentDelivery]) -> list[str]:
+        external = self._external_agents
+        return [
+            delivery.agent_id
+            for delivery in deliveries
+            if not delivery.report_owed and delivery.agent_id in external
+        ]
+
+    async def _notify_external_delivered(self, agent_ids: list[str]) -> None:
+        placement = getattr(self, "_external_placement", None)
+        if not agent_ids or placement is None:
+            return
+        try:
+            # report_external cannot acknowledge a result parked in a wave digest
+            # or a busy slot's queue; this settle is where it actually landed.
+            await placement.acknowledge_delivered(agent_ids)
+        except Exception:
+            # The parent already has the result; a failed acknowledgement can at
+            # worst re-deliver it after a restart, so it must not fail the settle.
+            logger.warning("External delivery acknowledgement failed", exc_info=True)
 
     def get(self, agent_id: str) -> SubagentInfo | None:
         return self._run_events.get_impl(agent_id)
@@ -6420,6 +6640,7 @@ _COMPONENT_GLOBAL_BINDINGS = (
     time,
     transient_retry_delay,
     turn_spec_hooks,
+    floored_spec_hooks,
     invalidate_stale_kas_session,
     refuse_stale_switch,
     replace_stale_shared_session,

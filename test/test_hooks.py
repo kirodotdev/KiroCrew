@@ -745,6 +745,11 @@ class TestHookGateKwargs:
         # The settle ladder's Gate port. Its HookGate adapter consults
         # ``on_tool_call`` through each surface's own scanned site.
         ("tool_permission.py", "policy.gate"),
+        # DenyOnlyGate.judge delegates to its wrapped Gate (HookGate,
+        # policy.gate, or another DenyOnlyGate) -- a re-dispatch, not a hook
+        # consultation in its own right. The wrapped gate's own `.judge` call
+        # is the scanned site that must build its ToolCall in place.
+        ("tool_permission.py", "self._inner"),
     }
     ALLOWED_OVERRIDES = {
         # Provider-agnostic readings of a stream that may not be an AcpEvent.

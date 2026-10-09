@@ -972,6 +972,11 @@ class AcpEvent:
     #: text chunk — so a consumer may trust ``wait_reason`` without re-checking
     #: provenance.
     status: "StructuredStatus | None" = None
+    #: ``"interactive"`` when the run raising this permission request carries an
+    #: approval floor from a remote hub. Set by the subagent ladder before it asks
+    #: a responder, never by the backend; a gateway approval callback then skips
+    #: every non-human auto-approve shortcut for the request.
+    approval_floor: str = ""
 
     @property
     def shell_command(self) -> str | None:

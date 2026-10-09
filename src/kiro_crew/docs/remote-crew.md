@@ -249,6 +249,7 @@ over a normal link.
 | `instances.max_recovery_attempts` | `8` | How many times a dropped tunnel retries itself before it gives up. |
 | `instances.recover_backoff_max_secs` | `30.0` | Cap on the wait between those retries. |
 | `instances.probe_failure_threshold` | `3` | How many failed health probes tear down a tunnel that has stopped forwarding. |
+| `instances.remote_subagents` | `false` | Let `spawn_run` place a subagent on a connected crew (`executor="remote"`). The child runs under that crew's own tool-approval policy, so turn it on only for crews at least as strict as this gateway. |
 
 ```bash
 kirocrew config set instances.warm_set_cap 3

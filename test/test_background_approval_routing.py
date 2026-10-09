@@ -419,3 +419,63 @@ class TestIdentityTrustedChildHonorsUnconditionalGrants:
         approve_fn = gateway._interactive_approval("cron")
         assert await approve_fn(ev) is True
         gateway.dashboard_state.request_approval.assert_awaited_once()
+
+
+def _floored(event: LLMEvent) -> LLMEvent:
+    event.approval_floor = "interactive"
+    return event
+
+
+class TestApprovalFloorSkipsEveryShortcut:
+    """A remote hub's interactive floor leaves only the person's answer.
+
+    Each event here would be auto-approved by the shortcut under test without the
+    floor (the identity-trusted child is eligible for every unconditional grant),
+    so a pass proves the floor, not the event's fidelity, closed the shortcut.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("make", [_event, _child_identity_event])
+    async def test_auto_approve_sources_fast_denies(self, make) -> None:
+        gateway = _make_gateway()
+        gateway._cfg.hooks.get = MagicMock(return_value=["subagent"])
+        approve_fn = gateway._interactive_approval("subagent")
+        assert await approve_fn(_floored(make())) is False
+        gateway.dashboard_state.request_approval.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("make", [_event, _child_identity_event])
+    async def test_yolo_approval_mode_prompts(self, make) -> None:
+        gateway = _make_gateway()
+        gateway._approval_mode = "yolo"
+        approve_fn = gateway._interactive_approval("subagent")
+        assert await approve_fn(_floored(make())) is True
+        gateway.dashboard_state.request_approval.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_yolo_override_prompts(self) -> None:
+        gateway = _make_gateway()
+        _override = MagicMock()
+        _override.is_active = MagicMock(return_value=True)
+        with patch("kiro_crew.slack.gateway.safety_override", return_value=_override):
+            approve_fn = gateway._interactive_approval("subagent")
+            assert await approve_fn(_floored(_event())) is True
+        gateway.dashboard_state.request_approval.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_slot_trust_prompts(self) -> None:
+        gateway = _make_gateway()
+        gateway.dashboard_state._slots = {"slot-1": _slot(running=True, trust=True)}
+        approve_fn = gateway._interactive_approval(
+            "subagent", slot_resolver=lambda _rid: "slot-1"
+        )
+        assert await approve_fn(_floored(_event())) is True
+        gateway.dashboard_state.request_approval.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_the_same_event_without_a_floor_is_auto_approved(self) -> None:
+        gateway = _make_gateway()
+        gateway._approval_mode = "yolo"
+        approve_fn = gateway._interactive_approval("subagent")
+        assert await approve_fn(_event()) is True
+        gateway.dashboard_state.request_approval.assert_not_awaited()

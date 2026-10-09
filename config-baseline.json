@@ -4111,7 +4111,8 @@
         "mint_timeout_secs": null,
         "max_recovery_attempts": 8,
         "recover_backoff_max_secs": 30.0,
-        "probe_failure_threshold": 3
+        "probe_failure_threshold": 3,
+        "remote_subagents": false
       }
     },
     {
@@ -4243,6 +4244,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 3
+    },
+    {
+      "path": "instances.remote_subagents",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Remote Subagents",
+      "help": "Let spawn_run place a subagent on a connected remote crew (executor='remote'). Default off. The child then runs under the remote crew's own tool-approval policy, not this gateway's; turn it on only for crews whose approval policy is at least as strict as this one.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "heartbeat",

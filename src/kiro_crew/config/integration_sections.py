@@ -840,6 +840,16 @@ class InstancesConfig:
             "(zombie) tunnel is torn down to trigger self-heal.",
         ),
     )
+    remote_subagents: bool = field(
+        default=False,
+        metadata=_meta(
+            "Remote Subagents",
+            "Let spawn_run place a subagent on a connected remote crew "
+            "(executor='remote'). Default off. The child then runs under the remote "
+            "crew's own tool-approval policy, not this gateway's; turn it on only for "
+            "crews whose approval policy is at least as strict as this one.",
+        ),
+    )
 
     def __post_init__(self) -> None:
         if self.warm_set_cap < 0:

@@ -2412,8 +2412,10 @@ class TestADismissalOutlivesTheManager:
 
         import kiro_crew.subagent as subagent_module
 
-        source = inspect.getsource(subagent_module.SubagentManager.settle_before_delete)
+        source = inspect.getsource(subagent_module._commit_panel_dismissal)
         assert "asyncio.to_thread(record_panel_dismissal" in source
+        settle = inspect.getsource(subagent_module.SubagentManager.settle_before_delete)
+        assert "await _commit_panel_dismissal(" in settle
 
     def test_the_sweep_removes_a_record_whose_folder_is_gone(self, agent_root):
         import shutil
