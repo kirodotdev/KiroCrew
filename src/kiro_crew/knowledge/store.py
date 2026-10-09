@@ -3837,17 +3837,29 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         # that already exists here is outside it either way: ``INSERT OR IGNORE`` leaves
         # the local row alone and the inserted-items rule already refuses to hand it to
         # an imported claim.
-        contested = self._contested_claims(bundle, source_id_map, set(item_source))
+        contested, stale_file = self._contested_claims(
+            bundle, source_id_map, set(item_source))
         _present, absent = self._items_exist(contested)
         for item_id in sorted(absent - blocked):
-            withheld.append({"reason": "item_id_claimed_by_another_document",
-                             "item_id": item_id})
+            if item_id in stale_file:
+                # This id's only claimant is the restoring document's own
+                # ``folder_file_state`` row whose file is gone -- a deletion the next
+                # folder scan will run, not a live foreign owner. Saying "another
+                # document claims it" is wrong and offers no remedy; name the actual
+                # one: let the folder rescan reap the stale row, then re-import.
+                withheld.append({"reason": "folder_file_rescan_then_reimport",
+                                 "item_id": item_id})
+            else:
+                withheld.append({"reason": "item_id_claimed_by_another_document",
+                                 "item_id": item_id})
         return blocked | absent, withheld
 
     def _contested_claims(
         self, bundle: dict, source_id_map: dict[str, str], shipped: set[str]
-    ) -> set[str]:
-        """Shipped ids a local row claims that this import must not create.
+    ) -> tuple[set[str], set[str]]:
+        """Shipped ids a local row claims that this import must not create, and the
+        subset of them contested ONLY because a restoring folder row's backing file is
+        gone (so the remedy is a rescan then a re-import, not "another document owns it").
 
         The rule and its one exception: an id a local row claims must not be handed to an
         import, UNLESS the claiming row is a document this bundle is restoring. Both
@@ -3912,9 +3924,11 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                 if target and isinstance(key, str) and key and group:
                     restored_groups.setdefault((table, target, key), set()).update(group)
         contested: set[str] = set()
+        stale_file: set[str] = set()
+        other: set[str] = set()
         sources = set(source_id_map.values())
         if not sources or not shipped:
-            return contested
+            return contested, stale_file
         for table, key_col in _DOC_STATE_KEY_COL.items():
             # A bundle that ships no row for a table states no ownership through it, so
             # its items cannot be judged against that table's local claims at all. The
@@ -3959,10 +3973,25 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                     # per-chunk-deleted document for good.
                     exempt = restored_groups.get(
                         (table, row["source_id"], row["row_key"]), set())
-                    if exempt and not _backing_object_present(table, row["row_key"]):
+                    # An id contested ONLY because this own-row's backing file is gone is
+                    # a different story than one a foreign row claims: the user's remedy
+                    # is to let the folder rescan reap the stale row, then re-import. We
+                    # record which ids fell to the file gate so :meth:`_bundle_blocked_
+                    # items` can report that remedy instead of the misleading "another
+                    # document claims it". An id a NON-exempt (foreign) row also contests
+                    # stays in the generic bucket -- the rescan would not free it -- so
+                    # the reported stale-file set is net of ``other`` below.
+                    file_gate_denied = bool(exempt) and not _backing_object_present(
+                        table, row["row_key"])
+                    if file_gate_denied:
                         exempt = set()
-                    contested |= overlap - exempt
-        return contested
+                    newly = overlap - exempt
+                    if file_gate_denied:
+                        stale_file |= newly
+                    else:
+                        other |= newly
+                    contested |= newly
+        return contested, stale_file - other
 
     def _items_exist(self, item_ids: set[str]) -> tuple[set[str], set[str]]:
         """(*item_ids* this store holds, the rest), read in bounded chunks.

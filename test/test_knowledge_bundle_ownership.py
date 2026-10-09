@@ -1406,10 +1406,17 @@ class TestTheFolderExemptionNeedsTheBackingFileToStillExist:
         result = importer.import_bundle(bundle)
 
         assert result["items_withheld"] == 1, "a stale folder claim still earned the exemption"
+        # The claimant is the restoring document's OWN stale folder row, not a different
+        # live document, so the reason names the real remedy (rescan then re-import) and
+        # must NOT be the misleading "another document claims it".
+        reasons = {w.get("reason") for w in result["withheld"]}
+        assert (
+            "item_id_claimed_by_another_document" not in reasons
+        ), "the stale-file case still reports the wrong, remedy-less reason"
         assert [
             w["item_id"]
             for w in result["withheld"]
-            if w.get("reason") == "item_id_claimed_by_another_document"
+            if w.get("reason") == "folder_file_rescan_then_reimport"
         ] == [folder_item]
         assert (
             _item_count(importer, "folder body") == 0
