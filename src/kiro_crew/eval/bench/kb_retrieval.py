@@ -224,15 +224,16 @@ class KBQuery:
 class KBGoldenSet:
     """A frozen golden set: the corpus plus the labeled queries.
 
-    ``label_revision`` counts the label corrections the set has absorbed since
+    ``label_revision`` counts the scoring edits the set has absorbed since
     it was authored under its ``name``: ``None`` for a set whose gold labels are
-    the author's originals, ``1`` after the first correction, and so on. It is
+    the author's originals, ``1`` after the first scoring edit, and so on. It is
     an integer rather than a date or a free-form tag because two revisions must
     order unambiguously ("does this print carry the newer labels?") and the
     value must be greppable in the JSON (``"label_revision": 1``). A present
     ``0`` is refused: it would spell "unrevised" a second way and let two
-    files that mean the same thing print differently. Every edit to a gold label
-    under an existing name bumps it, so the printed header (see
+    files that mean the same thing print differently. Every edit under an
+    existing name that can move a score -- a gold label, a question or a
+    document -- bumps it, so the printed header (see
     :func:`format_kb_report`) can tell two reports on the same corpus name apart.
     """
 
@@ -501,10 +502,10 @@ def default_golden_set_path() -> Path:
     using its topic's vocabulary, so matching a single term wins. v2 carries
     competing distractors, and the legs separate on it: keyword-only
     (deterministic: FTS5 + graph, no model) scores nDCG@3 0.834 / MRR@3 0.804 /
-    MAP@3 0.781, against 0.917 / 0.887 / 0.885 for the semantic leg measured with
+    MAP@3 0.781, against 0.926 / 0.900 / 0.898 for the semantic leg measured with
     ``qwen3-embedding:0.6b``, and ``multi_hop`` recall_all@3 reads 0.250 keyword
     versus 1.000 semantic. MAP separates the two legs more widely than either
-    companion (0.104, against 0.083 nDCG and 0.083 MRR), which is the multi-gold
+    companion (0.117, against 0.092 nDCG and 0.096 MRR), which is the multi-gold
     ranking signal it exists to expose. Re-measure the semantic triple after a
     model or quantization change; only the keyword triple is reproducible from
     the corpus alone.
@@ -515,7 +516,9 @@ def default_golden_set_path() -> Path:
     order shuffled), agreeing with the file on 43, 42 and 40 of 46. Agreement is
     evidence the questions are unambiguous, NOT proof the labels are right --
     every annotator was a language model, so a shared blind spot reads as
-    consensus. Externally-anchored relevance judgments are the standing gap.
+    consensus. The five queries the annotators split on are rewritten so one
+    reading is right, gold sets unchanged (``label_revision`` 2).
+    Externally-anchored relevance judgments are the standing gap.
 
     Consequence for anyone comparing runs: a v1 report and a v2 report measure
     DIFFERENT corpora and their metrics are not comparable. Nothing mechanical
@@ -529,11 +532,12 @@ def default_golden_set_path() -> Path:
     and one scored against the corrected labels (0.834, 0.250) differ by a
     labelling change, not by retriever movement. The header therefore carries
     the set's ``label_revision`` beside the name -- ``KB retrieval eval:
-    kb_golden_v2 (label revision 1)`` -- and a print made from the original
+    kb_golden_v2 (label revision 2)`` -- and a print made from the original
     labels reads either the bare name or ``(unrevised labels)``. Two prints are
     comparable only when both name AND revision match; read both before putting
     two of these numbers side by side, and bump ``label_revision`` with every
-    gold-label edit under an existing name.
+    edit under an existing name that can move a score -- a gold label, a
+    question or a document.
     """
     return golden_set_dir() / "kb_golden_v2.json"
 

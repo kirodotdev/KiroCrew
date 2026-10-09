@@ -1,6 +1,6 @@
 {
   "name": "kb_golden_v2",
-  "label_revision": 1,
+  "label_revision": 2,
   "docs": [
     {
       "id": "d-deploy-payments-cd-hypothetical",
@@ -237,7 +237,7 @@
       "id": "d-mfa-audit-q4",
       "title": "Q4 security audit findings",
       "section_title": "Access controls",
-      "content": "Audit item AC-3 was re-verified in Q4: hardware MFA is enforced on production console access, again with no exceptions found. This is the second consecutive audit to confirm the baseline.",
+      "content": "Audit item AC-3 was verified in Q4: hardware MFA is enforced on production console access for all sampled accounts, with no exceptions found.",
       "tags": ["security", "mfa", "audit", "q4"]
     },
     {
@@ -621,7 +621,7 @@
     {
       "id": "q-contradiction-4",
       "class": "contradiction",
-      "question": "Which document decides a region question when two sources disagree?",
+      "question": "Which ADR overrides the infra wiki's primary region claim?",
       "gold_doc_ids": ["d-region-adr"]
     },
     {
@@ -669,7 +669,7 @@
     {
       "id": "q-reinforcement-4",
       "class": "reinforcement",
-      "question": "Were any MFA exceptions found in the security audits?",
+      "question": "Did either the Q3 or the Q4 security audit find any MFA exceptions?",
       "gold_doc_ids": ["d-mfa-audit-q3", "d-mfa-audit-q4"]
     },
     {
@@ -717,13 +717,13 @@
     {
       "id": "q-abstention-4",
       "class": "abstention",
-      "question": "What is the monthly infrastructure budget for the search service specifically?",
+      "question": "Which director approved the most recent infrastructure budget overrun?",
       "gold_doc_ids": []
     },
     {
       "id": "q-abstention-5",
       "class": "abstention",
-      "question": "How many days are staging application logs retained?",
+      "question": "Which team approved the 2025 application log retention change?",
       "gold_doc_ids": []
     },
     {
