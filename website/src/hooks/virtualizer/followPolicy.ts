@@ -161,11 +161,15 @@ export function useFollowState(followOutput: boolean): FollowState {
   // scroller: selecting text or clicking a link moves nothing, and holding on
   // every click would turn the transcript's own surface into a follow brake.
   const lastGrabInputAtRef = useRef<number>(Number.NEGATIVE_INFINITY)
-  // When the scroller last dispatched a scroll event, of ANY origin. Compared
+  // When the scroller last dispatched a scroll event that moved the reader
+  // OFF our last write (outside SELF_SCROLL_EPSILON of it). Compared
   // against the upward and grab stamps above it answers "has the reader's
-  // scroll landed yet": a stamp newer than the last scroll event is intent
+  // scroll landed yet": a stamp newer than the last such event is intent
   // whose effect on `scrollTop` is still in flight, and `scrollIntentPending`
-  // holds the automatic pin off until it lands or expires (see pinAuto).
+  // holds the automatic pin off until it lands or expires (see pinAuto). An
+  // event inside the epsilon is NOT recorded here: it is either our own pin
+  // landing or the first frame of the reader's input, and it cannot say which,
+  // so it must not read as the reader's answer (see onFollowScroll).
   // Stamped by the scroll handler before anything else reads it.
   const lastScrollEventAtRef = useRef<number>(Number.NEGATIVE_INFINITY)
   // Whether the reader has LEFT the bottom is answered by position alone --
@@ -734,10 +738,25 @@ export function usePinning<T>(ctx: {
   ])
 
   const onFollowScroll = useCallback((el: HTMLDivElement, geom: ScrollGeom) => {
-    // Every scroll event, ours or the reader's, retires the in-flight upward
-    // intent (see lastScrollEventAtRef): from here on the position IS the
-    // reader's answer, and the decisions below read it.
-    lastScrollEventAtRef.current = performance.now()
+    // A scroll event that moved the reader OFF our last write retires the
+    // in-flight upward intent (see lastScrollEventAtRef): from here on the
+    // position IS the reader's answer, and the decisions below read it. One
+    // that landed INSIDE SELF_SCROLL_EPSILON of the write cannot decide either
+    // way, so it leaves the intent pending. The engine answers a wheel notch
+    // with an animation whose first frame moves a fraction of a pixel to a
+    // couple of pixels, and a slow precision touchpad reports a pixel or two
+    // per event: such a frame is indistinguishable from the sub-pixel landing
+    // of our own pin, so the handler below rightly leaves `stick` alone -- but
+    // read as the reader's ANSWER it also retired the hold, and a row appended
+    // in that frame then found a reader "resting on our write" and pinned them
+    // to the new bottom with an instant write that cancelled the notch's
+    // animation as well, so a reader could not leave the bottom of a streaming
+    // turn (kirodotdev/KiroCrew#18421). Left pending, the hold keeps the
+    // append's pin off until the notch's next frame lands outside the epsilon
+    // and releases follow here, or the intent expires unanswered (a wheel the
+    // transcript never answered) and the held pin retries against a reader who
+    // is still resting.
+    if (!isSelfScroll(geom.scrollTop, lastWriteTopRef.current)) lastScrollEventAtRef.current = performance.now()
     // Self-scroll pin writes and the frames of a smooth glide are excluded
     // from every reader-activity signal below: our own writes are not the
     // reader's travel, and the box's change across one of our events is not

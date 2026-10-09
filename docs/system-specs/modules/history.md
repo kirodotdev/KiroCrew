@@ -182,6 +182,13 @@ intent whose scroll event has not dispatched yet — an UPWARD input, or a point
 that grabbed the scrollbar (`scrollIntentPending`): the automatic pin is held
 until that scroll event decides, and retried once when the intent expires
 without one (a click on the thumb, a wheel-up on an unscrollable transcript). A
+scroll event that lands inside `SELF_SCROLL_EPSILON` of follow's own write does
+not decide it: it is either the pin landing or the first frame of the engine's
+answer to a wheel notch or a slow touchpad step, and it cannot say which, so the
+hold outlives it until a frame outside the epsilon lands (and releases follow) or
+the intent expires. Retiring the hold on that frame is how a row appended inside
+it pinned a reader who had just started to leave, cancelling their notch with it
+([#18421](https://github.com/kirodotdev/KiroCrew/issues/18421)). A
 reader whose scroll took them off that write has left: follow releases, an idle
 append leaves them where
 they are, and only their return to the bottom, the jump pill, or sending a message

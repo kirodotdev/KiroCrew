@@ -288,9 +288,12 @@ export function pinSuppressedNow(
  * scroll event within `settleMs` is spent, not preserved forever.
  *
  * Pure so the caller can hand it clock and stamps; `lastScrollEventAt` is the
- * time of the last scroll event of ANY origin (ours or the reader's), because
- * after any scroll event the position reflects the input and the position test
- * is exact again. Returns the ms left on the hold so the caller can schedule
+ * time of the last scroll event that landed OUTSIDE the self-scroll epsilon of
+ * the caller's last write, ours or the reader's, because after such an event
+ * the position reflects the input and the position test is exact again. An
+ * event inside that epsilon is not an answer: it is our own pin landing or the
+ * first frame of the input, and the caller does not record it, so the hold
+ * outlives it. Returns the ms left on the hold so the caller can schedule
  * its retry exactly at expiry.
  */
 export function scrollIntentPending(
