@@ -466,6 +466,72 @@ a token header begins with is left alone in chat, history and channel output, an
 on the KAS backend every Kiro Crew tool call had been refused as unattested and
 answers again.
 
+**Sessions that start and resume.** A session start on a slow host gets ninety
+seconds to come up, a start that keeps failing stops retrying in the background
+after three tries and cleans up the MCP servers it launched, and a start that
+waited behind another request or got a reply too large to read says so at once.
+Resume on a turn cut off by a restart or a crash carries on with that turn
+instead of the one before it, a chat whose backend lost its session reconnects
+and retries once instead of failing every prompt, and a chat holding an image the
+model no longer accepts recovers. Old chats bound to a crewmate the startup
+cleanup removed, or to a generated skill view, resume on their agent, the
+Crewmates roster drops the generated rows you never chatted with, and a
+crewmate's own chat keeps dispatching workers after a restart.
+
+**Kiro Crew's own tools.** Kiro Crew's tools stay available after an update
+prunes the previous install, across an in-app restart, and when a shared MCP
+backend falls back to running per session, instead of refusing every call as
+unattested until the gateway restarts. With kiro-cli 2.27 or later those tools
+load on demand under Tool Search, and the desktop app now bundles kiro-cli
+2.27.1. An installed agent can be made the default agent and stays the default
+while its workspace still declares it, and a project's always-on skill that does
+not fit, or a SKILL.md that is not UTF-8, is skipped with a warning instead of
+failing every session in that project.
+
+**Subagents and memory under load.** A subagent start is admitted when 2 GB
+would remain after it, where it used to want 4.5 GB free, it is priced by
+whether it shares its parent's runtime, and on a Mac it also waits while the
+kernel reports memory pressure, with the queued chip naming that reason. A
+concurrency cap cut under load climbs back once the host sits idle,
+`kirocrew spawn run` works from the host's own command line, and a Claude
+session running a background command or workflow is not recycled while that
+work runs. Chats accept messages a few seconds after a restart instead of about
+two minutes later, guide files over a crewmate's budget or behind a symlinked
+home are left out or read correctly instead of refusing the turn, and history
+consolidation stays bounded however large the memory table grows.
+
+**Config files and Windows.** A `config.json`, `mcp.json`, workspace settings
+file or SKILL.md saved with a UTF-8 byte order mark, as Windows editors do by
+default, is read like any other file, and an empty `mcp.json` reads as no
+servers instead of refusing every session. A `config.json` that does not parse
+is never overwritten with defaults by a theme, language or onboarding change,
+and the first-run Import setup offers Close setup for now when it cannot save.
+On Windows a gateway whose running version an install manager pruned recovers
+instead of looping behind the loading screen, an MCP server whose launcher is
+strict about the case of its `.exe` name starts, and a slow shutdown of a
+process tree is reported as still exiting rather than as a failure.
+
+**Security and scheduled jobs.** Every dashboard route that installs, opens or
+enables an app, edits, runs, acknowledges or cancels a scheduled job, reads host
+files or drives an agent now requires the dashboard owner, and an app token
+manages only its own scheduled jobs. Agent subprocesses can no longer rewrite
+`config.json`, `config.local.json` or the kiro-cli MCP registry, Windows
+directory junctions get the same checks as symlinks, and the link exfiltration
+check no longer flags an ordinary query string. Command crons run on Linux and
+macOS hosts whose `/bin/sh` is bash, because brace expansion in the stored
+command is refused instead, and the refusal names the cause for each platform.
+
+**Dashboard and desktop.** Open session tabs come back after a restart, the
+answer stays visible when a recycle notice follows it, your own queued and
+steered messages show as you typed them, and the file and code editors keep the
+caret while you type. A dashboard that fails to boot names the script that broke
+and refetches it on Clear cache and retry, the desktop app clears its page cache
+once after an upgrade, a busy long chat no longer reloads in a loop after a
+crash, and Connect your phone opens above the sessions panel. The desktop app
+reaches a remote crew whose SSH config runs a helper from Homebrew or
+`/usr/local/bin`, and on Linux a gateway started in an SSH session keeps starting
+agents, crons and apps after you log out.
+
 ## [0.7.2] - 2026-09-28
 
 A small fix.
