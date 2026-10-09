@@ -210,8 +210,22 @@ def apply_run_record(target: CronJob, run: CronJob) -> None:
     # sole authority for user-controlled pause/resume state.
     # Propagate the fired/parked disable for at-jobs — including a
     # fire-time-DENIED one (parked disabled instead of deleted so
-    # it cannot refire every tick yet stays re-enableable).
-    if run.schedule.kind == "at" and (not run.delete_after_run or run.fire_time_denied):
+    # it cannot refire every tick yet stays re-enableable), and one
+    # the gateway's named skip parked the same way (`not run.enabled`:
+    # the scan only picks up an enabled job, so an in-memory False at
+    # merge time means THIS run parked it -- `_mark_fire_skipped` for a
+    # vanished folder or an unresolvable agent; a manual run of an
+    # already-paused one-shot merely re-states the pause the disk copy
+    # already holds). Without this copy the park is in-memory only:
+    # `enabled` is re-derived from `user_paused` on reload, so the disk
+    # copy would come back live and due again on every tick -- the
+    # zero-delay refire loop the park exists to stop. A STARVED one-shot
+    # (`run_never_started` with `enabled` still True) deliberately does
+    # not match: starvation self-heals and that job must stay enabled
+    # and simply retry.
+    if run.schedule.kind == "at" and (
+        not run.delete_after_run or run.fire_time_denied or not run.enabled
+    ):
         target.enabled = run.enabled
         target.user_paused = not run.enabled
     # auto_paused is execution-owned (repeated-failure auto-pause and
@@ -232,6 +246,7 @@ def apply_run_record(target: CronJob, run: CronJob) -> None:
     # append_if_absent duplicated the row instead of collapsing it.
     target.last_result_ts = run.last_result_ts
     target.last_result_stamp = run.last_result_stamp
+    target.last_result_project_bound = run.last_result_project_bound
     target.last_posted_hash = run.last_posted_hash
     target.consecutive_dupes = run.consecutive_dupes
     target.last_posted_at = run.last_posted_at

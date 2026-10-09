@@ -38,6 +38,21 @@ _CHAT_FOLDER_NEEDS_PERSISTENT = (
     "has no job-wide tab to file. Clear the chat folder, or keep the session."
 )
 
+# The fourth `_validate_project_path` refusal, and VALUE-FREE like the other
+# three: this surface's contract is that a rejected project_path never rides
+# back out in the body (see the disclosure table in
+# docs/system-specs/modules/learn-cron-dashboard.md), and that safety then does
+# not depend on the owner gate's ordering holding forever. The shared
+# `sandbox._voice_runtime_guard_message` the four sibling pickers surface
+# verbatim names both absolute paths, which is why it is NOT reused here.
+# The remedy sentence is the guard's own wording so the two read alike, and the
+# three relationship variants (contains / inside / alias) collapse into one
+# sentence because the remedy is identical for all three.
+_PROJECT_PATH_OVERLAPS_DATA_HOME = (
+    "project_path overlaps Kiro Crew's protected voice runtime / data home. "
+    "Pick a project subdirectory that does not contain the Kiro Crew data home."
+)
+
 # Table-driven string-field caps for the persistence chokepoint. Every
 # caller-supplied string field persisted by _build_job/_update_job_locked
 # is listed here with its cap matching the REST/MCP boundary schemas
@@ -60,6 +75,7 @@ _CRON_STRING_FIELD_CAPS: tuple[tuple[str, int], ...] = (
     ("command", 5000),
     ("script", 200),
     ("timezone", 50),
+    ("project_path", MAX_SHORT_STRING),
     # Secret-grant fields have no boundary FieldSpec: the pins are sha256 hex
     # digests computed server-side by the grant endpoint / cron_secret_request
     # tool (grant validity is enforced by pin equality at fire time, not by
@@ -148,6 +164,8 @@ def build_job(
     minimal_context: bool = False,
     timeout: int = 0,
     timeout_secs: int = 0,
+    project_path: str = "",
+    _resolved_project_path: str | None = None,
 ) -> CronJob:
     """Validate inputs and construct the :class:`CronJob` (no I/O, no lock).
 
@@ -166,6 +184,26 @@ def build_job(
     transaction. This closes a create-then-mutate-then-unlocked-``_save``
     window (two concurrent creates could otherwise interleave at the
     ``await`` and the unlocked save could clobber the other request's job).
+
+    ``project_path``, when non-empty, must be an absolute, existing,
+    non-sensitive directory — validated HERE (same shape as
+    ``chat_folders._validate_project_dir``) so every create path shares one
+    check and a job is never persisted pointing at a path that was already
+    invalid at creation time. A path that later disappears is NOT
+    re-validated on every wake; that is a run-time condition surfaced on
+    the run record, not a reason to refuse the job outright.
+
+    ``_resolved_project_path`` is an internal-only escape hatch for the
+    async build paths: this function is genuinely "no I/O" for every OTHER
+    field, but ``project_path`` validation does real filesystem syscalls
+    (``os.path.realpath``, ``os.path.isdir``), which a caller on the event
+    loop must not run inline. :meth:`add_job_async` and
+    :meth:`add_job_if_absent_async` resolve ``project_path`` via
+    :meth:`_validate_project_path_async` (a worker-thread offload) BEFORE
+    calling this, then pass the result through here so the sync
+    resolution is skipped. Sync callers (:meth:`add_job`,
+    :meth:`add_job_if_absent`) never set this and get the original
+    on-the-spot validation.
     """
     from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
 
@@ -204,11 +242,21 @@ def build_job(
             "command": command,
             "script": script,
             "timezone": timezone,
+            "project_path": project_path,
         },
         required=frozenset({"name", "message"}),
     )
     if chat_folder_id and not persistent_session:
         raise ValueError(_CHAT_FOLDER_NEEDS_PERSISTENT)
+    # `_validate_project_path` stays a CronService staticmethod on the facade:
+    # four call sites and two test modules address it there, so reaching it
+    # through the `seams` alias this function already holds keeps ONE spelling
+    # rather than splitting the validator from the name everything else uses.
+    resolved_project_path = ""
+    if _resolved_project_path is not None:
+        resolved_project_path = _resolved_project_path
+    elif project_path:
+        resolved_project_path = seams.CronService._validate_project_path(project_path)
     if timeout_secs and not 1 <= int(timeout_secs) <= 86400:
         raise ValueError(f"timeout_secs must be within 1..86400, got {timeout_secs}")
     if timeout_secs and (command or script):
@@ -276,6 +324,7 @@ def build_job(
         minimal_context=minimal_context,
         timeout=timeout,
         timeout_secs=int(timeout_secs) if timeout_secs else seams._JOB_TIMEOUT_SECS,
+        project_path=resolved_project_path,
     )
 
 
@@ -289,6 +338,8 @@ def apply_job_update(
     transition sink (see :meth:`CronService._update_job_locked`): filled with the
     prior ``chat_folder_id`` only when this update actually changes it.
     """
+    from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
+
     # Validate approval_mode if provided
     if "approval_mode" in kwargs:
         valid_approval_modes = ("", "auto")
@@ -349,6 +400,29 @@ def apply_job_update(
     if "timezone" in kwargs and kwargs["timezone"]:
         if not is_valid_timezone(kwargs["timezone"]):
             raise ValueError(f"Invalid timezone: {kwargs['timezone']!r}")
+    # Same bar as add_job/build_job: an updated project_path must be
+    # absolute, resolved, non-sensitive, and an existing directory. An
+    # empty string is a valid update (clears the binding back to
+    # global-agent-only) and skips this check. So does a value EQUAL to
+    # the stored one: presence is not a change, the same convention
+    # `chat_folder_id` follows. The job form resubmits the field
+    # unchanged on every edit, and once the bound folder is moved or
+    # deleted -- the state the fire path's vanished-directory skip
+    # reports -- holding the equal value to the existing-directory bar
+    # refuses every unrelated edit (a rename, a schedule change, a
+    # retarget of the agent) with a folder error instead of saving it.
+    # Validated in this pre-mutation section, inside the caller's store
+    # lock, for the same reason the budget checks are: a refusal must not
+    # leave earlier field mutations stranded on the in-memory job. The
+    # validator stays a `CronService` staticmethod on the facade (its
+    # four call sites and two test modules address it there), so it is
+    # reached through the `seams` alias like the other patched names.
+    if (
+        "project_path" in kwargs
+        and kwargs["project_path"]
+        and kwargs["project_path"] != job.project_path
+    ):
+        kwargs["project_path"] = seams.CronService._validate_project_path(kwargs["project_path"])
     if "skip_dates" in kwargs and kwargs["skip_dates"]:
         for _d in kwargs["skip_dates"]:
             if not is_valid_skip_date(_d):
@@ -484,6 +558,8 @@ def apply_job_update(
         job.skip_dates = kwargs["skip_dates"] or []
     if "timezone" in kwargs:
         job.timezone = kwargs["timezone"] or ""
+    if "project_path" in kwargs:
+        job.project_path = kwargs["project_path"] or ""
     if "strict_schedule" in kwargs:
         job.strict_schedule = bool(kwargs["strict_schedule"])
     if "persistent_session" in kwargs:

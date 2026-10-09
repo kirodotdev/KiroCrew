@@ -150,7 +150,13 @@ class TestUpdate:
         """Create-only: even if a client sends it, PATCH must not pass it to the
         store (provenance is fixed at creation)."""
         update = AsyncMock(return_value=_job(source_preset="error-digest"))
-        app = _app(api_cron_update, "/api/crons/{job_id}", update_job_async=update)
+        get_job = AsyncMock(return_value=_job())
+        app = _app(
+            api_cron_update,
+            "/api/crons/{job_id}",
+            update_job_async=update,
+            get_job_async=get_job,
+        )
         async with TestClient(TestServer(app)) as client:
             resp = await client.patch(
                 "/api/crons/j1", json={"name": "renamed", "source_preset": "standup-brief"}

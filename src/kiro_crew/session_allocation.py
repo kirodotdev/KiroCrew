@@ -2350,17 +2350,27 @@ class SessionAllocationService:
 
             model = await asyncio.to_thread(resolve_model)
 
+        # The requested cwd is reported as its RELATION to the pool's, never as
+        # the path: a project-bound cron job's folder is withheld from non-owners
+        # by the cron API, and this INFO line reaches every dashboard-user
+        # socket through the log-ring replay. The relation is what the pool
+        # decision below turns on, so the line still explains it.
+        if not cwd:
+            cwd_relation = "none"
+        elif cwd == owner._pool_cwd:
+            cwd_relation = "pool"
+        else:
+            cwd_relation = "other"
         self._deps.logger.info(
             "Pool decision: key=%s resume_sid=%s model=%s agent=%s "
-            "pool_size=%d pool_qsize=%d cwd=%s pool_cwd=%s",
+            "pool_size=%d pool_qsize=%d cwd=%s",
             key,
             resume_sid,
             model,
             agent,
             owner._pool_size,
             owner._warm_pool.qsize(),
-            cwd,
-            owner._pool_cwd,
+            cwd_relation,
         )
         provider_switched = False
         cwd_blocks_pool = bool(cwd and cwd != owner._pool_cwd)

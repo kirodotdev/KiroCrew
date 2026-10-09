@@ -23,6 +23,16 @@ def _make_request(body: dict, job_id: str = "abc123") -> MagicMock:
     mock_job = MagicMock()
     mock_job.id = job_id
     mock_state.crons.update_job_async = AsyncMock(return_value=mock_job)
+    # The job-level owner gate (api_cron_update) fetches the job first via
+    # get_job_async to decide whether the request needs owner authorization
+    # -- an unconfigured MagicMock attribute is not awaitable, so every test
+    # here would otherwise fail with "object MagicMock can't be used in
+    # 'await' expression" before ever reaching the agent-mapping logic these
+    # tests exist to cover. project_path="" (unbound) makes the gate pass
+    # through unconditionally, matching every job these tests construct.
+    existing_job = MagicMock()
+    existing_job.project_path = ""
+    mock_state.crons.get_job_async = AsyncMock(return_value=existing_job)
 
     request = MagicMock()
     request.app = {"state": mock_state}
