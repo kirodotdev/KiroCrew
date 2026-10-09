@@ -7733,34 +7733,39 @@ class TestEmptyArgvElementDoesNotBreakTheDenyView:
         # interposed empty word is still not a publish.
         assert is_denied('git "" stash push') is None
 
-    def test_a_whitespace_only_word_is_a_documented_residual(self):
-        """DOCUMENTED GAP, pinned rather than claimed.
+    def test_a_whitespace_only_word_is_elided_from_an_added_view(self):
+        """A quoted WHITESPACE-ONLY word does not hide a command-shape rule.
 
-        A quoted WHITESPACE-ONLY word (``rm -rf " " /home/x``) renders the same
-        extra separator and still escapes the rule.  It is NOT fixed here.  A
-        render that dropped it would be additive like the empty-elided one and so
-        could not lose a denial, but it is not the same claim: an empty element
-        carries no characters, so a view without it is still the argv the shell
-        hands over, while a whitespace-only element is a real operand naming a
-        file that can exist, so a view without it is an argv ONE OPERAND SHORT of
-        the one that runs.  ``is_denied``'s exception machinery is matched against
-        views, so the direction that widening opens is ALLOW.
+        ``rm -rf " " /home/x`` runs the recursive delete with one extra operand
+        (a file named by a single space), but the single-space join renders that
+        operand as extra separators and the rule's text is not a substring of the
+        plain view or the empty-elided one.  A FOURTH view drops whitespace-only
+        tokens.  It is appended beside the others, never substituted, so it can
+        only add a match: a view whose match an exception excuses moves on to the
+        next pattern, and any other view that matches still denies.
 
-        The naive alternative is unsound and must not be chosen either:
-        whitespace-collapsing the joined line would merge a two-word filename
-        into two operands and match a rule against a command that was never run --
-        the second assertion below is what keeps that on the record.
-
-        When that gap is closed, this test is the one that must
-        flip.
+        The view is one operand short of the argv that runs, so it is a render
+        to match deny rules against, not a claim about which files are named.
+        Whitespace-collapsing the joined line instead is unsound: it would merge a
+        two-word filename into two operands, so a token that carries any
+        non-whitespace character is kept whole -- the last assertion pins that.
         """
         from kiro_crew import security
 
-        for cmd in ('rm -rf " " /home/x', "rm -rf $'\\t' /home/x"):
-            assert is_denied(cmd) is None, (
-                f"{cmd!r} is now denied -- the residual this pins is closed, so update "
-                "the security spec and flip this assertion"
-            )
+        for cmd in (
+            'rm -rf " " /home/x',
+            "rm -rf $'\\t' /home/x",
+            "rm -rf ' ' $'\\t' /home/x",
+        ):
+            assert (
+                is_denied(cmd) is not None
+            ), f"a whitespace-only word escaped the deny view: {cmd!r}"
+        # The added view is appended after the plain and empty-elided renders.
+        views = security._deny_segment_views('rm -rf " " /home/x')
+        assert views[-1] == "rm -rf /home/x"
+        assert "rm -rf   /home/x" in views
+        # A command with no whitespace-only word gains no view.
+        assert security._deny_segment_views("ls -la /tmp") == ("ls -la /tmp",)
         # ...and the two-word filename that makes a whitespace collapse unsound.
         assert security._deny_segment_views('rm -rf "a b"')[-1] == "rm -rf a b"
 

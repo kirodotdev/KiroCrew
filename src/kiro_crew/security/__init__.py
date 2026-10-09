@@ -873,27 +873,21 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
     view standing.  A failure can therefore lose the EXTRA match but never the raw
     one, so it cannot turn a denied command into an allowed one.
 
+    ── Whitespace-only words ──
+    A quoted WHITESPACE-ONLY word (``rm -rf " " /home/x``) is a real operand, so
+    a fourth view drops it: an argv one operand short, matched against and
+    nothing more.  It is additive -- an exception excusing one view's match only
+    moves on to the next pattern -- so it can add a denial, never remove one.
+    A token with any non-whitespace character stays whole (``"a b"``).
+
     ── Residual ──
-    Three shapes stay outside every view.  A token split by BOTH quoting and a
+    Two shapes stay outside every view.  A token split by BOTH quoting and a
     separator-shaped glue construct (``"rm"$(echo ' ')-rf /``) is in none of them:
     the raw text is not contiguous and the glue lands on its own segment — the
     whole-string raw pass covers the glue-ONLY spelling (``git$(echo ' ')push``),
     and closing the combination needs a normalizer that models substitution,
     which a re-join is not.  A variable spelling of a path operand
     (``rm -rf $HOME``) is by construction not expanded here, per the note above.
-    And a quoted WHITESPACE-ONLY word (``rm -rf " " /home/x``) still renders an
-    extra separator.  Adding a render without it would be additive like the one
-    above and so could not lose a denial, but it is not the same claim: an empty
-    element carries no characters, so a view without it is still the argv the
-    shell hands over; a whitespace-only element is a real operand naming a file
-    that can exist, so a view without it is an argv ONE OPERAND SHORT of the one
-    that runs.  Widening the render to elements that do carry characters changes
-    what a view is permitted to assert -- and ``is_denied``'s exception machinery
-    (present, and ``_DENY_EXCEPTIONS`` empty today) is matched against views, so
-    the direction it would open is ALLOW, not deny.  Recognizing this shape wants
-    rules matched against argv STRUCTURE rather than against a rendered line,
-    which is what ``_SELF_PROTECTION_FLOOR_PATTERNS`` already does for the six
-    self-protection rules — and is why those are not fooled by either shape.
     """
     # Owners of the re-exported names read below, resolved through the
     # import system so the value is read from the one place it lives.
@@ -963,6 +957,10 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
             elided = " ".join(token for token in tokens if token)
             if elided and elided != view:
                 candidates.append(elided)
+            # Whitespace-only tokens dropped; appended, never substituted.
+            stripped = " ".join(token for token in tokens if token.strip())
+            if stripped and stripped not in candidates:
+                candidates.append(stripped)
             for candidate in candidates:
                 if not (is_root and not emit_self) and candidate not in seen_views:
                     seen_views.add(candidate)
