@@ -3747,6 +3747,20 @@ async def stop_slot_turn(
             preserve_queue=compaction_escape,
             on_hard=_on_hard_force,
         )
+        # Cascade the stop to in-flight subagents spawned by this parent
+        # session.  Without this the dashboard Stop only cancels the parent
+        # turn; subagents continue running as orphans until their timeout.
+        # The messaging-API stop (run_control.py) already does this.
+        _subs = getattr(state, "subagents", None)
+        if _subs is not None:
+            try:
+                await _subs.cancel_for_parent(cancel_key)
+            except Exception:
+                logger.debug(
+                    "cancel_for_parent failed during hard stop for slot %s",
+                    name,
+                    exc_info=True,
+                )
         sel().log_tool_invocation(
             session_key=_history_key_for(name),
             agent=getattr(slot, "agent", "") or "kirocrew",
@@ -3854,6 +3868,21 @@ async def stop_slot_turn(
         on_soft=_on_soft,
         on_hard=_on_hard,
     )
+    # Cascade the stop to in-flight subagents spawned by this parent session.
+    # Without this the dashboard Stop only cancels the parent turn; subagents
+    # continue running as orphans until their timeout.  The messaging-API stop
+    # (run_control.py) already does this.  Runs on every outcome — even
+    # "idle" — because subagents may outlive the parent turn that spawned them.
+    _subs = getattr(state, "subagents", None)
+    if _subs is not None:
+        try:
+            await _subs.cancel_for_parent(cancel_key)
+        except Exception:
+            logger.debug(
+                "cancel_for_parent failed during soft stop for slot %s",
+                name,
+                exc_info=True,
+            )
     # A genuine in-flight turn whose cooperative cancel does not confirm within
     # the budget answers ``stop_turn`` with a non-acked outcome, which that
     # method escalates to a hard reset on its own -- a dispatched, mid-execution
@@ -4620,6 +4649,18 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
         on_soft=_on_soft,
         on_hard=_on_hard,
     )
+    # Cascade the stop to in-flight subagents, same as the Stop button path
+    # above and the messaging-API stop (run_control.py).
+    _subs = getattr(state, "subagents", None)
+    if _subs is not None:
+        try:
+            await _subs.cancel_for_parent(cancel_key)
+        except Exception:
+            logger.debug(
+                "cancel_for_parent failed during interrupt for slot %s",
+                name,
+                exc_info=True,
+            )
     # Resolve orphaned card when provider reports no active turn
     if outcome == "idle" and slot._stop_event_id:
         _resolve_stop_event(slot, "soft")
