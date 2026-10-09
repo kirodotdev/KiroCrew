@@ -151,6 +151,50 @@ one subtly wrong reads a child as a sibling and says so in a precise sentence. S
 for markup it can follow instead. Your remedy is always one end tag, on the line the message
 names.
 
+## Motion
+
+Motion is decoration. With it off, the page must read the same. The reference is the
+`goal-board` built-in (`src/kiro_crew/dashboard_templates/builtin/goal-board/template.html`).
+
+Three kinds of effect are allowed:
+
+| Effect | When | Goal-board |
+|---|---|---|
+| pop-in | an element's FIRST draw only | `.item.pop` -> `gb-pop`, `.states.grow i` -> `gb-grow` |
+| subtle live loop | while an item is live or needs the reader | `.item.live::after` -> `gb-shimmer`, its `.dot` -> `gb-blink`; `.band` -> `gb-glow` (3 pulses) |
+| state-change flash | once, when a value changes | one short non-repeating `animation` |
+
+Only a live or needs-you element may loop, and gently: a soft shimmer or glow, never a
+spinner or a pulsing count. A needs-you glow pulses a few times and stops.
+Every loop stops under `prefers-reduced-motion`. A host
+refill redraws the page, so remember what was drawn and do not replay the pop-in
+(goal-board keeps a `seen` map by item id).
+
+The frame, as `CrewDynamicDashboard.tsx` and `widgetSrcdoc.ts` build it:
+
+- `sandbox="allow-scripts"` only: no `allow-popups`, no `allow-same-origin`.
+- CSP: inline `<style>` and `<script>` run; no CDN script, `connect-src 'none'`,
+  `img-src data: blob:`.
+- No link can leave the frame. A page asks the host instead:
+  `parent.postMessage({ type: 'kirocrew-dashboard:open', url: url }, '*')`. The host
+  (`useFrameOpenLink`) opens it only from its own frame, only right after a click or
+  key press in that frame, and only for a URL matching `PR_URL_RE`, a
+  `https://github.com/<owner>/<repo>/pull/<n>` page. Anything else drops, so post it
+  from a click handler, never on a timer.
+
+Script and buttons are for the built-in directory templates. A scaffolded page above
+stays inert, so its motion is CSS only and it links nowhere.
+
+**MUST: every page that animates ships this block, reaching both pseudo-elements.**
+
+```css
+@media (prefers-reduced-motion: reduce) {
+  .board *, .board *::before, .board *::after { animation: none !important; transition: none !important; }
+}
+```
+
+Use your page's own root class in place of `.board`.
+
 ## Who may write what
 
 Split on purpose, because the two ends admit of different enforcement.
