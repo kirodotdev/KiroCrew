@@ -739,15 +739,15 @@ back.)
 `kirocrew.json`, and every spec derived from it (the worker, every crewmate
 built from it), mounts Crew's platform guide server `kirocrew-guide` (where-is
 and how-to answers through `find_ui` and `search_docs`, dashboard guides, and
-a crewmate's own `rename_self`). The conductor specs and the background agents (knowledge,
-research, heartbeat) keep their own narrower server sets without it. Its entry carries no `autoApprove`; exactly the seven tools in
+change cards). The conductor specs and the background agents (knowledge,
+research, heartbeat) keep their own narrower server sets without it. Its entry carries no `autoApprove`; exactly the twelve tools in
 `agent._GUIDE_AUTO_GRANTS` are added to `allowedTools` as exact names, subject to
-the same governance ceiling as every grant: the reads, `guide_start` (it only
-offers a card the user must press), `guide_cancel` (which stops this
-conversation's guide and undoes nothing saved) and `rename_self`.
+the same governance ceiling as every grant: the reads, `guide_start` and
+`propose_change` (each only offers a card the user must press), and
+`guide_cancel` (which stops this conversation's guide and undoes nothing saved).
 A spec from before the server was a platform capability gains the ref and those
 grants once (`guide_platform_granted.json` marks it), and keeps whatever you do
-with them afterwards. Its guide tools work only for a turn the user
+with them afterwards. Its guide and card tools work only for a turn the user
 sent from the dashboard and refuse with one line anywhere else, a message from
 Slack or another channel included; `find_ui` and `search_docs` still answer
 there.

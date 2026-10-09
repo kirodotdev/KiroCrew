@@ -59,7 +59,7 @@ All methods are synchronous and called on the event loop, so no mutation can
 interleave with another. Nothing here is persisted: a gateway restart drops every
 guide, which is the conservative failure for a UI hint.
 
-A guide that ended is kept for a while: the
+A guide that ended is kept for the same windows a change card's result is: the
 newest one per slot is served by ``pending`` for ``TERMINAL_SHOWN_SECONDS`` (so a
 page reload still shows its result line in that chat) until the owner dismisses
 it, and it is pruned after ``TERMINAL_RETAIN_SECONDS``. ``MAX_STORED_GUIDES``
@@ -79,10 +79,11 @@ from kiro_crew import guide_catalog as catalog
 
 GUIDE_TTL_SECONDS = 30 * 60
 TAB_LEASE_SECONDS = 45
-#: How long a terminal guide is kept at all (``guide_status`` reads it).
+#: How long a terminal guide is kept at all (``guide_status`` reads it), as a
+#: finished change card is (``change_cards.FINISHED_RETAIN_SECONDS``).
 TERMINAL_RETAIN_SECONDS = 7 * 24 * 60 * 60
 #: How long ``pending`` still serves a slot's newest ended guide, for its chat's
-#: result line.
+#: result line, as a finished change card is (``change_cards.CARD_TTL_SECONDS``).
 TERMINAL_SHOWN_SECONDS = 24 * 60 * 60
 #: Ceiling on live (non-terminal) guides across every caller.
 MAX_LIVE_GUIDES = 64
@@ -119,7 +120,7 @@ TAB_REFUSE_REASONS = frozenset({REASON_BUILD_MISMATCH})
 REASON_PREDICATE_UNMET = "predicate_unmet"
 #: ``target_missing`` on a ``gate`` step: the gate (developer mode, a preview
 #: flag) is off. The guide carries ``blocker: {kind, gate, setting_id}`` so the
-#: agent can tell the user how to turn it on; the guide resumes once it is on.
+#: agent can propose turning it on; the guide resumes once it is on.
 REASON_GATE_OFF = "gate_off"
 #: ``target_missing`` on a ``select`` step whose picker has nothing to choose.
 #: The guide carries ``blocker: {kind, selection}``; never which entity.

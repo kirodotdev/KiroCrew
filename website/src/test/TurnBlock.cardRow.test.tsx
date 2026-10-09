@@ -1,5 +1,5 @@
 /**
- * A guide offer is never folded away with the tool steps that
+ * A change card / guide offer is never folded away with the tool steps that
  * proposed it: only the user can confirm it, so a collapsed turn still shows
  * the card row in place, between the steps before and after it.
  */
@@ -18,11 +18,11 @@ const renderTurnItem = (it: TurnItem): ReactNode => (
 )
 
 let seq = 0
-const tool = (): ChatMessage => ({ role: 'tool', content: '🔧 Running: guide_start', ts: `${++seq}` })
+const tool = (): ChatMessage => ({ role: 'tool', content: '🔧 Running: propose_change', ts: `${++seq}` })
 const text = (s: string): ChatMessage => ({ role: 'assistant', content: s, ts: `${++seq}` })
 const card = (): ChatMessage => ({
-  role: 'card', content: 'Theme', ts: `${++seq}`,
-  meta: { card: { surface: 'guide', id: 'g_1', slot: 's', kind: 'settings.show', title: '', status: 'offered' } },
+  role: 'card', content: 'Shorter replies', ts: `${++seq}`,
+  meta: { card: { surface: 'change', id: 'cc_1', slot: 's', kind: 'setting.change', title: 'Shorter replies', status: 'pending' } },
 })
 
 describe('a collapsed turn', () => {
@@ -30,7 +30,7 @@ describe('a collapsed turn', () => {
     seq = 0
     const messages: ChatMessage[] = [
       { role: 'user', content: 'go', ts: `${++seq}` },
-      tool(), text('Looking at your settings first, then I will show you where it is.'), tool(), card(), tool(),
+      tool(), text('Looking at your settings first, then I will propose the change.'), tool(), card(), tool(),
       text('I proposed a change to make replies shorter. Confirm it on the card above when you are ready.'),
     ]
     const items = applyRunningState(groupDisplayItems(messages), false)
@@ -40,7 +40,7 @@ describe('a collapsed turn', () => {
     // The steps fold behind the toggle; the card does not.
     expect(screen.getByRole('button').textContent).toMatch(/\d/)
     const row = screen.getByTestId('row-card')
-    expect(row.textContent).toBe('Theme')
+    expect(row.textContent).toBe('Shorter replies')
     // Collapsed rows stay mounted inside a height-0 section; the card is outside it.
     expect(row.closest('[data-collapsed="true"]')).toBeNull()
     expect(screen.getAllByTestId('row-tool').every(t => t.closest('[data-collapsed="true"]'))).toBe(true)

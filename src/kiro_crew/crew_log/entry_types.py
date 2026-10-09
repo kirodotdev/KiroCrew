@@ -547,6 +547,19 @@ _PARENT_EDGE_FIELDS: tuple[Field, ...] = (
 OBJECT_PRODUCER_PROBE = "probe"
 OBJECT_PRODUCERS: tuple[str, ...] = (OBJECT_PRODUCER_PROBE,)
 
+#: What a change card can END as -- the card store's finished statuses. CLOSED: the
+#: store is the only writer and the emitter refuses anything else, so an entry
+#: naming another value is a bug at the call site rather than a vocabulary that grew.
+#: ``failed`` is finished but retryable, so a later ``applied`` can follow it.
+CARD_FINISHED_STATUSES: tuple[str, ...] = (
+    "applied",
+    "partial",
+    "failed",
+    "cancelled",
+    "expired",
+    "undone",
+)
+
 #: What a guide can END as, closed for the same reason.
 GUIDE_FINISHED_STATUSES: tuple[str, ...] = ("completed", "cancelled", "expired")
 #: Why a guide ended, when that is more than its status says. Closed.
@@ -2265,7 +2278,66 @@ _SESSION_TYPES: tuple[EntryType, ...] = (
             "mistake book this row and nothing else."
         ),
     ),
-    # -- Guides ------------------------------------------------------------ #
+    # -- Change cards and guides ---------------------------------------- #
+    EntryType(
+        "card/proposed",
+        "The agent proposed a change card, at this point in the conversation.",
+        (
+            Field("slot", JSON_STRING, required=True, note="The slot whose chat shows the card."),
+            Field("card_id", JSON_STRING, required=True, note="The card's id in the card store."),
+            Field("kind", JSON_STRING, required=True, note="The card kind, e.g. setting.change."),
+            Field(
+                "title",
+                JSON_STRING,
+                required=True,
+                note=(
+                    "The gateway's title for the change, redacted and clipped. Names only: "
+                    "a card's parameters are never recorded, and a secret card carries no "
+                    "value field at all."
+                ),
+            ),
+            Field("revision", JSON_INT, required=True, note="The card's revision when proposed."),
+            Field(
+                "risk", JSON_STRING, note="The computed risk: normal, tighten, widen, code_exec."
+            ),
+            Field(
+                "turn",
+                JSON_INT,
+                note="The turn that proposed it; absent when no turn was live in this log.",
+            ),
+            _conversation_row("card"),
+        ),
+        note=(
+            "Written when the propose call lands, in the same step that appends the card's "
+            "row to the transcript, so seq orders it against the tool call that made it. "
+            "The card's LIVE state stays the card store's; this log records the proposal "
+            "and each outcome, not the edits in between."
+        ),
+    ),
+    EntryType(
+        "card/finished",
+        "A change card reached a finished status.",
+        (
+            Field("card_id", JSON_STRING, required=True, note="The card's id."),
+            Field(
+                "status",
+                JSON_STRING,
+                required=True,
+                enum=CARD_FINISHED_STATUSES,
+                enum_closed=True,
+                note=(
+                    "The status the card entered. failed is retryable, so the newest entry "
+                    "per card_id is its outcome."
+                ),
+            ),
+            Field("revision", JSON_INT, required=True, note="The revision that finished."),
+        ),
+        note=(
+            "One entry per finished status the card ENTERS, written beside the in-place "
+            "update of its transcript row. No turn: a person confirms a card, usually "
+            "between turns."
+        ),
+    ),
     EntryType(
         "guide/offered",
         "The agent offered a guide, at this point in the conversation.",

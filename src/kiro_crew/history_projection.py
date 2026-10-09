@@ -72,9 +72,9 @@ METADATA_LINE_CORRUPT = "corrupt"
 #: (``history_consolidation``), and every other model-bound reader already filters
 #: to conversation roles. The Slack thread-parent row, in particular, is untrusted
 #: text whose only route to the model is a fenced, injection-screened block. A
-#: ``card`` row is an agent's guide offer drawn at the point it was offered: the
-#: guide store owns its state, and the agent hears an outcome only through its
-#: own reporting path, never by reading this row back.
+#: ``card`` row is an agent's change card or guide offer drawn at the point it was
+#: proposed: the card store owns its state, and the agent hears an outcome only
+#: through its own reporting path, never by reading this row back.
 DISPLAY_ONLY_ROLES = frozenset({"notice", "card"})
 
 

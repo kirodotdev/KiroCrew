@@ -23,7 +23,7 @@ import json
 import os
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Any, Iterator, Optional
 
 from kiro_crew.atomic_write import atomic_write, fsync_dir
 from kiro_crew.platform_compat import file_lock, restrict_to_owner
@@ -54,6 +54,16 @@ class SecretValue:
 
     def __hash__(self) -> int:
         raise TypeError("SecretValue is not hashable")
+
+
+def entry_revision(entry: dict[str, Any]) -> str:
+    """A short digest naming one stored entry.
+
+    The entry is ciphertext under a fresh nonce, so two writes of the same value
+    get different revisions, and the digest says nothing about the value.
+    """
+    blob = json.dumps(entry, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
 class SecretVault:
@@ -192,6 +202,53 @@ class SecretVault:
         self._write_store(
             lambda entries: {**entries, name: self._encrypt_entry(name, value.encode("utf-8"))}
         )
+
+    async def set_with_revision(self, name: str, value: str) -> str:
+        """Store or overwrite a secret; return the :func:`entry_revision` of what was written.
+
+        The revision is read from the entry this call encrypted, inside the same
+        store lock as the write, so it names this write and never a concurrent
+        one that lands after it.
+        """
+        async with self._lock:
+            return await asyncio.to_thread(self._set_with_revision_sync, name, value)
+
+    def _set_with_revision_sync(self, name: str, value: str) -> str:
+        written: dict[str, str] = {}
+
+        def _mutate(entries: dict) -> dict:
+            entry = self._encrypt_entry(name, value.encode("utf-8"))
+            written.update(entry)
+            return {**entries, name: entry}
+
+        self._write_store(_mutate)
+        return entry_revision(written)
+
+    async def delete_if_revision(self, name: str, revision: str) -> bool:
+        """Remove *name* only while its stored entry still has *revision*.
+
+        The check and the delete run under one store lock, so a value another
+        writer stored since cannot be deleted in its place. ``False`` when the
+        name is absent or holds a different entry.
+        """
+        async with self._lock:
+            return await asyncio.to_thread(self._delete_if_revision_sync, name, revision)
+
+    def _delete_if_revision_sync(self, name: str, revision: str) -> bool:
+        if not self._store_path.exists():
+            return False
+        deleted = False
+
+        def _mutate(entries: dict) -> dict:
+            nonlocal deleted
+            entry = entries.get(name)
+            if not isinstance(entry, dict) or entry_revision(entry) != revision:
+                return entries
+            deleted = True
+            return {k: v for k, v in entries.items() if k != name}
+
+        self._write_store(_mutate)
+        return deleted
 
     async def delete(self, name: str) -> None:
         """Remove a secret. No-op if it does not exist."""

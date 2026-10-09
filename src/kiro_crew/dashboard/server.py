@@ -208,6 +208,7 @@ from kiro_crew.dashboard.server_runtime.crewmate_prune import (  # noqa: F401
     _crewmate_prune_gate_holds_path,
     _kick_crewmate_prune,
     _kick_deferred_transcript_removal,
+    _register_change_card_hook,
     _register_crewmate_prune_gate,
     await_crewmate_prune_settled,
 )
@@ -674,12 +675,21 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # internal-secret call falls through to cookie auth and every publish
         # fails with 403.
         "/api/agent-panel",
-        # MCP-only (the kirocrew-guide tools); no browser caller. Prefix
-        # matching covers every route under it. STRICT:
+        # MCP-only (the four kirocrew-guide tools); no browser caller. Prefix
+        # matching covers "/actions", "/start", "/status" and "/cancel". STRICT:
         # the caller's slot is derived from the X-Session-Key this secret backs,
         # so a cookie fall-through would let a browser name any session as the one
-        # calling the tool.
+        # offering the guide. The browser half ("/api/guide/pending", "/claim",
+        # ...) is deliberately NOT under this prefix and stays on cookie auth.
         "/api/guide/agent",
+        # MCP-only (the list_change_kinds / propose_change / get_change_status tools); no browser
+        # caller. Prefix matching covers "/kinds", "/propose" and "/status".
+        # STRICT for the same reason as the guide: the card's slot is derived from
+        # the X-Session-Key this secret backs. The browser half ("/api/cards/pending",
+        # "/api/cards/{id}/preview|cancel|dismiss") is deliberately NOT under this
+        # prefix and stays on owner-only cookie auth; applying a card happens only
+        # on the existing settings routes, through the card hook.
+        "/api/cards/agent",
         # MCP-only (knowledge_add_document tool); no browser caller — the
         # dashboard ingests via its own cookie-authed knowledge routes. Same
         # wiring class as "/api/notifications/agent" above.
@@ -2002,6 +2012,7 @@ async def start_dashboard(
         _register_connections_warm_lifecycle(app, state)
         _register_workflow_lifecycle(app, state)
         _register_crewmate_prune_gate(app, state)
+        _register_change_card_hook(app)
 
         # Unix-socket cleanup hook — registered before runner.setup freezes the
         # signal lists; the path itself only becomes known after the site starts

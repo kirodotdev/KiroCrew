@@ -1,21 +1,22 @@
-"""Guide offers as rows of the conversation.
+"""Change cards and guide offers as rows of the conversation.
 
-A guide offer is part of the conversation at the point the agent offered it, so
-it is recorded there: the offer route appends ONE ``card`` row to the offering
-slot's transcript and writes ``guide/offered`` into that session's crew log. The
-dashboard draws the live offer at that row.
+A card or a guide offer is part of the conversation at the point the agent proposed
+it, so it is recorded there: the propose route appends ONE ``card`` row to the
+proposing slot's transcript and writes ``card/proposed`` (or ``guide/offered``)
+into that session's crew log. The dashboard draws the live card at that row.
 
 Ownership is split on purpose:
 
-* The guide STORE owns live state. Claiming, walking, cancelling and every
-  guarantee that goes with them (owner-only, a human click) are its own and are
-  not touched here. The dashboard reads that state through its existing reads
-  and frames, so an inline offer updates in place.
-* The ROW owns the conversation's record. Its ``meta.card`` carries the offer's
-  id, kind, title and LAST status, and nothing else -- never a parameter. When a
-  guide reaches a finished status the row is patched in place and
-  ``guide/finished`` is written, so a reload long after the store pruned the
-  record still shows where the offer was and how it ended.
+* The card and guide STORES own live state. Applying, undoing, editing and every
+  guarantee that goes with them (owner-only, a human click, the plan hook) are
+  theirs and are not touched here. The dashboard reads that state through its
+  existing reads and frames, so an inline card updates in place.
+* The ROW owns the conversation's record. Its ``meta.card`` carries the card's
+  id, kind, title and LAST status, and nothing else -- never a parameter, never a
+  typed value. When a card or guide reaches a finished status the row is patched
+  in place and ``card/finished`` / ``guide/finished`` is written, so a reload long
+  after the store pruned the record still shows where the card was and how it
+  ended.
 
 The row is display-only (``history_projection.DISPLAY_ONLY_ROLES``): no
 model-bound reader carries it. The transcript is agent-writable, so nothing here
@@ -33,17 +34,23 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 ROLE_CARD = "card"
+SURFACE_CHANGE = "change"
 SURFACE_GUIDE = "guide"
 
 #: The status a proposal is born with, per surface.
-_PROPOSED = {SURFACE_GUIDE: "offered"}
+_PROPOSED = {SURFACE_CHANGE: "pending", SURFACE_GUIDE: "offered"}
 #: Guide end reasons a conversation row keeps (the result line words them).
 _GUIDE_RECORDED_REASONS = frozenset({"saved_without_guide"})
 
 #: Statuses after which a row records an outcome. Mirrors the stores' own sets.
+_CHANGE_FINISHED = frozenset({"applied", "partial", "failed", "cancelled", "expired", "undone"})
 _GUIDE_FINISHED = frozenset({"completed", "cancelled", "expired"})
-#: Live statuses a row may hold.
+#: Live statuses a row may hold; ``pending`` after ``failed`` is a retry.
+_CHANGE_LIVE = frozenset({"pending", "applying"})
 _GUIDE_LIVE = frozenset({"offered", "active", "target_missing"})
+
+_TITLE_MAX = 300
+_SUMMARY_MAX = 300
 
 #: Which crew-log unit each proposal was written into, keyed ``(surface, id)``.
 #: Held in process ONLY: a row's meta lives in an agent-writable file, and a
@@ -87,6 +94,21 @@ def _slot_sid(slot: Any) -> str:
 
 def _sid_for(surface: str, item_id: str, slot: Any) -> str:
     return _SIDS.get((surface, item_id)) or (_slot_sid(slot) if slot is not None else "")
+
+
+def _clean(text: Any, limit: int) -> str:
+    """Display text for a row: redacted, single-line, bounded."""
+    if not isinstance(text, str) or not text:
+        return ""
+    from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+
+    try:
+        out, _ = redact_exfiltration_urls(text)
+        out, _ = redact_credentials(out)
+    except Exception:
+        return ""
+    out = " ".join(out.split())
+    return out if len(out) <= limit else out[: limit - 1] + "\u2026"
 
 
 def _get_slot(state: Any, slot_key: str) -> Any:
@@ -149,6 +171,37 @@ def _patch_row(state: Any, slot: Any, row: dict[str, Any], updates: dict[str, An
         )
     except Exception:
         logger.debug("card row broadcast failed", exc_info=True)
+
+
+# ── change cards ──
+
+
+def record_change_proposed(state: Any, card: dict[str, Any]) -> None:
+    """Put a just-proposed change card into its conversation. Never raises."""
+    try:
+        _record_proposed(
+            state,
+            SURFACE_CHANGE,
+            card,
+            item_id=str(card.get("id") or ""),
+            title=_clean(card.get("title"), _TITLE_MAX),
+            fields={"kind": card.get("kind"), "risk": card.get("risk")},
+        )
+    except Exception:
+        logger.warning("could not record a change card in its conversation", exc_info=True)
+
+
+def record_change_status(state: Any, card: dict[str, Any]) -> None:
+    """Fold a card the store just published into its row. Never raises."""
+    try:
+        status = card.get("status")
+        if status in _CHANGE_FINISHED:
+            summary = _clean((card.get("result") or {}).get("summary"), _SUMMARY_MAX)
+            _record_status(state, SURFACE_CHANGE, card, str(card.get("id") or ""), status, summary)
+        elif status in _CHANGE_LIVE:
+            _record_status(state, SURFACE_CHANGE, card, str(card.get("id") or ""), status, None)
+    except Exception:
+        logger.warning("could not record a change card outcome", exc_info=True)
 
 
 # ── guides ──
@@ -224,9 +277,21 @@ def _record_proposed(
     sid = _slot_sid(slot)
     _remember_sid(surface, item_id, sid)
     _note_logged((surface, item_id), status, False)
-    crew_log_emit.on_guide_offered(
-        sid, slot=slot_key, guide_id=item_id, actions=fields.get("actions") or [], mid=mid
-    )
+    if surface == SURFACE_CHANGE:
+        crew_log_emit.on_card_proposed(
+            sid,
+            slot=slot_key,
+            card_id=item_id,
+            kind=str(fields.get("kind") or ""),
+            title=title,
+            risk=str(fields.get("risk") or ""),
+            revision=revision if isinstance(revision := public.get("revision"), int) else 1,
+            mid=mid,
+        )
+    else:
+        crew_log_emit.on_guide_offered(
+            sid, slot=slot_key, guide_id=item_id, actions=fields.get("actions") or [], mid=mid
+        )
 
 
 def _record_status(
@@ -259,7 +324,16 @@ def _record_status(
         return
     _note_logged(key, status, started or status == "active")
     sid = _sid_for(surface, item_id, slot)
-    if status in _GUIDE_FINISHED:
+    if surface == SURFACE_CHANGE:
+        if status in _CHANGE_FINISHED:
+            revision = public.get("revision")
+            crew_log_emit.on_card_finished(
+                sid,
+                card_id=item_id,
+                status=status,
+                revision=revision if isinstance(revision, int) else 1,
+            )
+    elif status in _GUIDE_FINISHED:
         crew_log_emit.on_guide_finished(sid, guide_id=item_id, status=status, reason=reason)
     elif status == "active" and not started:
         # Once per guide: a tab re-claiming after its lease lapsed is not a start.

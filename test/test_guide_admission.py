@@ -138,6 +138,25 @@ def test_a_turn_the_user_did_not_send_cannot_start_a_guide() -> None:
     assert (status, body["code"]) == (403, "not_user_turn")
 
 
+def test_a_turn_the_user_did_not_send_cannot_propose_a_card() -> None:
+    from kiro_crew.dashboard.handlers import change_cards as card_routes
+
+    state = FakeState()
+    state.open_slot("chat-1")._turn_user_sent = False
+
+    async def go(client):
+        resp = await client.post(
+            "/api/cards/agent/propose",
+            json={"kind": "chat.rename", "params": {"title": "x"}},
+            headers=agent("dashboard:chat-1"),
+        )
+        return resp.status, await resp.json()
+
+    propose = ("POST", "/api/cards/agent/propose", card_routes.api_cards_agent_propose)
+    status, body = run_guide_app(go, state, extra_routes=[propose])
+    assert (status, body["code"]) == (403, "not_user_turn")
+
+
 def _language_from(session_key: str, state: FakeState) -> tuple[int, dict]:
     async def go(client):
         resp = await client.get("/api/guide/agent/language", headers=agent(session_key))

@@ -154,7 +154,7 @@ function neighbour(messages: ChatMessage[], index: number, dir: -1 | 1): ChatMes
  *  is read from the UNFILTERED transcript when the caller passes it: any row
  *  between the two that is not the turn's own machinery ends the turn. Without
  *  a transcript (a host that has none) adjacency in the drawn list is the rule.
- *  A guide offer (`card` rows) is the crewmate's own proposal,
+ *  A change card or guide offer (`card` rows) is the crewmate's own proposal,
  *  so it joins the run like a message, grouped with the reply that explains it
  *  instead of floating between two speakers. */
 function chained(
@@ -177,7 +177,7 @@ function chained(
   return true
 }
 
-/** The `card` role a guide offer is written under
+/** The `card` role a change card or guide offer is written under
  *  (cards/ConversationCard's CARD_ROLE, restated to keep this module free of
  *  the card store's imports). */
 const CARD_ROW_ROLE = 'card'
@@ -261,7 +261,7 @@ export function crewmateBubbleClass(pos: CrewmateRunPosition): string {
 }
 
 /** The run's corner rule alone, for a surface in the run that draws its own
- *  box (a guide offer). */
+ *  box (a change card or guide offer). */
 export function crewmateCornerClass(pos: CrewmateRunPosition): string {
   return CORNERS[pos]
 }

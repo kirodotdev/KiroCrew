@@ -54,6 +54,7 @@ import UserMessage from './UserMessage'
 import CrewmateMessage, { type CrewmateIdentity } from './CrewmateMessage'
 import { crewmateBubbleClass, crewmateCornerClass, crewmateRunPosition } from '../../components/chat/crewmateBubbles'
 import { CardCornersContext } from '../../cards/cardCorners'
+import { CardAuthorContext } from '../../cards/cardAuthor'
 import { formatTs, quoteMessageFor, renderAssistantBubble, replyInThreadFor, threadFooterFor, type MessageRenderer, type MessageRenderContext } from '../../app-sdk/messageRenderers'
 import { renderUserContent } from './ChatPageMessageContent'
 import { fmtMessageTimeFull } from './messageTime'
@@ -383,7 +384,7 @@ export function createTranscriptRenderers(
       },
     },
     {
-      // a guide offer, at the point it was proposed. The
+      // Mate's change card or guide offer, at the point it was proposed. The
       // row holds a reference; the live card is the card / guide store's, so it
       // updates in place (cards/ConversationCard). The SDK default draws nothing
       // for this role, which is right for a store-free surface.
@@ -400,7 +401,9 @@ export function createTranscriptRenderers(
             {/* Same cap as a crewmate bubble (72ch at the message font size). */}
             <div className="max-w-[72ch]" style={{ fontSize: 'var(--mc-message-font-size, 14px)' }}>
               <CardCornersContext.Provider value={crewmateCornerClass(pos)}>
-                <ConversationCard message={m} slot={o.slot} />
+                <CardAuthorContext.Provider value={crewmate.label || crewmate.name}>
+                  <ConversationCard message={m} slot={o.slot} />
+                </CardAuthorContext.Provider>
               </CardCornersContext.Provider>
             </div>
           </CrewmateMessage>,

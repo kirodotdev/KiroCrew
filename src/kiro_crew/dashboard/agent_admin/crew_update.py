@@ -296,6 +296,25 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                     {"error": model_reason, "code": "invalid_model"}, status=400
                 )
         agent = cfg.agents[name]
+        # A change card's Undo arms the crewmate its apply wrote to. A
+        # same-name recreate in another process is caught by
+        # ``persist_member_config``'s locked memory-store check below (a new
+        # crewmate gets a new store). An ordinary update carries no key.
+        from kiro_crew.dashboard.handlers.undo_identity_guard import (
+            REQ_CARD_UNDO_CREWMATE_EXPECT,
+            UNDO_IDENTITY_CHANGED_CODE,
+            UNDO_IDENTITY_CHANGED_MESSAGE,
+            identity_mismatch,
+        )
+
+        undo_expect = request.get(REQ_CARD_UNDO_CREWMATE_EXPECT)
+        if isinstance(undo_expect, str) and identity_mismatch(
+            undo_expect or None, getattr(agent, "member_id", None) or None
+        ):
+            return web.json_response(
+                {"error": UNDO_IDENTITY_CHANGED_MESSAGE, "code": UNDO_IDENTITY_CHANGED_CODE},
+                status=409,
+            )
         if "kiro_agent" in body and body["kiro_agent"] != agent.kiro_agent:
             new_target = body["kiro_agent"]
             if not isinstance(new_target, str) or not TEMPLATE_NAME_RE.fullmatch(new_target):

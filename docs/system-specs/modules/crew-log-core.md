@@ -283,22 +283,26 @@ trimmed silently. No `turn`: a probe runs without a model turn, so the observati
 belongs to no turn. The monitor's state document still holds no history of the
 subject -- this entry is that history (`monitor-architecture.md`).
 
-### Guides
+### Cards and guides
 
 | Type | `data` | Emitter |
 |---|---|---|
+| `card/proposed` | `{slot, card_id, kind, title, revision, risk?, turn?, mid?}` — The agent proposed a change card at this point of the conversation | yes |
+| `card/finished` | `{card_id, status, revision}` — `status` closed to the card store's finished statuses (`applied`, `partial`, `failed`, `cancelled`, `expired`, `undone`) | yes |
 | `guide/offered` | `{slot, guide_id, actions:[id], turn?, mid?}` — The agent offered a guide at this point of the conversation | yes |
 | `guide/started` | `{guide_id}` — the first claim after the person pressed Start | yes |
 | `guide/finished` | `{guide_id, status}` — `status` closed to `completed`, `cancelled`, `expired` | yes |
 
-An offer is part of the conversation, so it is recorded twice in one step: a
-`card` row in the slot's transcript (display-only, drawn where it was offered) and
+A proposal is part of the conversation, so it is recorded twice in one step: a
+`card` row in the slot's transcript (display-only, drawn where it was proposed) and
 the opener here. `mid` is that row's id and is what joins the two. Every outcome
-patches the row in place and appends a closer, so the conversation with each offer
-in its final state is reconstructible from this log alone -- the openers say where
-and what, the newest closer per id says how it ended. Only action ids are recorded,
-never their parameters. The live state -- the tab driving a guide -- stays the guide
-store's.
+patches the row in place and appends a closer, so the conversation with each card in
+its final state is reconstructible from this log alone -- the openers say where and
+what, the newest closer per id says how it ended. Only names are recorded: no card
+parameter, no edited field and no typed value reaches either record. The live state
+-- revisions, apply steps, the tab driving a guide -- stays the card and guide
+stores', and a re-preview writes nothing here. `card/finished` may repeat for one id
+(`failed` is retryable; an applied card can be undone), so a reader takes the newest.
 
 None of these is `ignorable`. The marker is for an entry that samples a stream, and
 a skip reads as a seq gap to the class fold, so marking these would not let an older

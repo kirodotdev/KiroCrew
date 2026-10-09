@@ -328,9 +328,11 @@ async def api_secrets_set(request: web.Request) -> web.Response:
         return owned
 
     vault = SecretVault(config_dir())
-    await vault.set(name, value)
+    # The revision names THIS write (a digest of its ciphertext, never the
+    # value), so a caller that may delete it later can delete exactly it.
+    revision = await vault.set_with_revision(name, value)
     logger.info("Vault entry '%s' stored via dashboard", _sanitize_for_log(name))
-    return web.json_response({"ok": True, "name": name})
+    return web.json_response({"ok": True, "name": name, "revision": revision})
 
 
 async def api_secrets_delete(request: web.Request) -> web.Response:
@@ -356,7 +358,17 @@ async def api_secrets_delete(request: web.Request) -> web.Response:
     names = await asyncio.to_thread(vault.list_names)
     if name not in names:
         return web.json_response({"error": "Secret not found", "code": "not_found"}, status=404)
-    await vault.delete(name)
+    # ``?if_revision=`` deletes only the entry that write stored (a change
+    # card's Undo), never a value saved over it since.
+    if_revision = request.query.get("if_revision")
+    if if_revision is not None:
+        if not await vault.delete_if_revision(name, if_revision):
+            return web.json_response(
+                {"error": "The secret changed since it was saved", "code": "changed"},
+                status=409,
+            )
+    else:
+        await vault.delete(name)
     logger.info("Vault entry '%s' deleted via dashboard", _sanitize_for_log(name))
     return web.json_response({"ok": True, "name": name})
 

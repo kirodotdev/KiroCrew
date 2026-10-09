@@ -59,6 +59,7 @@ __all__ = [
     "provider_error_client",
     "resolve_pin_spelling",
     "resolve_pin_spelling_on",
+    "resolve_usable_model",
     "run_kiro_native_commands",
     "drain_skill_view_aliases",
     "skill_view_alias_census",
@@ -143,6 +144,20 @@ def resolve_pin_spelling_on(model_id: str, advertised: object, backend: str) -> 
     from kiro_crew.acp.client import resolve_pin_spelling_on as _impl
 
     return _impl(model_id, advertised, backend=backend)  # type: ignore[arg-type]
+
+
+def resolve_usable_model(preferred: str, advertised: object, *, backend: str = "") -> str:
+    """The model a substitute choice *preferred* resolves to, or ``""`` to inherit.
+
+    Thin delegation to :func:`kiro_crew.acp.client.resolve_usable_model` so
+    application code (the diagnose probes) reaches it through the SDK surface
+    instead of importing the ACP layer (the agent-sdk-boundary gate refuses a new
+    edge). Plain data in, plain data out. Function-local import for the same
+    reason as :func:`resolve_pin_spelling`.
+    """
+    from kiro_crew.acp.client import resolve_usable_model as _impl
+
+    return _impl(preferred, advertised, backend=backend)  # type: ignore[arg-type]
 
 
 def catalog_row_would_drop(model_id: str, advertised: object) -> bool:

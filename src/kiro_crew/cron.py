@@ -2225,6 +2225,46 @@ class CronService:
             self._arm_timer()
         return ok
 
+    async def remove_job_if_async(
+        self,
+        job_id: str,
+        *,
+        expected_revision: str,
+        revision_of: Callable[["CronJob"], str],
+        actor: str,
+        source: str,
+    ) -> str:
+        """Compare-and-delete: remove *job_id* only while ``revision_of(job)`` still
+        equals *expected_revision*, read and deleted under one store lock off the
+        loop. Returns ``"removed"``, ``"not_found"`` or ``"changed"``; raises
+        :class:`CronStoreBusy` on sustained contention.
+        """
+        outcome = await asyncio.to_thread(
+            self._remove_job_if_locked, job_id, expected_revision, revision_of
+        )
+        if outcome == "changed":
+            self._audit_refused_removal(job_id, actor=actor, source=source)
+        else:
+            self._audit_requested_removal(
+                job_id, removed=outcome == "removed", actor=actor, source=source
+            )
+        if outcome == "removed":
+            self._arm_timer()
+        return outcome
+
+    def _audit_refused_removal(self, job_id: str, *, actor: str, source: str) -> None:
+        """Audit a compare-and-delete the live job's fingerprint refused."""
+        try:
+            sel.sel().log_api_access(
+                caller=actor,
+                operation="cron.remove",
+                outcome="denied",
+                source=source,
+                resources=f"job_id={job_id} reason=changed_since_apply",
+            )
+        except Exception:
+            logger.warning("SEL audit for cron removal failed (job %s)", job_id, exc_info=True)
+
     def _audit_requested_removal(
         self,
         job_id: str,
@@ -2486,6 +2526,39 @@ class CronService:
                 logger.info("Removed cron job %s", job_id)
                 return True
         return False
+
+    def _remove_job_if_locked(
+        self,
+        job_id: str,
+        expected_revision: str,
+        revision_of: Callable[["CronJob"], str],
+    ) -> str:
+        """Lock/reload/compare/mutate/save core of :meth:`remove_job_if_async`.
+
+        An exact ``revision_of``/``expected_revision`` match proceeds to the same
+        remove-rows + cascade + save the unconditional path uses; a live job that
+        differs is left untouched (``"changed"``), a missing one ``"not_found"``.
+        """
+        with self._file_lock():
+            self._sync_for_write()
+            job = next((j for j in self._jobs if j.id == job_id), None)
+            if job is None:
+                return "not_found"
+            if revision_of(job) != expected_revision:
+                return "changed"
+            # Same ordering as _remove_job_locked: the grant-epoch bump reads
+            # live rows and must precede the row filter.
+            self._bump_grant_epochs_for({job_id})
+            restore = self._remove_job_rows({job_id})
+            try:
+                self._save()
+            except BaseException:
+                for child, previous_owner in restore:
+                    child.session_key = previous_owner
+                self._reset_fingerprint()
+                raise
+            logger.info("Removed cron job %s", job_id)
+            return "removed"
 
     def _remove_job_rows(self, removed_ids: set[str]) -> list[tuple[CronJob, str]]:
         """Filter ``removed_ids`` out of ``self._jobs`` and cascade the release.

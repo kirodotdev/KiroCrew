@@ -711,7 +711,7 @@ export function GuideProvider({ children }: { children: ReactNode }) {
 
   // A guide that ended stays in the gateway's pending list (its slot's newest,
   // for a day, until dismissed), so the slot's chat result line is DERIVED from
-  // that list and survives a reload. A dismissal
+  // that list and survives a reload the way a change card's does. A dismissal
   // is hidden here at once and recorded by the gateway for every tab.
   const [dismissed, setDismissed] = useState<ReadonlySet<string>>(() => new Set())
   const records = useMemo<Readonly<Record<string, Guide>>>(() => endedBySlot(guides, dismissed), [guides, dismissed])

@@ -12,6 +12,7 @@ import { store } from '../store'
 import { TAB_ID } from '../api/tabId'
 import { applyGuideUpdate } from '../api/guide'
 import { handleGuideObserveFrame } from '../guide/liveObservation'
+import { applyCardUpdate } from '../api/cards'
 import type { Notification, TodoList, McpSessionReport } from '../types'
 import { i18nT } from '../i18n/t'
 import { teamRoots } from '../pages/chat/command-center/model'
@@ -253,6 +254,12 @@ export function useWebSocket() {
             // Owner-only frame naming ONE tab; that tab answers with ids and
             // enum states only, every other tab ignores it.
             handleGuideObserveFrame(data)
+            break
+          }
+          case 'card_update': {
+            // Owner-only frame; folded into that slot's change-cards cache,
+            // which is also re-read on reconnect (frames are one-shot).
+            applyCardUpdate(queryClient, (data as { card?: unknown }).card)
             break
           }
           case 'todo_update': {

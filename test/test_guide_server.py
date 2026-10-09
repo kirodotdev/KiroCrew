@@ -118,7 +118,11 @@ def test_the_server_accepts_every_name_its_schema_advertises() -> None:
 
 @pytest.mark.parametrize(
     "denied",
-    [{f"{GUIDE_REF}/rename_self"}, {f"{GUIDE_REF}/find_ui", f"{GUIDE_REF}/guide_start"}],
+    [
+        {f"{GUIDE_REF}/rename_self"},
+        {f"{GUIDE_REF}/propose_change"},
+        {f"{GUIDE_REF}/find_ui", f"{GUIDE_REF}/guide_start"},
+    ],
 )
 def test_the_governance_ceiling_still_withholds_a_guide_grant(
     monkeypatch: pytest.MonkeyPatch, denied: set[str]
@@ -363,7 +367,7 @@ def test_a_foreign_template_and_its_member_are_left_exactly_as_they_are(
         "unattested_caller",
     ],
 )
-@pytest.mark.parametrize("tool", ["rename_self", "guide_start", "guide_status"])
+@pytest.mark.parametrize("tool", ["rename_self", "guide_start", "guide_status", "propose_change"])
 def test_every_gateway_admission_refusal_is_said_as_off_the_dashboard(
     monkeypatch: pytest.MonkeyPatch, code: str, tool: str
 ) -> None:
@@ -382,6 +386,7 @@ def test_every_gateway_admission_refusal_is_said_as_off_the_dashboard(
         "rename_self": {"name": "Pebble"},
         "guide_start": {"actions": [{"id": "settings.show"}]},
         "guide_status": {},
+        "propose_change": {"kind": "setting.change", "params": {}},
     }[tool]
     out = mcp_guide._call_tool_inner(tool, args)
     assert out.startswith(f"Error: {tool} needs the dashboard: ")
@@ -437,3 +442,46 @@ def test_a_refused_guide_start_says_no_card_was_shown(monkeypatch: pytest.Monkey
     out = mcp_guide._call_tool_inner("guide_start", {"actions": [{"id": "ui.show"}]})
     assert out.startswith("Error: no such action")
     assert mcp_guide.GUIDE_NOT_SHOWN_NOTE in out
+
+
+def test_a_dashboard_session_gets_a_card(monkeypatch: pytest.MonkeyPatch) -> None:
+    from kiro_crew import mcp_guide
+
+    monkeypatch.setattr(mcp_guide, "_strict_session_key", lambda: ("dashboard:c", ""))
+    monkeypatch.setattr(
+        mcp_guide, "_post", lambda *a, **k: {"id": "c1", "delivered_clients": 1, "risk": "normal"}
+    )
+    out = json.loads(
+        mcp_guide._call_tool_inner("propose_change", {"kind": "setting.change", "params": {}})
+    )
+    assert out["id"] == "c1" and "Shown above" in out["next"]
+
+
+def test_a_card_result_tells_the_model_how_to_reply(monkeypatch: pytest.MonkeyPatch) -> None:
+    from kiro_crew import mcp_guide
+
+    reply: dict[str, Any] = {}
+    monkeypatch.setattr(mcp_guide, "_strict_session_key", lambda: ("dashboard:c", ""))
+    monkeypatch.setattr(mcp_guide, "_post", lambda *a, **k: dict(reply))
+
+    def next_for(**state: Any) -> str:
+        reply.clear()
+        reply.update({"id": "c1", **state})
+        args = {"kind": "setting.change", "params": {}}
+        return json.loads(mcp_guide._call_tool_inner("propose_change", args))["next"]
+
+    assert "Queued" in next_for(delivered_clients=0)
+    assert "Shown above" in next_for(delivered_clients=1)
+    assert "box ticked" in next_for(delivered_clients=1, risk="widen")
+    # A code_exec draft that also widens auto-approval needs the tick too.
+    assert "box ticked" in next_for(delivered_clients=1, risk="code_exec", widen=True)
+
+
+def test_an_unidentified_caller_gets_the_same_refusal_for_a_card_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kiro_crew import mcp_guide
+
+    monkeypatch.setattr(mcp_guide, "_strict_session_key", lambda: ("", "no identity"))
+    out = mcp_guide._call_tool_inner("list_change_kinds", {})
+    assert out.startswith("Error: list_change_kinds needs the dashboard: no identity")

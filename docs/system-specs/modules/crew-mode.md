@@ -769,7 +769,7 @@ creation takes. It is never written on Global memory. A creation that fails leav
 row, no store and no sidecar, so the next start tries again. It carries no tool, Global-memory access, template or prompt of its own:
 its identity block is the ordinary member identity, and it can be renamed, rebound to
 another template and deleted through every ordinary path (`DELETE /api/agents/{name}`,
-`kirocrew agent delete`), and its key and label are free for another
+`kirocrew agent delete`, a change card's undo), and its key and label are free for another
 crewmate to use. The `mate_member_created.json` sidecar records the attempt and
 whether it created the row (`created`), so a deleted first crewmate is never
 re-created. The creation is skipped when the key already
@@ -786,34 +786,98 @@ The only thing that sets the first crewmate apart is its first welcome (see the
 first-welcome paragraph below), and it is the crewmate the Crewmates page opens when there
 is no previously used conversation.
 
-Guides, `find_ui` and `search_docs` are platform capabilities of the default `kirocrew`
-template, every crewmate built from it, the worker derived from it, and every dashboard
-session on them, on the always-mounted `kirocrew-guide` server
+Guides, change cards, `find_ui` and `search_docs` are platform capabilities of the
+default `kirocrew` template, every crewmate built from it, the worker derived from it, and
+every dashboard session on them, on the always-mounted `kirocrew-guide` server
 ([MCP architecture](../../architecture/mcp.md)). The conductor and background templates
-keep their own narrow server sets and do not mount it. The guide tools answer only a turn
-the user sent from the dashboard; a message from Slack or another channel is refused even
-when its conversation is mirrored into a dashboard slot, and a turn the person did not
-send (a loop wake, a schedule, `session_send`, a subagent completion) cannot start a
-guide. The rules an answer through them depends on travel in the tool descriptions and
-in each result's `next` line, not in any agent's prompt: call `find_ui` first for a
-where-is question and quote only what it returns; on `no_match`, search again with the
-control's own words before saying a control does not exist; never say a guide is shown
-unless the tool returned one; answer a control that decides what an agent may do without
-asking (Settings → Security, approvals, the Approval mode picker, a crewmate's permission
-picker, Computer Use, Secrets) in words, without a guide; and describe what a removal
-deletes only from the page's own `caution_text`. The operating contract every session
-receives (`config/prompt.md`, section `KiroCrew Capabilities`) carries one line pointing
-at these tools.
-`search_docs` searches and pages through `kiro_crew/docs/*.md` only, by the directory's
-own listing, and `find_ui` searches the packaged dashboard location index
-([mcp](../../architecture/mcp.md#find_ui-and-the-ui-location-index)); its labels follow
-the language the user's dashboard renders (the tab's `X-UI-Lang`, read back through
-`GET /api/guide/agent/language`), not the conversation's. A result's `guide_ref`
-(`settings.show`, `mcp.open_add` or the generic `ui.show`) is offered as is with
-`guide_start`; a new offer replaces the chat's unfinished guide by itself. The offer
-renders in the offering chat as a row of the conversation, and nothing moves until the
-user presses Start. The `/members?create=1&name=<encoded-name>&goal=<encoded-goal>` link
-to an editable UI draft remains for a user who wants to fill it in; opening a draft
+keep their own narrow server sets and do not mount it. The guide and card tools answer
+only a turn the user sent from the dashboard; a message from Slack or another channel is
+refused even when its conversation is mirrored into a dashboard slot, and a turn the person
+did not send (a loop wake, a schedule, `session_send`, a subagent completion) cannot start a
+guide or propose a card. The rules an answer through them depends
+on travel in the tool descriptions and in each result's `next` line, not in any agent's
+prompt: call `find_ui` first for a where-is question and quote only what it returns; on
+`no_match`, search again with the control's own words before saying a control does not
+exist; never say a guide or card is shown unless the tool returned one; answer a control
+that decides what an agent may do without asking (Settings → Security, approvals, the
+Approval mode picker, Computer Use, Secrets) in words, without a guide; describe what a
+removal deletes only from the page's own `caution_text`; and propose a denied-command,
+approval or secret change only when the user asked for that exact change. The operating
+contract every session receives (`config/prompt.md`, section `KiroCrew Capabilities`) carries one
+line pointing at these tools.
+In a dashboard turn, a change to Kiro Crew itself that the user asked for (settings,
+schedules, crewmates and their capabilities, templates, MCP servers, connections, secrets,
+app trust, denied-command rules) is preferably offered as a change card, which the user
+confirms; a card is never a way around a denial. Cards do not replace the direct tools:
+an agent that schedules its own work, a conductor or a scheduled run keeps using
+`cron_add` and the other tools it is granted, under their own approvals. An agent proposes
+one registered kind with `propose_change`, after
+`list_change_kinds` when the kind is unclear, `find_setting` for a setting, and
+`get_member_capabilities` for a crewmate's tools and approvals; `get_change_status` reads
+an outcome. The card's `risk` (`normal`/`tighten`/`widen`/`code_exec`) is the single
+badge label, but the "runs without asking" acknowledgement rides a separate `widen` flag,
+so a capabilities card that both launches code and expands auto-approval reads `code_exec`
+and still requires the acknowledgement; an old signed record missing the flag derives it
+from its capability impact. A setting whose value is a command this machine runs
+(`dashboard.terminal.shell`) is `code_exec` whatever its before/after. A reminder that runs once is a `schedule.create` card with `at` (a local
+ISO-8601 date-time, no offset) instead of `cron_expr`. `search_docs` searches and pages
+through `kiro_crew/docs/*.md` only, by the directory's own listing, and `find_ui` searches
+the packaged dashboard location index
+([mcp](../../architecture/mcp.md#find_ui-and-the-ui-location-index)); its labels follow the
+language the user's dashboard renders (the tab's `X-UI-Lang`, read back through
+`GET /api/guide/agent/language`), not the conversation's, and `find_setting` rows carry the
+on-screen label the same way. A result's `guide_ref` (`settings.show`, `mcp.open_add` or
+the generic `ui.show`) is offered as is with `guide_start`; a new offer replaces the chat's
+unfinished guide by itself. `diagnose_settings` returns read-only symptom probes from
+`diagnose_probes.py` (`findings`, each `{id, status: ok|warn|problem|unknown, summary,
+evidence, fix?}` where `fix` is a change card to propose or steps to tell the user), then
+every config and dashboard-config key whose value differs from its dataclass default,
+joined to its Settings entry (credential-like keys report only whether they are set), plus
+the newest 50 "Dashboard: ..." lines from Global memory history; an optional `topic`
+keeps matching rows, returning the unfiltered result with `topic_matched: false` when
+nothing matches. The card renders in the proposing chat as a row of the conversation, and
+only the owner's click applies it through the existing settings route, verified by the
+card hook. A secret's value is typed into the card and never passes through the agent.
+Card outcomes reach the agent's next turn as a `[CHANGE CARD RESULTS]` block that never
+starts a turn, and every owner change through those routes, card or manual, is a
+names-only "Dashboard: ..." line in Global memory history.
+An Undo never overwrites a change another tab made after this card wrote. A card's
+Undo baseline is the value the card itself wrote, read back at the revision the write
+reported, never whatever the post-apply read happens to find. For a `crewmate.capabilities`
+card the apply plan is a preview `POST` followed by a `PUT`, and only the `PUT` writes:
+a `PUT` that never landed (for example `stale_revision`, because another tab edited after
+the preview) counts as nothing applied and leaves no Undo, and a successful `PUT` binds the
+inverse to the revision that `PUT` returned. If the post-apply read is at a different
+revision than the `PUT` returned, another tab wrote after this card and there is no Undo
+(`changed_since_apply`). A `schedule.create` card's Undo deletes the schedule it made as a
+compare-and-delete under the cron store lock (see
+[Cron Service](learn-cron-dashboard.md#cron-service-cronpy)): the live job is re-fingerprinted
+and removed only while it still matches what the card left, so an edit another tab lands
+between the pre-delete snapshot check and the delete is refused rather than clobbered.
+A `crewmate.create` card's Undo is two destructive deletes guarded the same way. Its
+schedule DELETE compares `after.schedule` under the cron store lock exactly as a
+`schedule.create` Undo does, and a cron DELETE in an Undo with no recorded fingerprint
+fails closed rather than deleting unconditionally. Its crewmate DELETE is name-scoped,
+so it compares the immutable `member_id` the card's own create returned against the live
+crew's own, re-read inside the config deletion lock before the row is removed: an owner
+who deleted and recreated the same name between apply and Undo leaves a different crewmate
+wearing it, so the Undo answers `409 changed_since_apply` and keeps the replacement and
+its crew log rather than erasing it. The remaining destructive reverses get no Undo at
+all: an `mcp.install` or `mcp.add_custom` (uninstall), a `connection.connect`
+(disconnect), a `trust.app` (revoke) and a `denied_command` add (rule delete) all delete
+through stores that take no revision or fingerprint, so an Undo could not tell the entry
+the card wrote from one the owner put back under the same name. Those cards still apply;
+their preview and result carry `undo_unavailable_reason: no_identity_check`
+(`change_card_catalog.offers_no_undo`), and the change is reversed from its settings page.
+A `denied_command` toggle keeps its Undo, which is a `PATCH` rather than a delete.
+A `schedule.update` also offers no Undo (`no_identity_check`): its inverse is a cron
+`PATCH`, which writes unconditionally and could overwrite an edit another tab saved. A
+`crewmate.update` Undo is a `PUT` of the old fields armed with the `member_id` its apply
+snapshot recorded; the update route compares it with the live crew's under its config lock
+and answers `409 changed_since_apply` when the name now belongs to a different crewmate.
+Crewmate proposals are
+`crewmate.create` cards; the `/members?create=1&name=<encoded-name>&goal=<encoded-goal>`
+link to an editable UI draft remains for a user who wants to fill it in; opening a draft
 never creates a member or starts a schedule.
 The first-run host retains Meet CrewMates automatic entry at tour completion or the first
 Crewmates visit. The page-owned embedded flow listens only for explicit creation; the
@@ -1957,7 +2021,7 @@ sub-agent envelope between two replies — which `crewmateRunPosition` reads off
 the `crewmateTranscript` the pane hands its renderer; there is no time rule. A
 turn's own machinery (tool rows, thinking, the wire-only `done`), a resolved
 approval or a state-only row between two messages does not split the run, and a
-streaming row continues it. A guide offer (`role: 'card'`) is the crewmate's own
+streaming row continues it. A change card (`role: 'card'`) is the crewmate's own
 message and a member of the run: it is drawn inside `CrewmateMessage` at the
 reply's width, so a card that opens the run carries the author line and a card
 after an acknowledgement continues it, and the turn keeps one avatar. The

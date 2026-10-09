@@ -1,19 +1,22 @@
-"""The first crewmate (key ``mate``, shown as Mate) is an ordinary crewmate.
+"""The first crewmate (``kirocrew-mate``, shown as Mate) is an ordinary crewmate.
 
 Every path that renames, rebinds or removes a crew member treats it like any
 other: the dashboard and the CLI delete it, a rename writes its label, it can
-move to another template, and its name can be shared. Each test here fails if
-one of the removed guards comes back.
+move to another template, its name can be shared, and a change card may create,
+undo or delete it like any crewmate. Each test here fails if one of the removed
+guards comes back.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 from unittest.mock import MagicMock
 
 import pytest
 from aiohttp import web
 
+from kiro_crew import change_card_catalog as catalog
 from kiro_crew import cli_commands as cc
 from kiro_crew.agent_files import ASSISTANT_MEMBER_NAME
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
@@ -107,3 +110,31 @@ def test_the_key_and_the_label_are_free_once_it_is_gone():
     keyed = key_new_crew(ASSISTANT_MEMBER_NAME, "", {})
     assert (keyed.key, keyed.taken) == (ASSISTANT_MEMBER_NAME, "")
     assert key_new_crew("Mate", "", {}).taken == ""
+
+
+def test_a_card_creates_and_undoes_any_crewmate_name():
+    p = catalog.validate_params("crewmate.create", {"name": ASSISTANT_MEMBER_NAME, "goal": "g"})
+    preview = catalog.build_preview("crewmate.create", p, {"exists": False}, {})
+    assert preview["apply"]
+    undo, reason = catalog.build_undo(
+        "crewmate.create", p, {}, [{"name": ASSISTANT_MEMBER_NAME}], applied_steps=1
+    )
+    assert reason is None
+    assert undo == [
+        {"method": "DELETE", "path": f"/api/agents/{ASSISTANT_MEMBER_NAME}", "body": None}
+    ]
+
+
+def test_no_code_path_refers_to_the_removed_guards():
+    import kiro_crew.agent_files as files
+
+    for gone in (
+        "ASSISTANT_MEMBER_PROTECTED",
+        "ASSISTANT_MEMBER_RESERVED",
+        "ASSISTANT_NAME_TAKEN",
+        "collides_with_assistant_name",
+    ):
+        assert not hasattr(files, gone)
+    assert not hasattr(catalog, "deletes_assistant_member")
+    assert not hasattr(catalog, "MANAGED_TEMPLATES")
+    assert json.dumps(sorted(vars(catalog))).count("assistant") == 0
