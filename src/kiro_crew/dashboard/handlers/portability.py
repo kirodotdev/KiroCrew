@@ -17,6 +17,7 @@ from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.portability import (
     apply_import_zip,
     create_export_zip,
+    manifest_is_memory_only,
     unbundled_agent_templates,
     validate_import_zip,
 )
@@ -47,6 +48,24 @@ SESSIONS_SKIPPED_SIZE_HEADER = "X-Kirocrew-Sessions-Skipped-Size"
 
 def _sel():
     return _sel_fn()
+
+
+def _requested_components(
+    request: web.Request,
+) -> tuple[list[str] | None, web.Response | None]:
+    """The ``?components=`` selector: absent means the whole install, ``memory`` memory only.
+
+    Only those two are offered from the dashboard, so anything else is refused with a
+    code rather than silently widened to the whole install.
+    """
+    raw = request.query.get("components")
+    if raw is None or raw == "":
+        return None, None
+    if raw == "memory":
+        return ["memory"], None
+    return None, web.json_response(
+        {"error": "components must be 'memory'", "code": "invalid_components"}, status=400
+    )
 
 
 async def _read_upload_file(request: web.Request) -> tuple[Path | None, web.Response | None]:
@@ -98,9 +117,15 @@ async def api_portability_export(request: web.Request) -> web.Response:
     caller = request["user"]
     # Opt-in per export: chats ride only when this request asks for them.
     include_sessions = request.query.get("include_sessions", "").lower() in ("1", "true")
+    components, bad = _requested_components(request)
+    if bad is not None:
+        return bad
+    memory_only = components == ["memory"]
+    if memory_only:
+        include_sessions = False
     try:
         zip_bytes, manifest = await asyncio.to_thread(
-            create_export_zip, include_sessions=include_sessions
+            create_export_zip, include_sessions=include_sessions, memory_only=memory_only
         )
     except Exception as e:
         logger.exception("Export failed")
@@ -113,7 +138,7 @@ async def api_portability_export(request: web.Request) -> web.Response:
         return web.json_response({"error": "Export failed", "code": "export_failed"}, status=500)
 
     ts = manifest.get("created_at", "unknown").replace(":", "").replace("-", "")
-    filename = f"kirocrew-export-{ts}.zip"
+    filename = f"kirocrew-{'memory-' if memory_only else ''}export-{ts}.zip"
 
     contents = manifest.get("contents", {})
     skipped_size = contents.get("sessions_skipped_size", 0)
@@ -124,6 +149,7 @@ async def api_portability_export(request: web.Request) -> web.Response:
         operation="portability.export",
         outcome="ok",
         resources=f"size={len(zip_bytes)}"
+        + (",components=memory" if memory_only else "")
         + (
             f",sessions={contents.get('session_count', 0)},sessions_skipped_size={skipped_size}"
             if include_sessions
@@ -140,7 +166,8 @@ async def api_portability_export(request: web.Request) -> web.Response:
     # a hand-edited name cannot break the header line.
     # Bounded upstream (count and length), so the header stays small; the left-out
     # count rides along as a trailing "+N".
-    unbundled, more = await asyncio.to_thread(unbundled_agent_templates)
+    # A memory export carries no crews or config, so the template warning does not apply.
+    unbundled, more = ([], 0) if memory_only else await asyncio.to_thread(unbundled_agent_templates)
     if unbundled:
         headers[UNBUNDLED_TEMPLATES_HEADER] = json.dumps(unbundled + ([f"+{more}"] if more else []))
     if include_sessions:
@@ -169,6 +196,15 @@ async def api_portability_import(request: web.Request) -> web.Response:
             {"error": "mode must be 'merge' or 'replace'", "code": "invalid_import_mode"},
             status=400,
         )
+    components, bad = _requested_components(request)
+    if bad is not None:
+        return bad
+    memory_only = components == ["memory"]
+    if memory_only and mode != "merge":
+        return web.json_response(
+            {"error": "a memory-only import is merge only", "code": "memory_only_merge_only"},
+            status=400,
+        )
 
     zip_path, err_resp = await _read_upload_file(request)
     if err_resp is not None:
@@ -187,12 +223,33 @@ async def api_portability_import(request: web.Request) -> web.Response:
             return web.json_response(
                 {"ok": False, "error": error, "code": "import_archive_invalid"}, status=400
             )
+        # A memory bundle carries nothing else, so a Replace from it would reset every
+        # other component to absent. Merge is the only mode that makes sense for it.
+        if mode != "merge" and manifest_is_memory_only(manifest):
+            _sel().log_api_access(
+                caller=caller,
+                operation="portability.import",
+                outcome="denied",
+                error="memory-only archive with mode=replace",
+            )
+            return web.json_response(
+                {
+                    "ok": False,
+                    "error": "this archive holds memory only; import it with Merge",
+                    "code": "memory_only_merge_only",
+                },
+                status=400,
+            )
 
         # The running gateway's notification-settings store, so restored mutes apply at
         # once instead of being written back over by its in-memory copy.
         channel_settings = getattr(request.app.get("state"), "notification_channel_settings", None)
         summary = await asyncio.to_thread(
-            apply_import_zip, zip_path, mode, channel_settings=channel_settings
+            apply_import_zip,
+            zip_path,
+            mode,
+            channel_settings=channel_settings,
+            memory_only=memory_only or manifest_is_memory_only(manifest),
         )
 
         # `staging` is recorded here, not only returned. Nothing renders it, and
@@ -211,6 +268,7 @@ async def api_portability_import(request: web.Request) -> web.Response:
             resources=(
                 f"mode={mode},items={len(summary.get('items', []))},"
                 f"staging={summary.get('staging', 'unknown')}"
+                + (",components=memory" if summary.get("components") == ["memory"] else "")
                 + (f",refused={';'.join(refused)}" if refused else "")
             ),
         )

@@ -6483,6 +6483,7 @@
         "settings_kept_name_notifications": "notification settings",
         "include_chat_history": "Include chat history",
         "include_chat_history_hint": "Adds every chat in your Sessions list. Chats keep anything pasted into them, such as passwords or keys, so keep this archive private. Incognito and Temporary chats are never included.",
+        "include_chat_history_memory_hint": "Chat transcripts never go in a memory export; the agent's summaries of them do.",
         "chats_count": "Chats: {{chats}}",
         "archive_has_no_chats": "This archive has no chats. To bring chats, export again with Include chat history ticked.",
         "export_chats_skipped_size": "Older chats left out because they didn't fit in this archive: {{chats}}.",

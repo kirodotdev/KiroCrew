@@ -1215,11 +1215,39 @@ Contract:
 **HTTP refusals** of `/api/portability/*` (`dashboard/handlers/portability.py`)
 each carry a machine-readable `code`: `file_field_required` (400),
 `invalid_import_mode` (400), `import_archive_invalid` (400, with the validator's
-detail), `import_archive_too_large` (413), `auth_required` (401), a 409 with the
+detail), `invalid_components` (400, a `?components=` value other than `memory`),
+`memory_only_merge_only` (400, a Replace asked for memory only or given a memory
+bundle), `import_archive_too_large` (413), `auth_required` (401), a 409 with the
 refusal's own code, and `export_failed` / `import_failed` / `preview_failed`
 (500, opaque prose). A 4xx carries an actionable detail; a coded 5xx does not, so
 the dashboard's `PortabilityTab` `refusalText` shows its own localized fallback for
 a coded 5xx and the server's text otherwise.
+
+**Memory only.** `GET /api/portability/export?components=memory` builds an
+archive holding only the snapshot `memory` component (`memory.db`,
+`memory_index.db`, `workspace/memory/`, `workspace/knowledge/`, `memory_stores/`),
+never chats. Its manifest declares `components: ["memory"]` and carries
+`portability.MEMORY_EXPORT_MANIFEST_VERSION`, which lies outside the
+`1..EXPORT_MANIFEST_VERSION` range a whole-install import accepts, so a reader
+that does not know memory bundles refuses one rather than applying it as a whole
+install. `POST /api/portability/import?mode=merge&components=memory` extracts and
+merges only the memory members of any archive; an archive whose manifest declares
+memory only is imported that way without the parameter. The manifest is the one
+member at `<prefix>/MANIFEST.json` (`portability._top_manifest`); both the
+validator and the import read only that one, so a deeper file with that name is
+ordinary content. No top-level manifest, or more than one, is refused. Memory is
+not redacted: the dashboard shows a confirm step listing what the file holds
+before it builds the export.
+
+**Member names.** Because the memory filter reads member NAMES, both
+`validate_import_zip` and `apply_import_zip` refuse a name an extractor could
+place elsewhere (`portability._unsafe_member_name`): `..`, an absolute name, a
+drive prefix (`C:/x`, which Windows `zipfile` strips), and, only on a host where a
+backslash is a path separator, a backslash-spelled form of those. On POSIX a
+backslash is an ordinary filename character and is kept. After each extract the
+import also refuses a member that did not land under its own top directory. The
+manifest is capped at `_MAX_SETTINGS_DOCUMENT_BYTES` (8 MiB, the budget the export
+sizes its own manifest to, session times included) before it is decoded.
 
 The dashboard export (`portability.create_export_zip`) carries every document a
 Settings choice is persisted in: `config.json`, `config.local.json`,

@@ -118,7 +118,7 @@ async def test_export_includes_chats_only_when_the_request_asks(
     module = _handler_module()
     seen: list[bool] = []
 
-    def export(*, include_sessions: bool = False):
+    def export(*, include_sessions: bool = False, memory_only: bool = False):
         seen.append(include_sessions)
         return b"PK", {"created_at": "t", "contents": {"session_count": 2}}
 
@@ -331,3 +331,162 @@ async def test_every_refusal_carries_a_code(monkeypatch) -> None:
             assert response.status >= 400, body
             assert isinstance(body.get("code"), str) and body["code"], body
             assert isinstance(body.get("error"), str) and body["error"], body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query", "memory_only", "sessions"),
+    [
+        ("?components=memory", True, False),
+        ("?components=memory&include_sessions=true", True, False),
+        ("?include_sessions=true", False, True),
+        ("", False, False),
+    ],
+)
+async def test_export_memory_only_when_asked(monkeypatch, query, memory_only, sessions) -> None:
+    module = _handler_module()
+    seen: list[tuple[bool, bool]] = []
+
+    def export(*, include_sessions: bool = False, memory_only: bool = False):
+        seen.append((memory_only, include_sessions))
+        return b"PK", {"created_at": "t", "contents": {}}
+
+    monkeypatch.setattr(module, "_sel", lambda: _AuditLog())
+    monkeypatch.setattr(module, "create_export_zip", export)
+    monkeypatch.setattr(module, "unbundled_agent_templates", lambda: ([], 0))
+
+    async with TestClient(TestServer(_make_app(module))) as client:
+        response = await client.get(
+            f"/api/portability/export{query}", headers={"X-Test-User": "owner"}
+        )
+
+    assert response.status == 200
+    assert seen == [(memory_only, sessions)]
+    assert ("memory-export" in response.headers["Content-Disposition"]) is memory_only
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/api/portability/export", "/api/portability/import"])
+async def test_an_unknown_component_is_coded(path: str) -> None:
+    module = _handler_module()
+    async with TestClient(TestServer(_make_app(module))) as client:
+        method = client.get if path.endswith("export") else client.post
+        kwargs = {} if path.endswith("export") else {"data": _zip_upload()}
+        response = await method(
+            f"{path}?components=config", headers={"X-Test-User": "owner"}, **kwargs
+        )
+        body = await response.json()
+
+    assert response.status == 400
+    assert body["code"] == "invalid_components"
+
+
+@pytest.mark.asyncio
+async def test_memory_only_import_is_merge_only() -> None:
+    module = _handler_module()
+    async with TestClient(TestServer(_make_app(module))) as client:
+        response = await client.post(
+            "/api/portability/import?mode=replace&components=memory",
+            data=_zip_upload(),
+            headers={"X-Test-User": "owner"},
+        )
+        body = await response.json()
+
+    assert response.status == 400
+    assert body["code"] == "memory_only_merge_only"
+
+
+@pytest.mark.asyncio
+async def test_a_memory_bundle_refuses_replace(monkeypatch) -> None:
+    """Replace from a memory bundle would reset everything it does not carry."""
+    module = _handler_module()
+    applied: list[Any] = []
+    monkeypatch.setattr(module, "_sel", lambda: _AuditLog())
+    monkeypatch.setattr(
+        module,
+        "validate_import_zip",
+        lambda p: (True, "", {"version": 2, "components": ["memory"]}),
+    )
+    monkeypatch.setattr(module, "apply_import_zip", lambda *a, **k: applied.append(a))
+
+    async with TestClient(TestServer(_make_app(module))) as client:
+        response = await client.post(
+            "/api/portability/import?mode=replace",
+            data=_zip_upload(),
+            headers={"X-Test-User": "owner"},
+        )
+        body = await response.json()
+
+    assert response.status == 400
+    assert body["code"] == "memory_only_merge_only"
+    assert applied == []
+
+
+@pytest.mark.asyncio
+async def test_memory_only_import_passes_the_flag(monkeypatch) -> None:
+    module = _handler_module()
+    seen: list[bool] = []
+    monkeypatch.setattr(module, "_sel", lambda: _AuditLog())
+    monkeypatch.setattr(module, "validate_import_zip", lambda p: (True, "", {"version": 2}))
+
+    def apply(zip_path, mode, *, channel_settings=None, memory_only=False):
+        seen.append(memory_only)
+        return {"items": [], "components": ["memory"]}
+
+    monkeypatch.setattr(module, "apply_import_zip", apply)
+
+    async with TestClient(TestServer(_make_app(module))) as client:
+        response = await client.post(
+            "/api/portability/import?mode=merge&components=memory",
+            data=_zip_upload(),
+            headers={"X-Test-User": "owner"},
+        )
+
+    assert response.status == 200
+    assert seen == [True]
+
+
+@pytest.mark.asyncio
+async def test_a_validated_memory_manifest_scopes_the_import(monkeypatch) -> None:
+    """Without ?components the validated declaration alone turns the filter on."""
+    module = _handler_module()
+    seen: list[bool] = []
+    monkeypatch.setattr(module, "_sel", lambda: _AuditLog())
+    monkeypatch.setattr(
+        module,
+        "validate_import_zip",
+        lambda p: (True, "", {"version": 2, "components": ["memory"]}),
+    )
+
+    def apply(zip_path, mode, *, channel_settings=None, memory_only=False):
+        seen.append(memory_only)
+        return {"items": []}
+
+    monkeypatch.setattr(module, "apply_import_zip", apply)
+
+    async with TestClient(TestServer(_make_app(module))) as client:
+        response = await client.post(
+            "/api/portability/import?mode=merge",
+            data=_zip_upload(),
+            headers={"X-Test-User": "owner"},
+        )
+
+    assert response.status == 200
+    assert seen == [True]
+
+
+@pytest.mark.asyncio
+async def test_a_memory_export_names_no_unbundled_templates(monkeypatch) -> None:
+    module = _handler_module()
+    monkeypatch.setattr(module, "_sel", lambda: _AuditLog())
+    monkeypatch.setattr(module, "create_export_zip", lambda **_k: (b"PK", {"created_at": "t"}))
+    monkeypatch.setattr(module, "unbundled_agent_templates", lambda: (["reviewer"], 0))
+
+    async with TestClient(TestServer(_make_app(module))) as client:
+        memory = await client.get(
+            "/api/portability/export?components=memory", headers={"X-Test-User": "owner"}
+        )
+        whole = await client.get("/api/portability/export", headers={"X-Test-User": "owner"})
+
+    assert module.UNBUNDLED_TEMPLATES_HEADER not in memory.headers
+    assert whole.headers.get(module.UNBUNDLED_TEMPLATES_HEADER) == '["reviewer"]'

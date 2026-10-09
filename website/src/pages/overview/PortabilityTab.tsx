@@ -3,6 +3,7 @@ import { Download, Upload, FileArchive, AlertCircle, CheckCircle } from 'lucide-
 import { Card, CardTitle } from '../../components/ui'
 import SimpleSelect from '../../components/SimpleSelect'
 import ErrorNotice from '../../components/ErrorNotice'
+import { useConfirm } from '../../components/ConfirmDialog'
 
 import { i18nT } from '../../i18n/t'
 import { noteStaleOwnerResponse } from '../../api/staleOwnerSignal'
@@ -68,6 +69,30 @@ interface Manifest {
   hostname: string
   user: string
   contents: Record<string, number>
+  /** `["memory"]` when the archive is a memory-only export; absent for a whole install. */
+  components?: string[]
+}
+
+/** Whether a previewed archive declares it carries memory only. */
+export function isMemoryOnlyManifest(manifest: Manifest | null): boolean {
+  const c = manifest?.components
+  return Array.isArray(c) && c.length === 1 && c[0] === 'memory'
+}
+
+/**
+ * What a memory-only export carries, in the order the confirm step lists it.
+ * Mirrors the snapshot `memory` component: memory.db (facts, lessons, episodic
+ * memories, knowledge graph), workspace/memory, workspace/knowledge and every
+ * named store. Nothing is redacted, so the list is the whole of it.
+ */
+export function memoryShareItems(): string[] {
+  return [
+    i18nT('pages.overview.portabilityTab.share_memory_item_semantic'),
+    i18nT('pages.overview.portabilityTab.share_memory_item_episodic'),
+    i18nT('pages.overview.portabilityTab.share_memory_item_knowledge'),
+    i18nT('pages.overview.portabilityTab.share_memory_item_notes'),
+    i18nT('pages.overview.portabilityTab.share_memory_item_stores'),
+  ]
 }
 
 /**
@@ -237,19 +262,49 @@ export default function PortabilityTab() {
   const [previewError, setPreviewError] = useState('')
   const [mode, setMode] = useState<'merge' | 'replace'>('merge')
   const [includeChats, setIncludeChats] = useState(false)
+  const [memoryOnly, setMemoryOnly] = useState(false)
+  const [importMemoryOnly, setImportMemoryOnly] = useState(false)
   const [chatLines, setChatLines] = useState<string[]>(carried?.chats ?? [])
   const fileRef = useRef<HTMLInputElement>(null)
+  const { confirm: confirmShare, confirmDialog } = useConfirm()
+  // A memory bundle carries nothing else, so it only ever imports with Merge.
+  const previewMemoryOnly = isMemoryOnlyManifest(preview)
+  const memoryImport = importMemoryOnly || previewMemoryOnly
+  const effectiveMode = previewMemoryOnly ? 'merge' : mode
 
   useEffect(() => {
     dropCarriedImportResult()
   }, [])
 
   const handleExport = async () => {
+    // A memory-only export exists to be handed to someone else, and nothing in it
+    // is redacted: the user sees what it holds and says yes before it is built.
+    if (memoryOnly) {
+      const ok = await confirmShare({
+        title: i18nT('pages.overview.portabilityTab.share_memory_title'),
+        body: (
+          <span data-testid="portability-share-memory-body">
+            <span className="block mb-2">{i18nT('pages.overview.portabilityTab.share_memory_intro')}</span>
+            {memoryShareItems().map(item => (
+              <span key={item} className="block pl-3" data-testid="portability-share-memory-item">• {item}</span>
+            ))}
+            <span className="block mt-2">{i18nT('pages.overview.portabilityTab.share_memory_warning')}</span>
+          </span>
+        ),
+        confirmLabel: i18nT('pages.overview.portabilityTab.share_memory_confirm'),
+        primary: true,
+      })
+      if (!ok) return
+    }
     setExportStatus({ type: 'loading', msg: i18nT('pages.overview.portabilityTab.generating_export') })
     setExportWarning('')
     setExportChatsSkipped('')
+    const withChats = includeChats && !memoryOnly
     try {
-      const resp = await fetch(includeChats ? '/api/portability/export?include_sessions=true' : '/api/portability/export')
+      const exportUrl = memoryOnly
+        ? '/api/portability/export?components=memory'
+        : withChats ? '/api/portability/export?include_sessions=true' : '/api/portability/export'
+      const resp = await fetch(exportUrl)
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({ error: resp.statusText }))
         noteStaleOwnerResponse(resp.status, err)
@@ -270,7 +325,7 @@ export default function PortabilityTab() {
       setExportStatus({ type: 'ok', msg: i18nT('pages.overview.portabilityTab.download_started') })
       const { names, more } = unbundledTemplates(resp.headers.get('X-Kirocrew-Unbundled-Templates'))
       if (names.length) setExportWarning(i18nT('pages.overview.portabilityTab.export_templates_not_included', { names: joinWithMore(names, more) }))
-      const skipped = includeChats ? skippedChats(resp.headers.get('X-Kirocrew-Sessions-Skipped-Size')) : 0
+      const skipped = withChats ? skippedChats(resp.headers.get('X-Kirocrew-Sessions-Skipped-Size')) : 0
       if (skipped > 0) setExportChatsSkipped(i18nT('pages.overview.portabilityTab.export_chats_skipped_size', { chats: skipped }))
     } catch (e: unknown) {
       setExportStatus({ type: 'error', msg: e instanceof Error ? e.message : i18nT('pages.overview.portabilityTab.network_error') })
@@ -305,7 +360,7 @@ export default function PortabilityTab() {
   const handleImport = async () => {
     const file = fileRef.current?.files?.[0]
     if (!file) return
-    if (mode === 'replace' && !confirm(i18nT('pages.overview.portabilityTab.replace_mode_will_overwrite_existing_data_contin'))) return
+    if (effectiveMode === 'replace' && !confirm(i18nT('pages.overview.portabilityTab.replace_mode_will_overwrite_existing_data_contin'))) return
 
     setImportStatus({ type: 'loading', msg: i18nT('pages.overview.portabilityTab.importing') })
     setImportWarnings([])
@@ -319,7 +374,9 @@ export default function PortabilityTab() {
     await pauseUiPrefsSync()
     let adopting = false
     try {
-      const resp = await fetch(`/api/portability/import?mode=${mode}`, { method: 'POST', body: fd })
+      const params = new URLSearchParams({ mode: effectiveMode })
+      if (memoryImport && effectiveMode === 'merge') params.set('components', 'memory')
+      const resp = await fetch(`/api/portability/import?${params}`, { method: 'POST', body: fd })
       const data = await resp.json()
       if (data.ok) {
         const summary = data.summary || {}
@@ -381,24 +438,52 @@ export default function PortabilityTab() {
   return (
     <div className="space-y-4">
       <Card>
-        <CardTitle>{i18nT('pages.overview.portabilityTab.export_configuration')}</CardTitle>
+        <CardTitle>
+          {memoryOnly
+            ? i18nT('pages.overview.portabilityTab.export_memory_title')
+            : i18nT('pages.overview.portabilityTab.export_configuration')}
+        </CardTitle>
         <p className="text-muted text-[13px] mb-3">
-          {i18nT('pages.overview.portabilityTab.download_all_settings_memory_skills_crons_and_le')}
+          {memoryOnly
+            ? i18nT('pages.overview.portabilityTab.download_memory_only_description')
+            : i18nT('pages.overview.portabilityTab.download_all_settings_memory_skills_crons_and_le')}
         </p>
         <label className="flex min-h-11 cursor-pointer items-center gap-2 text-[13px]">
           <input
             type="checkbox"
+            aria-label={i18nT('pages.overview.portabilityTab.export_memory_only')}
+            className="h-4 w-4 shrink-0 accent-accent"
+            checked={memoryOnly}
+            disabled={exportStatus.type === 'loading'}
+            aria-describedby="portability-memory-only-hint"
+            onChange={event => {
+              setMemoryOnly(event.target.checked)
+              if (event.target.checked) setIncludeChats(false)
+            }}
+          />
+          {i18nT('pages.overview.portabilityTab.export_memory_only')}
+        </label>
+        <p id="portability-memory-only-hint" className="text-text text-[12px] mb-3">
+          {i18nT('pages.overview.portabilityTab.export_memory_only_hint')}
+        </p>
+        {/* A memory export never carries chats: the box stays visible but off,
+            and says why, so it does not vanish or come back ticked on its own. */}
+        <label className={`flex min-h-11 items-center gap-2 text-[13px] ${memoryOnly ? 'cursor-not-allowed text-muted' : 'cursor-pointer'}`}>
+          <input
+            type="checkbox"
             aria-label={i18nT('pages.overview.portabilityTab.include_chat_history')}
             className="h-4 w-4 shrink-0 accent-accent"
-            checked={includeChats}
-            disabled={exportStatus.type === 'loading'}
+            checked={includeChats && !memoryOnly}
+            disabled={memoryOnly || exportStatus.type === 'loading'}
             aria-describedby="portability-include-chats-hint"
             onChange={event => setIncludeChats(event.target.checked)}
           />
           {i18nT('pages.overview.portabilityTab.include_chat_history')}
         </label>
         <p id="portability-include-chats-hint" className="text-text text-[12px] mb-3">
-          {i18nT('pages.overview.portabilityTab.include_chat_history_hint')}
+          {memoryOnly
+            ? i18nT('pages.overview.portabilityTab.include_chat_history_memory_hint')
+            : i18nT('pages.overview.portabilityTab.include_chat_history_hint')}
         </p>
         <div className="flex items-center gap-3">
           <button
@@ -408,24 +493,60 @@ export default function PortabilityTab() {
             className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-[13px] font-semibold font-body cursor-pointer bg-accent text-accent-fg border-none hover:bg-accent-hover transition-colors disabled:opacity-60"
           >
             <Download size={14} />
-            {exportStatus.type === 'loading' ? i18nT('pages.overview.portabilityTab.generating') : i18nT('pages.overview.portabilityTab.download_export_zip')}
+            {exportStatus.type === 'loading'
+              ? i18nT('pages.overview.portabilityTab.generating')
+              : memoryOnly
+                ? i18nT('pages.overview.portabilityTab.download_memory_export_zip')
+                : i18nT('pages.overview.portabilityTab.download_export_zip')}
           </button>
-          {exportStatus.msg && (
-            <span className={`text-[12px] inline-flex items-center gap-1 ${exportStatus.type === 'ok' ? 'text-ok' : exportStatus.type === 'error' ? 'text-danger' : 'text-muted'}`}>
+          {exportStatus.msg && exportStatus.type !== 'error' && (
+            <span className={`text-[12px] inline-flex items-center gap-1 ${exportStatus.type === 'ok' ? 'text-ok' : 'text-muted'}`}>
               {exportStatus.type === 'ok' && <CheckCircle size={12} />}
-              {exportStatus.type === 'error' && <AlertCircle size={12} />}
               {exportStatus.msg}
             </span>
           )}
         </div>
+        {/* No hand-off: the import card below may hold a chosen archive and its
+            `preview`, neither saved anywhere durable. The hand-off unmounts this
+            tab, and a `File` cannot be restored programmatically. */}
+        {exportStatus.type === 'error' && (
+          <ErrorNotice variant="inline" message={exportStatus.msg} className="mt-3" testId="portability-export-error" />
+        )}
         <WarnLine msg={exportWarning} testId="portability-export-warning" />
         <WarnLine msg={exportChatsSkipped} testId="portability-export-chats-skipped" />
       </Card>
 
       <Card>
-        <CardTitle>{i18nT('pages.overview.portabilityTab.import_configuration')}</CardTitle>
+        <CardTitle>
+          {memoryImport
+            ? i18nT('pages.overview.portabilityTab.import_memory_title')
+            : i18nT('pages.overview.portabilityTab.import_configuration')}
+        </CardTitle>
         <p className="text-muted text-[13px] mb-3">
-          {i18nT('pages.overview.portabilityTab.upload_a_kirocrew_export_zip_to_restore_settings')}
+          {memoryImport
+            ? i18nT('pages.overview.portabilityTab.import_memory_description')
+            : i18nT('pages.overview.portabilityTab.upload_a_kirocrew_export_zip_to_restore_settings')}
+        </p>
+        {/* Above the Import button, so the option is read before the commit.
+            Under Replace the box is off and looks it, like the export's chat box. */}
+        <label className={`flex min-h-11 items-center gap-2 text-[13px] ${
+          previewMemoryOnly || mode === 'replace' ? 'cursor-not-allowed' : 'cursor-pointer'
+        } ${mode === 'replace' && !previewMemoryOnly ? 'text-muted' : ''}`}>
+          <input
+            type="checkbox"
+            aria-label={i18nT('pages.overview.portabilityTab.import_memory_only')}
+            className="h-4 w-4 shrink-0 accent-accent"
+            checked={memoryImport && effectiveMode === 'merge'}
+            disabled={previewMemoryOnly || mode === 'replace' || importStatus.type === 'loading'}
+            aria-describedby="portability-import-memory-only-hint"
+            onChange={event => setImportMemoryOnly(event.target.checked)}
+          />
+          {i18nT('pages.overview.portabilityTab.import_memory_only')}
+        </label>
+        <p id="portability-import-memory-only-hint" className="text-text text-[12px] mb-3">
+          {previewMemoryOnly
+            ? i18nT('pages.overview.portabilityTab.archive_memory_only')
+            : i18nT('pages.overview.portabilityTab.import_memory_only_hint')}
         </p>
         <div className="flex items-center gap-3 flex-wrap">
           <label {...uiLocation('backup.import-file')} htmlFor="portability-import-file" className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-[13px] font-semibold font-body cursor-pointer bg-bg-elevated border border-border hover:border-accent transition-colors">
@@ -445,8 +566,12 @@ export default function PortabilityTab() {
             aria-label={i18nT('pages.overview.portabilityTab.mode')}
             options={['merge', 'replace']}
             optionLabels={[i18nT('pages.overview.portabilityTab.merge'), i18nT('pages.overview.portabilityTab.replace')]}
-            value={mode}
-            onChange={v => setMode(v as 'merge' | 'replace')}
+            value={effectiveMode}
+            disabled={previewMemoryOnly}
+            onChange={v => {
+              setMode(v as 'merge' | 'replace')
+              if (v === 'replace') setImportMemoryOnly(false)
+            }}
           />
           <button
             onClick={handleImport}
@@ -458,23 +583,40 @@ export default function PortabilityTab() {
           </button>
         </div>
 
-        {preview && (
+        {preview && (() => {
+          // In a memory import, rows outside memory are named but marked skipped,
+          // so the preview says what will load rather than what the file holds.
+          const skipped = memoryImport
+            ? <span data-testid="portability-preview-skipped" className="text-muted"> {i18nT('pages.overview.portabilityTab.archive_item_skipped')}</span>
+            : null
+          const outside = memoryImport ? 'text-muted' : undefined
+          return (
           <div className="mt-3 p-3 rounded-lg bg-bg-elevated border border-border text-[12px] font-mono space-y-1">
             <div className="font-semibold text-text mb-1">{i18nT('pages.overview.portabilityTab.archive_contents')}</div>
-            {preview.contents['config.json'] != null && <div>{i18nT('pages.overview.portabilityTab.config')} {(preview.contents['config.json'] / 1024).toFixed(1)} {i18nT('pages.overview.portabilityTab.kb')}</div>}
+            {preview.contents['config.json'] != null && <div className={outside}>{i18nT('pages.overview.portabilityTab.config')} {(preview.contents['config.json'] / 1024).toFixed(1)} {i18nT('pages.overview.portabilityTab.kb')}{skipped}</div>}
             {preview.contents['memory.db'] != null && <div>{i18nT('pages.overview.portabilityTab.memory_db')} {(preview.contents['memory.db'] / 1024).toFixed(1)} {i18nT('pages.overview.portabilityTab.kb')}</div>}
-            {preview.contents['crons.json'] != null && <div>{i18nT('pages.overview.portabilityTab.crons')} {(preview.contents['crons.json'] / 1024).toFixed(1)} {i18nT('pages.overview.portabilityTab.kb')}</div>}
-            {preview.contents.workspace_files != null && <div>{i18nT('pages.overview.portabilityTab.workspace_files')} {preview.contents.workspace_files}</div>}
-            {preview.contents.skill_count != null && <div>{i18nT('pages.overview.portabilityTab.skills')} {preview.contents.skill_count}</div>}
-            {preview.contents.plan_memory_files != null && <div>{i18nT('pages.overview.portabilityTab.plan_memory_files')} {preview.contents.plan_memory_files}</div>}
+            {preview.contents['crons.json'] != null && <div className={outside}>{i18nT('pages.overview.portabilityTab.crons')} {(preview.contents['crons.json'] / 1024).toFixed(1)} {i18nT('pages.overview.portabilityTab.kb')}{skipped}</div>}
+            {preview.contents.workspace_files != null && (
+              <div>
+                {previewMemoryOnly
+                  ? i18nT('pages.overview.portabilityTab.archive_memory_files', { count: preview.contents.workspace_files })
+                  : memoryImport
+                    // A whole archive imported memory only loads just its memory and knowledge folders.
+                    ? i18nT('pages.overview.portabilityTab.archive_workspace_memory_only', { count: preview.contents.workspace_files })
+                    : `${i18nT('pages.overview.portabilityTab.workspace_files')} ${preview.contents.workspace_files}`}
+              </div>
+            )}
+            {preview.contents.skill_count != null && <div className={outside}>{i18nT('pages.overview.portabilityTab.skills')} {preview.contents.skill_count}{skipped}</div>}
+            {preview.contents.plan_memory_files != null && <div className={outside}>{i18nT('pages.overview.portabilityTab.plan_memory_files')} {preview.contents.plan_memory_files}{skipped}</div>}
             {preview.contents.session_count != null
-              ? <div>{i18nT('pages.overview.portabilityTab.chats_count', { chats: preview.contents.session_count })}</div>
-              : <div data-testid="portability-preview-no-chats" className="text-muted">{i18nT('pages.overview.portabilityTab.archive_has_no_chats')}</div>}
+              ? <div className={outside}>{i18nT('pages.overview.portabilityTab.chats_count', { chats: preview.contents.session_count })}{skipped}</div>
+              : !memoryImport && <div data-testid="portability-preview-no-chats" className="text-muted">{i18nT('pages.overview.portabilityTab.archive_has_no_chats')}</div>}
             <div className="pt-1 border-t border-border mt-1 text-muted">
               {i18nT('pages.overview.portabilityTab.created')} {preview.created_at} {i18nT('pages.overview.portabilityTab.from')} {preview.user}@{preview.hostname}
             </div>
           </div>
-        )}
+          )
+        })()}
 
         {/* No hand-off: the chosen archive lives in the file input above and in
             `preview`, neither of which is saved anywhere durable. The hand-off
@@ -513,6 +655,7 @@ export default function PortabilityTab() {
           </div>
         )}
       </Card>
+      {confirmDialog}
     </div>
   )
 }

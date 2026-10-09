@@ -15,6 +15,7 @@ import json
 import logging
 import math
 import os
+import re
 import shutil
 import socket
 import stat
@@ -57,6 +58,7 @@ from kiro_crew.notifications.settings import ChannelSettings, parse_imported_set
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.snapshot import (
     _DB_SIDECAR_GLOBS,
+    COMPONENTS,
     EXPORT_MANIFEST_VERSION,
     NotificationCopyUnsupported,
     _copy_notifications,
@@ -121,6 +123,44 @@ EXCLUDE_DIRS = frozenset(
 
 def _mc_dir() -> Path:
     return Path(os.environ.get("KIROCREW_HOME", config_dir()))
+
+
+#: The snapshot ``memory`` component, which a memory-only export carries and a
+#: memory-only import applies: its two databases, the memory half of the workspace,
+#: and every named store (``memory_stores/``, walked by its own filter below).
+MEMORY_ONLY_FILES: tuple[str, ...] = COMPONENTS["memory"].files
+MEMORY_ONLY_TREES: tuple[str, ...] = tuple(
+    t for t in COMPONENTS["memory"].trees if t != MEMORY_STORES_DIR_NAME
+)
+
+
+#: The manifest version a memory-only export writes. It sits outside the range a
+#: whole-install import accepts (``1..EXPORT_MANIFEST_VERSION``), so a reader that does
+#: not know memory bundles refuses one instead of applying it as a whole install, where
+#: a Replace would reset every component the bundle does not carry.
+MEMORY_EXPORT_MANIFEST_VERSION = 1001
+
+
+def manifest_is_memory_only(manifest: object) -> bool:
+    """True when an export manifest declares it carries the memory component only."""
+    return isinstance(manifest, dict) and manifest.get("components") == ["memory"]
+
+
+def _is_memory_member(rest: tuple[str, ...]) -> bool:
+    """Whether an archive member (its path below the export prefix) is memory.
+
+    Lexical only, on the member NAME, so a memory-only import never extracts any
+    other component -- whatever else the archive carries stays in the zip.
+    """
+    if not rest:
+        return True  # the prefix directory itself
+    if rest == ("MANIFEST.json",):
+        return True
+    if len(rest) == 1:
+        return rest[0] in MEMORY_ONLY_FILES
+    if rest[0] == MEMORY_STORES_DIR_NAME:
+        return True
+    return any(rest[: len(t.split("/"))] == tuple(t.split("/")) for t in MEMORY_ONLY_TREES)
 
 
 def _is_excluded(rel_path: PurePosixPath) -> bool:
@@ -862,7 +902,9 @@ def missing_crew_templates(config_path: Path) -> tuple[list[dict[str, str]], int
     return rows, len(missing) - len(kept)
 
 
-def create_export_zip(*, include_sessions: bool = False) -> tuple[bytes, dict]:
+def create_export_zip(
+    *, include_sessions: bool = False, memory_only: bool = False
+) -> tuple[bytes, dict]:
     """Create a zip archive of Kiro Crew state. Returns (zip_bytes, manifest_dict).
 
     *include_sessions* adds the dashboard chats (`_export_sessions`). It is off by
@@ -870,7 +912,15 @@ def create_export_zip(*, include_sessions: bool = False) -> tuple[bytes, dict]:
     that carries chats is a different thing to hand around than one that does not;
     the manifest then records ``session_count`` and ``sessions_withheld``. With it
     off the archive is unchanged.
+
+    *memory_only* narrows the archive to the snapshot's ``memory`` component
+    (`MEMORY_ONLY_FILES` and `MEMORY_ONLY_TREES`): no config, crons, hooks, skills,
+    other workspace files or chats, so memory can be handed to someone else without
+    the rest of the install. The manifest records ``components: ["memory"]``. It
+    wins over *include_sessions*.
     """
+    if memory_only:
+        include_sessions = False
     mc = _mc_dir()
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     prefix = f"kirocrew-export-{ts}"
@@ -882,16 +932,21 @@ def create_export_zip(*, include_sessions: bool = False) -> tuple[bytes, dict]:
     contents_summary: dict = {}
 
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
-        # Core JSON/text files
-        for fname in (
-            "config.json",
-            *_SETTINGS_DOCUMENTS,
-            "hooks.json",
-            "crons.json",
-            "notifications.jsonl",
-            "project_dir",
-            "workspace_dir",
-        ):
+        # Core JSON/text files (none of them is memory)
+        core_files: tuple[str, ...] = (
+            ()
+            if memory_only
+            else (
+                "config.json",
+                *_SETTINGS_DOCUMENTS,
+                "hooks.json",
+                "crons.json",
+                "notifications.jsonl",
+                "project_dir",
+                "workspace_dir",
+            )
+        )
+        for fname in core_files:
             src = mc / fname
             if src.is_file() and not src.is_symlink():
                 zf.write(str(src), f"{prefix}/{fname}")
@@ -901,7 +956,7 @@ def create_export_zip(*, include_sessions: bool = False) -> tuple[bytes, dict]:
         # the core files above -- the directory holds nothing else that rides (its lock
         # file is this host's runtime state), so the pinned tree walk below is not needed.
         teams_src = mc / "crew-teams" / "teams.json"
-        if teams_src.is_file() and not teams_src.is_symlink():
+        if not memory_only and teams_src.is_file() and not teams_src.is_symlink():
             zf.write(str(teams_src), f"{prefix}/crew-teams/teams.json")
             contents_summary["crew-teams/teams.json"] = teams_src.stat().st_size
 
@@ -922,7 +977,10 @@ def create_export_zip(*, include_sessions: bool = False) -> tuple[bytes, dict]:
         # configured spelling would return an empty archive on such a host.
         mc_real = os.path.realpath(mc)
         dir_counts: dict[str, int] = {}
-        for dirname in ("workspace", "plan_memory", "skills"):
+        # A memory-only export walks only the memory half of the workspace; its
+        # files still count as ``workspace_files`` so the import preview reads them.
+        trees = MEMORY_ONLY_TREES if memory_only else ("workspace", "plan_memory", "skills")
+        for dirname in trees:
             count = 0
             for rel, fd in _walk_contained(mc_real, PurePath(dirname), _keep_for_export):
                 try:
@@ -935,10 +993,12 @@ def create_export_zip(*, include_sessions: bool = False) -> tuple[bytes, dict]:
                 finally:
                     os.close(fd)
                 count += 1
-            dir_counts[dirname] = count
+            top = dirname.split("/", 1)[0]
+            dir_counts[top] = dir_counts.get(top, 0) + count
         contents_summary["workspace_files"] = dir_counts.get("workspace", 0)
-        contents_summary["plan_memory_files"] = dir_counts.get("plan_memory", 0)
-        contents_summary["skill_count"] = dir_counts.get("skills", 0)
+        if not memory_only:
+            contents_summary["plan_memory_files"] = dir_counts.get("plan_memory", 0)
+            contents_summary["skill_count"] = dir_counts.get("skills", 0)
 
         # Named memory stores: the same pinned walk, with the tree's own filter and the
         # fence lifted (see `_open_verified`). A store's databases go through the backup
@@ -969,13 +1029,15 @@ def create_export_zip(*, include_sessions: bool = False) -> tuple[bytes, dict]:
         # Build the envelope before selecting chats so their timestamp map is
         # budgeted against the same document the importer will read.
         manifest = {
-            "version": EXPORT_MANIFEST_VERSION,
+            "version": MEMORY_EXPORT_MANIFEST_VERSION if memory_only else EXPORT_MANIFEST_VERSION,
             "format": "zip",
             "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "hostname": socket.gethostname(),
             "user": os.environ.get("USER", "unknown"),
             "contents": contents_summary,
         }
+        if memory_only:
+            manifest["components"] = ["memory"]
         if include_sessions:
             session_mtimes: dict[str, float] = {}
             exported, withheld, skipped = _export_sessions(
@@ -1015,6 +1077,73 @@ def _is_link_entry(info: zipfile.ZipInfo) -> bool:
     return bool(mode) and stat.S_ISLNK(mode)
 
 
+_DRIVE_PREFIX = re.compile(r"^[A-Za-z]:")
+
+
+def _unsafe_member_name(name: str, *, backslash_separates: bool | None = None) -> bool:
+    """True for a member name an extractor could place somewhere other than it reads.
+
+    Covers traversal and absolute names, and the Windows forms: a drive prefix
+    (``C:/x``) that ``zipfile`` strips on extraction, and, where the host treats a
+    backslash as a separator, a backslash-spelled traversal or drive. A stripped
+    drive moves the member up one level, out of the archive prefix, so a lexical
+    filter on the name (the memory-only filter, the one-top-directory check) would
+    describe a different place from where it lands. On POSIX a backslash is an
+    ordinary filename character that the export itself can write, so it is not
+    refused there.
+    """
+    if backslash_separates is None:
+        backslash_separates = os.sep == "\\" or os.altsep == "\\"
+    if backslash_separates:
+        name = name.replace("\\", "/")
+    if name.startswith("/"):
+        return True
+    parts = PurePosixPath(name).parts
+    if ".." in parts:
+        return True
+    return bool(parts) and bool(_DRIVE_PREFIX.match(parts[0]))
+
+
+def _read_manifest_bytes(zf: zipfile.ZipFile, member: str | zipfile.ZipInfo) -> bytes:
+    """A manifest member's bytes, refusing one larger than the manifest budget.
+
+    The budget is ``_MAX_SETTINGS_DOCUMENT_BYTES``, the same one the export sizes
+    its manifest to (session times included), so every backup this product writes
+    reads back. Checked before anything is inflated, so an oversized member is
+    never decoded. Pass the ``ZipInfo`` when iterating entries: a name resolves to
+    the LAST entry of that name, so reading duplicates by name reads one entry many
+    times.
+    """
+    info = member if isinstance(member, zipfile.ZipInfo) else zf.getinfo(member)
+    if info.file_size > _MAX_SETTINGS_DOCUMENT_BYTES:
+        raise ValueError(f"Manifest member too large: {info.filename}")
+    return zf.read(info)
+
+
+def _top_manifest(infos: list[zipfile.ZipInfo], *, required: bool = True) -> zipfile.ZipInfo | None:
+    """The archive's one manifest, at ``<prefix>/MANIFEST.json``.
+
+    Only that placement is the manifest: a ``MANIFEST.json`` deeper in the tree is
+    ordinary content (a workspace or skill file can carry that name), so it never
+    decides what an import applies. Two at the top, under one prefix or two, are
+    refused, since then no single manifest describes the archive. With none,
+    ``required`` decides between refusing and returning ``None``.
+    """
+    tops = [
+        info
+        for info in infos
+        if len(PurePosixPath(info.filename).parts) == 2
+        and PurePosixPath(info.filename).name == "MANIFEST.json"
+    ]
+    if len(tops) > 1:
+        raise ValueError("More than one top-level MANIFEST.json in archive")
+    if not tops:
+        if required:
+            raise ValueError("No MANIFEST.json found in archive")
+        return None
+    return tops[0]
+
+
 def validate_import_zip(zip_path: Path) -> tuple[bool, str, dict]:
     """Validate a zip file for import.
 
@@ -1027,8 +1156,7 @@ def validate_import_zip(zip_path: Path) -> tuple[bool, str, dict]:
 
             # Check for path traversal
             for name in names:
-                parts = PurePosixPath(name).parts
-                if ".." in parts or name.startswith("/"):
+                if _unsafe_member_name(name):
                     return False, f"Rejected path traversal: {name}", {}
 
             # Zip-bomb guard: bound entry count and total uncompressed size.
@@ -1057,13 +1185,21 @@ def validate_import_zip(zip_path: Path) -> tuple[bool, str, dict]:
                     return False, f"Rejected link entry: {info.filename}", {}
 
             # Find manifest
-            manifest_entries = [n for n in names if n.endswith("MANIFEST.json")]
-            if not manifest_entries:
-                return False, "No MANIFEST.json found in archive", {}
-
-            manifest_data = json.loads(zf.read(manifest_entries[0]))
+            try:
+                top = _top_manifest(zf.infolist())
+                if top is None:  # required=True raises instead; this narrows the type
+                    return False, "No MANIFEST.json found in archive", {}
+                manifest_bytes = _read_manifest_bytes(zf, top)
+            except ValueError as exc:
+                return False, f"Rejected: {exc}", {}
+            manifest_data = json.loads(manifest_bytes)
             version = manifest_data.get("version")
-            if not isinstance(version, int) or not 1 <= version <= EXPORT_MANIFEST_VERSION:
+            memory_bundle = version == MEMORY_EXPORT_MANIFEST_VERSION and manifest_is_memory_only(
+                manifest_data
+            )
+            if not memory_bundle and (
+                not isinstance(version, int) or not 1 <= version <= EXPORT_MANIFEST_VERSION
+            ):
                 return False, f"Unsupported manifest version: {version}", {}
 
             return True, "", manifest_data
@@ -1879,8 +2015,26 @@ def _read_session_mtimes(zf: zipfile.ZipFile) -> dict[str, float]:
     return mtimes
 
 
+def _read_member_json(zf: zipfile.ZipFile, name: str | zipfile.ZipInfo) -> object:
+    """One archive member parsed as JSON, or ``None`` when it does not parse.
+
+    An oversized member raises ``ValueError`` instead of reading as ``None``: the
+    caller asks whether ANY manifest declares memory only, and an unreadable one
+    must not quietly answer "no" and widen the import.
+    """
+    data = _read_manifest_bytes(zf, name)
+    try:
+        return json.loads(data)
+    except (ValueError, RecursionError):
+        return None
+
+
 def apply_import_zip(
-    zip_path: Path, mode: str = "merge", *, channel_settings: ChannelSettings | None = None
+    zip_path: Path,
+    mode: str = "merge",
+    *,
+    channel_settings: ChannelSettings | None = None,
+    memory_only: bool = False,
 ) -> dict:
     """Extract and apply an import zip.
 
@@ -1894,6 +2048,11 @@ def apply_import_zip(
         channel_settings: the running gateway's notification-settings store, so a
             restored mute applies at once and is not written back over by the
             in-memory copy. ``None`` (no gateway in this process) loads one from disk.
+        memory_only: apply only the memory component (`_is_memory_member`); every
+            other member stays in the zip. Also implied by an archive whose manifest
+            declares memory only. Merge only: a Replace raises ``ValueError``,
+            because a whole-install replace from a memory bundle would reset
+            everything the bundle does not carry.
 
     Returns summary dict of what was imported. ``ui_prefs_restored`` is True when the
     browser-preference backup was installed, which tells the dashboard to re-read it.
@@ -1979,13 +2138,33 @@ def apply_import_zip(
                     f"{_MAX_IMPORT_UNCOMPRESSED} (possible zip bomb)"
                 )
             session_mtimes = _read_session_mtimes(zf)
+            if not memory_only:
+                # The same one manifest the validator read decides the scope; a file
+                # elsewhere that happens to be named MANIFEST.json is content. With no
+                # manifest at all nothing declares memory only (the validator is what
+                # requires one); two at the top are still refused.
+                top = _top_manifest(infos, required=False)
+                memory_only = top is not None and manifest_is_memory_only(
+                    _read_member_json(zf, top)
+                )
+            if memory_only and mode != "merge":
+                raise ValueError("A memory-only import is merge only")
             for info in infos:
                 parts = PurePosixPath(info.filename).parts
-                if ".." in parts or info.filename.startswith("/"):
+                if _unsafe_member_name(info.filename):
                     continue
                 if _is_link_entry(info):
                     continue
+                if memory_only and not _is_memory_member(tuple(parts[1:])):
+                    continue
                 extracted = zf.extract(info, work)
+                # The filters above read the NAME; this checks where the extractor
+                # actually put it. A member that lost its top directory on the way
+                # out would be read as a different component than it was filtered as.
+                if Path(extracted).relative_to(work).parts[:1] != parts[:1]:
+                    raise ValueError(
+                        f"Rejected member that left its archive prefix: {info.filename}"
+                    )
                 if len(parts) >= 3 and parts[1] == SESSIONS_DIR_NAME and not info.is_dir():
                     # Only accepted chats are copied out of this private staging tree;
                     # no-overwrite copying preserves these epochs on installed files.
@@ -1998,6 +2177,8 @@ def apply_import_zip(
         if len(snap_dirs) != 1:
             raise ValueError(f"Expected 1 top-level directory in zip, found {len(snap_dirs)}")
         snap = snap_dirs[0]
+        if memory_only:
+            summary["components"] = ["memory"]
 
         # Re-vet imported cron commands before ANY path below consumes
         # crons.json (merge, copy, or replace). An import archive is
