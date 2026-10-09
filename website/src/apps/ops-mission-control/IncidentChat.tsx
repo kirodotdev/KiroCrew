@@ -27,6 +27,7 @@ import { AppScopedApiProvider } from '../../app-sdk/scopedApi'
 import ChatEmbed from '../../app-sdk/ChatEmbed'
 
 import { i18nT } from '../../i18n/t'
+import { withBase } from '../../lib/basePath'
 /**
  * The panel's fixed box height and the composer's auto-grow cap, together.
  *
@@ -68,7 +69,7 @@ export default function IncidentChat({
   // Deliberately NOT the router's navigate: this panel sits on a board row, and a
   // full document load is the intended behaviour when the embed navigates away.
   const navigateFn = useCallback((path: string) => {
-    window.location.assign(path)
+    window.location.assign(withBase(path))
   }, [])
 
   return (

@@ -3,6 +3,7 @@ import { runInNewContext } from 'node:vm'
 import * as ts from 'typescript'
 import * as reactQuery from '@tanstack/react-query'
 import { describe, expect, it } from 'vitest'
+import { vendorImportMap } from '../../scripts/lib/basePath.mjs'
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8')
 
@@ -48,12 +49,12 @@ describe('app shared-module boundaries', () => {
   })
 
   it('maps the documented UI specifier and React Query to checked-in vendor stubs', () => {
-    const config = read('../../vite.config.ts')
+    const { imports } = vendorImportMap('/')
     for (const [specifier, filename] of [
       ['@kirocrew/app-sdk/ui', 'kirocrew-ui.mjs'],
       ['@tanstack/react-query', 'tanstack-react-query.mjs'],
     ]) {
-      expect(config).toContain(`'${specifier}': '/vendor/${filename}'`)
+      expect(imports[specifier]).toBe(`/vendor/${filename}`)
       expect(read(`../../public/vendor/${filename}`)).toContain('window.__kirocrew_modules')
     }
   })

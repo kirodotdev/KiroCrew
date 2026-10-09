@@ -9,7 +9,10 @@
  * The app calls the gateway with root-relative URLs (`fetch('/api/...')`,
  * `new WebSocket(`${proto}//${host}/api/ws`)`). Under a sub-path those escape
  * the mount, so {@link installBasePathShims} prefixes them once, at the
- * transport, instead of at every call site.
+ * transport, and {@link installBasePathDomShims} does the same for URLs written
+ * into the DOM, instead of at every call site. A dynamic `import()` and a
+ * `location` navigation reach neither hook, so those call sites use
+ * {@link withBase}; basePath.test.ts guards that.
  */
 
 /** `import.meta.env.BASE_URL` without its trailing slash; `''` at the root. */
@@ -21,13 +24,23 @@ export function toBasePath(baseUrl: string | undefined): string {
   return trimmed.startsWith('/') ? trimmed : ''
 }
 
+function hasBase(pathname: string, base: string): boolean {
+  return pathname === base || pathname.startsWith(`${base}/`)
+}
+
+/**
+ * `window.location.pathname` with the base removed, so a check like
+ * `startsWith('/embed/')` reads the app route in a sub-path build too. Code
+ * inside the router should use its `location`, which already has no base.
+ */
+export function appPathname(pathname: string = window.location.pathname, base: string = BASE_PATH): string {
+  if (base === '' || !hasBase(pathname, base)) return pathname
+  return pathname.slice(base.length) || '/'
+}
+
 /** The `basename` for the router: `undefined` at the root (the router default). */
 export function routerBasename(base: string = BASE_PATH): string | undefined {
   return base === '' ? undefined : base
-}
-
-function hasBase(pathname: string, base: string): boolean {
-  return pathname === base || pathname.startsWith(`${base}/`)
 }
 
 /**
@@ -99,5 +112,66 @@ export function installBasePathShims(win: ShimWindow = window, base: string = BA
   }) as typeof fetch
   if (win.WebSocket) win.WebSocket = wrapConstructor(win.WebSocket, rebase)
   if (win.EventSource) win.EventSource = wrapConstructor(win.EventSource, rebase)
+  return true
+}
+
+/** URL-valued attributes the app writes with root-relative paths. */
+const urlAttributes = new Set(['src', 'href', 'poster', 'action'])
+
+/** Element interface -> its URL-valued property, for code that sets `el.src = ...`. */
+type Ctor = { prototype: object } | undefined
+function urlProperties(w: Record<string, unknown>): ReadonlyArray<readonly [Ctor, string]> {
+  const c = (x: unknown) => x as Ctor
+  return [
+    [c(w.HTMLImageElement), 'src'],
+    [c(w.HTMLScriptElement), 'src'],
+    [c(w.HTMLIFrameElement), 'src'],
+    [c(w.HTMLSourceElement), 'src'],
+    [c(w.HTMLMediaElement), 'src'],
+    [c(w.HTMLVideoElement), 'poster'],
+    [c(w.HTMLAnchorElement), 'href'],
+    [c(w.HTMLLinkElement), 'href'],
+  ]
+}
+
+type DomShimWindow = {
+  location: { host: string }
+  open?: (url?: string | URL, ...rest: string[]) => unknown
+  Element: { prototype: Element }
+} & Record<string, unknown>
+
+/**
+ * Route URLs the app writes into the DOM (`<img src="/api/...">`,
+ * `<a href="/chat">`, `el.src = ...`, `window.open('/x')`) through the base, the
+ * same way {@link installBasePathShims} does for transports. React writes these
+ * attributes through `setAttribute`, so one hook covers every rendered element.
+ * A no-op that returns `false` in the stock build.
+ */
+export function installBasePathDomShims(win: DomShimWindow = window as unknown as DomShimWindow, base: string = BASE_PATH): boolean {
+  if (base === '') return false
+  const rebase = (url: string) => rebaseUrl(url, win.location.host, base)
+  const proto = win.Element.prototype
+  const nativeSetAttribute = proto.setAttribute
+  proto.setAttribute = function setAttribute(this: Element, name: string, value: string) {
+    const next = urlAttributes.has(name.toLowerCase()) ? rebase(String(value)) : value
+    return nativeSetAttribute.call(this, name, next)
+  }
+  for (const [ctor, prop] of urlProperties(win)) {
+    const desc = ctor && Object.getOwnPropertyDescriptor(ctor.prototype, prop)
+    if (!ctor || !desc?.set || !desc.configurable) continue
+    const nativeSet = desc.set
+    Object.defineProperty(ctor.prototype, prop, {
+      ...desc,
+      set(this: Element, value: string) { nativeSet.call(this, rebase(String(value))) },
+    })
+  }
+  // `new Audio(url)` sets `src` inside the constructor, past the setter hook.
+  const NativeAudio = win.Audio as (abstract new (...args: never[]) => unknown) | undefined
+  if (typeof NativeAudio === 'function') win.Audio = wrapConstructor(NativeAudio, rebase)
+  if (typeof win.open === 'function') {
+    const nativeOpen = win.open.bind(win)
+    win.open = (url?: string | URL, ...rest: string[]) =>
+      nativeOpen(url == null ? url : rebase(String(url)), ...rest)
+  }
   return true
 }

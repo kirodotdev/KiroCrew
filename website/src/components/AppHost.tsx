@@ -21,6 +21,7 @@ import { errMessage } from '../utils/thunkError'
 
 import { i18nT } from '../i18n/t'
 import { appDisplayName, appDescription } from './appstore/appManifest'
+import { withBase } from '@/lib/basePath'
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -245,7 +246,7 @@ function AppHostInner({ app, entry: entryOverride, active = true, sessionKey }: 
   const permissions = app.manifest?.permissions || {}
   const allowedApi = permissions.api || []
   const allowedEvents = permissions.events || []
-  const bundlePath = `/apps/${app.name}/ui/${entry}`
+  const bundlePath = withBase(`/apps/${app.name}/ui/${entry}`)
 
   // Dynamically import the app bundle. Keyed on resetKey so retry works.
   const LazyApp = useMemo(

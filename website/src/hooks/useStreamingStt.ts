@@ -6,6 +6,7 @@ import type { SttModelProgress } from '../lib/sttProviders'
 import { joinTranscript } from '../lib/dictationText'
 import { i18nT } from '../i18n/t'
 import { MAX_TIMER_DELAY_MS } from '../utils/timerDelay'
+import { withBase } from '@/lib/basePath'
 
 /**
  * Streaming STT over `/api/ws/stt`.
@@ -455,7 +456,7 @@ export function useStreamingStt ({ onPartial, onFinal, onCaptureStop, onError, o
     const ctx = new AudioContext()
     ctxRef.current = ctx
     try {
-      await ctx.audioWorklet.addModule('/pcm-worklet.js')
+      await ctx.audioWorklet.addModule(withBase('/pcm-worklet.js'))
     } catch {
       if (sessionRef.current === session && !session.cancelled) {
         onErrorRef.current?.(i18nT('hooks.useStreamingStt.audio_worklet_unavailable'))

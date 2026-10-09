@@ -32,6 +32,10 @@ describe('extractEntryScript', () => {
     expect(extractEntryScript(html('/assets/index-abc123.js'), ORIGIN))
       .toBe(`${ORIGIN}/assets/index-abc123.js`)
   })
+  it('reads the entry of a sub-path build', () => {
+    expect(extractEntryScript(html('/proxy/kc/assets/index-abc123.js'), ORIGIN))
+      .toBe(`${ORIGIN}/proxy/kc/assets/index-abc123.js`)
+  })
   it('answers null for documents without a hashed entry (dev server)', () => {
     expect(extractEntryScript('<html><script src="/src/main.tsx"></script></html>', ORIGIN)).toBeNull()
   })

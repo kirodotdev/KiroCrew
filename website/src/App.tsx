@@ -143,6 +143,7 @@ import { isChatRoute, useRouteActiveModel } from './shell/nav/routeActive'
 import { useDeveloperMode } from './shell/nav/developerMode'
 import { RailHeaderGlyph, RailBrandToggle, RailCommunityLinks } from './shell/nav/railChrome'
 import { AdaptiveMobileRail } from './shell/nav/adaptiveMobileRail'
+import { appPathname } from './lib/basePath'
 
 // Lazy on purpose: the update-found popup (its policy module, Trans runtime
 // wiring, and mutation plumbing) is dead weight for every session without an
@@ -808,10 +809,10 @@ export default function App() {
   // Deliberately a ref (not window.name-based): returnSelfToMain()'s deep-link
   // fallback does a full location.assign to the main view, which is a fresh
   // document load and correctly re-evaluates to false there.
-  const isPopout = useRef(window.location.pathname.startsWith('/popout/')).current
+  const isPopout = useRef(appPathname().startsWith('/popout/')).current
   // The load-time popout URL: the wildcard route below re-pins any stray
   // in-window navigation back to this frame instead of escaping to '/'.
-  const initialPopoutPath = useRef(window.location.pathname + window.location.search).current
+  const initialPopoutPath = useRef(appPathname() + window.location.search).current
   const dispatch = useAppDispatch()
   // Register the operator's link rules (dashboard.link_patterns) into the
   // autolink registry from the shell, so every surface linkifies — not only

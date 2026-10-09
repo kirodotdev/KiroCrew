@@ -25,6 +25,7 @@
  */
 import { isEmbeddedPane } from './embedded'
 import { parseLoopbackOriginPort } from './tunnelOrigin'
+import { appPathname } from './basePath'
 
 export const NATIVE_NOTIFY_TYPE = 'mc-native-notify'
 export const NATIVE_NOTIFY_VERSION = 1
@@ -71,7 +72,7 @@ export interface NativeNotifyEnvelope {
 export function relayTargetOrigin(): string | null {
   if (!isEmbeddedPane()) return null
   try {
-    if (window.location.pathname.startsWith('/embed/')) return null
+    if (appPathname().startsWith('/embed/')) return null
     if (!document.referrer) return null
     const origin = new URL(document.referrer).origin
     return parseLoopbackOriginPort(origin) === null ? null : origin

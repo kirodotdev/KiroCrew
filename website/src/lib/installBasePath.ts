@@ -1,8 +1,9 @@
 /**
- * Side-effect entry: install the base-path transport shims before any other
+ * Side-effect entry: install the base-path transport and DOM shims before any other
  * module runs, so nothing captures the unwrapped `fetch`. A no-op in the stock
  * root-mounted build. See ./basePath.ts.
  */
-import { installBasePathShims } from './basePath'
+import { installBasePathDomShims, installBasePathShims } from './basePath'
 
 installBasePathShims()
+installBasePathDomShims()

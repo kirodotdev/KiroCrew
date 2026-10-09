@@ -23,7 +23,7 @@ import {
 import { precompressPlugin } from './scripts/precompress.mjs'
 import { atomicPublishPlugin } from './scripts/publish-dist.mjs'
 import { CONTEXT_SINGLETON_DEDUPE } from './vite.shared'
-import { resolveBuildBase, vendorImportMap } from './scripts/lib/basePath.mjs'
+import { resolveBuildBase, vendorImportMap, withoutServiceWorker } from './scripts/lib/basePath.mjs'
 import {
   parseBrandingConfig,
   applyBrandingToHtml,
@@ -92,9 +92,11 @@ function appImportMapPlugin(): Plugin {
     },
     transformIndexHtml: {
       order: 'post',
-      handler(html) {
+      handler(html, ctx) {
         const tag = `<script type="importmap">${JSON.stringify(vendorImportMap(base))}</script>`
-        return html.replace('<head>', `<head>\n  ${tag}`)
+        // Only the dashboard shell registers the service worker; app windows do not.
+        const shell = base === '/' || ctx.path !== '/index.html' ? html : withoutServiceWorker(html)
+        return shell.replace('<head>', `<head>\n  ${tag}`)
       },
     },
   }

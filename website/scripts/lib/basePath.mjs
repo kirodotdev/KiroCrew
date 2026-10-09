@@ -60,3 +60,27 @@ const VENDOR_IMPORTS = [
 export function vendorImportMap(base) {
   return { imports: Object.fromEntries(VENDOR_IMPORTS.map(([spec, rel]) => [spec, `${base}${rel}`])) }
 }
+
+/** The shell's service-worker registration call, exactly as index.html writes it. */
+export const SW_REGISTER_CALL = "navigator.serviceWorker.register('/sw.js')"
+
+/**
+ * The shell for a sub-path build: the service worker is not registered.
+ *
+ * public/sw.js routes by root paths (`/api`, `/assets/`, `/`), so under a base
+ * it would cache API responses and serve the wrong shell. A sub-path build runs
+ * without it (no offline shell) rather than with a worker that misroutes. The
+ * stock build never calls this, so its shell is unchanged.
+ *
+ * Throws if the call is missing, so a reworded registration cannot silently
+ * slip a misrouting worker into a sub-path build.
+ *
+ * @param {string} html
+ * @returns {string}
+ */
+export function withoutServiceWorker(html) {
+  if (!html.includes(SW_REGISTER_CALL)) {
+    throw new Error(`index.html no longer contains ${SW_REGISTER_CALL}; update withoutServiceWorker in scripts/lib/basePath.mjs`)
+  }
+  return html.replace(SW_REGISTER_CALL, 'Promise.resolve()')
+}

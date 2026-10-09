@@ -20,7 +20,6 @@ import { recordEvent } from '../../rum'
 import { isSessionApprovalConsentRequiredError, useTrustGate } from '../../components/appstore/TrustAppModal'
 import type { TrustAppTarget } from '../../components/appstore/TrustAppModal'
 import type { AppsData } from './useAppsData'
-import { withBase } from '@/lib/basePath'
 
 type AppActionsInput = Pick<
   AppsData,
@@ -43,7 +42,7 @@ export function useAppActions({
 
   // Cmd/Ctrl-click opens the detail page in a new tab.
   const openDetail = (name: string, e?: React.MouseEvent | React.KeyboardEvent) => {
-    if (e && (e.metaKey || e.ctrlKey)) { window.open(withBase(`/apps/detail/${name}`), '_blank', 'noopener,noreferrer'); return }
+    if (e && (e.metaKey || e.ctrlKey)) { window.open(`/apps/detail/${name}`, '_blank', 'noopener,noreferrer'); return }
     navigate(`/apps/detail/${name}`)
   }
   // autoAction travels as router STATE, never a query param — a URL-reachable

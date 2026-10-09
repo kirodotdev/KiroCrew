@@ -686,6 +686,24 @@ def test_incomplete_bundle_reason_ignores_route_served_references(tmp_path):
     assert frontend._incomplete_bundle_reason(complete) == ""
 
 
+def test_incomplete_bundle_reason_checks_sub_path_build_refs(tmp_path):
+    """A KIROCREW_BASE_PATH build writes /<base>/assets/...; its chunks still count.
+
+    Without matching the base, such an index has no refs at all and a tree with
+    every chunk missing would pass as complete.
+    """
+    built = tmp_path / "dist"
+    built.mkdir()
+    (built / "assets").mkdir()
+    (built / "index.html").write_text(
+        '<script type="module" src="/proxy/dash/assets/main-abc123.js"></script>'
+    )
+    assert "1 referenced asset(s) missing" in frontend._incomplete_bundle_reason(built)
+
+    (built / "assets" / "main-abc123.js").write_text("console.log(1)")
+    assert frontend._incomplete_bundle_reason(built) == ""
+
+
 def test_stage_built_dist_sweeps_residue_even_when_refusing(tmp_path):
     """Refusing an unusable source must still clear abandoned staging trees.
 

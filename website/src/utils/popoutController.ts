@@ -24,6 +24,7 @@
  */
 
 import { i18nT } from '../i18n/t'
+import { withBase } from '../lib/basePath'
 
 /** Heartbeat cadence (ms) for the main window's liveness ping. */
 export const HEARTBEAT_MS = 5_000
@@ -399,7 +400,7 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
    * Navigation indirection: jsdom can't redefine `window.location`, so tests
    * swap this via `__setNavigateForTests` to assert the deep-link fallback.
    */
-  let navigate = (url: string): void => window.location.assign(url)
+  let navigate = (url: string): void => window.location.assign(withBase(url))
 
   /**
    * Return THIS popout window's entity to the main dashboard: focus the opener
@@ -502,7 +503,7 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
     mainSubscribers = 0
     selfId = null
     handles.clear()
-    navigate = (url: string) => window.location.assign(url)
+    navigate = (url: string) => window.location.assign(withBase(url))
     windowOpen = (url: string, target: string) => { window.open(url, target) }
     mainId = null
     navIntentHandler = null

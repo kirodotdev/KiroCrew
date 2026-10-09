@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react'
+import { appPathname } from '@/lib/basePath'
 
 /* Exported for the top-bar rung-budget test: the <640px icon-only rung base in
    index.css needs the desktop readouts to be unreachable below the pill's
@@ -71,6 +72,6 @@ export function useIsMobile() {
   // In embed mode (IntelliJ plugin minimal view), never report as mobile
   // regardless of viewport width. The plugin panel can be narrow but should
   // always behave as desktop (Enter to send, full icon row, no collapsed UI).
-  if (typeof window !== 'undefined' && window.location.pathname.startsWith('/embed/')) return false
+  if (typeof window !== 'undefined' && appPathname().startsWith('/embed/')) return false
   return match
 }

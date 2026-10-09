@@ -9,6 +9,7 @@ import { isChatPath } from '../notificationBanner'
 import { bindSlotReadSender, emitSlotRead, flushSlotRead } from '../../lib/slotReadRelay'
 import { getViewedThreadSlot } from '../../lib/viewedThread'
 import type { SocketConnection } from './connection'
+import { appPathname } from '@/lib/basePath'
 
 /** True when this window is rendering the active slot's transcript: the chat
  *  routes (the root path serves ChatPage too) plus the popout and embed chat
@@ -25,7 +26,7 @@ import type { SocketConnection } from './connection'
  *  mark-as-read) need no gate — they only occur on surfaces that show the
  *  slot, under real focus. */
 const isChatSurfaceVisible = (): boolean =>
-  typeof window !== 'undefined' && isChatPath(window.location.pathname)
+  typeof window !== 'undefined' && isChatPath(appPathname())
 /** True when *slot* is the thread this window is displaying: the chat
  *  surfaces' `chat.activeSlot`, or the thread a non-chat surface (the Crew
  *  Members page) registered in `viewedThread`. The unread-marker's gate: a
