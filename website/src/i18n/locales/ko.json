@@ -6241,7 +6241,10 @@
       "split_down": "아래로 분할",
       "split_right": "오른쪽으로 분할",
       "split_right_d": "오른쪽으로 분할 (⌘D)",
-      "type_to_filter": "입력하여 필터링…"
+      "type_to_filter": "입력하여 필터링…",
+      "show_earlier_messages": "이전 메시지 보기",
+      "conversation_boundary": "여기서부터 새 대화",
+      "hide_earlier_messages": "이전 메시지 숨기기"
     },
     "cliPanel": {
       "copied": "복사됨",
@@ -17432,7 +17435,17 @@
       "dashboard_render_error": "이 대시보드를 그릴 수 없습니다.",
       "dashboard_frame_title": "{{crew}}의 대시보드",
       "dashboard_rendering": "대시보드 그리는 중…",
-      "back_to_roster": "크루메이트 목록으로"
+      "back_to_roster": "크루메이트 목록으로",
+      "new_conversation": "새 대화 시작",
+      "new_conversation_row_sub": "이전 메시지는 유지됩니다 · 진행 중인 작업을 먼저 멈춥니다",
+      "new_conversation_confirm_title": "‘{{name}}’와 새 대화를 시작할까요?",
+      "new_conversation_confirm_body": "‘{{name}}’는 처음부터 시작합니다. 이 대화에서 나눔 이야기는 기억하지 못합니다. 장기 기억에 저장한 것은 그대로 남고, 이전 메시지도 모두 ‘이전 메시지 보기’ 아래 그대로 남습니다. 지금 작업 중이면 그 작업을 먼저 멈춥니다.",
+      "new_conversation_confirm_action": "새 대화 시작",
+      "new_conversation_failed_title": "새 대화를 시작할 수 없습니다",
+      "new_conversation_boundary_failed": "‘여기서부터 새 대화’ 선을 추가하려면 ‘새 대화 시작’를 다시 누르세요. 메시지는 하나도 사라지지 않습니다. 선이 없으면 {{name}}이(가) 이미 잊은 메시지가 지금 것처럼 보이고, 다시 누르면 그 뒤에 한 이야기도 잊힙니다.",
+      "new_conversation_boundary_failed_title": "새 대화는 시작됐지만 선을 저장하지 못했습니다",
+      "new_conversation_busy": "{{name}}은(는) 다른 곳에서 오는 새 메시지, 예를 들어 채널 메시지를 처리하고 있습니다. 그래서 이 대화는 조용해 보입니다. 잠시 뒤에 다시 시도하세요.",
+      "conversation_boundary_evicted": "이전 새 대화의 ‘여기서부터 새 대화’ 선이 사라졌습니다. 그래서 그 위의 메시지는 이 대화보다 이전 것일 수 있습니다. ‘새 대화 시작’을 눌러 새로운 시작을 표시하세요."
     },
     "tasksCapacityCard": {
       "title": "작업 및 용량",

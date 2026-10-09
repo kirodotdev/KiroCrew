@@ -36,6 +36,7 @@ from kiro_crew.atomic_write import atomic_write, fsync_dir, read_bytes_with_retr
 from kiro_crew.config.paths import data_home
 from kiro_crew.external_text import external_text_requires_redaction
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
+from kiro_crew.memory_stores import MEMORY_STORE_NAME_MAX
 from kiro_crew.pinned_fs import (
     PinnedPathRefusal,
     open_in_pinned_parent,
@@ -362,6 +363,12 @@ def _member_session_element(
 # local constant rather than imported because it is a private name there; the
 # artifact store remains the source of truth for the spelling.
 _SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?\Z")
+
+#: The slug length ``_SLUG_RE`` accepts, named so that readers which have to
+#: bound something BUILT from a slug can derive their bound instead of guessing
+#: one (see ``DM_SLOT_KEY_MAX_CHARS``). The regex stays the enforcing spelling;
+#: ``test_slug_max_chars_agrees_with_validate_slug`` pins the two together.
+SLUG_MAX_CHARS = 80
 
 #: The ONLY mode whose sessions may be recorded. An allowlist, not a denylist of
 #: no-trace modes: a mode that is missing, empty (metadata not yet flushed for a
@@ -825,6 +832,18 @@ def member_slot_key(slug: str, memory_store: str = "") -> str:
         # The complete store name is already a unique, bounded generation ID.
         key += MEMORY_STORE_SLOT_SUFFIX + memory_store
     return key
+
+
+#: Longest key ``member_slot_key`` can return, summed from the same four inputs
+#: that function concatenates -- the prefix, a slug at its cap, the memory-store
+#: suffix and a store name at its cap -- rather than picked as a round number.
+#: A reader that has to bound a slot key it read off a log line (the roster
+#: projection's boundary fold) uses THIS, so widening either name cap moves the
+#: reader's bound with the builder instead of leaving it dropping keys the
+#: builder still produces.
+DM_SLOT_KEY_MAX_CHARS = (
+    len(DM_SLOT_KEY_PREFIX) + SLUG_MAX_CHARS + len(MEMORY_STORE_SLOT_SUFFIX) + MEMORY_STORE_NAME_MAX
+)
 
 
 def member_thread_session_alias(slug: str, memory_store: str = "") -> str:

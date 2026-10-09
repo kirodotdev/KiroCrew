@@ -6241,7 +6241,10 @@
       "split_down": "下に分割",
       "split_right": "右に分割",
       "split_right_d": "右に分割 (⌘D)",
-      "type_to_filter": "フィルタリングするには入力…"
+      "type_to_filter": "フィルタリングするには入力…",
+      "show_earlier_messages": "以前のメッセージを表示",
+      "conversation_boundary": "ここから新しい会話",
+      "hide_earlier_messages": "以前のメッセージを隠す"
     },
     "cliPanel": {
       "copied": "コピーしました",
@@ -17432,7 +17435,17 @@
       "dashboard_render_error": "このダッシュボードを描画できませんでした。",
       "dashboard_frame_title": "{{crew}} のダッシュボード",
       "dashboard_rendering": "ダッシュボードを描画中…",
-      "back_to_roster": "クルーメイト一覧に戻る"
+      "back_to_roster": "クルーメイト一覧に戻る",
+      "new_conversation": "新しい会話を始める",
+      "new_conversation_row_sub": "前のメッセージは残ります・先に進行中の作業を止めます",
+      "new_conversation_confirm_title": "「{{name}}」と新しい会話を始めますか？",
+      "new_conversation_confirm_body": "「{{name}}」は一から始めます。このチャットで話したことは覚えていません。長期記憶に保存したものは残り、以前のメッセージもすべて「以前のメッセージを表示」からここに残ります。 いま作業中なら、その作業を先に止めます。",
+      "new_conversation_confirm_action": "新しい会話を始める",
+      "new_conversation_failed_title": "新しい会話を始められませんでした",
+      "new_conversation_boundary_failed": "「ここから新しい会話」の線を追加するには、もう一度「新しい会話を始める」を押してください。メッセージは一つも失われません。線がないと、{{name}} がすでに忘れたメッセージが今のもののように見え、もう一度押すとそれ以降に話したことも忘れられます。",
+      "new_conversation_boundary_failed_title": "新しい会話は始まりましたが、線は保存できませんでした",
+      "new_conversation_busy": "{{name}} は別の場所から届いたメッセージ、たとえばチャンネルのメッセージを処理しています。そのためこのチャットは静かに見えます。少ししてからもう一度試してください。",
+      "conversation_boundary_evicted": "以前の新しい会話の「ここから新しい会話」の線が失われました。そのため、その上のメッセージはこの会話より前のものかもしれません。「新しい会話を始める」を押して、新たな開始を記録してください。"
     },
     "tasksCapacityCard": {
       "title": "タスクと処理能力",

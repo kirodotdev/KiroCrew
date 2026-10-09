@@ -64,6 +64,27 @@ export function createChatSlotSettingsEndpoints({ post, j, jfetch: fetch }: Clie
       post('/api/chat/slots/' + encodeURIComponent(slot) + '/reload', {}).then(j) as Promise<{ ok?: boolean; error?: string }>,
     chatSlotProject: (slot: string, project: string) =>
       post('/api/chat/slots/' + encodeURIComponent(slot) + '/project', { project }).then(j) as Promise<{ ok?: boolean; project?: string }>,
+    /** A fresh conversation on the SAME slot: the next turn cold-starts instead
+     *  of resuming the accumulated one. The slot stays open, its key is
+     *  unchanged (channel linkage, schedules and tasks hang off it) and its
+     *  transcript stays on disk — the model forgets, the record does not.
+     *
+     *  `replay: false` is sent EXPLICITLY. The route defaults it to `true`,
+     *  which replays the discarded history straight back into the fresh
+     *  context: omitting the flag would make the whole call a no-op from the
+     *  user's point of view while still answering 200.
+     *
+     *  409 `turn_in_flight` while a turn is running on the slot or the session,
+     *  or while sub-agents are still attached.
+     *
+     *  `boundary` reports the DURABLE record of where the fresh conversation
+     *  begins, which the route waits for: `recorded` landed, `not_owed` is an
+     *  ordinary chat slot with no member log, and `failed` means the reset
+     *  happened but nothing wrote the line — so the discarded messages are still
+     *  on screen with nothing marking them as forgotten, and the caller must say
+     *  so rather than report a clean reset. */
+    chatSlotResetConversation: (slot: string) =>
+      post('/api/chat/slots/' + encodeURIComponent(slot) + '/reset-conversation', { replay: false }).then(j) as Promise<{ slot?: string; reset?: boolean; replay?: boolean; boundary?: 'recorded' | 'not_owed' | 'failed' }>,
   }
 
   return { selection }

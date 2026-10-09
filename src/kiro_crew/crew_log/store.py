@@ -2135,11 +2135,21 @@ _LIFECYCLE_TYPES = frozenset({_TYPE_SESSION_OPENED, _TYPE_SESSION_CLOSED})
 #: id, but its own ``clear_sid`` is guarded by ``if clear_conversation and session
 #: is not None``, so a reset that keeps the conversation emits
 #: ``session/closed {reset}`` while LEAVING the old id mapped -- still resumable,
-#: and its log still needed. ``discarded`` clears the sid unconditionally and would
-#: qualify on that test, but no path writes that reason into a crew log today, so
-#: admitting it would be a rule about a file nothing produces. Every other reason --
-#: a shutdown, a crash, an eviction, or a spelling this build does not know -- ends
-#: the gateway's SERVICE of the session without ending the id's life.
+#: and its log still needed.
+#:
+#: ``discarded`` is NOT here either, and it is the one reason that is excluded on
+#: purpose rather than for want of a writer. ``discard_conversation`` writes it,
+#: and it does clear the sid unconditionally, so it would qualify on the
+#: resumability test above. What it must not qualify for is DELETION: a discard is
+#: the one teardown whose whole contract is that the record survives it. The slot
+#: stays open, its transcript stays on disk, and the pane goes on showing the
+#: discarded conversation behind "Show earlier messages" -- so the unit's log is
+#: the record of a conversation a person can still read, and expiring it on age
+#: would retire the history of a thread that is still on screen. The reason is
+#: written so a reader can see WHEN the conversation ended and why; it carries no
+#: authorization with it. Every other reason -- a shutdown, a crash, an eviction,
+#: or a spelling this build does not know -- ends the gateway's SERVICE of the
+#: session without ending the id's life.
 #:
 #: This reason is the whole authorization for deleting a unit, and it is read from
 #: the crew log rather than from anything outside it. The obvious alternative -- ask

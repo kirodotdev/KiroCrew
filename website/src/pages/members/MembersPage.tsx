@@ -60,7 +60,7 @@ import { CrewMemberMark } from '../../components/CrewMemberMark'
 import NewCrewmateDialog, { type CreatedCrewmate } from './NewCrewmateDialog'
 import { sendTurn } from '../../chat-core/transport/sendTurn'
 import { useTranslation } from 'react-i18next'
-import { api, type CrewTeam, type MemberRosterRow } from '../../api/client'
+import { api, ApiError, type CrewTeam, type MemberRosterRow } from '../../api/client'
 import { crewDisplayName, type KiroCrewAgent } from '../../components/AgentSelector'
 import { isAssistantMember, pendingMate } from '../../lib/assistantMember'
 import { useFirstGreeting } from './useFirstGreeting'
@@ -601,6 +601,33 @@ const EMPTY_TEAMS: readonly CrewTeam[] = []
 /** i18n translate function, taken from the hook so the row need not re-derive
  *  its type. */
 type TFn = ReturnType<typeof useTranslation>['t']
+
+/** The largest instant a JavaScript `Date` can hold (ECMA-262: +/-1e8 days from
+ *  the epoch). A number past it makes every `Date` method raise `RangeError`,
+ *  which is why a projected timestamp is checked against it before the DM pane
+ *  builds anything out of it. */
+const MAX_JS_DATE_MS = 8.64e15
+
+/** How long "New conversation" waits for a stopped turn to actually let go of
+ *  the slot before it asks for the reset anyway.
+ *
+ *  The reset route refuses a busy slot (409 `turn_in_flight`), and the slot
+ *  being busy is the very case this action exists for — a crewmate stuck in a
+ *  turn that will not end. So the flow stops the turn first and then waits, and
+ *  the wait is BOUNDED because a stop is not a promise: a provider that never
+ *  answers would otherwise park the user on a spinner for good. When the budget
+ *  runs out the reset is asked for regardless, and its own refusal is what the
+ *  user is shown — the route is the authority on busy, not this page's view of
+ *  it. */
+const RESET_STOP_WAIT_MS = 20_000
+/** How often the wait re-reads the slot's live busy flag. */
+const RESET_STOP_POLL_MS = 250
+/** When the wait presses Stop a second time. The route escalates a second stop
+ *  to a hard kill (see `stop_slot_turn`), which is exactly what a person does
+ *  after watching a cooperative stop fail to take — and the only thing that
+ *  moves a genuinely stuck turn. Half the budget, so the kill still has half a
+ *  budget to land in. */
+const RESET_STOP_ESCALATE_MS = RESET_STOP_WAIT_MS / 2
 
 /** One roster row. Extracted so `useMemberProjection` is called once PER ROW
  *  (a hook cannot run inside the parent's `.map`), letting a `member_projection`
@@ -2083,6 +2110,49 @@ export default function MembersPage() {
     if (mate && (!urlMember || urlMember === mate.name)) return
     window.dispatchEvent(new Event(CREWMATES_PAGE_ENTERED_EVENT))
   }, [loaded, loadError, crewPreview, members, urlMember])
+  // Where the DM's CURRENT conversation begins: the last "New conversation" on
+  // this slot, as the member log recorded it. From the projection rather than
+  // from any state this page holds, which is what makes the line survive a
+  // reload and a gateway restart — and what makes a reset performed in another
+  // tab show up here. Undefined for a slot that has never been reset, so the
+  // pane draws exactly what it drew before.
+  const conversationStartTs = useMemo(() => {
+    const at = activeSlot ? activeRoster?.conversation_starts?.[activeSlot]?.ts : undefined
+    // Bounded to what `Date` can hold, not merely typed. The pane turns this
+    // number into a `Date`, and a value past that range (a hand-edited member
+    // log) makes the marker's own `toISOString()` raise and replaces the whole
+    // DM with an error fallback. The fold bounds it server-side too; this is the
+    // same guard at the one place the prop comes from, because a projection
+    // written by an older gateway reaches this code unbounded.
+    if (typeof at !== 'number' || !Number.isFinite(at) || at <= 0) return undefined
+    return at <= MAX_JS_DATE_MS ? at : undefined
+  }, [activeRoster, activeSlot])
+  // Slots whose evicted-boundary note the user has closed. Keyed by slot,
+  // because the condition does not clear by leaving the thread: the fold's
+  // count only ever rises, so one boolean would carry crewmate A's dismissal
+  // onto crewmate B's unread note.
+  const [evictedNoteClosed, setEvictedNoteClosed] = useState<ReadonlySet<string>>(new Set())
+  /** Whether to say that a boundary for this crewmate was recorded and dropped.
+   *
+   *  The fold bounds `conversation_starts` and counts what it evicts, because a
+   *  dropped key reads EXACTLY like a slot nobody ever reset — and that is the
+   *  one state this feature exists to prevent: the pane draws a discarded
+   *  conversation as current. This note is that count's reader.
+   *
+   *  Only while THIS slot has no boundary of its own. With one, the pane is
+   *  already drawing the right line and the dropped boundaries belong to slots
+   *  the user is not looking at, so a note here would be noise about elsewhere.
+   *
+   *  The copy says "for this crewmate", never "for this thread": the count says
+   *  how many were dropped and never which, so claiming this thread lost its own
+   *  would be asserting something nothing here knows. It clears itself — the
+   *  next reset gives the slot a boundary, which makes `conversationStartTs`
+   *  defined. */
+  const evictedBoundaryShown = useMemo(() => {
+    if (conversationStartTs !== undefined) return false
+    const evicted = activeRoster?.conversation_starts_evicted
+    return typeof evicted === 'number' && Number.isInteger(evicted) && evicted > 0
+  }, [activeRoster, conversationStartTs])
   // Two distinct verdicts with two different sentences: a collision is a
   // fact about the roster (the slug's thread belongs to another crew), a
   // failed POST is a transport error. Both render through ErrorNotice so
@@ -2629,6 +2699,184 @@ export default function MembersPage() {
     setSchedAtStake(s || schedDraftDirty.current)
   }, [])
   const { confirm: confirmSched, confirmDialog: schedConfirmDialog } = useConfirm()
+  // "New conversation" on the open crewmate's DM. Its own `useConfirm` rather
+  // than a share of the schedules one: two surfaces asking at once would have
+  // the second answer the first "no", and these two are reached from different
+  // halves of the page.
+  const { confirm: confirmReset, confirmDialog: resetConfirmDialog } = useConfirm()
+  // The DM slot as of this render, for the one read that happens AFTER an await
+  // (see `requestNewConversation`). `activeSlotRef` above cannot serve: it holds
+  // `confirmedSlot`, which is deliberately empty while the thread read is in
+  // flight or has failed, so a reset answered inside that window would compare
+  // against '' and be abandoned although the crewmate never changed.
+  const activeDmSlotRef = useRef('')
+  activeDmSlotRef.current = activeSlot
+  // The live per-slot busy reading, for the polls that happen AFTER an await
+  // (see `waitForSlotIdle`). Keyed by SLOT rather than read off the open
+  // crewmate: the wait outlives a crewmate switch, and `isRunning(active)`
+  // would then be answering about whoever is open by then.
+  const liveRunningRef = useRef<Record<string, boolean>>({})
+  liveRunningRef.current = liveRunning
+  const [resetting, setResetting] = useState(false)
+  // The HEADING travels with the message, because the two outcomes this notice
+  // carries are opposites: a refused reset did not happen, and a boundary-failed
+  // reset did. One shared "Couldn't start a new conversation" title over "the new
+  // conversation started, but…" tells the reader the reverse of the body.
+  const [resetError, setResetError] = useState<{ title: string; message: string; report?: ErrorReport } | null>(null)
+  /** Stop whatever turn is running on `slot`, then wait for it to let go.
+   *
+   *  The reason this exists: the reset route refuses a busy slot with 409
+   *  `turn_in_flight`, and a busy slot is the case the action is FOR. "New
+   *  conversation" lives in the profile card because the one time anybody
+   *  reaches for it is a crewmate stuck mid-turn — so a flow that only works on
+   *  an idle slot works in exactly the situation nobody needs it.
+   *
+   *  Three presses' worth of work, done for the user: Stop, watch, Stop again.
+   *  The second stop is not a retry — the route escalates a second stop to a
+   *  hard kill (`stop_slot_turn`), which is the only thing that moves a turn
+   *  whose cooperative cancel never took, and is what a person does after
+   *  watching the first one fail.
+   *
+   *  The backend guards are untouched, deliberately: this does not ask the
+   *  route to reset a busy slot, it makes the slot not busy. Everything the
+   *  guards protect (a turn mid-write, children still attached, an inbound
+   *  channel turn) is still the route's to refuse, and after the budget runs
+   *  out that refusal is exactly what the user is shown.
+   *
+   *  Never throws. A stop that fails is not a reason to abandon the reset: the
+   *  reset is the thing asked for, and the route itself decides whether the
+   *  slot can take it. */
+  const stopTurnBeforeReset = useCallback(async (slot: string) => {
+    let answer: { info?: string } | undefined
+    try {
+      answer = await api.stopChatSlot(slot)
+    } catch {
+      // Swallowed on purpose. The reset below is the action; a failed stop only
+      // means the slot may still be busy, which the route will say.
+    }
+    // The route's own word for "there was nothing to stop". Waiting on it would
+    // be waiting for a state the slot is already in, and this is the ordinary
+    // case — an idle crewmate whose profile the user opened.
+    if (answer?.info === 'not running') return
+    const started = Date.now()
+    let escalated = false
+    while (Date.now() - started < RESET_STOP_WAIT_MS) {
+      await new Promise((r) => setTimeout(r, RESET_STOP_POLL_MS))
+      // Read per SLOT, so a crewmate switch mid-wait does not make this answer
+      // about a different thread. A slot with no live frame reads as idle,
+      // which is the right direction to be wrong in: the reset is asked for and
+      // the route refuses it if that reading was stale.
+      if (!liveRunningRef.current[slot]) return
+      if (!escalated && Date.now() - started >= RESET_STOP_ESCALATE_MS) {
+        escalated = true
+        try {
+          await api.stopChatSlot(slot)
+        } catch {
+          // Same reason as above: the reset still gets asked for.
+        }
+      }
+    }
+  }, [])
+  /** Start a fresh conversation on the open crewmate's DM slot.
+   *
+   *  Asks first, because what it does cannot be undone from the UI: the model's
+   *  context is gone. What it does NOT do is the other half of the copy — the
+   *  transcript stays, the slot key stays, and the crewmate's long-term memory
+   *  stays — so the dialog says all three, and the earlier messages are one
+   *  click away in the pane rather than deleted. It also says that a turn
+   *  running right now is stopped first, because that is a second thing being
+   *  consented to and the user is reaching for this control precisely when one
+   *  IS running.
+   *
+   *  The slot is captured BEFORE the await: the UI stays live while the dialog
+   *  is open (see `useConfirm`), so the answer can arrive after the user has
+   *  switched crewmates, and acting on the slot that is open by then would reset
+   *  a conversation nobody asked about. A switch in that window abandons the
+   *  reset instead.
+   *
+   *  A refusal is still SHOWN. The route answers 409 while a turn is in flight
+   *  on the slot or its session, or while sub-agents are still attached, and
+   *  `stopTurnBeforeReset` above clears what it can rather than guaranteeing
+   *  anything: a turn that outlasts the stop budget, or an inbound channel turn
+   *  admitted after it, lands here. Swallowing it would read as "nothing
+   *  happened" over a conversation the model still remembers. */
+  const requestNewConversation = useCallback(() => {
+    const slot = activeSlot
+    const name = activeView ? crewDisplayName(activeView) : ''
+    if (!slot) return
+    void (async () => {
+      const ok = await confirmReset({
+        title: t('pages.membersPage.new_conversation_confirm_title', { name }),
+        body: t('pages.membersPage.new_conversation_confirm_body', { name }),
+        confirmLabel: t('pages.membersPage.new_conversation_confirm_action'),
+        // NOT destructive, which is the whole copy above in one visual: nothing
+        // is deleted. The dialog's default is the red button, and red beside
+        // "the earlier messages stay" reads as a warning the sentence denies.
+        // Weighty, because the model's context does not come back — which is
+        // what a non-danger confirm is for. PRIMARY so it is still the obvious
+        // answer: without it confirm and Cancel are two plain outline buttons
+        // the reader has to tell apart by reading both labels.
+        danger: false,
+        primary: true,
+      })
+      if (!ok || slot !== activeDmSlotRef.current) return
+      setResetError(null)
+      setResetting(true)
+      try {
+        // The slot is made idle before the reset is asked for, because the
+        // route refuses a busy one and busy is the case this action is for.
+        await stopTurnBeforeReset(slot)
+        const answer = await api.chatSlotResetConversation(slot)
+        if (answer.boundary === 'failed') {
+          // The reset HAPPENED and its record did not. Reported rather than
+          // swallowed, because this is the one outcome where the pane keeps
+          // drawing messages the crewmate has forgotten with no line marking
+          // them: a silent success here is a lie about what is on screen.
+          setResetError({
+            title: t('pages.membersPage.new_conversation_boundary_failed_title'),
+            message: t('pages.membersPage.new_conversation_boundary_failed', { name }),
+          })
+        }
+        // The boundary lands through the member log's own projection frame. This
+        // invalidation is the fallback for the frame not arriving: the log append
+        // rides a bounded queue that may refuse, and a reset whose boundary never
+        // reached the pane would leave a discarded conversation reading as
+        // current. A refetch costs one request and settles it either way.
+        void queryClient.invalidateQueries({ queryKey: MEMBERS_ROSTER_QUERY_KEY })
+      } catch (err) {
+        const raw = err instanceof Error ? err.message : String(err)
+        // The route's own busy refusal gets the user's words, not the gateway's.
+        // "a turn is in flight" is the code's term for a state the page already
+        // renders as the crewmate working, and it reads beside an "Idle" pill
+        // with no next step. Branched on the STATUS plus the body's `code`, not
+        // on the message text: the text is the server's to change.
+        const busy = err instanceof ApiError
+          && err.status === 409
+          && err.body.includes('turn_in_flight')
+        setResetError(busy
+          ? { title: t('pages.membersPage.new_conversation_failed_title'), message: t('pages.membersPage.new_conversation_busy', { name }) }
+          : { title: t('pages.membersPage.new_conversation_failed_title'), message: raw, report: findReport(raw) })
+      } finally {
+        setResetting(false)
+      }
+    })()
+  }, [activeSlot, activeView, confirmReset, queryClient, stopTurnBeforeReset, t])
+  /** The one notice for the one outcome, mounted in whichever of its two places
+   *  the reader is looking at: under the profile card's row while that card is
+   *  open (where the press happened), above the thread once it is closed. Built
+   *  once so the two sites cannot drift into two different notices — and ONE
+   *  state behind it, so there is never a second copy to dismiss. */
+  const resetErrorNotice = resetError ? (
+    <ErrorNotice
+      message={resetError.message}
+      report={resetError.report}
+      title={resetError.title}
+      onDismiss={() => setResetError(null)}
+      askAgent={false}
+      actionPlacement="below"
+      testId="member-new-conversation-error"
+    />
+  ) : null
   /** The section's own collapse toggle, which it cannot guard itself. */
   const requestCancelSchedDraft = useCallback((proceed: () => void) => {
     void (async () => {
@@ -4465,6 +4713,18 @@ export default function MembersPage() {
                 testId="member-panel-action-error"
               />
             )}
+            {/* A refused or failed "New conversation", for the case where the
+                profile card that asked for it is no longer open — the card
+                renders the same notice under its own row (see
+                `resetErrorNotice`), and whichever of the two is mounted is the
+                only copy. Above the thread, where the notices around it live,
+                and dismissable: the conversation below is intact and unchanged,
+                so this is a report rather than a verdict on the thread. No
+                hand-off, for the reason its neighbours give — the DM composer
+                holds an unsaved draft. */}
+            {resetError && !profile && (
+              <div className="px-4 py-2">{resetErrorNotice}</div>
+            )}
             {/* The editor's roster read (crewAgentsQuery, enabled only once the
                 identity pill sets editingCrew) failed: without this the pill would
                 be a silent dead click — editingAgent stays undefined, the hook's
@@ -4492,6 +4752,40 @@ export default function MembersPage() {
                  the fallback did open something. */
               <div className="px-4 py-2 text-[13px] text-warn" role="status" data-testid="member-gone-notice">
                 {t('pages.membersPage.member_gone', { name: gone.name, shown: gone.shown })}
+              </div>
+            )}
+            {activeSlot && evictedBoundaryShown && !evictedNoteClosed.has(activeSlot) && (
+              /* The reader for the fold's eviction count. A status, not an
+                 error: nothing failed on this visit, and ErrorNotice says in
+                 its own docs that it has no muted register — a notice about
+                 something that happened some resets ago must not arrive wearing
+                 danger tokens. Muted rather than the warn tone its
+                 `member-gone-notice` neighbour wears, because that one is
+                 decision-critical (the user is about to type into a thread they
+                 did not ask for) and this one tells them how to read what is
+                 already on screen.
+
+                 Dismissable, unlike that neighbour: `gone` clears when the user
+                 navigates, and this does not — the count only rises — so
+                 without a close it would sit over the thread until the next
+                 reset. Closing is per slot and for this visit only; it is not
+                 persisted, because the state it describes is still true. */
+              <div
+                className="px-4 py-2 flex items-start gap-2 text-[12px] text-muted"
+                role="status"
+                data-testid="member-boundary-evicted-notice"
+              >
+                <span className="min-w-0">{t('pages.membersPage.conversation_boundary_evicted')}</span>
+                <button
+                  type="button"
+                  className="shrink-0 bg-transparent border-none p-0 text-muted hover:text-text cursor-pointer"
+                  aria-label={t('app.dismiss')}
+                  title={t('app.dismiss')}
+                  onClick={() => setEvictedNoteClosed((prev) => new Set(prev).add(activeSlot))}
+                  data-testid="member-boundary-evicted-dismiss"
+                >
+                  <X size={12} aria-hidden />
+                </button>
               </div>
             )}
             {activeCollision && (
@@ -4684,6 +4978,7 @@ export default function MembersPage() {
                     onSessionOpen={openSessionGuarded}
                     sessions={connected && slotsLoaded ? sessionRoster : undefined}
                     activeSession={activeSlot}
+                    conversationStartTs={conversationStartTs}
                   />
                 </ErrorBoundary>
               </div>
@@ -4966,6 +5261,11 @@ export default function MembersPage() {
               onRequestBack={requestProfileBack}
               onEdit={() => setEditingCrew(active.name)}
               onOpenFiles={() => openCrewView('files')}
+              // Only with a confirmed thread: with no slot there is no
+              // conversation to start over, and the row would be a dead press.
+              onNewConversation={activeSlot ? requestNewConversation : undefined}
+              newConversationBusy={resetting}
+              newConversationError={resetErrorNotice}
             />
           ) : null
           // The card is a hover card either way — rounded on every corner, a third
@@ -5231,6 +5531,10 @@ export default function MembersPage() {
           the section's collapse toggle, so it must sit outside the panel subtree the
           answer may unmount. */}
       {schedConfirmDialog}
+      {/* "New conversation"'s prompt. Out here beside the schedules one and for
+          the same reason: it is raised from the thread header, which a crewmate
+          switch while the dialog is open would unmount under its own answer. */}
+      {resetConfirmDialog}
       {/* CREW-18688: the bot-edit modal, opened in place by the thread header's
           identity pill (member-identity-pill). Renders nothing until editingCrew is
           set; the hook returns open=false until its roster read resolves the

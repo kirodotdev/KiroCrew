@@ -6443,7 +6443,10 @@
       "split_down": "Dividir abaixo",
       "split_right": "Dividir à direita",
       "split_right_d": "Dividir à direita (⌘D)",
-      "type_to_filter": "Digite para filtrar…"
+      "type_to_filter": "Digite para filtrar…",
+      "show_earlier_messages": "Mostrar mensagens anteriores",
+      "conversation_boundary": "A nova conversa começa aqui",
+      "hide_earlier_messages": "Ocultar mensagens anteriores"
     },
     "cliPanel": {
       "copied": "Copiado",
@@ -17948,7 +17951,17 @@
       "dashboard_render_error": "Nao foi possivel desenhar este painel.",
       "dashboard_frame_title": "Painel de {{crew}}",
       "dashboard_rendering": "Desenhando o painel…",
-      "back_to_roster": "Voltar aos colegas"
+      "back_to_roster": "Voltar aos colegas",
+      "new_conversation": "Iniciar uma nova conversa",
+      "new_conversation_row_sub": "As mensagens anteriores são mantidas · primeiro para o trabalho em curso",
+      "new_conversation_confirm_title": "Começar uma nova conversa com “{{name}}”?",
+      "new_conversation_confirm_body": "“{{name}}” começa de novo: não vai lembrar nada do que foi dito nesta conversa. O que ele salvou na memória de longo prazo permanece, e todas as mensagens anteriores ficam aqui em “Mostrar mensagens anteriores”. Se ele estiver trabalhando agora, esse trabalho é parado primeiro.",
+      "new_conversation_confirm_action": "Começar uma nova conversa",
+      "new_conversation_failed_title": "Não foi possível começar uma nova conversa",
+      "new_conversation_boundary_failed": "Aperte “Iniciar uma nova conversa” de novo para adicionar a linha “A nova conversa começa aqui”. Nenhuma mensagem é perdida. Sem a linha, as mensagens que {{name}} já esqueceu continuam parecendo atuais, e apertar de novo também esquece o que foi dito desde então.",
+      "new_conversation_boundary_failed_title": "Nova conversa começada, linha não salva",
+      "new_conversation_busy": "{{name}} está atendendo uma mensagem que chegou por outro lugar, como um canal, então esta conversa continua parecendo calma. Tente de novo em um instante.",
+      "conversation_boundary_evicted": "A linha “A nova conversa começa aqui” de uma conversa anterior foi perdida, então as mensagens acima dela podem ser anteriores a esta conversa. Toque em “Iniciar uma nova conversa” para marcar um novo começo."
     },
     "tasksCapacityCard": {
       "title": "Tarefas e capacidade",

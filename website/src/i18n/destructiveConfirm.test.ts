@@ -229,6 +229,13 @@ export const QUOTED_OPERAND_CONFIRM_KEYS = [
   'pages.settings.securityPanel.trustedApps.revoke_confirm_body',
   'pages.settings.securityPanel.trustedRegistries.grant_confirm_title',
   'pages.settings.securityPanel.trustedRegistries.grant_confirm_body',
+  // The crewmate's "New conversation" ask. The operand is the crewmate's own
+  // display label, which the user wrote, so a crewmate named "Everything"
+  // renders a sentence about everything rather than about a crewmate. Both the
+  // title AND the body carry it: the body is the line that states the
+  // consequence, and bare there it reads as prose exactly as the title would.
+  'pages.membersPage.new_conversation_confirm_title',
+  'pages.membersPage.new_conversation_confirm_body',
 ]
 
 /**

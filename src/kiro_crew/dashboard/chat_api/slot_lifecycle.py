@@ -348,6 +348,18 @@ async def api_chat_slot_reset_conversation(request: web.Request) -> web.Response
     if attached is not None:
         return attached
 
+    # The boundary INSTANT, taken here rather than when its log entry is written.
+    # ``discard_conversation`` releases the registry lock after its pop and then
+    # awaits a provider shutdown it documents as slow, and a turn admitted during
+    # that window belongs to the SUCCESSOR conversation. A boundary stamped at
+    # append time therefore lands after that turn's own rows, and the pane hides
+    # the successor's live prompt as discarded history -- durably, because the
+    # boundary is the durable record. Taken on the line before the teardown, whose
+    # only suspension before the pop is acquiring that lock, so every successor
+    # row is after it; and the rows it could in principle precede belong to a turn
+    # the guards above have already refused.
+    boundary_ms = int(time.time() * 1000)
+
     # ``skip_if_busy``: the fast paths above cannot see a turn that holds the
     # per-session semaphore but has not yet put a prompt in flight (an inbound
     # channel message between the lease and its first stream event). The discard
@@ -371,13 +383,36 @@ async def api_chat_slot_reset_conversation(request: web.Request) -> web.Response
     # discard: a refusal above leaves the old conversation (and its verdict) in
     # place.
     slot.forget_session_model_state()
+    # The durable boundary, and the response WAITS for it. The transcript is
+    # deliberately left in place, so nothing in the slot's own files says where
+    # the discarded conversation ends and the fresh one begins -- the member log
+    # is what says it, and the roster projection is what hands it to the pane,
+    # which is why the line survives a reload and a gateway restart.
+    #
+    # AWAITED off the loop, and its outcome RETURNED, rather than queued and
+    # dropped. The append fsyncs, so it cannot run here; but a queued append
+    # cannot be inspected and the queue refuses at its ceiling, and a reset
+    # acknowledged with no boundary recorded leaves messages the model has
+    # forgotten rendering as current context with nothing on screen saying so.
+    # The teardown itself cannot be undone by a failed append -- the conversation
+    # is already discarded -- so the honest answer is 200 naming what did and did
+    # not happen, not a 500 that invites a caller to retry a reset that already
+    # ran. The client shows the `failed` case; `not_owed` is an ordinary chat
+    # slot, which has no member log to write into.
+    #
+    # Imported in the body, not at module scope: an owner's functions run on the
+    # handlers module's globals (see ``chat_api.compose``), so a module-level
+    # import here would be a name no function could read.
+    from kiro_crew import eventlog_hooks
+
+    boundary = await asyncio.to_thread(eventlog_hooks.record_slot_reset, name, boundary_ms)
     sel().log_api_access(
         caller=request.get("app", "") or "dashboard",
         operation="slot_reset_conversation",
         outcome="completed",
-        resources=f"slot={name} replay={replay}",
+        resources=f"slot={name} replay={replay} boundary={boundary}",
     )
-    return web.json_response({"slot": name, "reset": True, "replay": replay})
+    return web.json_response({"slot": name, "reset": True, "replay": replay, "boundary": boundary})
 
 
 def _release_closed_execution(

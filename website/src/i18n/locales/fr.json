@@ -6443,7 +6443,10 @@
       "split_down": "Diviser vers le bas",
       "split_right": "Diviser vers la droite",
       "split_right_d": "Diviser vers la droite (⌘D)",
-      "type_to_filter": "Saisir pour filtrer…"
+      "type_to_filter": "Saisir pour filtrer…",
+      "show_earlier_messages": "Afficher les messages précédents",
+      "conversation_boundary": "La nouvelle conversation commence ici",
+      "hide_earlier_messages": "Masquer les messages précédents"
     },
     "cliPanel": {
       "copied": "Copié",
@@ -17948,7 +17951,17 @@
       "dashboard_render_error": "Ce tableau de bord n'a pas pu etre dessine.",
       "dashboard_frame_title": "Tableau de bord de {{crew}}",
       "dashboard_rendering": "Affichage du tableau de bord…",
-      "back_to_roster": "Retour aux coéquipiers"
+      "back_to_roster": "Retour aux coéquipiers",
+      "new_conversation": "Démarrer une nouvelle conversation",
+      "new_conversation_row_sub": "Les messages précédents sont conservés · arrête d'abord le travail en cours",
+      "new_conversation_confirm_title": "Démarrer une nouvelle conversation avec « {{name}} » ?",
+      "new_conversation_confirm_body": "« {{name}} » repart de zéro : il ne se souviendra de rien de ce qui a été dit dans cette discussion. Ce qu'il a enregistré dans sa mémoire à long terme est conservé, et tous les messages précédents restent ici sous « Afficher les messages précédents ». S'il est en train de travailler, ce travail est arrêté d'abord.",
+      "new_conversation_confirm_action": "Démarrer une nouvelle conversation",
+      "new_conversation_failed_title": "Impossible de démarrer une nouvelle conversation",
+      "new_conversation_boundary_failed": "Appuie à nouveau sur «Démarrer une nouvelle conversation» pour ajouter la ligne « La nouvelle conversation commence ici ». Aucun message n'est perdu. Sans la ligne, les messages que {{name}} a déjà oubliés semblent toujours actuels, et appuyer à nouveau oublie aussi tout ce qui a été dit depuis.",
+      "new_conversation_boundary_failed_title": "Nouvelle conversation démarrée, ligne non enregistrée",
+      "new_conversation_busy": "{{name}} traite un message arrivé d'ailleurs, par exemple d'un canal : cette discussion a donc l'air calme. Réessaie dans un instant.",
+      "conversation_boundary_evicted": "La ligne « La nouvelle conversation commence ici » d’une conversation précédente a été perdue, donc les messages au-dessus sont peut-être antérieurs à cette conversation. Appuie sur Démarrer une nouvelle conversation pour marquer un nouveau départ."
     },
     "tasksCapacityCard": {
       "title": "Tâches et capacité",

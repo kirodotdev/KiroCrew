@@ -67,6 +67,7 @@ const API_KEY_ORDER = [
   'chatSlotSelectionCapabilities', 'effortLevels', 'slashCommands', 'chatSlotAgent',
   'chatSlotModel', 'chatSlotAutocompact', 'setChatSlotAutocompact', 'chatSlotsModel',
   'chatSlotReasoningEffort', 'chatSlotWorkspace', 'chatSlotReload', 'chatSlotProject',
+  'chatSlotResetConversation',
   'createWorktree', 'recentProjects', 'favoriteProjects', 'addFavoriteProject',
   'removeFavoriteProject', 'browseDirs', 'browseDrives',
   'browseFiles', 'projectGit', 'projectGitStatus', 'projectGitLog',

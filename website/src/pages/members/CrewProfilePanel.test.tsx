@@ -212,6 +212,96 @@ describe('CrewProfilePanel Profile tab', () => {
     expect(screen.queryByText('No description yet')).toBeNull()
   })
 
+  /* "New conversation" lives HERE and not in the thread header (reviewer's
+   * call): the one occasion anybody reaches for it is a crewmate stuck in a
+   * turn, which is rare enough that a header button spends permanent space on
+   * it. The card owns only the door — the ask, the stop, the reset and the
+   * outcome are all the host's. */
+  describe('the New conversation row', () => {
+    it('is the LAST thing on the tab, below every other row', () => {
+      /* Below the doors into what the crewmate IS, because this one throws away
+       * what it currently knows. A reader scanning the card reaches it only
+       * after there is nothing else left. */
+      setup({ onNewConversation: vi.fn() })
+      const pane = screen.getByTestId('crew-profile-pane-profile')
+      const row = screen.getByTestId('crew-profile-new-conversation')
+      const rows = Array.from(pane.querySelectorAll('[data-testid^="crew-profile-"]'))
+        .filter((el) => el.tagName === 'BUTTON')
+      expect(rows[rows.length - 1]).toBe(row)
+      // Its own group, not appended to the notes/permissions/model list: the
+      // separation is half of what says this row is a different kind of thing.
+      const group = screen.getByTestId('crew-profile-reset-group')
+      expect(group).toContainElement(row)
+      // Last in the tab's own column, so a row added later cannot quietly land
+      // underneath it.
+      expect(pane.firstElementChild?.lastElementChild).toBe(group)
+    })
+
+    it('reads in the danger colour, from the theme token and not a literal', () => {
+      /* Red is the warning the reader gets BEFORE the dialog states it. On the
+       * label only: red on the sub line too makes the row shout, and the sub
+       * line is the quieter half (what the action is for). */
+      setup({ onNewConversation: vi.fn() })
+      const row = screen.getByTestId('crew-profile-new-conversation')
+      const label = row.querySelector('.font-semibold')
+      expect(label).toHaveTextContent('Start a new conversation')
+      expect(label).toHaveClass('text-danger')
+      // The theme's token, so every theme and the high-contrast mode get their
+      // own red. A hex here would be one colour for all of them.
+      expect(row.className).not.toMatch(/#[0-9a-f]{3,8}/i)
+      expect(label?.className).not.toMatch(/#[0-9a-f]{3,8}/i)
+      expect(row.querySelector('.text-muted')).toHaveTextContent(/Earlier messages are kept/)
+    })
+
+    it('says what it is for: earlier messages are kept, current work stopped first', () => {
+      setup({ onNewConversation: vi.fn() })
+      const row = screen.getByTestId('crew-profile-new-conversation')
+      // One term everywhere: the sub says what the action keeps and what it
+      // stops, in the same plain words as the dialog, so the red row no longer
+      // reads as "delete".
+      expect(row.textContent).toMatch(/Earlier messages are kept/)
+      expect(row.textContent).toMatch(/stops current work first/)
+    })
+
+    it('is NOT held while the crewmate is working, which is the whole point of it', () => {
+      /* A row disabled on `running` would be unavailable in exactly the
+       * situation it exists for. The host's flow stops the turn before it asks
+       * for the reset; the route is still the authority on whether it may. */
+      const onNewConversation = vi.fn()
+      setup({ running: true, onNewConversation })
+      const row = screen.getByTestId('crew-profile-new-conversation')
+      expect(row).not.toBeDisabled()
+      fireEvent.click(row)
+      expect(onNewConversation).toHaveBeenCalledTimes(1)
+    })
+
+    it('is held only while its own flow runs, and says so with a spinner', () => {
+      /* A second press would stack a second stop-and-reset on one slot. */
+      const onNewConversation = vi.fn()
+      setup({ onNewConversation, newConversationBusy: true })
+      const row = screen.getByTestId('crew-profile-new-conversation')
+      expect(row).toBeDisabled()
+      expect(row.querySelector('.animate-spin')).toBeTruthy()
+      fireEvent.click(row)
+      expect(onNewConversation).not.toHaveBeenCalled()
+    })
+
+    it('renders the host\'s outcome notice under the row that caused it', () => {
+      setup({ onNewConversation: vi.fn(), newConversationError: <div data-testid="host-reset-error">refused</div> })
+      const pane = screen.getByTestId('crew-profile-pane-profile')
+      const notice = screen.getByTestId('host-reset-error')
+      const group = screen.getByTestId('crew-profile-reset-group')
+      expect(pane).toContainElement(notice)
+      expect(group.compareDocumentPosition(notice) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    })
+
+    it('is absent with no thread to reset, rather than a dead press', () => {
+      setup()
+      expect(screen.queryByTestId('crew-profile-new-conversation')).toBeNull()
+      expect(screen.queryByTestId('crew-profile-reset-group')).toBeNull()
+    })
+  })
+
   it('Read more and Notes push a page over the card with one back control naming the crewmate', async () => {
     setup()
     fireEvent.click(screen.getByTestId('crew-profile-read-more'))

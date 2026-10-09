@@ -7,7 +7,9 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useModelsDegraded } from '../providers/modelListHealth'
 import ChatMessageList from '../app-sdk/ChatMessageList'
 import type { VirtualTranscriptHandle } from '../app-sdk/ChatMessageList'
-import type { ThreadHooks } from '../app-sdk/messageRenderers'
+import type { ChatMessage } from '../types'
+import type { MessageRenderContext, ThreadHooks } from '../app-sdk/messageRenderers'
+import ConversationBoundaryRow, { CONVERSATION_BOUNDARY_KIND } from '../pages/chat/ConversationBoundaryRow'
 import { EdgeFade, JumpToBottomButton } from '../app-sdk/ChatScrollChrome'
 import { DOCK_CLEARANCE_PX, useComposerDockMetrics } from '../pages/chat/composerDockMetrics'
 import { createTranscriptRenderers } from '../pages/chat/transcriptRenderers'
@@ -153,6 +155,7 @@ export default function ChatPane({
   sessions,
   activeSession,
   crewmateCreated,
+  conversationStartTs,
 }: {
   slotKey: string
   onOpenCommandCenter?: () => void
@@ -267,6 +270,17 @@ export default function ChatPane({
   activeSession?: string
   /** Host confirmation of a user-created crewmate, never a synthetic AI reply. */
   crewmateCreated?: ReactNode
+  /** Epoch ms at which this slot's CURRENT conversation begins — the moment a
+   *  "New conversation" discarded the one before it. Rows older than this are
+   *  still in the transcript (a discard deliberately deletes nothing) but the
+   *  model does not remember them, so they are collapsed behind "Show earlier
+   *  messages" instead of reading as current context.
+   *
+   *  The host reads it from the member log's own projection, never from this
+   *  pane's state, which is what makes the line survive a reload and a gateway
+   *  restart. Undefined = no reset on record, and the pane draws exactly what it
+   *  drew before. */
+  conversationStartTs?: number
 }) {
   // One instance covers both dropdown filter inputs (never open at once).
   const dispatch = useAppDispatch()
@@ -534,9 +548,35 @@ export default function ChatPane({
   // is the status line above the footer (`liveActivity`), not a transcript
   // row, so the working indicator holds still while steps come and go.
   const crewmateLive = running || !!paneSlot?.running
+  // Pressed "Show earlier messages": the rows from before the conversation
+  // boundary are drawn again. One-way within a mounted pane — a reader who asked
+  // for the history is not asked to ask twice — and reset when the pane changes
+  // slot or a NEW boundary lands, so a fresh conversation starts collapsed.
+  const [showEarlier, setShowEarlier] = useState(false)
+  useEffect(() => { setShowEarlier(false) }, [slotKey, conversationStartTs])
+  /** The drawn rows, and how many of them predate the conversation boundary. */
+  const { drawn, earlierCut } = useMemo(() => {
+    const rows = crewmate ? filterCrewmateChat(paneMessages) : paneMessages
+    if (!conversationStartTs) return { drawn: rows, earlierCut: 0 }
+    // A PREFIX walk, not a filter, and that is the safe reading of a transcript
+    // whose rows are chronological: it stops at the first row that is not older
+    // than the boundary, so a row with an unreadable `ts` in the middle cannot
+    // hide the tail behind it. A row with no readable `ts` counts as current for
+    // the same reason — showing a message that may be older is a smaller error
+    // than hiding one that is not.
+    let cut = 0
+    while (cut < rows.length) {
+      const at = Date.parse(rows[cut].ts ?? '')
+      if (!Number.isFinite(at) || at >= conversationStartTs) break
+      cut++
+    }
+    return { drawn: rows, earlierCut: cut }
+  }, [crewmate, paneMessages, conversationStartTs])
+  /** Pre-boundary rows currently withheld; 0 once the reader has asked for them. */
+  const earlierHidden = showEarlier ? 0 : earlierCut
   const messages = useMemo(
-    () => (crewmate ? filterCrewmateChat(paneMessages) : paneMessages),
-    [crewmate, paneMessages],
+    () => (earlierHidden > 0 ? drawn.slice(earlierHidden) : drawn),
+    [drawn, earlierHidden],
   )
   // What the crewmate is doing right now, for the status line above the
   // working indicator: read through the SAME seam the DM header's identity
@@ -546,6 +586,34 @@ export default function ChatPane({
     running: crewmateLive,
     delegatedOnly: !!paneSlot?.subagents_running && !paneSlot?.running,
   })
+  /** The rows the list draws, with the boundary marker spliced in at the line.
+   *
+   *  A row rather than a header above the transcript, because the marker has to
+   *  be AT the boundary and the boundary moves: collapsed it is the top of the
+   *  drawn list, revealed it sits between the discarded conversation and the
+   *  current one. A control above the rows is in the right place only in the
+   *  first case, and a reader who expanded the history would otherwise be left
+   *  with an undivided transcript and no way to tell which half the model
+   *  remembers — which is the one question this boundary exists to answer.
+   *
+   *  `messages` stays the REAL list: the empty hint, the pinned prompt, the
+   *  footer's last role and the earlier-messages anchor all read it, and a
+   *  marker counted as a message would make a freshly reset thread look
+   *  non-empty and stop it saying so. */
+  const drawnRows = useMemo(() => {
+    if (!conversationStartTs || earlierCut === 0) return messages
+    const marker: ChatMessage = {
+      role: 'system',
+      kind: CONVERSATION_BOUNDARY_KIND,
+      content: '',
+      cls: '',
+      // The boundary's own moment: the row key is then stable across renders,
+      // and the card states when the conversation started.
+      ts: new Date(conversationStartTs).toISOString(),
+    }
+    const at = showEarlier ? earlierCut : 0
+    return [...messages.slice(0, at), marker, ...messages.slice(at)]
+  }, [messages, conversationStartTs, earlierCut, showEarlier])
   // The unfiltered rows, handed to the row set for the one read that must see
   // what the filter dropped (the steer-chip decision reads the policy-block
   // inject row). `undefined` for an ordinary chat, so its renderer set does not
@@ -803,7 +871,14 @@ export default function ChatPane({
   // whole history, so that read is upgraded to the whole transcript first
   // (same latch as the streaming upgrade) and the hint waits for it. An
   // unbounded read that is still empty is the real never-spoken case.
-  const crewmateQuietUnproven = !!crewmate && warmHasMore === true && paneMessages.length > 0 && messages.length === 0
+  // `earlierCut === 0` is part of the question, not a tidy-up. A DM longer than
+  // one hydrate page whose conversation was just reset has rows in the window
+  // and none drawn — the exact shape "the window proved nothing" tests for — so
+  // without it every reset, and every reopen before the next message, latches
+  // the unbounded read. That read then finds nothing new, because the boundary
+  // still withholds those rows: the whole transcript is pulled to answer a
+  // question the boundary has already answered.
+  const crewmateQuietUnproven = !!crewmate && warmHasMore === true && paneMessages.length > 0 && messages.length === 0 && earlierCut === 0
   if (!limitLatched.current && crewmateQuietUnproven) {
     limitRef.current = undefined
     limitLatched.current = true
@@ -1574,26 +1649,44 @@ export default function ChatPane({
     setToolDisclosure((prev) => ({ ...prev, [key]: expanded }))
   }, [])
   const renderers = useMemo(
-    () => createTranscriptRenderers({
-      slot: slotKey,
-      toolDisclosure,
-      onToolDisclosureChange: setToolDisclosureFor,
-      // A steer-only surface has no steer/queue concept to explain, so a
-      // confirmed steer draws as an ordinary message: no badge, no tint.
-      hideSteerBadge: busyMode === 'steer-only',
-      // Attachment cards / @mention chips open through the host's file viewer
-      // (#9487); without it they render without an opener.
-      onFileOpen,
-      crewmate,
-      crewmateTranscript,
-      // Session links resolve through the SAME renderer path the single-chat
-      // page uses; there is no second resolver. Absent from the host = the
-      // renderer's own gate leaves them plain.
-      onSessionOpen,
-      sessions,
-      activeSession,
-    }),
-    [slotKey, toolDisclosure, setToolDisclosureFor, busyMode, onFileOpen, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession],
+    () => [
+      // Ahead of the shared set, and shape-matched: the row is this pane's own
+      // synthetic marker, so no role entry further down should ever claim it.
+      {
+        id: 'conversation_boundary',
+        roles: ['*'] as const,
+        match: (m: ChatMessage) => m.kind === CONVERSATION_BOUNDARY_KIND,
+        render: (m: ChatMessage, ctx: MessageRenderContext) => ctx.row(
+          <ConversationBoundaryRow
+            key={ctx.key}
+            at={Date.parse(m.ts ?? '')}
+            earlierHidden={earlierHidden}
+            onToggle={() => setShowEarlier(v => !v)}
+          />,
+          true,
+        ),
+      },
+      ...createTranscriptRenderers({
+        slot: slotKey,
+        toolDisclosure,
+        onToolDisclosureChange: setToolDisclosureFor,
+        // A steer-only surface has no steer/queue concept to explain, so a
+        // confirmed steer draws as an ordinary message: no badge, no tint.
+        hideSteerBadge: busyMode === 'steer-only',
+        // Attachment cards / @mention chips open through the host's file viewer
+        // (#9487); without it they render without an opener.
+        onFileOpen,
+        crewmate,
+        crewmateTranscript,
+        // Session links resolve through the SAME renderer path the single-chat
+        // page uses; there is no second resolver. Absent from the host = the
+        // renderer's own gate leaves them plain.
+        onSessionOpen,
+        sessions,
+        activeSession,
+      }),
+    ],
+    [slotKey, toolDisclosure, setToolDisclosureFor, busyMode, onFileOpen, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, earlierHidden],
   )
 
   // The composer dock floats over the bottom of the scroller (ChatPage's
@@ -1765,7 +1858,9 @@ export default function ChatPane({
             TranscriptScrollShell for the style contract it enforces. */}
         <ChatMessageList
           ref={listRef}
-          messages={messages}
+          // `drawnRows`, not `messages`: identical unless this slot has a
+          // conversation boundary, in which case it carries the marker row.
+          messages={drawnRows}
           // The slot's own liveness too, not only this session's stream: a
           // DM/member pane observing a turn driven elsewhere still follows.
           running={running || !!paneSlot?.running}
@@ -1799,6 +1894,12 @@ export default function ChatPane({
                 : undefined,
             aboveRows: (
               <>
+                {/* The conversation boundary is NOT here. It is a row
+                    (`ConversationBoundaryRow`, spliced into `drawnRows`),
+                    because the line it draws has to sit AT the boundary and the
+                    boundary moves once the earlier messages are revealed — a
+                    header above the rows is in the right place only while they
+                    are hidden. */}
                 {slotDetailFailed && (
                   <div className="mx-4 my-2 flex items-start gap-2">
                     {/* No hand-off: the composer draft (`input`) in this pane is unsaved local
@@ -1823,9 +1924,14 @@ export default function ChatPane({
                     is on screen, so "hasn't said anything" would sit under a
                     line that shows it busy. */}
                 {crewmateCreated}
+                {/* `earlierHidden` guards the quiet reading: a crewmate whose
+                    conversation was just discarded has rows in `paneMessages`
+                    and none drawn, which is the exact shape "has been quiet"
+                    tests for — but it has not been quiet, it has been reset, and
+                    the fresh-thread hint is the true line there. */}
                 {messages.length === 0 && !(crewmate ? crewmateLive : running) && !slotDetailFailed && !hideEmptyHint && !crewmateQuietUnproven && (
-                  <div className="text-center text-muted text-[13px] px-4 py-8" data-testid={crewmate && paneMessages.length > 0 ? 'crewmate-quiet-hint' : undefined}>
-                    {crewmate && paneMessages.length > 0 ? (
+                  <div className="text-center text-muted text-[13px] px-4 py-8" data-testid={crewmate && paneMessages.length > 0 && earlierHidden === 0 ? 'crewmate-quiet-hint' : undefined}>
+                    {crewmate && paneMessages.length > 0 && earlierHidden === 0 ? (
                       <>
                         <div>{i18nT('components.chatPane.crewmate_quiet', { name: crewmate.label || crewmate.name })}</div>
                         {/* Where the work went: Profile > Sessions. A link when the host

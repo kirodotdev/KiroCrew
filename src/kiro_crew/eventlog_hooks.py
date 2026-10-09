@@ -874,6 +874,77 @@ def member_name_for_slug(cfg, slug) -> "str | None":
     return None
 
 
+#: ``record_slot_reset``'s three answers. ``not_owed`` and ``failed`` are
+#: deliberately separate: a slot with no member owner has no boundary to write,
+#: while a slot that has one and could not write it leaves forgotten messages
+#: reading as current. A caller that collapsed the two would report the second as
+#: routine.
+BOUNDARY_RECORDED = "recorded"
+BOUNDARY_NOT_OWED = "not_owed"
+BOUNDARY_FAILED = "failed"
+
+
+def record_slot_reset(slot_key: str, boundary_ms: int) -> str:
+    """Append a ``slot/reset`` boundary to the member log of *slot_key*'s owner.
+
+    *boundary_ms* is the instant the conversation was discarded, captured by the
+    caller and persisted here rather than taken from this append. The two are not
+    the same moment and the difference is not cosmetic: ``discard_conversation``
+    releases the session registry lock after its pop and then AWAITS a provider
+    shutdown that is slow by its own admission, so a turn admitted during that
+    window belongs to the SUCCESSOR conversation. Stamping the boundary when this
+    append finally runs puts it after that turn's own rows, and a pane cutting on
+    it hides the successor's live prompt as discarded history -- durably, because
+    the boundary is the durable record.
+
+    BLOCKING, and answers whether the entry LANDED rather than whether it was
+    queued -- which is the whole reason it does not go through :func:`submit`. The
+    boundary is the only durable statement of where a slot's current conversation
+    begins; the transcript is deliberately left in place, so a reset whose
+    boundary never reached the log leaves messages the model has forgotten
+    rendering as current context, with nothing on screen saying so. A queued
+    append cannot be inspected, and the queue can refuse at its ceiling, so the
+    caller would acknowledge a completed reset it has no record of. It appends
+    inline instead and reports the outcome, which is what lets the route answer
+    with it.
+
+    The append fsyncs, so this must not run on the gateway serving loop: the
+    caller hands it to a worker thread. Ordering against the queued writers is not
+    needed -- the member log assigns ``seq`` off the file tail under its own lock,
+    and no reader of this entry depends on its position relative to another
+    member event.
+
+    The owner is resolved from the slot key itself, through the members module's
+    one spelling of that strip, so only a member's own DM slot records a boundary.
+    An ordinary chat slot bound to a member's private store has a member owner too
+    -- the slots broadcast resolves that second case out of the CONFIG -- but it is
+    not resolved here: the boundary's only consumer is the crewmate DM pane, which
+    is the first case. A slot with no member owner answers ``not_owed`` rather
+    than guessing one.
+    """
+    from kiro_crew.eventlog.types import SLOT_RESET
+    from kiro_crew.members import slug_from_dm_slot_key
+
+    try:
+        slug = slug_from_dm_slot_key(slot_key)
+    except Exception:
+        logger.warning("slot/reset owner could not be resolved", exc_info=True)
+        return BOUNDARY_FAILED
+    if not slug:
+        return BOUNDARY_NOT_OWED
+    # `name` left empty on purpose, the way the slots broadcast leaves it: `emit`
+    # passes `name or slug` to `ensure`, which resolves the exact name from the
+    # roster once per member rather than once per event.
+    if isinstance(boundary_ms, bool) or not isinstance(boundary_ms, (int, float)):
+        # The log is append-only, so a value that is not a moment would be a
+        # permanent line no reader can place. Refusing is better than writing it:
+        # the caller then reports a boundary it does not have, which is the truth.
+        logger.warning("slot/reset boundary is not a moment: %r", boundary_ms)
+        return BOUNDARY_FAILED
+    landed = emit(slug, "", SLOT_RESET, {"slot_key": slot_key, "ts": int(boundary_ms)})
+    return BOUNDARY_RECORDED if landed else BOUNDARY_FAILED
+
+
 def emit(slug, name, type, data) -> bool:
     """Ensure a member's log exists and append one event; answer whether it landed.
 

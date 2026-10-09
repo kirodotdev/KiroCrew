@@ -47,6 +47,27 @@ ACTIVITY_RECORD = "activity/record"
 SLOT_OPENED = "slot/opened"
 SLOT_CLOSED = "slot/closed"
 
+# The slot's native conversation was discarded and the next turn cold-starts a
+# fresh one. The slot itself stays open and its transcript stays on disk, so this
+# is neither an open nor a close: it is the BOUNDARY between two conversations
+# inside one slot's history.
+# data: {"slot_key": str, "ts": int}
+#
+# ``ts`` IS the boundary: the instant the conversation was discarded, captured by
+# the route before the teardown and persisted here. The envelope's own ``time``
+# is a different moment -- the append happens after a provider shutdown the
+# teardown awaits -- and is read only as a fallback for a line carrying no
+# ``ts``.
+#
+# Those two are the whole payload. A row count and the discarded ACP session id
+# were both written here at first and neither had a reader -- the client holds a
+# bounded TAIL of the transcript, so an absolute row index cannot be applied to
+# it, and the successor's own ``session/opened {previous: {sid}}`` already
+# records the session chain. This log has no compaction, so a field written here
+# is written for good; one nobody reads is a line every future reader has to
+# account for.
+SLOT_RESET = "slot/reset"
+
 # The member's patrol (auto-nudge loop on its DM slot) started / stopped.
 # data: {"slot_key": str}  /  {"slot_key": str, "reason": str}
 # reason is the loop's stopped_reason, or "interrupted" when synthesised at load.
@@ -62,6 +83,7 @@ ALL_EVENT_TYPES = frozenset(
         ACTIVITY_RECORD,
         SLOT_OPENED,
         SLOT_CLOSED,
+        SLOT_RESET,
         PATROL_STARTED,
         PATROL_STOPPED,
     }
@@ -99,7 +121,11 @@ def is_known_event_type(type_: str) -> bool:
 
 # ---- projection keys -----------------------------------------------------
 
-PROJ_ROSTER = "roster"  # MemberRosterRow minus ``running``
+#: ``MemberRosterRow`` minus ``running``, plus ``conversation_starts``:
+#: ``{slot_key: {ts}}`` for the slots this member has reset, which is where each
+#: of those slots' CURRENT conversation begins. Served on every roster read, so a
+#: DM pane has the boundary before any live frame arrives.
+PROJ_ROSTER = "roster"
 PROJ_ACTIVITY = (
     "activity"  # {"recent": [record...] (newest first, <= 50), "today": int, "week": int}
 )

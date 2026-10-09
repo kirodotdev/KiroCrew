@@ -2668,6 +2668,30 @@ class SessionLifecycleService:
             else:
                 self._suppress_replay.add(key)
             if session is not None:
+                # Append-only the session's own log, flag-gated and fail-soft, in
+                # the position the reset and destroy sites use and for their
+                # reason: the emitter hands the entry to its own thread and
+                # returns, so this adds no suspension point, while writing it
+                # after the await below would let a live turn's entries take a
+                # lower seq than the teardown that already happened.
+                #
+                # `discarded` is a NON-TERMINAL close reason, which is the whole
+                # point of writing it here. The sid is cleared unconditionally on
+                # this path, so the id is genuinely unresumable -- but
+                # `_TERMINAL_CLOSE_REASONS` is the authorization to DELETE a
+                # closed unit, and this conversation's log is the record of a
+                # transcript that deliberately stays on disk. See the note on that
+                # set in `crew_log/store.py`.
+                #
+                # Deferred, not module-scope: this module is reached from the
+                # gateway boot path, and AUTOSDE's no-new-work-on-gateway-boot-path
+                # rule asks for a flag-gated subsystem's IMPORT to be gated too.
+                from kiro_crew.crew_log import emit as crew_log_emit
+
+                crew_log_emit.on_session_closed(
+                    crew_log_emit.session_id_of(session.provider),
+                    END_REASON_DISCARDED,
+                )
                 # Same lock hold as the pop, exactly like the clear_sid below.
                 await record_session_ended(key, end_reason=END_REASON_DISCARDED)
         # The registry lock, not an absence of suspension points, is what keeps a

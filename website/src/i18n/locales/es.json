@@ -6443,7 +6443,10 @@
       "split_down": "Dividir abajo",
       "split_right": "Dividir a la derecha",
       "split_right_d": "Dividir a la derecha (⌘D)",
-      "type_to_filter": "Escribe para filtrar…"
+      "type_to_filter": "Escribe para filtrar…",
+      "show_earlier_messages": "Mostrar mensajes anteriores",
+      "conversation_boundary": "Aquí empieza la nueva conversación",
+      "hide_earlier_messages": "Ocultar mensajes anteriores"
     },
     "cliPanel": {
       "copied": "Copiado",
@@ -17948,7 +17951,17 @@
       "dashboard_render_error": "No se pudo dibujar este panel.",
       "dashboard_frame_title": "Panel de {{crew}}",
       "dashboard_rendering": "Dibujando el panel…",
-      "back_to_roster": "Volver a los compañeros"
+      "back_to_roster": "Volver a los compañeros",
+      "new_conversation": "Iniciar una nueva conversación",
+      "new_conversation_row_sub": "Los mensajes anteriores se conservan · primero detiene el trabajo en curso",
+      "new_conversation_confirm_title": "¿Empezar una nueva conversación con “{{name}}”?",
+      "new_conversation_confirm_body": "“{{name}}” empieza de nuevo: no recordará nada de lo dicho en este chat. Lo que haya guardado en su memoria a largo plazo se mantiene, y todos los mensajes anteriores siguen aquí en “Mostrar mensajes anteriores”. Si está trabajando ahora mismo, ese trabajo se detiene primero.",
+      "new_conversation_confirm_action": "Empezar una nueva conversación",
+      "new_conversation_failed_title": "No se pudo empezar una nueva conversación",
+      "new_conversation_boundary_failed": "Pulsa “Iniciar una nueva conversación” otra vez para añadir la línea “Aquí empieza la nueva conversación”. No se pierde ningún mensaje. Sin la línea, los mensajes que {{name}} ya olvidó siguen pareciendo actuales, y pulsar otra vez también olvida lo dicho desde entonces.",
+      "new_conversation_boundary_failed_title": "Nueva conversación empezada, línea no guardada",
+      "new_conversation_busy": "{{name}} está atendiendo un mensaje que llegó por otro sitio, como un canal, así que este chat sigue pareciendo tranquilo. Inténtalo otra vez en un momento.",
+      "conversation_boundary_evicted": "Se perdió la línea “Aquí empieza la nueva conversación” de una conversación anterior, así que los mensajes por encima pueden ser anteriores a esta conversación. Pulsa “Iniciar una nueva conversación” para marcar un nuevo comienzo."
     },
     "tasksCapacityCard": {
       "title": "Tareas y capacidad",
