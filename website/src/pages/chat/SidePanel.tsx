@@ -1023,7 +1023,7 @@ export default function SidePanel({
           frameless Linux paint their caption controls — the panel chrome below
           would sit under them, covered and unclickable. Bottom-docked the strip
           is nowhere near that corner, so it takes no reserve. */}
-      <div className={`side-panel-strip flex items-end gap-1.5 shrink-0 px-2 pt-2 pb-0 min-h-10 rounded-tl-xl bg-bg-elevated border-b border-border${isBottom ? '' : ' focus-caption-reserve'}`}>
+      <div className={`side-panel-strip side-panel-strip-cq flex items-end gap-1.5 shrink-0 px-2 pt-2 pb-0 min-h-10 rounded-tl-xl bg-bg-elevated border-b border-border${isBottom ? '' : ' focus-caption-reserve'}`}>
         {/* Pinned views (Changes / Files / Artifacts): always present, fixed at
             the front, non-closable, not draggable, compact. The group's 8px gap
             matches the active chip's corner-piece width, so a piece lands in the
@@ -1049,8 +1049,8 @@ export default function SidePanel({
         >
           {/* The host's leading tabs, ahead of the pinned views: non-closable
               chips, never Reorder items — they are the strip's identity, not
-              documents. ALWAYS labelled (`pinned={false}`): several icon-only
-              chips would be unlabelled navigation. No `role="tablist"` here —
+              documents. Named by visible text and `host`'s aria-label; a
+              badge rides after the label. No `role="tablist"` here —
               the strip already carries one on the dynamic group, and the
               pinned chips beside these have never had their own. */}
           {!!leadingTabs?.length && (
@@ -1904,9 +1904,7 @@ function TabChip({ tab, active, onSelect, onClose, closable = true, pinned = fal
   host?: boolean
   /** Overrides the kind-derived glyph. Required when `tab.kind` is absent. */
   icon?: ReactNode
-  /** Count / status pill rendered after the label. Only ever shown while the
-   *  label is (an icon-only chip has no room and the pill would read as part of
-   *  the glyph). */
+  /** Count / status pill rendered after the label. */
   badge?: ReactNode
   testId?: string
 }) {
@@ -1914,11 +1912,12 @@ function TabChip({ tab, active, onSelect, onClose, closable = true, pinned = fal
   // reads KIND_ICON. Reuses the shared ['apps'] query, so no extra fetch.
   const panelTabDescriptors = usePanelTabDescriptors()
   const glyph = icon ?? (tab.kind ? iconForKind(tab.kind, panelTabDescriptors) : null)
-  // Pinned views (Changes / Files / Artifacts) are icon-only when inactive and
-  // expand to icon + label when active — a hybrid that keeps the strip compact
-  // while still naming the current view. Dynamic (document / terminal) tabs
-  // always show their label. Icon-only chips MUST carry an accessible name.
-  const showLabel = active || !pinned
+  // Every chip shows its label, pinned views (Changes / Artifacts / Files)
+  // included: an icon-only pinned chip leaves a first-time user guessing which
+  // glyph is Files. On a strip too narrow for three labels an inactive pinned
+  // chip drops to its icon (`side-tab-pinned-idle`, index.css) so none of the
+  // three scrolls out of view.
+  const narrowIconOnly = pinned && !active
   return (
     <div
       role="tab"
@@ -1929,13 +1928,12 @@ function TabChip({ tab, active, onSelect, onClose, closable = true, pinned = fal
       // activates them natively instead of also selecting the tab.
       onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onSelect() } }}
       onAuxClick={(e) => { if (closable && e.button === 1) { e.preventDefault(); onClose() } }}
-      // Icon-only pinned chips have no visible text, so give them an explicit
-      // accessible name + hover tooltip. Harmless (and a nice tooltip) when the
-      // label is also shown.
+      // Pinned and host chips carry an explicit accessible name, so a badge
+      // after the label never becomes part of the tab's name.
       aria-label={pinned || host ? tab.title : undefined}
       // Labeled chips CSS-truncate at max-w-[240px], so the hover tooltip is
       // the only way to read a long title in full (e.g. an MCP app's
-      // server/tool identity, #9868). Icon-only chips need it as their name.
+      // server/tool identity).
       // A file/diff/folder tab's label is only `basename(path)`, so a deep tree
       // and two same-named files in different directories are indistinguishable
       // from the label alone — prefer the full path whenever the tab carries
@@ -1950,25 +1948,22 @@ function TabChip({ tab, active, onSelect, onClose, closable = true, pinned = fal
       // corner pieces carry a matching 1px arc in their gradient, so the hairline
       // FOLLOWS the outward curve instead of running straight through it (see
       // .side-tab-active in index.css). Inactive = muted text with a hover wash.
-      // Icon-only (inactive pinned) collapses to a square (w-8, centered).
       // This deliberately supersedes the earlier Figma "Side Navigation" pill
       // spec (28px, 6px all-corner radius, --border active fill).
-      className={`group relative isolate flex items-center gap-1 h-8 rounded-t-md rounded-b-none border cursor-pointer shrink-0 select-none transition-colors ${
-        showLabel ? `max-w-[240px] ${closable ? 'pl-2 pr-1' : 'px-2'}` : 'w-8 justify-center px-0'
+      className={`${narrowIconOnly ? 'side-tab-pinned-idle ' : ''}group relative isolate flex items-center gap-1 h-8 rounded-t-md rounded-b-none border cursor-pointer shrink-0 select-none transition-colors ${
+        `max-w-[240px] ${closable ? 'pl-2 pr-1' : 'px-2'}`
       } ${
         active ? 'side-tab-active bg-bg text-accent border-x-border border-t-border border-b-transparent' : 'side-tab-inactive border-transparent text-muted hover:text-text'
       }`}
     >
       <span className="shrink-0">{glyph}</span>
-      {showLabel && (
-        <span className="min-w-0 text-[12px] truncate text-left">
-          {tab.kind === 'terminal' && tab.sessionId
-            ? <TerminalTabTitle sessionId={tab.sessionId} fallback={tab.title} />
-            : tab.title}
-        </span>
-      )}
-      {showLabel && badge != null && (
-        <span className="shrink-0" data-testid={testId ? `${testId}-badge` : undefined}>{badge}</span>
+      <span className="side-tab-label min-w-0 text-[12px] truncate text-left">
+        {tab.kind === 'terminal' && tab.sessionId
+          ? <TerminalTabTitle sessionId={tab.sessionId} fallback={tab.title} />
+          : tab.title}
+      </span>
+      {badge != null && (
+        <span className="side-tab-badge shrink-0" data-testid={testId ? `${testId}-badge` : undefined}>{badge}</span>
       )}
       {closable && (
         <div className="flex items-center gap-0.5 shrink-0">

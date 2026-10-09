@@ -78,7 +78,7 @@ function renderEmptyPanel() {
 
 /** Every tab chip, addressed by role rather than by any label this test asserts. */
 const chips = () => screen.getAllByRole('tab')
-/** A chip's accessible name -- pinned chips are icon-only, so it is the aria-label. */
+/** A chip's accessible name -- pinned chips set it explicitly as the aria-label. */
 const nameOf = (el: HTMLElement) => el.getAttribute('aria-label')
 
 describe('the pinned block is permanent, not content-driven', () => {

@@ -2865,6 +2865,17 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
 .side-tab-inactive:hover::before{
   content:'';position:absolute;left:0;right:0;top:2px;bottom:4px;
   border-radius:8px;background:var(--bg-hover);z-index:-1}
+/* Narrow strip: the pinned views (Changes / Artifacts / Files) are labelled,
+   but at a strip too narrow for three labels an INACTIVE pinned chip drops to
+   its icon, so all three stay on screen instead of the last one scrolling out
+   of view. The active chip keeps its word; every chip keeps its aria-label and
+   tooltip. Unlayered, so it beats the chip's Tailwind width/padding utilities.
+   The strip is the query container (`side-panel-strip-cq`). */
+.side-panel-strip-cq{container-type:inline-size}
+@container (max-width:400px){
+  .side-tab-pinned-idle{width:2rem;max-width:none;justify-content:center;padding-left:0;padding-right:0}
+  .side-tab-pinned-idle .side-tab-label,.side-tab-pinned-idle .side-tab-badge{display:none}
+}
 /* Reveal-in-sidebar confirmation: an accent outline the reveal handler holds
    briefly and then fades (ChatSidebar reveal effect, issue #912). Outline, not
    background, because the revealed row is usually the active one and already
