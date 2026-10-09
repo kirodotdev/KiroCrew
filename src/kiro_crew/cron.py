@@ -4078,6 +4078,16 @@ class CronService:
             if not job.failure_recorded and not job.run_never_started:
                 job.record_failure()
             logger.error("Cron job '%s' timed out after %ds", job.name, deadline)
+        finally:
+            # A one-shot whose run FAILED (error or timeout) is auto-paused, not
+            # consumed: the pause is execution-owned, so apply_run_record persists
+            # it under the generation fence and the doctor reports it. In a finally
+            # so a cancel after the failure still parks it. A denied or
+            # never-started run is not a failed run and keeps its own handling.
+            if job.delete_after_run and job.last_status == "error" and not job.auto_paused:
+                if not (job.fire_time_denied or job.run_never_started):
+                    job.enabled, job.auto_paused = False, True
+                    job._audit_pause_change("auto_paused")
 
     async def _execute(self, job: CronJob, claim: _RunClaim | None = None) -> None:
         """Run the job callback and update runtime fields (last_run_ts, last_status).
@@ -4219,9 +4229,12 @@ class CronService:
             # unreadable store to an empty job list WITHOUT raising, so presence
             # is exactly what a corrupt store destroys, and the deferred queue
             # below then never fired for a delete that was still owed on disk.
-            delete_owed = job.delete_after_run and not (
+            # A failed run's auto-pause is only in memory until the save lands, so
+            # a save fault keeps the plain consume rule (as the busy path does).
+            consume_on_fault = job.delete_after_run and not (
                 job.fire_time_denied or job.run_never_started
             )
+            delete_owed = consume_on_fault and job.last_status != "error"
             removed_one_shot = False
             restore: list[tuple[CronJob, str]] = []
             consumed_row = False
@@ -4292,10 +4305,10 @@ class CronService:
                 # reload, and the save never landed, so the disk copy is still
                 # enabled. Without a queue entry the reloaded one-shot comes back
                 # enabled and runs a second time on the next tick. Keyed on
-                # delete_owed, NOT presence: an absent id proves nothing about
+                # consume_on_fault, NOT presence: an absent id proves nothing about
                 # whether the delete is owed, and the drain intersects the queue
                 # with what is present and drops the rest.
-                if delete_owed:
+                if consume_on_fault:
                     self._pending_removals.add(job.id)
                 if isinstance(exc, CronStoreUnreadable):
                     # Return WITHOUT auditing: the emit below records only a SAVED

@@ -2699,11 +2699,14 @@ class TestClaimBackstopRetainsAnUnstartedOneShot:
 
         # Off-loop: _merge_job_result enters the bounded sync store lock.
         await asyncio.to_thread(svc._merge_job_result, created)
-        still_present = any(j.id == created.id for j in svc.list_jobs())
-        assert still_present is expect_retained, (
+        still_present = any(j.id == created.id for j in svc.list_jobs(include_disabled=True))
+        # Retained either way, by a DIFFERENT owner: the unstarted run by
+        # run_never_started, the overrun because a failed one-shot is kept.
+        assert created.last_status == "error"
+        assert still_present, (
             "the one-shot was deleted by a run that never dispatched"
             if expect_retained
-            else "the one-shot survived a run that did dispatch"
+            else "a one-shot whose run timed out was deleted instead of kept"
         )
 
     @pytest.mark.asyncio
@@ -3575,3 +3578,185 @@ class TestCronDefaultAgent:
         assert kwargs["crew_agent"] == ""
         # ... with no crew workspace bound off the collision.
         assert kwargs["cwd"] is None
+
+
+class TestFailedOneShotIsParkedNotDeleted:
+    """A one-shot whose run FAILED (error or timeout) is kept, parked disabled.
+
+    Only a run that ended "ok" consumes a ``delete_after_run`` at-job. Each
+    callback double below implements the real contract of its path: raise
+    (LLM error), sleep past the deadline (timeout), or mark the job and return
+    normally (fire-time deny, never-started).
+    """
+
+    @staticmethod
+    def _svc(tmp_path, on_job):
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path, on_job=on_job)
+        svc._load()
+        job = svc.add_job(name="one-shot", message="go", at_ts=9999999999.0)
+        job.delete_after_run = True
+        svc._save()
+        return svc, job
+
+    @staticmethod
+    def _on_disk(tmp_path, job_id):
+        from kiro_crew.cron import CronService
+
+        fresh = CronService(base_dir=tmp_path)
+        fresh._load()
+        return next((j for j in fresh.list_jobs(include_disabled=True) if j.id == job_id), None)
+
+    async def _run(self, svc, job):
+        from kiro_crew.cron_service.execution import close_run
+
+        await svc._execute_with_timeout(job)
+        # The production shape: merge the run's frozen COPY against a store
+        # the merge must reload, so the live job's fields cannot leak through.
+        terminal, _status, _result = close_run(
+            job, started_at=0.0, generation=1, being_cancelled=False
+        )
+        svc._reset_fingerprint()
+        await asyncio.to_thread(svc._merge_job_result, terminal)
+
+    @pytest.mark.asyncio
+    async def test_errored_one_shot_is_kept_and_disabled(self, tmp_path):
+        async def _boom(j):
+            raise RuntimeError("agent failed")
+
+        svc, job = self._svc(tmp_path, _boom)
+        await self._run(svc, job)
+        stored = self._on_disk(tmp_path, job.id)
+        assert stored is not None, "a one-shot whose run errored was deleted"
+        assert stored.enabled is False and stored.auto_paused is True
+        assert stored.user_paused is False, "a failure park must not read as a user pause"
+        assert stored.last_status == "error"
+        assert stored.last_error == "agent failed"
+
+    @pytest.mark.asyncio
+    async def test_timed_out_one_shot_is_kept_and_disabled(self, tmp_path, monkeypatch):
+        import kiro_crew.cron as cron_mod
+
+        monkeypatch.setattr(cron_mod, "effective_wake_budget", lambda j: 0.05)
+        for name in ("_pool_queue_allowance", "_gate_budget_allowance", "_vet_allowance"):
+            monkeypatch.setattr(cron_mod, name, lambda j: 0)
+
+        async def _hang(j):
+            await asyncio.Event().wait()  # never set: only the deadline ends it
+
+        svc, job = self._svc(tmp_path, _hang)
+        await self._run(svc, job)
+        stored = self._on_disk(tmp_path, job.id)
+        assert stored is not None, "a one-shot whose run timed out was deleted"
+        assert stored.enabled is False and stored.auto_paused is True
+        assert stored.user_paused is False, "a failure park must not read as a user pause"
+        assert (stored.last_error or "").startswith("Timed out after")
+
+    @pytest.mark.asyncio
+    async def test_successful_one_shot_is_still_deleted(self, tmp_path):
+        async def _ok(j):
+            return "ok"
+
+        svc, job = self._svc(tmp_path, _ok)
+        await self._run(svc, job)
+        assert job.last_status == "ok"
+        assert self._on_disk(tmp_path, job.id) is None, "a successful one-shot was not consumed"
+
+    @pytest.mark.asyncio
+    async def test_denied_one_shot_is_still_parked_disabled(self, tmp_path):
+        async def _deny(j):
+            j.last_status = "error"
+            j.fire_time_denied = True
+
+        svc, job = self._svc(tmp_path, _deny)
+        await self._run(svc, job)
+        stored = self._on_disk(tmp_path, job.id)
+        assert stored is not None, "a denied one-shot was deleted"
+        assert stored.enabled is False
+        assert stored.auto_paused is False, "a policy denial is neutral and must not auto-pause"
+
+    @pytest.mark.asyncio
+    async def test_never_started_one_shot_stays_enabled(self, tmp_path):
+        async def _starved(j):
+            j.last_status = "error"
+            j.run_never_started = True
+
+        svc, job = self._svc(tmp_path, _starved)
+        await self._run(svc, job)
+        stored = self._on_disk(tmp_path, job.id)
+        assert stored is not None, "a never-started one-shot was deleted"
+        assert stored.enabled is True, "a never-started one-shot was parked; it must retry"
+
+    @pytest.mark.asyncio
+    async def test_stale_failed_record_does_not_park_a_newer_run(self, tmp_path):
+        from kiro_crew.cron_service.execution import close_run
+
+        async def _boom(j):
+            raise RuntimeError("old run failed")
+
+        svc, job = self._svc(tmp_path, _boom)
+        await svc._execute_with_timeout(job)
+        terminal, _status, _result = close_run(
+            job, started_at=0.0, generation=1, being_cancelled=False
+        )
+        # A newer run's record already landed: the store holds generation 2.
+        stored = next(j for j in svc._jobs if j.id == job.id)
+        stored.run_generation = 2
+        # The operator re-enabled it, which clears the pause the old run set.
+        stored.enabled, stored.user_paused, stored.auto_paused = True, False, False
+        svc._save()
+        svc._reset_fingerprint()
+        await asyncio.to_thread(svc._merge_job_result, terminal)
+        on_disk = self._on_disk(tmp_path, job.id)
+        assert on_disk is not None
+        assert on_disk.enabled is True, "an older failed record parked a newer run"
+
+    @pytest.mark.asyncio
+    async def test_save_fault_on_a_failed_one_shot_still_queues_its_consume(self, tmp_path):
+        from kiro_crew.cron_service.execution import close_run
+        from kiro_crew.cron_service.store import CronStoreUnreadable
+
+        async def _boom(j):
+            raise RuntimeError("agent failed")
+
+        svc, job = self._svc(tmp_path, _boom)
+        await svc._execute_with_timeout(job)
+        terminal, _status, _result = close_run(
+            job, started_at=0.0, generation=1, being_cancelled=False
+        )
+
+        def _unreadable():
+            # The real contract: the store cannot be read, so nothing is written.
+            raise CronStoreUnreadable("store unreadable")
+
+        svc._save = _unreadable
+        await asyncio.to_thread(svc._merge_job_result, terminal)
+        # The auto-pause never reached disk, so the deferred consume must be queued,
+        # or the still-enabled disk row would run again on the next tick.
+        assert job.id in svc._pending_removals
+
+    @pytest.mark.asyncio
+    async def test_cancel_during_failure_alert_still_parks_the_one_shot(self, tmp_path):
+        from kiro_crew.cron_service.execution import close_run
+
+        async def _fail_then_cancelled_in_alert(j):
+            # The command/script contract: mark the run failed on the shared job,
+            # then await the failure alert -- which a shutdown cancels.
+            j.last_status = "error"
+            j.last_error = "exit 1"
+            raise asyncio.CancelledError
+
+        svc, job = self._svc(tmp_path, _fail_then_cancelled_in_alert)
+        with pytest.raises(asyncio.CancelledError):
+            await svc._execute_with_timeout(job)
+        terminal, _status, _result = close_run(
+            job, started_at=0.0, generation=1, being_cancelled=True
+        )
+        svc._reset_fingerprint()
+        await asyncio.to_thread(svc._merge_job_result, terminal)
+        stored = self._on_disk(tmp_path, job.id)
+        assert stored is not None, "a cancelled failed one-shot was deleted"
+        assert (
+            stored.enabled is False and stored.auto_paused is True
+        ), "a cancel during the failure alert left the failed one-shot enabled"
