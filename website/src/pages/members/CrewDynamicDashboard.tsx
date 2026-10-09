@@ -6,6 +6,7 @@ import { Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useTheme } from '../../hooks/useTheme'
 import { useSandboxDoc } from '../../hooks/useSandboxDoc'
+import { useFrameOpenLink } from '../../hooks/useFrameOpenLink'
 import { buildSrcdoc, readThemeVars } from '../../lib/widgetSrcdoc'
 import { i18nT } from '../../i18n/t'
 import { useLanguage } from '../../i18n/LanguageProvider'
@@ -21,7 +22,9 @@ import { useLanguage } from '../../i18n/LanguageProvider'
  *   cannot read the dashboard's cookies or localStorage, or touch the parent DOM.
  * - No `allow-popups`. A template is loaded at run time, including one a user
  *   imported from a shared file, and a window it could open is a capability
- *   nothing about a status page needs.
+ *   nothing about a status page needs. The one way out is the host's own
+ *   `kirocrew-dashboard:open` bridge (`useFrameOpenLink`): a GitHub pull-request
+ *   URL, from this frame, right after a user gesture, opened by the host.
  * - No `allow-top-navigation`, `allow-forms`, or `allow-modals`.
  *
  * Egress is closed by the document CSP (`connect-src 'none'`), which the gateway
@@ -141,6 +144,8 @@ export default function CrewDynamicDashboard({ slug, member, displayName, onAct 
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
   }, [])
+  // A pull request the page links to: this frame only, GitHub PR URLs only.
+  useFrameOpenLink([frameRef])
   const { theme, colorTheme, themeVersion } = useTheme()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const themeVars = useMemo(() => readThemeVars(), [theme, colorTheme, themeVersion])

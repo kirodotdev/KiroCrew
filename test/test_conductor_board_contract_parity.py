@@ -254,3 +254,16 @@ def test_colours_come_from_theme_variables() -> None:
             assert re.search(
                 rf"var\(--[\w-]+,\s*{re.escape(hexval)}\)", line
             ), f"colour {hexval} is not a theme-variable fallback: {line.strip()}"
+
+
+def test_a_pr_with_a_repo_asks_the_host_to_open_it() -> None:
+    """The sandbox has no allow-popups: a PR opens only through the host's bridge,
+    which honours exactly a github.com pull-request URL. No repo, no button."""
+    src = _script(_html())
+    assert 'parent.postMessage({ type: "kirocrew-dashboard:open", url: url }, "*")' in src
+    assert src.count("postMessage(") == 1
+    assert r"/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/[0-9]+\/?$/" in src
+    assert '"https://github.com/" + repo + "/pull/" + prNum[1]' in src
+    assert "if (prNum && PR_URL.test(prUrl)){" in src
+    assert 'el("button", "pr", "PR #" + prNum[1] + " on GitHub \\u2197")' in src
+    assert '} else if (pr) card.appendChild(el("span", "pr",' in src

@@ -36,8 +36,9 @@ class ConductorBoardTask(TypedDict):
     task: str
     state: str
     step: str
-    #: A pull-request number or ``#N`` text. Shown as text, not a link: the crew
-    #: webview sandbox withholds ``allow-popups``, so a new-tab link is a dead click.
+    #: A pull-request number or ``#N`` text. With the panel's ``repo`` it is a button
+    #: asking the host to open the PR (``kirocrew-dashboard:open``); the sandbox has no
+    #: ``allow-popups``, so a plain link would be a dead click. Without ``repo``, text.
     pr: NotRequired[str | int]
 
 
@@ -53,3 +54,5 @@ class ConductorBoardPanel(TypedDict):
     #: The conductor's next move, one line.
     next: str
     tasks: list[ConductorBoardTask]
+    #: ``owner/name`` of the code host repo the ``pr`` numbers belong to. Optional.
+    repo: NotRequired[str]

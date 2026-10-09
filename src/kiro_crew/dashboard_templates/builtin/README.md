@@ -81,7 +81,11 @@ the lead already knows which of six reds is the one that matters, and no fold ra
 page draws the `crewmate wrote this` tag only when the host says the field IS agentic, so
 a value arriving some other way cannot borrow the label.
 
-`goal-board` and `work-kanban` declare none, because every number they show has a fold.
+`work-kanban` declares none, because every number it shows has a fold. `goal-board`
+declares one, `asks`: the answers the conductor offers for an item waiting on the reader,
+keyed by item id. Its numbers are all folded; the options are a judgment no fold holds.
+Each needs-you row gets a Reply button whether or not `asks` has an entry, and every
+button posts `kirocrew-dashboard:act`, which only fills the reader's chat box.
 
 ## Checking and rendering them
 

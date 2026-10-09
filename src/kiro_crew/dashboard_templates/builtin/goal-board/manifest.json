@@ -2,7 +2,7 @@
   "id": "goal-board",
   "version": 1,
   "title": "Goal board",
-  "description": "The work ledger this crewmate conducts: the goal, the round it is on, and every item with its state, the conductor's decision, the acceptance verdict and the worker's own last report. Read from the work slot fold, so an item's state here is the state the conductor recorded.",
+  "description": "The work ledger this crewmate conducts: the goal, the round it is on, and every item with its state, the conductor's decision, the acceptance verdict and the worker's own last report. Read from the work slot fold, so an item's state here is the state the conductor recorded. One field is the conductor's own: asks, keyed by item id, each {options: [short strings]} -- the answers it offers for an item waiting on the reader. Each needs-you row gets a Reply button and one button per option; every button only fills the reader's chat box, never sends. A row with no entry still gets Reply, so the page works with no write at all.",
   "source": "builtin",
   "fields": {
     "goal": { "type": "string", "source": { "fold": "work", "path": "conductor.goal" } },
@@ -13,6 +13,7 @@
     "last_entry_at": { "type": "string", "source": { "fold": "work", "path": "conductor.last_entry_at" } },
     "entries": { "type": "number", "source": { "fold": "work", "path": "conductor.entries" } },
     "items": { "type": "array", "source": { "fold": "work", "path": "items" } },
-    "omitted": { "type": "number", "source": { "fold": "work", "path": "omitted" } }
+    "omitted": { "type": "number", "source": { "fold": "work", "path": "omitted" } },
+    "asks": { "type": "object", "values": { "type": "object", "properties": { "options": { "type": "array", "items": { "type": "string" } } } }, "source": { "agentic": true } }
   }
 }

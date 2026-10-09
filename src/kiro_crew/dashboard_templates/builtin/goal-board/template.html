@@ -6,15 +6,50 @@
     .board .meta { display: flex; flex-wrap: wrap; gap: 10px; font-size: 10.5px; color: var(--muted, #9aa); margin-top: 4px; }
     .board .sub { font-size: 10px; color: var(--muted, #9aa); }
     .states { display: flex; gap: 2px; height: 8px; border-radius: 4px; overflow: hidden; margin: 9px 0 5px; background: var(--bg-hover, #222); }
-    .states i { display: block; height: 100%; }
+    .states i { display: block; height: 100%; transform-origin: left; }
+    .states.grow i { animation: gb-grow .9s cubic-bezier(.2,.8,.2,1) both; }
+    .done { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; margin-top: 9px; font-size: 11px; color: var(--muted, #9aa); }
+    .done b { color: var(--text-strong, #fff); font-weight: 600; }
+    .band { border: 1px solid var(--warn, #ffd230); border-left-width: 4px; border-radius: 8px; padding: 7px 9px; margin-top: 9px;
+      background: var(--warn-subtle, rgba(255, 210, 48, .12)); animation: gb-glow 2.6s ease-in-out 3; }
+    .band .k { color: var(--warn, #ffd230); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
+    .band .v { margin-top: 2px; overflow-wrap: anywhere; color: var(--text-strong, #fff); }
+    .band .q { margin-top: 1px; overflow-wrap: anywhere; color: var(--text, #e6e6e6); }
+    .band .hint { margin-top: 1px; font-size: 10px; color: var(--muted, #9aa); }
+    .band .acts { display: flex; flex-wrap: wrap; gap: 5px; margin: 4px 0 6px; }
+    .band button { font: inherit; font-size: 10.5px; padding: 2px 9px; border-radius: 6px; cursor: pointer;
+      border: 1px solid var(--border-strong, #555); background: var(--bg-elevated, #1a1a1a); color: var(--text, #e6e6e6); overflow-wrap: anywhere; text-align: left; }
+    .band button.reply { border-color: var(--warn, #ffd230); color: var(--text-strong, #fff); font-weight: 600; }
+    .band button:hover { background: var(--bg-hover, #222); }
+    .chips button.prlink { font: inherit; font-size: 10px; font-weight: 600; cursor: pointer; text-decoration: underline; }
+    .chips button.prlink:focus-visible { outline: 2px solid var(--accent, #00d492); outline-offset: 1px; }
+    .band button:focus-visible { outline: 2px solid var(--accent, #00d492); outline-offset: 1px; }
+    .calm { margin-top: 9px; font-size: 10.5px; color: var(--muted, #9aa); }
+    .calm::before { content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--ok, #00d492); margin-right: 6px; }
     .tally { display: flex; flex-wrap: wrap; gap: 9px; font-size: 10.5px; color: var(--muted, #9aa); }
     .tally b { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
-    .item { border: 1px solid var(--border, #333); border-radius: 8px; padding: 8px 9px; margin-top: 6px; }
-    .item .t { font-weight: 600; color: var(--text-strong, #fff); }
+    .item { position: relative; overflow: hidden; border: 1px solid var(--border, #333); border-top: 3px solid var(--tone, var(--border, #333));
+      border-radius: 8px; padding: 8px 9px; margin-top: 6px; }
+    .item.pop { animation: gb-pop .42s cubic-bezier(.2,1.4,.4,1) both; }
+    .item.you { background: var(--warn-subtle, rgba(255, 210, 48, .12)); }
+    .item.live::after { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 3px;
+      background: linear-gradient(90deg, transparent, var(--accent, #00d492), transparent); transform: translateX(-100%); animation: gb-shimmer 1.4s linear infinite; }
+    .item .t { font-weight: 600; color: var(--text-strong, #fff); overflow-wrap: anywhere; }
     .item .chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
-    .chip { font-size: 10px; font-weight: 600; padding: 1px 7px; border-radius: 9px; background: var(--bg-hover, #222); }
+    .chip { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; font-weight: 600; padding: 1px 7px; border-radius: 9px; background: var(--bg-hover, #222); }
+    .chip.pill { color: var(--tone); border: 1px solid var(--tone); background: color-mix(in srgb, var(--tone) 12%, transparent); }
+    .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: gb-blink 1.1s ease-in-out infinite; }
     .item .line { font-size: 10.5px; color: var(--muted, #9aa); margin-top: 4px; }
-    .item .line em { color: var(--text, #e6e6e6); font-style: normal; }
+    .item .line em { color: var(--text, #e6e6e6); font-style: normal; overflow-wrap: anywhere; }
+    @keyframes gb-pop { from { opacity: 0; transform: translateY(6px) scale(.96); } to { opacity: 1; transform: none; } }
+    @keyframes gb-grow { from { transform: scaleX(0); } to { transform: none; } }
+    @keyframes gb-shimmer { to { transform: translateX(100%); } }
+    @keyframes gb-blink { 0%, 100% { opacity: 1; } 50% { opacity: .2; } }
+    @keyframes gb-glow { 0%, 100% { box-shadow: 0 0 0 0 transparent; } 50% { box-shadow: 0 0 0 4px var(--warn-subtle, rgba(255, 210, 48, .22)); } }
+    /* Every animation above is decoration: with motion off the page reads the same. */
+    @media (prefers-reduced-motion: reduce) {
+      .board *, .board *::before, .board *::after { animation: none !important; transition: none !important; }
+    }
   </style>
 
   <h2 data-i18n="title">Goal board</h2>
@@ -30,6 +65,8 @@
     <span><span data-i18n="last_write">last write</span> <span data-dashboard-field="last_entry_at">-</span></span>
   </div>
 
+  <div id="you"></div>
+  <div class="done" id="done"></div>
   <div class="states" id="states"></div>
   <div class="tally" id="tally"></div>
 
@@ -38,6 +75,7 @@
   <div class="sub" style="margin-top: 7px;">
     <span data-dashboard-field="items">-</span> <span data-i18n="on_board">on the board,</span>
     <span data-dashboard-field="omitted">-</span> <span data-i18n="not_shown">not shown (list truncated)</span>
+    <span data-dashboard-field="asks" hidden></span>
   </div>
 
   <script>
@@ -53,8 +91,19 @@
           entries: 'entries', opened: 'opened', last_write: 'last write',
           on_board: 'on the board,', not_shown: 'not shown (list truncated)',
           verdict: 'verdict {v}', fails: '{n} fail(s)', worker_status: 'worker {v}', pr: 'PR {n}',
+          pr_open: 'PR {n} on GitHub \u2197', pr_open_title: 'Open PR {n} on GitHub',
           decision: 'decision', reported: 'reported', worker: 'worker',
           empty: 'No item on this board yet.',
+          needs_you: 'Needs you', calm: 'Nothing needs you right now.',
+          done_of: '{d} of {n} accepted', running: '{n} in progress', waiting: '{n} need you',
+          reason_approval: 'approval', reason_needs_human: 'needs a person',
+          reply: '\u270e Write a reply', option: '\u270e {o}', option_title: 'Puts this in your chat box to check and send',
+          next_approval: 'Approve the tool on its approval card in chat. Writing a reply does not approve it.',
+          status_progress: 'working', status_done: 'reported done', status_question: 'has a question',
+          status_blocked: 'is stuck',
+          state_needs_you: 'needs you',
+          about: 'About "{t}" ({id}): ',
+          fills_chat: 'Buttons fill your chat box. Nothing sends until you press send.',
           state_open: 'open', state_accepted: 'accepted', state_rejected: 'rejected',
           state_blocked: 'blocked', state_abandoned: 'abandoned', state_unknown: 'unknown'
         },
@@ -62,9 +111,20 @@
           title: '\u76ee\u6807\u770b\u677f', round: '\u8f6e\u6b21', goal_version: '\u76ee\u6807\u7248\u672c', depth: '\u5c42\u7ea7',
           entries: '\u6761\u76ee', opened: '\u5f00\u542f\u4e8e', last_write: '\u6700\u540e\u5199\u5165',
           on_board: '\u9879\u5728\u770b\u677f\u4e0a\uff0c', not_shown: '\u9879\u672a\u663e\u793a\uff08\u5217\u8868\u5df2\u622a\u65ad\uff09',
+          pr_open: 'GitHub \u4e0a\u7684 PR {n} \u2197', pr_open_title: '\u5728 GitHub \u4e0a\u6253\u5f00 PR {n}',
           verdict: '\u88c1\u5b9a {v}', fails: '{n} \u6b21\u5931\u8d25', worker_status: '\u6267\u884c\u8005 {v}', pr: 'PR {n}',
           decision: '\u51b3\u5b9a', reported: '\u6c47\u62a5', worker: '\u6267\u884c\u8005',
           empty: '\u770b\u677f\u4e0a\u8fd8\u6ca1\u6709\u4efb\u4f55\u4e8b\u9879\u3002',
+          needs_you: '\u9700\u8981\u4f60', calm: '\u73b0\u5728\u6ca1\u6709\u9700\u8981\u4f60\u5904\u7406\u7684\u4e8b\u3002',
+          done_of: '{d} / {n} \u5df2\u63a5\u53d7', running: '{n} \u8fdb\u884c\u4e2d', waiting: '{n} \u9700\u8981\u4f60',
+          reason_approval: '\u7b49\u5f85\u6279\u51c6', reason_needs_human: '\u9700\u8981\u4eba\u5de5',
+          fills_chat: '\u6309\u94ae\u53ea\u4f1a\u586b\u5165\u4f60\u7684\u804a\u5929\u6846\u3002\u4f60\u6309\u53d1\u9001\u524d\u4e0d\u4f1a\u53d1\u51fa\u3002',
+          reply: '\u270e \u5199\u56de\u590d', option: '\u270e {o}', option_title: '\u586b\u5165\u4f60\u7684\u804a\u5929\u6846\uff0c\u68c0\u67e5\u540e\u518d\u53d1\u9001',
+          next_approval: '\u8bf7\u5728\u804a\u5929\u91cc\u7684\u6279\u51c6\u5361\u7247\u4e0a\u6279\u51c6\u8be5\u5de5\u5177\u3002\u5199\u56de\u590d\u4e0d\u4f1a\u6279\u51c6\u5b83\u3002',
+          status_progress: '\u5de5\u4f5c\u4e2d', status_done: '\u5df2\u62a5\u544a\u5b8c\u6210', status_question: '\u6709\u95ee\u9898',
+          status_blocked: '\u88ab\u5361\u4f4f',
+          state_needs_you: '\u9700\u8981\u4f60',
+          about: '\u5173\u4e8e\u201c{t}\u201d\uff08{id}\uff09\uff1a',
           state_open: '\u8fdb\u884c\u4e2d', state_accepted: '\u5df2\u63a5\u53d7', state_rejected: '\u5df2\u62d2\u7edd',
           state_blocked: '\u53d7\u963b', state_abandoned: '\u5df2\u653e\u5f03', state_unknown: '\u672a\u77e5'
         }
@@ -92,6 +152,10 @@
       function stateLabel(state) {
         return has('state_' + state) ? i18n('state_' + state) : state;
       }
+      // A worker status the ledger stamps, in the reader's language when known.
+      function statusLabel(st) {
+        return has('status_' + st) ? i18n('status_' + st) : st;
+      }
       function applyStatic() {
         var nodes = document.querySelectorAll('[data-i18n]');
         for (var i = 0; i < nodes.length; i++) nodes[i].textContent = i18n(nodes[i].getAttribute('data-i18n'));
@@ -101,6 +165,7 @@
       // derived, because a state this page has no colour for must still be VISIBLE:
       // it falls through to the neutral chip instead of vanishing from the tally.
       var STATES = [
+        ['needs_you', 'needs you', 'var(--warn, #ffd230)'],
         ['open', 'open', 'var(--accent, #00d492)'],
         ['accepted', 'accepted', 'var(--info, #6aa9ff)'],
         ['rejected', 'rejected', 'var(--danger, #ff5c5c)'],
@@ -118,7 +183,7 @@
         var el = document.createElement('span');
         el.className = 'chip';
         el.textContent = label;
-        if (colour) el.style.color = colour;
+        if (colour) { el.className = 'chip pill'; el.style.setProperty('--tone', colour); }
         return el;
       }
       function line(label, value) {
@@ -131,6 +196,70 @@
         return el;
       }
 
+      // An open item whose worker asked or is stuck waits on the reader: the warm band.
+      function needsYou(it) {
+        return text(it.state) === 'open' && (it.status === 'question' || it.status === 'blocked');
+      }
+      // An open item whose worker last reported progress is still moving. Not keyed
+      // on the worker's session key: the host masks it before any field reaches a page.
+      function live(it) {
+        return text(it.state) === 'open' && it.status === 'progress';
+      }
+      // THE CHAT BOX, never the wire: the host fills the person's composer with this
+      // text and the person presses send, so a row can offer a reply and never speak
+      // as them. Same message office and project-report post.
+      function act(text) {
+        try { parent.postMessage({ type: 'kirocrew-dashboard:act', text: text }, '*'); }
+        catch (e) { /* no host: the choice simply does nothing */ }
+      }
+      // A PR the row names, opened BY THE HOST: the frame has no popups, and the host
+      // opens only an exact github.com pull-request URL from this frame.
+      var PR_URL = /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/[0-9]+\/?$/;
+      function openPr(url) {
+        try { parent.postMessage({ type: 'kirocrew-dashboard:open', url: url }, '*'); }
+        catch (e) { /* no host: the link simply does nothing */ }
+      }
+      // The repo is the item's own acceptance bar's; an item without one has no link.
+      function prUrl(it, pr) {
+        var acc = it.acceptance && typeof it.acceptance === 'object' ? it.acceptance : {};
+        var url = 'https://github.com/' + (text(acc.repo) || '') + '/pull/' + pr;
+        return PR_URL.test(url) ? url : null;
+      }
+      function clip(v, n) { var t = text(v) || ''; return t.length > n ? t.slice(0, n - 1) + '\u2026' : t; }
+      // The conductor's own offered answers for one item, from the agentic `asks`
+      // field. An item with no entry has none, and its row still gets Reply.
+      function optionsFor(id) {
+        var a = ((window.kirocrew || {}).fields || {}).asks;
+        var e = a && typeof a === 'object' && id && Object.prototype.hasOwnProperty.call(a, id) ? a[id] : null;
+        var o = e && Array.isArray(e.options) ? e.options : [];
+        return o.filter(function (x) { return !!text(x); }).slice(0, 6);
+      }
+      function button(label, cls, say) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        if (cls) b.className = cls;
+        b.textContent = label;
+        if (say !== null) b.addEventListener('click', function () { act(say); });
+        return b;
+      }
+      function actions(it) {
+        var id = text(it.item_id) || '';
+        var ref = i18n('about', { t: clip(it.title, 70) || DASH, id: id || DASH });
+        var row = document.createElement('div');
+        row.className = 'acts';
+        row.appendChild(button(i18n('reply'), 'reply', ref));
+        var opts = optionsFor(id);
+        for (var i = 0; i < opts.length; i++) {
+          var ob = button(i18n('option', { o: clip(opts[i], 40) }), null, ref + clip(opts[i], 200));
+          ob.title = i18n('option_title');
+          row.appendChild(ob);
+        }
+        return row;
+      }
+
+      // Ids already drawn once, so a host refill does not replay the pop-in.
+      var seen = {};
+
       function items() {
         var f = (window.kirocrew || {}).fields || {};
         return Array.isArray(f.items) ? f.items.filter(function (i) { return i && typeof i === 'object'; }) : [];
@@ -141,11 +270,13 @@
         var tally = document.getElementById('tally');
         if (!bar || !tally) return;
         bar.textContent = '';
+        bar.className = 'states' + (bar.getAttribute('data-drawn') ? '' : ' grow');
+        if (list.length) bar.setAttribute('data-drawn', '1');
         tally.textContent = '';
         var counts = {};
         var order = [];
         for (var i = 0; i < list.length; i++) {
-          var s = text(list[i].state) || 'unknown';
+          var s = needsYou(list[i]) ? 'needs_you' : (text(list[i].state) || 'unknown');
           if (counts[s] === undefined) { counts[s] = 0; order.push(s); }
           counts[s] += 1;
         }
@@ -169,6 +300,58 @@
         }
       }
 
+      function drawLoop(list) {
+        var done = document.getElementById('done');
+        var you = document.getElementById('you');
+        if (!done || !you) return;
+        var acc = 0, run = 0, ask = [];
+        for (var i = 0; i < list.length; i++) {
+          if (text(list[i].state) === 'accepted') acc += 1;
+          if (live(list[i])) run += 1;
+          if (needsYou(list[i])) ask.push(list[i]);
+        }
+        done.textContent = '';
+        var b = document.createElement('b');
+        b.textContent = i18n('done_of', { d: acc, n: list.length });
+        done.appendChild(b);
+        done.appendChild(document.createTextNode(i18n('running', { n: run }) + ' \u00b7 ' + i18n('waiting', { n: ask.length })));
+        you.textContent = '';
+        var box = document.createElement('div');
+        if (!ask.length) { box.className = 'calm'; box.textContent = i18n('calm'); you.appendChild(box); return; }
+        box.className = 'band';
+        var k = document.createElement('div');
+        k.className = 'k';
+        k.textContent = i18n('needs_you');
+        box.appendChild(k);
+        var hint = document.createElement('div');
+        hint.className = 'hint';
+        hint.textContent = i18n('fills_chat');
+        box.appendChild(hint);
+        for (var j = 0; j < ask.length; j++) {
+          var v = document.createElement('div');
+          v.className = 'v';
+          var why = text(ask[j].reason);
+          v.textContent = (text(ask[j].title) || text(ask[j].item_id) || DASH) + ' \u2014 ' + statusLabel(ask[j].status) +
+            (why ? ' (' + (has('reason_' + why) ? i18n('reason_' + why) : why) + ')' : '');
+          box.appendChild(v);
+          var said = text(ask[j].summary);
+          if (said) {
+            var q = document.createElement('div');
+            q.className = 'q';
+            q.textContent = said;
+            box.appendChild(q);
+          }
+          if (why === 'approval') {
+            var nx = document.createElement('div');
+            nx.className = 'q';
+            nx.textContent = i18n('next_approval');
+            box.appendChild(nx);
+          }
+          box.appendChild(actions(ask[j]));
+        }
+        you.appendChild(box);
+      }
+
       function drawItems(list) {
         var host = document.getElementById('items');
         if (!host) return;
@@ -176,7 +359,10 @@
         for (var i = 0; i < list.length; i++) {
           var it = list[i];
           var card = document.createElement('div');
-          card.className = 'item';
+          var id = text(it.item_id) || String(i);
+          card.className = 'item' + (seen[id] ? '' : ' pop') + (live(it) ? ' live' : '') + (needsYou(it) ? ' you' : '');
+          if (!seen[id]) card.style.animationDelay = (Math.min(i, 12) * 45) + 'ms';
+          seen[id] = true;
           var t = document.createElement('div');
           t.className = 't';
           t.textContent = text(it.title) || text(it.item_id) || DASH;
@@ -185,7 +371,15 @@
           var chips = document.createElement('div');
           chips.className = 'chips';
           var state = text(it.state) || 'unknown';
-          chips.appendChild(chip(stateLabel(state), colourFor(state)));
+          card.style.setProperty('--tone', colourFor(state));
+          var pill = chip(stateLabel(state), colourFor(state));
+          if (live(it)) {
+            var dot = document.createElement('span');
+            dot.className = 'dot';
+            dot.setAttribute('aria-hidden', 'true');
+            pill.insertBefore(dot, pill.firstChild);
+          }
+          chips.appendChild(pill);
           // A VERDICT and a STATE are different facts and the board keeps both: the
           // verdict is what the acceptance evaluator answered, the state is what the
           // conductor then stamped. Showing only one hides a disagreement.
@@ -195,9 +389,16 @@
           if (fails) chips.appendChild(chip(i18n('fails', { n: fails }), 'var(--danger, #ff5c5c)'));
           var status = text(it.status);
           // The worker's own last word, which is a CLAIM rather than an acceptance.
-          if (status) chips.appendChild(chip(i18n('worker_status', { v: status }), null));
+          if (status) chips.appendChild(chip(i18n('worker_status', { v: statusLabel(status) }), null));
           var pr = num(it.pr);
-          if (pr) chips.appendChild(chip(i18n('pr', { n: pr }), 'var(--info, #6aa9ff)'));
+          var prAt = pr ? prUrl(it, pr) : null;
+          if (prAt) {
+            var link = button(i18n('pr_open', { n: pr }), 'chip pill prlink', null);
+            link.style.setProperty('--tone', 'var(--info, #6aa9ff)');
+            link.title = i18n('pr_open_title', { n: pr });
+            link.addEventListener('click', function (u) { return function () { openPr(u); }; }(prAt));
+            chips.appendChild(link);
+          } else if (pr) chips.appendChild(chip(i18n('pr', { n: pr }), null));
           card.appendChild(chips);
 
           var decision = text(it.decision);
@@ -226,6 +427,7 @@
         for (var c = 0; c < cells.length; c++) {
           if (!cells[c].textContent.trim()) cells[c].textContent = DASH;
         }
+        drawLoop(list);
         drawStates(list);
         drawItems(list);
         // The bound element for the array gets a count: the host binds by textContent,

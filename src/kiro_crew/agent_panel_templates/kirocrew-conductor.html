@@ -19,7 +19,9 @@
   Rules held here:
     values reach the page as text only (textContent), never as markup.
     no links: the crew webview sandbox withholds allow-popups, so a new-tab link is a
-      dead click and a bare link navigates the frame away. A PR number is text.
+      dead click and a bare link navigates the frame away. A PR number with a valid
+      top-level `repo` is a <button> that posts kirocrew-dashboard:open to the host,
+      which opens only a github.com pull-request URL; without `repo` it is text.
     no network: the frame CSP closes egress anyway; nothing here asks for any.
     theme variables only, each with a fallback for a frame that forwards none.
     ALL motion stops under prefers-reduced-motion.
@@ -129,6 +131,9 @@
   .dot{width:6px; height:6px; border-radius:50%; background:var(--tone); animation:blink 1.1s ease-in-out infinite}
   @keyframes blink{0%,100%{opacity:1}50%{opacity:.2}}
   .pr{color:var(--c-mute); font-size:12px}
+  button.pr{align-self:flex-start; font:inherit; font-size:12px; padding:0; border:0; background:none;
+    color:var(--c-info); text-decoration:underline; cursor:pointer}
+  button.pr:focus-visible{outline:2px solid var(--c-acc); outline-offset:2px; border-radius:3px}
   .tone-ok{--tone:var(--c-ok)}
   .tone-run{--tone:var(--c-acc)}
   .tone-test{--tone:var(--c-info)}
@@ -185,6 +190,14 @@
     var s = str(v).toLowerCase();
     for (var i = 0; i < STEPS.length; i++) if (STEPS[i].toLowerCase() === s) return i;
     return -1;
+  }
+
+  /* THE HOST OPENS IT, never the frame: the sandbox has no popups, and the host
+     opens only an exact github.com pull-request URL from this frame. */
+  var PR_URL = /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/[0-9]+\/?$/;
+  function openPr(url){
+    try { parent.postMessage({ type: "kirocrew-dashboard:open", url: url }, "*"); }
+    catch (e) { /* no host: the link simply does nothing */ }
   }
 
   var page = document.getElementById("page");
@@ -252,6 +265,7 @@
 
   /* ---------- one card per task ---------- */
   var tasks = Array.isArray(d.tasks) ? d.tasks : [];
+  var repo = str(d.repo);
   var grid = el("ul", "grid");
   grid.setAttribute("aria-label", "Tasks");
   var shown = 0;
@@ -272,7 +286,15 @@
     card.appendChild(top);
 
     var pr = str(t.pr);
-    if (pr) card.appendChild(el("span", "pr", (/^\d+$/.test(pr) ? "PR #" + pr : pr)));
+    var prNum = /^#?(\d+)$/.exec(pr);
+    var prUrl = prNum ? "https://github.com/" + repo + "/pull/" + prNum[1] : "";
+    if (prNum && PR_URL.test(prUrl)){
+      var link = el("button", "pr", "PR #" + prNum[1] + " on GitHub \u2197");
+      link.type = "button";
+      link.title = "Open PR #" + prNum[1] + " on GitHub";
+      link.addEventListener("click", function(){ openPr(prUrl); });
+      card.appendChild(link);
+    } else if (pr) card.appendChild(el("span", "pr", (prNum ? "PR #" + prNum[1] : pr)));
 
     var at = stepIndex(t.step);
     var finished = (tone === "ok");
