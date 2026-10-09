@@ -533,6 +533,23 @@ function ownedAtFailure(): Set<string> | null {
 }
 
 /**
+ * Composite fields that are PURELY cosmetic rendering prefs: the local viewport's
+ * layout/scale, carrying no cross-device-meaningful state. For these, and ONLY
+ * these, a value the profile holds locally is kept over a cross-origin host
+ * default even on a split-aware failed-restore marker (see `compositeChildOwned`).
+ *
+ * This is the deliberate, maintainer-ruled exception for GH #18237: a user's
+ * chat content width flipped Compact->Comfortable on upgrade because a cross-origin
+ * host default overwrote the locally-held value after a failed reconcile. For a
+ * cosmetic width pref the user's local choice must win; the module records no
+ * provenance of whether a now-present composite child arrived before or after
+ * the failure, so the narrowest honest fix is a named allowlist (just the one
+ * field the ruling names) rather than a blanket present-local-wins rule (which
+ * would reverse the GPT 5.6 / Opus 5 default-fill protection for every field).
+ */
+const COSMETIC_COMPOSITE_FIELDS = new Set<string>(['contentWidth'])
+
+/**
  * Whether a composite CHILD wire key was owned at the failure that produced
  * `owned`.
  *
@@ -551,11 +568,32 @@ function ownedAtFailure(): Set<string> | null {
  * ownership is genuinely unavailable and the whole blob is the finest grain
  * there is. When any child entry is present the marker is from a split-aware
  * build and the exact child key is required.
+ *
+ * ONE narrow exception (GH #18237, maintainer-ruled): a COSMETIC composite field
+ * (`COSMETIC_COMPOSITE_FIELDS`) that is PRESENT locally is treated as owned when
+ * the marker carries the parent -- the parent's presence proves the profile held
+ * chat config at the failure, so a cosmetic width value in the blob is the user's
+ * local choice, which must survive a cross-origin host default. This does NOT
+ * touch any non-cosmetic field: `showTimestamps`, `pinLastPrompt`, and every
+ * other default-fillable setting still require their exact child entry, so the
+ * GPT 5.6 / Opus 5 default-fill protection is unchanged for them.
  */
-function compositeChildOwned(owned: Set<string>, childWireKey: string): boolean {
+function compositeChildOwned(
+  owned: Set<string>,
+  childWireKey: string,
+  localPresent = false,
+): boolean {
   if (owned.has(childWireKey)) return true
   const hasChildEntry = [...owned].some((k) => childField(k) !== null)
-  return !hasChildEntry && owned.has(COMPOSITE_KEY)
+  if (!hasChildEntry) return owned.has(COMPOSITE_KEY)
+  // Split-aware marker: the exact child entry is normally required. Cosmetic
+  // exception -- a present-local cosmetic field is kept under a parent-carrying
+  // marker (the profile demonstrably held chat config at the failure).
+  const field = childField(childWireKey)
+  if (localPresent && field !== null && COSMETIC_COMPOSITE_FIELDS.has(field)) {
+    return owned.has(COMPOSITE_KEY)
+  }
+  return false
 }
 
 /** Record a failed restore. Never widens an existing snapshot (see the key's doc). */
@@ -960,7 +998,8 @@ export async function reconcileNewDurableKeys(): Promise<number> {
       // by an un-uploaded local edit the dirty marker still records.
       const isOwned =
         dirty.has(key) ||
-        (owned !== null && (field === null ? owned.has(key) : compositeChildOwned(owned, key)))
+        (owned !== null &&
+          (field === null ? owned.has(key) : compositeChildOwned(owned, key, local !== null)))
       const keepLocal = local !== null && (owned === null || isOwned)
       if (keepLocal) {
         updates.set(key, local)
@@ -1456,7 +1495,9 @@ function restoreHostValues(
     // downgrade signal); a child counts as owned by its EXACT entry, by the
     // parent only on a legacy child-less marker (see compositeChildOwned), or
     // by an un-uploaded local edit the dirty marker still records (GPT F1).
-    const isOwned = dirty.has(wireKey) || (owned !== null && compositeChildOwned(owned, wireKey))
+    const isOwned =
+      dirty.has(wireKey) ||
+      (owned !== null && compositeChildOwned(owned, wireKey, localField !== null))
     if (localField !== null && (owned === null || isOwned)) continue
     // A child whose host value is not valid JSON is skipped rather than staged
     // as null over a valid local field.
