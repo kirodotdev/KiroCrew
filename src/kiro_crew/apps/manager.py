@@ -3006,15 +3006,12 @@ def register_external_app(
     prior_grants_present = _approved_grants_path(name).is_file() if existing else False
     approved_grants: dict[str, list[str]] | None
     if not manifest_data:
-        approved_grants = (
-            _read_approved_grants(name)
-            if existing
-            else (
-                _declared_grant_entries(on_disk.permissions)
-                if (on_disk := get_app_manifest(name)) is not None
-                else None
-            )
-        )
+        if existing:
+            approved_grants = _read_approved_grants(name)
+        elif (on_disk := get_app_manifest(name)) is not None:
+            approved_grants = _declared_grant_entries(on_disk.permissions)
+        else:
+            approved_grants = None
     elif existing:
         approved_grants = _approved_grants_after_manifest_change(
             existing_approved=prior_grants,
