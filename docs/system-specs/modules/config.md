@@ -3164,6 +3164,11 @@ On Windows a fourth mechanism applies: a Job object attached to each agent spawn
 and one warning names the ones that are set
 (`sandbox._WINDOWS_INERT_RESOURCE_LIMIT_KEYS`).
 
+On macOS no mechanism bounds the agent tree's memory: the cgroup path is a no-op,
+and the session host's rlimit profile sets only `RLIMIT_NOFILE`, so `max_memory_mb`
+has no effect there, set or unset (see
+[`docs/decisions/2026-10-09-macos-has-no-agent-tree-memory-ceiling.md`](../../decisions/2026-10-09-macos-has-no-agent-tree-memory-ceiling.md)).
+
 `0` cannot be normalised away in either direction. On the rlimit path it is a
 documented request ("leave the inherited limit unchanged") with existing configs
 behind it; on the cgroup path systemd **rejects** a zero property and the scope
