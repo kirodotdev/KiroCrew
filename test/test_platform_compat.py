@@ -7799,6 +7799,33 @@ class TestKillAndReap:
         proc.kill.assert_called_once()
 
 
+class TestTerminateAndReapSyncReapedChild:
+    """The blocking twin of the reaped-child guard in :func:`kill_and_reap`."""
+
+    @pytest.mark.parametrize("live", [True, False])
+    def test_the_tree_kill_addresses_only_a_child_that_is_not_reaped(self, live) -> None:
+        """``terminate_and_reap_sync``'s fallback (Windows, a reaped child, or
+        one outside its own group) kills by pid. Once ``poll()`` has reaped the
+        child its pid may name another process, so only an unreaped child's
+        tree is killed. The group and same-group probes are pinned so the reap
+        check alone decides."""
+        from unittest import mock
+
+        proc = mock.MagicMock()
+        proc.pid = 99_999_999_999  # above every pid_max: never a live process
+        proc.poll.return_value = None if live else 0
+        with (
+            mock.patch.object(pc, "_isolated_group_of_live_child", lambda *a, **k: None),
+            mock.patch.object(pc, "_shares_own_process_group", lambda _pid: False),
+            mock.patch.object(pc, "kill_process_tree") as tree,
+        ):
+            pc.terminate_and_reap_sync(proc, grace=0.1, reap_timeout=0.1)
+        if live:
+            tree.assert_called_once_with(99_999_999_999, pc.SIGKILL)
+        else:
+            tree.assert_not_called()
+
+
 class TestPublishDirNoreplace:
     """Workspace installs must never replace a raced empty
     destination -- POSIX os.rename silently replaces an empty directory, so

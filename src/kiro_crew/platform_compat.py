@@ -7316,7 +7316,9 @@ def terminate_and_reap_sync(
     stdio use the async helper, which drains them; this one is for a child
     writing to the caller's own terminal. Otherwise (Windows, a child already
     reaped, or one that does not lead its own group) it is killed outright the
-    way :func:`kill_and_reap` kills: its tree, unless it shares our group.
+    way :func:`kill_and_reap` kills: its tree, unless it shares our group or
+    has already been reaped -- a reaped child's pid may belong to another
+    process by now.
 
     A Ctrl-C landing mid-stop does not abandon it: KeyboardInterrupt is held
     until the stop has finished, then re-raised once.
@@ -7351,7 +7353,14 @@ def terminate_and_reap_sync(
             with contextlib.suppress(Exception):
                 kill_process_group(pgid, SIGKILL)
     else:
-        if type(proc.pid) is int and not _shares_own_process_group(proc.pid):
+        # ``poll()`` reaps an exited child, which frees its pid for reuse, so a
+        # pid-addressed tree kill is only safe while it still answers ``None``:
+        # a child exiting after that stays an unreaped zombie holding its pid.
+        if (
+            type(proc.pid) is int
+            and proc.poll() is None
+            and not _shares_own_process_group(proc.pid)
+        ):
             with contextlib.suppress(Exception):
                 kill_process_tree(proc.pid, SIGKILL)
     if proc.poll() is None:
