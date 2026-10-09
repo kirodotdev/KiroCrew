@@ -3172,6 +3172,14 @@ export default function MembersPage() {
                     crewmate={crewmateIdentity}
                     onOpenCrewWorkLog={openCrewWorkLog}
                     threads={threadHooks}
+                    // A path the crewmate names in a reply opens as a Files tab
+                    // in this page's own side panel, the way it does on the
+                    // chat page: the same `usePanelDocumentActions` opener the
+                    // panel's Files view uses, which also reveals whichever
+                    // placement (docked column or overlay) is live. Without it
+                    // the chip fell back to the OS reveal, and on a remote
+                    // gateway the click answered nothing.
+                    onFileOpen={openFile}
                   />
                 </ErrorBoundary>
               </div>

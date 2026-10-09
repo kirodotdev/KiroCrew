@@ -110,6 +110,7 @@ export default function ChatPane({
   hideEmptyHint,
   openSideChat,
   leading,
+  onFileOpen,
   busyMode = 'split',
   crewmate,
   onOpenCrewWorkLog,
@@ -160,6 +161,14 @@ export default function ChatPane({
    *  split view's lives in the chat page's activity panel, the Members page's
    *  in its detail drawer. Capability by omission, like `onOpenFull`. */
   openSideChat?: (slot: string) => boolean | void | Promise<boolean | void>
+  /** Open a file in the host's file viewer, the way the main chat does.
+   *  Reaches every row the transcript draws: a confirmed path chip in a
+   *  reply, an attachment card or @mention chip on a sent prompt, a tool
+   *  row's file. Without it the renderer has no handler and a path chip
+   *  falls back to revealing the file in the OS file manager, which on a
+   *  remote gateway shows the reader nothing; an attachment card renders
+   *  without an opener. Capability by omission, like `openSideChat`. */
+  onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
   /** What the composer's send does while the slot is busy. Defaults to
    *  `'split'` — the same Steer/Queue split button as the main chat, which
    *  split-view (⌘D) panes keep: they are the main chat's own sessions seen
@@ -1415,10 +1424,13 @@ export default function ChatPane({
       // A steer-only surface has no steer/queue concept to explain, so a
       // confirmed steer draws as an ordinary message: no badge, no tint.
       hideSteerBadge: busyMode === 'steer-only',
+      // Path chips, attachment cards and @mention chips open through the
+      // host's file viewer (#9487); without it they render without an opener.
+      onFileOpen,
       crewmate,
       crewmateTranscript,
     }),
-    [slotKey, toolDisclosure, setToolDisclosureFor, busyMode, crewmate, crewmateTranscript],
+    [slotKey, toolDisclosure, setToolDisclosureFor, busyMode, onFileOpen, crewmate, crewmateTranscript],
   )
 
   // Quote / Ask on selected assistant text — the same chat-core seam the main
@@ -1583,6 +1595,7 @@ export default function ChatPane({
           onQuote={onQuote}
           onAsk={onAsk}
           threads={threads}
+          onFileOpen={onFileOpen}
           transcript={{
             sessionId: `pane:${slotKey}`,
             scrollerRef,
