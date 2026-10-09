@@ -69,6 +69,7 @@ from kiro_crew.mcp_gateway.launch_approval import (
 )
 from kiro_crew.mcp_gateway.manager import is_credential_env_key
 from kiro_crew.mcp_gateway.read_limits import config_read_buffer_limit
+from kiro_crew.mcp_gateway.secret_uri import secret_reference_keys
 from kiro_crew.mcp_utils import mcp_server_alias
 from kiro_crew.sandbox import scrub_agent_denied_env
 from kiro_crew.security import is_sensitive_path
@@ -579,6 +580,20 @@ def _normalized_env(entry: dict[str, Any], *, context: str = "") -> dict[str, An
             context, type(declared).__name__,
         )
     return {}
+
+
+def _needs_private_backend(withheld: int, entry_env: Mapping[str, Any]) -> bool:
+    """True when a routed server must get a connection-private backend to run at all.
+
+    A server whose env would be partly withheld from a SHARED backend is normally
+    left unwrapped, so the session launches it with its declared env. That cannot
+    work when the env names a vault secret: the session cannot read the vault, so
+    the server would start with the literal ``secret://`` text as its credential.
+    A private backend receives the whole declared env
+    (``daemon/launch._declared_env_for_private_backend``) and is spawned by the
+    gateway, which is the one place the reference is resolved.
+    """
+    return bool(withheld) and bool(secret_reference_keys(entry_env))
 
 
 def _withheld_env_count(
@@ -1221,7 +1236,10 @@ def _rewrite_single_spec(
             if pooling_enabled
             else 0
         )
-        if withheld:
+        # A server whose env names a vault secret is the one case where leaving it
+        # unwrapped cannot work; see :func:`_needs_private_backend`.
+        private = _needs_private_backend(withheld, entry_env)
+        if withheld and not private:
             # A pooled backend is spawned WITHOUT
             # part (or, with forwarding off, all) of the env this spec
             # declares. A server that needs a withheld key dies at prime on
@@ -1269,8 +1287,9 @@ def _rewrite_single_spec(
             approval_mode=approval_mode,
             sidecars_written=sidecars_written,
             # Sharing is global over the stub set: being stubbed is the only
-            # per-server decision, so there is nothing further to consult here.
-            poolable=pooling_enabled,
+            # per-server decision -- except a server that could not be shared
+            # with its env intact and names a vault secret (``private`` above).
+            poolable=pooling_enabled and not private,
             identity_keys=identity_keys,
             read_buffer_limit=read_buffer_limit,
             notes=notes,
@@ -1376,6 +1395,10 @@ def _rewrite_single_spec(
             # Not injected at all: kiro-cli's own merge of the real settings
             # file still gives the session this server, launched in-sandbox.
             continue
+        # The vetting pass let a withheld-env server through only for this reason.
+        inject_private = pooling_enabled and _needs_private_backend(
+            _withheld_env_count(entry_env, forward_env, identity_keys), entry_env
+        )
         new_servers[alias] = _build_stub_entry(
             stubs_dir=stubs_dir,
             server_name=alias,
@@ -1388,7 +1411,7 @@ def _rewrite_single_spec(
             sandbox_mode=sandbox_mode,
             approval_mode=approval_mode,
             sidecars_written=sidecars_written,
-            poolable=pooling_enabled,
+            poolable=pooling_enabled and not inject_private,
             identity_keys=identity_keys,
             read_buffer_limit=read_buffer_limit,
             notes=notes,
@@ -1487,7 +1510,7 @@ def _injectable_settings_servers(
             if pooling_enabled
             else 0
         )
-        if withheld:
+        if withheld and not _needs_private_backend(withheld, entry_env):
             # Settings edition of the withheld-env guard: pooling would
             # withhold part or all of this server's declared env and
             # crash-loop it.

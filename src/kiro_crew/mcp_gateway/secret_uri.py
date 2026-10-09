@@ -8,6 +8,7 @@ the secret is never persisted in plaintext outside the vault.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 
 from kiro_crew.secrets import SecretVault
@@ -32,6 +33,28 @@ _SECRET_URI_PREFIX = SECRET_URI_PREFIX  # internal alias for existing call sites
 #: every message names only the operator-declared env-var KEY. With nothing
 #: echoed, a hostile name (bidi override, newline, zero-width) has no text to
 #: forge.
+
+
+def secret_reference_keys(env: object) -> list[str]:
+    """The env-var KEYS of *env* whose value is a ``secret://`` reference, sorted.
+
+    The one predicate every launch path asks before it hands an env block to a
+    child it does not resolve itself. :func:`resolve_secret_uris` -- run on the
+    gateway's backend spawn -- is the only resolver, so any other path that would
+    start the server must refuse instead: passing the literal reference through
+    makes the server start with a wrong credential rather than fail.
+
+    Returns KEYS only, never a value or a secret name, so a caller may name them
+    in a log line or an error (see the note below on why names are never echoed).
+    Anything that is not a mapping of strings answers ``[]``.
+    """
+    if not isinstance(env, Mapping):
+        return []
+    return sorted(
+        str(key)
+        for key, value in env.items()
+        if isinstance(value, str) and value.startswith(SECRET_URI_PREFIX)
+    )
 
 
 def _is_valid_secret_name(name: str) -> bool:

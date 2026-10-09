@@ -638,6 +638,19 @@ reference in a server's `env` block is resolved to the real value by
 process environment alone — never the agent's. A reference to a missing name
 fails the server's spawn rather than launching it with an absent credential.
 
+That gateway spawn is the **only** resolver. Every other path that would start
+the server runs where the vault cannot be read, so each now reaches that spawn
+or refuses rather than hand the server the literal reference: the agent-spec
+rebuild withholds a stdio server that carries a reference and is not routed
+through the gateway (`mcp_gateway.stub_servers`), keeping its tool refs as it
+does for an unresolved command; the overlay rewriter gives a routed server
+(agent-declared or from the Kiro global `~/.kiro/settings/mcp.json`) whose env would be withheld from a
+shared backend a connection-private backend instead of leaving it unwrapped; and
+the stub's direct-exec fallback exits instead of exec'ing. Each names only the
+env-var key, never the secret's name or value. Out of scope: an app-registered
+server (whether an app may name a vault secret is a separate decision) and a
+hand-written agent file that Kiro Crew does not rebuild.
+
 Security properties:
 
 - **Write-only surface.** The vault is stored (`POST /api/secrets`), listed by

@@ -13,6 +13,7 @@ App ownership is read from the manifests that mint the keys
 
 from __future__ import annotations
 
+import functools
 import itertools
 import os
 from collections.abc import Callable
@@ -29,6 +30,7 @@ from kiro_crew.mcp_cleanup import (
     mcp_entry_is_muted,
     warn_invalid_disabled,
 )
+from kiro_crew.mcp_gateway.secret_uri import secret_reference_keys
 from kiro_crew.mcp_provenance import (
     DERIVED_KEY,
     command_is_ours,
@@ -416,6 +418,104 @@ def merge_mcp_sources(config: dict) -> McpSources:
     return McpSources(kirocrew_mcp, shared_mcp, extra_shared_mcp, managed_names)
 
 
+#: Rebuild-owned record that THIS rebuild wrote ``disabled: true`` onto an
+#: agent-only entry because its env holds a ``secret://`` reference nothing will
+#: resolve. It is what lets the next pass lift exactly that mute and no
+#: ``disabled`` the user wrote. The ``x-`` namespace never collides with a kiro-cli
+#: field (see ``mcp_provenance.MARKER_KEY``).
+WITHHELD_KEY = "x-kirocrew-withheld"
+
+
+def _mute_withheld(entry: dict) -> dict:
+    """*entry* muted in place, with the record that this rebuild muted it.
+
+    Used for a server declared ONLY in the agent spec: this file is its one copy,
+    so dropping it would lose the declaration, while emitting it live would start
+    it with the literal reference. A user-written ``disabled`` is left as found
+    and gains no record, so it is never lifted.
+    """
+    if entry.get("disabled") is True and WITHHELD_KEY not in entry:
+        return entry
+    muted = dict(entry)
+    muted["disabled"] = True
+    muted[WITHHELD_KEY] = True
+    return muted
+
+
+def _lift_withheld_mute(entry: dict) -> dict:
+    """*entry* without a mute :func:`_mute_withheld` wrote; unchanged otherwise."""
+    if WITHHELD_KEY not in entry:
+        return entry
+    lifted = {k: v for k, v in entry.items() if k != WITHHELD_KEY}
+    if lifted.get("disabled") is True:
+        lifted.pop("disabled")
+    return lifted
+
+
+def _gateway_routed_names() -> frozenset[str]:
+    """The servers routed through the MCP gateway, as configured; empty on any failure.
+
+    Empty is the fail-closed answer for :func:`_unrouted_secret_reference`: a
+    config that cannot be read routes nothing, so a server with a vault reference
+    is withheld rather than launched with the reference unresolved.
+    """
+    try:
+        # Deferred: the config loader is heavy and only a server that carries a
+        # ``secret://`` reference needs it, so most rebuilds never import it here.
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        return frozenset(KiroCrewConfig.load().mcp_gateway.stub_servers)
+    except Exception:  # noqa: BLE001 -- any failure means "cannot prove routed"
+        agent_mod.logger.warning(
+            "Could not read the MCP gateway routing; treating every server as "
+            "unrouted for secret:// references",
+            exc_info=True,
+        )
+        return frozenset()
+
+
+def _unrouted_secret_reference(
+    name: str,
+    chosen: dict,
+    routed: Callable[[], frozenset[str]],
+    app_owned: Callable[[], dict[str, bool]],
+) -> bool:
+    """True when *name* must be withheld: it names a vault secret nothing will resolve.
+
+    A ``secret://NAME`` env value is resolved from the vault only when the MCP
+    gateway starts the server (``mcp_gateway/secret_uri.py``). A server that is
+    not routed through the gateway is started by the session from the spec this
+    rebuild writes, and that path cannot read the vault -- so the server came up
+    with the literal reference as its credential. Withholding it is the documented
+    behaviour for a reference that cannot be resolved: the server does not start.
+
+    An app-registered server is exempt. Its env is the app's declaration, and
+    whether an installed app may name a vault secret at all is a separate,
+    open question this rebuild does not answer; the app registration path warns
+    about such a value on its own.
+
+    Names only env KEYS in the warning, never a value or a secret name.
+    """
+    keys = secret_reference_keys(chosen.get("env"))
+    if not keys:
+        return False
+    alias = mcp_server_alias(name)
+    routed_names = routed()
+    if name in routed_names or alias in routed_names:
+        return False
+    if alias in app_owned():
+        return False
+    agent_mod.logger.warning(
+        "Not starting MCP server %r: env %s holds a secret:// reference, which is "
+        "resolved only when the MCP gateway starts the server. Turn on routing for "
+        "the server in MCP Management and approve its launch there, so the "
+        "reference is resolved from the vault.",
+        name,
+        ", ".join(repr(k) for k in keys),
+    )
+    return True
+
+
 def resolve_mcp_servers(
     config: dict,
     sources: McpSources,
@@ -461,6 +561,9 @@ def resolve_mcp_servers(
     # resolution candidate list. The probe's correctness is "this is the value the
     # chain would have resolved", so two separate spellings could drift apart.
     _scopes: tuple[tuple[str, dict], ...] = sources.scopes
+    # Read at most once per pass, and only when some server carries a reference.
+    _routed = functools.cache(_gateway_routed_names)
+    _app_owned = functools.cache(_app_owned_mcp_keys)
     for name, spec in _cfg_servers.items():
         if not isinstance(spec, dict):
             continue
@@ -617,6 +720,9 @@ def resolve_mcp_servers(
             # secret snapshotted here could be retired by the time it is written.
             _oauth_client_targets[name] = _store_entry is not None
             continue
+        # A mute this rebuild wrote on an earlier pass is lifted before anything
+        # reads the entry, so the decision below is taken afresh every pass.
+        spec = _lift_withheld_mute(spec)
         # Build candidate specs in priority order: the merged winner first,
         # then the same server from each source as a resolution fallback.
         candidates: list[tuple[str, dict]] = [("winner", spec)]
@@ -643,6 +749,20 @@ def resolve_mcp_servers(
                 chosen = cand
                 break
 
+        if resolved and _unrouted_secret_reference(name, chosen, _routed, _app_owned):
+            if _scope_owned:
+                # A command resolved, but the session would launch this server with
+                # a ``secret://`` value it cannot resolve. The scope file still holds
+                # the declaration, so the server is withheld exactly like an
+                # unresolved command: the refs stay, and the pass after the server
+                # is routed through the gateway emits it again.
+                _unresolved_this_pass.add(name)
+                continue
+            # This file is the only copy of an agent-only declaration, so it is kept
+            # and muted in place rather than dropped; see _mute_withheld.
+            _mute_here = True
+        else:
+            _mute_here = False
         if resolved:
             # Start from the merged winner so user-set NON-command fields
             # (autoApprove, disabled, ...) are preserved.  When we fall back to
@@ -693,6 +813,8 @@ def resolve_mcp_servers(
                 if isinstance(_cmd_source, str) and _cmd_source:
                     _derived = (_cmd_source, resolved)
             valid_servers[name] = record_derived(merged, _derived)
+            if _mute_here:
+                valid_servers[name] = _mute_withheld(valid_servers[name])
         elif not had_any_command:
             # No candidate defined a command at all — distinct from a command
             # that was defined but couldn't be resolved.

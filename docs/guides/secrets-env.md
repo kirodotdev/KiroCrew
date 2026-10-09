@@ -40,6 +40,15 @@ At spawn the gateway resolves `secret://MY_MCP_SECRET` from the vault.  If the
 named secret does not exist, the server fails to start rather than launching
 with a missing credential.
 
+The gateway is the only place a reference is resolved, so **route the server
+through the gateway**: in **Developer → MCP Management**, turn routing on for
+the server (this adds it to `mcp_gateway.stub_servers`). For the servers the
+default agent mounts (from either `mcp.json` above), an unrouted server with a
+`secret://` value is not started at all, and a warning names the env key —
+rather than starting it with the literal `secret://` text as its credential.
+An agent file you maintain by hand under `~/.kiro/agents/` is launched as
+written, so route any server it declares with a `secret://` value.
+
 ### Managed secrets in Settings
 
 `GET /api/secrets` returns every stored name plus a `managed` catalog. A managed
