@@ -8005,6 +8005,9 @@
       "ttl_time_to_live": "TTL (tiempo de vida)",
       "unexpected_response": "Respuesta inesperada",
       "via": "vía",
+      "visibility": "Visibilidad",
+      "visibility_private": "Privado (solo tú)",
+      "visibility_public": "Público (cualquiera con el enlace)",
       "public_exposure_warning": "Cualquiera con el enlace publicado puede ver este contenido. Se sirve en la Internet pública sin autenticación."
     },
     "pullRequestPanel": {

@@ -187,6 +187,64 @@ export function effectiveTtlHours(
   return ttlSelectableFor(selected) && ttlChoice === TTL_72 ? 72 : 0
 }
 
+export type PublishVisibility = 'PRIVATE' | 'PUBLIC'
+/** What a publication can already carry. The panel never offers SHARED, but a re-publish keeps it. */
+export type StoredVisibility = PublishVisibility | 'SHARED'
+
+/**
+ * The visibilities the panel offers for this row, or `[]` when there is nothing to choose.
+ *
+ * Only a core row describes its sharing model, and the choice is offered only when that
+ * model supports BOTH private and public publications. Shared is left out: it needs a
+ * list of people, which this panel does not collect.
+ *
+ * Only a FIRST publish gets the choice. The panel's copy of an existing publication can
+ * be stale, so a re-publish keeps the publication's own visibility instead (see
+ * `effectiveVisibility`); the publish engine orders a narrowing re-publish sharing-first.
+ */
+export function visibilityOptionsFor(
+  selected: UnifiedProvider | undefined,
+  alreadyPublished: boolean,
+): PublishVisibility[] {
+  if (alreadyPublished) return []
+  const sm = selected?.core?.sharing_model
+  if (!sm) return []
+  const out: PublishVisibility[] = []
+  if (sm.supports_private) out.push('PRIVATE')
+  if (sm.supports_public) out.push('PUBLIC')
+  return out.length > 1 ? out : []
+}
+
+/**
+ * The visibility the publish request actually carries for the current selection.
+ *
+ * Derived the same way as the TTL: the choice is one piece of state shared by every row,
+ * so a "private" picked on one row must not ride along onto a row that offers no choice.
+ * A re-publish keeps the publication's own visibility, so it neither widens a private
+ * copy nor narrows a public one. Anything else the row cannot honour reads as public,
+ * which is the request the panel has always sent.
+ */
+export function effectiveVisibility(
+  choice: PublishVisibility,
+  selected: UnifiedProvider | undefined,
+  existing: string | null | undefined,
+): StoredVisibility {
+  // Only a core row publishes through the artifact's own publication. Any other row
+  // (the public-web deploy surface) is public whatever the artifact's record says.
+  if (!selected?.core) return 'PUBLIC'
+  if (existing != null) {
+    return existing === 'PRIVATE' || existing === 'SHARED' ? existing : 'PUBLIC'
+  }
+  return visibilityOptionsFor(selected, false).includes(choice) ? choice : 'PUBLIC'
+}
+
+/** The label for a visibility, shared by the choice and the confirm step so they read the same. */
+function visibilityLabel(v: PublishVisibility): string {
+  return v === 'PRIVATE'
+    ? i18nT('components.publishHub.visibility_private')
+    : i18nT('components.publishHub.visibility_public')
+}
+
 export function buildProviderList(
   appProviders: AppPublishProvider[],
   kind: string,
@@ -300,6 +358,15 @@ export function PublishHub({
   // selection means no ordering or missed reset can bring the promise back.
   const ttlSelectable = ttlSelectableFor(selected)
   const selectedTtlHours = () => effectiveTtlHours(ttlHours, selected)
+  const [visibilityChoice, setVisibilityChoice] = useState<PublishVisibility>('PUBLIC')
+  const existingVisibility = artifact.publication ? (artifact.publication.visibility ?? 'PUBLIC') : null
+  const alreadyPublished = existingVisibility != null
+  const visibilityOptions = visibilityOptionsFor(selected, alreadyPublished)
+  const selectedVisibility = effectiveVisibility(visibilityChoice, selected, existingVisibility)
+  // The exposure warning and the acknowledgment describe a public link, so both need a
+  // destination that serves without login AND a request that asks for public.
+  const exposesPublicly = selected?.publicReachable !== false
+    && (!selected?.core || selectedVisibility === 'PUBLIC')
   // A core row can be SELECTED while unconfigured (its remedy is its own hint, so
   // it is selected rather than routed away — see the provider-list onClick). But an
   // unconfigured destination cannot publish, so the confirm step must NOT offer a
@@ -380,7 +447,12 @@ export function PublishHub({
         // go through the deploy endpoint below: with no app endpoint that path falls back
         // to `/api/deploy/deploy`, the per-artifact deploy machinery this destination
         // exists to replace.
-        const resp = await api.publishArtifactToCoreProvider(artifact.slug, selected.id)
+        const resp = await api.publishArtifactToCoreProvider(
+          artifact.slug,
+          selected.id,
+          selectedVisibility,
+          selectedVisibility === 'SHARED' ? (artifact.publication?.shared_with ?? []) : [],
+        )
         const outcome = readPublishOutcome(resp)
         if (!outcome) {
           // Same condition, same wording as the app path below: the response carried
@@ -461,7 +533,7 @@ export function PublishHub({
    *  the same `scanBlocked` reset the acknowledgment performs is done here so the
    *  override path settles identically whichever way it went. */
   const commitPublish = (overrideScan: boolean) => {
-    if (selected?.publicReachable !== false) {
+    if (exposesPublicly) {
       setAck({ overrideScan })
       return
     }
@@ -558,8 +630,14 @@ export function PublishHub({
             {typeof preview.message === 'string' && <p>{preview.message}</p>}
             {typeof preview.bytes === 'number' && <p>{i18nT('components.publishHub.size')} {(preview.bytes / 1024).toFixed(1)} {i18nT('components.publishHub.kb')}</p>}
             {typeof preview.scan === 'string' && <p>{i18nT('components.publishHub.scan')} {preview.scan}</p>}
+            {selected.core && (visibilityOptions.length > 0 || alreadyPublished) && selectedVisibility !== 'SHARED' && (
+              <p>
+                {i18nT('components.publishHub.visibility')}:{' '}
+                <span className="font-semibold text-text">{visibilityLabel(selectedVisibility)}</span>
+              </p>
+            )}
           </div>
-          {selected.publicReachable && (
+          {exposesPublicly && (
             <div className="flex items-start gap-2 text-[12px] text-warn p-2 rounded border border-warn/30 bg-warn-subtle">
               <AlertTriangle className="lucide-inline shrink-0" />
               <span>{i18nT('components.publishHub.public_exposure_warning')}</span>
@@ -597,7 +675,7 @@ export function PublishHub({
               <p className="text-[12px] text-muted">
                 {i18nT('components.publishHub.publishing_is_blocked_until_scan_findings_are_re')}
               </p>
-              {selected.publicReachable && (
+              {exposesPublicly && (
                 <div className="flex items-start gap-2 text-[12px] text-warn p-2 rounded border border-warn/30 bg-warn-subtle">
                   <AlertTriangle className="lucide-inline shrink-0" />
                   <span>{i18nT('components.publishHub.public_exposure_warning')}</span>
@@ -645,6 +723,29 @@ export function PublishHub({
               "72 hours" would hand back a persistent public link while the user believed the
               exposure was time-boxed. Same `ttlSelectable` the value derives from, so a
               hidden control can never leave a live choice behind it. */}
+          {visibilityOptions.length > 0 && (
+          <fieldset>
+            <legend className="text-[11px] text-muted mb-1">{i18nT('components.publishHub.visibility')}</legend>
+            <div className="flex gap-4">
+              {visibilityOptions.map(v => {
+                const label = visibilityLabel(v)
+                return (
+                <label key={v} className="flex items-center gap-1.5 text-sm text-text cursor-pointer">
+                  <input
+                    type="radio"
+                    name="publish-visibility"
+                    value={v}
+                    aria-label={label}
+                    checked={selectedVisibility === v}
+                    onChange={() => setVisibilityChoice(v)}
+                  />
+                  {label}
+                </label>
+                )
+              })}
+            </div>
+          </fieldset>
+          )}
           {ttlSelectable && (
           <div>
             <label className="text-[11px] text-muted block mb-1">{i18nT('components.publishHub.ttl_time_to_live')}</label>

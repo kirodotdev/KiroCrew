@@ -2962,6 +2962,9 @@
       "scan_blocked_finding_one": "Scan blocked ({{count}} finding)",
       "scan_blocked_finding_other": "Scan blocked ({{count}} findings)",
       "unexpected_response": "Unexpected response",
+      "visibility": "Visibility",
+      "visibility_private": "Private (only you)",
+      "visibility_public": "Public (anyone with the link)",
       "public_exposure_warning": "Anyone with the published link can view this content. It is served on the public internet with no authentication."
     },
     "pullRequestPanel": {

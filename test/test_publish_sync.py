@@ -806,6 +806,45 @@ async def test_republish_preserves_push_error(store, fake_client):
 
 
 @pytest.mark.asyncio
+async def test_republish_narrowing_changes_sharing_before_content(store, fake_client):
+    # A re-publish that narrows a public publication to private must withdraw it
+    # first: new content may only reach the narrower audience.
+    store.create(name="Doc", content="v1", kind="text", slug="d")
+    await publish_sync.publish("d", visibility="PUBLIC")
+    store.update("d", content="v2", snapshot=True)
+    fake_client.calls.clear()
+    await publish_sync.publish("d", visibility="PRIVATE")
+    order = [name for name, _ in fake_client.calls if name in ("update_sharing", "upload_version")]
+    assert order == ["update_sharing", "upload_version"]
+    assert fake_client.called("update_sharing")[0]["visibility"] == "PRIVATE"
+    assert store.get("d").publication.visibility == "PRIVATE"
+
+
+@pytest.mark.asyncio
+async def test_republish_widening_pushes_content_before_sharing(store, fake_client):
+    # Widening keeps the old order: content updates while the link is still narrow.
+    store.create(name="Doc", content="v1", kind="text", slug="d")
+    await publish_sync.publish("d", visibility="PRIVATE")
+    store.update("d", content="v2", snapshot=True)
+    fake_client.calls.clear()
+    await publish_sync.publish("d", visibility="PUBLIC")
+    order = [name for name, _ in fake_client.calls if name in ("update_sharing", "upload_version")]
+    assert order == ["upload_version", "update_sharing"]
+    assert store.get("d").publication.visibility == "PUBLIC"
+
+
+@pytest.mark.asyncio
+async def test_republish_narrowing_still_reports_push_error(store, fake_client):
+    store.create(name="Doc", content="v1", kind="text", slug="d")
+    await publish_sync.publish("d", visibility="PUBLIC")
+    store.update("d", content="v2", snapshot=True)
+    fake_client.upload_version_response = {"error": "expected sha mismatch"}
+    result = await publish_sync.publish("d", visibility="PRIVATE")
+    assert "conflict" in result["last_error"].lower()
+    assert store.get("d").publication.visibility == "PRIVATE"
+
+
+@pytest.mark.asyncio
 async def test_delete_for_artifact_withdraws_and_reports_withdrawn(store, fake_client):
     store.create(name="Doc", content="x", kind="text", slug="d")
     await publish_sync.publish("d")

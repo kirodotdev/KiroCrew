@@ -889,7 +889,13 @@ and on a scan override, exactly as before. A destination that declares `False`
 confirm click publishes directly, because both surfaces say the content is
 going onto the open internet, and a gate that lies where the destination is
 private teaches the user to click past it where it is public. The publish flow
-always requests `visibility: PUBLIC`, so `False` asserts that even a
+requests `visibility: PUBLIC` unless the user picks Private (offered only on a
+first publish, and only when the destination's sharing model supports both). A
+re-publish offers no choice and keeps the publication's current visibility,
+because the panel's copy of the publication can be stale. When a re-publish does
+narrow visibility, the publish engine changes sharing before it pushes content, so
+new content never reaches the audience being withdrawn. A
+Private request shows neither surface. So `False` asserts that even a
 publication the provider files as PUBLIC is served only to an authenticated
 reader; a provider whose PUBLIC publications are readable by anyone must leave
 it `True`. The default is
