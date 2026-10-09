@@ -281,11 +281,11 @@ describe('McpTab needs_auth status', () => {
    * #6274: a row that needs a sign-in AND resolves to a curated Connections
    * provider (name === slug AND url === the registry mcp_url) can start the
    * sign-in in place, reusing the headless mint engine — but only while the
-   * Connections UI is on, which is now the default. A non-resolvable row, or an
-   * instance that pulled the `connections_ui: false` escape hatch, keeps the chat
-   * prose unchanged — minting is never offered for arbitrary URLs (parked
-   * maintainer decision #4286), and with no cards on screen chat is again the
-   * only authorize prompt.
+   * Connections UI is on, which is now the default. A row named like a registry
+   * provider whose URL is not the registry's, or an instance that pulled the
+   * `connections_ui: false` escape hatch, keeps the chat prose unchanged: the
+   * gateway keeps a registry name on the provider path, and with no cards on
+   * screen chat is again the only authorize prompt.
    */
   it('offers an in-place Sign in on a resolvable managed row when connections_ui is on', async () => {
     mockApi.kirocrewConfig.mockResolvedValue({ connections_ui: true })
@@ -363,6 +363,67 @@ describe('McpTab needs_auth status', () => {
         authGrantPresent: false,
       },
     ])
+    renderTab()
+
+    await waitFor(() => expect(screen.getByText('Sign-in required')).toBeInTheDocument())
+    expect(screen.getByRole('link', { name: /Go to chat/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Sign in/ })).not.toBeInTheDocument()
+  })
+
+  /**
+   * A remote server the owner added outside the registry signs in in place by its
+   * own name: the gateway reads its URL from the owner's config.
+   */
+  const userAdded = (overrides: Partial<McpServer>): McpServer => ({
+    ...remote('needs_auth'),
+    name: 'docs-internal',
+    url: 'https://docs.example.com/mcp',
+    authChallenge: true,
+    ownerSignIn: true,
+    ...overrides,
+  })
+
+  it('offers an in-place Sign in on a user-added remote server that needs one', async () => {
+    mockApi.mcpServers.mockResolvedValue([userAdded({ authGrantPresent: false })])
+    renderTab()
+
+    await waitFor(() => expect(screen.getByText('Sign-in required')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Sign in' })).toBeInTheDocument())
+    expect(screen.queryByRole('link', { name: /Go to chat/ })).not.toBeInTheDocument()
+  })
+
+  it('offers Sign in again on a user-added server that holds a grant', async () => {
+    mockApi.mcpServers.mockResolvedValue([userAdded({ authGrantPresent: true })])
+    renderTab()
+
+    await waitFor(() => expect(screen.getByText('Signed in')).toBeInTheDocument())
+    expect(screen.getByRole('button', { name: 'Sign in again' })).toBeInTheDocument()
+    // The reason sits next to the button, so it does not read as a sign-out.
+    expect(screen.getByText(/No tools listed. Sign in again to check the sign-in/)).toBeInTheDocument()
+  })
+
+  it('offers Sign in again under an OAuth failure on a user-added server', async () => {
+    mockApi.mcpServers.mockResolvedValue([userAdded({ status: 'error', error: 'HTTP 401' })])
+    renderTab()
+
+    await waitFor(() => expect(screen.getByText(/HTTP 401/)).toBeInTheDocument())
+    expect(screen.getByRole('button', { name: 'Sign in again' })).toBeInTheDocument()
+  })
+
+  it('keeps the chat guidance on a remote server the owner did not add from the dashboard', async () => {
+    // An agent, a session or a hand edit can put a remote entry in the config;
+    // only the owner's dashboard add records it, so the row offers no mint.
+    mockApi.mcpServers.mockResolvedValue([userAdded({ authGrantPresent: false, ownerSignIn: false })])
+    renderTab()
+
+    await waitFor(() => expect(screen.getByText('Sign-in required')).toBeInTheDocument())
+    expect(screen.getByRole('link', { name: /Go to chat/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Sign in/ })).not.toBeInTheDocument()
+  })
+
+  it('offers no in-place sign-in for a user-added server while connections_ui is off', async () => {
+    mockApi.kirocrewConfig.mockResolvedValue({ connections_ui: false })
+    mockApi.mcpServers.mockResolvedValue([userAdded({ authGrantPresent: false })])
     renderTab()
 
     await waitFor(() => expect(screen.getByText('Sign-in required')).toBeInTheDocument())

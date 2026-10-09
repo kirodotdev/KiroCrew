@@ -459,6 +459,39 @@ async def test_no_baseline_grants_only_on_a_positive_revalidation(
 
 
 @pytest.mark.asyncio
+async def test_a_pinned_mint_revalidates_against_the_pinned_entry(
+    monkeypatch: pytest.MonkeyPatch, protected_pids: set[int]
+):
+    # The no-baseline revalidation of a pinned mint must check the entry the
+    # owner record validated, never a fresh read of the main spec.
+    monkeypatch.setattr(mint, "_MINT_GRANT_POLL_SECONDS", 0.001)
+    _write_paired_grant_artifacts(_URL)
+    _FakeClient.command_results["/mcp"] = {
+        "data": {"servers": [{"name": "notion", "status": "failed", "toolCount": 0}]}
+    }
+    monkeypatch.setattr(mint, "grant_fingerprint", lambda url, **kw: None)
+    pinned = {"url": _URL}
+
+    await mint.start_oauth_mint("notion", _URL, pinned=pinned)
+    entry = mint._mints["notion"]
+    assert entry["state"] == "waiting"
+
+    monkeypatch.setattr(mint, "_GRANT_REVALIDATION_INTERVAL_SECONDS", 0.0)
+    seen: list[object] = []
+
+    async def _validate(slug: str, url: str, pinned: object = None) -> bool:
+        seen.append(pinned)
+        return True
+
+    monkeypatch.setattr(mint, "_validate_existing_grant", _validate)
+
+    await asyncio.wait_for(entry["watcher"], timeout=5)
+
+    assert mint._mints["notion"]["state"] == "granted"
+    assert seen and all(p is pinned for p in seen)
+
+
+@pytest.mark.asyncio
 async def test_the_revalidation_fallback_is_rate_limited(
     monkeypatch: pytest.MonkeyPatch, protected_pids: set[int]
 ):
@@ -2243,6 +2276,7 @@ def test_no_coroutine_in_the_mint_module_touches_the_filesystem_directly():
         "_record_mint_spec",
         "_forget_mint_spec",
         "_write_mint_agent_spec",
+        "_write_pinned_mint_spec",
         "_remove_mint_agent_spec",
         "_agent_spec_entry_missing",
         "_log_mint_outcome",

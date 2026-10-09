@@ -1110,6 +1110,9 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("api_agent_template_delete", "dashboard"),
     ],
     "kiro_crew/dashboard/handlers/hooks.py": [("api_kiro_hooks", "dashboard")],
+    # One read: the configured-server mint resolves the server's URL from the
+    # owner's main spec, so the caller never supplies it.
+    "kiro_crew/dashboard/handlers/connections.py": [("connections_mint", "dashboard")],
     "kiro_crew/dashboard/handlers/mcp.py": [
         ("api_mcp_active", "dashboard"),
         ("mcp_find_server_spec", "dashboard"),

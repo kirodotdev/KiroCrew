@@ -82,6 +82,13 @@ export function connectionProviderForServer(server: McpServer): ConnectionProvid
   )
 }
 
+/** Whether ``name`` is any registry provider's slug, shipped or not. The gateway
+ *  keeps such a name on the provider path only, so a user-added server that
+ *  reuses it is not offered the configured-server sign-in. */
+export function isRegistrySlug(name: string): boolean {
+  return registry.some(provider => provider.slug === name.toLowerCase())
+}
+
 export function serverForConnection(
   provider: ConnectionProvider,
   servers: readonly McpServer[],

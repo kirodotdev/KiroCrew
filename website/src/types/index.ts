@@ -879,6 +879,10 @@ export interface McpServer {
    *  alongside `authChallenge`; absent is "unknown", which is why the sign-in
    *  wording is gated on an explicit `false`. */
   authGrantPresent?: boolean
+  /** The owner added this remote server from the dashboard, at this url, so the
+   *  table may offer the in-place sign-in on it. Absent or false for a server
+   *  an agent, a session or a hand edit added. */
+  ownerSignIn?: boolean
   /** Spec-declared temp keys the probe refused (path already redacted); the
    *  probe ran with the managed temp instead. Absent when nothing was refused. */
   tempRefusals?: McpTempRefusal[]

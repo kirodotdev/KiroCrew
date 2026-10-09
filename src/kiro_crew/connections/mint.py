@@ -382,8 +382,30 @@ def _mint_spec_body(name: str, servers: dict[str, Any], description: str) -> dic
     }
 
 
-def _write_mint_agent_spec(slug: str) -> tuple[str, str]:
+def _write_pinned_mint_spec(agents_dir: Path, alias: str, entry: dict[str, Any]) -> tuple[str, str]:
+    """Write the one-server mint spec for an entry the caller already validated."""
+    name = _mint_spec_name(alias)
+    path = agents_dir / f"{name}.json"
+    if path.exists():
+        raise FileExistsError(f"mint spec {name} already exists")
+    if not _record_mint_spec(str(path)):
+        raise OSError(f"could not record mint spec {name}")
+    _agent.write_owner_derived_spec(
+        path,
+        _mint_spec_body(
+            name, {alias: dict(entry)}, f"Ephemeral OAuth approval-URL mint for {alias}."
+        ),
+    )
+    return name, str(path)
+
+
+def _write_mint_agent_spec(slug: str, pinned: dict[str, Any] | None = None) -> tuple[str, str]:
     """Write a one-server spec for ``slug``'s mint; return its name and path.
+
+    ``pinned`` is a server entry the caller already validated. When given it is
+    the entry written, and the main spec is not read again, so the endpoint the
+    mint connects to is the one that was checked even if the main spec changes
+    in between.
 
     The mint needs exactly ONE server to answer: the one being connected.
     Pointing it at the shared agent makes kiro-cli initialize every configured
@@ -397,6 +419,8 @@ def _write_mint_agent_spec(slug: str) -> tuple[str, str]:
     """
     agents_dir = _agent.kiro_agents_dir_path()
     alias = mcp_server_alias(slug)
+    if pinned is not None:
+        return _write_pinned_mint_spec(agents_dir, alias, pinned)
     # Hardened reader. A REFUSED main spec (oversize, sensitive symlink,
     # non-object) must NOT reach the main-agent fallback: that fallback spawns
     # ``kiro-cli --agent kirocrew``, and the child would reload the very file the
@@ -521,6 +545,7 @@ async def _grant_change_proven(
     mcp_url: str,
     baseline: tuple[int, int] | None,
     last_revalidation: list[float],
+    pinned: dict[str, Any] | None = None,
 ) -> bool:
     """Whether the credential can be POSITIVELY proven to work now. Fail-closed.
 
@@ -548,7 +573,9 @@ async def _grant_change_proven(
 
     An unreadable current stat is False, and so is an unproven revalidation:
     "could not look" is not proof, and this predicate is the last thing standing
-    between a stale pair and a Connected badge.
+    between a stale pair and a Connected badge. ``pinned`` is the validated
+    server entry of an owner-added server; the revalidation runs against it, never
+    against a fresh read of the main spec.
     """
     current = await asyncio.to_thread(grant_fingerprint, mcp_url)
     if baseline is not None:
@@ -558,7 +585,9 @@ async def _grant_change_proven(
         return False
     last_revalidation.append(now)
     logger.info("OAuth mint for %r has no grant baseline; revalidating before granting", slug)
-    return await _validate_existing_grant(slug, mcp_url)
+    if pinned is None:
+        return await _validate_existing_grant(slug, mcp_url)
+    return await _validate_existing_grant(slug, mcp_url, pinned)
 
 
 async def _mint_watcher(
@@ -567,6 +596,7 @@ async def _mint_watcher(
     token: str,
     require_proof: bool = False,
     baseline: tuple[int, int] | None = None,
+    pinned: dict[str, Any] | None = None,
 ) -> None:
     """Hold the mint until consent completes or the TTL expires.
 
@@ -584,7 +614,8 @@ async def _mint_watcher(
     lie this flow exists to prevent, plus a consent URL that cannot be
     redeemed. ``require_proof`` is carried SEPARATELY from ``baseline`` on purpose:
     an unreadable capture stat yields no baseline, and inferring "no disproof" from
-    that absence is what let the resurrection path reopen.
+    that absence is what let the resurrection path reopen. ``pinned`` is carried
+    to the revalidation (see :func:`_grant_change_proven`).
     """
     revalidation: list[float] = []
     try:
@@ -593,8 +624,10 @@ async def _mint_watcher(
             await asyncio.sleep(_MINT_GRANT_POLL_SECONDS)
             if not await grant_observed(mcp_url):
                 continue
-            if require_proof and not await _grant_change_proven(
-                slug, mcp_url, baseline, revalidation
+            if require_proof and not await (
+                _grant_change_proven(slug, mcp_url, baseline, revalidation)
+                if pinned is None
+                else _grant_change_proven(slug, mcp_url, baseline, revalidation, pinned)
             ):
                 continue
             doomed: MintState | None = None
@@ -798,7 +831,9 @@ _GRANT_VALIDATION_COMMANDS = ("/mcp", "/tools")
 _GRANT_PROVEN_VERDICTS = frozenset({"usable", "no_tools"})
 
 
-async def _validate_existing_grant(slug: str, mcp_url: str) -> bool:
+async def _validate_existing_grant(
+    slug: str, mcp_url: str, pinned: dict[str, Any] | None = None
+) -> bool:
     """Prove an on-disk grant is actually usable before a mint reports ``granted``.
 
     ``grant_observed`` answers only "does the artifact PAIR exist" -- true for a
@@ -840,7 +875,11 @@ async def _validate_existing_grant(slug: str, mcp_url: str) -> bool:
     try:
         acp_client_cls = _acp_client_factory()
         mint_work_dir = await asyncio.to_thread(data_home)
-        agent_name, spec_path = await asyncio.to_thread(_write_mint_agent_spec, slug)
+        agent_name, spec_path = await (
+            asyncio.to_thread(_write_mint_agent_spec, slug)
+            if pinned is None
+            else asyncio.to_thread(_write_mint_agent_spec, slug, pinned)
+        )
         holdings["agent"] = agent_name
         holdings["spec_path"] = spec_path
         client = acp_client_cls(
@@ -881,6 +920,7 @@ async def start_oauth_mint(
     mcp_url: str,
     token: str | None = None,
     prior: MintState | None = None,
+    pinned: dict[str, Any] | None = None,
 ) -> None:
     """Mint ``slug``'s approval URL on a dedicated promptless session.
 
@@ -889,7 +929,9 @@ async def start_oauth_mint(
     guard gets one fresh process and OAuth state before rejection becomes terminal.
 
     ``token``/``prior`` come from :func:`reserve_mint_row` when a caller already
-    made the row visible; without them this installs its own row.
+    made the row visible; without them this installs its own row. ``pinned`` is
+    the validated server entry to mint with instead of re-reading the main spec
+    (see :func:`_write_mint_agent_spec`).
     """
     if token is None:
         my_token, prior = await reserve_mint_row(slug)
@@ -926,7 +968,11 @@ async def start_oauth_mint(
         # anything, and fall through to a fresh mint on anything short of a
         # proven-working verdict -- the spawn loop below is exactly what a
         # user expects Connect to do when consent still needs proving.
-        if await _validate_existing_grant(slug, mcp_url):
+        if await (
+            _validate_existing_grant(slug, mcp_url)
+            if pinned is None
+            else _validate_existing_grant(slug, mcp_url, pinned)
+        ):
             async with _mints_lock:
                 if _mints.get(slug, {}).get("token") == my_token:
                     _mints[slug] = {
@@ -963,7 +1009,11 @@ async def start_oauth_mint(
         for attempt in range(_MINT_URL_REJECTION_ATTEMPTS):
             acp_client_cls = _acp_client_factory()
             # One server, not all of them: see _write_mint_agent_spec.
-            agent_name, spec_path = await asyncio.to_thread(_write_mint_agent_spec, slug)
+            agent_name, spec_path = await (
+                asyncio.to_thread(_write_mint_agent_spec, slug)
+                if pinned is None
+                else asyncio.to_thread(_write_mint_agent_spec, slug, pinned)
+            )
             holdings["agent"] = agent_name
             holdings["spec_path"] = spec_path
             client = acp_client_cls(
@@ -1066,6 +1116,15 @@ async def start_oauth_mint(
                                 my_token,
                                 validation_failed,
                                 disproven_grant,
+                            )
+                            if pinned is None
+                            else _mint_watcher(
+                                slug,
+                                mcp_url,
+                                my_token,
+                                validation_failed,
+                                disproven_grant,
+                                pinned,
                             )
                         ),
                     }

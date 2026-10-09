@@ -153,19 +153,17 @@ provider (`dashboard/chat_runner._emit_mcp_oauth_request`, rendered by
 flushed into the transcript at session init, so the banner also appears on a
 fresh session with nothing typed.
 
-**For a user-added or self-hosted server that does not match a curated
-Connections provider, the chat banner is the only place you can start the
-sign-in** — and that is the manual case this guide is about. Curated providers
-have two additional dashboard surfaces. Miro is present in
-`connections/registry.json`, so it qualifies when the Connections UI is
-unlocked:
+Two dashboard surfaces start the same sign-in outside chat:
 
-- The **MCP** table's per-row **Sign in** control (`McpRowSignIn`) renders when
-  the row resolves to a registry provider and the Connections UI is unlocked.
-  It uses the same headless mint, authorization, and paste-back relay as the
-  Connections card. A user-added or self-hosted row that does not resolve to a
-  provider instead gets a sentence linking to chat; arbitrary URLs are never
-  minted from this surface.
+- The **MCP** table's per-row **Sign in** control (`McpRowSignIn`) renders on a
+  remote row when the Connections UI is unlocked, for a registry provider (Miro
+  is present in `connections/registry.json`) and for a server you added from
+  the dashboard's **Add Custom** form. It uses the same headless mint,
+  authorization, and paste-back relay as the Connections card. The dashboard
+  sends only the server's name, never a URL. Every other row gets a sentence
+  linking to chat instead: a local (stdio) server, a name containing `/`, a
+  name that is a registry provider's slug, and any remote server added another
+  way (by an agent, by a session, or by editing a config file).
 - A Connections provider card drives its own consent flow; a banner for one of
   those is tagged so chat does not repeat a prompt the card already shows.
 
@@ -190,6 +188,22 @@ static `Authorization` header ([../architecture/mcp.md](../architecture/mcp.md),
 Reaching **Signed in** is what gives the flow an ending. Because the panel is
 served from the probe cache for its TTL, a row you just authenticated can still
 read "Sign-in required" until you re-probe it (the panel names that step).
+
+With the Connections UI on (the default), a remote row can start the sign-in in
+place, for a registry provider and for a server you added from the dashboard
+alike:
+
+- **Sign in** on a **Sign-in required** row opens the provider's approval link.
+- **Sign in again** on a **Signed in** row, or under an OAuth server's `401`
+  error, first checks the held grant and asks for consent only when it no longer
+  works (expired, revoked, or minted for other scopes).
+
+When you add or edit a remote server from the dashboard, the gateway records its
+name and URL in `config.json`, which agents cannot write. The sign-in is offered,
+and minted, only while the server's configured URL still equals that record. A
+server an agent or a session added, or one of yours whose URL was changed
+outside the dashboard, keeps the chat guidance until you save it again from the
+dashboard.
 
 ## Complete the browser flow and select a team/tenant
 
