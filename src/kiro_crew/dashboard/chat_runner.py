@@ -346,6 +346,14 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     user_text_span,
     with_bounded_redaction_records,
 )
+from kiro_crew.dashboard.config_staleness import (
+    managed_spec_missing,
+    record_spawn_config,
+    records_provider,
+    refresh_config_stale,
+    spawn_config_fingerprint,
+    turn_spawn_inputs,
+)
 from kiro_crew.dashboard.handlers import (
     MAX_PROMPT_BYTES,
     _find_prompt,
@@ -379,6 +387,7 @@ from kiro_crew.dashboard.session_directive_apply import (  # noqa: F401
     apply_session_directive_outcome,
 )
 from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY
+from kiro_crew.dashboard.stale_config import ConfigFingerprint, SpawnInputs
 from kiro_crew.dashboard.state import (  # noqa: F401
     _MAX_SLOT_MESSAGES,
     _TURN_CONTINUING_INJECT_KINDS,
@@ -4506,6 +4515,59 @@ def _schedule_widget_registration(
         image_task.add_done_callback(state._background_tasks.discard)
 
 
+def _schedule_config_stale_refresh(state: DashboardState, slot: _ChatSlot) -> None:
+    """Recompute *slot*'s stale-config badge in the background, off the turn's path.
+
+    Badge bookkeeping never breaks a turn: any failure here is logged and dropped.
+    """
+    try:
+        task = asyncio.get_running_loop().create_task(refresh_config_stale(state, slot))
+        state._background_tasks.add(task)
+        task.add_done_callback(state._background_tasks.discard)
+    except Exception:  # noqa: BLE001 - a change detector never fails a turn
+        logger.debug("Stale-config refresh not scheduled for slot %s", slot.key, exc_info=True)
+
+
+async def _take_spawn_fingerprint(
+    cfg: Any, slot: _ChatSlot, session_key: str, kiro_agent: str | None, *, prespawn: bool = False
+) -> tuple[SpawnInputs, ConfigFingerprint] | None:
+    """The spawn inputs and fingerprint a turn records, or ``None`` on any failure.
+
+    ``prespawn`` takes it for a spawn that has not started yet. A missing
+    managed spec is then left for that spawn to heal (``None``): regenerating
+    it here rebuilds every managed spec and re-reads the config dozens of
+    times, and the first turn, finding no record, fingerprints the healed spec.
+    Badge bookkeeping only: it must never break the turn or spawn that takes it.
+    """
+
+    def _take(inputs: SpawnInputs) -> ConfigFingerprint | None:
+        if prespawn and managed_spec_missing(inputs.agent):
+            return None
+        return spawn_config_fingerprint(cfg, session_key, inputs)
+
+    try:
+        inputs = turn_spawn_inputs(slot, kiro_agent)
+        fingerprint = await asyncio.to_thread(_take, inputs)
+    except Exception:  # noqa: BLE001 - a change detector never fails a turn
+        logger.debug("Config fingerprint failed for slot %s", slot.key, exc_info=True)
+        return None
+    if fingerprint is None:
+        return None
+    return inputs, fingerprint
+
+
+def _record_spawn_config_quietly(
+    slot: _ChatSlot, provider: Any, spawn: tuple[SpawnInputs, ConfigFingerprint] | None
+) -> None:
+    """:func:`record_spawn_config`, with any failure logged and dropped."""
+    if spawn is None or provider is None:
+        return
+    try:
+        record_spawn_config(slot, provider, *spawn)
+    except Exception:  # noqa: BLE001 - a change detector never fails a turn
+        logger.debug("Spawn config not recorded for slot %s", slot.key, exc_info=True)
+
+
 def _strip_yaml_frontmatter(content: str) -> str:
     """Strip a leading YAML frontmatter block from prompt/SOP *content*.
 
@@ -5979,6 +6041,17 @@ async def _eager_spawn(
                 or _slot_binding(slot) != _bound
             ):
                 return
+            # The config this process is about to read, fingerprinted BEFORE the
+            # handshake so an edit that lands while it runs -- or at any point
+            # before the first message -- is a difference the first turn's
+            # turn sees as stale, rather than a fingerprint that turn records as the
+            # config the process started under. Taken before the admission
+            # below, which reserves a registry entry: every await between the
+            # reservation and the try/finally that releases it would be a
+            # window in which a cancellation leaks that reservation for good.
+            _spawn = await _take_spawn_fingerprint(
+                cfg, slot, session_key, kiro_agent, prespawn=True
+            )
             # ADMISSION, before the process exists: the live-population cap is
             # host-derived, and on a host that cannot afford another idle
             # agent process the right move is to not spawn it — the first
@@ -6022,6 +6095,7 @@ async def _eager_spawn(
                     allow_resume=allow_resume,
                     _bound=_bound,
                     start_priority=start_priority,
+                    spawn_config=_spawn,
                 )
             finally:
                 # Every exit that is not a registration -- refused, another
@@ -6073,11 +6147,16 @@ async def _spawn_admitted_prefetch(
     allow_resume: bool,
     _bound: tuple,
     start_priority: StartPriority,
+    spawn_config: tuple[SpawnInputs, ConfigFingerprint] | None = None,
 ) -> None:
     """The admitted half of ``_eager_spawn``: handshake, guards, registration.
 
     Split out so the caller can bracket it in one ``try/finally`` that releases
     the admission reservation; a ``return`` from any guard below lands there.
+
+    ``spawn_config`` is the fingerprint taken before the handshake; it is
+    recorded against the provider this call registers, so the stale-config
+    badge compares against the config the process actually started under.
     """
     try:
         # The store this slot was writing, read before the allocation below maps
@@ -6197,6 +6276,8 @@ async def _spawn_admitted_prefetch(
         is_new,
         resumed,
     )
+    if spawn_config is not None:
+        _record_spawn_config_quietly(slot, sessions.get_provider(session_key), spawn_config)
     if allow_resume and resumed:
         _schedule_prefetch_ttl(state, slot, session_key)
     # Fresh and resumed sessions alike count against the live-
@@ -10412,6 +10493,18 @@ async def _run_chat(
         # get_or_create or we'd reuse the stale session for one turn. Safe here:
         # no session lock is held yet, so reset() can't self-kill.
         await _consume_pending_reset(state, slot)
+        # The config a process spawned for this turn would read, taken BEFORE the
+        # provider is acquired and recorded against it below (only when no record
+        # describes it yet), so an edit landing while this turn spawns is a
+        # difference the stale-config badge shows rather than a record of it.
+        # Skipped when a record already describes the live provider: that is
+        # the one this turn runs on unless it is replaced below, and then the
+        # replacement is fingerprinted once it is acquired.
+        _spawn = (
+            None
+            if records_provider(slot, state.sessions.get_provider(session_key))
+            else await _take_spawn_fingerprint(loaded_cfg, slot, session_key, kiro_agent)
+        )
         # Same "before get_or_create or we reuse a stale session for one turn"
         # reasoning as the reset above, for a staleness the session map cannot
         # see: the child is alive and healthy, but the account it authenticated
@@ -10594,6 +10687,12 @@ async def _run_chat(
                 state.sessions.allocation_requested_model(session_key) or _requested_model
             )
         _acquired = True
+        # Keyed on the registry's provider, the object a later status check
+        # looks up, rather than on the handle returned here.
+        _turn_provider = state.sessions.get_provider(session_key) or client
+        if _spawn is None and not records_provider(slot, _turn_provider):
+            _spawn = await _take_spawn_fingerprint(loaded_cfg, slot, session_key, kiro_agent)
+        _record_spawn_config_quietly(slot, _turn_provider, _spawn)
         # The acquired provider is the final authority for harness-specific slash
         # gates. A dead live row can be replaced during the get_or_create call
         # above. The positive capability fails closed for unknown adapters and
@@ -19275,6 +19374,8 @@ async def _run_chat(
                 "nudge_turn": _directive_self_wake and _turn_landed,
             },
         )
+        # The turn's end: recompute the stale-config badge off this path.
+        _schedule_config_stale_refresh(state, slot)
         # The turn's crew log closers, in the one order a reader can trust: every
         # `message/sent` for this turn has now been flushed, so the tool closer,
         # the last step's completion and the turn's own completion land after the

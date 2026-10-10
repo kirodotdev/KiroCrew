@@ -216,6 +216,15 @@ _EXPECTED_GATE_CALL_SITES: dict[str, int] = {
     # anchors.  Both handler call sites run this helper via ``asyncio.to_thread``,
     # so those inline anchor resolutions never block the event loop.
     "kiro_crew/dashboard/handlers/taskrunner.py": 1,
+    # ``_pin`` (Windows only): the stale-config gate must not resolve a
+    # candidate directory -- or the gate's own anchors -- by name before it is
+    # pinned, since on Windows that would follow a swapped junction aimed at a
+    # share. So ``_gated_dir_windows`` screens the lexical ``abspath`` spelling
+    # against lexically anchored fence targets with no gate call, and ``_pin``
+    # hands this gate ``pinned_fs.fd_real_path`` of the held handle -- the
+    # canonical answer -- after a no-follow component walk. It runs inside the
+    # fingerprint/sweep ``asyncio.to_thread`` worker, never the event loop.
+    "kiro_crew/dashboard/stale_config.py": 1,
     # ``security.is_sensitive_canonical_path``: the shared entry point for a
     # reader that canonicalised its path itself. It picks the gate by thread --
     # this pre-resolved gate off the event loop, the bounded gate on it -- so
@@ -230,7 +239,11 @@ _EXPECTED_GATE_CALL_SITES: dict[str, int] = {
     # (``_read_agent_spec`` / ``read_agent_spec_strict``, each handing it the
     # ``Path.resolve(strict=True)`` result; the native skill projection reads
     # every spec under ``asyncio.to_thread``, and a stalled pool there dropped
-    # agents silently and surfaced as ``no prepared skill discovery view``).
+    # agents silently and surfaced as ``no prepared skill discovery view``),
+    # and ``agent._pinned_spec_documents``, handing it a name listed through a
+    # pin of the gate-admitted (canonical) agents directory, an entry no link
+    # can redirect (the per-turn stale-config fingerprint resolves its spec
+    # this way, off the event loop).
     # ``test_artifacts_pathres.py`` and ``test_agent_discovery_pathres.py`` pin
     # the canonical spelling and the thread split for each caller. The store's
     # root check and ``source_path`` pointers, and the reader module's project

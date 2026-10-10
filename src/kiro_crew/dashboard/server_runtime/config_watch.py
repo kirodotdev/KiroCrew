@@ -1,13 +1,16 @@
 """The live config watcher's gateway wiring.
 
 The appliers whose holder is the dashboard state, the watcher's cleanup, and its start
-once the listener serves.
+once the listener serves; and the stale-config badge's gateway wiring (its sweep, its
+ConfigWatch subscription, its write-triggered refresh and the warm pool's and
+respawn's readers).
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
@@ -15,7 +18,13 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.server import (
         DashboardState,
         KiroCrewConfig,
+        config_write_refresh_middleware,
         logger,
+        pool_spawn_config,
+        respawn_spawn_config,
+        start_config_stale_sweep,
+        stop_config_stale_detection,
+        subscribe_backend_changes,
     )
 
 
@@ -282,3 +291,41 @@ def _kick_config_watch(app: web.Application, state: DashboardState) -> None:
     task = asyncio.create_task(_start())
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)
+
+
+def _arm_config_stale_sweep(app: web.Application, state: DashboardState) -> None:
+    """Start the stale-config badge's periodic sweep for edits made outside the gateway.
+
+    The write-triggered refresh is a middleware, placed in each entrypoint's
+    ordered chain by ``_config_write_refresh`` so the chain's assignment cannot
+    drop it. The cleanup hook registered here cancels and awaits the sweep and
+    cancels the ConfigWatch subscription, so neither outlives the app.
+    """
+    state._config_stale_sweep = start_config_stale_sweep(state)  # prevent GC
+    # A backend change in config.json reaches the badge through the one
+    # ConfigWatch rather than another stat of the file.
+    state._config_stale_backend_sub = subscribe_backend_changes(state)  # prevent GC
+    # A hard stop's eager respawn and a reset's successor are started by the
+    # session layer, not a chat turn: this reader fingerprints them before they
+    # start, so a chat that has not had a turn since still has a record.
+
+    async def _respawn_config(session_key: str) -> Any:
+        return await respawn_spawn_config(state, session_key)
+
+    state.sessions.respawn_config_reader = _respawn_config
+
+    async def _config_stale_shutdown(app_: web.Application) -> None:
+        await stop_config_stale_detection(state)
+
+    app.on_cleanup.append(_config_stale_shutdown)
+
+
+def _config_write_refresh(state: DashboardState) -> Callable:
+    """The stale-config badge's write-triggered refresh middleware for *state*."""
+    return config_write_refresh_middleware(state)
+
+
+def _pool_spawn_config(agent: str, cwd: str) -> Any:
+    """``SessionManager.spawn_config_reader``: see ``config_staleness.pool_spawn_config``."""
+    # Called off the loop.
+    return pool_spawn_config(agent, cwd)

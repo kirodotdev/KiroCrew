@@ -11,6 +11,7 @@ import MarkdownRenderer from '../../components/MarkdownRenderer'
 import MessageErrorBoundary from '../../components/MessageErrorBoundary'
 import PastedChip from '../../components/PastedChip'
 import SessionActionsMenu from '../../components/SessionActionsMenu'
+import StaleConfigBadge from '../../components/StaleConfigBadge'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -103,6 +104,12 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
     s => (activeSlot ? s.dashboard.slots?.find(sl => sl.key === activeSlot)?.mcp_report : null) ?? null,
   )
 
+  // The stale-config badge rides the menu trigger, so a click on it opens the
+  // menu its remedy (Reload session) lives in.
+  const staleSlot = useAppSelector(
+    s => (activeSlot ? s.dashboard.slots?.find(sl => sl.key === activeSlot) : undefined),
+  )
+
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
@@ -112,16 +119,21 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
              the title, which on the phone this trigger is the only copy of. */
           <button data-testid="session-title-menu" className="flex min-w-0 items-center gap-1 px-1 py-1 rounded-md text-text-strong cursor-pointer bg-transparent border-none transition-colors hover:bg-bg-hover" aria-haspopup="menu">
             <span className="session-header-title text-[15px] font-semibold truncate min-w-0">{triggerLabel}</span>
+            <StaleConfigBadge slot={staleSlot} />
             <span className="sr-only">, {i18nT('pages.chatPage.session_options')}</span>
             <ChevronDown size={16} className="shrink-0 text-muted" />
           </button>
         ) : (
-          <button className="px-0.5 py-1 rounded-md text-muted hover:text-text cursor-pointer bg-transparent border-none transition-all" aria-label={i18nT('pages.chatPage.session_options')}>
+          <button className="flex items-center gap-1 px-0.5 py-1 rounded-md text-muted hover:text-text cursor-pointer bg-transparent border-none transition-all" aria-label={i18nT('pages.chatPage.session_options')}>
+            <StaleConfigBadge slot={staleSlot} />
             <ChevronDown size={14} />
           </button>
         )}
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="min-w-[180px]">
+      {/* Capped to the viewport: the Reload row's stale-config note can be wider
+        *  than a 320px phone in a long locale, and the uncapped menu would run
+        *  off-screen instead of letting that note wrap. */}
+      <DropdownMenuContent align="start" className="min-w-[180px] max-w-[calc(100vw-1rem)]">
         {newSessionHere && (
           <>
             <DropdownMenuItem data-testid="mobile-new-session-here" disabled={newSessionHere.disabled} onSelect={newSessionHere.onSelect}>

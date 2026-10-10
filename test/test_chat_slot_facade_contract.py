@@ -85,6 +85,9 @@ _TO_DICT_KEYS = (
     "theme_consent",
     "theme_consent_sha",
     "memory_mode",
+    # The live session runs on config changed since it started (stale badge).
+    "config_stale",
+    "config_stale_inputs",
     "forked_from",
     "linked_session_key",
     "app",

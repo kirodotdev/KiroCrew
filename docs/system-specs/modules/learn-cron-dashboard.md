@@ -1557,7 +1557,9 @@ specified compatibility change.
     entries;
   - `mcp_routes` — the MCP route table both entrypoints mount first, and the
     deferred-import route binders;
-  - `config_watch` — the live config watcher's appliers and its post-bind start;
+  - `config_watch` — the live config watcher's appliers and its post-bind start,
+    and the stale-config badge's sweep, write-triggered refresh and warm-pool
+    reader;
   - `workflow_startup` — the workflow service's off-boot initialization, its
     readiness gate and its shutdown;
   - `crewmate_prune` — the crewmate prune migration, its request gate and settle

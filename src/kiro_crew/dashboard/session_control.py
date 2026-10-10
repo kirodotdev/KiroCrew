@@ -89,6 +89,7 @@ from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
     slot_history_key,
 )
+from kiro_crew.dashboard.config_staleness import refresh_config_stale
 from kiro_crew.dashboard.create_rate_limit import (
     SESSION_CREATE,
     allow_create,
@@ -4046,14 +4047,15 @@ def authorize_target(
     member) the fence is evaluated inline as before.
 
     ``allow_self`` waives the self-target refusal, and with it the ownership fence for
-    that one case. Two verbs pass it. A release, where the target itself is a
+    that one case. Three verbs pass it. A release, where the target itself is a
     legitimate caller because a session taken over must not depend on its holder still
     running to get out. A close, so a session that has finished its one job can archive
     its own tab instead of leaving it for the person or its creator to dismiss; the close
     is the same recoverable archival a peer close is, and it cancels the caller's own
-    running turn, which is the turn asking for it. It waives nothing else -- an ephemeral, app-scoped or
-    channel-linked caller is still refused, and a target that is not the caller is
-    still judged by every rule above.
+    running turn, which is the turn asking for it. And the read-only config-status
+    check, which an agent runs on its own chat after editing its own MCP servers. It
+    waives nothing else -- an ephemeral, app-scoped or channel-linked caller is still
+    refused, and a target that is not the caller is still judged by every rule above.
     """
 
     deny = _deny_factory(caller_session_key=caller_session_key, operation=operation, target=target)
@@ -8674,6 +8676,66 @@ def _bounded_summary(payload: dict) -> dict[str, Any]:
         "intents_omitted": max(0, len(raw_intents) - MAX_SUMMARY_INTENTS),
         "constraints": [_summary_text(n) for n in notes[:MAX_SUMMARY_NOTES]],
         "constraints_omitted": max(0, len(notes) - MAX_SUMMARY_NOTES),
+    }
+
+
+async def read_config_status(
+    state: "DashboardState",
+    *,
+    caller_session_key: str,
+    target: str,
+    caller_fenced: bool | None = None,
+) -> dict[str, Any]:
+    """Whether *target*'s live session runs on config changed since it started.
+
+    The same answer the dashboard's stale-config badge shows
+    (:func:`kiro_crew.dashboard.config_staleness.refresh_config_stale`), which
+    this call also refreshes. Read-only: nothing is relaunched; applying a
+    change is the target's Reload action. Authorized by the gate
+    :func:`read_summary` uses (``authorize_target``), which runs before the
+    first suspension, so the handler's ``prewarm_enabled_check`` stays valid.
+
+    The caller's OWN chat is a valid target (``allow_self``): the usual reason to
+    ask is "did my edit to my own MCP servers reach me", and answering it reads
+    only the caller's own config. Every other refusal still applies, so a peer
+    is judged exactly as :func:`read_summary` judges it.
+    """
+
+    def _authorize(*, recheck: bool) -> "_ChatSlot":
+        return authorize_target(
+            state,
+            caller_session_key=caller_session_key,
+            target=target,
+            operation="config_status",
+            skip_enabled_check=recheck,
+            precomputed_ownership_fenced=caller_fenced,
+            allow_self=True,
+        )
+
+    slot = _authorize(recheck=False)
+    status = await refresh_config_stale(state, slot)
+    # The recompute suspends: re-run the gate before answering, and the answer
+    # must still be the same slot.
+    if _authorize(recheck=True) is not slot:
+        raise SessionControlError(
+            "the target session was replaced while its config was checked; try again",
+            status=409,
+            code="target_replaced",
+        )
+    _audit(
+        caller_session_key=caller_session_key,
+        operation="config_status",
+        slot_key=slot.key,
+        outcome="allowed",
+        detail={"stale": status["stale"]},
+    )
+    return {
+        "ok": True,
+        "target": slot.key,
+        "title": sanitize_outbound(slot.display_title),
+        "stale": status["stale"],
+        "changed": status["changed"],
+        "unreadable": status["unreadable"],
     }
 
 

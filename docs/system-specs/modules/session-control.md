@@ -34,6 +34,7 @@ unreachable in production because the caller's `X-Internal-Secret` is ignored.
 | `session_release` | `POST /api/session-control/release` | Let a session the caller holds, or the caller itself, out from under its parent; the released session keeps its own subtree |
 | `session_read_message` | `GET /api/session-control/read` | Read another session's transcript tail + liveness |
 | `session_summary` | `GET /api/session-control/summary` | Read another session's cached intent summary + liveness, authorized as `session_read_message` is; never generates one |
+| `session_config_status` | `GET /api/session-control/config-status` | Report whether another session's agent process runs on outdated config (agent spec, `mcp.json`, ACP backend changed since spawn) and which inputs changed, authorized as `session_summary` is; never reloads anything |
 
 `session_adopt` and `session_release` reshape the session tree, so both go
 through `authorize_target` like every other verb and add tree checks of their

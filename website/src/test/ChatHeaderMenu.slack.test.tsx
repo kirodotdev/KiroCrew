@@ -450,3 +450,13 @@ describe('Session menu — independence and offers', () => {
     expect(api.linkMirror).not.toHaveBeenCalled()
   })
 })
+
+describe('Session menu -- narrow viewport', () => {
+  it('caps the menu to the viewport so a long stale-config note wraps instead of overflowing', async () => {
+    renderMenu({ key: 'chat-1-100', config_stale: true, config_stale_inputs: '~/.kiro/agents/kirocrew.json' })
+    await screen.findByText('Reload session')
+    const menu = document.querySelector('[role="menu"]')
+    expect(menu).not.toBeNull()
+    expect(menu).toHaveClass('max-w-[calc(100vw-1rem)]')
+  })
+})

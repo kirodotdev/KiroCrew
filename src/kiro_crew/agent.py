@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import errno
 import importlib
 import json
 import logging
@@ -51,7 +52,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, Iterator, Literal, MutableMapping
 
-from kiro_crew import agent_state, platform_compat
+from kiro_crew import agent_state, hooks, platform_compat
 from kiro_crew.agent_discovery import (
     SKILL_URI_PREFIX,
     AmbiguousAgentSpecError,
@@ -75,6 +76,8 @@ from kiro_crew.agent_spec_format import (
     agent_spec_candidates,
     is_markdown_spec,
     iter_agent_spec_files,
+    live_agent_spec_names,
+    parse_agent_spec_bytes,
 )
 from kiro_crew.atomic_write import read_json_or, replace_with_retry
 from kiro_crew.config import config_dir
@@ -104,7 +107,7 @@ from kiro_crew.platform import (
 )
 from kiro_crew.platform.governance import agentcore_posture
 from kiro_crew.platform.governance_profiles import governance_permits
-from kiro_crew.security import is_sensitive_path
+from kiro_crew.security import is_sensitive_canonical_path, is_sensitive_path
 from kiro_crew.sel import (  # circular import: sel imports config which imports agent
     SecurityEvent,
     sel,
@@ -3024,24 +3027,183 @@ def agent_spec_path(name: str, *, agents_dir: Path | None = None) -> Path | None
     iterates the directory unordered, so which of them is live is undefined, and
     a writer cannot pick without risking clearing the pin nothing is reading.
     """
-    if not is_registered_agent_name(name):
-        return None
-    agents_dir = agents_dir if agents_dir is not None else kiro_agents_dir_path()
-    if not agents_dir.is_dir():
-        return None
+    return _resolve_agent_spec(name, agents_dir, json_only=False)
 
-    direct = set(agent_spec_candidates(agents_dir, name))
-    declared_matches: list[Path] = []
-    fallbacks: list[Path] = []
+
+#: At most this many entries of a pinned agents directory are listed by
+#: :func:`pinned_agent_spec_path`. The directory is agent-writable, and its
+#: caller runs on every turn, so the listing must not grow with whatever an
+#: agent writes there; past the cap the scope is reported unknown instead.
+PINNED_SPEC_DIR_MAX_ENTRIES = 4096
+
+#: At most this many bytes, summed over every spec it reads, are read by one
+#: :func:`pinned_agent_spec_path` resolve. A declared ``name`` beats a matching
+#: filename, so the resolve parses every listed spec; without an aggregate cap
+#: the entry cap times the per-file cap would let an agent-written directory
+#: cost gigabytes of reads per turn. Real agents directories are a few dozen
+#: kilobytes; past the cap the scope is reported unknown instead.
+PINNED_SPEC_DIR_MAX_TOTAL_BYTES = 8 * 1024 * 1024
+
+
+#: The errnos a pinned read raises for an entry it refuses to read at all: a
+#: link at the name (``ELOOP``; ``EMLINK`` from ``O_NOFOLLOW`` on FreeBSD), a
+#: hardlink or non-regular file (``EINVAL``), a directory (``EISDIR``).
+_REFUSED_SPEC_ENTRY_ERRNOS = frozenset({errno.ELOOP, errno.EMLINK, errno.EINVAL, errno.EISDIR})
+
+
+class SpecDirectoryOverflowError(OSError):
+    """A pinned agents directory is past a resolve bound.
+
+    It holds more than :data:`PINNED_SPEC_DIR_MAX_ENTRIES` entries, or its specs
+    sum to more than :data:`PINNED_SPEC_DIR_MAX_TOTAL_BYTES`.
+    """
+
+
+def pinned_agent_spec_path(
+    name: str,
+    *,
+    agents_dir: Path,
+    pinned: platform_compat.PinnedDirectory,
+    json_only: bool,
+) -> Path | None:
+    """:func:`agent_spec_path` resolved through *pinned*, a handle the caller
+    opened on *agents_dir*; with *json_only*, among ``*.json`` specs alone (the
+    form kiro-cli reads).
+
+    For a caller that screened *agents_dir* and must not reopen it by name: the
+    listing and every spec read go through the handle (see
+    :func:`_resolve_agent_spec`). Same selection, safety and ambiguity rules.
+    Raises :class:`SpecDirectoryOverflowError` when the directory holds more
+    than :data:`PINNED_SPEC_DIR_MAX_ENTRIES` entries or its specs sum to more
+    than :data:`PINNED_SPEC_DIR_MAX_TOTAL_BYTES`, and ``OSError`` when a spec in
+    it exists but cannot be read, since that spec may be the one resolved.
+    """
+    return _resolve_agent_spec(name, agents_dir, json_only=json_only, pinned=pinned)
+
+
+def _named_spec_documents(agents_dir: Path, *, json_only: bool) -> Iterator[tuple[Path, dict]]:
+    """Every safe, parsed spec of *agents_dir*, listed and read by path."""
     for spec_path in iter_agent_spec_files(agents_dir):
+        if json_only and is_markdown_spec(spec_path):
+            continue
         if not _spec_path_is_safe(spec_path, agents_dir):
             continue
         try:
             data = _read_spec_capped(spec_path)
         except (OSError, ValueError):
             continue
-        if not isinstance(data, dict):
+        if isinstance(data, dict):
+            yield spec_path, data
+
+
+def _pinned_spec_documents(
+    pinned: platform_compat.PinnedDirectory, agents_dir: Path, *, json_only: bool
+) -> Iterator[tuple[Path, dict]]:
+    """:func:`_named_spec_documents` through *pinned*, never reopening *agents_dir*.
+
+    *agents_dir* is the canonical path the pin was opened on and is used only to
+    name the results. The listing, the twin probe and every read go through the
+    handle; a link, a hardlink or any non-regular entry is refused by the read
+    itself, so the per-entry guards :func:`_spec_path_is_safe` asks of a path
+    are answered by the open. The sensitive-path fence is asked of the
+    already-canonical name, which no link can redirect, through
+    :func:`~kiro_crew.security.is_sensitive_canonical_path`.
+
+    The listing is bounded by :data:`PINNED_SPEC_DIR_MAX_ENTRIES` and the reads
+    by :data:`PINNED_SPEC_DIR_MAX_TOTAL_BYTES` summed over every spec; a
+    directory past either raises :class:`SpecDirectoryOverflowError` rather than
+    being materialized or read whole.
+    """
+
+    def _present(entry: str) -> bool:
+        try:
+            pinned.lstat(entry)
+        except OSError:
+            return False
+        return True
+
+    listed = pinned.names_bounded(PINNED_SPEC_DIR_MAX_ENTRIES)
+    if listed is None:
+        raise SpecDirectoryOverflowError(
+            f"more than {PINNED_SPEC_DIR_MAX_ENTRIES} entries in {str(agents_dir)!r}"
+        )
+    remaining = PINNED_SPEC_DIR_MAX_TOTAL_BYTES
+    for entry in live_agent_spec_names(listed, entry_exists=_present):
+        if json_only and is_markdown_spec(entry):
             continue
+        # The hardened reader skips AppleDouble sidecars by name.
+        if entry.startswith("._"):
+            continue
+        spec_path = agents_dir / entry
+        if is_sensitive_canonical_path(str(spec_path)):
+            continue
+        # The read is capped at what the aggregate budget has left, and refused
+        # from the descriptor's own size (EFBIG), so no spec is read past it.
+        try:
+            raw = pinned.read_bytes(entry, max_bytes=min(hooks.MAX_FILE_BYTES, remaining))
+        except OSError as exc:
+            if exc.errno == errno.EFBIG:
+                raise SpecDirectoryOverflowError(
+                    f"specs in {str(agents_dir)!r} exceed the "
+                    f"{PINNED_SPEC_DIR_MAX_TOTAL_BYTES}-byte read budget"
+                ) from exc
+            # Removed between the listing and the read: no spec here.
+            if exc.errno == errno.ENOENT:
+                continue
+            # A link, a hardlink or a non-regular entry is refused by the open
+            # or the descriptor check, and is skipped exactly as
+            # _spec_path_is_safe skips it on the by-name path: the resolver
+            # never selects such an entry, so its presence says nothing about
+            # which spec resolves.
+            if exc.errno in _REFUSED_SPEC_ENTRY_ERRNOS:
+                continue
+            # A spec that exists but cannot be read (a revoked permission) may
+            # be the one that declares the name, so which file resolves is
+            # unknown. Raised rather than skipped, which would read as that spec
+            # being absent.
+            raise
+        remaining -= len(raw)
+        # A document nested past the parser's depth raises RecursionError; it
+        # is a syntax error like any other and is skipped the same way.
+        try:
+            data = parse_agent_spec_bytes(raw, spec_path)
+        except (ValueError, RecursionError):
+            continue
+        if isinstance(data, dict):
+            yield spec_path, data
+
+
+def _resolve_agent_spec(
+    name: str,
+    agents_dir: Path | None,
+    *,
+    json_only: bool,
+    pinned: platform_compat.PinnedDirectory | None = None,
+) -> Path | None:
+    """The resolver behind :func:`agent_spec_path` and :func:`pinned_agent_spec_path`.
+
+    With *pinned* -- a :class:`~kiro_crew.platform_compat.PinnedDirectory` the
+    caller opened on *agents_dir* -- the listing and every spec read go through
+    that handle and the directory is never reopened by its name, so a name
+    swapped for a link (a Windows junction to a UNC share) after the caller's
+    screen is not followed. The selection rules are the same either way.
+    """
+    if not is_registered_agent_name(name):
+        return None
+    if pinned is not None:
+        if agents_dir is None:
+            raise TypeError("a pinned resolve needs the path the pin was opened on")
+        specs = _pinned_spec_documents(pinned, agents_dir, json_only=json_only)
+    else:
+        agents_dir = agents_dir if agents_dir is not None else kiro_agents_dir_path()
+        if not agents_dir.is_dir():
+            return None
+        specs = _named_spec_documents(agents_dir, json_only=json_only)
+
+    direct = set(agent_spec_candidates(agents_dir, name))
+    declared_matches: list[Path] = []
+    fallbacks: list[Path] = []
+    for spec_path, data in specs:
         declared = data.get("name")
         if declared == name:
             declared_matches.append(spec_path)
@@ -4492,6 +4654,19 @@ def rebuild_agent_config_reporting(*, _held_out: list[bool] | None = None) -> tu
 
 # Backward-compat alias — callers may still use the old name.
 install_agent = rebuild_agent_config
+
+
+def managed_spec_missing(agent: str | None) -> bool:
+    """Whether *agent* is the managed default and its spec is absent on disk.
+
+    The one case :func:`ensure_agent_materialized` regenerates. Never raises.
+    """
+    try:
+        return agent == Path(AGENT_FILENAME).stem and not (
+            (kiro_agents_dir_path() / AGENT_FILENAME).exists()
+        )
+    except Exception:  # noqa: BLE001 - a read-only probe never fails its caller
+        return False
 
 
 def ensure_agent_materialized(agent: str | None) -> bool:

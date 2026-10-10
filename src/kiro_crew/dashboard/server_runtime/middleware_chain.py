@@ -117,6 +117,7 @@ def _install_dashboard_middlewares(
     tailnet_host: str,
     configured_host: str,
     dashboard_url: str,
+    config_write_refresh: Callable,
 ) -> None:
     """Install the dashboard's middleware chain on *app*, outermost first.
 
@@ -234,6 +235,10 @@ def _install_dashboard_middlewares(
         # record: every /api/chat/slots/{slot}/* route takes one app-ownership
         # decision here before its handler runs (dashboard/slot_ownership.py).
         slot_ownership_middleware,
+        # Inner to auth and audit: it reads only the response status, and
+        # refreshes every live chat's stale-config badge after a successful
+        # config write.
+        config_write_refresh,
         spa_fallback,
     ]
 
@@ -268,6 +273,7 @@ def _install_api_middlewares(
     port: int,
     local_only: bool,
     tailnet_trust: tailnet.TailnetTrust,
+    config_write_refresh: Callable,
 ) -> None:
     """Install the headless (``--slack-only``) API server's middleware chain on *app*.
 
@@ -347,4 +353,7 @@ def _install_api_middlewares(
         # Same per-slot app-ownership checkpoint as the dashboard chain, so a
         # per-slot route registered on this server is decided the same way.
         slot_ownership_middleware,
+        # As in the dashboard chain: refresh every live chat's stale-config badge
+        # after a successful config write.
+        config_write_refresh,
     ]

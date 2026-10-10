@@ -1319,6 +1319,34 @@ def _session_tools() -> tuple[Tool, ...]:
             identity="strict",
             routes=("GET /api/session-control/summary",),
         ),
+        Tool(
+            name="session_config_status",
+            description=(
+                "Report whether a session's agent process runs on OUTDATED config: an "
+                "MCP server, agent spec or mcp.json edited after the process started, "
+                "which it does not see until the session is reloaded. Returns 'stale' "
+                "(true, false, or null when a config file cannot be read or the check "
+                "could not run) and which "
+                "files changed, the same answer the dashboard's stale-config badge "
+                "shows. An MCP edit a hot-reloading kiro-cli has already applied is not "
+                "stale. READ-only: it never reloads anything; applying a change is the "
+                "Reload session action in that tab. Authorized as session_summary is, "
+                "except that your own chat is a valid target."
+            ),
+            schema={
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Session key from list_sessions, or its exact title.",
+                    },
+                },
+                "required": ["target"],
+            },
+            run=_run_session_config_status,
+            identity="strict",
+            routes=("GET /api/session-control/config-status",),
+        ),
     )
 
 
@@ -3222,6 +3250,36 @@ def _run_session_summary(args: dict[str, Any], ctx: ToolContext) -> str:
     except DashboardError as refused:
         return f"Error: could not read that session's summary: {refused.error}"
     return _render_session_summary(resp)
+
+
+def _run_session_config_status(args: dict[str, Any], ctx: ToolContext) -> str:
+    try:
+        resp = ctx.client.get(
+            f"/api/session-control/config-status?target={quote(str(args['target']))}",
+            session_key=ctx.caller_key,
+        )
+    except DashboardError as refused:
+        return f"Error: could not check that session's config: {refused.error}"
+    target = resp.get("target", args["target"])
+    if resp.get("stale") is None:
+        unreadable = ", ".join(resp.get("unreadable") or [])
+        if not unreadable:
+            # No file named: the check itself failed or was overtaken by a
+            # reload, so there is no file to fix.
+            return redact(
+                f"`{target}`: unknown -- the config could not be checked right now; try again."
+            )
+        return redact(
+            f"`{target}`: unknown -- {unreadable} could not be read, so whether its "
+            "config changed cannot be told."
+        )
+    if not resp.get("stale"):
+        return redact(f"`{target}` runs on its current config.")
+    changed = ", ".join(resp.get("changed") or []) or "its config"
+    return redact(
+        f"`{target}` has a stale config ({changed} changed since it started). "
+        "It needs a Reload of that session to apply."
+    )
 
 
 def _run_chat_folder_tree(args: dict[str, Any], ctx: ToolContext) -> str:

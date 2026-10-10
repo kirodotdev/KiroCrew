@@ -37,6 +37,7 @@ import { slotChannelLabel, slotChannelNamespace } from '../utils/channelOrigin'
 import { toolStatusLabel, type ToolStatusDetail } from '../utils/toolStatusLabel'
 import { sessionRefBlockReason } from '../utils/sessionRefs'
 import { SearchInput, Input, Btn, IconButton, IconButtonGroup } from '../components/ui'
+import StaleConfigBadge from '../components/StaleConfigBadge'
 import SimpleSelect from '../components/SimpleSelect'
 import FolderConfigModal from '../components/FolderConfigModal'
 import ModelDropdownList from '../components/ModelDropdownList'
@@ -1638,7 +1639,7 @@ const SessionRow = memo(function SessionRow({ view, actions }: SessionRowProps) 
           <DropdownMenuTrigger asChild>
             <button type="button" className="mc-touch-hit text-muted/50 active:text-text p-1 cursor-pointer bg-transparent border-none" aria-label={i18nT('pages.chatSidebar.more_options')} onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}><MoreVertical size={14} /></button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="min-w-[160px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
+          <DropdownMenuContent align="end" className="min-w-[160px] max-w-[calc(100vw-1rem)]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
             <SessionActionsMenu variant="dropdown" {...rowMenuProps} onDuplicate={() => onDuplicate(rowKey)} />
           </DropdownMenuContent>
         </DropdownMenu>
@@ -1652,7 +1653,7 @@ const SessionRow = memo(function SessionRow({ view, actions }: SessionRowProps) 
           <DropdownMenuTrigger asChild>
             <IconButton title={i18nT('pages.chatSidebar.more')} aria-label={i18nT('pages.chatSidebar.more_options')} {...uiLocation('sessions.row-menu')} onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}><MoreVertical size={12} /></IconButton>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="min-w-[160px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
+          <DropdownMenuContent align="end" className="min-w-[160px] max-w-[calc(100vw-1rem)]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
             <SessionActionsMenu variant="dropdown" {...rowMenuProps} />
           </DropdownMenuContent>
         </DropdownMenu>
@@ -1663,7 +1664,7 @@ const SessionRow = memo(function SessionRow({ view, actions }: SessionRowProps) 
     // `langGen` (read with `void` above) because the labels are i18nT strings, which re-translate on a catalog load.
     ), [renamingHere, foreignRow, isMobile, isActive, rowMenuProps, onMenuCloseAutoFocus, onDuplicate, onCloseSession, closeReachLabel, rowKey, langGen])
     const rowContextMenuContent = useMemo(() => (void langGen, !foreignRow ? (
-      <ContextMenuContent className="min-w-[160px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
+      <ContextMenuContent className="min-w-[160px] max-w-[calc(100vw-1rem)]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
         <SessionActionsMenu variant="context" {...rowMenuProps} />
       </ContextMenuContent>
     ) : null), [foreignRow, onMenuCloseAutoFocus, rowMenuProps, langGen])
@@ -1947,6 +1948,11 @@ const SessionRow = memo(function SessionRow({ view, actions }: SessionRowProps) 
                 *  rare agent switch, and the repo's animation invariant is
                 *  framer-only (no new CSS @keyframes). */}
               <span key={agentName || 'empty'} title={agentDisplay || undefined} className={`truncate shrink-0 ${resolvedSlotTags.length > 0 || agentDiverged ? 'max-w-[50%]' : ''}`}>{agentDisplay || '\u00A0'}</span>
+              {/* Per-session metadata sits directly after the agent name, on the
+                *  meta line, rather than on a stacked line of its own (the
+                *  session-row-fixed-height rule). Renders nothing unless the
+                *  session's agent process runs on config changed since it started. */}
+              <StaleConfigBadge slot={s} compact />
               {/* Peer-OWNERSHIP badge: this session belongs to another machine.
                 *  The SAME component the `RemoteCrewChip` further down this row
                 *  uses, which says a LOCAL session dispatches its turns to a peer.

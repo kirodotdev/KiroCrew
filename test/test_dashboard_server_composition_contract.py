@@ -248,7 +248,8 @@ _BASE_OWNERS: dict[str, tuple[str, ...]] = {
 }
 
 #: The boot phases the two entrypoints delegate to, which the one-module file kept
-#: inline in their bodies, and the owner each lives in.
+#: inline in their bodies, plus the helpers added to the boot after the split, and
+#: the owner each lives in.
 _PHASE_OWNERS: dict[str, tuple[str, ...]] = {
     "app_platform": (
         "_reconcile_app_resources",
@@ -257,6 +258,7 @@ _PHASE_OWNERS: dict[str, tuple[str, ...]] = {
         "_warm_builtin_app_names",
         "_warm_materialized_agents",
     ),
+    "config_watch": ("_arm_config_stale_sweep", "_config_write_refresh", "_pool_spawn_config"),
     "crewmate_prune": ("_converge_channel_transcripts",),
     "diagnostics": ("_register_diag_recorder_shutdown", "_start_diag_recorder"),
     "heartbeat": (
@@ -563,7 +565,7 @@ def test_every_moved_name_is_one_object_in_its_owner() -> None:
     strays = [f"{o}:{n}" for o, n in placed if getattr(server, n) is not vars(_owner(o)).get(n)]
     assert strays == []
     names = [name for _, name in placed]
-    assert len(names) == len(set(names)) == 90 + 23
+    assert len(names) == len(set(names)) == 90 + 26
 
 
 def test_the_moved_names_keep_their_base_shapes() -> None:
@@ -1320,6 +1322,7 @@ _DASHBOARD_CHAIN = (
     ("middleware", "token_auth_middleware.<locals>."),
     ("sel_audit_middleware", "_install_dashboard_middlewares.<locals>."),
     ("slot_ownership_middleware", "slot_ownership_middleware"),
+    ("_config_write_refresh", "config_write_refresh_middleware.<locals>."),
     ("spa_fallback", "_install_dashboard_middlewares.<locals>."),
     ("_workflow_ready", "_register_workflow_lifecycle.<locals>."),
     ("_crewmate_prune_gate", "_register_crewmate_prune_gate.<locals>."),
@@ -1333,6 +1336,7 @@ _API_CHAIN = (
     ("middleware", "token_auth_middleware.<locals>."),
     ("sel_audit_middleware", "_install_api_middlewares.<locals>."),
     ("slot_ownership_middleware", "slot_ownership_middleware"),
+    ("_config_write_refresh", "config_write_refresh_middleware.<locals>."),
     ("_workflow_ready", "_register_workflow_lifecycle.<locals>."),
 )
 
@@ -1349,6 +1353,7 @@ _DASHBOARD_HOOKS = {
     ),
     "on_cleanup": (
         "_tunnel_shutdown",
+        "_config_stale_shutdown",
         "_status_sink_shutdown",
         "_hooks_shutdown",
         "_contrib_shutdown",
@@ -1375,6 +1380,7 @@ _DASHBOARD_HOOKS = {
 _API_HOOKS = {
     "on_startup": ("_stt_startup", "_own_host_warm"),
     "on_cleanup": (
+        "_config_stale_shutdown",
         "_kiro_prerequisite_shutdown",
         "_kas_login_shutdown",
         "_stt_shutdown",
@@ -1401,7 +1407,8 @@ _API_HOOKS = {
 _DASHBOARD_BOOT = tuple("""
     consume_managed_service_launch_environment set_pending_staged_hook
     set_pending_consumed_hook set_global_hook_store register_skill_read_observer
-    wire_session_subagent_probe _wire_tunnel_shutdown _wire_status_delta_sink
+    wire_session_subagent_probe _wire_tunnel_shutdown start_config_stale_sweep
+    subscribe_backend_changes _wire_status_delta_sink
     register_status_delta_sink _precompute_telemetry current_context
     _register_mcp_routes _deferred _deferred setup_spawn_resume_routes
     _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
@@ -1412,7 +1419,7 @@ _DASHBOARD_BOOT = tuple("""
     _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
-    _deferred _deferred
+    _deferred _deferred _deferred
     register_all subprocess_executor subprocess_executor subprocess_executor
     subprocess_executor subprocess_executor subprocess_executor _register_deploy_routes
     setup_knowledge_routes setup_weixin_routes setup_feedback_routes
@@ -1424,7 +1431,8 @@ _DASHBOARD_BOOT = tuple("""
     tailnet_effective_allowed_logins tailnet_identity_unknown degraded_config_files
     build_allowed_origins _make_host_validation_middleware _make_csrf_middleware
     _make_deny_audit_middleware resolve_dashboard_host build_host_canonical_redirect
-    warm_auth_singletons warm_sel_singleton make_route_latency_middleware
+    warm_auth_singletons warm_sel_singleton config_write_refresh_middleware
+    make_route_latency_middleware
     _mixed_internal_api_paths safe_context_call current_context token_auth_middleware
     _register_prevent_sleep_shutdown _register_listener_guard_shutdown
     _register_stt_hooks _register_own_host_warm _register_config_watch
@@ -1444,7 +1452,8 @@ _DASHBOARD_BOOT = tuple("""
     _dispatch_healthy_boot_marker
     """.split())
 _DASHBOARD_TEARDOWN = tuple("""
-    current_context unregister_status_delta_sink stop_hook_reconciler
+    current_context stop_config_stale_detection unregister_status_delta_sink
+    stop_hook_reconciler
     on_gateway_shutdown async_safe_context_call current_context
     """.split())
 _DASHBOARD_ELSEWHERE = tuple("""
@@ -1463,10 +1472,12 @@ _DASHBOARD_ELSEWHERE = tuple("""
     """.split())
 _API_BOOT = tuple("""
     set_global_hook_store register_skill_read_observer wire_session_subagent_probe
+    start_config_stale_sweep subscribe_backend_changes
     _precompute_telemetry current_context tailnet_effective_allowed_logins
     tailnet_identity_unknown degraded_config_files build_allowed_origins
     _make_host_validation_middleware _make_csrf_middleware _make_deny_audit_middleware
-    warm_auth_singletons warm_sel_singleton make_route_latency_middleware
+    warm_auth_singletons warm_sel_singleton config_write_refresh_middleware
+    make_route_latency_middleware
     _mixed_internal_api_paths safe_context_call current_context token_auth_middleware
     _register_mcp_routes _deferred _deferred setup_spawn_resume_routes
     _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
@@ -1477,7 +1488,7 @@ _API_BOOT = tuple("""
     _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
-    _deferred _deferred
+    _deferred _deferred _deferred
     _register_deploy_routes _register_stt_hooks _register_own_host_warm
     _register_config_watch _register_prevent_sleep_shutdown
     _register_listener_guard_shutdown _register_browser_install_cleanup
@@ -1491,7 +1502,7 @@ _API_BOOT = tuple("""
     _kick_local_decision_model _kick_owner_only_sweep _arm_prevent_sleep_poll
     record_boot_to_ready _dispatch_healthy_boot_marker
     """.split())
-_API_TEARDOWN: tuple[str, ...] = ()
+_API_TEARDOWN: tuple[str, ...] = ("stop_config_stale_detection",)
 _API_ELSEWHERE = tuple("""
     S:_initialize_workflow_service S:_stt_idle_sweep S:_stt_startup_prewarm
     T:_live_sibling_port T:_write_instance_credentials T:_write_secret_file
@@ -1691,8 +1702,8 @@ def _routes(app: web.Application) -> list[tuple[str, str, str]]:
 #: SHA-256 of the MCP route table's ``"<method> <path> <handler>"`` rows in
 #: registration order, and their count. The table is shared by both entrypoints, so a
 #: route added to it on purpose updates these with it.
-_MCP_TABLE_ROWS = 263
-_MCP_TABLE_DIGEST = "e5288be5d1c4ffa54e5acad402079508f90da02e2b45709ef2759245dbc4e3a8"
+_MCP_TABLE_ROWS = 265
+_MCP_TABLE_DIGEST = "4a34f3431935bc3a33f9fd26e5d2b94b3cee44cfc487815275b90da87cede039"
 
 
 def test_the_mcp_route_table_keeps_its_rows_and_order() -> None:
@@ -2266,6 +2277,7 @@ def _dashboard_chain(**overrides: Any) -> web.Application:
         "tailnet_host": "",
         "configured_host": "127.0.0.1",
         "dashboard_url": "",
+        "config_write_refresh": _through,
     }
     server._install_dashboard_middlewares(app, **(kwargs | overrides))
     return app
@@ -2355,6 +2367,7 @@ async def test_the_headless_audit_records_every_api_method(
         port=25300,
         local_only=True,
         tailnet_trust=None,
+        config_write_refresh=_through,
     )
     log = _sel_double(monkeypatch, f"{_FACADE}.sel")
     audit = _layer(app, "sel_audit_middleware")

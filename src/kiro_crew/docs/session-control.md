@@ -5,12 +5,13 @@ change its model, reload its agent process, and take another one under itself in
 the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 31 of its tools, written for the agent that is about to use them.
+for all 32 of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
 
 - **Session control** — `session_create`, `session_fork`, `session_send`,
-  `session_read_message`, `session_summary`, `session_stop`, `session_end_wait`, `session_retry`,
+  `session_read_message`, `session_summary`, `session_config_status`, `session_stop`,
+  `session_end_wait`, `session_retry`,
   `session_set_model`, `session_reload`, `session_close`, `session_revive`, `session_broadcast`,
   `session_status`, `session_adopt`, `session_release`. These reach another session.
 - **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`,
@@ -345,6 +346,31 @@ Each goal carries the panel's state word (`in-progress`, `needs-you`, `done`,
 `dropped`). A completed goal reads `needs-you` only when its verification
 failed (`verified=false`); a completed goal never checked either way reads
 `done`.
+
+### `session_config_status`
+
+| Argument | Required | Meaning |
+|---|---|---|
+| `target` | yes | Session key, or its exact title |
+
+Reports whether the target's agent process has a stale config: an MCP
+server, agent spec or `mcp.json` setting it runs on that changed after the process started, which
+it does not see until the session is reloaded. The answer is the one the
+dashboard's stale-config badge shows, and the call refreshes that badge:
+
+```
+`chat-7` has a stale config (~/.kiro/agents/kirocrew.json changed since it started). It needs a Reload of that session to apply.
+```
+
+`stale` is `null` when a config file exists but cannot be read, and the reply
+names it. An MCP edit a hot-reloading kiro-cli already applied live is not
+stale. File names are display-safe: relative to the project, or under `~`.
+
+Read-only: nothing is relaunched. Applying the change is the **Reload session**
+action in the target's session menu. Authorized as `session_summary` is,
+except that your own chat is a valid target (checking whether your own MCP
+edit reached you is the usual reason to call it); the check runs again after the config is read, so a target replaced in
+between is refused (`target_replaced`).
 
 ### `session_adopt` and `session_release`
 
@@ -738,7 +764,7 @@ gateway-issued key counts. Refusals you should expect, by code:
 | `target_not_found` | No open session matches that key or title. A closed tab is out of scope for every verb except session_revive, whose target is precisely an archived session |
 | `target_already_live` | session_revive only: the session is open already. The message carries its live key — address it directly |
 | `ambiguous_target` | The string matches more than one session across the three forms below. Address it by its session key |
-| `self_target` | A session cannot control itself. session_close and session_release are the exceptions: both accept the caller as the target |
+| `self_target` | A session cannot control itself. session_close, session_release and session_config_status are the exceptions: all three accept the caller as the target |
 | `not_creator` | The caller is fenced to sessions it created itself (a crew member's DM slot, a scheduled run, and anything either of them created) |
 | `workspace_mismatch` | Peers must be in the same workspace — that is the memory boundary |
 | `ephemeral_target` | Incognito and temporary sessions are not addressable |

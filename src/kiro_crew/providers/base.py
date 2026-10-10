@@ -10,7 +10,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Callable
 from functools import cached_property
-from typing import TYPE_CHECKING, AsyncContextManager, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, AsyncContextManager, Literal, Protocol, runtime_checkable
 
 # Event kinds — re-exported from the single source of truth
 from kiro_crew.acp.types import (  # noqa: F401
@@ -753,6 +753,26 @@ class LLMProvider(ABC):
         Consumers must act only on a literal ``True``, so a mocked provider's
         attribute never reads as a skip."""
         return False
+
+    @property
+    def pool_spawn_config(self) -> Any:
+        """The config fingerprint taken before this process started, by its starter.
+
+        ``(SpawnInputs, ConfigFingerprint)``, attached by
+        ``session_pool._fill_warm_pool`` through the gateway's
+        ``spawn_config_reader``, or by a hard stop's eager respawn and a
+        reset's successor through its ``respawn_config_reader``, so the chat
+        the process serves compares against what it read at spawn rather than
+        at a later claim or turn. Default None -- no receipt, for every
+        provider no such starter stamped (harness-parity H14): the chat then
+        records its own fingerprint, which errs only toward a missed
+        difference. Declared here rather than probed off the instance.
+        """
+        return getattr(self, "_pool_spawn_config", None)
+
+    @pool_spawn_config.setter
+    def pool_spawn_config(self, value: Any) -> None:
+        self._pool_spawn_config = value
 
     def available_models(self) -> list[dict[str, str]]:
         """Backend-advertised models (``[{modelId, name, ...}]``) for the model
