@@ -210,6 +210,7 @@
       "host-config.js",
       "open-path.js",
       "download-handler.js",
+      "download-expectations.js",
       "store-rename.js",
       "upgrade-cache.js",
       "remote-token.js",

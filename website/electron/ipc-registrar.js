@@ -18,6 +18,7 @@ const { makeUpdaterLogger } = require("./update-logger");
 const { detectWsl2 } = require("./wsl-detection");
 const { crashNoticeSummary } = require("./crash-collector");
 const { PREFIX: PANE_ASSETS_PREFIX, purgeableOrigin } = require("./pane-asset-journal");
+const { safeFilename } = require("./download-handler");
 
 /**
  * Register the Electron shell's renderer bridges without taking ownership of
@@ -40,6 +41,10 @@ function createIpcRegistrar({
   // companion being wired.
   closeCrewCompanionForUpdate = () => {},
   reopenCrewCompanionAfterUpdate = () => {},
+  // Shared single-use registry of downloads the renderer explicitly announced,
+  // consumed by the will-download handler (see download-expectations.js). When
+  // absent the download:expect channel is simply not registered.
+  downloadExpectations = null,
 } = {}) {
   if (!electron) throw new Error("createIpcRegistrar: electron is required");
   if (!store) throw new Error("createIpcRegistrar: store is required");
@@ -113,6 +118,25 @@ function createIpcRegistrar({
       windows.menu.execute(event.sender, id, index));
     ipcMain.on("dev-mode-changed", (_event, enabled) =>
       windows.menu.setDevMode(enabled));
+
+    // The export path announces each download it is about to start ("expect one
+    // download named <name>") so the will-download handler auto-saves ONLY
+    // downloads the app explicitly asked for. The expectation is keyed by the
+    // ANNOUNCING FRAME's own origin (event.sender), not a renderer-supplied
+    // value, so one origin cannot pre-authorise another's download; the leaf
+    // name is sanitised with the same safeFilename the handler uses so both
+    // sides key on the same value.
+    if (downloadExpectations && typeof downloadExpectations.register === "function") {
+      ipcMain.on("download:expect", (event, filename) => {
+        let origin = "";
+        try {
+          origin = new URL(event.sender.getURL()).origin;
+        } catch {
+          origin = "";
+        }
+        downloadExpectations.register({ origin, filename: safeFilename(filename) });
+      });
+    }
 
     // The shortcuts UI reports what is ACTUALLY bound. Registration may have
     // fallen back to the default or degraded to no shortcut at all.
