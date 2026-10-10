@@ -888,15 +888,15 @@ def _is_self_kill(text_lower: str) -> bool:
             # out of the match (``pkill other; echo kirocrew`` is not a self-kill).
             depth = 0
             for arg in tokens[i + 1 :]:
-                # Search the raw arg AND its normalized form.  Normalizing alone is
-                # not enough: a pkill pattern is an ERE, so a ``>`` inside it is part
-                # of the TARGET (``pkill -f '>kirocrew'``) and stripping it as a
-                # redirect would discard the name.  Raw alone is not enough either --
-                # an empty substitution (``kiro$()crew``) only reads as the name once
-                # removed.  Either match is a hit.
-                if _SELF_NAME_RE.search(_debracket(arg)) or _SELF_NAME_RE.search(
-                    _shell_normalizer._normalize_operand(arg)
-                ):
+                # Search the raw arg, its normalized form, and its resolved-word view.
+                # Normalizing alone is not enough: a pkill pattern is an ERE, so a ``>``
+                # or ``|`` in it is part of the TARGET (``'>kirocrew'``, ``zz|kirocrew``)
+                # and the operand view cuts there.  Raw alone misses an empty
+                # substitution or a default (``kiro$()crew``, ``zz|kiro${x:-crew}``), which
+                # the construct-only ``_resolved_word_view`` resolves.  Any hit counts.
+                n = _shell_normalizer
+                views = (_debracket(arg), n._normalize_operand(arg), n._resolved_word_view(arg))
+                if any(_SELF_NAME_RE.search(view) for view in views):
                     return True
                 depth += _substitution_depth_delta(arg)
                 if depth <= 0 and _ends_argv(arg):
@@ -961,7 +961,7 @@ def _is_self_kill(text_lower: str) -> bool:
         # a name needing TWO transforms sits in the seam between
         # single-transform searches), while the bare search reaches a name the
         # transform DESTROYS (``${PATH/usr/|'kiro''crew'|zz-}``; the ``pkill``
-        # leg's sibling seam is tracked in the module spec).  See the helper's docstring for
+        # leg searches the same view per argument).  See the helper's docstring for
         # why the transform is not ``_normalize_operand``.
         for body in _bare_kill_raw_bodies(source):
             if _SELF_NAME_RE.search(_debracket(body)) or _SELF_NAME_RE.search(
