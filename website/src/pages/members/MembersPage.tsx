@@ -137,6 +137,7 @@ import { createPortal } from 'react-dom'
 import { useCrewmateThreadsFlag } from '../../hooks/useCrewmateThreadsFlag'
 import { CrewDashboardFrame } from './CrewWebview'
 import CrewDashboardTab from './CrewDashboardTab'
+import { useAppliedDashboard } from './useAppliedDashboard'
 import { mergePaneDraft } from '../../utils/chatPaneDrafts'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -2630,6 +2631,9 @@ export default function MembersPage() {
 
   const activeSlug = active?.slug ?? ''
   const activeMemberName = active?.name ?? ''
+  // Read only with the preview OFF: on, the tab is the dynamic dashboard regardless.
+  const dashboardAdopted = useAppliedDashboard(activeSlug, activeMemberName, !dashboardPreview)
+  const showDynamicDashboard = dashboardPreview || dashboardAdopted
   // What a schedule created from the Schedules tab must carry in its `agent` field --
   // which is the provider template only for a crewmate whose identity the server will
   // KEEP. `wakesCrew` matches a job on `member_id` when there is one, and otherwise
@@ -4837,6 +4841,12 @@ export default function MembersPage() {
           // The entry itself is unconditional either way. The TAB is a standing one;
           // only what fills it moves with the flag.
           //
+          // A crewmate whose page somebody ADOPTED (`dashboard_apply` or a rollback,
+          // instance version above 0) shows that page with the preview off too: the
+          // person chose it explicitly, and the published view in its place made the
+          // choice look like it did nothing. A crewmate still on the default page keeps
+          // the published view, so the preview stays off by default for everyone else.
+          //
           // No card, Contained bar or Expand around either (not the CrewWebview
           // drawer) and no Command Center above it: each read as one more container
           // stacked over the one page that matters.
@@ -4850,7 +4860,7 @@ export default function MembersPage() {
                 ? <p role="status" className="px-4 pt-3 text-sm text-muted">{t('pages.membersPage.opening_thread')}</p>
                 : null}
               {activeSlug && activeMemberName && (
-                dashboardPreview ? (
+                showDynamicDashboard ? (
                   // Keyed per crewmate so the tab remounts on a switch instead of
                   // opening the next crewmate on the page held for this one.
                   <CrewDashboardTab
