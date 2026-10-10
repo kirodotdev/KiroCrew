@@ -535,7 +535,7 @@ describe('DevFleetPage pod actions', () => {
   it('opens the pod in a severed tab once the URL comes back', async () => {
     const fake = stubWindowOpen()
     installFetch(fleetOf(MAIN_ROW, readyRow({ running: true, health: 200 })), (u, opts) => {
-      if (u.includes('/pod/') && isPost(opts)) return res({ ok: true, url: 'https://pod.example.test/?k=1' })
+      if (u === '/api/apps/dev-fleet/pod-token' && isPost(opts)) return res({ ok: true, url: 'https://pod.example.test/?k=1' })
       return null
     })
     renderPage()
@@ -549,7 +549,7 @@ describe('DevFleetPage pod actions', () => {
   it('closes the blank tab and reports the error when the mint fails', async () => {
     const fake = stubWindowOpen()
     installFetch(fleetOf(MAIN_ROW, readyRow({ running: true, health: 200 })), (u, opts) => {
-      if (u.includes('/pod/') && isPost(opts)) return res({ ok: false, error: 'mint refused' })
+      if (u === '/api/apps/dev-fleet/pod-token' && isPost(opts)) return res({ ok: false, error: 'mint refused' })
       return null
     })
     renderPage()
@@ -557,6 +557,27 @@ describe('DevFleetPage pod actions', () => {
     fireEvent.click(screen.getByText('Open'))
     await waitFor(() => expect(screen.getByText('mint refused')).toBeInTheDocument())
     expect(fake.close).toHaveBeenCalled()
+  })
+
+  it('mints through the gateway and closes the blank tab when it refuses with a non-2xx', async () => {
+    // The pod refuses a mint from the sandboxed backend (member_owner_token_refused),
+    // so the token comes from the gateway's owner-only route. An auth refusal there
+    // throws rather than answering in-band, and must not strand the blank tab.
+    const fake = stubWindowOpen()
+    const posted: string[] = []
+    installFetch(fleetOf(MAIN_ROW, readyRow({ running: true, health: 200 })), (u, opts) => {
+      if (u.includes('pod') && u.includes('token') && isPost(opts)) {
+        posted.push(u)
+        return res({ ok: false, error: 'owner only' }, 403)
+      }
+      return null
+    })
+    renderPage()
+    await waitForRow('wt-a')
+    fireEvent.click(screen.getByText('Open'))
+    await waitFor(() => expect(fake.close).toHaveBeenCalled())
+    expect(posted).toEqual(['/api/apps/dev-fleet/pod-token'])
+    expect(fake.location.href).toBe('')
   })
 
   it('spins a pod up from the row menu and confirms it came up', async () => {
@@ -626,7 +647,7 @@ describe('DevFleetPage pod actions', () => {
     // the URL has to be opened on its own, still without an opener.
     const openSpy = vi.spyOn(window, 'open').mockReturnValue(null)
     installFetch(fleetOf(MAIN_ROW, readyRow({ running: true, health: 200 })), (u, opts) => {
-      if (u.includes('/pod/') && isPost(opts)) return res({ ok: true, url: 'https://pod.example.test/late' })
+      if (u === '/api/apps/dev-fleet/pod-token' && isPost(opts)) return res({ ok: true, url: 'https://pod.example.test/late' })
       return null
     })
     renderPage()

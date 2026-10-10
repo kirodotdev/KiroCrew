@@ -87,6 +87,16 @@ def install_pointer_provider(provider: PointerProvider | None) -> None:
     _POINTER_PROVIDER = provider
 
 
+def running_in_backend() -> bool:
+    """True in the sandboxed Dev Fleet backend, False in the gateway.
+
+    ``server.main()`` installs a pointer provider unconditionally, so its presence is
+    this process's identity — the same test :func:`_make_live` refuses on. Callers use
+    it to keep host-namespace work (a pod token mint) out of the sandbox.
+    """
+    return _POINTER_PROVIDER is not None
+
+
 async def pointer_state(*, fresh: bool = False) -> PointerState:
     """The pointer state this process is entitled to: local in the gateway, brokered
     in the backend. ``fresh`` bypasses display caches on both sides.

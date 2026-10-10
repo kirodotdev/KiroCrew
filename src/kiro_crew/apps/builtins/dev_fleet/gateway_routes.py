@@ -28,6 +28,11 @@ sandboxed backend is reverse-proxied at ``/apps/dev-fleet/api/``):
 ``POST restart-gateway``
     Same gate. It shares the ``_MAKE_LIVE_LOCK`` / ``_MAKE_LIVE_COMMITTED`` latch
     with the cutover, so the two must live in one process.
+``POST pod-token``
+    Mint a pod's 2h dashboard token for the fleet's Open button. Same owner-only
+    gate. It runs here for a different reason than the pointer: the pod certifies
+    only a caller in the gateway's own namespaces, so a mint from the sandboxed
+    backend is always refused (``member_owner_token_refused``).
 ``GET live-target``
     The pointer-state read broker: ``{live, staged, staged_cancel_available}`` as
     :class:`live.PointerState`. Admits ONLY Dev Fleet's own app token — this is how
@@ -154,8 +159,7 @@ def _require_owner_human(operation: str) -> Callable[[_Handler], _Handler]:
                 return _deny(
                     request,
                     operation,
-                    "the live-target cutover is a dashboard-owner action; an app "
-                    "token cannot perform it",
+                    "this is a dashboard-owner action; an app token cannot perform it",
                     status=403,
                 )
             refused = await require_owner_dashboard_request(request, operation)
@@ -393,6 +397,64 @@ async def handle_make_live(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+#: Same bound ``agent_pod_api`` applies to a pod name from a caller.
+_MAX_POD_NAME_LEN = 200
+
+
+@_require_enabled
+@_require_owner_human("dev_fleet_pod_token")
+async def handle_pod_token(request: web.Request) -> web.Response:
+    """POST /api/apps/dev-fleet/pod-token — body ``{name}``; answers ``{ok, token, url}``.
+
+    Mints a pod's 2h dashboard token for the fleet row's Open button. It runs here
+    because the pod's ``/api/token/local`` certifies only a caller sharing the pod
+    gateway's user + mount namespaces, and the sandboxed backend does not, so a mint
+    from there is always refused (``member_owner_token_refused``).
+
+    OWNER-ONLY and refused for every app principal, Dev Fleet's own included: that
+    token is readable by every build child in the backend's namespace, and a pod
+    runs outside the sandbox, so a backend-token mint would hand a build child a
+    credential for code it cannot otherwise reach.
+    """
+    body, err = await read_bounded_json(request)
+    if err is not None:
+        return err
+    assert body is not None
+    name = body.get("name")
+    if not isinstance(name, str) or not name or "\x00" in name or len(name) > _MAX_POD_NAME_LEN:
+        return web.json_response(
+            {
+                "ok": False,
+                "code": "invalid_name",
+                "error": f"'name' must be a non-empty string of at most "
+                f"{_MAX_POD_NAME_LEN} characters without NUL bytes",
+            },
+            status=400,
+        )
+    refused = await _ensure_repo()
+    if refused is not None:
+        return refused
+    # Imported on first use, as ``agent_pod_api`` does: ``worktree_ops`` pulls in the
+    # frontend build, dependency sync and sandbox layers, which every gateway would
+    # otherwise pay for at startup for an app that is off by default.
+    from kiro_crew.apps.builtins.dev_fleet import worktree_ops
+
+    try:
+        result = await worktree_ops._pod_token(name)
+    except repository.RepoUnavailable as exc:
+        return web.json_response(
+            {
+                "ok": False,
+                "code": "repo_not_configured",
+                "error": f"Dev Fleet main checkout unavailable: {runtime._redact(str(exc))}",
+            },
+            status=409,
+        )
+    # ``_audit`` records the outcome and the redacted error only, never the token.
+    _audit(request, "dev_fleet_pod_token", result, target=name)
+    return web.json_response(result)
+
+
 def _audit(request: web.Request, operation: str, result: dict[str, Any], *, target: str) -> None:
     """One SEL record per mutation, mirroring the backend's ``_audited`` decorator."""
     ok = bool(result.get("ok"))
@@ -438,6 +500,7 @@ def register_routes(app: web.Application) -> None:
     app.router.add_delete(f"{API_PREFIX}/live-target/removal-lease", handle_removal_lease_release)
     app.router.add_post(f"{API_PREFIX}/restart-gateway", handle_restart_gateway)
     app.router.add_post(f"{API_PREFIX}/make-live", handle_make_live)
+    app.router.add_post(f"{API_PREFIX}/pod-token", handle_pod_token)
 
 
 __all__ = (
@@ -445,6 +508,7 @@ __all__ = (
     "APP_NAME",
     "handle_live_target",
     "handle_make_live",
+    "handle_pod_token",
     "handle_removal_lease_acquire",
     "handle_removal_lease_release",
     "handle_removal_lease_renew",

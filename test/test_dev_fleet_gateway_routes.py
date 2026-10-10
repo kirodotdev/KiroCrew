@@ -49,7 +49,7 @@ class TestRegistration:
         expected = {(r.method, r.resource.canonical) for r in direct.router.routes()}
         assert expected <= mounted, sorted(expected - mounted)
 
-    def test_register_routes_mounts_exactly_the_six(self) -> None:
+    def test_register_routes_mounts_exactly_the_seven(self) -> None:
         app = web.Application()
         gateway_routes.register_routes(app)
         mounted = sorted(
@@ -60,6 +60,7 @@ class TestRegistration:
             ("GET", "/api/apps/dev-fleet/live-target"),
             ("POST", "/api/apps/dev-fleet/live-target/removal-lease"),
             ("POST", "/api/apps/dev-fleet/make-live"),
+            ("POST", "/api/apps/dev-fleet/pod-token"),
             ("POST", "/api/apps/dev-fleet/restart-gateway"),
             ("PUT", "/api/apps/dev-fleet/live-target/removal-lease"),
         ]
@@ -335,6 +336,104 @@ class TestTheWriteRoutesAreOwnerOnly:
             )
             assert r.status == 400
             assert "make_live" not in recorded
+        finally:
+            await client.close()
+
+
+class TestThePodTokenRoute:
+    """``POST pod-token`` mints in the gateway, for the dashboard owner only.
+
+    The pod's ``/api/token/local`` refuses a caller outside the gateway's own
+    namespaces, so the sandboxed backend can never mint; and the backend's app
+    token is readable by its build children, so it must buy no mint here either.
+    """
+
+    @pytest.fixture
+    def minted(self, monkeypatch, enabled, recorded):
+        from kiro_crew.apps.builtins.dev_fleet import worktree_ops
+
+        calls: list[str] = []
+
+        async def _pod_token(name):
+            calls.append(name)
+            return {"ok": True, "token": "SECRET", "url": "http://127.0.0.1:9/?token=SECRET"}
+
+        monkeypatch.setattr(worktree_ops, "_pod_token", _pod_token)
+        return calls
+
+    async def test_owner_human_gets_the_token(self, minted, recorded) -> None:
+        client = await _client(_make_app(principal_app=""))
+        try:
+            resp = await client.post("/api/apps/dev-fleet/pod-token", json={"name": "feat"})
+            assert resp.status == 200
+            body = await resp.json()
+            assert body["ok"] is True and body["url"].endswith("?token=SECRET")
+            assert minted == ["feat"]
+            assert recorded["discovered"] is True, "the gateway must discover the repo first"
+        finally:
+            await client.close()
+
+    @pytest.mark.parametrize("principal", ["dev-fleet", "md-notebook"])
+    async def test_any_app_token_is_refused(self, minted, principal) -> None:
+        client = await _client(_make_app(principal_app=principal))
+        try:
+            resp = await client.post("/api/apps/dev-fleet/pod-token", json={"name": "feat"})
+            assert resp.status == 403
+            assert minted == []
+        finally:
+            await client.close()
+
+    async def test_a_non_owner_human_is_refused(self, minted) -> None:
+        client = await _client(_make_app(principal_app="", user="guest", owner_id="owner"))
+        try:
+            resp = await client.post("/api/apps/dev-fleet/pod-token", json={"name": "feat"})
+            assert resp.status in (401, 403)
+            assert minted == []
+        finally:
+            await client.close()
+
+    @pytest.mark.parametrize("bad", ["", "a\x00b", 7, "x" * 201])
+    async def test_a_malformed_name_is_refused_before_the_mint(self, minted, bad) -> None:
+        client = await _client(_make_app(principal_app=""))
+        try:
+            resp = await client.post("/api/apps/dev-fleet/pod-token", json={"name": bad})
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "invalid_name"
+            assert minted == []
+        finally:
+            await client.close()
+
+    async def test_the_audit_row_never_carries_the_token(self, minted, monkeypatch) -> None:
+        rows: list[dict] = []
+
+        class _Sel:
+            def log_api_access(self, **kw):
+                rows.append(kw)
+
+        monkeypatch.setattr(gateway_routes, "sel", lambda: _Sel())
+        client = await _client(_make_app(principal_app=""))
+        try:
+            resp = await client.post("/api/apps/dev-fleet/pod-token", json={"name": "feat"})
+            assert resp.status == 200
+        finally:
+            await client.close()
+        assert [(r["operation"], r["outcome"]) for r in rows] == [
+            ("dev_fleet_pod_token", "success")
+        ]
+        assert "SECRET" not in json.dumps(rows)
+
+    async def test_an_unconfigured_checkout_is_a_409(self, enabled, recorded, monkeypatch) -> None:
+        from kiro_crew.apps.builtins.dev_fleet import worktree_ops
+
+        async def _raise(name):
+            raise gateway_routes.repository.RepoNotConfigured("no checkout configured")
+
+        monkeypatch.setattr(worktree_ops, "_pod_token", _raise)
+        client = await _client(_make_app(principal_app=""))
+        try:
+            resp = await client.post("/api/apps/dev-fleet/pod-token", json={"name": "feat"})
+            assert resp.status == 409
+            assert (await resp.json())["code"] == "repo_not_configured"
         finally:
             await client.close()
 

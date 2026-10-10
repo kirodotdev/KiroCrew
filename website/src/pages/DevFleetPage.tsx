@@ -1324,7 +1324,12 @@ export default function DevFleetPage() {
         // test and must not be able to navigate the live dashboard tab.
         const w = window.open('about:blank', '_blank')
         if (w) w.opener = null
-        const r = await api.post<{ ok?: boolean; url?: string; error?: string }>('/pod/token', { name })
+        // Minted by the GATEWAY: the pod refuses a mint from the sandboxed
+        // backend (member_owner_token_refused). An auth refusal there is a
+        // non-2xx that throws, so close the blank tab before reporting it.
+        let r: { ok?: boolean; url?: string; error?: string } | undefined
+        try { r = await api.postGateway<{ ok?: boolean; url?: string; error?: string }>('/pod-token', { name }) }
+        catch (e: unknown) { w?.close(); throw e }
         if (r?.ok && r.url) { if (w) w.location.href = r.url; else window.open(r.url, '_blank', 'noopener') }
         else { w?.close(); notify(r?.error || i18nT('pages.devFleetPage.token_mint_failed'), { type: 'error' }) }
       }

@@ -298,6 +298,65 @@ async def test_pod_up_withholds_token_when_ownership_is_unproven(monkeypatch, po
 
 
 # --------------------------------------------------------------------------- #
+# The dashboard's buttons run these helpers in the SANDBOXED backend, which the
+# pod refuses exactly as it refuses a member child. There they must not mint.
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def in_backend(monkeypatch):
+    """Mark this process as the backend the way ``server.main`` does."""
+
+    async def _provider(fresh):  # pragma: no cover - never read by these tests
+        raise AssertionError("pointer state is not read here")
+
+    monkeypatch.setattr(worktree_ops.live, "_POINTER_PROVIDER", _provider)
+
+
+@pytest.mark.asyncio
+async def test_pod_up_in_the_backend_boots_no_token_and_skips_the_mint(
+    monkeypatch, pod_up_stubs, in_backend
+):
+    """The Up button's path: the pod boots, and no refused mint turns it into a failure.
+
+    Before the fix the backend minted after boot, the pod answered 403
+    member_owner_token_refused, and the button reported a pod that was actually up
+    as failed. The token now comes from the gateway's owner-only pod-token route.
+    """
+    run_cmd = AsyncMock(return_value=(0, '{"port": 7100, "token": ""}', ""))
+    monkeypatch.setattr(worktree_ops.runtime, "_run_cmd", run_cmd)
+    monkeypatch.setattr(worktree_ops.runtime.rt, "active_names", lambda cfg: {"kc-wt-x"})
+
+    def _no_backend_mint(*args):
+        pytest.fail("the sandboxed backend must never mint a pod token")
+
+    monkeypatch.setattr(worktree_ops.runtime.rt, "mint_token", _no_backend_mint)
+
+    result = await worktree_ops._pod_up("kc-wt-x")
+
+    assert result == {"ok": True, "port": 7100, "token": ""}
+    assert "--no-token" in run_cmd.await_args.args[0]
+    pod_up_stubs.audit.log_api_access.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_pod_token_in_the_backend_refuses_without_minting(monkeypatch, in_backend):
+    """A stale page still calling the backend's /api/pod/token gets a named refusal."""
+
+    def _no_backend_mint(*args):
+        pytest.fail("the sandboxed backend must never mint a pod token")
+
+    monkeypatch.setattr(worktree_ops.runtime.rt, "mint_token", _no_backend_mint)
+    guard = AsyncMock(return_value=None)
+    monkeypatch.setattr(worktree_ops, "_pod_checkout_guard", guard)
+
+    result = await worktree_ops._pod_token("kc-wt-x")
+
+    assert result["ok"] is False
+    assert result["code"] == "wrong_process"
+    assert "/api/apps/dev-fleet/pod-token" in result["error"]
+    guard.assert_not_awaited()
+
+
+# --------------------------------------------------------------------------- #
 # The `pod up --no-token` CLI switch the gateway relies on.
 # --------------------------------------------------------------------------- #
 class _CfgStub:

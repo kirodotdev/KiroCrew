@@ -2,12 +2,12 @@
  * Dev Fleet API client — thin fetch wrapper for the app's two server namespaces.
  *
  * Most routes are served by the SPAWNED backend, reverse-proxied at
- * `/apps/dev-fleet/api/...`. Two are served by the gateway process itself under
- * `/api/apps/dev-fleet/...` — `make-live` and `restart-gateway` — because they
- * touch the live-target pointer (or its cutover latch), which is masked from the
- * sandboxed backend and everything it spawns. `postGateway` targets that
- * namespace; the request body and response shape are unchanged from when the
- * backend served them.
+ * `/apps/dev-fleet/api/...`. Three are served by the gateway process itself under
+ * `/api/apps/dev-fleet/...`. `make-live` and `restart-gateway` touch the
+ * live-target pointer (or its cutover latch), which is masked from the
+ * sandboxed backend and everything it spawns. `pod-token` mints a pod's
+ * dashboard token, which the pod refuses to issue to the sandboxed backend.
+ * `postGateway` targets that namespace.
  *
  * Failures are raised as the dashboard's own `ApiError` (from `api/client`),
  * which already carries the status and the raw body: this module only needs the
