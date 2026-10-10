@@ -3933,11 +3933,18 @@ def _outline_step(state: dict[str, Any], entry: Entry) -> None:
         # Rule 1: a cut reply is skipped and does NOT clear the standing draft.
         if data.get("interrupted") is True:
             return
-        # Rule 2: the newest uncut reply wins.
-        draft = _outline_preview(data.get("text"), OUTLINE_REPLY_CHARS)
-        if not draft:
-            return
-        state["draft"] = draft
+        # Rule 2: the newest uncut reply wins, INCLUDING one with no readable body.
+        #
+        # An empty preview is not the same fact as a cut reply, and only rule 1 may
+        # keep a draft standing. A body too long for one line is stored as
+        # ``message/chunk`` entries and its citing ``message/sent`` carries ``chunks``
+        # and ``chars`` and no ``text`` at all -- so a turn that narrates before a tool
+        # call ("let me check that") and then answers at length has a LAST reply this
+        # fold cannot read. Holding the narration there would publish an intermediate
+        # line as the thing the turn settled on, which no reader can tell from a real
+        # answer. Empty is the honest preview, and it is what this fold's scope says:
+        # it does not read ``message/chunk``, so an overflow body has none here.
+        state["draft"] = _outline_preview(data.get("text"), OUTLINE_REPLY_CHARS)
         state["draft_turn"] = turn
         return
 
@@ -3973,6 +3980,15 @@ def _outline_step(state: dict[str, Any], entry: Entry) -> None:
         # only because rows are anchored on the ordinal; see the section note.
         row["actor"] = _as_str(data.get("actor"))
         row["refused"] = _as_str(data.get("reason"))
+        # RETRACTED HERE TOO, and not only at ``turn/started``. A refusal is written
+        # WITHOUT a start -- the gates run between the two, which is the same ordering
+        # the ordinal anchor exists for -- so a rerun that is refused never reaches the
+        # retraction a start carries. Regenerate removes a settled answer and runs the
+        # turn again; Stop while it is still preparing lands exactly here, and leaving
+        # the committed reply would show the answer that was REMOVED beside the reason
+        # the rerun produced none. "This ordinal produced nothing" has to retract both
+        # the committed reply and any standing draft, or it is only half said.
+        row["reply"] = ""
         state["draft"] = ""
         state["draft_turn"] = 0
         return

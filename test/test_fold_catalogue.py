@@ -125,25 +125,37 @@ class TestTheCatalogueCoversTheKernel:
 
 
 class TestANullFieldIsNeverGivenAGuessedType:
-    """A null field on an empty fold reports ``unknown``, and nothing cleverer.
+    """A null field's type is DECLARED or ``unknown``. It is never guessed.
 
-    The clever version -- look the field NAME up in the entry-type registry -- shipped
-    first and was wrong: a rendered name is owned by no one entry type, so ``status``
-    reported ``previous: dict`` and ``turn: int``. A confident wrong row is worse than a
-    missing one, because a reader cannot tell which rows to trust. These tests redden if
-    any inference comes back.
+    The guess -- look the field NAME up in the entry-type registry -- shipped first and
+    was wrong: a rendered name is owned by no one entry type, so ``status`` reported
+    ``previous: dict`` and ``turn: int``. A confident wrong row is worse than a missing
+    one, because a reader cannot tell which rows to trust.
+
+    What replaced the guess is not silence. ``dashboard_types._NULLABLE`` DECLARES the
+    type of a null leaf where one is declarable, and a declaration is checked in both
+    directions by ``test_dashboard_types``: the path must be one the fold renders null,
+    and the type must be the one the fold writes there. So the rule here is the stricter
+    one -- a null row carries exactly the declared type, or ``unknown``, and nothing in
+    between.
     """
 
-    def test_every_optional_row_in_the_committed_catalogue_is_unknown(
-        self, committed: dict[str, Any]
-    ) -> None:
-        guessed = [
-            f"{fold['name']}.{row['name']}={row['type']}"
-            for fold in committed["folds"]
-            for row in fold["fields"]
-            if row["optional"] is True and row["type"] != "unknown"
-        ]
-        assert guessed == [], f"a type was inferred for a null field: {guessed}"
+    def test_every_optional_row_is_declared_or_unknown(self, committed: dict[str, Any]) -> None:
+        from kiro_crew import dashboard_types as dt
+
+        guessed: list[str] = []
+        for fold in committed["folds"]:
+            for row in fold["fields"]:
+                if row["optional"] is not True:
+                    continue
+                declared = dt._NULLABLE.get(f"{fold['name']}.{row['name']}")
+                expected = dt.UNKNOWN_TYPE if declared is None else declared["type"]
+                if row["type"] != expected:
+                    guessed.append(
+                        f"{fold['name']}.{row['name']} is {row['type']!r}, "
+                        f"declared {expected!r}"
+                    )
+        assert guessed == [], f"a null field's type was neither declared nor unknown: {guessed}"
 
     def test_at_least_one_optional_row_exists_so_the_check_is_not_vacuous(
         self, committed: dict[str, Any]
@@ -156,21 +168,44 @@ class TestANullFieldIsNeverGivenAGuessedType:
         ]
         assert optional, "no null fields at all: the rule above is asserting nothing"
 
-    def test_the_row_builder_itself_refuses_to_type_a_null(
-        self, generator: Any, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Held separately from the committed artifact: this one reddens even if a future
-        kernel happens to leave no field null."""
-        monkeypatch.setattr(generator, "_rendered", lambda name: {"n": None, "said": "x"})
-        assert generator._field_rows("probe") == [
+    def test_the_row_builder_itself_carries_the_three_cases(self, generator: Any) -> None:
+        """Held separately from the committed artifact, and it has to be: the committed
+        one carries no undeclared null row (see the class below), so this is the only
+        place the ``unknown`` branch is exercised.
+
+        Three cases in one shape: a declared null, an undeclared null, and a plain value.
+        """
+        from kiro_crew import dashboard_types as dt
+
+        entry = dt.FoldType(
+            name="probe",
+            shape={
+                "type": "object",
+                "properties": {
+                    "stamp": {"type": "number", "nullable": True},
+                    "n": {"type": dt.UNKNOWN_TYPE, "nullable": True, "why": "renders null"},
+                    "said": {"type": "string"},
+                },
+            },
+            source_fold="probe",
+            keyed_by=dt.KEYED_BY_SESSION,
+            owner_served=False,
+            state_version=1,
+            row_bytes=None,
+        )
+        assert generator._field_rows(entry) == [
             {"name": "n", "type": "unknown", "optional": True},
-            {"name": "said", "type": "str", "optional": False},
+            {"name": "said", "type": "string", "optional": False},
+            {"name": "stamp", "type": "number", "optional": True},
         ]
 
 
 class TestOnlyFoldsDeclaringABinderAreBound:
-    """``_rendered`` binds a slot to the folds that DECLARE a binder, not to every
-    slot-keyed fold -- today one fold of the four declares one.
+    """The probe binds a slot to the folds that DECLARE a binder, not to every slot-keyed
+    fold -- today one fold of the four declares one.
+
+    Aimed at ``dashboard_types._probe``, which is where the probe lives now that the
+    script renders the catalog instead of probing for itself. Same rule, one copy of it.
 
     Both directions matter. Binding a fold that declares no binder is impossible; NOT
     binding one that does would render a board-wide fold against no board, and it would
@@ -179,11 +214,13 @@ class TestOnlyFoldsDeclaringABinderAreBound:
 
     def test_the_binder_set_is_derived_from_the_kernel_and_is_not_empty(self) -> None:
         binders = {name for name, fold in _FOLDS.items() if fold.bind_slot is not None}
-        assert binders, "no fold declares a slot binder: the bind branch in _rendered is dead"
+        assert binders, "no fold declares a slot binder: the bind branch in _probe is dead"
         for name in binders:
             assert _FOLDS[name].bind_slot is not None
 
-    def test_rendered_binds_exactly_those_folds(self, generator: Any) -> None:
+    def test_the_probe_binds_exactly_those_folds(self) -> None:
+        from kiro_crew import dashboard_types as dt
+
         bound: list[str] = []
         for name, fold in _FOLDS.items():
             original = fold.bind_slot
@@ -196,17 +233,19 @@ class TestOnlyFoldsDeclaringABinderAreBound:
 
             object.__setattr__(fold, "bind_slot", spy)
             try:
-                generator._rendered(name)
+                dt._probe(name)
             finally:
                 object.__setattr__(fold, "bind_slot", original)
         expected = sorted(name for name, fold in _FOLDS.items() if fold.bind_slot is not None)
         assert sorted(bound) == expected
 
-    def test_a_fold_with_no_binder_still_renders(self, generator: Any) -> None:
+    def test_a_fold_with_no_binder_still_renders(self) -> None:
+        from kiro_crew import dashboard_types as dt
+
         unbound = [name for name, fold in _FOLDS.items() if fold.bind_slot is None]
         assert unbound, "every fold declares a binder: the docstring's other half is stale"
         for name in unbound:
-            assert isinstance(generator._rendered(name), dict)
+            assert dt._probe(name)["type"] == "object"
 
 
 class TestTheScaffoldReadsTheCatalogue:
@@ -334,33 +373,32 @@ class TestATextFieldNamesARealFoldKey:
 
 
 class TestTheFoldMenusRespectAnUnknownType:
-    """An OPTIONAL catalogue row carries `"type": "unknown"`, and that is not "no type".
+    """An `unknown` row is admitted to a menu, and that is not "no type".
 
-    The catalogue refuses to guess an optional field's type from an empty fold, so filtering
-    a menu on the wanted type alone sees only the REQUIRED fields -- and refuses the optional
-    ones, which are exactly the fields a dashboard wants, because an optional field is the
-    one that can be absent and that is what `Unsaid` is for. The menu is therefore "names
-    this fold has, minus the ones whose type is known and wrong".
+    The menu is "names this fold has, minus the ones whose type is known and wrong", so a
+    row the catalogue could not type must not be filtered out: an optional field is
+    exactly the field a dashboard wants, because absence is what `Unsaid` renders.
+
+    The committed catalogue currently has NO `unknown` row -- every null leaf is declared
+    (see `TestEveryOptionalRowIsTypedToday`) -- so this behaviour is exercised against a
+    planted row rather than asserted of a real one. Keeping it tested is the point: the
+    next fold to render an undeclared null must still be declarable.
     """
 
-    def test_an_optional_text_field_is_offered(self, scaffold: Any, committed: Any) -> None:
-        rows = {
-            f["name"]: (str(f.get("type")), bool(f.get("optional")))
-            for fold in committed["folds"]
-            if fold["name"] == "status"
-            for f in fold["fields"]
-        }
-        optional_unknown = sorted(n for n, (t, o) in rows.items() if o and t == "unknown")
-        assert optional_unknown, "this case needs a fold with optional rows to be about"
-        offered = scaffold.text_fields("status")
-        assert set(optional_unknown) <= set(offered), (
-            "optional fields are missing from the text menu, so the check would refuse the "
-            "very fields a dashboard renders as 'not said'"
-        )
+    def test_an_unknown_typed_row_is_offered_to_both_menus(
+        self, scaffold: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        planted = (("said", "string"), ("counted", "number"), ("mystery", "unknown"))
+        monkeypatch.setattr(scaffold, "_catalogue_rows", lambda fold: planted)
+        assert "mystery" in scaffold.text_fields("status")
+        assert "mystery" in scaffold.counting_fields("status")
+        # And the typed rows still land in their own menu only.
+        assert "counted" not in scaffold.text_fields("status")
+        assert "said" not in scaffold.counting_fields("status")
 
     def test_a_field_whose_type_is_known_and_wrong_is_still_refused(self, scaffold: Any) -> None:
-        """The half that must not be widened away: `dropped` is a `dict` and `resumed` a
-        `bool`, both declared, so neither is text and neither is a count."""
+        """The half that must not be widened away: `dropped` is an `object` and `resumed`
+        a `boolean`, both declared, so neither is text and neither is a count."""
         for name in ("dropped", "resumed"):
             with pytest.raises(scaffold.ScaffoldError, match="not a text field of this fold"):
                 scaffold.parse_fields([f"{name}:str|unsaid"], texts=scaffold.text_fields("status"))
@@ -395,27 +433,31 @@ class TestAnAlwaysPresentFieldIsNotCheckedAgainstTheFold:
 class TestAnUntypeableSourceIsSaidOutLoud:
     """The limit of the fold-source check, stated where a reader will meet it.
 
-    An OPTIONAL row is catalogued `unknown` and its real type is not recoverable: the
-    catalogue derives types from a rendered fold, where an absent optional field is `None`,
-    and looking the name up in the entry-type registry was tried and answered
-    `status.previous` with `dict` and `status.turn` with `int`. So `turn:str|unsaid` is
-    admitted while the projection writes a dict there, and the card renders "not said" for
-    every active turn.
+    A row the catalogue could not type is admitted to a menu, because refusing it would
+    make the field undeclarable -- and NAMED, to the person making the choice, because no
+    gate downstream can catch a wrong one: the emitted gates build the card from an EMPTY
+    view, where "not said" is the expected answer, so they agree with a wrong render.
 
-    Refusing those rows instead would make every optional field undeclarable, and an
-    optional field is the one a dashboard wants, because absence is what `Unsaid` renders.
-    So the choice is admitted and NAMED, to the person making it, at the moment they make it.
+    `status.turn` is not an example of it: the catalogue renders `dashboard_types.catalog`,
+    which declares `status.turn` as `object`, so `turn:str|unsaid` is REFUSED outright
+    rather than admitted with a note. `TestEveryOptionalRowIsTypedToday` pins that.
+
+    So the note's machinery is tested against a planted row, and it is worth keeping
+    tested: a fold can render a null the declarations do not cover, and the first one to
+    do so needs the note.
     """
 
     def test_an_untypeable_source_is_admitted_with_a_note(self, scaffold: Any, capsys: Any) -> None:
-        unchecked = scaffold.unchecked_sources("status")
-        assert "turn" in unchecked, "this case needs an untypeable row to be about"
+        planted = (("lifecycle", "string"), ("mystery", "unknown"))
         scaffold.parse_fields(
-            ["turn:str|unsaid"], texts=scaffold.text_fields("status"), unchecked=unchecked
+            ["mystery:str|unsaid"],
+            texts=("lifecycle", "mystery"),
+            unchecked=frozenset({"mystery"}),
         )
         note = capsys.readouterr().err
         assert "could not type it" in note
         assert "no gate will say so" in note, "the note must admit the gates agree with it"
+        assert planted  # names the shape the note is about, for a reader of this case
 
     def test_a_typed_source_is_admitted_silently(self, scaffold: Any, capsys: Any) -> None:
         """The note must fire on the untypeable rows only, or it is noise an author learns
@@ -427,14 +469,118 @@ class TestAnUntypeableSourceIsSaidOutLoud:
         )
         assert "could not type" not in capsys.readouterr().err
 
-    def test_the_untypeable_set_is_exactly_the_optional_rows(
+    def test_the_untypeable_set_is_exactly_the_unknown_rows(
         self, scaffold: Any, committed: Any
     ) -> None:
-        optional = {
+        """The set tracks the `unknown` TYPE, not optionality.
+
+        The two are different sets: a null leaf carries its declared type, so an optional
+        row is usually typed, and the one the note must follow is the type.
+        """
+        unknown = {
             f["name"]
             for fold in committed["folds"]
             if fold["name"] == "status"
             for f in fold["fields"]
-            if bool(f.get("optional"))
+            if f["type"] == "unknown"
         }
-        assert set(scaffold.unchecked_sources("status")) == optional
+        assert set(scaffold.unchecked_sources("status")) == unknown
+
+
+class TestEveryOptionalRowIsTypedToday:
+    """No row in the committed catalogue is `unknown`.
+
+    Every null leaf the folds render is declared in `dashboard_types._NULLABLE`, and the
+    catalogue renders that catalog, so no row leaves an author to type it by reading the
+    kernel. This case records the state rather than asserting it can never change: a new
+    fold rendering an undeclared null makes it red, which is the moment to add the
+    declaration or accept the `unknown` deliberately.
+    """
+
+    def test_no_committed_row_is_unknown(self, committed: Any) -> None:
+        unknown = [
+            f"{fold['name']}.{row['name']}"
+            for fold in committed["folds"]
+            for row in fold["fields"]
+            if row["type"] == "unknown"
+        ]
+        assert unknown == [], (
+            "these rows are typed 'unknown'; declare them in dashboard_types._NULLABLE "
+            f"or change this case deliberately: {unknown}"
+        )
+
+    def test_status_turn_is_an_object_and_so_undeclarable_as_text(self, scaffold: Any) -> None:
+        """The row the old limit was named after. Declared `object`, so the text menu
+        refuses it instead of rendering 'not said' at every active turn."""
+        with pytest.raises(scaffold.ScaffoldError, match="not a text field of this fold"):
+            scaffold.parse_fields(["turn:str|unsaid"], texts=scaffold.text_fields("status"))
+
+
+class TestOneDerivation:
+    """The committed artifacts are the ``dashboard_types`` catalog, rendered.
+
+    There were TWO registry-probing catalogs: this script's own
+    ``start()``->``render()`` pass, and ``dashboard_types.catalog``. Two probes mean two
+    answers, and they had already diverged -- the script typed a field ``unknown``
+    wherever the empty fold rendered ``None``, while ``dashboard_types._NULLABLE``
+    declares a type for the ones that are declarable, so ``status.opened_at`` read
+    ``unknown`` in ``folds.json`` and ``number`` in the catalog.
+
+    Neither gate could see it. ``--check`` compared the committed files against the
+    script's OWN probe, and ``test_dashboard_types`` compared the catalog against the
+    folds -- so each half agreed with itself. What was missing was a case that reads the
+    two against each other, which is this one.
+    """
+
+    def _leaf(self, shape: dict[str, Any], field: str) -> dict[str, Any] | None:
+        return ((shape.get("properties") or {}).get(field)) if isinstance(shape, dict) else None
+
+    def test_every_committed_row_carries_the_catalog_s_type(self, committed: Any) -> None:
+        """Row by row, against ``dashboard_types.catalog``. The one source of types."""
+        from kiro_crew import dashboard_types as dt
+
+        shapes = {entry.name: dict(entry.shape) for entry in dt.catalog()}
+        disagree: list[str] = []
+        for fold in committed["folds"]:
+            shape = shapes.get(fold["name"])
+            assert shape is not None, f"{fold['name']} is committed but not in the catalog"
+            for row in fold["fields"]:
+                node = self._leaf(shape, row["name"])
+                assert node is not None, f"{fold['name']}.{row['name']} is in no catalog shape"
+                if node.get("type") != row["type"]:
+                    disagree.append(
+                        f"{fold['name']}.{row['name']}: folds.json says {row['type']!r}, "
+                        f"the catalog says {node.get('type')!r}"
+                    )
+        assert disagree == [], "\n".join(disagree)
+
+    def test_the_five_declared_stamps_are_numbers_in_both(self, committed: Any) -> None:
+        """The leaves the disagreement was found on, pinned by name.
+
+        ``_NULLABLE`` declares these as ``number`` because the fold assigns
+        ``entry.time``, an ``int`` of epoch milliseconds. A committed row that still says
+        ``unknown`` sends a template author to type a stamp as a string.
+        """
+        rows = {
+            (fold["name"], row["name"]): row["type"]
+            for fold in committed["folds"]
+            for row in fold["fields"]
+        }
+        for key in (("status", "opened_at"), ("status", "closed_at"), ("status", "last_time")):
+            assert rows[key] == "number", f"{key[0]}.{key[1]} is {rows[key]!r}"
+
+    def test_the_committed_types_are_the_manifest_vocabulary(self, committed: Any) -> None:
+        """Not Python's. A row typed ``str`` is a row no Model field can declare, so the
+        author has to translate it in their head and the catalog's own ``field_types``
+        are the only list that matters."""
+        from kiro_crew import dashboard_types as dt
+
+        allowed = set(dt.describe()["field_types"]) | {dt.UNKNOWN_TYPE}
+        seen = {row["type"] for fold in committed["folds"] for row in fold["fields"]}
+        assert seen <= allowed, sorted(seen - allowed)
+
+    def test_the_script_no_longer_probes_the_registry_itself(self, generator: Any) -> None:
+        """The duplicate is GONE, not merely agreeing today. Two probes that match are
+        still two probes, and the next edit to one of them is the next divergence."""
+        assert not hasattr(generator, "_rendered"), "the script still has its own probe"
+        assert generator.UNKNOWN_TYPE is not None

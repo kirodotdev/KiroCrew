@@ -152,7 +152,7 @@ def counting_fields(fold: str) -> tuple[str, ...]:
     render, and nothing in the emitted gates notices because they build the card from an
     EMPTY view, where "not said" is the expected answer.
     """
-    return _fold_fields(fold, "int")
+    return _fold_fields(fold, "number")
 
 
 def text_fields(fold: str) -> tuple[str, ...]:
@@ -163,12 +163,16 @@ def text_fields(fold: str) -> tuple[str, ...]:
     gates do not notice: they build the card from an EMPTY view, where "not said" IS the
     expected answer.
     """
-    return _fold_fields(fold, "str")
+    return _fold_fields(fold, "string")
 
 
-#: What the catalogue writes for an OPTIONAL field's type. Its real type is not knowable
-#: from an empty fold and the catalogue refuses to guess one, so this is not "no type" --
-#: it is "a type this reader must not assume is wrong".
+#: What the catalogue writes for a field whose type it could not establish: the empty
+#: fold renders ``None`` there and nothing declares what fills it. Not "no type" -- it is
+#: "a type this reader must not assume is wrong".
+#:
+#: The catalogue's types are the MODEL FIELD's words (``string``, ``number``,
+#: ``boolean``, ``object``, ``array``), which is why the two menus above ask for
+#: ``number`` and ``string`` rather than ``int`` and ``str``.
 _UNKNOWN_TYPE = "unknown"
 
 
@@ -184,24 +188,19 @@ def _fold_fields(fold: str, wanted: str) -> tuple[str, ...]:
     which is what ``Unsaid`` is for.
 
     So this menu is not "fields of this type". It is "names this fold has, minus the ones
-    whose type is known and wrong". Read what that does NOT buy, because it is the whole
-    limit of this check: an ``"unknown"`` row whose real type IS wrong is accepted here.
-    ``status.turn`` is optional and the projection writes it as a dict, so
-    ``turn:str|unsaid`` is admitted and the card renders the words "not said" for every
-    active turn.
+    whose type is known and wrong".
 
-    Nothing in this script or in the emitted gates can catch that. The type is not
-    recoverable: the catalogue derives it from a rendered fold, where an absent optional
-    field is ``None`` and nothing else, and looking the name up in the entry-type registry
-    was tried and answered ``status.previous`` with ``dict`` and ``status.turn`` with
-    ``int`` -- which is why the catalogue writes ``unknown`` rather than a guess. The
-    emitted gates build the card from an EMPTY view, where "not said" is the expected
-    answer, so they agree with the wrong render.
+    That second set is wide, because the catalogue renders ``dashboard_types.catalog``,
+    which declares the type of a null leaf wherever one is declarable. ``status.turn`` is
+    optional and declared ``object``, so ``turn:str|unsaid`` is REFUSED here rather than
+    admitted to render the words "not said" at every active turn.
 
-    What is left is to say so, at the moment the choice is made, to the person making it:
-    :func:`parse_fields` prints a line naming every ``unknown``-typed source it admits.
-    A reader deciding whether this check is strong enough should assume it is not, for
-    optional rows, and read the note.
+    The limit is the genuinely untypeable row: the empty fold renders ``None`` and
+    nothing declares what fills it, so an ``"unknown"`` row whose real type IS wrong is
+    accepted. The emitted gates cannot catch it either -- they build the card from an
+    EMPTY view, where "not said" is the expected answer, so they agree with the wrong
+    render. :func:`parse_fields` prints a line naming every ``unknown``-typed source it
+    admits, which is a short list and worth reading.
     """
     rows = _catalogue_rows(fold)
     return tuple(

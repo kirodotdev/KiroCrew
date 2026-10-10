@@ -73,6 +73,21 @@ class _Log:
             data["interrupted"] = True
         return self.add("message/sent", data, src=ACP)
 
+    def chunked_reply(self, turn: int, step: int, *, chars: int = 70_000) -> int:
+        """A reply too long for one line, in the shape the writer really stores.
+
+        `_append_body_entry` slices an oversize body into `message/chunk` entries and
+        the citing `message/sent` carries `chunks` and `chars` and NO `text`
+        (`emit.py`: the overflow branch builds its data from `turn` / `step` / extras
+        only). So this is not a reply with an empty body -- it is a reply whose body
+        is somewhere this fold does not read.
+        """
+        return self.add(
+            "message/sent",
+            {"turn": turn, "step": step, "chunks": [self._seq + 1, self._seq + 2], "chars": chars},
+            src=ACP,
+        )
+
     def completed(self, turn: int, *, stop_reason: str = "end_turn") -> int:
         return self.add("turn/completed", {"turn": turn, "stop_reason": stop_reason})
 
@@ -313,6 +328,83 @@ class TestWhatARowCarries:
         log.prompt(1, "a question")
         log.started(1)
         log.reply(1, 1, "cut before it said anything useful", interrupted=True)
+        log.completed(1)
+        assert log.row(1)["reply"] == ""
+
+    def test_a_refusal_at_a_settled_ordinal_clears_the_answer_it_replaces(self) -> None:
+        """The retraction rule, on the path that has no `turn/started` to carry it.
+
+        Regenerate removes a turn's answer and runs it again; Stop while that rerun is
+        still preparing writes `turn/refused` and NO `turn/started`, at the same
+        ordinal. `turn/started` is where a rerun's retraction lives, so a refusal that
+        never gets one leaves the committed reply standing and the row then shows the
+        answer that was removed beside the reason the rerun never produced one.
+
+        A refusal means this ordinal produced nothing, so it has to retract the same
+        two things a start does: the committed reply and any standing draft.
+        """
+        log = _Log()
+        _settled_turn(log, 1, "a question", "the answer that was then removed")
+        # The premise: the answer really is committed before the refusal lands.
+        assert log.row(1)["reply"] == "the answer that was then removed"
+
+        log.refused(1, "stopped before it ran")
+        row = log.row(1)
+        assert row["refused"] == "stopped before it ran"
+        assert row["reply"] == ""
+
+    def test_a_refusal_clears_only_its_own_ordinals_answer(self) -> None:
+        # The limit: the retraction is per row, so a refusal on one turn must not blank
+        # the answer a different turn settled on.
+        log = _Log()
+        _settled_turn(log, 1, "the first question", "the first answer")
+        _settled_turn(log, 2, "the second question", "the second answer")
+        log.refused(2, "stopped before it ran")
+        assert log.row(1)["reply"] == "the first answer"
+        assert log.row(2)["reply"] == ""
+        assert log.row(2)["refused"] == "stopped before it ran"
+
+    def test_a_chunked_final_reply_settles_on_nothing_rather_than_on_the_narration(self) -> None:
+        """Settled rule 1 again, on the half an EMPTY body must not borrow.
+
+        A turn often narrates before it calls a tool ("let me check that"), and the
+        real answer that follows can be long enough that the writer stores it as
+        chunks -- so the citing `message/sent` carries no `text` at all. Treating that
+        like a cut reply keeps the narration standing, and the closer then publishes
+        the narration AS the settled answer: an intermediate line presented as the
+        thing the turn concluded, which is the one reading a reader cannot detect.
+
+        Empty is the honest answer, and it is what this fold's stated scope promises:
+        it does not read `message/chunk`, so an overflow body has no preview here.
+        """
+        log = _Log()
+        log.prompt(1, "summarise the whole log")
+        log.started(1)
+        log.reply(1, 1, "let me check that")
+        log.chunked_reply(1, 2)
+        log.completed(1)
+        assert log.row(1)["reply"] == ""
+
+    def test_a_chunked_reply_does_not_stop_a_later_short_one_from_settling(self) -> None:
+        # The limit of the case above: an empty body REPLACES the draft, it does not
+        # freeze it, so a reply that lands after one still settles the turn.
+        log = _Log()
+        log.prompt(1, "a question")
+        log.started(1)
+        log.chunked_reply(1, 1)
+        log.reply(1, 2, "the short answer that followed")
+        log.completed(1)
+        assert log.row(1)["reply"] == "the short answer that followed"
+
+    def test_a_cut_reply_after_a_chunked_one_still_does_not_resurrect_a_narration(self) -> None:
+        # The two rules meet: the chunked reply clears the narration, and the cut one
+        # that follows must not clear anything further NOR bring the narration back.
+        log = _Log()
+        log.prompt(1, "a question")
+        log.started(1)
+        log.reply(1, 1, "let me check that")
+        log.chunked_reply(1, 2)
+        log.reply(1, 3, "half a sentence", interrupted=True)
         log.completed(1)
         assert log.row(1)["reply"] == ""
 

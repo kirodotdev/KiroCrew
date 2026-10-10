@@ -22,26 +22,32 @@ silently stale, and stale is worse than absent here, because an agent that trust
 writes a provider reading a field no fold produces. ``--check`` is the gate that makes
 that impossible, and ``test_fold_catalogue.py`` runs it.
 
-## How a field's type is determined, and where it honestly cannot be
+## Where the types come from: ONE derivation
 
-Each fold is rendered from its own ``start()`` state -- the empty fold -- because that
-is reachable with no fixtures at all. A fixture per fold would be a second source of
-truth, which is the thing being removed.
+This script does not probe the registry. It RENDERS
+:func:`kiro_crew.dashboard_types.catalog`, which is the runtime verb an agent calls for
+the same question -- so these two artifacts and that tool cannot answer differently.
 
-A field holding a real value reports that value's own ``type(value).__name__``, which
-is an observation, not a guess.
+A second probe here would be a second source of truth wearing one coat: both walk
+``start()``->``render()``, both have to be edited together, and they drift. The catalog
+consults its own declarations for the leaves whose type IS knowable, so a bare probe
+types a stamp ``unknown`` where the catalog types it ``number`` -- and no gate sees the
+split, because each half compares against itself.
 
-An empty fold leaves some fields ``None``: the projection kernel uses ``None`` as the
-initial value for fields that later hold a real one. For those the observed type says
-nothing, and the catalogue says ``unknown``. It does not infer one from an entry field
-of the same name: a rendered name is not owned by any one entry type, so that lookup
-answers confidently and sometimes wrongly, and a reader cannot tell which rows to
-trust. One wrong row costs more than every missing one.
+So the fold's shape, each field's type and whether it is optional are all read off the
+catalog. ``--check`` compares the committed bytes with that same rendering, which is
+what makes a disagreement impossible rather than merely unlikely.
 
-That is not a gap to apologise for. A field that is ``None`` on an empty fold is
-exactly a field a provider must read as possibly absent, so its row carries
-``optional: true`` and the template contract types it ``... | Unsaid``. The safe answer
-and the honest one are the same answer.
+The types are the MANIFEST's vocabulary -- ``string``, ``number``, ``boolean``,
+``object``, ``array`` -- and not Python's, because a template author declares a Model
+field in those words. A row that said ``str`` was a row the author had to translate.
+
+``unknown`` survives for one case and is not a gap to apologise for: the empty fold
+renders ``None`` and nothing declares what fills it. Those are exactly the fields a
+provider must read as possibly absent, so the row carries ``optional: true`` and the
+template contract types it ``... | Unsaid``. The safe answer and the honest one are the
+same answer. What is gone is the case where a type WAS known and this file still said
+``unknown``.
 """
 
 from __future__ import annotations
@@ -57,6 +63,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 
+from kiro_crew import dashboard_types as dt  # noqa: E402
 from kiro_crew.crew_log import projection as proj  # noqa: E402
 from kiro_crew.platform_compat import is_link_or_junction  # noqa: E402
 
@@ -70,10 +77,11 @@ MARKDOWN_PATH = SKILL_DIR / "FOLDS.md"
 #: not understand rather than reading a missing key as an empty one.
 CATALOGUE_VERSION = 1
 
-#: What a field's row reports when the empty fold shows ``None`` and the generator was
-#: therefore never told the type. NOT a placeholder to be filled in later by inference:
-#: see the module docstring for why a same-name lookup is worse than this word.
-UNKNOWN_TYPE = "unknown"
+#: What a field's row reports when the empty fold shows ``None`` and nothing declares
+#: what fills it. Taken from the catalog rather than spelled again here: the word has to
+#: be the same one the runtime tool answers with, or a reader comparing the two artifacts
+#: against a live gateway sees two vocabularies.
+UNKNOWN_TYPE = dt.UNKNOWN_TYPE
 
 #: One line per fold: the question it answers, in a reader's words. The ONLY hand-held
 #: text in the document, and it is here rather than in the markdown because the gate
@@ -124,36 +132,46 @@ class CatalogueError(Exception):
     """The catalogue cannot be built, or the committed one has drifted."""
 
 
-def _rendered(name: str) -> dict[str, Any]:
-    """One fold's rendered value on its EMPTY state.
+def _catalog() -> dict[str, dt.FoldType]:
+    """:func:`kiro_crew.dashboard_types.catalog`, keyed by fold name.
 
-    A fold that DECLARES a slot binder is bound before it is rendered: it is told which
-    slot it is folding before the first entry, and rendering it unbound would answer
-    about no board at all. Today exactly one fold declares one, so most slot-keyed folds
-    take no binder -- those, like the session-keyed ones, need no slot to render their
-    empty state, and this function must not pretend otherwise.
+    Called once per document build, because the catalog probes every fold and this
+    script asks about each one twice -- for its key kind and for its fields.
     """
-    fold = proj._FOLDS[name]
-    state = fold.start()
-    if fold.bind_slot is not None:
-        fold.bind_slot(state, "catalogue-probe")
-    value = fold.render(state)
-    if not isinstance(value, dict):
-        raise CatalogueError(f"{name}: render returned {type(value).__name__}, not an object")
-    return value
+    return {entry.name: entry for entry in dt.catalog()}
 
 
-def _field_rows(name: str) -> list[dict[str, Any]]:
+def _field_rows(entry: dt.FoldType) -> list[dict[str, Any]]:
+    """One row per top-level field of *entry*'s shape.
+
+    FLAT on purpose, where the catalog's shape nests: this document's reader is the
+    skill's ``scaffold.py``, which validates a ``--fold`` choice and a field name
+    against it, and a nested row list would make it walk a tree to answer a question
+    about one name. A composing agent that needs the nested shape calls the
+    ``dashboard_types`` tool, which is the same data unflattened.
+
+    ``optional`` is the shape's own ``nullable``, so it keeps meaning "the empty fold
+    renders ``None`` here" -- and the TYPE beside it is now whatever the catalog could
+    establish for that leaf, which for a declared stamp is ``number`` and not
+    ``unknown``.
+    """
+    shape = dict(entry.shape)
+    if shape.get("type") != "object":
+        raise CatalogueError(
+            f"{entry.name}: the catalog shape is {shape.get('type')!r}, not an object"
+        )
+    properties = shape.get("properties")
+    if not isinstance(properties, dict):
+        raise CatalogueError(f"{entry.name}: the catalog shape carries no properties")
     rows: list[dict[str, Any]] = []
-    for field, value in sorted(_rendered(name).items()):
-        if value is None:
-            # No inference here, on purpose. The obvious one -- look the field NAME up
-            # in the entry-type registry -- is wrong: a rendered name belongs to no one
-            # entry type, so it answered ``status.previous`` with ``dict`` and
-            # ``status.turn`` with ``int``. ``unknown`` is the true answer.
-            rows.append({"name": field, "type": UNKNOWN_TYPE, "optional": True})
-            continue
-        rows.append({"name": field, "type": type(value).__name__, "optional": False})
+    for field, node in sorted(properties.items()):
+        rows.append(
+            {
+                "name": field,
+                "type": node.get("type", UNKNOWN_TYPE),
+                "optional": bool(node.get("nullable")),
+            }
+        )
     return rows
 
 
@@ -169,17 +187,28 @@ def catalogue() -> dict[str, Any]:
     if stale:
         raise CatalogueError(f"_ANSWERS names folds the kernel does not have: {stale}")
 
+    catalog = _catalog()
+    absent = sorted(set(proj._FOLDS) - set(catalog))
+    if absent:
+        raise CatalogueError(
+            f"the dashboard_types catalog is missing registered folds: {absent}. This "
+            "document is rendered from that catalog, so a fold it does not list cannot "
+            "be described here."
+        )
+
     folds: list[dict[str, Any]] = []
     for name in proj._FOLDS:
         fold = proj._FOLDS[name]
+        entry = catalog[name]
         folds.append(
             {
                 "name": name,
-                # A session-keyed fold answers about ONE conversation. A slot-keyed one
-                # answers about a workstream that outlived several, and is folded over
-                # every log the slot ran under -- so serving it under one session's id
-                # reports a part as the whole.
-                "mode": "session" if name in proj.SESSION_FOLD_NAMES else "slot",
+                # The catalog's own answer, not a second membership test. A session-keyed
+                # fold answers about ONE conversation; a slot-keyed one answers about a
+                # workstream that outlived several, and is folded over every log the slot
+                # ran under -- so serving it under one session's id reports a part as the
+                # whole.
+                "mode": entry.keyed_by,
                 "advertised": name not in proj.INTERNAL_PROJECTION_NAMES,
                 # ``None`` means every entry moves this fold -- whether the registry
                 # leaves ``affects`` unset or spells out the whole vocabulary, which is
@@ -190,7 +219,7 @@ def catalogue() -> dict[str, Any]:
                     else sorted(fold.affects)
                 ),
                 "answers": _ANSWERS[name],
-                "fields": _field_rows(name),
+                "fields": _field_rows(entry),
             }
         )
     return {"catalogue_version": CATALOGUE_VERSION, "folds": folds}
@@ -216,10 +245,13 @@ def render_markdown(doc: dict[str, Any]) -> str:
         "",
         "`optional` means the field is `None` on an empty fold, so a writer could leave",
         "it unset. Those are exactly the fields a contract types `... | Unsaid` and a",
-        "provider reads with `read_text` / `read_int`, never with a `0` default. Every",
-        "optional field's type is `unknown`, because an empty fold shows `None` and says",
-        "nothing about what fills it -- read the fold's own render function before you",
-        "type it, and never let this file guess on your behalf.",
+        "provider reads with `read_text` / `read_int`, never with a `0` default.",
+        "",
+        "A type is given in the Model field's own vocabulary -- `string`, `number`,",
+        "`boolean`, `object`, `array` -- so you can declare the field without",
+        "translating. An optional field still carries a real type wherever one is",
+        "declared; `unknown` is left only where the empty fold shows `None` and nothing",
+        "says what fills it, and there you read the fold's own render function.",
         "",
         "A `session` fold answers about ONE conversation. A `slot` fold answers about a",
         "workstream that outlived several conversations and is folded over every log the",
@@ -331,11 +363,15 @@ def selftest() -> int:
     assert names == list(proj._FOLDS), f"catalogue order {names} against {list(proj._FOLDS)}"
     assert names, "catalogue is empty -- the probe is broken, not the kernel"
 
+    vocabulary = set(dt.describe()["field_types"]) | {UNKNOWN_TYPE}
     for fold in doc["folds"]:
         assert fold["fields"], f"{fold['name']} rendered no fields"
-        assert fold["mode"] in ("session", "slot"), fold
+        assert fold["mode"] in (dt.KEYED_BY_SESSION, dt.KEYED_BY_SLOT), fold
         for row in fold["fields"]:
-            assert row["type"] != "NoneType", f"{fold['name']}.{row['name']} typed NoneType"
+            # The MANIFEST's words, which is the whole point of rendering the catalog
+            # rather than probing: a Python type name here would be one an author
+            # cannot declare.
+            assert row["type"] in vocabulary, f"{fold['name']}.{row['name']}: {row['type']!r}"
 
     # The work fold is slot-keyed and carries the conductor board; a mode regression
     # there would send a template author to read one session's part as the whole.

@@ -31,7 +31,7 @@ from typing import Any, Final, cast
 
 from aiohttp import web
 
-from kiro_crew import agent_panel, dashboard_agentic
+from kiro_crew import agent_panel, dashboard_agentic, dashboard_types
 from kiro_crew import members as members_mod
 from kiro_crew import pipeline_board_contract
 from kiro_crew.config.loader import KiroCrewConfig
@@ -1635,6 +1635,81 @@ async def api_dashboard_fields(request: web.Request) -> web.Response:
     )
 
 
+async def api_dashboard_types(request: web.Request) -> web.Response:
+    """GET /api/agent-panel/dashboard/types -- the data-type catalog, READ ONLY.
+
+    What a dashboard block can be bound to: every fold the crew log registers, its
+    field shape, the fold the value comes from, and how far that fold has been folded
+    for THIS caller. Nothing is written, nothing is staged, and the catalog of shapes
+    is the same for every caller -- the per-caller half is only the seq numbers.
+
+    On the strict-internal prefix with its siblings, and through the same
+    ``_resolve_dashboard_caller`` gate, for two reasons. The seqs are facts about this
+    crewmate's own logs, so they are no more public than its mistake book. And the
+    route must resolve a slot at all to read them.
+
+    A fold that could not be read comes back as ``folded_through: null`` rather than
+    ``0``: zero is a fold that has consumed nothing, which is a different answer, and a
+    composing agent that cannot tell them apart would read an unreadable fold as an
+    empty one and bind a block to it.
+    """
+    resolved, refusal = await _resolve_dashboard_caller(request, "dashboard_types")
+    if refusal is not None:
+        return refusal
+    assert resolved is not None
+    _slug, _crew_name, slot = resolved
+    state: DashboardState = request.app["state"]
+    unit = _session_unit(state, request.headers.get("X-Session-Key", ""))
+    reached = await asyncio.to_thread(_folded_through, slot, unit)
+    return web.json_response(dashboard_types.describe(reached))
+
+
+def _folded_through(slot: str, unit: str) -> dict[str, int | None]:
+    """How far each registered fold has been folded, for *slot* and *unit*.
+
+    Two reads, not fourteen: the session-keyed folds come back from ONE
+    ``fold_session`` pass over the unit's log, and each slot-keyed fold is a warm memo
+    lookup on an eager fold that walks nothing.
+
+    What the session pass costs depends on what is already on disk. It is called with no
+    ``since``, so it resumes from the unit's newest savepoint and walks only the entries
+    past it -- and for a unit that has none, which is every unit this route reaches
+    before its first eager fold lands, it walks the log from the beginning. That is one
+    pass for all seven session folds either way, and it is bounded by the log rather than
+    by the number of folds.
+
+    Every omission is deliberate and each is ``None`` rather than ``0``:
+
+    * ``radar`` is :data:`~kiro_crew.crew_log.projection.OWNER_SERVED_SLOT_PROJECTION`
+      -- its owner orders the slot's units itself and a generic read would serve part
+      of the record as the whole, so this route does not make one;
+    * a caller with no slot, or whose slot has no live unit, has nothing to read the
+      session folds against;
+    * a fold whose read RAISES is logged and reported unread, because a catalog of
+      shapes is still worth serving when one seq cannot be fetched.
+    """
+    reached: dict[str, int | None] = {name: None for name in projection.FOLD_NAMES}
+    if unit:
+        try:
+            bundle = projection.fold_session(unit, projection.SESSION_FOLD_NAMES)
+            for name, checkpoint in bundle.checkpoints.items():
+                # The CHECKPOINT's seq, not ``bundle.projection(name).seq``: both
+                # answer the same number, and this one reads it without rendering
+                # fourteen values the caller asked nothing about.
+                reached[name] = checkpoint.last_seq
+        except Exception:
+            logger.warning("dashboard types: session folds for %s are unreadable", unit)
+    if slot:
+        for name in projection.SLOT_PROJECTION_NAMES:
+            if name == projection.OWNER_SERVED_SLOT_PROJECTION:
+                continue
+            try:
+                reached[name] = projection.read_slot_projection(slot, name).seq
+            except Exception:
+                logger.warning("dashboard types: the %s fold for %s is unreadable", name, slot)
+    return reached
+
+
 def _current_values(
     slug: str, crew_name: str, instance: dashboard_agentic.Instance | None
 ) -> tuple[dict[str, Any] | None, dict[str, str]]:
@@ -2124,6 +2199,10 @@ def register_agent_panel_routes(app: web.Application) -> None:
     # much as for publish -- a write lands in the crewmate's own crew log, so a
     # caller holding only a dashboard cookie must not reach it.
     app.router.add_get("/api/agent-panel/dashboard/fields", api_dashboard_fields)
+    # The data-type catalog, a pure read and on this prefix anyway: it answers how far
+    # the calling crewmate's own folds have been folded, which is state about that
+    # crewmate and nobody else's to read.
+    app.router.add_get("/api/agent-panel/dashboard/types", api_dashboard_types)
     app.router.add_post("/api/agent-panel/dashboard/write", api_dashboard_write)
     # The page's own four, under the same prefix and so with the same auth. A preview
     # and an apply reach a crewmate's instance store and its crew log, so a caller

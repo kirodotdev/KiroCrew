@@ -11,10 +11,13 @@ the exception and argues for itself in the pull request that adds it.
 
 `optional` means the field is `None` on an empty fold, so a writer could leave
 it unset. Those are exactly the fields a contract types `... | Unsaid` and a
-provider reads with `read_text` / `read_int`, never with a `0` default. Every
-optional field's type is `unknown`, because an empty fold shows `None` and says
-nothing about what fills it -- read the fold's own render function before you
-type it, and never let this file guess on your behalf.
+provider reads with `read_text` / `read_int`, never with a `0` default.
+
+A type is given in the Model field's own vocabulary -- `string`, `number`,
+`boolean`, `object`, `array` -- so you can declare the field without
+translating. An optional field still carries a real type wherever one is
+declared; `unknown` is left only where the empty fold shows `None` and nothing
+says what fills it, and there you read the fold's own render function.
 
 A `session` fold answers about ONE conversation. A `slot` fold answers about a
 workstream that outlived several conversations and is folded over every log the
@@ -48,28 +51,28 @@ Moved by **every** entry in the log.
 
 | Field | Type | Optional |
 |---|---|---|
-| `agent` | `str` | no |
-| `close_reason` | `unknown` | yes |
-| `closed_at` | `unknown` | yes |
-| `cwd` | `str` | no |
-| `dropped` | `dict` | no |
-| `entries` | `int` | no |
-| `last_error` | `unknown` | yes |
-| `last_stop_reason` | `unknown` | yes |
-| `last_time` | `unknown` | yes |
-| `lifecycle` | `str` | no |
-| `model` | `str` | no |
-| `opened_at` | `unknown` | yes |
-| `owner` | `str` | no |
-| `previous` | `unknown` | yes |
-| `provider` | `str` | no |
-| `resumed` | `bool` | no |
-| `seeded` | `bool` | no |
-| `slot` | `str` | no |
-| `turn` | `unknown` | yes |
-| `turn_open` | `bool` | no |
-| `turns_completed` | `int` | no |
-| `turns_refused` | `int` | no |
+| `agent` | `string` | no |
+| `close_reason` | `string` | yes |
+| `closed_at` | `number` | yes |
+| `cwd` | `string` | no |
+| `dropped` | `object` | no |
+| `entries` | `number` | no |
+| `last_error` | `string` | yes |
+| `last_stop_reason` | `string` | yes |
+| `last_time` | `number` | yes |
+| `lifecycle` | `string` | no |
+| `model` | `string` | no |
+| `opened_at` | `number` | yes |
+| `owner` | `string` | no |
+| `previous` | `string` | yes |
+| `provider` | `string` | no |
+| `resumed` | `boolean` | no |
+| `seeded` | `boolean` | no |
+| `slot` | `string` | no |
+| `turn` | `object` | yes |
+| `turn_open` | `boolean` | no |
+| `turns_completed` | `number` | no |
+| `turns_refused` | `number` | no |
 
 ## `usage`
 
@@ -79,17 +82,17 @@ Moved by: `background/completed`, `compaction/applied`, `context/composed`, `req
 
 | Field | Type | Optional |
 |---|---|---|
-| `by_model` | `dict` | no |
-| `compactions` | `dict` | no |
-| `context` | `dict` | no |
-| `credits` | `float` | no |
-| `credits_by_source` | `dict` | no |
-| `duration_ms` | `int` | no |
-| `models_omitted` | `int` | no |
-| `models_omitted_saturated` | `bool` | no |
-| `steps` | `dict` | no |
-| `tokens` | `dict` | no |
-| `turns` | `dict` | no |
+| `by_model` | `object` | no |
+| `compactions` | `object` | no |
+| `context` | `object` | no |
+| `credits` | `number` | no |
+| `credits_by_source` | `object` | no |
+| `duration_ms` | `number` | no |
+| `models_omitted` | `number` | no |
+| `models_omitted_saturated` | `boolean` | no |
+| `steps` | `object` | no |
+| `tokens` | `object` | no |
+| `turns` | `object` | no |
 
 ## `timeline`
 
@@ -99,11 +102,11 @@ Moved by: `approval/decided`, `approval/requested`, `compaction/applied`, `model
 
 | Field | Type | Optional |
 |---|---|---|
-| `dropped` | `int` | no |
-| `first_seq` | `unknown` | yes |
-| `last_seq` | `unknown` | yes |
-| `limit` | `int` | no |
-| `moments` | `list` | no |
+| `dropped` | `number` | no |
+| `first_seq` | `number` | yes |
+| `last_seq` | `number` | yes |
+| `limit` | `number` | no |
+| `moments` | `array` | no |
 
 ## `tools`
 
@@ -113,19 +116,19 @@ Moved by: `tool/called`, `tool/completed`.
 
 | Field | Type | Optional |
 |---|---|---|
-| `by_name` | `dict` | no |
-| `calls` | `int` | no |
-| `completed` | `int` | no |
-| `elapsed_ms` | `int` | no |
-| `errors` | `int` | no |
-| `names_omitted` | `int` | no |
-| `names_omitted_saturated` | `bool` | no |
-| `open` | `int` | no |
-| `open_calls` | `list` | no |
-| `open_calls_omitted` | `int` | no |
-| `open_dropped` | `int` | no |
-| `unidentified_calls` | `int` | no |
-| `unmatched_completions` | `int` | no |
+| `by_name` | `object` | no |
+| `calls` | `number` | no |
+| `completed` | `number` | no |
+| `elapsed_ms` | `number` | no |
+| `errors` | `number` | no |
+| `names_omitted` | `number` | no |
+| `names_omitted_saturated` | `boolean` | no |
+| `open` | `number` | no |
+| `open_calls` | `array` | no |
+| `open_calls_omitted` | `number` | no |
+| `open_dropped` | `number` | no |
+| `unidentified_calls` | `number` | no |
+| `unmatched_completions` | `number` | no |
 
 ## `approvals`
 
@@ -135,16 +138,16 @@ Moved by: `approval/decided`, `approval/requested`.
 
 | Field | Type | Optional |
 |---|---|---|
-| `by_decision` | `dict` | no |
-| `decided` | `int` | no |
-| `last` | `unknown` | yes |
-| `pending` | `int` | no |
-| `pending_dropped` | `int` | no |
-| `pending_omitted` | `int` | no |
-| `pending_requests` | `list` | no |
-| `requested` | `int` | no |
-| `unidentified_requests` | `int` | no |
-| `unmatched_decisions` | `int` | no |
+| `by_decision` | `object` | no |
+| `decided` | `number` | no |
+| `last` | `object` | yes |
+| `pending` | `number` | no |
+| `pending_dropped` | `number` | no |
+| `pending_omitted` | `number` | no |
+| `pending_requests` | `array` | no |
+| `requested` | `number` | no |
+| `unidentified_requests` | `number` | no |
+| `unmatched_decisions` | `number` | no |
 
 ## `subagents`
 
@@ -154,12 +157,12 @@ Moved by: `subagent/completed`, `subagent/dismissed`, `subagent/failed`, `subage
 
 | Field | Type | Optional |
 |---|---|---|
-| `by_id` | `dict` | no |
-| `dismissed` | `int` | no |
-| `omitted` | `int` | no |
-| `running` | `int` | no |
-| `running_exact` | `bool` | no |
-| `totals` | `dict` | no |
+| `by_id` | `object` | no |
+| `dismissed` | `number` | no |
+| `omitted` | `number` | no |
+| `running` | `number` | no |
+| `running_exact` | `boolean` | no |
+| `totals` | `object` | no |
 
 ## `class`
 
@@ -169,14 +172,14 @@ Moved by **every** entry in the log.
 
 | Field | Type | Optional |
 |---|---|---|
-| `app` | `str` | no |
-| `channel` | `bool` | no |
-| `complete` | `bool` | no |
-| `damaged` | `bool` | no |
-| `memory` | `str` | no |
-| `recorded` | `bool` | no |
-| `workspace` | `str` | no |
-| `workspace_moved` | `bool` | no |
+| `app` | `string` | no |
+| `channel` | `boolean` | no |
+| `complete` | `boolean` | no |
+| `damaged` | `boolean` | no |
+| `memory` | `string` | no |
+| `recorded` | `boolean` | no |
+| `workspace` | `string` | no |
+| `workspace_moved` | `boolean` | no |
 
 ## `outline`
 
@@ -186,13 +189,13 @@ Moved by: `message/received`, `message/sent`, `turn/completed`, `turn/refused`, 
 
 | Field | Type | Optional |
 |---|---|---|
-| `dropped` | `int` | no |
-| `first_turn` | `unknown` | yes |
-| `last_turn` | `unknown` | yes |
-| `limit` | `int` | no |
-| `prompt_chars` | `int` | no |
-| `reply_chars` | `int` | no |
-| `turns` | `list` | no |
+| `dropped` | `number` | no |
+| `first_turn` | `number` | yes |
+| `last_turn` | `number` | yes |
+| `limit` | `number` | no |
+| `prompt_chars` | `number` | no |
+| `reply_chars` | `number` | no |
+| `turns` | `array` | no |
 
 ## `ledger`
 
@@ -202,16 +205,16 @@ Moved by: `ledger/recorded`.
 
 | Field | Type | Optional |
 |---|---|---|
-| `artifacts` | `dict` | no |
-| `created_at` | `str` | no |
-| `events` | `list` | no |
-| `finished_at` | `str` | no |
-| `goal` | `str` | no |
-| `last_progress_at` | `str` | no |
-| `next` | `str` | no |
-| `phase` | `str` | no |
-| `schema` | `int` | no |
-| `tried` | `list` | no |
+| `artifacts` | `object` | no |
+| `created_at` | `string` | no |
+| `events` | `array` | no |
+| `finished_at` | `string` | no |
+| `goal` | `string` | no |
+| `last_progress_at` | `string` | no |
+| `next` | `string` | no |
+| `phase` | `string` | no |
+| `schema` | `number` | no |
+| `tried` | `array` | no |
 
 ## `radar`
 
@@ -221,15 +224,15 @@ Moved by: `radar/recorded`.
 
 | Field | Type | Optional |
 |---|---|---|
-| `counts` | `dict` | no |
-| `crew_id` | `str` | no |
-| `events` | `list` | no |
-| `items` | `list` | no |
-| `owner` | `str` | no |
-| `phase_lines` | `dict` | no |
-| `repo` | `str` | no |
-| `schema` | `int` | no |
-| `skips` | `dict` | no |
+| `counts` | `object` | no |
+| `crew_id` | `string` | no |
+| `events` | `array` | no |
+| `items` | `array` | no |
+| `owner` | `string` | no |
+| `phase_lines` | `object` | no |
+| `repo` | `string` | no |
+| `schema` | `number` | no |
+| `skips` | `object` | no |
 
 ## `work`
 
@@ -239,9 +242,9 @@ Moved by: `work/recorded`.
 
 | Field | Type | Optional |
 |---|---|---|
-| `conductor` | `dict` | no |
-| `items` | `list` | no |
-| `omitted` | `int` | no |
+| `conductor` | `object` | no |
+| `items` | `array` | no |
+| `omitted` | `number` | no |
 
 ## `panel`
 
@@ -251,18 +254,18 @@ Moved by: `panel/published`.
 
 | Field | Type | Optional |
 |---|---|---|
-| `crew` | `str` | no |
-| `crew_key` | `str` | no |
-| `data` | `dict` | no |
-| `history` | `list` | no |
-| `history_omitted` | `int` | no |
-| `owners` | `dict` | no |
-| `owners_omitted` | `int` | no |
-| `published_at` | `str` | no |
-| `publishes` | `int` | no |
-| `schema` | `int` | no |
-| `template` | `str` | no |
-| `title` | `str` | no |
+| `crew` | `string` | no |
+| `crew_key` | `string` | no |
+| `data` | `object` | no |
+| `history` | `array` | no |
+| `history_omitted` | `number` | no |
+| `owners` | `object` | no |
+| `owners_omitted` | `number` | no |
+| `published_at` | `string` | no |
+| `publishes` | `number` | no |
+| `schema` | `number` | no |
+| `template` | `string` | no |
+| `title` | `string` | no |
 
 ## `agentic`
 
@@ -272,9 +275,9 @@ Moved by: `dashboard/agentic_value`.
 
 | Field | Type | Optional |
 |---|---|---|
-| `fields` | `dict` | no |
-| `fields_omitted` | `int` | no |
-| `wrote` | `int` | no |
+| `fields` | `object` | no |
+| `fields_omitted` | `number` | no |
+| `wrote` | `number` | no |
 
 ## `mistakes`
 
@@ -284,9 +287,9 @@ Moved by: `dashboard/agentic_refused`.
 
 | Field | Type | Optional |
 |---|---|---|
-| `groups` | `list` | no |
-| `groups_omitted` | `int` | no |
-| `refused` | `int` | no |
+| `groups` | `array` | no |
+| `groups_omitted` | `number` | no |
+| `refused` | `number` | no |
 
 ## `workstreams`
 
@@ -296,12 +299,12 @@ Moved by: `background/completed`, `session/opened`, `subagent/completed`, `subag
 
 | Field | Type | Optional |
 |---|---|---|
-| `items` | `list` | no |
-| `last_entry_at` | `str` | no |
-| `omitted` | `int` | no |
-| `schema` | `int` | no |
-| `series` | `list` | no |
-| `slot` | `str` | no |
-| `spenders_omitted` | `int` | no |
-| `unattributed` | `dict` | no |
-| `units_omitted` | `int` | no |
+| `items` | `array` | no |
+| `last_entry_at` | `string` | no |
+| `omitted` | `number` | no |
+| `schema` | `number` | no |
+| `series` | `array` | no |
+| `slot` | `string` | no |
+| `spenders_omitted` | `number` | no |
+| `unattributed` | `object` | no |
+| `units_omitted` | `number` | no |

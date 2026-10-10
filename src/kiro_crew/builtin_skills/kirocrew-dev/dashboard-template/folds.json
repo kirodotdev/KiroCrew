@@ -10,112 +10,112 @@
       "fields": [
         {
           "name": "agent",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "close_reason",
-          "type": "unknown",
+          "type": "string",
           "optional": true
         },
         {
           "name": "closed_at",
-          "type": "unknown",
+          "type": "number",
           "optional": true
         },
         {
           "name": "cwd",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "dropped",
-          "type": "dict",
+          "type": "object",
           "optional": false
         },
         {
           "name": "entries",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "last_error",
-          "type": "unknown",
+          "type": "string",
           "optional": true
         },
         {
           "name": "last_stop_reason",
-          "type": "unknown",
+          "type": "string",
           "optional": true
         },
         {
           "name": "last_time",
-          "type": "unknown",
+          "type": "number",
           "optional": true
         },
         {
           "name": "lifecycle",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "model",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "opened_at",
-          "type": "unknown",
+          "type": "number",
           "optional": true
         },
         {
           "name": "owner",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "previous",
-          "type": "unknown",
+          "type": "string",
           "optional": true
         },
         {
           "name": "provider",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "resumed",
-          "type": "bool",
+          "type": "boolean",
           "optional": false
         },
         {
           "name": "seeded",
-          "type": "bool",
+          "type": "boolean",
           "optional": false
         },
         {
           "name": "slot",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "turn",
-          "type": "unknown",
+          "type": "object",
           "optional": true
         },
         {
           "name": "turn_open",
-          "type": "bool",
+          "type": "boolean",
           "optional": false
         },
         {
           "name": "turns_completed",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "turns_refused",
-          "type": "int",
+          "type": "number",
           "optional": false
         }
       ]
@@ -140,57 +140,57 @@
       "fields": [
         {
           "name": "by_model",
-          "type": "dict",
+          "type": "object",
           "optional": false
         },
         {
           "name": "compactions",
-          "type": "dict",
+          "type": "object",
           "optional": false
         },
         {
           "name": "context",
-          "type": "dict",
+          "type": "object",
           "optional": false
         },
         {
           "name": "credits",
-          "type": "float",
+          "type": "number",
           "optional": false
         },
         {
           "name": "credits_by_source",
-          "type": "dict",
+          "type": "object",
           "optional": false
         },
         {
           "name": "duration_ms",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "models_omitted",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "models_omitted_saturated",
-          "type": "bool",
+          "type": "boolean",
           "optional": false
         },
         {
           "name": "steps",
-          "type": "dict",
+          "type": "object",
           "optional": false
         },
         {
           "name": "tokens",
-          "type": "dict",
+          "type": "object",
           "optional": false
         },
         {
           "name": "turns",
-          "type": "dict",
+          "type": "object",
           "optional": false
         }
       ]
@@ -219,27 +219,27 @@
       "fields": [
         {
           "name": "dropped",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "first_seq",
-          "type": "unknown",
+          "type": "number",
           "optional": true
         },
         {
           "name": "last_seq",
-          "type": "unknown",
+          "type": "number",
           "optional": true
         },
         {
           "name": "limit",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "moments",
-          "type": "list",
+          "type": "array",
           "optional": false
         }
       ]
@@ -256,67 +256,67 @@
       "fields": [
         {
           "name": "by_name",
-          "type": "dict",
+          "type": "object",
           "optional": false
         },
         {
           "name": "calls",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "completed",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "elapsed_ms",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "errors",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "names_omitted",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "names_omitted_saturated",
-          "type": "bool",
+          "type": "boolean",
           "optional": false
         },
         {
           "name": "open",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "open_calls",
-          "type": "list",
+          "type": "array",
           "optional": false
         },
         {
           "name": "open_calls_omitted",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "open_dropped",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "unidentified_calls",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "unmatched_completions",
-          "type": "int",
+          "type": "number",
           "optional": false
         }
       ]
@@ -333,52 +333,52 @@
       "fields": [
         {
           "name": "by_decision",
-          "type": "dict",
+          "type": "object",
           "optional": false
         },
         {
           "name": "decided",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "last",
-          "type": "unknown",
+          "type": "object",
           "optional": true
         },
         {
           "name": "pending",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "pending_dropped",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "pending_omitted",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "pending_requests",
-          "type": "list",
+          "type": "array",
           "optional": false
         },
         {
           "name": "requested",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "unidentified_requests",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "unmatched_decisions",
-          "type": "int",
+          "type": "number",
           "optional": false
         }
       ]
@@ -397,32 +397,32 @@
       "fields": [
         {
           "name": "by_id",
-          "type": "dict",
+          "type": "object",
           "optional": false
         },
         {
           "name": "dismissed",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "omitted",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "running",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "running_exact",
-          "type": "bool",
+          "type": "boolean",
           "optional": false
         },
         {
           "name": "totals",
-          "type": "dict",
+          "type": "object",
           "optional": false
         }
       ]
@@ -436,42 +436,42 @@
       "fields": [
         {
           "name": "app",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "channel",
-          "type": "bool",
+          "type": "boolean",
           "optional": false
         },
         {
           "name": "complete",
-          "type": "bool",
+          "type": "boolean",
           "optional": false
         },
         {
           "name": "damaged",
-          "type": "bool",
+          "type": "boolean",
           "optional": false
         },
         {
           "name": "memory",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "recorded",
-          "type": "bool",
+          "type": "boolean",
           "optional": false
         },
         {
           "name": "workspace",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "workspace_moved",
-          "type": "bool",
+          "type": "boolean",
           "optional": false
         }
       ]
@@ -491,37 +491,37 @@
       "fields": [
         {
           "name": "dropped",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "first_turn",
-          "type": "unknown",
+          "type": "number",
           "optional": true
         },
         {
           "name": "last_turn",
-          "type": "unknown",
+          "type": "number",
           "optional": true
         },
         {
           "name": "limit",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "prompt_chars",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "reply_chars",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "turns",
-          "type": "list",
+          "type": "array",
           "optional": false
         }
       ]
@@ -537,52 +537,52 @@
       "fields": [
         {
           "name": "artifacts",
-          "type": "dict",
+          "type": "object",
           "optional": false
         },
         {
           "name": "created_at",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "events",
-          "type": "list",
+          "type": "array",
           "optional": false
         },
         {
           "name": "finished_at",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "goal",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "last_progress_at",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "next",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "phase",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "schema",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "tried",
-          "type": "list",
+          "type": "array",
           "optional": false
         }
       ]
@@ -598,47 +598,47 @@
       "fields": [
         {
           "name": "counts",
-          "type": "dict",
+          "type": "object",
           "optional": false
         },
         {
           "name": "crew_id",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "events",
-          "type": "list",
+          "type": "array",
           "optional": false
         },
         {
           "name": "items",
-          "type": "list",
+          "type": "array",
           "optional": false
         },
         {
           "name": "owner",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "phase_lines",
-          "type": "dict",
+          "type": "object",
           "optional": false
         },
         {
           "name": "repo",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "schema",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "skips",
-          "type": "dict",
+          "type": "object",
           "optional": false
         }
       ]
@@ -654,17 +654,17 @@
       "fields": [
         {
           "name": "conductor",
-          "type": "dict",
+          "type": "object",
           "optional": false
         },
         {
           "name": "items",
-          "type": "list",
+          "type": "array",
           "optional": false
         },
         {
           "name": "omitted",
-          "type": "int",
+          "type": "number",
           "optional": false
         }
       ]
@@ -680,62 +680,62 @@
       "fields": [
         {
           "name": "crew",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "crew_key",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "data",
-          "type": "dict",
+          "type": "object",
           "optional": false
         },
         {
           "name": "history",
-          "type": "list",
+          "type": "array",
           "optional": false
         },
         {
           "name": "history_omitted",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "owners",
-          "type": "dict",
+          "type": "object",
           "optional": false
         },
         {
           "name": "owners_omitted",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "published_at",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "publishes",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "schema",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "template",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "title",
-          "type": "str",
+          "type": "string",
           "optional": false
         }
       ]
@@ -751,17 +751,17 @@
       "fields": [
         {
           "name": "fields",
-          "type": "dict",
+          "type": "object",
           "optional": false
         },
         {
           "name": "fields_omitted",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "wrote",
-          "type": "int",
+          "type": "number",
           "optional": false
         }
       ]
@@ -777,17 +777,17 @@
       "fields": [
         {
           "name": "groups",
-          "type": "list",
+          "type": "array",
           "optional": false
         },
         {
           "name": "groups_omitted",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "refused",
-          "type": "int",
+          "type": "number",
           "optional": false
         }
       ]
@@ -808,47 +808,47 @@
       "fields": [
         {
           "name": "items",
-          "type": "list",
+          "type": "array",
           "optional": false
         },
         {
           "name": "last_entry_at",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "omitted",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "schema",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "series",
-          "type": "list",
+          "type": "array",
           "optional": false
         },
         {
           "name": "slot",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "spenders_omitted",
-          "type": "int",
+          "type": "number",
           "optional": false
         },
         {
           "name": "unattributed",
-          "type": "dict",
+          "type": "object",
           "optional": false
         },
         {
           "name": "units_omitted",
-          "type": "int",
+          "type": "number",
           "optional": false
         }
       ]
