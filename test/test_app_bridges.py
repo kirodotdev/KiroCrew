@@ -2003,6 +2003,46 @@ class TestStdioInterpreterResolution:
             )
         assert "resolves to no existing executable" not in caplog.text
 
+    def test_a_secret_uri_env_value_logs_a_warning_and_registers_unchanged(
+        self, tmp_path, app_env, monkeypatch, caplog
+    ):
+        # kiro-cli never resolves secret://, so an app stdio server it spawns
+        # gets the literal. The warning states that gap without prescribing a
+        # route to vault access (that trust model is undecided), names the env
+        # KEY only, never the secret name, and leaves the declared value as is.
+        with caplog.at_level("WARNING", logger="kiro_crew.apps.bridges"):
+            entry = self._register_stdio(
+                tmp_path, app_env, monkeypatch,
+                {
+                    "command": "python3",
+                    "args": [],
+                    "env": {"API_TOKEN": "secret://hidden-name-10641", "MODE": "x"},
+                },
+                setup=_fake_venv_python,
+            )
+        assert entry["env"]["API_TOKEN"] == "secret://hidden-name-10641"
+        warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        hits = [w for w in warnings if "secret://" in w]
+        assert len(hits) == 1
+        assert "test-app" in hits[0] and "'srv'" in hits[0]
+        assert "'API_TOKEN'" in hits[0]
+        assert "'MODE'" not in hits[0]
+        assert "hidden-name-10641" not in caplog.text
+        assert "kiro-cli spawns the server directly" in hits[0]
+        assert "undecided" in hits[0]
+        assert "stub" not in hits[0].lower()
+
+    def test_a_plain_env_logs_no_secret_uri_warning(
+        self, tmp_path, app_env, monkeypatch, caplog
+    ):
+        with caplog.at_level("WARNING", logger="kiro_crew.apps.bridges"):
+            self._register_stdio(
+                tmp_path, app_env, monkeypatch,
+                {"command": "python3", "args": [], "env": {"MODE": "secret:/not-a-ref"}},
+                setup=_fake_venv_python,
+            )
+        assert "secret:// reference" not in caplog.text
+
     def test_one_bad_server_does_not_block_its_siblings(self, tmp_path, app_env, monkeypatch):
         import kiro_crew.apps.bridges as bmod
 

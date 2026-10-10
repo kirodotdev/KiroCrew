@@ -2837,6 +2837,41 @@ def _warn_unresolvable_stdio_command(app_name: str, server_name: str, cfg: dict)
         )
 
 
+def _warn_unresolved_secret_refs(app_name: str, server_name: str, env: dict) -> None:
+    """Warn when an app's stdio MCP server declares a ``secret://`` env value.
+
+    An app-registered stdio server is written into the agent config, and when
+    kiro-cli spawns it directly the child gets the literal reference text: the
+    credential silently never arrives. How an installed app may receive a vault
+    secret at all is an open trust decision, so this neither resolves the value
+    nor points at a route that would: it states the gap, gates nothing, and
+    leaves the entry exactly as declared.
+
+    Names only the env-var KEYS, never the secret name after the scheme -- the
+    same sink rule :mod:`kiro_crew.mcp_gateway.secret_uri` follows, because a
+    manifest-authored name can carry control characters. Never raises.
+    """
+    # Lazy: the resolver module pulls in the vault, which registration never needs.
+    from kiro_crew.mcp_gateway.secret_uri import SECRET_URI_PREFIX
+
+    keys = sorted(
+        str(key)
+        for key, value in env.items()
+        if isinstance(value, str) and value.startswith(SECRET_URI_PREFIX)
+    )
+    if not keys:
+        return
+    logger.warning(
+        "App %s: stdio MCP server %r sets env %s to a secret:// reference; when "
+        "kiro-cli spawns the server directly it receives the literal reference "
+        "text, not a vault value. How an app may receive a vault secret is "
+        "undecided (https://github.com/kirodotdev/KiroCrew/issues/10641)",
+        app_name,
+        server_name,
+        ", ".join(repr(k) for k in keys),
+    )
+
+
 def _schedule_unresolvable_warning(app_name: str, server_name: str, cfg: dict) -> None:
     """Run the unresolvable-command probe without ever blocking the event loop.
 
@@ -3016,6 +3051,7 @@ def _register_mcp_servers(
                     # through the shared normalization point (env.emit_env).
                     env = cfg.get("env")
                     if isinstance(env, dict):
+                        _warn_unresolved_secret_refs(app_name, server_name, env)
                         cfg = {**cfg, "env": emit_env(env)}
             servers[namespaced] = cfg
             registered.append(namespaced)
