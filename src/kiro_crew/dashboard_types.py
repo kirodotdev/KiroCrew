@@ -80,9 +80,9 @@ __all__ = [
 KEYED_BY_SESSION: Final[str] = "session"
 KEYED_BY_SLOT: Final[str] = "slot"
 #: The THIRD key kind: a fold keyed by a tree ROOT, folded over the logs of every slot
-#: the tree reaches. What a block binding a TREE names, and the one kind whose value
-#: arrives on a page load and on a refetch rather than on a bus push -- a composing agent
-#: reads that off this value, so it is a distinct word and not ``slot`` with a footnote.
+#: the tree reaches. What a block binding a TREE names, and the one kind no bus push can
+#: carry, so its value belongs to a page load and a refetch -- a composing agent reads
+#: that off this value, so it is a distinct word and not ``slot`` with a footnote.
 KEYED_BY_TREE: Final[str] = "tree"
 
 #: The ``type`` of a leaf the probe saw as ``null`` and nothing declares. Deliberately
@@ -373,8 +373,8 @@ def describe(folded_through: Mapping[str, int | None] | None = None) -> dict[str
         "session_keyed": list(SESSION_FOLD_NAMES),
         "slot_keyed": list(SLOT_PROJECTION_NAMES),
         # The third key kind, listed beside the other two so a reader resolving a type's
-        # key does it from one payload. A fold here is read on a page load and on a
-        # refetch rather than pushed over the bus, which is the one thing a composer has
-        # to know about this kind beyond its name.
+        # key does it from one payload. No bus push can carry a fold here, so its value
+        # belongs to a page load and a refetch, and that read ships with the first block
+        # that consumes it -- which is what a composer has to know beyond its name.
         "tree_keyed": list(TREE_PROJECTION_NAMES),
     }

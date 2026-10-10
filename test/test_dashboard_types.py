@@ -284,7 +284,7 @@ class TestKeying:
         import: a tree fold with no measured figure would publish ``row_bytes: null``
         to a composing agent sizing a block, which reads as "this fold retains nothing".
         """
-        by_name = dt.catalog_by_name()
+        by_name = _by_name()
         assert TREE_PROJECTION_NAMES, "the tree key kind has no members to check"
         for name in TREE_PROJECTION_NAMES:
             assert by_name[name].row_bytes == _TREE_FOLD_ROW_BYTES[name]

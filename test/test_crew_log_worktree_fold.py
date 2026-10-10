@@ -99,6 +99,32 @@ def _row(value: dict[str, Any], board: str) -> dict[str, Any]:
     return matched[0]
 
 
+def _catalog_entry(name: str) -> Any:
+    """One catalog entry by fold name. A test convenience; the module ships no accessor
+    keyed by name, because nothing in ``src/`` resolves one that way."""
+    return {entry.name: entry for entry in dt.catalog()}[name]
+
+
+def _at(shape: Any, path: str) -> dict[str, Any] | None:
+    """The shape at dotted *path*, or ``None``; the OPAQUE node itself when it hits one.
+
+    A local walk for the same reason: the catalog's own shape walk has no production
+    caller, so it is not a shipped surface. What these cases are about is what the
+    catalog DECLARES, and this is only how they reach a nested declaration.
+    """
+    node = shape
+    if not path:
+        return dict(node)
+    for key in path.split("."):
+        if node.get("opaque") is True:
+            return dict(node)
+        properties = node.get("properties")
+        if not isinstance(properties, dict) or key not in properties:
+            return None
+        node = properties[key]
+    return dict(node)
+
+
 def _hang(child: str, under_item: str, in_board: str, *, depth: int = 1) -> list[Entry]:
     """The two entries that hang *child* under *under_item* of *in_board*.
 
@@ -206,11 +232,11 @@ def test_a_v3_package_block_binding_the_tree_validates() -> None:
 
     # And the catalog agrees those three paths are real, which is the other half of a
     # binding: the gate says the FOLD exists, the catalog says the PATH does.
-    shape = dt.catalog_by_name()[FOLD].shape
-    assert dt.shape_at(shape, "boards") == {"type": "array"}
-    assert dt.shape_at(shape, "roots") == {"type": "array"}
-    assert dt.shape_at(shape, "cycles") == {"type": "number"}
-    assert dt.shape_at(shape, "not_a_field") is None
+    shape = _catalog_entry(FOLD).shape
+    assert _at(shape, "boards") == {"type": "array"}
+    assert _at(shape, "roots") == {"type": "array"}
+    assert _at(shape, "cycles") == {"type": "number"}
+    assert _at(shape, "not_a_field") is None
 
 
 def test_the_catalog_keys_the_fold_by_tree_and_not_by_slot() -> None:
@@ -219,7 +245,7 @@ def test_the_catalog_keys_the_fold_by_tree_and_not_by_slot() -> None:
     ``slot`` would send it to key a whole fleet's tree by one board's slot, and
     ``session`` by one conversation. Both read as complete answers.
     """
-    entry = dt.catalog_by_name()[FOLD]
+    entry = _catalog_entry(FOLD)
     assert entry.keyed_by == dt.KEYED_BY_TREE
     assert entry.keyed_by not in (dt.KEYED_BY_SLOT, dt.KEYED_BY_SESSION)
     assert FOLD in dt.describe()["tree_keyed"]
@@ -322,7 +348,7 @@ def test_the_tree_folds_row_cost_is_derived_from_its_own_rows(make, kind) -> Non
     one_rows, many_rows = count(one), count(many)
     assert many_rows > one_rows, f"the {kind} fixture added no counted rows"
     measured = (_state_bytes(many) - _state_bytes(one)) / (many_rows - one_rows)
-    recorded = projection.tree_fold_row_bytes(FOLD)
+    recorded = projection._TREE_FOLD_ROW_BYTES[FOLD]
 
     assert _state_bytes(many) <= projection.slot_fold_cell_bytes(FOLD, many), (
         f"a driven {kind} state weighs {_state_bytes(many):,} bytes and is charged "
@@ -380,7 +406,7 @@ def test_both_row_kinds_are_counted() -> None:
 def test_a_cell_is_never_charged_zero() -> None:
     """An empty tree still holds its flat header fields, so it is charged one row."""
     empty = _state([])
-    assert projection.slot_fold_cell_bytes(FOLD, empty) == projection.tree_fold_row_bytes(FOLD)
+    assert projection.slot_fold_cell_bytes(FOLD, empty) == projection._TREE_FOLD_ROW_BYTES[FOLD]
 
 
 def test_the_measured_tables_are_kept_apart_by_key_kind() -> None:
@@ -390,9 +416,6 @@ def test_the_measured_tables_are_kept_apart_by_key_kind() -> None:
     assert FOLD in projection._TREE_FOLD_ROW_BYTES
     assert FOLD not in projection._SLOT_FOLD_ROW_BYTES
     assert not set(projection._TREE_FOLD_ROW_BYTES) & set(projection._SLOT_FOLD_ROW_BYTES)
-    # A name that is not a tree fold answers the unmeasured fallback here rather than
-    # silently borrowing a slot fold's measurement.
-    assert projection.tree_fold_row_bytes("work") == projection._UNMEASURED_ROW_BYTES
 
 
 # --------------------------------------------------------------------------- #

@@ -4462,16 +4462,6 @@ def slot_fold_row_bytes(name: str) -> int:
     return _TREE_FOLD_ROW_BYTES.get(name, _UNMEASURED_ROW_BYTES)
 
 
-def tree_fold_row_bytes(name: str) -> int:
-    """What one retained row of the TREE-keyed *name* fold is charged.
-
-    A reader asking about the third key kind reads this rather than
-    :func:`slot_fold_row_bytes`, so a name that is not a tree fold answers the
-    unmeasured fallback here instead of silently returning a slot fold's figure.
-    """
-    return _TREE_FOLD_ROW_BYTES.get(name, _UNMEASURED_ROW_BYTES)
-
-
 def slot_fold_cell_bytes(name: str, state: "Mapping[str, Any] | None" = None) -> int:
     """An upper bound on what *state* retains, charged against the ceiling.
 
@@ -8012,8 +8002,13 @@ def read_tree_projection(root: str, name: str) -> Projection:
     COLD every time, and that is the posture the key kind earns rather than an omission:
     a warm cell would be invalidated by growth in ANY member's log, including a member
     the cell did not know existed, and there is no publisher for that event. So this fold
-    is lazy, has no bus scope, and is served on a page load and on a refetch -- which the
+    is lazy, has no bus scope, and belongs on a page load and on a refetch -- which the
     controller contract already covers, since a gap triggers a full refetch anyway.
+
+    No production caller reaches it yet. BOTH routes that take a fold name -- the
+    owner's per-session read and the internal per-unit one -- REFUSE a tree-keyed name
+    rather than folding the one unit they address, and this read ships gated, with the
+    first dashboard consumer that can bound the walk and check each unit it reaches.
     """
     return projection_of(fold_tree_checkpoint(require_name(name), root))
 

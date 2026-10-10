@@ -19,8 +19,10 @@ A field spec is ``{"type": ..., "source": ...}``. ``type`` is one of
 
     One of the THREE key kinds -- session, slot or tree. A TREE-keyed fold is the one a
     block binding a TREE reaches, and it is the one exception to the sentence above: it
-    joins the logs of many slots, so no bus scope keys it and it is read on a page load
-    and on a refetch instead of pushed (see
+    joins the logs of many slots, so no bus scope keys it and it cannot be pushed, which
+    puts it on the page-load and refetch read instead. That read ships with the first
+    block that consumes it, so a tree binding validates and reports unavailable until
+    then (see
     :data:`~kiro_crew.crew_log.projection.TREE_PROJECTION_NAMES` and
     :func:`~kiro_crew.dashboard_feed.scope_for`). A block binds it exactly the same way;
     what differs is when the value arrives.

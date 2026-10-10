@@ -146,9 +146,11 @@ def scope_for(fold: str) -> str:
     * A name in NO key-kind set is not a registered fold at all.
     * A TREE-keyed fold IS registered and IS bindable, and deliberately has no scope:
       it joins the logs of many slots, so its value is stale when any member's log
-      grows and the bus has no key that covers that. It is read on a page load and on a
-      refetch (:func:`~kiro_crew.crew_log.projection.read_tree_projection`), which the
-      controller's gap rule already covers. Stated here rather than left to fall out of
+      grows and the bus has no key that covers that. Its value belongs to a page load
+      and a refetch (:func:`~kiro_crew.crew_log.projection.read_tree_projection`),
+      which the controller's gap rule already covers, and that read ships with the
+      first block that consumes it -- so ``subscribe`` reports a tree binding
+      unavailable until then. Stated here rather than left to fall out of
       three failed membership tests, because an absence that means "by design" and an
       absence that means "unknown name" would otherwise look identical.
     """

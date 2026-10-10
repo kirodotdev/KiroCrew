@@ -355,6 +355,75 @@ async def test_the_session_route_refuses_a_tree_keyed_fold_rather_than_folding_o
 
 
 @pytest.mark.asyncio
+async def test_the_unit_route_refuses_a_tree_keyed_fold_rather_than_folding_one_unit(monkeypatch):
+    """The SECOND door, refusing the same way. Same defect, same reason as the route
+    above: this one folds the one unit its path names, and a tree fold's population is
+    not a property of that key.
+
+    It is a separate case because the two routes are separate gates. This one admits an
+    internal caller on a forwarded session key rather than the owner's cookie, so a
+    refusal written on the per-session route does not cover it -- and a tree name went
+    through here while the other door refused it.
+    """
+    handle = _log()
+    _opened(handle)
+    _flag_on(monkeypatch)
+    assert crew_log.TREE_PROJECTION_NAMES, "the tree key kind has no members to check"
+    for name in crew_log.TREE_PROJECTION_NAMES:
+        request = _internal_request(
+            f"/api/crew-log/units/{SESSION}/projection/{name}",
+            slots={"chat-owner": _Slot(restricted=False)},
+            match={"unit": SESSION, "name": name},
+        )
+        response = await routes.api_crew_log_unit_projection(request)
+        assert response.status == 400, response.text
+        body = json.loads(response.text)
+        assert body["code"] == "unknown_projection"
+        assert "tree-keyed" in body["error"]
+    # A session-keyed fold through the same door still answers, so the refusal is
+    # scoped to the kind and not to the route. Read off the advertised list rather than
+    # named here: this door folds ONE unit, so a slot-keyed name is refused by design
+    # and picking one by hand would test the wrong refusal.
+    served_here = [
+        name for name in crew_log.PROJECTION_NAMES if name in crew_log.SESSION_FOLD_NAMES
+    ]
+    assert served_here, "no advertised session-keyed fold to check the refusal against"
+    for name in served_here:
+        served = await routes.api_crew_log_unit_projection(
+            _internal_request(
+                f"/api/crew-log/units/{SESSION}/projection/{name}",
+                slots={"chat-owner": _Slot(restricted=False)},
+                match={"unit": SESSION, "name": name},
+            )
+        )
+        assert served.status == 200, (name, served.text)
+
+
+def test_every_route_that_takes_a_projection_name_is_one_of_the_two_that_refuse_a_tree():
+    """The RULE, not the two instances: a fail-closed refusal is only fail-closed if it
+    covers every door that takes a fold name.
+
+    Read off the registered route table rather than listed by hand, so a THIRD route
+    with a ``{name}`` fails here instead of shipping as a hole. The two cases above own
+    the behaviour; this one owns the inventory, and it is the half that was missing when
+    one of the two doors accepted a tree name.
+    """
+    from kiro_crew.dashboard.routes import sessions as session_routes
+
+    app = web.Application()
+    session_routes.register(app)
+    named = {
+        resource.canonical
+        for resource in app.router.resources()
+        if str(resource.canonical).endswith("/projection/{name}")
+    }
+    assert named == {
+        "/api/sessions/{id}/crew-log/projection/{name}",
+        "/api/crew-log/units/{unit}/projection/{name}",
+    }
+
+
+@pytest.mark.asyncio
 async def test_the_projection_routes_refuse_a_slot_keyed_fold_its_owner_serves(monkeypatch):
     """A slot-keyed fold its OWNER serves (the radar fold: its owner orders the slot's
     units by what the crew recorded and pins the live unit last) is refused by both
