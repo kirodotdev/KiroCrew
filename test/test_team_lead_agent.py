@@ -3097,6 +3097,138 @@ class TestTeamLeadSkillReusesRatherThanCopies:
         assert "goal-conductor" in skill
 
 
+def _team_management_section() -> str:
+    """The skill's team-management section alone, whitespace normalized.
+
+    Sliced rather than searched whole, so a phrase pinned below has to sit in
+    the section that owns that rule instead of anywhere in the skill. The
+    normalization is the same one ``_charter`` applies, so one assertion can
+    read both texts and a reflow breaks neither.
+    """
+    raw = (_SKILLS / "team-lead" / "SKILL.md").read_text(encoding="utf-8")
+    _, marker, rest = raw.partition("## 6. Running the team itself")
+    assert marker, "the team-management section is not in the skill"
+    section, limits, _ = rest.partition("## Known limits")
+    assert limits, "the section no longer ends where this probe reads it"
+    return " ".join(section.split())
+
+
+class TestTeamLeadCarriesTeamManagementRules:
+    """Five calls about the TEAM rather than about an item, each pinned to the
+    mechanism that decides it.
+
+    Both surfaces are asserted together because they are one rule in two
+    places: the skill carries the reading and the charter carries the pointer,
+    so a rule dropped from either half leaves the lead with half a rule. Each
+    pin is a mechanism NAME rather than a prose fragment, which is what lets
+    the wording be copy-edited without the test having to be rewritten.
+    """
+
+    def test_the_probe_reads_both_texts(self, tmp_path, monkeypatch):
+        """The positive control, and it runs first for a reason: every test
+        below is an ``in`` against two strings, and an empty string would make
+        the absences pass and the presences the only thing left to break. So
+        this one proves both texts arrived with content in them, and that a
+        phrase genuinely absent from both is reported absent."""
+        section = _team_management_section()
+        charter = _charter(tmp_path, monkeypatch)
+        assert len(section) > 500, "the section came back too small to carry five rules"
+        assert len(charter) > 2000, "the charter came back too small to be the charter"
+        for absent in ("merge two lines on a hunch", "raise the depth cap to three"):
+            assert absent not in section, absent
+            assert absent not in charter, absent
+
+    def test_capacity_gates_every_wave_including_a_reseed(self, tmp_path, monkeypatch):
+        """``resource_status`` is advisory and reserves nothing, so the rule is
+        WHEN it is read. A reseed stands up as many sessions as a first
+        dispatch, which is the reading a lead otherwise skips. Closing the
+        terminal item is the other half: capacity taken and never given back is
+        a ceiling reached by a fleet that has already stopped running."""
+        section = _team_management_section()
+        charter = _charter(tmp_path, monkeypatch)
+        # The reading lives in the skill: when to read, all FOUR posture words
+        # (a list of three reads as complete and leaves the failed reading to
+        # be decided from feel), and the server ceilings that own the number.
+        assert "resource_status" in section
+        assert "reseed wave" in section
+        assert "action=close" in section
+        for posture in ("ample", "tight", "critical", "unknown"):
+            assert posture in section, posture
+        assert "MAX_SLOTS_PER_CREATOR" in section
+        assert "MAX_LIVE_SLOTS" in section
+        # The charter states WHEN to read it once, in its own capacity section,
+        # and the failed reading is the single fact this change adds there. A
+        # second statement of the rest would be the duplicate this test exists
+        # to keep out.
+        assert "`unknown` means the reading FAILED" in charter
+        assert "resource_status" in charter
+
+    def test_the_depth_cap_is_named_without_restating_the_one_level_rule(
+        self, tmp_path, monkeypatch
+    ):
+        """What is net-new here is the MECHANISM, not the instruction. Both
+        surfaces already carry "a conductor you dispatch dispatches workers
+        only", so a second statement of it would contradict the first the day
+        one of them is edited. This section names the cap that refuses, and the
+        tracked mismatch that is why the stated tree is the safe one."""
+        skill = " ".join(
+            (_SKILLS / "team-lead" / "SKILL.md").read_text(encoding="utf-8").split()
+        )
+        section = _team_management_section()
+        charter = _charter(tmp_path, monkeypatch)
+        assert "MAX_DEPTH" in section, "the section does not name the cap that refuses"
+        assert "work_ledger.py" in section
+        assert "18127" in section, "the tracked guard mismatch is not cited"
+        assert "ask to have the cap raised" in section
+        # The instruction stays where it already was, stated ONCE on each
+        # surface, and this section does not become a second copy of it.
+        assert "dispatches workers only" in skill
+        assert "dispatches workers only" not in section
+        assert "dispatches workers" in charter
+
+    def test_merging_two_lines_closes_and_reseeds(self, tmp_path, monkeypatch):
+        """Three readings say two lines have stopped being two, and the merge
+        is a ledger operation rather than a session one. ``session_adopt``
+        appears on both surfaces as what this is NOT: it moves sessions, it is
+        outside the auto-approved set, and it is the owner's call."""
+        section = _team_management_section()
+        charter = _charter(tmp_path, monkeypatch)
+        for text in (section, charter):
+            assert "session_adopt" in text
+            assert "handoffs" in text
+            assert "action=close" in text
+        assert "approval" in section
+
+    def test_a_tracker_is_dispatched_when_one_read_stops_fitting(
+        self, tmp_path, monkeypatch
+    ):
+        """The trigger is a concrete reading, not a feeling of being busy: the
+        compact ledger read comes back cut. And the tracker's charter is the
+        narrower half of the rule -- it reports, so a fleet never ends up with
+        two sessions ruling on the same item."""
+        section = _team_management_section()
+        charter = _charter(tmp_path, monkeypatch)
+        for text in (section, charter):
+            assert "tracker" in text
+            assert "never decides" in text
+        assert "compact" in section
+        assert "summary item" in section
+
+    def test_one_owner_per_shared_file_and_one_integrator_per_output(
+        self, tmp_path, monkeypatch
+    ):
+        """Both halves travel together: a shared file with two writers and an
+        output with two landers are the same failure at different scales. The
+        author-grades-itself clause is the third, and it is why review is its
+        own item rather than a step inside one."""
+        section = _team_management_section()
+        charter = _charter(tmp_path, monkeypatch)
+        for text in (section, charter):
+            assert "One owner per shared file" in text
+            assert "one integrator per output" in text
+        assert "author" in section
+
+
 class TestTeamLeadPayloadGovernanceGenerationGuard:
     """A team-lead KAS payload is built from the on-disk spec BEFORE the admission
     gate's unbounded queue wait. A governance refresh during that wait rebuilds the disk

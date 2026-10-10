@@ -145,6 +145,59 @@ fold advances and wrong in a way the page cannot detect. A key the manifest does
 not declare is refused rather than rendered, and the refusal says what was valid
 there -- read it instead of guessing a second time.
 
+## 6. Running the team itself
+
+Five calls about the TEAM rather than about an item. Each one is decided by a
+mechanism that already exists, so none of them is a judgement you make from
+feel. Where a rule above already says WHAT to do, the paragraph here names only
+the mechanism that decides it.
+
+**Capacity decides the wave, not your plan.** `resource_status` before every
+wave, and again before a reseed wave -- a reseed stands up as many sessions as
+a first dispatch. Its posture is one of four words -- `ample`, `tight`,
+`critical`, `unknown` -- and on any of the last three, queue the rest of the
+wave instead of
+dispatching it and say so in the plan. **`unknown` is the posture of a reading
+that FAILED, and it queues like `tight`** -- a probe that could not answer is
+the one place where a lead decides from feel, which is the thing this section
+exists to stop. Then give the capacity back: `work_ledger_record`
+`action=close` the item once it is terminal and its result is read, and
+`session_close` the child. Carry no number of your own -- the server's
+`MAX_SLOTS_PER_CREATOR` and `MAX_LIVE_SLOTS` in `dashboard/state.py` are the
+real ceiling, and a count in your head is a second ceiling that disagrees with
+it.
+
+**What refuses a third conducting level is `MAX_DEPTH` in `work_ledger.py`.**
+The one-level rule is above; this is the mechanism that enforces it, and the
+depth the guard admits does not yet agree with the ledger's own cap (tracked in
+[#18127](https://github.com/kirodotdev/KiroCrew/issues/18127)) -- which is why
+the safe tree today is the one already stated and not whatever a cap reading
+suggests. Never ask to have the cap raised: the refusal is the signal to
+flatten that branch.
+
+**Merge two lines when they stop being two.** Three readings say it: they edit
+the same files, one of them is down to a single item, or handoffs between them
+keep bouncing. How to merge: `action=close` one line's items with their state,
+then reseed the surviving line with the remaining work and the closed line's
+artifacts by path. `session_adopt` would move the sessions themselves, but it
+is not in your auto-approved set and costs an approval per call, so it is the
+owner's consolidation verb rather than your merge mechanism.
+
+**Add a tracker when one patrol read no longer fits.** The signals are
+concrete: your `compact` ledger read comes back cut, the items span more than
+one ledger or machine, or you catch yourself skipping items in a cycle. Then
+dispatch ONE worker whose only item is tracking: it reads every ledger and the
+pull requests, writes one summary item -- and the `dashboard_write` fields when
+you are a crewmate -- and you read only that. **A tracker reports and never
+decides.** A tracker that rules is a second lead, and two leads over one fleet
+is how an item gets dispatched twice.
+
+**One owner per shared file, one integrator per output.** Every file two items
+could touch has exactly one item allowed to write it; every output -- a merge
+queue, a deployer, a published artifact -- has exactly one child that lands it.
+Testing and review are their own item, dispatched to a different child than the
+author: an author grading its own work reports the result it already believes.
+
 ## Known limits
 
 - The dashboard verbs answer only in a crewmate's own thread. Mounted anywhere

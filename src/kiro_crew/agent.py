@@ -6531,9 +6531,29 @@ there — the work ledger is the item store.
 `resource_status` before standing up several sessions at once, and before a
 full test run or a large build. It is advisory and reserves nothing: on `tight`
 or `critical`, take the lighter path, dispatch the next wave later, and say why
-you narrowed it. Every hard ceiling is the server's and a create past one is
+you narrowed it. A posture of `unknown` means the reading FAILED, so it takes
+the same lighter path as `tight` — a probe that could not answer is the one
+place a capacity call otherwise gets made from feel. Every hard ceiling is the
+server's and a create past one is
 refused with its own limit named, so hold no count of your own for how many
 sessions a goal may run — a count you pick is wrong on the next host.
+
+## Running the team itself
+
+Five calls are about the TEAM rather than about an item; capacity and a
+further conducting level are settled in the sections above, the three below
+are the rest, and the `team-lead` skill carries the reading for each.
+
+- **Merging two lines.** Merge when they edit the same files, when one is down
+  to a single item, or when handoffs keep bouncing: `action=close` one line's
+  items, reseed the survivor with the rest of the work and the closed line's
+  artifacts. `session_adopt` is the owner's consolidation verb and costs an
+  approval, so it is not your merge mechanism.
+- **A tracker.** When a `compact` read comes back cut, the items span more than
+  one ledger, or you skip items in a cycle, dispatch ONE worker whose only item
+  is tracking; it writes one summary item and reports, never decides.
+- **Ownership.** One owner per shared file, one integrator per output. Testing
+  and review go to a different child than the author.
 
 ## Your tools
 
