@@ -17,8 +17,10 @@
  * supervisor has just recovered a backend from a stale bundle. A miss is
  * confirmed by a second probe a few seconds later, so a bundle that is being
  * swapped in place (briefly absent, then back at the same path) never
- * prompts. Once a miss is confirmed `onPruned` runs exactly once and the
- * watch stops: the remedy is a restart, and asking twice helps nobody.
+ * prompts. Once a miss is confirmed the periodic probe stops and `onPruned`
+ * asks the user to restart. An answer of "not now" (onPruned resolving to
+ * anything but true) is asked again every `remindMs`, because the abort this
+ * guards against still comes, just later; one prompt at a time, never stacked.
  *
  * It cannot relaunch the shell itself. Electron re-executes process.execPath,
  * which is the path that is gone, and where the replacement bundle lives is
@@ -37,6 +39,7 @@
 
 const DEFAULT_INTERVAL_MS = 60_000;
 const DEFAULT_CONFIRM_DELAY_MS = 5_000;
+const DEFAULT_REMIND_MS = 30 * 60_000;
 
 /**
  * The parts of the running image that are no longer on disk.
@@ -72,12 +75,14 @@ function missingShellBundleParts({ fs, path, processObj }) {
  * @param {object} o.path
  * @param {object} o.processObj
  * @param {boolean} o.isPackaged          app.isPackaged.
- * @param {(missing: string[]) => void} o.onPruned  runs once, on a confirmed miss.
+ * @param {(missing: string[]) => (boolean|Promise<boolean>)} o.onPruned  asks the
+ *        user to restart on a confirmed miss; true means the app is quitting.
  * @param {() => boolean} [o.isQuitting]  skip while the app is shutting down.
  * @param {() => boolean} [o.isUpdating]  skip while an update owns the bundle.
  * @param {(message: string) => void} [o.log]
  * @param {number} [o.intervalMs]
  * @param {number} [o.confirmDelayMs]
+ * @param {number} [o.remindMs]           how long a "not now" lasts.
  * @param {Function} [o.setIntervalFn]
  * @param {Function} [o.clearIntervalFn]
  * @param {Function} [o.setTimeoutFn]
@@ -94,6 +99,7 @@ function createShellBundleWatch({
   log = () => {},
   intervalMs = DEFAULT_INTERVAL_MS,
   confirmDelayMs = DEFAULT_CONFIRM_DELAY_MS,
+  remindMs = DEFAULT_REMIND_MS,
   setIntervalFn = setInterval,
   clearIntervalFn = clearInterval,
   setTimeoutFn = setTimeout,
@@ -102,7 +108,11 @@ function createShellBundleWatch({
   const enabled = processObj.platform === "darwin" && Boolean(isPackaged);
   let interval = null;
   let confirmTimer = null;
+  let remindTimer = null;
+  // Set from the first confirmed miss on: the periodic probe is over and every
+  // later step is a prompt or a reminder.
   let fired = false;
+  let stopped = false;
 
   const busy = () => {
     try {
@@ -123,6 +133,49 @@ function createShellBundleWatch({
       clearTimeoutFn(confirmTimer);
       confirmTimer = null;
     }
+    if (remindTimer !== null) {
+      clearTimeoutFn(remindTimer);
+      remindTimer = null;
+    }
+  }
+
+  function ask(missing) {
+    let answer;
+    try {
+      answer = onPruned(missing);
+    } catch (error) {
+      log(`shell bundle: restart prompt failed: ${error && error.message}`);
+      answer = false;
+    }
+    Promise.resolve(answer).then(
+      (quit) => { if (quit !== true) remindLater(); },
+      (error) => {
+        log(`shell bundle: restart prompt failed: ${error && error.message}`);
+        remindLater();
+      },
+    );
+  }
+
+  function remindLater() {
+    if (stopped || remindTimer !== null) return;
+    remindTimer = setTimeoutFn(remind, remindMs);
+    if (remindTimer && typeof remindTimer.unref === "function") remindTimer.unref();
+  }
+
+  function remind() {
+    remindTimer = null;
+    if (stopped || busy()) return;
+    const missing = missingNow();
+    if (missing.length === 0) {
+      // Only a reinstall at the very same path brings the files back; the image
+      // this process maps is the old one, but nothing is missing to read.
+      log("shell bundle: this app's files are back on disk; resuming the periodic probe");
+      fired = false;
+      start();
+      return;
+    }
+    log(`shell bundle: still running from a removed bundle (${missing.join(", ")}); asking again`);
+    ask(missing);
   }
 
   function confirm() {
@@ -134,13 +187,12 @@ function createShellBundleWatch({
       return;
     }
     fired = true;
-    stop();
-    log(`shell bundle: this app's own files are gone (${missing.join(", ")}); asking the user to restart`);
-    try {
-      onPruned(missing);
-    } catch (error) {
-      log(`shell bundle: restart prompt failed: ${error && error.message}`);
+    if (interval !== null) {
+      clearIntervalFn(interval);
+      interval = null;
     }
+    log(`shell bundle: this app's own files are gone (${missing.join(", ")}); asking the user to restart`);
+    ask(missing);
   }
 
   /** Probe now; a miss arms the confirming probe. Returns whether one is pending. */
@@ -155,18 +207,26 @@ function createShellBundleWatch({
   }
 
   function start() {
-    if (!enabled || fired || interval !== null) return;
+    if (!enabled || stopped || fired || interval !== null) return;
     interval = setIntervalFn(() => { checkNow(); }, intervalMs);
     if (interval && typeof interval.unref === "function") interval.unref();
   }
 
-  return Object.freeze({ start, stop, checkNow, enabled });
+  // Final: the app is going away. A paused watch would be resumable, which
+  // nothing needs.
+  function shutdown() {
+    stopped = true;
+    stop();
+  }
+
+  return Object.freeze({ start, stop: shutdown, checkNow, enabled });
 }
 
 /**
  * Ask the user to quit and reopen the app, once its bundle is gone. Quitting
  * is the user's choice: an open composer draft or an unsent prompt is theirs
- * to finish first, and "Later" keeps the app running exactly as it was.
+ * to finish first, and "Later" keeps the app running exactly as it was until
+ * the watch's next reminder.
  * Never rejects.
  *
  * @param {object} o
@@ -180,13 +240,16 @@ async function promptRestartForPrunedBundle({ dialog, requestQuit, log = () => {
   try {
     ({ response } = await dialog.showMessageBox({
       type: "warning",
-      title: "Restart Kiro Crew",
-      message: "Kiro Crew was updated while it was running.",
-      detail: "The copy of Kiro Crew this window runs from has been removed, so it can "
-        + "close without warning. Your chats and the gateway are not affected. "
-        + "Quit and open Kiro Crew again to finish the update.",
+      // macOS does not render a message box title, so the instruction lives in
+      // `message`. It says reopen because the app quits and does not relaunch
+      // itself: the path it would relaunch is the one that was removed.
+      title: "Quit and reopen Kiro Crew",
+      message: "Kiro Crew was updated. Quit and reopen it to keep working.",
+      detail: "This window may close at any moment. Copy any unsent message first.",
       buttons: ["Quit Kiro Crew", "Later"],
-      defaultId: 0,
+      // The dialog opens on a timer, not on anything the user did, so Return
+      // pressed mid-sentence in the composer must not quit and lose the draft.
+      defaultId: 1,
       cancelId: 1,
     }));
   } catch (error) {
@@ -208,4 +271,5 @@ module.exports = {
   promptRestartForPrunedBundle,
   DEFAULT_INTERVAL_MS,
   DEFAULT_CONFIRM_DELAY_MS,
+  DEFAULT_REMIND_MS,
 };

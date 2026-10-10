@@ -1,5 +1,7 @@
 "use strict";
 
+const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { test } = require("node:test");
 const assert = require("node:assert");
@@ -22,6 +24,8 @@ function fakeFs(present) {
     existsSync(target) { return present.has(target); },
   };
 }
+
+const flush = () => new Promise((resolve) => setImmediate(resolve));
 
 function fakeTimers() {
   const timeouts = [];
@@ -48,9 +52,10 @@ function fakeTimers() {
       const index = intervals.findIndex((timer) => timer.id === id);
       if (index >= 0) intervals.splice(index, 1);
     },
-    fireTimeout() {
-      const timer = timeouts.shift();
-      assert.ok(timer, "a confirming probe is armed");
+    fireTimeout(ms) {
+      const index = ms === undefined ? 0 : timeouts.findIndex((timer) => timer.ms === ms);
+      assert.ok(index >= 0 && timeouts[index], `a ${ms ?? "pending"}ms timer is armed`);
+      const [timer] = timeouts.splice(index, 1);
       timer.fn();
     },
     tick() {
@@ -66,6 +71,7 @@ function build({
   present = new Set([EXEC_PATH, ASAR]),
   isUpdating = () => false,
   isQuitting = () => false,
+  answer = () => false,
 } = {}) {
   const fs = fakeFs(present);
   const timers = fakeTimers();
@@ -78,10 +84,11 @@ function build({
     isPackaged,
     isUpdating,
     isQuitting,
-    onPruned: (missing) => pruned.push(missing),
+    onPruned: (missing) => { pruned.push(missing); return answer(); },
     log: (message) => logs.push(message),
     intervalMs: 60_000,
     confirmDelayMs: 5_000,
+    remindMs: 1_800_000,
     setIntervalFn: timers.setIntervalFn,
     clearIntervalFn: timers.clearIntervalFn,
     setTimeoutFn: timers.setTimeoutFn,
@@ -251,6 +258,8 @@ test("the restart prompt quits only when the user chooses to", async () => {
     assert.strictEqual(quits, expectQuit ? 1 : 0);
     assert.deepStrictEqual(options.buttons, ["Quit Kiro Crew", "Later"]);
     assert.strictEqual(options.cancelId, 1, "dismissing the dialog keeps the app running");
+    assert.strictEqual(options.defaultId, 1, "Return on an unprompted dialog keeps the app running");
+    assert.match(options.message, /Quit and reopen/, "the instruction is in the text macOS renders");
   }
 });
 
@@ -262,4 +271,88 @@ test("a restart prompt that cannot be shown keeps the app running", async () => 
   });
   assert.strictEqual(quit, false);
   assert.strictEqual(quits, 0);
+});
+
+test("the probe reads a real directory tree: an intact bundle, then a deleted one", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "shell-bundle-watch-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const app = path.join(root, "KiroCrew.app", "Contents");
+  fs.mkdirSync(path.join(app, "MacOS"), { recursive: true });
+  fs.mkdirSync(path.join(app, "Resources"), { recursive: true });
+  const execPath = path.join(app, "MacOS", "Kiro Crew");
+  fs.writeFileSync(execPath, "");
+  fs.writeFileSync(path.join(app, "Resources", "app.asar"), "");
+  const processObj = { execPath, resourcesPath: path.join(app, "Resources") };
+
+  assert.deepStrictEqual(missingShellBundleParts({ fs, path, processObj }), []);
+  fs.rmSync(path.join(root, "KiroCrew.app"), { recursive: true, force: true });
+  assert.deepStrictEqual(
+    missingShellBundleParts({ fs, path, processObj }),
+    [execPath, path.join(app, "Resources", "app.asar")],
+  );
+});
+
+test("Later is asked again after the reminder delay, never stacked", async () => {
+  const { watch, timers, pruned } = build({ present: new Set() });
+  watch.start();
+  watch.checkNow();
+  timers.fireTimeout(5_000);
+  await flush();
+  assert.strictEqual(pruned.length, 1);
+  assert.deepStrictEqual(timers.timeouts.map((timer) => timer.ms), [1_800_000]);
+
+  assert.strictEqual(watch.checkNow(), false, "a respawn signal does not stack a second prompt");
+  timers.fireTimeout(1_800_000);
+  await flush();
+  assert.strictEqual(pruned.length, 2, "asked again");
+  assert.deepStrictEqual(timers.timeouts.map((timer) => timer.ms), [1_800_000]);
+});
+
+test("choosing to quit schedules no reminder", async () => {
+  const { watch, timers, pruned } = build({ present: new Set(), answer: () => true });
+  watch.checkNow();
+  timers.fireTimeout(5_000);
+  await flush();
+  assert.strictEqual(pruned.length, 1);
+  assert.deepStrictEqual(timers.timeouts, []);
+});
+
+test("a prompt that rejects is treated as Later", async () => {
+  const { watch, timers } = build({
+    present: new Set(),
+    answer: () => Promise.reject(new Error("dialog gone")),
+  });
+  watch.checkNow();
+  timers.fireTimeout(5_000);
+  await flush();
+  assert.deepStrictEqual(timers.timeouts.map((timer) => timer.ms), [1_800_000]);
+});
+
+test("files back on disk at reminder time resume the periodic probe instead of prompting", async () => {
+  const { watch, fs: files, timers, pruned } = build({ present: new Set() });
+  watch.start();
+  watch.checkNow();
+  timers.fireTimeout(5_000);
+  await flush();
+  assert.strictEqual(timers.intervals.length, 0);
+
+  files.present.add(EXEC_PATH);
+  files.present.add(ASAR);
+  timers.fireTimeout(1_800_000);
+  await flush();
+  assert.strictEqual(pruned.length, 1);
+  assert.strictEqual(timers.intervals.length, 1, "the periodic probe is back");
+});
+
+test("stop cancels a pending reminder and the watch cannot be restarted", async () => {
+  const { watch, timers, pruned } = build({ present: new Set() });
+  watch.start();
+  watch.checkNow();
+  timers.fireTimeout(5_000);
+  await flush();
+  watch.stop();
+  assert.deepStrictEqual(timers.timeouts, []);
+  watch.start();
+  assert.strictEqual(timers.intervals.length, 0);
+  assert.strictEqual(pruned.length, 1);
 });
