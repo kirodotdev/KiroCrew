@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from urllib.parse import urlparse
@@ -57,12 +58,32 @@ def _normalize_link(raw: object) -> dict[str, str]:
     }
 
 
+#: Most characters of a link's url and context the label prompt reads. The in-flight
+#: key and the shared call are built from the same cut (``_bounded_link``), so
+#: nothing they hold grows with the request.
+_LINK_URL_MAX = 500
+_LINK_CONTEXT_MAX = 300
+
+
+def _bounded_link(link: dict) -> dict[str, str]:
+    """The part of ``link`` the label prompt reads: its url and context, cut to their limits.
+
+    Idempotent, so a link it already bounded comes back unchanged: the context is
+    stripped before and after the cut.
+    """
+    return {
+        "url": link.get("url", "")[:_LINK_URL_MAX],
+        "context": link.get("context", "").strip()[:_LINK_CONTEXT_MAX].rstrip(),
+    }
+
+
 def _build_link_summary_prompt(links: list[dict]) -> str:
     """Build prompt for batch link summary generation."""
     items: list[str] = []
     for i, link in enumerate(links):
-        url = _safe_url_for_prompt(link.get("url", "")[:500])
-        ctx = link.get("context", "").strip()[:300]
+        bounded = _bounded_link(link)
+        url = _safe_url_for_prompt(bounded["url"])
+        ctx = bounded["context"]
         ctx_part = f"\n  Context: {ctx}" if ctx else ""
         items.append(f"{i + 1}. URL: {url}{ctx_part}")
     return _LINK_SUMMARY_PROMPT.format(items="\n".join(items))
@@ -72,6 +93,15 @@ def _build_link_summary_prompt(links: list[dict]) -> str:
 # override for auto). A hardcoded model id 400s on accounts/partitions that do
 # not serve it.
 _LINK_SUMMARY_MODEL = "auto"
+#: Bound on one link-label call: the same 30 s the folder icon and folder
+#: suggestion one-liners use.
+_LINK_SUMMARY_TIMEOUT_SECS = 30.0
+#: Link-label calls running now, keyed by their bounded links (``_bounded_link``), so
+#: an identical request awaits the running call instead of starting another. An
+#: entry is removed when its call ends; at most ``_LINK_SUMMARY_INFLIGHT_MAX``
+#: distinct link sets run at once, and a request past that is answered without labels.
+_LINK_SUMMARY_INFLIGHT: dict[tuple[tuple[str, str], ...], asyncio.Task[list[str]]] = {}
+_LINK_SUMMARY_INFLIGHT_MAX = 8
 
 #: Unspaced-script ceiling for the prose guard on a 3-8 word label. The prompt
 #: teaches no character budget (the title's "~4-14 characters" hint is not sent
@@ -103,6 +133,33 @@ _PREAMBLE_RE = re.compile(
 )
 
 
+async def _shared_link_summaries(state: DashboardState, links: list[dict]) -> list[str]:
+    """Labels for ``links``, sharing one running call among identical requests.
+
+    The key and the call's input are the bounded links (``_bounded_link``), the
+    fields the prompt reads, so an entry holds at most ``_LINK_URL_MAX +
+    _LINK_CONTEXT_MAX`` characters per link however long the request's strings are.
+    Labels are positional, so each waiter's labels line up with its own links. The
+    call is shielded, so a request that goes away does not cancel it for the others.
+    Its entry leaves ``_LINK_SUMMARY_INFLIGHT`` when it ends, however it ends.
+    """
+    bounded = [_bounded_link(link) for link in links]
+    key = tuple((link["url"], link["context"]) for link in bounded)
+    task = _LINK_SUMMARY_INFLIGHT.get(key)
+    if task is None:
+        if len(_LINK_SUMMARY_INFLIGHT) >= _LINK_SUMMARY_INFLIGHT_MAX:
+            raise RuntimeError("too many link-label calls in flight")
+        task = asyncio.ensure_future(_resolve_link_summaries(state, bounded))
+        _LINK_SUMMARY_INFLIGHT[key] = task
+
+        def _forget(done: asyncio.Task[list[str]]) -> None:
+            if _LINK_SUMMARY_INFLIGHT.get(key) is done:
+                del _LINK_SUMMARY_INFLIGHT[key]
+
+        task.add_done_callback(_forget)
+    return list(await asyncio.shield(task))
+
+
 async def _resolve_link_summaries(state: DashboardState, links: list[dict]) -> list[str]:
     """Generate summaries for a batch of links using the background session."""
     prompt = _build_link_summary_prompt(links)
@@ -110,7 +167,11 @@ async def _resolve_link_summaries(state: DashboardState, links: list[dict]) -> l
     # governed default model (``_LINK_SUMMARY_MODEL`` is "auto") via the shared
     # background one-liner helper (denials are SEL-logged).
     text = await run_bg_oneliner(
-        state.sessions, prompt, model=_LINK_SUMMARY_MODEL, sel_source="chat_nav"
+        state.sessions,
+        prompt,
+        model=_LINK_SUMMARY_MODEL,
+        sel_source="chat_nav",
+        timeout=_LINK_SUMMARY_TIMEOUT_SECS,
     )
 
     # Parse: one label per line. The frontend merges the reply POSITIONALLY
@@ -187,7 +248,7 @@ async def api_chat_nav_resolve_links(request: web.Request) -> web.Response:
     links = [_normalize_link(x) for x in links[:20]]
 
     try:
-        summaries = await _resolve_link_summaries(state, links)
+        summaries = await _shared_link_summaries(state, links)
     except Exception as exc:
         # Cosmetic link-label enrichment must never emit a 5xx: a resolver
         # failure (e.g. an LLM/provider error on the shared background session)

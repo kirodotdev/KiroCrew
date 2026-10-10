@@ -1,8 +1,9 @@
 """The ACP driver's vocabulary: names application code reads by VALUE.
 
-Stop classes and the stop-reason classifier, the structured-status frame and
-its wait reasons, the terminal tool-call statuses, the session-start timeout and
-the native-child marker are backend vocabulary a consumer compares against or
+Stop classes and the stop-reason classifier, the stop reasons of a turn the
+backend did not finish, the structured-status frame and its wait reasons, the
+terminal tool-call statuses, the session-start and prompt timeouts and the
+native-child marker are backend vocabulary a consumer compares against or
 raises on. They reach application code from here, so a consumer never names
 ``kiro_crew.acp`` itself (``scripts/check_agent_sdk_boundary.py``).
 
@@ -16,7 +17,7 @@ the import this module replaces.
 
 from __future__ import annotations
 
-from kiro_crew.acp.client import AcpProcessDied
+from kiro_crew.acp.client import AcpProcessDied, AcpTimeoutError
 from kiro_crew.acp.session_handle import NATIVE_CHILD_NOT_RESUMABLE, AcpRequestTimeout
 from kiro_crew.acp.types import (
     EVENT_STRUCTURED_STATUS,
@@ -27,6 +28,8 @@ from kiro_crew.acp.types import (
     STOP_CLASS_RECOVERING,
     STOP_CLASS_STALLED,
     STOP_CLASS_SUCCEEDED,
+    STOP_REASON_STALE_RECOVER,
+    STOP_REASON_TIMEOUT,
     STOP_RECOVERY_MAX_RETRIES,
     TERMINAL_TOOL_STATUSES,
     WAIT_REASON_INPUT,
@@ -45,10 +48,13 @@ __all__ = [
     "STOP_CLASS_RECOVERING",
     "STOP_CLASS_STALLED",
     "STOP_CLASS_SUCCEEDED",
+    "STOP_REASON_STALE_RECOVER",
+    "STOP_REASON_TIMEOUT",
     "STOP_RECOVERY_MAX_RETRIES",
     "TERMINAL_TOOL_STATUSES",
     "WAIT_REASON_INPUT",
     "AcpRequestTimeout",
+    "AcpTimeoutError",
     "StructuredStatus",
     "classify_stop_reason",
 ]

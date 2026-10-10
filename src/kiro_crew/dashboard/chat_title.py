@@ -190,6 +190,9 @@ _TITLE_SOURCE_SCAN_LIMIT = _TITLE_TEXT_LIMIT + _TITLE_MAX_ATTACHMENT_FILES * (
 # set_model override for auto, so titling runs on the backend-resolved entitled
 # model instead of a literal the account may not have.
 _TITLE_MODEL = "auto"
+#: Bound on one title call, initial or refresh: the same 30 s the folder icon and
+#: folder suggestion one-liners use. A title that misses it falls back as on error.
+_TITLE_TIMEOUT_SECS = 30.0
 
 # Per-word delay for the word-by-word title reveal animation. LLM chunk
 # streaming arrives in a sub-second burst (too fast to perceive), so the reveal
@@ -819,6 +822,7 @@ async def _generate_title_via_kiro(
         state.sessions,
         prompt,
         model=_TITLE_MODEL,
+        timeout=_TITLE_TIMEOUT_SECS,
         crew_log_kind="title",
         crew_log_session_key=session_key,
     )
@@ -853,6 +857,7 @@ async def _generate_refreshed_title(
         state.sessions,
         prompt,
         model=_TITLE_MODEL,
+        timeout=_TITLE_TIMEOUT_SECS,
         crew_log_kind="title",
         crew_log_session_key=session_key,
     )
