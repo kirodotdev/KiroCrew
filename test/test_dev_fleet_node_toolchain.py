@@ -165,7 +165,7 @@ def test_warm_build_path_is_idempotent(node_dir):
 @pytest.mark.parametrize(
     "fn",
     [
-        "_pod_up",
+        "_pod_up_locked",
         "_pod_down",
         "_pod_provision",
         "_sync_start_locked",

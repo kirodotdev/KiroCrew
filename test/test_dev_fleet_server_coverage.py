@@ -816,24 +816,36 @@ def allow_pod(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_pod_up_refused_by_guard(monkeypatch):
+    monkeypatch.setattr(
+        repository, "_find_worktree", AsyncMock(return_value=({"path": "/w"}, None))
+    )
     monkeypatch.setattr(worktree_ops, "_pod_checkout_guard", AsyncMock(return_value="nope"))
     assert await worktree_ops._pod_up("feat") == {"ok": False, "error": "nope"}
 
 
 @pytest.mark.asyncio
 async def test_pod_up_cli_failure_is_reported(monkeypatch, allow_pod):
+    monkeypatch.setattr(
+        repository, "_find_worktree", AsyncMock(return_value=({"path": "/w"}, None))
+    )
     monkeypatch.setattr(runtime, "_run_cmd", AsyncMock(return_value=(1, "", "boom")))
     assert await worktree_ops._pod_up("feat") == {"ok": False, "error": "boom"}
 
 
 @pytest.mark.asyncio
 async def test_pod_up_non_json_output_still_ok(monkeypatch, allow_pod):
+    monkeypatch.setattr(
+        repository, "_find_worktree", AsyncMock(return_value=({"path": "/w"}, None))
+    )
     monkeypatch.setattr(runtime, "_run_cmd", AsyncMock(return_value=(0, "not json", "")))
     assert await worktree_ops._pod_up("feat") == {"ok": True, "output": "not json"}
 
 
 @pytest.mark.asyncio
 async def test_pod_up_json_output_is_merged(monkeypatch, allow_pod):
+    monkeypatch.setattr(
+        repository, "_find_worktree", AsyncMock(return_value=({"path": "/w"}, None))
+    )
     monkeypatch.setattr(runtime, "_run_cmd", AsyncMock(return_value=(0, '{"port": 9999}', "")))
     assert await worktree_ops._pod_up("feat") == {"ok": True, "port": 9999}
 
