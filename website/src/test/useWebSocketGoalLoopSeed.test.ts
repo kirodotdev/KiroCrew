@@ -17,6 +17,7 @@ import { createTestStore } from './helpers'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { api } from '../api/client'
 import { normalizeAutomationRecord } from '../monitoring/automation'
+import monitorContract from '../monitoring/contract.json'
 import { removeAutomation, sseAutomation } from '../store/chatSlice'
 
 /** Resolved by hand inside the test so the in-flight window is controllable. */
@@ -74,7 +75,7 @@ const TERMINAL_MONITOR = {
   max_cycles: 0, cycle_count: 0, active: false, last_fire_ts: 0, next_due_ts: 0,
   stopped_reason: 'token_budget',
   monitor: {
-    version: 1, config_generation: 1, kind: 'github_pull_request',
+    version: monitorContract.monitorStateVersion, config_generation: 1, kind: 'github_pull_request',
     target: 'https://github.com/kirodotdev/KiroCrew/pull/42', objective: 'review_ready',
     budgets: {
       max_runtime_secs: 14_400, max_agent_turns: 8, max_tokens: 250_000,

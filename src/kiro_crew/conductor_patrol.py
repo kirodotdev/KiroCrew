@@ -10,7 +10,9 @@ ledger nobody read. Two pieces close the gap:
   patrol through the same chokepoint an agent's own ``monitor_start`` uses
   (``autonudge_authz.authorize_and_add_nudge``), create-only, so an existing
   loop -- active, paused or stopped and retained by a person -- is never
-  displaced or stacked. A refusal is logged at WARNING and never fails the bind.
+  displaced or stacked. A refusal is logged at WARNING and never fails the bind;
+  the shutdown refusal a bind racing the gateway's teardown meets is logged at
+  DEBUG instead.
   The loop is tagged ``default_patrol``: the conductor's own later
   ``monitor_start`` replaces it rather than meeting a 409.
 * :func:`has_active_patrol` -- read by ``work_ledger_read`` to flag each open
@@ -162,6 +164,7 @@ async def ensure_patrol(state: Any, conductor_key: str) -> str:
             return EXISTING
         from kiro_crew.autonudge import is_channel_key
         from kiro_crew.autonudge_authz import authorize_and_add_nudge
+        from kiro_crew.autonudge_service.model import SERVICE_SHUTTING_DOWN_MESSAGE
         from kiro_crew.monitoring.models import MonitorCreationSurface
 
         _armed, error, status = await authorize_and_add_nudge(
@@ -194,6 +197,18 @@ async def ensure_patrol(state: Any, conductor_key: str) -> str:
         logger.warning("conductor patrol arm failed for %s", conductor_key, exc_info=True)
         return REFUSED
     if error is not None:
+        if (
+            status == 503
+            and error == SERVICE_SHUTTING_DOWN_MESSAGE
+            and getattr(svc, "_accepting_mutations", True) is False
+        ):
+            # The gateway is shutting down: ``add`` returned its canonical admission
+            # refusal after closure. Other 503s (audit or credential outages) remain
+            # warnings even when they race the same closed-admission window.
+            logger.debug(
+                "conductor patrol not armed for %s: auto-nudge is shutting down", conductor_key
+            )
+            return REFUSED
         logger.warning(
             "conductor patrol arm refused for %s: %s [status %s]", conductor_key, error, status
         )

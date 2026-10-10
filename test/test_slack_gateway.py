@@ -21,9 +21,14 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 import pytest
 from wheel_update_test_helpers import ARTIFACT_BASE, FEED_BASE, wire_wheel_apply
 
-from kiro_crew.autonudge import NudgeLoop
+from kiro_crew.autonudge import AutoNudgeService, NudgeLoop
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.handlers import updates as dashboard_updates
+from kiro_crew.monitoring.models import (
+    MonitorActionCompletion,
+    MonitorActionDisposition,
+    MonitorState,
+)
 from kiro_crew.slack import gateway as gw
 from kiro_crew.slack.gateway import (
     _CRON_MSG_LIMIT,
@@ -76,8 +81,8 @@ async def _until_set_while_progressing(event, progress, what: str) -> None:
         await asyncio.sleep(0.05)
 
 
-async def _within_lost_run(awaitable, what: str):
-    """Await *awaitable* under ``_LOST_RUN_SECS``; on expiry fail naming *what*.
+async def _within_lost_run(awaitable, what: str, *, timeout: float = _LOST_RUN_SECS):
+    """Await *awaitable* under a lost-run ceiling; fail naming *what* on expiry.
 
     A bare ``wait_for`` raises an empty ``TimeoutError``. This one says what never
     finished, the ceiling and the elapsed time. A ``TimeoutError`` the awaited code
@@ -85,14 +90,14 @@ async def _within_lost_run(awaitable, what: str):
     """
     started = time.monotonic()
     try:
-        return await asyncio.wait_for(awaitable, _LOST_RUN_SECS)
+        return await asyncio.wait_for(awaitable, timeout)
     except asyncio.TimeoutError:
         elapsed = time.monotonic() - started
         # A loop timer can fire up to one clock tick early (15.6 ms on Windows 3.12).
-        if elapsed < _LOST_RUN_SECS - 1.0:
+        if elapsed < timeout - 1.0:
             raise
         pytest.fail(
-            f"{what} did not finish within the {_LOST_RUN_SECS:.0f}s lost-run ceiling "
+            f"{what} did not finish within the {timeout:.0f}s lost-run ceiling "
             f"({elapsed:.1f}s elapsed)"
         )
 
@@ -1016,6 +1021,344 @@ class TestShutdown:
         await orch._shutdown()  # should not raise
 
     @pytest.mark.asyncio
+    async def test_shutdown_awaits_autonudge_drain(self):
+        orch = _make_orchestrator()
+        orch.autonudge_svc = MagicMock()
+        orch.autonudge_svc.shutdown = AsyncMock()
+
+        await orch._shutdown()
+
+        orch.autonudge_svc.shutdown.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_shutdown_drains_autonudge_before_session_storage_close(self):
+        orch = _make_orchestrator()
+        started = asyncio.Event()
+        release = asyncio.Event()
+        order: list[str] = []
+
+        async def drain_autonudge():
+            order.append("autonudge-start")
+            started.set()
+            await _within_lost_run(release.wait(), "the AutoNudge drain release")
+            order.append("autonudge-durable")
+
+        async def close_sessions():
+            order.append("sessions-close")
+
+        orch.autonudge_svc = MagicMock()
+        orch.autonudge_svc.shutdown = AsyncMock(side_effect=drain_autonudge)
+        orch.sessions = _mock_sessions()
+        orch.sessions.close_all = AsyncMock(side_effect=close_sessions)
+
+        shutdown = asyncio.create_task(orch._shutdown())
+        await _within_lost_run(started.wait(), "the AutoNudge drain start")
+        await asyncio.sleep(0)
+        assert "sessions-close" not in order
+
+        release.set()
+        await _within_lost_run(shutdown, "the shutdown waiting on the AutoNudge drain")
+
+        assert order.index("autonudge-durable") < order.index("sessions-close")
+
+    @pytest.mark.asyncio
+    async def test_shutdown_keeps_autonudge_published_through_dashboard_cleanup(
+        self, tmp_path, monkeypatch
+    ):
+        """A close still reaches the closed service until the dashboard is gone."""
+        from kiro_crew import autonudge as autonudge_module
+
+        monkeypatch.setenv("KIROCREW_AUTONUDGE", "1")
+        service = AutoNudgeService(base_dir=tmp_path)
+        await _within_lost_run(service.start(), "the AutoNudge test service start")
+        observed: list[tuple[bool, object | None]] = []
+
+        async def cleanup_dashboard():
+            observed.append((service._accepting_mutations, autonudge_module.get_instance()))
+
+        orch = _make_orchestrator()
+        orch.autonudge_svc = service
+        orch._dashboard_runner = MagicMock()
+        orch._dashboard_runner.cleanup = AsyncMock(side_effect=cleanup_dashboard)
+        try:
+            await _within_lost_run(
+                orch._shutdown(),
+                "gateway shutdown through dashboard cleanup",
+            )
+            assert observed == [
+                (False, service)
+            ], "the singleton was withdrawn before the dashboard runner stopped"
+            assert (
+                autonudge_module.get_instance() is None
+            ), "the singleton survived the completed gateway shutdown"
+        finally:
+            service.stop()
+
+    @pytest.mark.asyncio
+    async def test_interrupted_shutdown_keeps_autonudge_published_through_owned_cleanup(
+        self, tmp_path, monkeypatch
+    ):
+        """The owned teardown task has the same publication boundary."""
+        from kiro_crew import autonudge as autonudge_module
+
+        monkeypatch.setenv("KIROCREW_AUTONUDGE", "1")
+        service = AutoNudgeService(base_dir=tmp_path)
+        await _within_lost_run(service.start(), "the interrupted AutoNudge test start")
+        drained = asyncio.Event()
+        real_shutdown = service.shutdown
+
+        async def interrupt_after_drain():
+            await real_shutdown()
+            drained.set()
+            raise asyncio.CancelledError()
+
+        observed: list[tuple[bool, object | None]] = []
+
+        async def cleanup_dashboard():
+            observed.append((drained.is_set(), autonudge_module.get_instance()))
+
+        monkeypatch.setattr(service, "shutdown", interrupt_after_drain)
+        orch = _make_orchestrator()
+        orch.autonudge_svc = service
+        orch._dashboard_runner = MagicMock()
+        orch._dashboard_runner.cleanup = AsyncMock(side_effect=cleanup_dashboard)
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await _within_lost_run(
+                    orch._shutdown(),
+                    "the interrupted gateway's owned teardown",
+                )
+            assert observed == [
+                (True, service)
+            ], "the owned teardown withdrew the singleton before dashboard cleanup"
+            assert (
+                autonudge_module.get_instance() is None
+            ), "the singleton survived the completed owned teardown"
+        finally:
+            service.stop()
+
+    @pytest.mark.asyncio
+    async def test_started_dashboard_accounting_is_durable_before_session_close(
+        self,
+        tmp_path,
+    ):
+        service = AutoNudgeService(base_dir=tmp_path)
+        loop = NudgeLoop(
+            id="monitor1",
+            slot_key="chat-1-123",
+            message="inspect the changed pull request",
+            monitor=MonitorState(
+                kind="github_pull_request",
+                target="owner/repo#123",
+                objective="review_ready",
+                created_ts=1_000.0,
+            ),
+        )
+        service._loops[loop.id] = loop
+        assert await service.mark_monitor_action_in_flight(
+            loop.id,
+            "failure-a",
+            now=1_100.0,
+        )
+        await service._lock.acquire()
+        completion = asyncio.create_task(
+            service.record_monitor_turn_completion(
+                MonitorActionCompletion(
+                    monitor_id=loop.id,
+                    fingerprint="failure-a",
+                    disposition=MonitorActionDisposition.SUCCESS,
+                    completed_ts=1_120.0,
+                    input_tokens=12,
+                    output_tokens=4,
+                )
+            )
+        )
+        for _ in range(100):
+            if service._inflight_adds:
+                break
+            await asyncio.sleep(0)
+        else:
+            raise AssertionError("dashboard accounting never entered the service drain")
+
+        sessions = _mock_sessions()
+
+        async def close_sessions():
+            assert service._inflight_adds == set()
+            restored = AutoNudgeService(base_dir=tmp_path)
+            await asyncio.to_thread(restored._load)
+            restored_loop = restored.get_by_id(loop.id)
+            assert restored_loop is not None and restored_loop.monitor is not None
+            assert restored_loop.monitor.agent_turns == 1
+            assert restored_loop.monitor.total_tokens == 16
+
+        sessions.close_all = AsyncMock(side_effect=close_sessions)
+        orch = _make_orchestrator()
+        orch.autonudge_svc = service
+        orch.sessions = sessions
+
+        async def release_after_shutdown_closes_admission():
+            async def wait_for_closed_admission():
+                while service._accepting_mutations:
+                    await asyncio.sleep(0)
+
+            await asyncio.wait_for(wait_for_closed_admission(), timeout=_LOST_RUN_SECS)
+            sessions.close_all.assert_not_awaited()
+            service._lock.release()
+
+        release = asyncio.create_task(release_after_shutdown_closes_admission())
+        shutdown = asyncio.create_task(orch._shutdown())
+        try:
+            await _within_lost_run(shutdown, "shutdown after dashboard accounting")
+            await _within_lost_run(completion, "dashboard completion accounting")
+            await _within_lost_run(release, "the admission-close release task")
+        finally:
+            if service._lock.locked():
+                service._lock.release()
+            pending = [task for task in (completion, release, shutdown) if not task.done()]
+            for task in pending:
+                task.cancel()
+            if pending:
+                await _within_lost_run(
+                    asyncio.gather(*pending, return_exceptions=True),
+                    "the dashboard accounting test cleanup",
+                )
+
+        sessions.close_all.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_autonudge_shutdown_continues_gateway_cleanup(self):
+        orch = _make_orchestrator()
+        started = asyncio.Event()
+        release = asyncio.Event()
+        drained = asyncio.Event()
+
+        async def durable_shutdown():
+            started.set()
+            drain = asyncio.create_task(
+                _within_lost_run(release.wait(), "the durable AutoNudge drain release")
+            )
+            interrupted = False
+            try:
+                await asyncio.shield(drain)
+            except asyncio.CancelledError:
+                interrupted = True
+                while not drain.done():
+                    try:
+                        await asyncio.shield(drain)
+                    except asyncio.CancelledError:
+                        continue
+            drained.set()
+            if interrupted:
+                raise asyncio.CancelledError()
+
+        orch.autonudge_svc = MagicMock()
+        orch.autonudge_svc.shutdown = AsyncMock(side_effect=durable_shutdown)
+        orch.cron_svc = MagicMock()
+        orch.cron_svc.stop = AsyncMock()
+        orch.heartbeat_svc = MagicMock()
+        orch.heartbeat_svc.stop = MagicMock()
+
+        shutdown = asyncio.create_task(orch._shutdown())
+        await _within_lost_run(started.wait(), "the cancellable AutoNudge drain start")
+        shutdown.cancel()
+        await asyncio.sleep(0)
+        assert not shutdown.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await _within_lost_run(shutdown, "the cancelled AutoNudge drain")
+
+        assert drained.is_set()
+        orch.cron_svc.stop.assert_awaited_once()
+        orch.heartbeat_svc.stop.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_teardown_after_an_interrupted_autonudge_drain_stops_at_the_graceful_deadline(
+        self, monkeypatch
+    ):
+        """The drain absorbs the graceful bound's one cancellation to finish its
+        writes, so the teardown after it must carry that bound itself: a slow step is
+        cut at the deadline instead of running unbounded past it."""
+        monkeypatch.setattr(gw, "GRACEFUL_SHUTDOWN_SECS", 0.3)
+        orch = _make_orchestrator()
+        cron_cut = asyncio.Event()
+
+        async def interrupted_drain():
+            raise asyncio.CancelledError()
+
+        async def slow_cron_stop():
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cron_cut.set()
+                raise
+
+        orch.autonudge_svc = MagicMock()
+        orch.autonudge_svc.shutdown = AsyncMock(side_effect=interrupted_drain)
+        orch.cron_svc = MagicMock()
+        orch.cron_svc.stop = AsyncMock(side_effect=slow_cron_stop)
+        orch.sessions = _mock_sessions()
+
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(orch._shutdown(), timeout=5)
+        await _within_lost_run(cron_cut.wait(), "the graceful teardown cancellation")
+
+        assert cron_cut.is_set()
+        orch.sessions.close_all.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_teardown_bound_survives_a_step_that_swallows_its_cancellation(self, monkeypatch):
+        """The deadline belongs to the waiter, not to the teardown step's await."""
+        monkeypatch.setattr(gw, "GRACEFUL_SHUTDOWN_SECS", 0.3)
+        orch = _make_orchestrator()
+        cron_cut = asyncio.Event()
+        release_swallowed_cancel = asyncio.Event()
+        teardown_tasks: list[asyncio.Task] = []
+
+        async def interrupted_drain():
+            raise asyncio.CancelledError()
+
+        async def swallowing_cron_stop():
+            task = asyncio.current_task()
+            assert task is not None
+            teardown_tasks.append(task)
+            release = asyncio.create_task(
+                _within_lost_run(
+                    release_swallowed_cancel.wait(),
+                    "the cancellation-swallowing teardown stub release",
+                )
+            )
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cron_cut.set()
+                await release
+
+        orch.autonudge_svc = MagicMock()
+        orch.autonudge_svc.shutdown = AsyncMock(side_effect=interrupted_drain)
+        orch.cron_svc = MagicMock()
+        orch.cron_svc.stop = AsyncMock(side_effect=swallowing_cron_stop)
+        orch.sessions = _mock_sessions()
+
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(orch._shutdown(), timeout=5)
+            await _within_lost_run(
+                cron_cut.wait(), "the cancellation-swallowing teardown cancellation"
+            )
+
+            assert cron_cut.is_set()
+            orch.sessions.close_all.assert_not_awaited()
+        finally:
+            release_swallowed_cancel.set()
+            for task in teardown_tasks:
+                task.cancel()
+            if teardown_tasks:
+                await _within_lost_run(
+                    asyncio.gather(*teardown_tasks, return_exceptions=True),
+                    "the cancellation-swallowing teardown stub cleanup",
+                )
+
+    @pytest.mark.asyncio
     async def test_shutdown_stops_cron(self):
         orch = _make_orchestrator()
         orch.cron_svc = MagicMock()
@@ -1073,6 +1416,69 @@ class TestShutdown:
         orch._dashboard_runner = None
         await orch._shutdown()
         assert task.cancelled()
+
+    @pytest.mark.asyncio
+    async def test_handler_removal_cannot_keep_shutdown_from_autonudge_drain(self, monkeypatch):
+        """A cancellation-absorbing handler is awaited only after the drain."""
+        monkeypatch.setattr(gw, "GRACEFUL_SHUTDOWN_SECS", 0.05)
+        orch = _make_orchestrator()
+        remove_entered = asyncio.Event()
+        remove_cancelled = asyncio.Event()
+        release_remove = asyncio.Event()
+        drain_reached = asyncio.Event()
+
+        async def absorbing_remove(_loop_id):
+            remove_entered.set()
+            release = asyncio.create_task(
+                _within_lost_run(release_remove.wait(), "the handler-removal stub release")
+            )
+            while not release.done():
+                try:
+                    await asyncio.shield(release)
+                except asyncio.CancelledError:
+                    remove_cancelled.set()
+            await release
+
+        async def interrupted_drain():
+            drain_reached.set()
+            raise asyncio.CancelledError()
+
+        service = MagicMock()
+        service.remove = AsyncMock(side_effect=absorbing_remove)
+        service.shutdown = AsyncMock(side_effect=interrupted_drain)
+        orch.autonudge_svc = service
+        orch.sessions = _mock_sessions()
+        handler = asyncio.create_task(service.remove("loop-wedged-removal"))
+        orch._handler_tasks.add(handler)
+        handler.add_done_callback(orch._handler_tasks.discard)
+        await asyncio.wait_for(remove_entered.wait(), timeout=_LOST_RUN_SECS)
+
+        shutdown = asyncio.create_task(orch._shutdown())
+        owned_teardown: list[asyncio.Task] = []
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await _within_lost_run(
+                    shutdown,
+                    "gateway shutdown with a cancellation-absorbing handler removal",
+                )
+            await asyncio.wait_for(drain_reached.wait(), timeout=_LOST_RUN_SECS)
+            await asyncio.wait_for(remove_cancelled.wait(), timeout=_LOST_RUN_SECS)
+            service.shutdown.assert_awaited_once_with()
+            orch.sessions.close_all.assert_not_awaited()
+            owned_teardown = [
+                task
+                for task in asyncio.all_tasks()
+                if task is not asyncio.current_task()
+                and task.get_name() == "gateway-shutdown-teardown"
+            ]
+        finally:
+            release_remove.set()
+            await _within_lost_run(handler, "the released handler removal")
+            if owned_teardown:
+                await _within_lost_run(
+                    asyncio.gather(*owned_teardown, return_exceptions=True),
+                    "the cancelled owned teardown",
+                )
 
     @pytest.mark.asyncio
     async def test_shutdown_cancels_and_reaps_console_script_repair(self, tmp_path):

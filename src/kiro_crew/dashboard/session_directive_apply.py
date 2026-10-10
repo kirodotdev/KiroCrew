@@ -1062,9 +1062,18 @@ async def _monitor_update(
         #
         # Expressed ONCE, as a term in the revival decision itself, rather than as a
         # guard per branch: a per-branch guard loses this precedence as soon as a
-        # new bound is added ahead of it.
+        # new bound is added ahead of it. A turn that already LANDED keeps the same
+        # fact in ``terminal_delivered`` until its settlement runs, so both count.
         monitor = getattr(loop, "monitor", None)
-        owed = str(getattr(monitor, "terminal_pending", "") or "") if monitor else ""
+        owed = (
+            str(
+                getattr(monitor, "terminal_pending", "")
+                or getattr(monitor, "terminal_delivered", "")
+                or ""
+            )
+            if monitor
+            else ""
+        )
         terminal = reason == MONITOR_TERMINAL_REASON or bool(owed)
         # A settled outcome wins; the debt is the fallback that keeps the
         # merged-vs-closed distinction available before the settlement lands. Both

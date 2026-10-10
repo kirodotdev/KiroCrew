@@ -16,8 +16,13 @@ import math
 import secrets
 import time
 from dataclasses import dataclass, field
+from enum import Enum
+from typing import TYPE_CHECKING, Any, Literal
 
 from kiro_crew.monitoring.models import MonitorOutcome, MonitorState, retained_outcome_blocks_rearm
+
+if TYPE_CHECKING:
+    import asyncio
 
 #: ``stopped_reason`` for a loop whose watched subject finished (a merged or
 #: closed pull request). Distinct from the bound reasons because there is nothing
@@ -36,9 +41,23 @@ MONITOR_TERMINAL_REASON = "monitor_terminal"
 #: unchanged here), so the record is KEPT and deactivated under this reason rather
 #: than removed -- a removed row left the goal popover on its empty form with
 #: nothing saying the goal was met.
-#: The stop file itself is left where it was written; the arm path unlinks it
-#: before a new loop is armed on the slot (``authorize_and_add_nudge``).
+#: The stop file itself is left where it was written. A replacement arm retires
+#: the stale file inside its add transaction, after the replacement row commits
+#: and before its timer is published.
 STOP_SENTINEL_REASON = "stop_sentinel"
+
+#: ``stopped_reason`` for a provisional stale-sentinel replacement. Every
+#: two-phase add commits the replacement inactive and timerless under this reason
+#: before cleanup; the reason is retained when cleanup or activation persistence
+#: fails, including when the stale file was removed successfully. This is
+#: system-imposed and may be displaced by a later re-arm after recovery.
+STALE_SENTINEL_CLEANUP_FAILED_REASON = "stale_sentinel_cleanup_failed"
+
+#: The event ``update`` emits, in place of ``updated``, when it revives a row parked
+#: under :data:`STALE_SENTINEL_CLEANUP_FAILED_REASON`. That row's inactive ``added``
+#: was announced as a stopped patrol, and the revival clears the reason an observer
+#: would read, so it needs a name of its own for the patrol to read started again.
+PARKED_ROW_REVIVED_EVENT = "parked_row_revived"
 
 #: The two FINISHED stops -- the agent created its stop file, or the watched
 #: subject merged or closed. Terminal in a way the bounds are not: there is nothing
@@ -152,8 +171,81 @@ class AutoNudgeStaleBaseline(RuntimeError):
     """
 
 
+#: Stable caller-facing text for the admission refusal raised after shutdown closes.
+#: Authorizers return it unchanged, so callers that must distinguish this 503 from
+#: audit or credential outages compare against this value rather than copying text.
+SERVICE_SHUTTING_DOWN_MESSAGE = "AutoNudge service is shutting down"
+
+
+class NudgeAdmissionReason(str, Enum):
+    """The typed causes an admission refusal can expose at a caller boundary."""
+
+    SESSION_CHANGED = "session_changed"
+    SERVICE_SHUTTING_DOWN = "service_shutting_down"
+    PERSISTENCE_LEASE_CONSUMED = "persistence_lease_consumed"
+
+
 class NudgeAdmissionRefused(RuntimeError):
-    """The session authorized for an arm disappeared before its commit point."""
+    """A mutation cannot enter or finish under its requested admission."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: NudgeAdmissionReason = NudgeAdmissionReason.SESSION_CHANGED,
+    ) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+class StaleStopSentinelCleanupFailed(RuntimeError):
+    """A provisional replacement remains inactive because its stale file stayed."""
+
+    def __init__(self, path: str, loop_id: str) -> None:
+        self.path = path
+        self.loop_id = loop_id
+        super().__init__(f"could not retire stale stop sentinel {path}")
+
+
+class StaleStopSentinelActivationFailed(RuntimeError):
+    """A provisional replacement remains inactive because activation did not persist."""
+
+    def __init__(self, path: str, loop_id: str) -> None:
+        self.path = path
+        self.loop_id = loop_id
+        super().__init__(f"could not persist activation after retiring stale stop sentinel {path}")
+
+
+@dataclass
+class _MutationAdmission:
+    """One service-generation lease for durable mutation writes.
+
+    Captured by a mutation before its first await, so a shutdown that closes
+    admission while the caller waits on a lock still lets that already-admitted
+    owner reach its durable boundary. ``generation`` ties the lease to one
+    ``start()``; a single-use lease (the default) admits exactly one store write,
+    while a timer callback that crossed its post-sleep boundary holds a
+    multi-write lease for the writes its own task makes (``owner_task``).
+    """
+
+    generation: int
+    owner_task: "asyncio.Task[Any] | None" = None
+    allow_multiple_persistence: bool = False
+    persistence_submitted: bool = False
+
+
+@dataclass
+class _TransactionSubmissions:
+    """How many store writes one admitted transaction has started.
+
+    ``_run_admitted_transaction`` creates one for the child it supervises and carries
+    it in that child's copied context, so only a write the transaction itself starts
+    counts. A detached write under the same lease runs in another context and leaves
+    it untouched. The caller's cancellation hold reads it: a caller cancelled before
+    this transaction submitted anything leaves at once.
+    """
+
+    count: int = 0
 
 
 # The two stops where a bound the user typed ran out, each the ending ``_timer``
@@ -184,6 +276,7 @@ _TERMINAL_BOUND_REASONS = _BUDGET_EXHAUSTED_REASONS | {
     STRUCTURAL_TERMINAL_REASON,
     SESSION_START_FAILURE_REASON,
     CONSECUTIVE_FAILURE_REASON,
+    STALE_SENTINEL_CLEANUP_FAILED_REASON,
 }
 
 
@@ -242,10 +335,12 @@ def _stopped_row_is_replaceable(loop: "NudgeLoop") -> bool:
     Unknown outcomes and reasons are treated as evidence (fail closed).
 
     An EMPTY reason is evidence too: a pause recorded before the reason field
-    existed carries one, and the store holds nothing that tells it apart from a
-    torn write. The torn shape that CAN be told apart — no reason AND a live
-    deadline — is resumed by ``_load`` (``_is_torn_deactivation``) before any
-    re-arm asks, so refusing here costs nothing for that case.
+    existed carries one. Current two-phase adds persist their provisional row
+    under ``stale_sentinel_cleanup_failed``, so an interrupted add is marked as
+    a system-imposed, replaceable pause. The torn shape that CAN be told apart —
+    no reason AND a live deadline — is resumed by ``_load``
+    (``_is_torn_deactivation``) before any re-arm asks, so refusing here costs
+    nothing for that case.
     """
     state = loop.monitor
     if state is not None and state.outcome is not None:
@@ -469,9 +564,12 @@ class NudgeLoop:
     # "manual" (user pause / any caller that didn't say otherwise),
     # "autonudge_stop" (deliberate directive), "cycle_cap",
     # "runtime_budget", or "approval_stalled" (set by _timer's terminal
-    # bounds), "stop_sentinel" (the stop file existed when _timer woke) or
-    # "monitor_terminal" (the watched subject merged or closed). "approval_stalled"
-    # is from before approval stalls became a hold; it is still read on old rows.
+    # bounds), "stale_sentinel_cleanup_failed" (set before a two-phase add's
+    # provisional snapshot and retained when cleanup or activation persistence
+    # fails), "stop_sentinel" (the stop file existed when _timer woke), or
+    # "monitor_terminal" (the watched subject merged or closed).
+    # "approval_stalled" is from before approval stalls became a hold; it is
+    # still read on old rows.
     # Persisted so revival logic can distinguish a manual pause from a bound
     # expiry — elapsed wall-clock keeps growing after a manual pause, so
     # WITHOUT this record a paused loop whose budget has since elapsed is
@@ -640,6 +738,36 @@ def terminal_notification_delivery_matches(
 
 class MonitorUpdateConflict(ValueError):
     """A structured mutation would break active action correlation."""
+
+
+class MonitorCredentialFollowUpFailed(RuntimeError):
+    """A committed monitor update's credential follow-up failed."""
+
+    def __init__(
+        self,
+        loop: NudgeLoop,
+        *,
+        kind: Literal["revoke", "grant"],
+        rolled_back: bool,
+    ) -> None:
+        self.loop = loop
+        self.kind = kind
+        self.rolled_back = rolled_back
+        super().__init__(f"monitor credential {kind} follow-up failed")
+
+
+class MonitorCredentialRollbackFailed(RuntimeError):
+    """A credential follow-up and its monitor compensation both failed."""
+
+    def __init__(
+        self,
+        loop: NudgeLoop,
+        *,
+        kind: Literal["revoke", "grant"],
+    ) -> None:
+        self.loop = loop
+        self.kind = kind
+        super().__init__(f"monitor credential {kind} rollback failed")
 
 
 def runtime_budget_exceeded(loop: "NudgeLoop", now: float | None = None) -> bool:

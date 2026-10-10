@@ -103,7 +103,12 @@ class TestGatewayUpdateCheckIsBackgrounded:
             "the fire-and-forget task must be strongly referenced or it can be "
             "garbage-collected mid-flight"
         )
-        shutdown_src = inspect.getsource(GatewayOrchestrator._shutdown)
+        assert "self._stop_services_and_sessions(" in inspect.getsource(
+            GatewayOrchestrator._shutdown
+        )
+        shutdown_src = inspect.getsource(GatewayOrchestrator._shutdown) + inspect.getsource(
+            GatewayOrchestrator._stop_services_and_sessions
+        )
         assert "update_task = self._update_check_task" in shutdown_src
         assert "update_task.cancel()" in shutdown_src
         assert "_cancel_update_check()" in shutdown_src

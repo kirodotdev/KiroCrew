@@ -629,9 +629,14 @@ async def _persist_judge_state(self: AutoNudgeService, loop: NudgeLoop) -> bool:
     runs as a SHIELDED supervised task: the cancellation reaches this frame while
     the write keeps the lock and drains through ``_inflight_adds``.
     ``CancelledError`` is not caught -- the caller going away is not a
-    persistence failure, and swallowing it would break cancellation.
+    persistence failure, and swallowing it would break cancellation. The inner
+    task is a different task from the admitted timer callback, so the callback's
+    lease is handed to it explicitly; a contextvar copy alone would not be
+    recognised as the owner's.
     """
-    inner: "asyncio.Task[None]" = asyncio.ensure_future(self._persist_locked())
+    inner: "asyncio.Task[None]" = asyncio.ensure_future(
+        self._persist_locked(admission=self._effective_admission(None))
+    )
     self._inflight_adds.add(inner)
 
     def _finish(t: "asyncio.Task[None]") -> None:

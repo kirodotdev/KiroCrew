@@ -1504,6 +1504,208 @@ class TestStartupReconcile:
         assert eventlog_hooks.reconcile_members_at_startup(cfg, state, autonudge) == 0
         assert svc.last_seq(slug) == seq_after
 
+    def test_a_provisional_stale_sentinel_row_closes_the_armed_patrol(self):
+        """Snapshot one is an inactive provisional row, even if the process
+        died before its ``added`` frame could publish ``patrol/stopped``."""
+        from kiro_crew.autonudge import (
+            STALE_SENTINEL_CLEANUP_FAILED_REASON,
+            NudgeLoop,
+        )
+
+        cfg = _fake_config({CREW: _agent()})
+        slug = members.slug_for_name(CREW)
+        svc = get_service()
+        svc.ensure(slug, CREW)
+        _seed_config_baseline(svc, slug, cfg.agents[CREW])
+        slot_key = "member-code-reviewer"
+        svc.append(slug, types.PATROL_STARTED, {"slot_key": slot_key})
+        provisional = NudgeLoop(
+            id="provisional",
+            slot_key=slot_key,
+            message="patrol",
+            active=False,
+            stopped_reason=STALE_SENTINEL_CLEANUP_FAILED_REASON,
+            next_due_ts=0.0,
+        )
+
+        wrote = eventlog_hooks.reconcile_members_at_startup(
+            cfg,
+            SimpleNamespace(_slots={}),
+            SimpleNamespace(get_by_slot=lambda key: provisional if key == slot_key else None),
+        )
+
+        assert wrote == 1
+        wake = svc.snapshot(slug)["values"][types.PROJ_WAKE]
+        assert wake["patrol"] == "stopped"
+        newest = svc.history(slug, before=None, limit=1)[0]
+        assert newest["type"] == types.PATROL_STOPPED
+        assert newest["data"]["reason"] == "interrupted"
+
+    def test_an_activated_provisional_row_declines_the_startup_closer(self):
+        from kiro_crew.autonudge import (
+            STALE_SENTINEL_CLEANUP_FAILED_REASON,
+            NudgeLoop,
+        )
+
+        cfg = _fake_config({CREW: _agent()})
+        slug = members.slug_for_name(CREW)
+        svc = get_service()
+        svc.ensure(slug, CREW)
+        _seed_config_baseline(svc, slug, cfg.agents[CREW])
+        slot_key = "member-code-reviewer"
+        svc.append(slug, types.PATROL_STARTED, {"slot_key": slot_key})
+        provisional = NudgeLoop(
+            id="provisional",
+            slot_key=slot_key,
+            message="patrol",
+            active=False,
+            stopped_reason=STALE_SENTINEL_CLEANUP_FAILED_REASON,
+            next_due_ts=0.0,
+        )
+        reads = 0
+
+        def get_by_slot(key):
+            nonlocal reads
+            reads += 1
+            if reads > 1:
+                provisional.active = True
+                provisional.stopped_reason = ""
+            return provisional if key == slot_key else None
+
+        seq_before = svc.last_seq(slug)
+        wrote = eventlog_hooks.reconcile_members_at_startup(
+            cfg,
+            SimpleNamespace(_slots={}),
+            SimpleNamespace(get_by_slot=get_by_slot),
+        )
+
+        assert reads == 2, "the guarded closer did not re-read the live loop"
+        assert wrote == 0
+        assert svc.last_seq(slug) == seq_before
+        wake = svc.snapshot(slug)["values"][types.PROJ_WAKE]
+        assert wake["patrol"] == "armed"
+        assert wake["slot_key"] == slot_key
+
+    def test_a_plain_pause_before_the_guarded_write_declines_startup_closer(self):
+        from kiro_crew.autonudge import (
+            STALE_SENTINEL_CLEANUP_FAILED_REASON,
+            NudgeLoop,
+        )
+
+        cfg = _fake_config({CREW: _agent()})
+        slug = members.slug_for_name(CREW)
+        svc = get_service()
+        svc.ensure(slug, CREW)
+        _seed_config_baseline(svc, slug, cfg.agents[CREW])
+        slot_key = "member-code-reviewer"
+        svc.append(slug, types.PATROL_STARTED, {"slot_key": slot_key})
+        provisional = NudgeLoop(
+            id="provisional",
+            slot_key=slot_key,
+            message="patrol",
+            active=False,
+            stopped_reason=STALE_SENTINEL_CLEANUP_FAILED_REASON,
+            next_due_ts=0.0,
+        )
+        reads = 0
+
+        def get_by_slot(key):
+            nonlocal reads
+            reads += 1
+            if reads > 1:
+                provisional.stopped_reason = ""
+            return provisional if key == slot_key else None
+
+        seq_before = svc.last_seq(slug)
+        wrote = eventlog_hooks.reconcile_members_at_startup(
+            cfg,
+            SimpleNamespace(_slots={}),
+            SimpleNamespace(get_by_slot=get_by_slot),
+        )
+
+        assert reads == 2, "the guarded closer did not re-read the live loop"
+        assert wrote == 0
+        assert svc.last_seq(slug) == seq_before
+        wake = svc.snapshot(slug)["values"][types.PROJ_WAKE]
+        assert wake["patrol"] == "armed"
+        assert wake["slot_key"] == slot_key
+
+    def test_a_failed_live_loop_reread_declines_startup_closer(self):
+        from kiro_crew.autonudge import (
+            STALE_SENTINEL_CLEANUP_FAILED_REASON,
+            NudgeLoop,
+        )
+
+        cfg = _fake_config({CREW: _agent()})
+        slug = members.slug_for_name(CREW)
+        svc = get_service()
+        svc.ensure(slug, CREW)
+        _seed_config_baseline(svc, slug, cfg.agents[CREW])
+        slot_key = "member-code-reviewer"
+        svc.append(slug, types.PATROL_STARTED, {"slot_key": slot_key})
+        provisional = NudgeLoop(
+            id="provisional",
+            slot_key=slot_key,
+            message="patrol",
+            active=False,
+            stopped_reason=STALE_SENTINEL_CLEANUP_FAILED_REASON,
+            next_due_ts=0.0,
+        )
+        reads = 0
+
+        def get_by_slot(key):
+            nonlocal reads
+            reads += 1
+            if reads > 1:
+                raise RuntimeError("live AutoNudge read unavailable")
+            return provisional if key == slot_key else None
+
+        seq_before = svc.last_seq(slug)
+        wrote = eventlog_hooks.reconcile_members_at_startup(
+            cfg,
+            SimpleNamespace(_slots={}),
+            SimpleNamespace(get_by_slot=get_by_slot),
+        )
+
+        assert reads == 2, "the guarded closer did not attempt its live re-read"
+        assert wrote == 0
+        assert svc.last_seq(slug) == seq_before
+        wake = svc.snapshot(slug)["values"][types.PROJ_WAKE]
+        assert wake["patrol"] == "armed"
+        assert wake["slot_key"] == slot_key
+
+    def test_a_paused_loop_keeps_its_armed_patrol_at_startup(self):
+        from kiro_crew.autonudge import NudgeLoop
+
+        cfg = _fake_config({CREW: _agent()})
+        slug = members.slug_for_name(CREW)
+        svc = get_service()
+        svc.ensure(slug, CREW)
+        _seed_config_baseline(svc, slug, cfg.agents[CREW])
+        slot_key = "member-code-reviewer"
+        svc.append(slug, types.PATROL_STARTED, {"slot_key": slot_key})
+        paused = NudgeLoop(
+            id="paused",
+            slot_key=slot_key,
+            message="patrol",
+            active=False,
+            stopped_reason="",
+            next_due_ts=0.0,
+        )
+        seq_before = svc.last_seq(slug)
+
+        wrote = eventlog_hooks.reconcile_members_at_startup(
+            cfg,
+            SimpleNamespace(_slots={}),
+            SimpleNamespace(get_by_slot=lambda key: paused if key == slot_key else None),
+        )
+
+        assert wrote == 0
+        assert svc.last_seq(slug) == seq_before
+        wake = svc.snapshot(slug)["values"][types.PROJ_WAKE]
+        assert wake["patrol"] == "armed"
+        assert wake["slot_key"] == slot_key
+
     def test_a_contended_patrol_closer_does_not_starve_the_slot_closers(self, monkeypatch):
         """One closer losing its tail must not cost the same member's other closers.
 

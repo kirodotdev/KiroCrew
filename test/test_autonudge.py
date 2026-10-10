@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import errno
+import gc
 import json
 import logging
 import threading
 import time
+import weakref
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -21,20 +27,30 @@ from kiro_crew.autonudge import (
     MANUAL_STOP_REASON,
     RUNTIME_BUDGET_REASON,
     SESSION_START_FAILURE_REASON,
+    STALE_SENTINEL_CLEANUP_FAILED_REASON,
     STRUCTURAL_TERMINAL_REASON,
     AutoNudgeService,
     MonitorUpdateConflict,
+    NudgeAdmissionReason,
+    NudgeAdmissionRefused,
     NudgeLoop,
+    StaleStopSentinelActivationFailed,
+    StaleStopSentinelCleanupFailed,
     runtime_budget_exceeded,
 )
 from kiro_crew.dashboard.handlers.autonudge import render_nudge_message
+from kiro_crew.monitoring import models as monitor_models
 from kiro_crew.monitoring.decision import monitor_budget_reason
 from kiro_crew.monitoring.models import (
     MONITOR_STATE_VERSION,
+    MonitorActionCompletion,
+    MonitorActionDisposition,
     MonitorBudgets,
+    MonitorDispatchResult,
     MonitorOutcome,
     MonitorState,
 )
+from kiro_crew.testing.wait import until_parked
 
 
 def _owner_dashboard_identity():
@@ -114,6 +130,24 @@ def svc(tmp_path):
 
 
 _FROZEN_NOW = 1_000_000.0
+
+#: Lost-run ceiling for synchronization the test itself must release. It is a
+#: hang guard whose expiry fails at the awaited line, never a performance
+#: assertion, and is at most half the repository's ``--timeout=120``.
+_LOST_RUN_SECS = 10.0
+
+
+async def _wait_until(predicate, what: str) -> None:
+    """Wait until *predicate* is true, failing by name if the run is wedged."""
+
+    async def _spin() -> None:
+        while not predicate():
+            await asyncio.sleep(0)
+
+    try:
+        await asyncio.wait_for(_spin(), timeout=_LOST_RUN_SECS)
+    except asyncio.TimeoutError:
+        pytest.fail(f"{what} did not happen within the lost-run ceiling")
 
 
 def _freeze_clock(monkeypatch) -> None:
@@ -210,6 +244,538 @@ async def test_terminal_notification_delivery_survives_opaque_monitor_reload(svc
 
 
 @pytest.mark.asyncio
+async def test_add_retires_stale_sentinel_before_timer_publication_and_zero_delay_fire(
+    tmp_path, monkeypatch
+):
+    sentinel = tmp_path / "stale-stop"
+    sentinel.write_text("stop", encoding="utf-8")
+    on_fire = AsyncMock(return_value=True)
+    service = AutoNudgeService(base_dir=tmp_path / "home", on_fire=on_fire)
+    real_arm = service._arm_from_deadline
+    real_start_persistence = service._start_persistence
+    armed: list[str] = []
+    persistence_calls = 0
+    activation_persistence_started = asyncio.Event()
+    release_activation_persistence = asyncio.Event()
+
+    def observe_arm(loop: NudgeLoop) -> None:
+        assert not sentinel.exists(), "timer publication preceded stale-sentinel retirement"
+        armed.append(loop.id)
+        real_arm(loop)
+
+    def block_activation_persistence(payload, *, admission=None):
+        nonlocal persistence_calls
+        persistence_calls += 1
+        if persistence_calls != 2:
+            return real_start_persistence(payload, admission=admission)
+
+        async def persist_after_release() -> None:
+            activation_persistence_started.set()
+            await asyncio.wait_for(release_activation_persistence.wait(), timeout=_LOST_RUN_SECS)
+            await real_start_persistence(payload, admission=admission)
+
+        return asyncio.create_task(persist_after_release())
+
+    monkeypatch.setattr(service, "_arm_from_deadline", observe_arm)
+    monkeypatch.setattr(service, "_start_persistence", block_activation_persistence)
+    add_task = asyncio.create_task(
+        service.add(
+            slot_key="chat-1-123",
+            message="go",
+            idle_secs=60,
+            stop_sentinel_path=str(sentinel),
+            retire_stale_stop_sentinel=sentinel,
+        )
+    )
+    try:
+        await asyncio.wait_for(activation_persistence_started.wait(), timeout=_LOST_RUN_SECS)
+        provisional = service.get_by_slot("chat-1-123")
+        assert provisional is not None
+        assert not provisional.active, "activation was published before its snapshot persisted"
+        assert provisional.next_due_ts == 0.0
+        assert provisional.stopped_reason == STALE_SENTINEL_CLEANUP_FAILED_REASON
+        assert provisional.id not in service._timers
+
+        release_activation_persistence.set()
+        loop = await asyncio.wait_for(add_task, timeout=_LOST_RUN_SECS)
+        assert persistence_calls == 2
+        assert armed == [loop.id], "the committed replacement was not armed exactly once"
+        persisted = json.loads(service._path.read_text(encoding="utf-8"))["loops"][0]
+        assert persisted["active"] is True
+        assert persisted["next_due_ts"] == loop.next_due_ts
+        service._cancel_timer(loop.id)
+
+        await service._timer(loop, delay=0.0)
+
+        assert loop.active, "a zero-delay first tick treated the retired marker as live"
+        assert loop.stopped_reason != "stop_sentinel"
+        on_fire.assert_awaited_once_with(loop)
+    finally:
+        release_activation_persistence.set()
+        if not add_task.done():
+            try:
+                await asyncio.wait_for(add_task, timeout=_LOST_RUN_SECS)
+            except BaseException:
+                pass
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_activation_write_failure_cannot_publish_a_timer_during_turn_completion(
+    tmp_path, monkeypatch, caplog
+):
+    sentinel = tmp_path / "stale-stop"
+    sentinel.write_text("stop", encoding="utf-8")
+    service = AutoNudgeService(base_dir=tmp_path / "home")
+    real_start_persistence = service._start_persistence
+    persistence_calls = 0
+    activation_persistence_started = asyncio.Event()
+    release_activation_persistence = asyncio.Event()
+
+    def fail_activation_persistence(payload, *, admission=None):
+        nonlocal persistence_calls
+        persistence_calls += 1
+        if persistence_calls != 2:
+            return real_start_persistence(payload, admission=admission)
+
+        async def fail_after_release() -> None:
+            activation_persistence_started.set()
+            await asyncio.wait_for(release_activation_persistence.wait(), timeout=_LOST_RUN_SECS)
+            raise OSError("activation store unavailable")
+
+        return asyncio.create_task(fail_after_release())
+
+    monkeypatch.setattr(service, "_start_persistence", fail_activation_persistence)
+    caplog.set_level(logging.WARNING, logger="kiro_crew.autonudge")
+    add_task = asyncio.create_task(
+        service.add(
+            slot_key="chat-1-123",
+            message="go",
+            idle_secs=60,
+            stop_sentinel_path=str(sentinel),
+            retire_stale_stop_sentinel=sentinel,
+        )
+    )
+    try:
+        await asyncio.wait_for(activation_persistence_started.wait(), timeout=_LOST_RUN_SECS)
+        provisional = service.get_by_slot("chat-1-123")
+        assert provisional is not None and not provisional.active
+        assert provisional.next_due_ts == 0.0
+        assert provisional.stopped_reason == STALE_SENTINEL_CLEANUP_FAILED_REASON
+
+        service.notify_turn_complete("chat-1-123")
+
+        assert (
+            provisional.id not in service._timers
+        ), "turn completion armed a timer while activation persistence was pending"
+        release_activation_persistence.set()
+        with pytest.raises(StaleStopSentinelActivationFailed):
+            await asyncio.wait_for(add_task, timeout=_LOST_RUN_SECS)
+
+        retained = service.get_by_slot("chat-1-123")
+        assert retained is provisional
+        assert not retained.active
+        assert retained.next_due_ts == 0.0
+        assert retained.stopped_reason == STALE_SENTINEL_CLEANUP_FAILED_REASON
+        assert retained.id not in service._timers
+        warnings = [
+            record
+            for record in caplog.records
+            if record.name == "kiro_crew.autonudge"
+            and "could not persist activation" in record.getMessage()
+        ]
+        assert len(warnings) == 1
+        assert warnings[0].exc_info is not None
+        assert warnings[0].exc_info[0] is OSError
+        assert str(warnings[0].exc_info[1]) == "activation store unavailable"
+    finally:
+        release_activation_persistence.set()
+        if not add_task.done():
+            try:
+                await asyncio.wait_for(add_task, timeout=_LOST_RUN_SECS)
+            except BaseException:
+                pass
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_activation_serialize_failure_restores_the_provisional_row(tmp_path, monkeypatch):
+    sentinel = tmp_path / "stale-stop"
+    sentinel.write_text("stop", encoding="utf-8")
+    service = AutoNudgeService(base_dir=tmp_path / "home")
+    real_serialize = service._serialize_state
+    serialize_calls = 0
+
+    def fail_activation_serialize():
+        nonlocal serialize_calls
+        serialize_calls += 1
+        if serialize_calls == 2:
+            raise RuntimeError("activation serialization unavailable")
+        return real_serialize()
+
+    monkeypatch.setattr(service, "_serialize_state", fail_activation_serialize)
+    try:
+        with pytest.raises(RuntimeError, match="activation serialization unavailable"):
+            await service.add(
+                slot_key="chat-1-123",
+                message="go",
+                idle_secs=60,
+                stop_sentinel_path=str(sentinel),
+                retire_stale_stop_sentinel=sentinel,
+            )
+
+        retained = service.get_by_slot("chat-1-123")
+        assert retained is not None
+        assert not retained.active
+        assert retained.next_due_ts == 0.0
+        assert retained.stopped_reason == STALE_SENTINEL_CLEANUP_FAILED_REASON
+        assert retained.id not in service._timers
+        assert not sentinel.exists(), "the completed cleanup was lost"
+        persisted = json.loads(service._path.read_text(encoding="utf-8"))["loops"][0]
+        assert persisted["active"] is False
+        assert persisted["next_due_ts"] == 0.0
+        assert persisted["stopped_reason"] == STALE_SENTINEL_CLEANUP_FAILED_REASON
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_add_retires_a_dangling_stale_sentinel_symlink(tmp_path, monkeypatch):
+    from kiro_crew.autonudge_service import mutations as mutations_mod
+
+    sentinel = tmp_path / "stale-stop"
+    sentinel.symlink_to(tmp_path / "missing-target")
+    assert sentinel.is_symlink() and not sentinel.exists(), "fixture is not a dangling symlink"
+    service = AutoNudgeService(base_dir=tmp_path / "home")
+    real_probe = mutations_mod._probe_stale_stop_sentinel
+
+    def probe_under_lock(path: Path) -> None:
+        assert service._lock.locked(), "the sentinel probe ran outside the add transaction"
+        real_probe(path)
+
+    monkeypatch.setattr(mutations_mod, "_probe_stale_stop_sentinel", probe_under_lock)
+    try:
+        loop = await service.add(
+            slot_key="chat-1-123",
+            message="go",
+            idle_secs=60,
+            stop_sentinel_path=str(sentinel),
+            retire_stale_stop_sentinel=sentinel,
+        )
+
+        assert not sentinel.is_symlink(), "the dangling sentinel entry survived cleanup"
+        assert loop.active and loop.stopped_reason == ""
+        assert loop.id in service._timers, "the replacement was not armed after link cleanup"
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_add_treats_enotdir_stale_sentinel_probe_as_absent(tmp_path, monkeypatch):
+    from kiro_crew.autonudge_service import mutations as mutations_mod
+
+    sentinel = tmp_path / "blocked-parent" / "stale-stop"
+    service = AutoNudgeService(base_dir=tmp_path / "home")
+    real_start_persistence = service._start_persistence
+    persistence_calls = 0
+
+    def raise_enotdir(_path: Path) -> None:
+        raise OSError(errno.ENOTDIR, "sentinel parent is not a directory")
+
+    def count_persistence(payload, *, admission=None):
+        nonlocal persistence_calls
+        persistence_calls += 1
+        return real_start_persistence(payload, admission=admission)
+
+    monkeypatch.setattr(mutations_mod, "_probe_stale_stop_sentinel", raise_enotdir)
+    monkeypatch.setattr(service, "_start_persistence", count_persistence)
+    try:
+        loop = await service.add(
+            slot_key="chat-1-123",
+            message="go",
+            idle_secs=60,
+            stop_sentinel_path=str(sentinel),
+            retire_stale_stop_sentinel=sentinel,
+        )
+
+        assert persistence_calls == 1
+        assert loop.active
+        assert loop.stopped_reason == ""
+        assert loop.next_due_ts > 0
+        assert loop.id in service._timers
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("winerror", [21, 123, 1921])
+async def test_add_treats_cpython_312_path_exists_winerrors_as_absent(
+    tmp_path, monkeypatch, winerror
+):
+    from kiro_crew.autonudge_service import mutations as mutations_mod
+
+    sentinel = tmp_path / "stale-stop"
+    service = AutoNudgeService(base_dir=tmp_path / "home")
+    real_start_persistence = service._start_persistence
+    persistence_calls = 0
+
+    def raise_winerror(_path: Path) -> None:
+        error = OSError("sentinel probe has a Windows absence error")
+        error.winerror = winerror  # type: ignore[attr-defined]
+        raise error
+
+    def count_persistence(payload, *, admission=None):
+        nonlocal persistence_calls
+        persistence_calls += 1
+        return real_start_persistence(payload, admission=admission)
+
+    monkeypatch.setattr(mutations_mod, "_probe_stale_stop_sentinel", raise_winerror)
+    monkeypatch.setattr(service, "_start_persistence", count_persistence)
+    try:
+        loop = await service.add(
+            slot_key="chat-1-123",
+            message="go",
+            idle_secs=60,
+            stop_sentinel_path=str(sentinel),
+            retire_stale_stop_sentinel=sentinel,
+        )
+
+        assert persistence_calls == 1
+        assert loop.active
+        assert loop.stopped_reason == ""
+        assert loop.id in service._timers
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_MUTATION_probe_value_error_restores_displaced_row_and_timer(tmp_path, monkeypatch):
+    from kiro_crew.autonudge_service import mutations as mutations_mod
+
+    service = AutoNudgeService(base_dir=tmp_path / "home")
+    existing = await service.add(
+        slot_key="chat-1-123",
+        message="before",
+        idle_secs=60,
+    )
+    original_timer = service._timers[existing.id]
+    stored_before = service._path.read_bytes()
+    sentinel = tmp_path / "stale-stop"
+
+    def fail_probe(_path: Path) -> None:
+        raise ValueError("invalid sentinel path")
+
+    monkeypatch.setattr(mutations_mod, "_probe_stale_stop_sentinel", fail_probe)
+    try:
+        with pytest.raises(ValueError, match="invalid sentinel path"):
+            await service.add(
+                slot_key="chat-1-123",
+                message="after",
+                idle_secs=60,
+                stop_sentinel_path=str(sentinel),
+                retire_stale_stop_sentinel=sentinel,
+            )
+
+        assert service.get_by_slot("chat-1-123") is existing
+        restored_timer = service._timers.get(existing.id)
+        assert restored_timer is not None and not restored_timer.done()
+        assert restored_timer is not original_timer
+        assert service._path.read_bytes() == stored_before
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_add_cleanup_failure_is_durable_inactive_timerless_and_typed(
+    tmp_path, monkeypatch, caplog
+):
+    sentinel = tmp_path / "stale-stop"
+    sentinel.mkdir()
+    service = AutoNudgeService(base_dir=tmp_path / "home")
+    real_start_persistence = service._start_persistence
+    persistence_calls = 0
+
+    def count_persistence(payload, *, admission=None):
+        nonlocal persistence_calls
+        persistence_calls += 1
+        return real_start_persistence(payload, admission=admission)
+
+    monkeypatch.setattr(service, "_start_persistence", count_persistence)
+    caplog.set_level(logging.WARNING, logger="kiro_crew.autonudge")
+    try:
+        with pytest.raises(StaleStopSentinelCleanupFailed) as raised:
+            await service.add(
+                slot_key="chat-1-123",
+                message="go",
+                idle_secs=60,
+                stop_sentinel_path=str(sentinel),
+                retire_stale_stop_sentinel=sentinel,
+            )
+
+        assert raised.value.path == str(sentinel)
+        assert persistence_calls == 1, "cleanup failure wrote a second reason snapshot"
+        loop = service.get_by_slot("chat-1-123")
+        assert loop is not None
+        assert not loop.active
+        assert loop.stopped_reason == STALE_SENTINEL_CLEANUP_FAILED_REASON
+        assert loop.next_due_ts == 0.0
+        assert loop.id not in service._timers, "cleanup failure published a timer"
+
+        restored = AutoNudgeService(base_dir=tmp_path / "home")
+        await asyncio.to_thread(restored._load)
+        persisted = restored.get_by_slot("chat-1-123")
+        assert persisted is not None
+        assert not persisted.active
+        assert persisted.stopped_reason == STALE_SENTINEL_CLEANUP_FAILED_REASON
+        assert persisted.next_due_ts == 0.0
+
+        warnings = [
+            record
+            for record in caplog.records
+            if record.name == "kiro_crew.autonudge" and record.levelno >= logging.WARNING
+        ]
+        assert len(warnings) == 1, "cleanup failure emitted duplicate warning records"
+        assert f"detail={str(sentinel)!r}" in warnings[0].getMessage()
+        assert warnings[0].exc_info is None, "cleanup failure emitted a warning traceback"
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_add_interrupted_after_provisional_snapshot_is_replaceable_after_restart(
+    tmp_path, monkeypatch
+):
+    sentinel = tmp_path / "stale-stop"
+    sentinel.write_text("stop", encoding="utf-8")
+    service = AutoNudgeService(base_dir=tmp_path / "home")
+    existing = await service.add("chat-1-123", "before", idle_secs=60)
+
+    def interrupt_after_snapshot(_loop: NudgeLoop) -> None:
+        raise RuntimeError("simulated interruption after snapshot one")
+
+    monkeypatch.setattr(service, "_revoke_self_arm_for", interrupt_after_snapshot)
+    try:
+        with pytest.raises(RuntimeError, match="simulated interruption after snapshot one"):
+            await service.add(
+                slot_key="chat-1-123",
+                message="after",
+                idle_secs=60,
+                stop_sentinel_path=str(sentinel),
+                retire_stale_stop_sentinel=sentinel,
+            )
+
+        replacement = service.get_by_slot("chat-1-123")
+        assert replacement is not None and replacement.id != existing.id
+        assert not replacement.active
+        assert replacement.next_due_ts == 0.0
+        assert replacement.stopped_reason == STALE_SENTINEL_CLEANUP_FAILED_REASON
+        assert not _an._is_torn_deactivation(replacement)
+        assert _an._stopped_row_is_replaceable(replacement)
+        persisted = json.loads(service._path.read_text(encoding="utf-8"))["loops"][0]
+        assert persisted["stopped_reason"] == STALE_SENTINEL_CLEANUP_FAILED_REASON
+    finally:
+        service.stop()
+
+    restored = AutoNudgeService(base_dir=tmp_path / "home")
+    await restored.start()
+    try:
+        paused = restored.get_by_slot("chat-1-123")
+        assert paused is not None and paused.id == replacement.id
+        assert not paused.active
+        assert paused.stopped_reason == STALE_SENTINEL_CLEANUP_FAILED_REASON
+        assert paused.id not in restored._timers, "the loader resumed the provisional row"
+
+        sentinel.unlink()
+        rearmed = await restored.add(
+            slot_key="chat-1-123",
+            message="rearmed",
+            idle_secs=60,
+            stop_sentinel_path=str(sentinel),
+            replace_existing=False,
+            replace_stopped=True,
+        )
+        assert rearmed.active and rearmed.id != paused.id
+    finally:
+        restored.stop()
+
+
+@pytest.mark.asyncio
+async def test_add_cleanup_failure_retires_displaced_self_arm_before_unlink(tmp_path, monkeypatch):
+    sentinel = tmp_path / "stale-stop"
+    sentinel.mkdir()
+    service = AutoNudgeService(base_dir=tmp_path / "home")
+    existing = await service.add("chat-1-123", "before", idle_secs=60)
+    await service.update(existing.id, active=False)
+    transitions: list[tuple[str, str]] = []
+
+    class _RecordingPath(type(sentinel)):
+        def unlink(self, missing_ok: bool = False) -> None:
+            transitions.append(("unlink", str(self)))
+            super().unlink(missing_ok=missing_ok)
+
+    recording_sentinel = _RecordingPath(sentinel)
+    monkeypatch.setattr(
+        service,
+        "_revoke_self_arm_for",
+        lambda loop: transitions.append(("revoked", loop.id)),
+    )
+    service.subscribe(
+        lambda event, loop: transitions.append((event, loop.id)) if loop is not None else None
+    )
+    try:
+        with pytest.raises(StaleStopSentinelCleanupFailed):
+            await service.add(
+                slot_key="chat-1-123",
+                message="after",
+                idle_secs=60,
+                stop_sentinel_path=str(recording_sentinel),
+                retire_stale_stop_sentinel=recording_sentinel,
+            )
+
+        replacement = service.get_by_slot("chat-1-123")
+        assert replacement is not None
+        assert transitions == [
+            ("revoked", existing.id),
+            ("removed", existing.id),
+            ("unlink", str(recording_sentinel)),
+            ("added", replacement.id),
+        ]
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_add_with_absent_stale_sentinel_uses_one_persistence_write(tmp_path, monkeypatch):
+    sentinel = tmp_path / "absent-stop"
+    service = AutoNudgeService(base_dir=tmp_path / "home")
+    real_start_persistence = service._start_persistence
+    persistence_calls = 0
+
+    def count_persistence(payload, *, admission=None):
+        nonlocal persistence_calls
+        persistence_calls += 1
+        return real_start_persistence(payload, admission=admission)
+
+    monkeypatch.setattr(service, "_start_persistence", count_persistence)
+    try:
+        loop = await service.add(
+            slot_key="chat-1-123",
+            message="go",
+            idle_secs=60,
+            stop_sentinel_path=str(sentinel),
+            retire_stale_stop_sentinel=sentinel,
+        )
+
+        assert persistence_calls == 1
+        assert loop.active
+        assert loop.stopped_reason == ""
+        assert loop.next_due_ts > 0
+        assert loop.id in service._timers
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
 async def test_add_and_fire_on_idle(svc, monkeypatch):
     """Arming a timer and letting it elapse triggers the fire callback."""
     fired: list[NudgeLoop] = []
@@ -263,11 +829,2318 @@ async def test_notify_turn_complete_rearms(svc):
 
 
 @pytest.mark.asyncio
+async def test_rearmed_timer_releases_completed_owner_tasks(tmp_path, monkeypatch):
+    svc = AutoNudgeService(base_dir=tmp_path)
+    loop = NudgeLoop(id="loop-rearm", slot_key="chat-1-1", message="tick", idle_secs=15)
+    task_refs: list[weakref.ReferenceType[asyncio.Task]] = []
+    ticks = 500
+    finished = asyncio.Event()
+
+    async def _rearm(current: NudgeLoop) -> None:
+        task = asyncio.current_task()
+        assert task is not None
+        task_refs.append(weakref.ref(task))
+        if len(task_refs) < ticks:
+            svc._arm_timer(current, delay=0.0)
+        else:
+            finished.set()
+
+    monkeypatch.setattr(svc, "_run_timer_callback", _rearm)
+    svc._arm_timer(loop, delay=0.0)
+    await asyncio.wait_for(finished.wait(), timeout=5)
+    final_timer = svc._timers[loop.id]
+    await asyncio.wait_for(asyncio.shield(final_timer), timeout=_LOST_RUN_SECS)
+    del final_timer
+    gc.collect()
+
+    assert len(task_refs) == ticks
+    assert sum(ref() is not None for ref in task_refs) <= 1
+
+
+@pytest.mark.asyncio
+async def test_shutdown_waits_for_blocking_executor_persistence(tmp_path, monkeypatch):
+    svc = AutoNudgeService(base_dir=tmp_path)
+    await svc.start()
+    real_write = svc._write_state
+    write_started = threading.Event()
+    release_write = threading.Event()
+    write_finished = threading.Event()
+
+    def blocking_write(payload):
+        write_started.set()
+        assert release_write.wait(timeout=5)
+        real_write(payload)
+        write_finished.set()
+
+    monkeypatch.setattr(svc, "_write_state", blocking_write)
+    add_task = asyncio.create_task(svc.add(slot_key="slot-drain", message="later", idle_secs=60))
+    assert await asyncio.to_thread(write_started.wait, 5)
+    shutdown_task = asyncio.create_task(svc.shutdown())
+    await _wait_until(lambda: not svc._accepting_mutations, "shutdown admission closure")
+
+    assert not shutdown_task.done()
+    assert not write_finished.is_set()
+    assert svc._inflight_adds
+    assert svc._inflight_persistence
+
+    release_write.set()
+    loop = await asyncio.wait_for(add_task, timeout=_LOST_RUN_SECS)
+    await asyncio.wait_for(shutdown_task, timeout=_LOST_RUN_SECS)
+    assert write_finished.is_set()
+    assert svc._inflight_adds == set()
+    assert svc._inflight_persistence == set()
+
+    restored = AutoNudgeService(base_dir=tmp_path)
+    await restored.start()
+    assert restored.get_by_slot("slot-drain").id == loop.id
+    await restored.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_shutdown_still_drains_executor_write(tmp_path, monkeypatch):
+    svc = AutoNudgeService(base_dir=tmp_path)
+    await svc.start()
+    real_write = svc._write_state
+    write_started = threading.Event()
+    release_write = threading.Event()
+
+    cancel_observed = asyncio.Event()
+
+    class ObservedDrain(_an._DurabilityDrain):
+        def note_cancelled(self) -> None:
+            super().note_cancelled()
+            cancel_observed.set()
+
+    monkeypatch.setattr(_an, "_DurabilityDrain", ObservedDrain)
+
+    def blocking_write(payload):
+        write_started.set()
+        assert release_write.wait(timeout=5)
+        real_write(payload)
+
+    monkeypatch.setattr(svc, "_write_state", blocking_write)
+    add_task = asyncio.create_task(svc.add(slot_key="slot-cancel", message="later", idle_secs=60))
+    assert await asyncio.to_thread(write_started.wait, 5)
+    shutdown_task = asyncio.create_task(svc.shutdown())
+    await _wait_until(lambda: not svc._accepting_mutations, "shutdown admission closure")
+    shutdown_task.cancel()
+    await asyncio.wait_for(cancel_observed.wait(), timeout=_LOST_RUN_SECS)
+    assert not shutdown_task.done()
+
+    release_write.set()
+    loop = await asyncio.wait_for(add_task, timeout=_LOST_RUN_SECS)
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(shutdown_task, timeout=_LOST_RUN_SECS)
+
+    restored = AutoNudgeService(base_dir=tmp_path)
+    await restored.start()
+    assert restored.get_by_slot("slot-cancel").id == loop.id
+    await restored.shutdown()
+
+
+def _wedge_write(svc, monkeypatch):
+    """Replace the executor write with one that blocks until the test releases it.
+
+    Returns (started, release, finished) threading events. `finished` is set only
+    when the REAL write has landed, so a test can tell "abandoned while wedged"
+    from "settled within the window" without timing.
+    """
+    real_write = svc._write_state
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+
+    def blocking_write(payload):
+        started.set()
+        assert release.wait(timeout=10)
+        real_write(payload)
+        finished.set()
+
+    monkeypatch.setattr(svc, "_write_state", blocking_write)
+    return started, release, finished
+
+
+@pytest.mark.asyncio
+async def test_cancelled_shutdown_stops_waiting_on_a_wedged_write_after_the_grace(
+    tmp_path, monkeypatch
+):
+    """The gateway's bounded wait delivers ONE cancellation. A drain that absorbed
+    it and kept waiting on a write that never finishes turned that bound into an
+    unbounded one; this pins that the drain leaves once its window closes, that
+    the write is neither cancelled nor lost, and that the closed service remains
+    published for the gateway's later dashboard teardown."""
+    monkeypatch.setattr(_an, "_DRAIN_CANCEL_GRACE_SECS", 0.05)
+    svc = AutoNudgeService(base_dir=tmp_path)
+    await svc.start()
+    started, release, finished = _wedge_write(svc, monkeypatch)
+    add_task = asyncio.create_task(svc.add(slot_key="slot-wedged", message="later", idle_secs=60))
+    assert await asyncio.to_thread(started.wait, 5)
+    wedged = set(svc._inflight_persistence)
+    assert wedged
+
+    shutdown_task = asyncio.create_task(svc.shutdown())
+    await asyncio.sleep(0)
+    shutdown_task.cancel()
+    # Bounded by the window, not by the write: nothing has released it.
+    done, _ = await asyncio.wait({shutdown_task}, timeout=2)
+    assert shutdown_task in done, "shutdown kept absorbing cancellation while the write was wedged"
+    assert not finished.is_set()
+    with pytest.raises(asyncio.CancelledError):
+        shutdown_task.result()
+    # The write itself was left alone -- still pending, still registered, and
+    # the service is closed to new mutations, so nothing can race it.
+    assert all(not future.done() and not future.cancelled() for future in wedged)
+    assert svc._inflight_persistence == wedged
+    assert svc._accepting_mutations is False
+    assert _an.get_instance() is svc
+
+    # Releasing the thread lands the durable write exactly as if the drain had
+    # waited: the owner completes and a fresh service reads the slot back.
+    release.set()
+    loop = await asyncio.wait_for(add_task, timeout=_LOST_RUN_SECS)
+    assert await asyncio.to_thread(finished.wait, 5)
+    for future in wedged:
+        await asyncio.wait_for(future, timeout=_LOST_RUN_SECS)
+    restored = AutoNudgeService(base_dir=tmp_path)
+    await restored.start()
+    assert restored.get_by_slot("slot-wedged").id == loop.id
+    await restored.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_claim_sets_survive_until_the_drain_settles(tmp_path, monkeypatch):
+    """An unsettled shutdown leaves work it stopped waiting on still running, so it
+    must not clear the runtime claim sets under it; a settled one releases them."""
+    monkeypatch.setattr(_an, "_DRAIN_CANCEL_GRACE_SECS", 0.05)
+    svc = AutoNudgeService(base_dir=tmp_path)
+    await svc.start()
+    started, release, finished = _wedge_write(svc, monkeypatch)
+    add_task = asyncio.create_task(svc.add(slot_key="slot-claims", message="later", idle_secs=60))
+    assert await asyncio.to_thread(started.wait, 5)
+    svc._accepted_monitor_turns["monitor-x"] = "fp-x"
+    svc._reconcile_candidates.add("loop-x")
+    svc._maintenance_quiescing.add("loop-x")
+
+    shutdown_task = asyncio.create_task(svc.shutdown())
+    await asyncio.sleep(0)
+    shutdown_task.cancel()
+    done, _ = await asyncio.wait({shutdown_task}, timeout=2)
+    assert shutdown_task in done
+    with pytest.raises(asyncio.CancelledError):
+        shutdown_task.result()
+    assert not finished.is_set()
+    assert svc._accepted_monitor_turns == {"monitor-x": "fp-x"}
+    assert svc._reconcile_candidates == {"loop-x"}
+    assert svc._maintenance_quiescing == {"loop-x"}
+    assert _an.get_instance() is svc
+
+    release.set()
+    await asyncio.wait_for(add_task, timeout=_LOST_RUN_SECS)
+    assert await asyncio.to_thread(finished.wait, 5)
+
+    settled = AutoNudgeService(base_dir=tmp_path)
+    await settled.start()
+    settled._accepted_monitor_turns["monitor-y"] = "fp-y"
+    settled._reconcile_candidates.add("loop-y")
+    settled._maintenance_quiescing.add("loop-y")
+    await settled.shutdown()
+    assert settled._accepted_monitor_turns == {}
+    assert settled._reconcile_candidates == set()
+    assert settled._maintenance_quiescing == set()
+
+
+@pytest.mark.asyncio
+async def test_uncancelled_shutdown_waits_past_the_grace_for_a_slow_write(tmp_path, monkeypatch):
+    """The window opens on CANCELLATION, never on its own: an uncancelled shutdown
+    still waits for a slow write however long it takes, because nobody has asked
+    it to stop and abandoning a write nobody rushed would weaken durability for no
+    caller. A non-positive window makes any other arming visible on its first pass,
+    so no elapsed-time wait is part of this proof."""
+    monkeypatch.setattr(_an, "_DRAIN_CANCEL_GRACE_SECS", -1.0)
+    svc = AutoNudgeService(base_dir=tmp_path)
+    await svc.start()
+    started, release, finished = _wedge_write(svc, monkeypatch)
+    drains: list[_an._DurabilityDrain] = []
+    drain_created = asyncio.Event()
+    held_write_settling = asyncio.Event()
+    real_drain = _an._DurabilityDrain
+
+    class ObservedDrain(real_drain):
+        def __init__(self) -> None:
+            super().__init__()
+            drains.append(self)
+            drain_created.set()
+
+        async def settle(self, *tasks):
+            if any(task in svc._inflight_persistence for task in tasks):
+                held_write_settling.set()
+            return await super().settle(*tasks)
+
+    monkeypatch.setattr(_an, "_DurabilityDrain", ObservedDrain)
+    add_task = asyncio.create_task(svc.add(slot_key="slot-slow", message="later", idle_secs=60))
+    assert await asyncio.to_thread(started.wait, 5)
+
+    shutdown_task = asyncio.create_task(svc.shutdown())
+    await _wait_until(lambda: not svc._accepting_mutations, "shutdown admission closure")
+    await asyncio.wait_for(drain_created.wait(), timeout=_LOST_RUN_SECS)
+    assert len(drains) == 1
+    drain = drains[0]
+    receipt_waiter = asyncio.create_task(held_write_settling.wait())
+    try:
+        assert drain.interrupted is False
+        assert drain._deadline is None
+        done, _ = await asyncio.wait(
+            {receipt_waiter, shutdown_task},
+            timeout=_LOST_RUN_SECS,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        assert receipt_waiter in done, "shutdown never offered the held write to the drain"
+        await asyncio.sleep(0)
+        assert drain.interrupted is False
+        assert drain._deadline is None
+        assert (
+            not shutdown_task.done()
+        ), "an uncancelled shutdown gave up on a write nobody cancelled"
+        assert not finished.is_set()
+    finally:
+        if not receipt_waiter.done():
+            receipt_waiter.cancel()
+            await asyncio.gather(receipt_waiter, return_exceptions=True)
+        release.set()
+
+    loop = await asyncio.wait_for(add_task, timeout=_LOST_RUN_SECS)
+    await asyncio.wait_for(shutdown_task, timeout=_LOST_RUN_SECS)
+    assert finished.is_set()
+    assert svc._inflight_persistence == set()
+    restored = AutoNudgeService(base_dir=tmp_path)
+    await restored.start()
+    assert restored.get_by_slot("slot-slow").id == loop.id
+    await restored.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_repeated_cancellation_within_the_grace_still_drains_to_durability(
+    tmp_path, monkeypatch
+):
+    """Cancellations inside the window are remembered, not compounded: a write
+    that finishes before the window closes is awaited to durability whether the
+    waiter was cancelled once or several times, and the caller sees exactly one
+    CancelledError afterwards."""
+    monkeypatch.setattr(_an, "_DRAIN_CANCEL_GRACE_SECS", 5.0)
+    svc = AutoNudgeService(base_dir=tmp_path)
+    await svc.start()
+    started, release, finished = _wedge_write(svc, monkeypatch)
+    first_cancel_observed = asyncio.Event()
+    second_cancel_observed = asyncio.Event()
+
+    class ObservedDrain(_an._DurabilityDrain):
+        def __init__(self) -> None:
+            super().__init__()
+            self._cancel_count = 0
+
+        def note_cancelled(self) -> None:
+            super().note_cancelled()
+            self._cancel_count += 1
+            (first_cancel_observed if self._cancel_count == 1 else second_cancel_observed).set()
+
+    monkeypatch.setattr(_an, "_DurabilityDrain", ObservedDrain)
+    add_task = asyncio.create_task(svc.add(slot_key="slot-twice", message="later", idle_secs=60))
+    assert await asyncio.to_thread(started.wait, 5)
+
+    shutdown_task = asyncio.create_task(svc.shutdown())
+    await _wait_until(lambda: not svc._accepting_mutations, "shutdown admission closure")
+    shutdown_task.cancel()
+    await asyncio.wait_for(first_cancel_observed.wait(), timeout=_LOST_RUN_SECS)
+    shutdown_task.cancel()
+    await asyncio.wait_for(second_cancel_observed.wait(), timeout=_LOST_RUN_SECS)
+    assert not shutdown_task.done()
+    assert not finished.is_set()
+
+    release.set()
+    loop = await asyncio.wait_for(add_task, timeout=_LOST_RUN_SECS)
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(shutdown_task, timeout=_LOST_RUN_SECS)
+    assert finished.is_set()
+    assert svc._inflight_persistence == set()
+    restored = AutoNudgeService(base_dir=tmp_path)
+    await restored.start()
+    assert restored.get_by_slot("slot-twice").id == loop.id
+    await restored.shutdown()
+
+
+def test_drain_grace_fits_inside_the_signal_margin():
+    """The window is spent AFTER the graceful budget has already been cancelled, so
+    it comes out of the SIGTERM-to-SIGKILL margin along with the rest of teardown.
+    A window as long as the margin would hand the exit back to the supervisor."""
+    from kiro_crew import gateway_shutdown_budget as budget
+
+    assert _an._DRAIN_CANCEL_GRACE_SECS == budget.PERSISTENCE_DRAIN_GRACE_SECS
+    assert 0 < budget.PERSISTENCE_DRAIN_GRACE_SECS < budget.SIGNAL_MARGIN_SECS / 2
+
+
+@pytest.mark.asyncio
+async def test_durability_drain_window_spans_every_settle_on_one_instance(monkeypatch):
+    """`shutdown()` drains its control tasks and then its persistence registry
+    through ONE drain. The gateway's single cancellation may land during the
+    first; the second must still be bounded by it, or a wedged write reached only
+    in the second phase would wait forever. Conversely a fresh instance that was
+    never cancelled waits past the window: the window opens on cancellation only."""
+    monkeypatch.setattr(_an, "_DRAIN_CANCEL_GRACE_SECS", 0.05)
+    loop = asyncio.get_running_loop()
+    drain = _an._DurabilityDrain()
+
+    first = loop.create_future()
+    waiter = asyncio.create_task(drain.settle(first))
+    await asyncio.sleep(0)
+    waiter.cancel()
+    await asyncio.sleep(0)
+    assert not waiter.done()
+    first.set_result(None)
+    assert await asyncio.wait_for(waiter, timeout=_LOST_RUN_SECS) is True
+    assert drain.interrupted is True
+
+    second = loop.create_future()
+    second_settlement = asyncio.create_task(drain.settle(second))
+    assert await asyncio.wait_for(second_settlement, timeout=_LOST_RUN_SECS) is False
+    assert not second.done() and not second.cancelled()
+
+    monkeypatch.setattr(_an, "_DRAIN_CANCEL_GRACE_SECS", -1.0)
+    fresh = _an._DurabilityDrain()
+    waiter_registered = asyncio.Event()
+
+    class RegisteredFuture(asyncio.Future):
+        def add_done_callback(self, fn, *, context=None):
+            waiter_registered.set()
+            super().add_done_callback(fn, context=context)
+
+    never = RegisteredFuture()
+    settling = asyncio.create_task(fresh.settle(never))
+    resolved_at_settlement: list[bool] = []
+    settling.add_done_callback(lambda _task: resolved_at_settlement.append(never.done()))
+    await asyncio.wait_for(waiter_registered.wait(), timeout=_LOST_RUN_SECS)
+    await asyncio.sleep(0)
+    assert fresh._deadline is None
+    assert fresh.interrupted is False
+    assert not settling.done()
+    never.set_result(None)
+    assert await asyncio.wait_for(settling, timeout=_LOST_RUN_SECS) is True
+    assert resolved_at_settlement == [True]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_cuts_an_inflight_channel_turn_but_drains_admitted_bookkeeping(tmp_path):
+    """A channel loop runs its turn inline in ``_on_fire``, and that turn only ends
+    when the gateway closes sessions -- which happens AFTER AutoNudge's drain. A
+    drain that waited on the delivering callback therefore always waited out the
+    gateway's whole graceful bound. Shutdown cuts the delivery instead, and still
+    drains the bookkeeping a delivery that already returned is writing."""
+    delivering = asyncio.Event()
+    delivery_cancelled = asyncio.Event()
+
+    async def on_fire(loop):
+        if loop.slot_key == "slack:C1:T1":
+            delivering.set()
+            try:
+                await asyncio.wait_for(
+                    asyncio.Event().wait(), timeout=_LOST_RUN_SECS
+                )  # a turn nothing but session close ends
+            except asyncio.CancelledError:
+                delivery_cancelled.set()
+                raise
+        return True
+
+    svc = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    await svc.start()
+    turning = await svc.add(slot_key="slack:C1:T1", message="turn", idle_secs=60)
+    settling = await svc.add(slot_key="slack:C2:T2", message="settle", idle_secs=60)
+    svc._cancel_timer(turning.id)
+    svc._cancel_timer(settling.id)
+    # Held so the second loop's settlement parks BEFORE it submits its write: the
+    # one place where cancelling the callback would lose the delivered cycle.
+    await asyncio.wait_for(svc._lock.acquire(), timeout=_LOST_RUN_SECS)
+    try:
+        svc._arm_timer(turning, delay=0.0)
+        await asyncio.wait_for(delivering.wait(), timeout=_LOST_RUN_SECS)
+        svc._arm_timer(settling, delay=0.0)
+        settling_timer = svc._timers[settling.id]
+        for _ in range(100):
+            if settling_timer in _an._timers._drain_registered_owners(svc):
+                break
+            await asyncio.sleep(0)
+        else:
+            raise AssertionError("the delivered cycle's settlement was never registered")
+
+        shutdown = asyncio.create_task(svc.shutdown())
+        await asyncio.wait_for(delivery_cancelled.wait(), timeout=_LOST_RUN_SECS)
+        await _wait_until(
+            lambda: not svc._accepting_mutations,
+            "shutdown admission closure while bookkeeping was registered",
+        )
+        assert not shutdown.done(), "shutdown did not wait for admitted bookkeeping"
+        assert not settling_timer.done()
+    finally:
+        svc._lock.release()
+
+    await asyncio.wait_for(shutdown, timeout=_LOST_RUN_SECS)
+    assert settling_timer.done() and not settling_timer.cancelled()
+    restored = AutoNudgeService(base_dir=tmp_path)
+    await asyncio.to_thread(restored._load)
+    assert restored.get_by_slot("slack:C2:T2").cycle_count == 1
+    assert restored.get_by_slot("slack:C1:T1").cycle_count == 0
+
+
+@pytest.mark.asyncio
+async def test_shutdown_drains_a_callback_inside_its_dispatch_record(tmp_path, monkeypatch):
+    """A structured monitor's post-dispatch record is bookkeeping its delivery earned:
+    a shutdown that lands while the callback waits for the service lock inside it
+    drains the callback instead of cancelling it, so DISPATCHED reaches the store."""
+    svc = AutoNudgeService(base_dir=tmp_path, on_monitor_tick=AsyncMock())
+    await svc.start()
+    monitor = await svc.add_monitor(
+        slot_key="chat-1-7",
+        kind="github_pull_request",
+        target="owner/repo#123",
+        objective="review_ready",
+        cadence_secs=60,
+        budgets=MonitorBudgets(),
+    )
+    assert await svc.mark_monitor_action_in_flight(monitor.id, "fp-a", now=time.time())
+    svc._cancel_timer(monitor.id)
+    entered = asyncio.Event()
+
+    async def _record_dispatch(loop):
+        entered.set()
+        await svc.record_monitor_dispatched(loop.id, "fp-a", now=time.time())
+
+    monkeypatch.setattr(svc, "_run_timer_callback", _record_dispatch)
+    await asyncio.wait_for(svc._lock.acquire(), timeout=_LOST_RUN_SECS)
+    try:
+        svc._arm_timer(monitor, delay=0.0)
+        timer = svc._timers[monitor.id]
+        await asyncio.wait_for(entered.wait(), timeout=_LOST_RUN_SECS)
+        await _wait_until(
+            lambda: timer in _an._timers._drain_registered_owners(svc),
+            "the dispatch record registration",
+        )
+        assert timer in _an._timers._drain_registered_owners(svc)
+        shutdown = asyncio.create_task(svc.shutdown())
+        await _wait_until(lambda: not svc._accepting_mutations, "shutdown admission closure")
+        assert not shutdown.done()
+        assert not timer.done()
+    finally:
+        svc._lock.release()
+
+    await asyncio.wait_for(shutdown, timeout=_LOST_RUN_SECS)
+    assert timer.done() and not timer.cancelled()
+    restored = AutoNudgeService(base_dir=tmp_path)
+    await asyncio.to_thread(restored._load)
+    restored_monitor = restored.get_by_id(monitor.id)
+    assert restored_monitor is not None and restored_monitor.monitor is not None
+    assert restored_monitor.monitor.wake_delivery is MonitorDispatchResult.DISPATCHED
+
+
+@pytest.mark.asyncio
+async def test_shutdown_cancels_dormant_timer_before_callback(tmp_path):
+    callback = AsyncMock(return_value=True)
+    svc = AutoNudgeService(base_dir=tmp_path, on_fire=callback)
+    await svc.start()
+    loop = await svc.add(slot_key="slot-dormant", message="later", idle_secs=60)
+    timer = svc._timers[loop.id]
+
+    await svc.shutdown()
+
+    assert timer.done()
+    callback.assert_not_awaited()
+    assert loop.id not in svc._timers
+
+
+@pytest.mark.asyncio
+async def test_cancelled_shutdown_drains_started_timer_persistence(tmp_path, monkeypatch):
+    svc = AutoNudgeService(base_dir=tmp_path, on_fire=AsyncMock(return_value=True))
+    await svc.start()
+    loop = await svc.add(slot_key="slot-callback-write", message="go", idle_secs=60)
+    svc._cancel_timer(loop.id)
+    real_write = svc._write_state
+    write_started = threading.Event()
+    release_write = threading.Event()
+
+    def blocking_write(payload):
+        write_started.set()
+        assert release_write.wait(timeout=5)
+        real_write(payload)
+
+    monkeypatch.setattr(svc, "_write_state", blocking_write)
+    shutdown = None
+    try:
+        svc._arm_timer(loop, delay=0.0)
+        assert await asyncio.to_thread(write_started.wait, 5)
+
+        shutdown = asyncio.create_task(svc.shutdown())
+        await asyncio.sleep(0)
+        shutdown.cancel()
+        await asyncio.sleep(0)
+        assert not shutdown.done()
+    finally:
+        release_write.set()
+
+    assert shutdown is not None
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(shutdown, timeout=_LOST_RUN_SECS)
+
+    restored = AutoNudgeService(base_dir=tmp_path)
+    await asyncio.to_thread(restored._load)
+    assert restored.get_by_slot("slot-callback-write").cycle_count == 1
+
+
+@pytest.mark.asyncio
+async def test_shutdown_closure_prevents_started_channel_callback_rearm(tmp_path):
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def on_fire(_loop):
+        started.set()
+        await asyncio.wait_for(release.wait(), timeout=_LOST_RUN_SECS)
+        return True
+
+    svc = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    await svc.start()
+    loop = await svc.add(slot_key="slack:C1:T1", message="go", idle_secs=60)
+    svc._cancel_timer(loop.id)
+    svc._arm_timer(loop, delay=0.0)
+    timer = svc._timers[loop.id]
+    await asyncio.wait_for(started.wait(), timeout=_LOST_RUN_SECS)
+
+    shutdown = asyncio.create_task(svc.shutdown())
+    await asyncio.sleep(0)
+    release.set()
+    await asyncio.wait_for(shutdown, timeout=_LOST_RUN_SECS)
+
+    assert timer.done()
+    assert loop.id not in svc._timers
+    assert svc._inflight_adds == set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["update", "remove"])
+async def test_a_callbacks_committed_mutation_survives_shutdown_cutting_its_delivery(
+    tmp_path,
+    operation,
+):
+    """A ``remove`` of the callback's own loop takes its task out of the timer
+    table, so the shutdown reaches it through the running-callback registry."""
+    started = asyncio.Event()
+    release_mutation = asyncio.Event()
+    mutation_finished = asyncio.Event()
+    finish_callback = asyncio.Event()
+    svc = AutoNudgeService(base_dir=tmp_path)
+    await svc.start()
+    loop = await svc.add(slot_key=f"slot-{operation}", message="before", idle_secs=60)
+    svc._cancel_timer(loop.id)
+
+    async def on_fire(_loop):
+        started.set()
+        await asyncio.wait_for(release_mutation.wait(), timeout=_LOST_RUN_SECS)
+        if operation == "update":
+            await svc.update(loop.id, message="after")
+        else:
+            await svc.remove(loop.id)
+        mutation_finished.set()
+        await asyncio.wait_for(finish_callback.wait(), timeout=_LOST_RUN_SECS)
+        return False
+
+    svc._on_fire = on_fire
+    svc._arm_timer(loop, delay=0.0)
+    timer = svc._timers[loop.id]
+    await asyncio.wait_for(started.wait(), timeout=_LOST_RUN_SECS)
+    release_mutation.set()
+    await asyncio.wait_for(mutation_finished.wait(), timeout=_LOST_RUN_SECS)
+    await asyncio.wait_for(svc.shutdown(), timeout=_LOST_RUN_SECS)
+    assert timer.cancelled()
+    assert not finish_callback.is_set()
+
+    restored = AutoNudgeService(base_dir=tmp_path)
+    await asyncio.to_thread(restored._load)
+    persisted = restored.get_by_slot(f"slot-{operation}")
+    if operation == "update":
+        assert persisted is not None and persisted.message == "after"
+    else:
+        assert persisted is None
+
+
+@pytest.mark.asyncio
+async def test_started_timer_admission_does_not_leak_to_detached_child(tmp_path):
+    started = asyncio.Event()
+    release_child = asyncio.Event()
+    child_finished = asyncio.Event()
+    refusals: list[str] = []
+    svc = AutoNudgeService(base_dir=tmp_path)
+    await svc.start()
+    loop = await svc.add(slot_key="slot-child", message="before", idle_secs=60)
+    svc._cancel_timer(loop.id)
+
+    async def on_fire(_loop):
+        async def detached_mutation():
+            await asyncio.wait_for(release_child.wait(), timeout=_LOST_RUN_SECS)
+            try:
+                await svc.update(loop.id, message="must-not-land")
+            except NudgeAdmissionRefused as exc:
+                refusals.append(str(exc))
+            finally:
+                child_finished.set()
+
+        asyncio.create_task(detached_mutation())
+        started.set()
+        await asyncio.wait_for(child_finished.wait(), timeout=_LOST_RUN_SECS)
+        return False
+
+    svc._on_fire = on_fire
+    svc._arm_timer(loop, delay=0.0)
+    await asyncio.wait_for(started.wait(), timeout=_LOST_RUN_SECS)
+    shutdown = asyncio.create_task(svc.shutdown())
+    await asyncio.sleep(0)
+    release_child.set()
+    await asyncio.wait_for(shutdown, timeout=_LOST_RUN_SECS)
+    await asyncio.wait_for(child_finished.wait(), timeout=_LOST_RUN_SECS)
+
+    assert refusals == ["AutoNudge service is shutting down"]
+    restored = AutoNudgeService(base_dir=tmp_path)
+    await asyncio.to_thread(restored._load)
+    assert restored.get_by_slot("slot-child").message == "before"
+
+
+@pytest.mark.asyncio
+async def test_MUTATION_shutdown_boundary_blocks_rearm_and_new_mutations(tmp_path, monkeypatch):
+    """A drained add cannot repopulate timers or submit work after closure."""
+    svc = AutoNudgeService(base_dir=tmp_path)
+    await svc.start()
+    real_write = svc._write_state
+    write_started = threading.Event()
+    release_write = threading.Event()
+
+    def blocking_write(payload):
+        write_started.set()
+        assert release_write.wait(timeout=5)
+        real_write(payload)
+
+    monkeypatch.setattr(svc, "_write_state", blocking_write)
+    add_task = asyncio.create_task(svc.add(slot_key="slot-boundary", message="later", idle_secs=60))
+    assert await asyncio.to_thread(write_started.wait, 5)
+    shutdown_task = asyncio.create_task(svc.shutdown())
+    await asyncio.sleep(0)
+    assert not svc._accepting_mutations
+
+    release_write.set()
+    loop = await asyncio.wait_for(add_task, timeout=_LOST_RUN_SECS)
+    await asyncio.wait_for(shutdown_task, timeout=_LOST_RUN_SECS)
+
+    assert loop.id not in svc._timers
+    assert svc._inflight_adds == set()
+    assert svc._inflight_persistence == set()
+    with pytest.raises(NudgeAdmissionRefused, match="shutting down"):
+        await svc.add(slot_key="late-add", message="no", idle_secs=60)
+    with pytest.raises(NudgeAdmissionRefused, match="shutting down"):
+        await svc.update(loop.id, message="late-update")
+    with pytest.raises(NudgeAdmissionRefused, match="shutting down"):
+        await svc.remove(loop.id)
+    with pytest.raises(NudgeAdmissionRefused, match="shutting down"):
+        await svc.add_monitor(
+            slot_key="late-monitor",
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            cadence_secs=60,
+            budgets=MonitorBudgets(),
+        )
+    with pytest.raises(NudgeAdmissionRefused, match="shutting down"):
+        await svc.update_monitor("missing-monitor", wake_instructions="late")
+    with pytest.raises(NudgeAdmissionRefused, match="shutting down"):
+        await svc.stop_monitor("missing-monitor")
+    assert svc.get_by_slot("slot-boundary") is loop
+    with pytest.raises(NudgeAdmissionRefused, match="shutting down"):
+        svc._start_persistence(svc._serialize_state())
+    assert svc._inflight_persistence == set()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_boundary_blocks_inflight_update_rearm(tmp_path, monkeypatch):
+    svc = AutoNudgeService(base_dir=tmp_path)
+    await svc.start()
+    loop = await svc.add(slot_key="slot-update", message="one", idle_secs=60)
+    await svc.update(loop.id, active=False)
+    assert loop.id not in svc._timers
+
+    real_write = svc._write_state
+    write_started = threading.Event()
+    release_write = threading.Event()
+
+    def blocking_write(payload):
+        write_started.set()
+        assert release_write.wait(timeout=5)
+        real_write(payload)
+
+    monkeypatch.setattr(svc, "_write_state", blocking_write)
+    update_task = asyncio.create_task(svc.update(loop.id, active=True))
+    assert await asyncio.to_thread(write_started.wait, 5)
+    shutdown_task = asyncio.create_task(svc.shutdown())
+    await asyncio.sleep(0)
+    release_write.set()
+
+    assert await asyncio.wait_for(update_task, timeout=_LOST_RUN_SECS) is loop
+    await asyncio.wait_for(shutdown_task, timeout=_LOST_RUN_SECS)
+    assert loop.active
+    assert loop.id not in svc._timers
+    assert svc._inflight_adds == set()
+    assert svc._inflight_persistence == set()
+
+
+async def _wait_for_mutation_owner(svc: AutoNudgeService) -> None:
+    for _ in range(100):
+        if svc._inflight_adds:
+            return
+        await asyncio.sleep(0)
+    raise AssertionError("mutation owner was not registered")
+
+
+@pytest.mark.asyncio
+async def test_MUTATION_admission_lease_is_single_use(tmp_path):
+    svc = AutoNudgeService(base_dir=tmp_path)
+    admission = svc._admit_mutation()
+    await svc._start_persistence(svc._serialize_state(), admission=admission)
+    with pytest.raises(NudgeAdmissionRefused, match="already consumed"):
+        svc._start_persistence(svc._serialize_state(), admission=admission)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["add", "update", "remove", "monitor"])
+async def test_MUTATION_admitted_mutation_commits_after_shutdown_closes(tmp_path, operation):
+    svc = AutoNudgeService(base_dir=tmp_path, on_monitor_tick=AsyncMock())
+    await svc.start()
+    existing = None
+    if operation in {"update", "remove"}:
+        existing = await svc.add(slot_key=f"slot-{operation}", message="before", idle_secs=60)
+        svc._cancel_timer(existing.id)
+    elif operation == "monitor":
+        existing = await svc.add_monitor(
+            slot_key="slot-monitor",
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            cadence_secs=60,
+            budgets=MonitorBudgets(),
+        )
+        svc._cancel_timer(existing.id)
+
+    gate = svc._lock if operation in {"add", "monitor"} else _an._maintenance_lock(svc._base_dir)
+    await asyncio.wait_for(gate.acquire(), timeout=_LOST_RUN_SECS)
+    if operation == "add":
+        mutation = asyncio.create_task(svc.add("slot-add", "after", idle_secs=60))
+    elif operation == "update":
+        mutation = asyncio.create_task(svc.update(existing.id, message="after"))
+    elif operation == "remove":
+        mutation = asyncio.create_task(svc.remove(existing.id))
+    else:
+        mutation = asyncio.create_task(svc.update_monitor(existing.id, wake_instructions="after"))
+    try:
+        await _wait_for_mutation_owner(svc)
+        shutdown = asyncio.create_task(svc.shutdown())
+        await asyncio.sleep(0)
+        gate.release()
+        await asyncio.wait_for(mutation, timeout=_LOST_RUN_SECS)
+        await asyncio.wait_for(shutdown, timeout=_LOST_RUN_SECS)
+    finally:
+        if gate.locked():
+            gate.release()
+
+    restored = AutoNudgeService(base_dir=tmp_path)
+    await restored.start()
+    try:
+        slot = restored.get_by_slot(f"slot-{operation}")
+        if operation == "remove":
+            assert slot is None
+        elif operation == "monitor":
+            assert slot is not None and slot.monitor is not None
+            assert slot.monitor.wake_instructions == "after"
+        else:
+            assert slot is not None and slot.message == "after"
+    finally:
+        await restored.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["remove", "monitor"])
+async def test_MUTATION_shutdown_drains_the_section_not_the_callers_remaining_task(
+    tmp_path, monkeypatch, operation
+):
+    svc = AutoNudgeService(base_dir=tmp_path, on_monitor_tick=AsyncMock())
+    await svc.start()
+    if operation == "remove":
+        loop = await svc.add(slot_key="slot-remove", message="before", idle_secs=60)
+    else:
+        loop = await svc.add_monitor(
+            slot_key="slot-monitor",
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            cadence_secs=60,
+            budgets=MonitorBudgets(),
+        )
+    svc._cancel_timer(loop.id)
+    committed = asyncio.Event()
+    release_section = asyncio.Event()
+    drain_snapshot = asyncio.Event()
+    caller_tail = asyncio.Event()
+
+    real_drain = _an._DurabilityDrain
+
+    class ObservedDrain(real_drain):
+        async def settle(self, *awaitables):
+            if any(awaitable in svc._inflight_adds for awaitable in awaitables):
+                drain_snapshot.set()
+            return await asyncio.wait_for(super().settle(*awaitables), timeout=_LOST_RUN_SECS)
+
+    monkeypatch.setattr(_an, "_DurabilityDrain", ObservedDrain)
+
+    if operation == "remove":
+        real_mutation = svc._remove_unserialized
+
+        async def mutation_after_commit(*args, **kwargs):
+            result = await real_mutation(*args, **kwargs)
+            committed.set()
+            await asyncio.wait_for(release_section.wait(), timeout=_LOST_RUN_SECS)
+            return result
+
+        monkeypatch.setattr(svc, "_remove_unserialized", mutation_after_commit)
+    else:
+        real_mutation = svc._update_monitor_admitted
+
+        async def mutation_after_commit(*args, **kwargs):
+            result = await real_mutation(*args, **kwargs)
+            committed.set()
+            await asyncio.wait_for(release_section.wait(), timeout=_LOST_RUN_SECS)
+            return result
+
+        monkeypatch.setattr(svc, "_update_monitor_admitted", mutation_after_commit)
+
+    async def mutation_then_wait_forever():
+        if operation == "remove":
+            assert await svc.remove(loop.id)
+        else:
+            updated = await svc.update_monitor(loop.id, wake_instructions="after")
+            assert updated is loop
+        await asyncio.wait_for(caller_tail.wait(), timeout=_LOST_RUN_SECS)
+
+    caller = asyncio.create_task(mutation_then_wait_forever())
+    shutdown = None
+    try:
+        await asyncio.wait_for(committed.wait(), timeout=_LOST_RUN_SECS)
+        shutdown = asyncio.create_task(svc.shutdown())
+        await asyncio.wait_for(drain_snapshot.wait(), timeout=_LOST_RUN_SECS)
+        release_section.set()
+        await asyncio.wait_for(shutdown, timeout=_LOST_RUN_SECS)
+        assert not caller.done(), "shutdown cancelled or drained work after the mutation section"
+    finally:
+        release_section.set()
+        caller.cancel()
+        await asyncio.wait_for(
+            asyncio.gather(caller, return_exceptions=True), timeout=_LOST_RUN_SECS
+        )
+        if shutdown is not None and not shutdown.done():
+            shutdown.cancel()
+            await asyncio.wait_for(
+                asyncio.gather(shutdown, return_exceptions=True), timeout=_LOST_RUN_SECS
+            )
+
+    restored = AutoNudgeService(base_dir=tmp_path)
+    await restored.start()
+    try:
+        persisted = restored.get_by_id(loop.id)
+        if operation == "remove":
+            assert persisted is None
+        else:
+            assert persisted is not None and persisted.monitor is not None
+            assert persisted.monitor.wake_instructions == "after"
+    finally:
+        await restored.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_MUTATION_cancelled_admitted_add_retires_stale_sentinel_during_shutdown(
+    tmp_path,
+):
+    sentinel = tmp_path / "stale-stop"
+    sentinel.write_text("stop", encoding="utf-8")
+    svc = AutoNudgeService(base_dir=tmp_path / "home")
+    await svc.start()
+    await asyncio.wait_for(svc._lock.acquire(), timeout=_LOST_RUN_SECS)
+    caller = asyncio.create_task(
+        svc.add(
+            "slot-cancelled",
+            "after",
+            idle_secs=60,
+            stop_sentinel_path=str(sentinel),
+            retire_stale_stop_sentinel=sentinel,
+        )
+    )
+    try:
+        await _wait_for_mutation_owner(svc)
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(caller, timeout=_LOST_RUN_SECS)
+        shutdown = asyncio.create_task(svc.shutdown())
+        await _wait_until(lambda: not svc.accepting_mutations, "shutdown admission closure")
+        svc._lock.release()
+        await asyncio.wait_for(shutdown, timeout=_LOST_RUN_SECS)
+    finally:
+        if svc._lock.locked():
+            svc._lock.release()
+
+    on_fire = AsyncMock(return_value=True)
+    restored = AutoNudgeService(base_dir=tmp_path / "home", on_fire=on_fire)
+    await restored.start()
+    try:
+        loop = restored.get_by_slot("slot-cancelled")
+        assert loop is not None, "the shielded add did not commit"
+        assert not sentinel.exists(), "the cancelled caller stranded the stale sentinel"
+        restored._cancel_timer(loop.id)
+
+        await restored._timer(loop, delay=0.0)
+
+        assert loop.active, "the first post-restart tick consumed the stale sentinel"
+        assert loop.stopped_reason != "stop_sentinel"
+        on_fire.assert_awaited_once_with(loop)
+    finally:
+        await restored.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_MUTATION_cancelled_remove_waiting_on_lock_still_persists(tmp_path, monkeypatch):
+    service = AutoNudgeService(base_dir=tmp_path / "home")
+    await service.start()
+    loop = await service.add(slot_key="slot-remove-cancelled", message="stop", idle_secs=60)
+    service._cancel_timer(loop.id)
+    lock = _an._maintenance_lock(service._base_dir)
+    await asyncio.wait_for(lock.acquire(), timeout=_LOST_RUN_SECS)
+    acquire_started = asyncio.Event()
+    real_acquire = service._acquire_mutation_lock
+
+    async def observed_acquire(*args, **kwargs):
+        acquire_started.set()
+        return await real_acquire(*args, **kwargs)
+
+    monkeypatch.setattr(service, "_acquire_mutation_lock", observed_acquire)
+    caller = asyncio.create_task(service.remove(loop.id))
+    registered: set[asyncio.Future] = set()
+    try:
+        await asyncio.wait_for(acquire_started.wait(), timeout=_LOST_RUN_SECS)
+        registered = set(service._inflight_adds)
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(caller, timeout=_LOST_RUN_SECS)
+        assert service.get_by_slot("slot-remove-cancelled") is loop
+    finally:
+        if lock.locked():
+            lock.release()
+
+    await asyncio.wait_for(
+        asyncio.gather(*registered, return_exceptions=True), timeout=_LOST_RUN_SECS
+    )
+    await _wait_until(lambda: not service._inflight_adds, "cancelled remove settlement")
+    assert service.get_by_slot("slot-remove-cancelled") is None
+    stored = json.loads(service._path.read_text(encoding="utf-8"))
+    assert stored["loops"] == [], "the cancelled handler left the removed row on disk"
+    await service.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "operation",
+    ["stop_monitor", "clear_terminal_monitor", "update_monitor"],
+)
+async def test_MUTATION_cancelled_monitor_mutation_waiting_on_lock_still_persists(
+    tmp_path, operation
+):
+    service = AutoNudgeService(base_dir=tmp_path / "home", on_monitor_tick=AsyncMock())
+    await service.start()
+    loop = await service.add_monitor(
+        slot_key=f"slot-{operation}",
+        kind="github_pull_request",
+        target="owner/repo#123",
+        objective="review_ready",
+        cadence_secs=60,
+        budgets=MonitorBudgets(),
+    )
+    service._cancel_timer(loop.id)
+    if operation == "clear_terminal_monitor":
+        assert await service.stop_monitor(loop.id) is loop
+        service._cancel_timer(loop.id)
+        gate = _an._maintenance_lock(service._base_dir)
+    else:
+        gate = service._lock
+    await asyncio.wait_for(gate.acquire(), timeout=_LOST_RUN_SECS)
+    if operation == "stop_monitor":
+        caller = asyncio.create_task(service.stop_monitor(loop.id))
+    elif operation == "clear_terminal_monitor":
+        caller = asyncio.create_task(service.clear_terminal_monitor(loop.id))
+    else:
+        caller = asyncio.create_task(
+            service.update_monitor(loop.id, wake_instructions="persist after cancel")
+        )
+    registered: set[asyncio.Future] = set()
+    try:
+        await _wait_for_mutation_owner(service)
+        registered = set(service._inflight_adds)
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(caller, timeout=_LOST_RUN_SECS)
+    finally:
+        if gate.locked():
+            gate.release()
+
+    await asyncio.wait_for(
+        asyncio.gather(*registered, return_exceptions=True), timeout=_LOST_RUN_SECS
+    )
+    await _wait_until(lambda: not service._inflight_adds, f"cancelled {operation} settlement")
+    current = service.get_by_id(loop.id)
+    if operation == "clear_terminal_monitor":
+        assert current is None
+    elif operation == "stop_monitor":
+        assert current is loop and loop.monitor is not None
+        assert loop.monitor.outcome is MonitorOutcome.USER_STOP
+    else:
+        assert current is loop and loop.monitor is not None
+        assert loop.monitor.wake_instructions == "persist after cancel"
+
+    restored = AutoNudgeService(base_dir=tmp_path / "home")
+    await asyncio.to_thread(restored._load)
+    persisted = restored.get_by_id(loop.id)
+    if operation == "clear_terminal_monitor":
+        assert persisted is None
+    elif operation == "stop_monitor":
+        assert persisted is not None and persisted.monitor is not None
+        assert persisted.monitor.outcome is MonitorOutcome.USER_STOP
+    else:
+        assert persisted is not None and persisted.monitor is not None
+        assert persisted.monitor.wake_instructions == "persist after cancel"
+    await service.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "operation",
+    [
+        "remove",
+        "stop_monitor",
+        "clear_terminal_monitor",
+        "update_monitor",
+        "release_approval_hold",
+    ],
+)
+async def test_MUTATION_caller_cancelled_mid_write_is_held_until_the_write_settles(
+    tmp_path, monkeypatch, operation
+):
+    """Once an admitted mutation's write is in flight, its caller waits it out.
+
+    The child completes the mutation either way; what this pins is the caller's
+    side: cancelled (twice) while the write runs, it stays attached until the write
+    settles and only then receives ``CancelledError``.
+    """
+    service = AutoNudgeService(base_dir=tmp_path / "home", on_monitor_tick=AsyncMock())
+    await service.start()
+    slot = f"slot-mid-write-{operation}"
+    if operation in {"remove", "release_approval_hold"}:
+        loop = await service.add(slot_key=slot, message="go", idle_secs=60)
+    else:
+        loop = await service.add_monitor(
+            slot_key=slot,
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            cadence_secs=60,
+            budgets=MonitorBudgets(),
+        )
+    service._cancel_timer(loop.id)
+    if operation == "clear_terminal_monitor":
+        assert await service.stop_monitor(loop.id) is loop
+        service._cancel_timer(loop.id)
+    elif operation == "release_approval_hold":
+        service.notify_approval_stalled(slot)
+        await _wait_until(lambda: loop.approval_stalled, "the approval hold record")
+        await _wait_until(lambda: not service._inflight_adds, "the approval hold settlement")
+        service._cancel_timer(loop.id)
+
+    real_write = service._write_state
+    armed = threading.Event()
+    write_started = threading.Event()
+    release_write = threading.Event()
+    order: list[str] = []
+
+    def _blocking_write(payload: dict) -> None:
+        if armed.is_set():
+            write_started.set()
+            if not release_write.wait(_LOST_RUN_SECS):
+                raise AssertionError("the test did not release the writer")
+        real_write(payload)
+        order.append("write-done")
+
+    monkeypatch.setattr(service, "_write_state", _blocking_write)
+    armed.set()
+    if operation == "remove":
+        caller = asyncio.create_task(service.remove(loop.id))
+    elif operation == "stop_monitor":
+        caller = asyncio.create_task(service.stop_monitor(loop.id))
+    elif operation == "clear_terminal_monitor":
+        caller = asyncio.create_task(service.clear_terminal_monitor(loop.id))
+    elif operation == "update_monitor":
+        caller = asyncio.create_task(
+            service.update_monitor(loop.id, wake_instructions="held through the write")
+        )
+    else:
+        caller = asyncio.create_task(service.release_approval_hold(slot, why="test", arm=False))
+    try:
+        assert await asyncio.to_thread(write_started.wait, _LOST_RUN_SECS)
+        caller.cancel()
+        await asyncio.sleep(0)
+        caller.cancel()
+        await asyncio.sleep(0)
+        assert not caller.done(), "the cancelled caller left before its write settled"
+    finally:
+        release_write.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(caller, timeout=_LOST_RUN_SECS)
+    assert order == ["write-done"], "the caller was released before the write landed"
+
+    restored = AutoNudgeService(base_dir=tmp_path / "home")
+    await asyncio.to_thread(restored._load)
+    persisted = restored.get_by_id(loop.id)
+    if operation in {"remove", "clear_terminal_monitor"}:
+        assert persisted is None
+    elif operation == "stop_monitor":
+        assert persisted is not None and persisted.monitor is not None
+        assert persisted.monitor.outcome is MonitorOutcome.USER_STOP
+    elif operation == "update_monitor":
+        assert persisted is not None and persisted.monitor is not None
+        assert persisted.monitor.wake_instructions == "held through the write"
+    else:
+        assert persisted is not None and persisted.approval_stalled is False
+    await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_MUTATION_shutdown_drains_cancelled_caller_remove(tmp_path):
+    service = AutoNudgeService(base_dir=tmp_path / "home")
+    await service.start()
+    loop = await service.add(slot_key="slot-remove-shutdown", message="stop", idle_secs=60)
+    service._cancel_timer(loop.id)
+    lock = _an._maintenance_lock(service._base_dir)
+    await asyncio.wait_for(lock.acquire(), timeout=_LOST_RUN_SECS)
+    caller = asyncio.create_task(service.remove(loop.id))
+    shutdown: asyncio.Task[None] | None = None
+    try:
+        await _wait_for_mutation_owner(service)
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(caller, timeout=_LOST_RUN_SECS)
+        shutdown = asyncio.create_task(service.shutdown())
+        await _wait_until(lambda: not service.accepting_mutations, "shutdown admission closure")
+        assert not shutdown.done(), "shutdown abandoned the admitted removal"
+        lock.release()
+        await asyncio.wait_for(shutdown, timeout=_LOST_RUN_SECS)
+    finally:
+        if lock.locked():
+            lock.release()
+        if shutdown is not None and not shutdown.done():
+            shutdown.cancel()
+            await asyncio.wait_for(
+                asyncio.gather(shutdown, return_exceptions=True), timeout=_LOST_RUN_SECS
+            )
+
+    assert service.get_by_slot("slot-remove-shutdown") is None
+    stored = json.loads(service._path.read_text(encoding="utf-8"))
+    assert stored["loops"] == [], "shutdown returned before the removal reached disk"
+
+
+@pytest.mark.asyncio
+async def test_MUTATION_running_callback_is_cancelled_after_remove_settles(tmp_path, monkeypatch):
+    service = AutoNudgeService(base_dir=tmp_path / "home")
+    await service.start()
+    loop = await service.add(slot_key="slot-callback-remove", message="stop", idle_secs=60)
+    service._cancel_timer(loop.id)
+    lock = _an._maintenance_lock(service._base_dir)
+    await asyncio.wait_for(lock.acquire(), timeout=_LOST_RUN_SECS)
+    entered = asyncio.Event()
+    callback_cancelled = asyncio.Event()
+
+    async def remove_from_callback(callback_loop):
+        entered.set()
+        try:
+            await service.remove(callback_loop.id)
+        except asyncio.CancelledError:
+            callback_cancelled.set()
+            raise
+
+    monkeypatch.setattr(service, "_run_timer_callback", remove_from_callback)
+    service._arm_timer(loop, delay=0.0)
+    timer = service._timers[loop.id]
+    shutdown: asyncio.Task[None] | None = None
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=_LOST_RUN_SECS)
+        await _wait_until(
+            lambda: timer in _an._timers._drain_registered_owners(service),
+            "remove transaction callback ownership",
+        )
+        shutdown = asyncio.create_task(service.shutdown())
+        await _wait_until(lambda: not service.accepting_mutations, "shutdown admission closure")
+        assert not timer.done(), "shutdown cancelled the callback before removal settled"
+        assert not callback_cancelled.is_set()
+        lock.release()
+        await asyncio.wait_for(shutdown, timeout=_LOST_RUN_SECS)
+    finally:
+        if lock.locked():
+            lock.release()
+        if shutdown is not None and not shutdown.done():
+            shutdown.cancel()
+            await asyncio.wait_for(
+                asyncio.gather(shutdown, return_exceptions=True), timeout=_LOST_RUN_SECS
+            )
+
+    assert callback_cancelled.is_set()
+    assert timer.done() and timer.cancelled()
+    assert service.get_by_slot("slot-callback-remove") is None
+    stored = json.loads(service._path.read_text(encoding="utf-8"))
+    assert stored["loops"] == []
+
+
+@pytest.mark.asyncio
+async def test_admitted_transaction_does_not_recancel_owner_after_its_wait_ended(tmp_path):
+    service = AutoNudgeService(base_dir=tmp_path / "home")
+    transaction_entered = asyncio.Event()
+    release_transaction = asyncio.Event()
+    owner_left_wait = asyncio.Event()
+    release_owner = asyncio.Event()
+    second_cancellation = asyncio.Event()
+
+    async def transaction() -> None:
+        transaction_entered.set()
+        await asyncio.wait_for(release_transaction.wait(), timeout=_LOST_RUN_SECS)
+
+    async def owner() -> None:
+        task = asyncio.current_task()
+        assert task is not None
+        service._running_callbacks.add(task)
+        try:
+            try:
+                await _an._timers._run_admitted_transaction(
+                    service,
+                    transaction(),
+                    cancel_callback_on_exit=True,
+                    on_failure_log="unexpected transaction failure",
+                )
+            except asyncio.CancelledError:
+                owner_left_wait.set()
+            try:
+                await asyncio.wait_for(release_owner.wait(), timeout=_LOST_RUN_SECS)
+            except asyncio.CancelledError:
+                second_cancellation.set()
+                raise
+        finally:
+            service._running_callbacks.discard(task)
+
+    callback = asyncio.create_task(owner())
+    try:
+        await asyncio.wait_for(transaction_entered.wait(), timeout=_LOST_RUN_SECS)
+        callback.cancel()
+        await asyncio.wait_for(owner_left_wait.wait(), timeout=_LOST_RUN_SECS)
+        service._accepting_mutations = False
+        release_transaction.set()
+        await _wait_until(
+            lambda: not service._inflight_adds,
+            "detached transaction settlement",
+        )
+        assert not second_cancellation.is_set()
+        assert not callback.done()
+        release_owner.set()
+        await asyncio.wait_for(callback, timeout=_LOST_RUN_SECS)
+    finally:
+        release_transaction.set()
+        release_owner.set()
+        if not callback.done():
+            callback.cancel()
+        await asyncio.wait_for(
+            asyncio.gather(callback, return_exceptions=True),
+            timeout=_LOST_RUN_SECS,
+        )
+
+
+@pytest.mark.asyncio
+async def test_MUTATION_prior_lease_write_does_not_hold_a_lock_waiting_transaction(
+    tmp_path, monkeypatch
+):
+    """Only the current transaction's submission can hold its cancelled caller."""
+    service = AutoNudgeService(base_dir=tmp_path / "home")
+    await service.start()
+    loop = await service.add(slot_key="slot-prior-write", message="stop", idle_secs=60)
+    service._cancel_timer(loop.id)
+    lock = _an._maintenance_lock(service._base_dir)
+    await asyncio.wait_for(lock.acquire(), timeout=_LOST_RUN_SECS)
+    prior_write_landed = asyncio.Event()
+    caller_released = asyncio.Event()
+    hold_started = asyncio.Event()
+    real_drain = _an._timers._DurabilityDrain
+
+    class ObservedDrain(real_drain):
+        def note_cancelled(self) -> None:
+            hold_started.set()
+            super().note_cancelled()
+
+    monkeypatch.setattr(_an._timers, "_DurabilityDrain", ObservedDrain)
+
+    async def remove_after_prior_write(_loop) -> None:
+        await service._persist_locked()
+        prior_write_landed.set()
+        try:
+            await service.remove(loop.id)
+        except asyncio.CancelledError:
+            caller_released.set()
+            raise
+
+    monkeypatch.setattr(service, "_run_timer_callback", remove_after_prior_write)
+    service._arm_timer(loop, delay=0.0)
+    timer = service._timers[loop.id]
+    released_wait = asyncio.create_task(caller_released.wait())
+    held_wait = asyncio.create_task(hold_started.wait())
+    try:
+        await asyncio.wait_for(prior_write_landed.wait(), timeout=_LOST_RUN_SECS)
+        await until_parked(lock, timeout=_LOST_RUN_SECS)
+        timer.cancel()
+        done, _ = await asyncio.wait(
+            {released_wait, held_wait},
+            timeout=_LOST_RUN_SECS,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        assert released_wait in done, "a prior lease write held the later transaction's caller"
+        assert held_wait not in done
+    finally:
+        lock.release()
+        for waiter in (released_wait, held_wait):
+            if not waiter.done():
+                waiter.cancel()
+        await asyncio.wait_for(
+            asyncio.gather(timer, released_wait, held_wait, return_exceptions=True),
+            timeout=_LOST_RUN_SECS,
+        )
+        await _wait_until(lambda: not service._inflight_adds, "the removal child settlement")
+
+    assert service.get_by_id(loop.id) is None
+    restored = AutoNudgeService(base_dir=tmp_path / "home")
+    await asyncio.to_thread(restored._load)
+    assert restored.get_by_id(loop.id) is None
+    await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_MUTATION_a_detached_lease_persist_does_not_hold_a_lock_waiting_transaction(
+    tmp_path, monkeypatch
+):
+    """A ``_persist_soon`` under the callback's lease is not this transaction's write.
+
+    The gate schedules the detached persist and the callback reaches ``remove()``
+    with no yield between, so that write lands only once the transaction waits for
+    its lock. Counting it as the transaction's own holds the cancelled caller for
+    the whole post-cancellation window. The transaction's token stays at zero, the
+    caller leaves at once, and the registered child completes the removal.
+    """
+    service = AutoNudgeService(base_dir=tmp_path / "home")
+    await service.start()
+    loop = await service.add(slot_key="slot-detached-persist", message="stop", idle_secs=60)
+    service._cancel_timer(loop.id)
+    lock = _an._maintenance_lock(service._base_dir)
+    await asyncio.wait_for(lock.acquire(), timeout=_LOST_RUN_SECS)
+    detached_write_submitted = asyncio.Event()
+    caller_released = asyncio.Event()
+    hold_started = asyncio.Event()
+    real_drain = _an._timers._DurabilityDrain
+
+    class ObservedDrain(real_drain):
+        def note_cancelled(self) -> None:
+            hold_started.set()
+            super().note_cancelled()
+
+    monkeypatch.setattr(_an._timers, "_DurabilityDrain", ObservedDrain)
+    real_start = service._start_persistence
+
+    def _observed_start(payload, *, admission=None):
+        future = real_start(payload, admission=admission)
+        detached_write_submitted.set()
+        return future
+
+    monkeypatch.setattr(service, "_start_persistence", _observed_start)
+
+    async def remove_after_scheduling_a_persist(_loop) -> None:
+        service._persist_soon()
+        try:
+            await service.remove(loop.id)
+        except asyncio.CancelledError:
+            caller_released.set()
+            raise
+
+    monkeypatch.setattr(service, "_run_timer_callback", remove_after_scheduling_a_persist)
+    service._arm_timer(loop, delay=0.0)
+    timer = service._timers[loop.id]
+    released_wait = asyncio.create_task(caller_released.wait())
+    held_wait = asyncio.create_task(hold_started.wait())
+    try:
+        await asyncio.wait_for(detached_write_submitted.wait(), timeout=_LOST_RUN_SECS)
+        await until_parked(lock, timeout=_LOST_RUN_SECS)
+        timer.cancel()
+        done, _ = await asyncio.wait(
+            {released_wait, held_wait},
+            timeout=_LOST_RUN_SECS,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        assert released_wait in done, "a detached lease write held the transaction's caller"
+        assert held_wait not in done
+    finally:
+        lock.release()
+        for waiter in (released_wait, held_wait):
+            if not waiter.done():
+                waiter.cancel()
+        await asyncio.wait_for(
+            asyncio.gather(timer, released_wait, held_wait, return_exceptions=True),
+            timeout=_LOST_RUN_SECS,
+        )
+        await _wait_until(lambda: not service._inflight_adds, "the removal child settlement")
+
+    assert service.get_by_id(loop.id) is None
+    restored = AutoNudgeService(base_dir=tmp_path / "home")
+    await asyncio.to_thread(restored._load)
+    assert restored.get_by_id(loop.id) is None
+    await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_an_observer_task_cannot_count_toward_the_transactions_submissions(tmp_path):
+    """A write an observer's task starts from inside a child is not the child's.
+
+    ``_emit`` clears the submission token for the observers it calls, so a task an
+    observer creates copies a context without it. Only the write the transaction
+    itself starts moves its count.
+    """
+    service = AutoNudgeService(base_dir=tmp_path / "home")
+    admission = service._admit_mutation(allow_multiple_persistence=True)
+    seen: list[tuple[str, object]] = []
+    observer_writes: list[asyncio.Task[None]] = []
+
+    async def _write_from_the_observer() -> None:
+        seen.append(("observer task", service._admitted_transaction_submissions.get()))
+        await service._start_persistence(service._serialize_state())
+
+    def observer(event: str, _loop: NudgeLoop | None) -> None:
+        seen.append(("observer", service._admitted_transaction_submissions.get()))
+        observer_writes.append(asyncio.ensure_future(_write_from_the_observer()))
+
+    service.subscribe(observer)
+
+    async def transaction() -> tuple[int, int]:
+        submissions = service._admitted_transaction_submissions.get()
+        assert submissions is not None, "the child must carry its own submission token"
+        service._emit("probe", None)
+        await asyncio.wait_for(asyncio.gather(*observer_writes), timeout=_LOST_RUN_SECS)
+        after_observer = submissions.count
+        await service._start_persistence(service._serialize_state(), admission=admission)
+        return after_observer, submissions.count
+
+    counts = await asyncio.wait_for(
+        _an._timers._run_admitted_transaction(
+            service,
+            transaction(),
+            on_failure_log="unexpected transaction failure",
+        ),
+        timeout=_LOST_RUN_SECS,
+    )
+
+    assert seen == [("observer", None), ("observer task", None)]
+    assert counts == (0, 1), "only the transaction's own write may move its count"
+
+
+@pytest.mark.asyncio
+async def test_an_observer_task_cannot_reach_a_monitor_updates_post_commit_handle(tmp_path):
+    """A task an observer creates from inside an update cannot see its continuation.
+
+    A detached monitor-update child carries its post-commit handle, and through it
+    the credential grant callback, in ``_MONITOR_UPDATE_POST_COMMIT``. ``_emit`` clears
+    it for the observers it calls, so a task an observer creates copies a context
+    without it, and the emitter gets its own handle back afterwards.
+    """
+    service = AutoNudgeService(base_dir=tmp_path / "home")
+    seen: list[tuple[str, object]] = []
+    observer_tasks: list[asyncio.Task[None]] = []
+
+    async def _observer_task() -> None:
+        seen.append(("observer task", _an._monitor_records._MONITOR_UPDATE_POST_COMMIT.get()))
+
+    def observer(event: str, _loop: NudgeLoop | None) -> None:
+        seen.append(("observer", _an._monitor_records._MONITOR_UPDATE_POST_COMMIT.get()))
+        observer_tasks.append(asyncio.ensure_future(_observer_task()))
+
+    service.subscribe(observer)
+
+    async def _grant(*_args: object) -> None:
+        return None
+
+    with _an._monitor_records._monitor_update_post_commit(_grant) as handle:
+        service._emit("updated", None)
+        assert _an._monitor_records._MONITOR_UPDATE_POST_COMMIT.get() is handle
+    await asyncio.wait_for(asyncio.gather(*observer_tasks), timeout=_LOST_RUN_SECS)
+
+    assert seen == [("observer", None), ("observer task", None)]
+
+
+@pytest.mark.asyncio
+async def test_a_persist_soon_task_cannot_count_toward_the_transactions_submissions(
+    tmp_path, monkeypatch
+):
+    """A persist task created inside the child is not the child's own write."""
+    service = AutoNudgeService(base_dir=tmp_path / "home")
+    admission = service._admit_mutation(allow_multiple_persistence=True)
+    detached_write_submitted = asyncio.Event()
+    real_start = service._start_persistence
+
+    def _observe_start(payload, *, admission=None):
+        future = real_start(payload, admission=admission)
+        detached_write_submitted.set()
+        return future
+
+    monkeypatch.setattr(service, "_start_persistence", _observe_start)
+
+    async def transaction() -> tuple[int, int]:
+        submissions = service._admitted_transaction_submissions.get()
+        assert submissions is not None, "the child must carry its own submission token"
+        service._persist_soon()
+        await asyncio.wait_for(detached_write_submitted.wait(), timeout=_LOST_RUN_SECS)
+        after_detached = submissions.count
+        await service._start_persistence(service._serialize_state(), admission=admission)
+        return after_detached, submissions.count
+
+    counts = await asyncio.wait_for(
+        _an._timers._run_admitted_transaction(
+            service,
+            transaction(),
+            on_failure_log="unexpected transaction failure",
+        ),
+        timeout=_LOST_RUN_SECS,
+    )
+    await _wait_until(lambda: not service._inflight_adds, "the detached persist")
+
+    assert counts == (0, 1), "only the transaction's own write may move its count"
+
+
+@pytest.mark.asyncio
+async def test_a_callback_held_through_its_write_takes_the_closure_cancel_as_one(tmp_path):
+    """The hold absorbs shutdown's cancel of the owning callback.
+
+    A callback cancelled once its transaction's write was submitted stays attached
+    until the transaction settles. Admission closing in that window makes the
+    helper cancel the callback again; the hold absorbs that, the callback sees
+    exactly one ``CancelledError``, and the companion record resolves only after.
+    """
+    service = AutoNudgeService(base_dir=tmp_path / "home")
+    admission = service._admit_mutation()
+    written = asyncio.Event()
+    finish_write = asyncio.Event()
+    seen: list[str] = []
+    requests: list[int] = []
+
+    async def transaction() -> None:
+        admission.persistence_submitted = True
+        submissions = service._admitted_transaction_submissions.get()
+        assert submissions is not None, "the child must carry its own submission token"
+        submissions.count += 1
+        written.set()
+        await asyncio.wait_for(finish_write.wait(), timeout=_LOST_RUN_SECS)
+
+    async def owner() -> None:
+        task = asyncio.current_task()
+        assert task is not None
+        service._running_callbacks.add(task)
+        try:
+            await _an._timers._run_admitted_transaction(
+                service,
+                transaction(),
+                cancel_callback_on_exit=True,
+                on_failure_log="unexpected transaction failure",
+            )
+        except asyncio.CancelledError:
+            seen.append("cancelled")
+            for _ in range(5):
+                await asyncio.sleep(0)
+            seen.append("no second cancel")
+            # Two requests reached this task, this test's and the helper's closure
+            # cancel, and the hold delivered them as the one error caught above.
+            requests.append(asyncio.current_task().cancelling())  # type: ignore[union-attr]
+        finally:
+            service._running_callbacks.discard(task)
+
+    callback = asyncio.create_task(owner())
+    try:
+        await asyncio.wait_for(written.wait(), timeout=_LOST_RUN_SECS)
+        callback.cancel()
+        await asyncio.sleep(0)
+        assert not callback.done(), "the callback left before its write settled"
+        service._accepting_mutations = False
+        finish_write.set()
+        await asyncio.wait_for(callback, timeout=_LOST_RUN_SECS)
+        await _wait_until(lambda: not service._inflight_adds, "the transaction's settlement")
+    finally:
+        finish_write.set()
+        if not callback.done():
+            callback.cancel()
+        await asyncio.wait_for(
+            asyncio.gather(callback, return_exceptions=True),
+            timeout=_LOST_RUN_SECS,
+        )
+
+    assert seen == ["cancelled", "no second cancel"]
+    assert requests == [2], "the closure cancel was not issued during the hold"
+
+
+@pytest.mark.asyncio
+async def test_expected_admitted_transaction_refusal_has_no_warning_traceback(tmp_path, caplog):
+    service = AutoNudgeService(base_dir=tmp_path / "home")
+
+    async def refuse() -> None:
+        raise MonitorUpdateConflict("caller-facing conflict")
+
+    caplog.set_level(logging.WARNING, logger="kiro_crew.autonudge")
+    with pytest.raises(MonitorUpdateConflict, match="caller-facing conflict"):
+        await _an._timers._run_admitted_transaction(
+            service,
+            refuse(),
+            on_failure_log="unexpected detached warning",
+            expected=(MonitorUpdateConflict,),
+        )
+
+    assert not [
+        record
+        for record in caplog.records
+        if record.name == "kiro_crew.autonudge"
+        and record.getMessage() == "unexpected detached warning"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_MUTATION_a_cancelled_guard_exit_still_releases_its_user_count(tmp_path):
+    """The per-monitor guard's exit bookkeeping cannot be skipped by a cancellation.
+
+    The exit runs while the service lock is held elsewhere and the user is then
+    cancelled. A count left behind would pin the lock entry of a row that is gone.
+    """
+    from kiro_crew.autonudge_service.maintenance import _monitor_mutation_guard
+
+    service = AutoNudgeService(base_dir=tmp_path / "home")
+    entered = asyncio.Event()
+    leave_body = asyncio.Event()
+
+    async def _user() -> None:
+        async with _monitor_mutation_guard(service, "gone-monitor"):
+            entered.set()
+            await asyncio.wait_for(leave_body.wait(), timeout=_LOST_RUN_SECS)
+
+    user = asyncio.create_task(_user())
+    parked: asyncio.Task[int] | None = None
+    await asyncio.wait_for(entered.wait(), timeout=_LOST_RUN_SECS)
+    assert service._monitor_mutation_lock_users == {"gone-monitor": 1}
+    await asyncio.wait_for(service._lock.acquire(), timeout=_LOST_RUN_SECS)
+    try:
+        leave_body.set()
+        # The exit either finishes at once or parks on the held service lock.
+        parked = asyncio.create_task(until_parked(service._lock, timeout=_LOST_RUN_SECS))
+        await asyncio.wait(
+            {user, parked}, timeout=_LOST_RUN_SECS, return_when=asyncio.FIRST_COMPLETED
+        )
+        user.cancel()
+        await asyncio.wait_for(asyncio.gather(user, return_exceptions=True), _LOST_RUN_SECS)
+    finally:
+        service._lock.release()
+        if parked is not None and not parked.done():
+            parked.cancel()
+        await asyncio.gather(*(t for t in (user, parked) if t is not None), return_exceptions=True)
+
+    assert "gone-monitor" not in service._monitor_mutation_lock_users
+    assert "gone-monitor" not in service._monitor_mutation_locks
+
+
+@pytest.mark.asyncio
+async def test_MUTATION_a_task_an_admitted_child_spawns_from_its_emit_does_not_inherit_its_owner(
+    tmp_path,
+):
+    """An observer's follow-up task must not pass for the owner's timer callback.
+
+    The owner here is the live timer task of ``keep`` and runs ``remove(target)``
+    through the detached child. The observer of that child's ``removed`` event
+    spawns a task which later retires ``keep``'s timer, and that cancel must reach
+    the owner instead of being taken for the owner cancelling itself.
+    """
+    service = AutoNudgeService(base_dir=tmp_path / "home")
+    await service.start()
+    keep = await service.add(slot_key="chat-keep-1", message="keep", idle_secs=600)
+    target = await service.add(slot_key="chat-target-1", message="go", idle_secs=600)
+    removed_returned = asyncio.Event()
+    hold_owner = asyncio.Event()
+    spawned: list[asyncio.Task[None]] = []
+    inherited: list[object] = []
+
+    async def _observer_followup() -> None:
+        inherited.append(service._admitted_transaction_owner.get())
+        await asyncio.wait_for(removed_returned.wait(), timeout=_LOST_RUN_SECS)
+        service._cancel_timer(keep.id)
+
+    def _observer(event: str, loop: NudgeLoop | None) -> None:
+        if event == "removed" and loop is not None and loop.id == target.id:
+            spawned.append(asyncio.ensure_future(_observer_followup()))
+
+    service.subscribe(_observer)
+
+    async def _owner() -> None:
+        await service.remove(target.id)
+        removed_returned.set()
+        await asyncio.wait_for(hold_owner.wait(), timeout=_LOST_RUN_SECS)
+
+    service._cancel_timer(keep.id)
+    owner = asyncio.create_task(_owner())
+    service._timers[keep.id] = owner
+    try:
+        await asyncio.wait_for(removed_returned.wait(), timeout=_LOST_RUN_SECS)
+        await asyncio.wait_for(asyncio.gather(*spawned), timeout=_LOST_RUN_SECS)
+        assert inherited == [None], "the observer's task inherited the owner"
+        await asyncio.wait_for(asyncio.gather(owner, return_exceptions=True), _LOST_RUN_SECS)
+        assert owner.cancelled(), "the follow-up's cancel was taken for self-cancellation"
+    finally:
+        hold_owner.set()
+        await asyncio.wait_for(asyncio.gather(owner, return_exceptions=True), _LOST_RUN_SECS)
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_add_update_remove_remain_admitted_before_shutdown(tmp_path):
+    """Opposite mode: the admission boundary changes no live-service behavior."""
+    svc = AutoNudgeService(base_dir=tmp_path)
+    await svc.start()
+    loop = await svc.add(slot_key="slot-live", message="one", idle_secs=60)
+    assert loop.id in svc._timers
+    updated = await svc.update(loop.id, message="two")
+    assert updated is loop
+    assert loop.message == "two"
+    await svc.remove(loop.id)
+    assert svc.get_by_slot("slot-live") is None
+    await svc.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_turn_hook_after_shutdown_arms_nothing(tmp_path):
+    """Sessions close AFTER AutoNudge drains, so a turn can still end on a slot whose
+    loop is active. Its completion hook must not arm a timer, or schedule the
+    deadline persist that comes with one, on a service that has already shut down."""
+    svc = AutoNudgeService(base_dir=tmp_path)
+    await svc.start()
+    loop = await svc.add(slot_key="chat-1-555", message="go", idle_secs=60)
+    await svc.shutdown()
+    assert svc._timers == {}
+    persists: list[int] = []
+    svc._persist_soon = lambda: persists.append(1)  # type: ignore[method-assign]
+
+    loop.next_due_ts = 0.0
+    svc.notify_turn_complete("chat-1-555")
+    svc._arm_timer(loop, delay=0.0)
+
+    assert svc._timers == {}
+    assert persists == []
+    assert svc._inflight_persistence == set()
+    # The hook's conductor push is not a timer; let it settle so nothing leaks.
+    if svc._inflight_adds:
+        await asyncio.wait_for(
+            asyncio.gather(*list(svc._inflight_adds), return_exceptions=True),
+            timeout=_LOST_RUN_SECS,
+        )
+
+
+@pytest.mark.asyncio
+async def test_shutdown_never_awaits_its_current_task(tmp_path):
+    svc = AutoNudgeService(base_dir=tmp_path)
+    await svc.start()
+    current = asyncio.current_task()
+    assert current is not None
+    svc._inflight_adds.add(current)
+
+    await asyncio.wait_for(svc.shutdown(), timeout=_LOST_RUN_SECS)
+
+    assert current in svc._inflight_adds
+    svc._inflight_adds.discard(current)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cut", ["extension_write", "ledger_read"])
+async def test_shutdown_during_a_ledger_extension_lands_it_whole_or_drops_it(
+    tmp_path, monkeypatch, cut
+):
+    """A spent bound raised for an open work ledger is one admitted write or none.
+
+    The extension runs inside the timer tick and first detaches the tick from the
+    timer table, so shutdown reaches it through the running-callback registry and
+    cancels it like any running callback. The raise itself goes through ``update``
+    under the tick's lease: cut while that write waits on the service lock, the
+    write is drained and lands; cut while the tick is still reading the ledger, no
+    write starts. Either way the store and the loop in memory agree, and no timer
+    is armed once admission has closed.
+    """
+    from kiro_crew.autonudge_service import firing
+
+    class _ObservedLock(asyncio.Lock):
+        def __init__(self) -> None:
+            super().__init__()
+            self.contended = asyncio.Event()
+
+        async def acquire(self) -> bool:
+            if self.locked():
+                self.contended.set()
+            return await super().acquire()
+
+    reading = threading.Event()
+    release_read = threading.Event()
+
+    def _ledger_has_open_items(_key: str) -> bool:
+        reading.set()
+        if cut == "ledger_read":
+            assert release_read.wait(timeout=_LOST_RUN_SECS)
+        return True
+
+    on_fire = AsyncMock(return_value=True)
+    svc = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    lock = _ObservedLock()
+    svc._lock = lock
+    await svc.start()
+    loop = await svc.add(slot_key="chat-7-777", message="patrol", idle_secs=600, max_cycles=200)
+    svc._cancel_timer(loop.id)
+    loop.cycle_count = 200
+    await svc._persist_locked()
+    pending_setup = [task for task in svc._inflight_adds if not task.done()]
+    if pending_setup:
+        await asyncio.wait_for(asyncio.gather(*pending_setup), timeout=_LOST_RUN_SECS)
+    lock.contended.clear()
+    monkeypatch.setattr(firing, "_ledger_has_open_items", _ledger_has_open_items)
+    monkeypatch.setattr(firing, "_ledger_backstop_secs", lambda: 7 * 24 * 3600)
+    monkeypatch.setattr(AutoNudgeService, "_observes_work_ledger", lambda self, lp: True)
+    real_timer = svc._timer
+    armed_after_closure: list[str] = []
+
+    def _recording_timer(lp, delay=None):
+        if not svc._accepting_mutations:
+            armed_after_closure.append(lp.id)
+        return real_timer(lp, delay)
+
+    monkeypatch.setattr(svc, "_timer", _recording_timer)
+
+    held = False
+    try:
+        if cut == "extension_write":
+            await asyncio.wait_for(lock.acquire(), timeout=_LOST_RUN_SECS)
+            held = True
+        svc._arm_timer(loop, delay=0.0)
+        tick = svc._timers[loop.id]
+        if cut == "extension_write":
+            await asyncio.wait_for(lock.contended.wait(), timeout=_LOST_RUN_SECS)
+        else:
+            assert await asyncio.to_thread(reading.wait, _LOST_RUN_SECS)
+        shutdown = asyncio.create_task(svc.shutdown())
+        await _wait_until(lambda: not svc._accepting_mutations, "shutdown admission closure")
+        if cut == "extension_write":
+            assert not shutdown.done(), "shutdown must drain the admitted extension write"
+            lock.release()
+            held = False
+        await asyncio.wait_for(shutdown, timeout=_LOST_RUN_SECS)
+    finally:
+        if held:
+            lock.release()
+        release_read.set()
+
+    restored = AutoNudgeService(base_dir=tmp_path)
+    await asyncio.to_thread(restored._load)
+    stored = restored.get_by_slot("chat-7-777")
+    assert stored is not None
+    expected = 250 if cut == "extension_write" else 200
+    assert stored.max_cycles == expected, "the extension landed whole or not at all"
+    assert loop.max_cycles == expected, "and the loop in memory holds what the store holds"
+    assert (stored.cycle_count, stored.active, stored.next_due_ts) == (
+        loop.cycle_count,
+        loop.active,
+        loop.next_due_ts,
+    )
+    assert loop.active is True and loop.stopped_reason == ""
+    assert tick.cancelled(), "the detached tick is still cancelled as a running callback"
+    assert armed_after_closure == [], "nothing may be armed after admission closed"
+    on_fire.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cut", ["delivery", "delivery_record", "none"])
+async def test_shutdown_during_a_displaced_default_patrol_wake_keeps_the_row_removed(
+    tmp_path, monkeypatch, cut
+):
+    """A default patrol displaced mid-wake keeps its tick running, outside the table.
+
+    The agent's own create-only arm, issued while the default patrol's channel turn
+    runs, detaches the firing tick from the timer table instead of cancelling it, so
+    that delivery finishes. The tick is still a running callback: shutdown cancels it
+    while it delivers and drains it once it sits inside its own delivery record. In
+    every case the removed row is not written back (the drained write snapshots the
+    live table, which holds only the replacement), it is never announced as fired, no
+    timer is armed for it, and nothing at all is armed once admission has closed.
+    """
+    delivering = asyncio.Event()
+    turn_done = asyncio.Event()
+    delivery_cancelled = asyncio.Event()
+    delivery_finished = asyncio.Event()
+
+    async def on_fire(_loop):
+        delivering.set()
+        try:
+            await asyncio.wait_for(turn_done.wait(), timeout=_LOST_RUN_SECS)
+        except asyncio.CancelledError:
+            delivery_cancelled.set()
+            raise
+        delivery_finished.set()
+        return True
+
+    svc = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    await svc.start()
+    events: list[tuple[str, str]] = []
+    svc.subscribe(lambda kind, lp: events.append((kind, getattr(lp, "id", ""))))
+    patrol = await svc.add(
+        slot_key="slack:C1:T1",
+        message="patrol",
+        idle_secs=600,
+        replace_existing=False,
+        default_patrol=True,
+    )
+    svc._cancel_timer(patrol.id)
+    real_timer = svc._timer
+    armed_after_closure: list[str] = []
+
+    def _recording_timer(lp, delay=None):
+        if not svc._accepting_mutations:
+            armed_after_closure.append(lp.id)
+        return real_timer(lp, delay)
+
+    monkeypatch.setattr(svc, "_timer", _recording_timer)
+    svc._arm_timer(patrol, delay=0.0)
+    tick = svc._timers[patrol.id]
+    await asyncio.wait_for(delivering.wait(), timeout=_LOST_RUN_SECS)
+
+    # The conductor's own monitor_start, arriving while the default patrol's turn runs.
+    own = await asyncio.wait_for(
+        svc.add(
+            slot_key="slack:C1:T1",
+            message="my own patrol",
+            idle_secs=600,
+            replace_existing=False,
+            replace_stopped=True,
+        ),
+        timeout=_LOST_RUN_SECS,
+    )
+    assert svc.get_by_slot("slack:C1:T1") is own
+    assert svc.get_by_id(patrol.id) is None
+    assert patrol.id not in svc._timers, "the displaced tick left the timer table"
+
+    held = False
+    try:
+        if cut == "delivery":
+            assert not delivery_cancelled.is_set(), "the arm did not cut the displaced delivery"
+            assert tick in svc._running_callbacks, "the displaced tick is a running callback"
+            shutdown = asyncio.create_task(svc.shutdown())
+            await asyncio.wait_for(delivery_cancelled.wait(), timeout=_LOST_RUN_SECS)
+        else:
+            if cut == "delivery_record":
+                # Held so the delivery record parks on the lock inside its section.
+                await asyncio.wait_for(svc._lock.acquire(), timeout=_LOST_RUN_SECS)
+                held = True
+            turn_done.set()
+            await _wait_until(
+                lambda: delivery_finished.is_set() or delivery_cancelled.is_set(),
+                "the end of the displaced delivery",
+            )
+            assert delivery_finished.is_set(), "the displaced delivery finished"
+            if cut == "delivery_record":
+                await _wait_until(
+                    lambda: tick in _an._timers._drain_registered_owners(svc),
+                    "the displaced delivery record's registration",
+                )
+                shutdown = asyncio.create_task(svc.shutdown())
+                await _wait_until(
+                    lambda: not svc._accepting_mutations, "shutdown admission closure"
+                )
+                assert not shutdown.done(), "shutdown drains the displaced delivery record"
+                assert not tick.done()
+                svc._lock.release()
+                held = False
+            else:
+                await asyncio.wait_for(asyncio.shield(tick), timeout=_LOST_RUN_SECS)
+                assert patrol.id not in svc._timers, "the removed row was not re-armed"
+                shutdown = asyncio.create_task(svc.shutdown())
+        await asyncio.wait_for(shutdown, timeout=_LOST_RUN_SECS)
+    finally:
+        if held:
+            svc._lock.release()
+        turn_done.set()
+
+    if cut == "delivery":
+        assert tick.cancelled(), "shutdown cancelled the displaced tick mid-delivery"
+        assert not delivery_finished.is_set()
+    else:
+        assert tick.done() and not tick.cancelled()
+    assert patrol.id not in svc._timers
+    assert armed_after_closure == [], "nothing may be armed after admission closed"
+    assert [kind for kind, loop_id in events if loop_id == patrol.id] == ["added", "removed"]
+    restored = AutoNudgeService(base_dir=tmp_path)
+    await asyncio.to_thread(restored._load)
+    assert [lp.id for lp in restored.list_all()] == [own.id], "the removed row stays removed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tick_state", ["cancelled", "draining"])
+async def test_a_failed_displacement_gives_no_tick_back_after_closure(
+    tmp_path, monkeypatch, tick_state
+):
+    """The give-back of a displaced default patrol's tick never outlives admission.
+
+    When the replacement's store write fails, the arm restores the default patrol and
+    puts its still-running tick back in the timer table. An arm admitted before
+    shutdown reaches that give-back after closure, once the table was emptied; by then
+    the tick is either a running callback shutdown cancelled that is still unwinding,
+    or one shutdown drains through its delivery record. Neither may return to the
+    table, and nothing is armed for the restored row.
+    """
+    delivering = asyncio.Event()
+    turn_done = asyncio.Event()
+    delivery_cancelled = asyncio.Event()
+    unwound = asyncio.Event()
+
+    async def on_fire(_loop):
+        delivering.set()
+        try:
+            await asyncio.wait_for(turn_done.wait(), timeout=_LOST_RUN_SECS)
+        except asyncio.CancelledError:
+            delivery_cancelled.set()
+            # A cancelled channel turn unwinds over several steps, so its tick is
+            # still running when the failed arm reaches the give-back.
+            await asyncio.wait_for(unwound.wait(), timeout=_LOST_RUN_SECS)
+            raise
+        return True
+
+    svc = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    await svc.start()
+    registered_after_closure: list[str] = []
+
+    class _ClosureWatchedTimers(dict):
+        def __setitem__(self, key, value):
+            if not svc._accepting_mutations:
+                registered_after_closure.append(key)
+            super().__setitem__(key, value)
+
+    svc._timers = _ClosureWatchedTimers(svc._timers)
+    patrol = await svc.add(
+        slot_key="slack:C1:T1",
+        message="patrol",
+        idle_secs=600,
+        replace_existing=False,
+        default_patrol=True,
+    )
+    svc._cancel_timer(patrol.id)
+    real_timer = svc._timer
+    armed_after_closure: list[str] = []
+
+    def _recording_timer(lp, delay=None):
+        if not svc._accepting_mutations:
+            armed_after_closure.append(lp.id)
+        return real_timer(lp, delay)
+
+    monkeypatch.setattr(svc, "_timer", _recording_timer)
+    real_write = svc._write_state
+    write_started = threading.Event()
+    release_write = threading.Event()
+    writes: list[None] = []
+
+    def _first_write_fails(payload):
+        writes.append(None)
+        if len(writes) == 1:
+            write_started.set()
+            assert release_write.wait(timeout=_LOST_RUN_SECS)
+            raise OSError("the store refused the replacement")
+        real_write(payload)
+
+    svc._arm_timer(patrol, delay=0.0)
+    tick = svc._timers[patrol.id]
+    await asyncio.wait_for(delivering.wait(), timeout=_LOST_RUN_SECS)
+    monkeypatch.setattr(svc, "_write_state", _first_write_fails)
+    arm = asyncio.create_task(
+        svc.add(
+            slot_key="slack:C1:T1",
+            message="my own patrol",
+            idle_secs=600,
+            replace_existing=False,
+            replace_stopped=True,
+        )
+    )
+    try:
+        assert await asyncio.to_thread(write_started.wait, _LOST_RUN_SECS)
+        assert patrol.id not in svc._timers and svc.get_by_id(patrol.id) is None
+        if tick_state == "draining":
+            # The delivery returns and its record waits on the lock the arm holds
+            # across its write: a drained owner, not a cancelled one.
+            turn_done.set()
+            await _wait_until(
+                lambda: tick in _an._timers._drain_registered_owners(svc),
+                "the displaced delivery record's registration",
+            )
+        shutdown = asyncio.create_task(svc.shutdown())
+        await _wait_until(lambda: not svc._accepting_mutations, "shutdown admission closure")
+        if tick_state == "cancelled":
+            await asyncio.wait_for(delivery_cancelled.wait(), timeout=_LOST_RUN_SECS)
+        assert not tick.done(), "the tick is still running when the give-back runs"
+    finally:
+        release_write.set()
+    with pytest.raises(OSError):
+        await asyncio.wait_for(arm, timeout=_LOST_RUN_SECS)
+    assert registered_after_closure == [], "the give-back registered the tick after closure"
+    unwound.set()
+    await asyncio.wait_for(shutdown, timeout=_LOST_RUN_SECS)
+
+    if tick_state == "cancelled":
+        assert tick.cancelled()
+    else:
+        assert tick.done() and not tick.cancelled()
+    assert registered_after_closure == []
+    assert armed_after_closure == [], "nothing may be armed after admission closed"
+    assert svc.get_by_slot("slack:C1:T1") is patrol, "the failed replacement restored the patrol"
+    restored = AutoNudgeService(base_dir=tmp_path)
+    await asyncio.to_thread(restored._load)
+    stored = restored.get_by_slot("slack:C1:T1")
+    assert stored is not None and stored.id == patrol.id
+    # A drained delivery record lands on the restored row; a cancelled delivery has none.
+    assert stored.cycle_count == (1 if tick_state == "draining" else 0)
+
+
+@pytest.mark.asyncio
+async def test_a_displaced_default_patrol_completion_resolves_through_shutdown_unwritten(
+    tmp_path, monkeypatch, caplog
+):
+    """A completion for the displaced default patrol's wake finds no row and writes nothing.
+
+    The agent's own arm replaces an ACTIVE default patrol even while its wake is in
+    flight, so that wake's completion accounting can arrive after the row is gone.
+    Admitted before closure, it waits on the lock the replacement holds across its
+    write and runs after shutdown closed admission: it charges, writes and announces
+    nothing, and its drained transaction resolves, so shutdown is not left waiting on
+    it. A completion that arrives after closure is refused at admission.
+    """
+
+    class _ObservedLock(asyncio.Lock):
+        def __init__(self) -> None:
+            super().__init__()
+            self.contended = asyncio.Event()
+
+        async def acquire(self) -> bool:
+            if self.locked():
+                self.contended.set()
+            return await super().acquire()
+
+    slot = "chat-p-conductor"
+    svc = AutoNudgeService(base_dir=tmp_path)
+    lock = _ObservedLock()
+    svc._lock = lock
+    events: list[tuple[str, str]] = []
+    svc.subscribe(lambda kind, lp: events.append((kind, getattr(lp, "id", ""))))
+    patrol = await svc.add(
+        slot_key=slot,
+        message="patrol",
+        idle_secs=600,
+        watch="work-ledger",
+        replace_existing=False,
+        default_patrol=True,
+    )
+    svc._cancel_timer(patrol.id)
+    assert patrol.monitor is not None
+    patrol.monitor.wake_in_flight = True
+    patrol.monitor.last_wake_fingerprint = "fp-default"
+    completion = MonitorActionCompletion(
+        monitor_id=patrol.id,
+        fingerprint="fp-default",
+        disposition=MonitorActionDisposition.SUCCESS,
+        completed_ts=patrol.created_ts + 1.0,
+    )
+    real_write = svc._write_state
+    write_started = threading.Event()
+    release_write = threading.Event()
+    writes: list[None] = []
+
+    def _counted_write(payload):
+        writes.append(None)
+        if len(writes) == 1:
+            write_started.set()
+            assert release_write.wait(timeout=_LOST_RUN_SECS)
+        real_write(payload)
+
+    monkeypatch.setattr(svc, "_write_state", _counted_write)
+    caplog.set_level(logging.DEBUG, logger="kiro_crew.autonudge")
+    arm = asyncio.create_task(
+        svc.add(
+            slot_key=slot,
+            message="my own patrol",
+            idle_secs=600,
+            replace_existing=False,
+            replace_stopped=True,
+        )
+    )
+    try:
+        assert await asyncio.to_thread(write_started.wait, _LOST_RUN_SECS)
+        assert svc.get_by_id(patrol.id) is None
+        lock.contended.clear()
+        accounting = asyncio.create_task(svc.record_monitor_turn_completion(completion))
+        await asyncio.wait_for(lock.contended.wait(), timeout=_LOST_RUN_SECS)
+        shutdown = asyncio.create_task(svc.shutdown())
+        await _wait_until(lambda: not svc._accepting_mutations, "shutdown admission closure")
+        assert not shutdown.done(), "shutdown drains the admitted completion"
+    finally:
+        release_write.set()
+    own = await asyncio.wait_for(arm, timeout=_LOST_RUN_SECS)
+    assert await asyncio.wait_for(accounting, timeout=_LOST_RUN_SECS) is None
+    await asyncio.wait_for(shutdown, timeout=_LOST_RUN_SECS)
+
+    assert len(writes) == 1, "only the replacement wrote; the removed row's completion did not"
+    assert svc.get_by_id(patrol.id) is None and svc.get_by_slot(slot) is own
+    assert own.cycle_count == 0
+    assert [kind for kind, loop_id in events if loop_id == patrol.id] == ["added", "removed"]
+    assert any(
+        record.levelno == logging.DEBUG
+        and "dropping the turn completion" in record.getMessage()
+        and patrol.id in record.getMessage()
+        for record in caplog.records
+    )
+    assert svc._inflight_adds == set()
+    with pytest.raises(NudgeAdmissionRefused) as refused:
+        await asyncio.wait_for(
+            svc.record_monitor_turn_completion(completion), timeout=_LOST_RUN_SECS
+        )
+    assert refused.value.reason is NudgeAdmissionReason.SERVICE_SHUTTING_DOWN
+    restored = AutoNudgeService(base_dir=tmp_path)
+    await asyncio.to_thread(restored._load)
+    assert [lp.id for lp in restored.list_all()] == [own.id]
+
+
+@pytest.mark.asyncio
 async def test_persistence_across_restart(tmp_path):
     svc1 = AutoNudgeService(base_dir=tmp_path)
     await svc1.start()
     loop = await svc1.add(slot_key="chat-1-123", message="go", idle_secs=15, max_cycles=5)
-    svc1.stop()
+    await svc1.shutdown()
 
     # New instance reads the same file and restores loops.
     svc2 = AutoNudgeService(base_dir=tmp_path)
@@ -278,7 +3151,7 @@ async def test_persistence_across_restart(tmp_path):
     assert restored.message == "go"
     assert restored.max_cycles == 5
     assert loop.id in svc2._timers  # timer re-armed
-    svc2.stop()
+    await svc2.shutdown()
 
 
 @pytest.mark.asyncio
@@ -804,7 +3677,7 @@ async def test_a_work_ledger_recheck_confirms_from_the_verdict_not_an_observatio
     monkeypatch.setattr(_an.irq, "poll", _ledger_settled)
     service = AutoNudgeService(base_dir=tmp_path, on_fire=lambda loop: True)
     monitor = _structured_monitor(kind="work-ledger", target="slack:C123:1700000000.1")
-    monitor.terminal_pending = "success"
+    monitor.terminal_delivered = "success"
     loop = NudgeLoop(
         id="monitor-wl-recheck",
         slot_key="slack:C123:1700000000.1",
@@ -816,7 +3689,7 @@ async def test_a_work_ledger_recheck_confirms_from_the_verdict_not_an_observatio
     service._loops[loop.id] = loop
     try:
         assert (
-            await service._terminal_still_holds(loop, monitor) is True
+            await service._terminal_still_holds(loop, monitor) == "holds"
         ), "an all-accepted work-ledger terminal confirms the owed success"
     finally:
         service.stop()
@@ -840,7 +3713,7 @@ async def test_a_work_ledger_recheck_with_a_changed_class_drops_the_owed_debt(
     monkeypatch.setattr(_an.irq, "poll", _ledger_rejected)
     service = AutoNudgeService(base_dir=tmp_path, on_fire=lambda loop: True)
     monitor = _structured_monitor(kind="work-ledger", target="slack:C123:1700000000.1")
-    monitor.terminal_pending = "success"
+    monitor.terminal_delivered = "success"
     loop = NudgeLoop(
         id="monitor-wl-recheck-2",
         slot_key="slack:C123:1700000000.1",
@@ -852,7 +3725,7 @@ async def test_a_work_ledger_recheck_with_a_changed_class_drops_the_owed_debt(
     service._loops[loop.id] = loop
     try:
         assert (
-            await service._terminal_still_holds(loop, monitor) is False
+            await service._terminal_still_holds(loop, monitor) == "gone"
         ), "a different ending is not the owed one"
     finally:
         service.stop()
@@ -869,7 +3742,7 @@ async def test_a_work_ledger_recheck_keeps_a_still_running_watch_alive(tmp_path,
     monkeypatch.setattr(_an.irq, "poll", _still_open)
     service = AutoNudgeService(base_dir=tmp_path, on_fire=lambda loop: True)
     monitor = _structured_monitor(kind="work-ledger", target="slack:C123:1700000000.1")
-    monitor.terminal_pending = "success"
+    monitor.terminal_delivered = "success"
     loop = NudgeLoop(
         id="monitor-wl-recheck-3",
         slot_key="slack:C123:1700000000.1",
@@ -881,7 +3754,7 @@ async def test_a_work_ledger_recheck_keeps_a_still_running_watch_alive(tmp_path,
     service._loops[loop.id] = loop
     try:
         assert (
-            await service._terminal_still_holds(loop, monitor) is False
+            await service._terminal_still_holds(loop, monitor) == "gone"
         ), "an unfinished ledger keeps the watch alive"
     finally:
         service.stop()
@@ -925,14 +3798,11 @@ async def test_a_direct_service_call_is_not_gated(tmp_path):
 async def test_every_uncertain_stored_gate_resolves_to_ungated(tmp_path, stored, note):
     """Only an explicit boolean true gates. Everything else stays ungated.
 
-    Two earlier tests here asserted the OPPOSITE -- that a corrupt value and an absent
-    key both decode to gated -- on the grounds that reading corrupt data as an opt-out
-    would ungate loops nobody chose to ungate. That had the asymmetry backwards, and
-    four review rounds circled it before it was named: gating is the state that can
-    silently STOP a loop, because a gated loop whose subject is merged or closed
-    DEACTIVATES. Being wrong toward ungated costs a turn per interval, which is what
-    today already costs. Being wrong toward gated stops a recurring task because its
-    instruction happened to mention a pull request -- and the absent-key case is
+    A corrupt value and an absent key both decode to ungated. Gating is the state
+    that can silently STOP a loop, because a gated loop whose subject is merged or
+    closed DEACTIVATES. Being wrong toward ungated costs a turn per interval, which is
+    what today already costs. Being wrong toward gated stops a recurring task because
+    its instruction happened to mention a pull request -- and the absent-key case is
     exactly the legacy generic loop that predates this field.
     """
     import json
@@ -998,9 +3868,9 @@ async def test_the_marker_writes_do_not_release_the_lock_mid_write(tmp_path, mon
     releasing = {"n": 0}
     real_releasing = service._persist_locked
 
-    async def _count_releasing():
+    async def _count_releasing(**kwargs):
         releasing["n"] += 1
-        await real_releasing()
+        await real_releasing(**kwargs)
 
     monkeypatch.setattr(service, "_persist_locked", _count_releasing)
 
@@ -1461,7 +4331,9 @@ async def test_a_death_between_the_floor_decision_and_its_turn_leaves_the_fire_o
         assert loop.monitor.quiet_streak == 0, "the baseline the next tick reads is published"
         assert loop.id in service._pending_floor_tick
         # The write that decision scheduled is what a restart reads, so let it land.
-        await asyncio.gather(*tuple(service._inflight_adds))
+        await asyncio.wait_for(
+            asyncio.gather(*tuple(service._inflight_adds)), timeout=_LOST_RUN_SECS
+        )
     finally:
         service.stop()
 
@@ -1534,7 +4406,9 @@ async def test_a_refused_floor_fire_then_a_restart_delivers_exactly_one_turn(tmp
         assert loop.monitor.floor_fire_pending is True
         assert loop.monitor.followup_ticks == _an._WAKE_FOLLOWUP_TICKS
         assert fired == [loop.id], "the refused fire is the only one so far"
-        await asyncio.gather(*tuple(service._inflight_adds))
+        await asyncio.wait_for(
+            asyncio.gather(*tuple(service._inflight_adds)), timeout=_LOST_RUN_SECS
+        )
     finally:
         service.stop()
 
@@ -2145,6 +5019,41 @@ async def test_an_upgraded_record_with_a_monitor_but_no_gate_is_not_polled(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_a_delivered_terminal_marker_settles_before_the_gate_opt_out(tmp_path, monkeypatch):
+    """A gate edit cannot buy a second turn after terminal delivery landed."""
+    on_fire = AsyncMock(return_value=True)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    monitor = _structured_monitor(kind="gh-pr", target="acme/widgets#42")
+    monitor.terminal_delivered = "success"
+    loop = NudgeLoop(
+        id="monitor-delivered-gate-off",
+        slot_key="slack:C123:1700000000.1",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        cycle_count=1,
+        monitor=monitor,
+        gate=False,
+    )
+    service._loops[loop.id] = loop
+    judge = AsyncMock(return_value=False)
+    reprobe = AsyncMock(return_value="holds")
+    monkeypatch.setattr(service, "_judge_tick_is_quiet", judge)
+    monkeypatch.setattr(service, "_terminal_still_holds", reprobe)
+
+    try:
+        assert await service._monitor_tick_is_quiet(loop) is True
+    finally:
+        service.stop()
+
+    judge.assert_not_awaited()
+    reprobe.assert_awaited_once_with(loop, monitor)
+    on_fire.assert_not_awaited()
+    assert loop.active is False
+    assert monitor.outcome is MonitorOutcome.SUCCESS
+    assert monitor.terminal_delivered == ""
+
+
+@pytest.mark.asyncio
 async def test_a_failed_retarget_write_hands_the_wake_claim_back(tmp_path, monkeypatch):
     """The rollback has to restore everything the retarget took, not just the fields.
 
@@ -2221,9 +5130,11 @@ async def test_a_retarget_during_lock_acquisition_does_not_crash_the_settlement(
 
     real_acquire = service._acquire_mutation_lock
 
-    async def _clear_the_monitor_then_acquire(loop_id):
-        lock = await real_acquire(loop_id)
-        if loop.monitor is not None and loop.monitor.terminal_pending:
+    async def _clear_the_monitor_then_acquire(loop_id, **kwargs):
+        lock = await asyncio.wait_for(real_acquire(loop_id, **kwargs), timeout=_LOST_RUN_SECS)
+        if loop.monitor is not None and (
+            loop.monitor.terminal_pending or loop.monitor.terminal_delivered
+        ):
             # Stands in for a retarget landing while we waited for this lock.
             loop.monitor = None
         return lock
@@ -2273,16 +5184,19 @@ async def test_a_failed_settlement_write_leaves_the_terminal_turn_owed(tmp_path,
     monkeypatch.setattr(service, "_emit", lambda event, _loop: events.append(event))
 
     real_writer = service._write_monitor_snapshot_locked
+    settlement_write_failed = False
 
-    async def _fail_the_settlement_write(payload=None):
+    async def _fail_the_settlement_write(payload=None, **kwargs):
+        nonlocal settlement_write_failed
         # Three writes use this writer in this flow -- the gate's in-flight marker,
         # the channel's terminal marker, and the settlement -- so the settlement is
-        # isolated by the one state only IT has: it deactivates the loop just before
-        # writing. Counting calls, or testing terminal_pending, both catch a marker
+        # isolated by the one state only IT has: its staged row deactivates the
+        # loop. Counting calls, or testing terminal_delivered, both catch a marker
         # write instead, which then rolls itself back and the settlement never runs.
-        if not loop.active:
+        if _writes_the_settlement(payload, loop.id):
+            settlement_write_failed = True
             raise OSError("disk full")
-        await real_writer(payload)
+        await real_writer(payload, **kwargs)
 
     monkeypatch.setattr(service, "_write_monitor_snapshot_locked", _fail_the_settlement_write)
 
@@ -2290,9 +5204,10 @@ async def test_a_failed_settlement_write_leaves_the_terminal_turn_owed(tmp_path,
         await service._timer(loop, delay=0)
         assert loop.monitor is not None
         assert "expired" not in events, "a finish must not be announced unpersisted"
-        assert loop.monitor.terminal_pending == "success", "the debt stays owed"
+        assert loop.monitor.terminal_delivered == "success", "the settlement stays owed"
         assert loop.monitor.outcome is None
         assert loop.active is True, "and the watch stays live so it retries"
+        assert settlement_write_failed, "the staged settlement selector must fire"
     finally:
         service.stop()
 
@@ -2329,9 +5244,9 @@ async def test_the_owed_terminal_turn_settles_only_once_it_lands(tmp_path, monke
     locks: list[str] = []
     real_acquire = service._acquire_mutation_lock
 
-    async def _tracking_acquire(loop_id):
+    async def _tracking_acquire(loop_id, **kwargs):
         locks.append(loop_id)
-        return await real_acquire(loop_id)
+        return await asyncio.wait_for(real_acquire(loop_id, **kwargs), timeout=_LOST_RUN_SECS)
 
     monkeypatch.setattr(service, "_acquire_mutation_lock", _tracking_acquire)
 
@@ -2349,6 +5264,764 @@ async def test_the_owed_terminal_turn_settles_only_once_it_lands(tmp_path, monke
             assert loop.monitor.terminal_pending == "success", "the debt is still owed"
     finally:
         service.stop()
+
+
+async def _write_terminal_restart_row(
+    tmp_path, owed: str = "", *, delivered: str = "", cycle_count: int
+) -> None:
+    service = AutoNudgeService(base_dir=tmp_path)
+    monitor = _structured_monitor(kind="gh-pr", target="acme/widgets#42")
+    monitor.terminal_pending = owed
+    monitor.terminal_delivered = delivered
+    loop = NudgeLoop(
+        id="monitor-terminal-restart",
+        slot_key="slack:C0123456:1700000000.1",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        cycle_count=cycle_count,
+        monitor=monitor,
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+    await asyncio.to_thread(service._save)
+
+
+def _owed_terminal_loop(loop_id: str) -> NudgeLoop:
+    """A channel PR watch whose final turn is owed, ready for its delivering fire."""
+    monitor = _structured_monitor(kind="gh-pr", target="acme/widgets#42")
+    monitor.terminal_pending = "success"
+    return NudgeLoop(
+        id=loop_id,
+        slot_key="slack:C0123456:1700000000.1",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=monitor,
+        gate=True,
+    )
+
+
+async def _cancel_pending(*tasks: "asyncio.Task | None") -> None:
+    """Cancel and reap whatever a failed assertion left running."""
+    pending = [task for task in tasks if task is not None and not task.done()]
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.wait_for(
+            asyncio.gather(*pending, return_exceptions=True), timeout=_LOST_RUN_SECS
+        )
+
+
+def _stored_row(tmp_path) -> dict:
+    stored = json.loads((tmp_path / "autonudge.json").read_text(encoding="utf-8"))
+    return stored["loops"][0]
+
+
+def _writes_the_settlement(payload, loop_id: str) -> bool:
+    """Whether a snapshot payload carries *loop_id*'s staged settlement row.
+
+    The settlement stages the deactivated row and writes it while the live loop is
+    still active, so the write is told apart from the marker writes by the row it
+    carries, never by live state.
+    """
+    if payload is None:
+        return False
+    return any(row.get("id") == loop_id and row.get("active") is False for row in payload["loops"])
+
+
+@pytest.mark.asyncio
+async def test_shutdown_skips_a_terminal_settlement_provider_reprobe(tmp_path, monkeypatch):
+    """A delivery record that shutdown drains starts no re-probe once it lands.
+
+    The record is a drained section, so shutdown waits for the delivered marker to
+    reach the store. The settlement after it reads admission before its first await,
+    so the drained callback leaves without a lock wait or provider I/O that shutdown,
+    not watching it, could not cancel.
+    """
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=AsyncMock(return_value=True))
+    await service.start()
+    loop = _owed_terminal_loop("monitor-terminal-shutdown")
+    monitor = loop.monitor
+    assert monitor is not None
+    service._loops[loop.id] = loop
+    monkeypatch.setattr(service, "_monitor_tick_is_quiet", AsyncMock(return_value=False))
+    probe = AsyncMock(return_value="holds")
+    monkeypatch.setattr(service, "_terminal_still_holds", probe)
+    lock_requests: list[str] = []
+    real_acquire = service._acquire_mutation_lock
+
+    async def _record_lock_request(loop_id, **kwargs):
+        lock_requests.append(loop_id)
+        return await asyncio.wait_for(real_acquire(loop_id, **kwargs), timeout=_LOST_RUN_SECS)
+
+    monkeypatch.setattr(service, "_acquire_mutation_lock", _record_lock_request)
+    real_persist = service._persist_locked
+    record_parked = asyncio.Event()
+    release_record = asyncio.Event()
+
+    async def _park_the_delivery_record(**kwargs):
+        if monitor.terminal_delivered == "success" and not record_parked.is_set():
+            record_parked.set()
+            await asyncio.wait_for(release_record.wait(), timeout=_LOST_RUN_SECS)
+        await real_persist(**kwargs)
+
+    monkeypatch.setattr(service, "_persist_locked", _park_the_delivery_record)
+    service._arm_timer(loop, delay=0.0)
+    settlement = service._timers[loop.id]
+    shutdown = None
+    try:
+        await asyncio.wait_for(record_parked.wait(), timeout=_LOST_RUN_SECS)
+        assert settlement in _an._timers._drain_registered_owners(service)
+
+        shutdown = asyncio.create_task(service.shutdown())
+        await _wait_until(lambda: not service._accepting_mutations, "shutdown admission closure")
+        release_record.set()
+        await asyncio.wait_for(shutdown, timeout=_LOST_RUN_SECS)
+        await asyncio.wait_for(settlement, timeout=_LOST_RUN_SECS)
+    finally:
+        release_record.set()
+        await _cancel_pending(settlement, shutdown)
+
+    assert lock_requests == [], "a drained callback must not queue for the settlement lock"
+    probe.assert_not_awaited()
+    assert monitor.terminal_delivered == "success"
+    stored = _stored_row(tmp_path)
+    assert stored["monitor"]["terminal_delivered"] == "success"
+    assert stored["cycle_count"] == 1
+
+
+async def _cut_an_in_flight_terminal_reprobe(tmp_path, monkeypatch) -> AsyncMock:
+    """Deliver an owed terminal turn, then shut down while its re-probe is running.
+
+    The stand-in re-probe waits on an event nothing sets, so only shutdown can end
+    it before the lost-run ceiling does. Returns the delivery callback, which must
+    have run exactly once.
+    """
+    on_fire = AsyncMock(return_value=True)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    await service.start()
+    loop = _owed_terminal_loop("monitor-terminal-reprobe-cut")
+    monitor = loop.monitor
+    assert monitor is not None
+    service._loops[loop.id] = loop
+    monkeypatch.setattr(service, "_monitor_tick_is_quiet", AsyncMock(return_value=False))
+    probe_started = asyncio.Event()
+    probe_cancelled = asyncio.Event()
+    never_answers = asyncio.Event()
+    drained_while_probing: list[bool] = []
+
+    async def _reprobe_that_never_answers(probed_loop, probed_monitor):
+        current = asyncio.current_task()
+        drained_while_probing.append(current in _an._timers._drain_registered_owners(service))
+        probe_started.set()
+        try:
+            await asyncio.wait_for(never_answers.wait(), timeout=_LOST_RUN_SECS)
+        except asyncio.CancelledError:
+            probe_cancelled.set()
+            raise
+        return "holds"
+
+    monkeypatch.setattr(service, "_terminal_still_holds", _reprobe_that_never_answers)
+    service._arm_timer(loop, delay=0.0)
+    settlement = service._timers[loop.id]
+    shutdown = None
+    try:
+        await asyncio.wait_for(probe_started.wait(), timeout=_LOST_RUN_SECS)
+        assert drained_while_probing == [False], "the re-probe must sit outside the drain"
+        assert monitor.terminal_delivered == "success"
+        assert _stored_row(tmp_path)["monitor"]["terminal_delivered"] == "success"
+
+        shutdown = asyncio.create_task(service.shutdown())
+        try:
+            await asyncio.wait_for(shutdown, timeout=_LOST_RUN_SECS)
+        except asyncio.TimeoutError:
+            pytest.fail("shutdown waited on the in-flight terminal re-probe")
+        await asyncio.wait({settlement}, timeout=_LOST_RUN_SECS)
+        assert settlement.done(), "the cancelled callback must have unwound"
+    finally:
+        await _cancel_pending(settlement, shutdown)
+
+    assert probe_cancelled.is_set(), "shutdown must cancel the re-probe, not skip past it"
+    assert settlement.cancelled()
+    on_fire.assert_awaited_once_with(loop)
+    assert monitor.terminal_delivered == "success", "the settlement stays owed"
+    assert monitor.outcome is None
+    assert loop.active is True
+    stored = _stored_row(tmp_path)
+    assert stored["monitor"]["terminal_delivered"] == "success"
+    assert stored["active"] is True
+    assert stored["cycle_count"] == 1
+    return on_fire
+
+
+@pytest.mark.asyncio
+async def test_shutdown_cancels_a_terminal_reprobe_already_in_flight(tmp_path, monkeypatch):
+    """A re-probe running when shutdown begins is cancelled, never awaited.
+
+    The real re-probe is a ``gh`` call that can take 25 s. Shutdown cancels the
+    callback running it like any other; the delivered marker written before it is
+    what keeps the settlement owed without repeating the channel turn.
+    """
+    await _cut_an_in_flight_terminal_reprobe(tmp_path, monkeypatch)
+
+
+@pytest.mark.asyncio
+async def test_restart_settles_a_cut_terminal_reprobe_once(tmp_path, monkeypatch):
+    """The next start settles what the cancelled re-probe left, without a second turn."""
+    await _cut_an_in_flight_terminal_reprobe(tmp_path, monkeypatch)
+    on_fire = AsyncMock(return_value=True)
+    restarted = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    monkeypatch.setattr(_an.irq, "poll", _terminal_poll())
+    await restarted.start()
+    loop = restarted.get_by_id("monitor-terminal-reprobe-cut")
+    assert loop is not None and loop.monitor is not None
+    assert loop.monitor.terminal_delivered == "success"
+    restarted._cancel_timer(loop.id)
+    probe = AsyncMock(return_value="holds")
+    monkeypatch.setattr(restarted, "_terminal_still_holds", probe)
+    try:
+        await asyncio.wait_for(restarted._timer(loop, delay=0.0), timeout=_LOST_RUN_SECS)
+    finally:
+        await asyncio.wait_for(restarted.shutdown(), timeout=_LOST_RUN_SECS)
+
+    on_fire.assert_not_awaited()
+    probe.assert_awaited_once_with(loop, loop.monitor)
+    assert loop.active is False
+    assert loop.monitor.outcome is MonitorOutcome.SUCCESS
+    assert loop.monitor.terminal_delivered == ""
+    assert loop.cycle_count == 1
+    stored = _stored_row(tmp_path)
+    assert stored["monitor"]["terminal_delivered"] == ""
+    assert stored["active"] is False
+    assert stored["cycle_count"] == 1
+
+
+@contextmanager
+def _a_version_one_build_that_predates(field_name: str) -> Iterator[None]:
+    """Decode and encode monitor rows the way a version-1 build without *field_name* does.
+
+    That build's decoder files every key its ``MonitorState`` does not declare under
+    ``extra_fields``, and its encoder writes those keys back after the fields it knows.
+    Hiding one field from ``fields()`` and ``asdict()`` inside ``monitoring.models`` is
+    exactly that reading; the rest of the service runs unchanged.
+    """
+    real_fields = monitor_models.fields
+    real_asdict = monitor_models.asdict
+
+    def _fields(cls):
+        found = real_fields(cls)
+        if cls is MonitorState:
+            return tuple(item for item in found if item.name != field_name)
+        return found
+
+    def _asdict(obj):
+        payload = real_asdict(obj)
+        if isinstance(obj, MonitorState):
+            payload.pop(field_name, None)
+        return payload
+
+    with (
+        patch.object(monitor_models, "fields", _fields),
+        patch.object(monitor_models, "asdict", _asdict),
+    ):
+        yield
+
+
+@pytest.mark.asyncio
+async def test_a_rollback_keeps_a_delivered_but_unsettled_monitor_running_and_delivers_nothing(
+    tmp_path, monkeypatch
+):
+    """A gateway rolled back past the delivered marker keeps the watch and owes nothing.
+
+    The record stays at state version 1 with ``terminal_pending`` empty, so the older
+    build neither blocks it as an unsupported version nor reads an owed turn: it loads
+    the loop active, files ``terminal_delivered`` under ``extra_fields``, observes the
+    subject as it always did and writes the key back untouched. The upgraded gateway
+    then finds the marker and settles once without a second turn. Whether the older
+    build owes a fresh terminal turn afterwards is decided by its own new observation,
+    as on main; this pins that the stored record itself owes it none.
+    """
+    await _cut_an_in_flight_terminal_reprobe(tmp_path, monkeypatch)
+    stored = _stored_row(tmp_path)["monitor"]
+    assert stored["version"] == MONITOR_STATE_VERSION == 1
+    assert stored["terminal_pending"] == ""
+    assert stored["terminal_delivered"] == "success"
+
+    rolled_back_fire = AsyncMock(return_value=True)
+    with _a_version_one_build_that_predates("terminal_delivered"):
+        rolled_back = AutoNudgeService(base_dir=tmp_path, on_fire=rolled_back_fire)
+        monkeypatch.setattr(
+            _an.irq, "poll", lambda *a, **k: _an.irq.Verdict(_an.irq.Outcome.QUIET, "nothing new")
+        )
+        await rolled_back.start()
+        try:
+            loop = rolled_back.get_by_id("monitor-terminal-reprobe-cut")
+            assert loop is not None and loop.monitor is not None
+            assert loop.active is True, "a rollback must not stop the structured monitor"
+            assert loop.monitor.version == MONITOR_STATE_VERSION
+            assert loop.monitor.stopped_reason == ""
+            assert loop.monitor.outcome is None
+            assert loop.monitor.terminal_pending == ""
+            assert loop.monitor.extra_fields == {"terminal_delivered": "success"}
+            assert loop.id in rolled_back._timers, "the older build re-armed the watch"
+            rolled_back._cancel_timer(loop.id)
+            assert (
+                await rolled_back._monitor_tick_is_quiet(loop) is True
+            ), "the older build read an owed turn into the stored record"
+            async with rolled_back._lock:
+                await rolled_back._write_monitor_snapshot_locked()
+        finally:
+            await asyncio.wait_for(rolled_back.shutdown(), timeout=_LOST_RUN_SECS)
+    rolled_back_fire.assert_not_awaited()
+    assert _stored_row(tmp_path)["monitor"]["terminal_delivered"] == "success"
+
+    upgraded_fire = AsyncMock(return_value=True)
+    upgraded = AutoNudgeService(base_dir=tmp_path, on_fire=upgraded_fire)
+    await upgraded.start()
+    loop = upgraded.get_by_id("monitor-terminal-reprobe-cut")
+    assert loop is not None and loop.monitor is not None
+    assert loop.monitor.terminal_delivered == "success"
+    upgraded._cancel_timer(loop.id)
+    monkeypatch.setattr(upgraded, "_terminal_still_holds", AsyncMock(return_value="holds"))
+    try:
+        await asyncio.wait_for(upgraded._timer(loop, delay=0.0), timeout=_LOST_RUN_SECS)
+    finally:
+        await asyncio.wait_for(upgraded.shutdown(), timeout=_LOST_RUN_SECS)
+    upgraded_fire.assert_not_awaited()
+    assert loop.active is False
+    assert loop.monitor.outcome is MonitorOutcome.SUCCESS
+    assert loop.monitor.terminal_delivered == ""
+    assert _stored_row(tmp_path)["monitor"]["terminal_delivered"] == ""
+
+
+@pytest.mark.asyncio
+async def test_a_terminal_settlement_drains_its_writes_but_not_its_reprobe(tmp_path, monkeypatch):
+    """With admission open the settlement lands as before, around an undrained re-probe.
+
+    The re-probe runs outside every drained section and the settlement write inside
+    one, so moving the re-probe back into the drain -- or the write out of it -- is
+    caught here on the ordinary path, before any shutdown.
+    """
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=AsyncMock(return_value=True))
+    loop = _owed_terminal_loop("monitor-terminal-normal")
+    monitor = loop.monitor
+    assert monitor is not None
+    service._loops[loop.id] = loop
+    monkeypatch.setattr(service, "_monitor_tick_is_quiet", AsyncMock(return_value=False))
+    events: list[str] = []
+    monkeypatch.setattr(service, "_emit", lambda event, _loop: events.append(event))
+    drained_while_probing: list[bool] = []
+    drained_while_settling: list[bool] = []
+
+    def _drained() -> bool:
+        return asyncio.current_task() in _an._timers._drain_registered_owners(service)
+
+    async def _reprobe_confirms(probed_loop, probed_monitor):
+        drained_while_probing.append(_drained())
+        return "holds"
+
+    monkeypatch.setattr(service, "_terminal_still_holds", _reprobe_confirms)
+    real_snapshot = service._write_monitor_snapshot_locked
+    settlement_write_observed = False
+
+    async def _observe_the_settlement_write(payload=None, **kwargs):
+        nonlocal settlement_write_observed
+        if _writes_the_settlement(payload, loop.id):
+            settlement_write_observed = True
+            drained_while_settling.append(_drained())
+        await real_snapshot(payload, **kwargs)
+
+    monkeypatch.setattr(service, "_write_monitor_snapshot_locked", _observe_the_settlement_write)
+    try:
+        await asyncio.wait_for(service._timer(loop, delay=0.0), timeout=_LOST_RUN_SECS)
+    finally:
+        service.stop()
+
+    assert drained_while_probing == [False]
+    assert drained_while_settling == [True]
+    assert settlement_write_observed, "the staged settlement selector must fire"
+    assert loop.active is False
+    assert monitor.outcome is MonitorOutcome.SUCCESS
+    assert monitor.terminal_pending == ""
+    assert loop.cycle_count == 1
+    assert [event for event in events if event in ("expired", "fired")] == ["expired", "fired"]
+    stored = _stored_row(tmp_path)
+    assert stored["monitor"]["terminal_pending"] == ""
+    assert stored["active"] is False
+    assert not [
+        future
+        for future in service._inflight_adds
+        if isinstance(future, _an._timers._RegisteredSectionCompletion)
+    ], "every drained section must resolve its completion"
+
+
+@pytest.mark.asyncio
+async def test_MUTATION_a_holds_settlement_retires_a_timer_rearmed_during_its_write(
+    tmp_path, monkeypatch
+):
+    """Publishing a staged stop retires a timer armed while its write waited."""
+    on_fire = AsyncMock(return_value=True)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = _owed_terminal_loop("monitor-terminal-rearmed-during-settlement")
+    monitor = loop.monitor
+    assert monitor is not None
+    monitor.terminal_delivered = "success"
+    loop.slot_key = "slot-terminal-rearmed-during-settlement"
+    loop.cycle_count = 1
+    loop.next_due_ts = time.time() + 60
+    service._loops[loop.id] = loop
+    events: list[str] = []
+    monkeypatch.setattr(service, "_emit", lambda event, _loop: events.append(event))
+    monkeypatch.setattr(service, "_terminal_still_holds", AsyncMock(return_value="holds"))
+    monkeypatch.setattr(_an._timers, "_wake_bound_conductor", lambda _svc, _slot: None)
+    writer_started = asyncio.Event()
+    release_writer = asyncio.Event()
+    real_snapshot = service._write_monitor_snapshot_locked
+
+    async def _park_the_settlement_write(payload=None, **kwargs):
+        if not _writes_the_settlement(payload, loop.id):
+            await real_snapshot(payload, **kwargs)
+            return
+        writer_started.set()
+        try:
+            await asyncio.wait_for(release_writer.wait(), timeout=_LOST_RUN_SECS)
+        except asyncio.CancelledError:
+            await asyncio.wait_for(release_writer.wait(), timeout=_LOST_RUN_SECS)
+            await real_snapshot(payload, **kwargs)
+            raise
+        await real_snapshot(payload, **kwargs)
+
+    monkeypatch.setattr(service, "_write_monitor_snapshot_locked", _park_the_settlement_write)
+    settlement = asyncio.create_task(service._settle_delivered_terminal(loop))
+    service._timers[loop.id] = settlement
+    rearmed = None
+    try:
+        await asyncio.wait_for(writer_started.wait(), timeout=_LOST_RUN_SECS)
+        service.notify_turn_complete(loop.slot_key)
+        rearmed = service._timers.get(loop.id)
+        assert rearmed is not None and rearmed is not settlement
+        release_writer.set()
+        await asyncio.wait_for(
+            asyncio.gather(settlement, return_exceptions=True),
+            timeout=_LOST_RUN_SECS,
+        )
+        assert loop.id not in service._timers
+        assert rearmed.done()
+    finally:
+        release_writer.set()
+        await _cancel_pending(settlement, rearmed)
+        service.stop()
+
+    assert settlement.cancelled()
+    on_fire.assert_not_awaited()
+    assert events == ["expired"]
+    assert loop.cycle_count == 1
+    assert loop.active is False
+    assert monitor.outcome is MonitorOutcome.SUCCESS
+
+
+@pytest.mark.asyncio
+async def test_fire_now_refuses_while_a_holds_settlement_write_is_in_flight(tmp_path, monkeypatch):
+    """Manual fire cannot report success for a timer the settlement will retire."""
+    on_fire = AsyncMock(return_value=True)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = _owed_terminal_loop("monitor-terminal-manual-fire-during-settlement")
+    monitor = loop.monitor
+    assert monitor is not None
+    monitor.terminal_delivered = "success"
+    loop.cycle_count = 1
+    service._loops[loop.id] = loop
+    events: list[str] = []
+    monkeypatch.setattr(service, "_emit", lambda event, _loop: events.append(event))
+    monkeypatch.setattr(service, "_terminal_still_holds", AsyncMock(return_value="holds"))
+    writer_started = asyncio.Event()
+    release_writer = asyncio.Event()
+    real_snapshot = service._write_monitor_snapshot_locked
+
+    async def _park_the_settlement_write(payload=None, **kwargs):
+        if _writes_the_settlement(payload, loop.id):
+            writer_started.set()
+            await asyncio.wait_for(release_writer.wait(), timeout=_LOST_RUN_SECS)
+        await real_snapshot(payload, **kwargs)
+
+    monkeypatch.setattr(service, "_write_monitor_snapshot_locked", _park_the_settlement_write)
+    settlement = asyncio.create_task(service._settle_delivered_terminal(loop))
+    try:
+        await asyncio.wait_for(writer_started.wait(), timeout=_LOST_RUN_SECS)
+        result = await service.fire_now(loop.id)
+        assert result == (None, "loop terminal settlement is in progress", 409)
+        assert loop.id not in service._timers
+        release_writer.set()
+        await asyncio.wait_for(settlement, timeout=_LOST_RUN_SECS)
+    finally:
+        release_writer.set()
+        await _cancel_pending(settlement, service._timers.get(loop.id))
+        service.stop()
+
+    on_fire.assert_not_awaited()
+    assert events == ["expired"]
+    assert loop.cycle_count == 1
+    assert loop.active is False
+    assert monitor.outcome is MonitorOutcome.SUCCESS
+
+
+@pytest.mark.asyncio
+async def test_failed_delivery_marker_write_stays_delivered_for_the_cycle_persist(
+    tmp_path, monkeypatch
+):
+    """A failed first persist cannot turn a delivered terminal back into owed work.
+
+    The later cycle-bookkeeping persist is the recovery write. Moving the outcome
+    back into ``terminal_pending`` in the first failure branch makes the durable row
+    owed again and the restarted service calls ``_on_fire`` a second time.
+    """
+    on_fire = AsyncMock(return_value=True)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = _owed_terminal_loop("monitor-terminal-delivery-persist")
+    monitor = loop.monitor
+    assert monitor is not None
+    service._loops[loop.id] = loop
+    first_persist_failed = False
+    real_persist = service._persist_locked
+
+    async def _fail_the_marker_once(**kwargs):
+        nonlocal first_persist_failed
+        if monitor.terminal_delivered == "success" and not first_persist_failed:
+            first_persist_failed = True
+            raise OSError("first marker write failed")
+        await real_persist(**kwargs)
+
+    monkeypatch.setattr(service, "_persist_locked", _fail_the_marker_once)
+    monkeypatch.setattr(service, "_settle_delivered_terminal", AsyncMock())
+    await asyncio.wait_for(service._run_fire_cycle(loop), timeout=_LOST_RUN_SECS)
+
+    assert first_persist_failed, "the marker write failure must be exercised"
+    on_fire.assert_awaited_once_with(loop)
+    assert monitor.terminal_delivered == "success"
+    stored = _stored_row(tmp_path)
+    assert stored["monitor"]["terminal_delivered"] == "success"
+    assert stored["cycle_count"] == 1
+    service.stop()
+
+    restarted_fire = AsyncMock(return_value=True)
+    restarted = AutoNudgeService(base_dir=tmp_path, on_fire=restarted_fire)
+    await restarted.start()
+    restored = restarted.get_by_id(loop.id)
+    assert restored is not None and restored.monitor is not None
+    restarted._cancel_timer(restored.id)
+    reprobe = AsyncMock(return_value="holds")
+    monkeypatch.setattr(restarted, "_terminal_still_holds", reprobe)
+    try:
+        await asyncio.wait_for(restarted._timer(restored, delay=0.0), timeout=_LOST_RUN_SECS)
+    finally:
+        await asyncio.wait_for(restarted.shutdown(), timeout=_LOST_RUN_SECS)
+
+    restarted_fire.assert_not_awaited()
+    reprobe.assert_awaited_once_with(restored, restored.monitor)
+    assert restored.active is False
+    assert restored.monitor.outcome is MonitorOutcome.SUCCESS
+    assert restored.monitor.terminal_delivered == ""
+    assert restored.cycle_count == 1
+
+
+@pytest.mark.asyncio
+async def test_MUTATION_a_failed_gone_reprobe_write_keeps_delivered_state_until_retry(
+    tmp_path, monkeypatch
+):
+    """A definite-gone answer reaches memory only after its staged write lands."""
+    on_fire = AsyncMock(return_value=True)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    monitor = _structured_monitor(kind="gh-pr", target="acme/widgets#42")
+    monitor.terminal_delivered = "success"
+    loop = NudgeLoop(
+        id="monitor-terminal-gone-write-fails",
+        slot_key="slack:C0123456:1700000000.1",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        cycle_count=1,
+        monitor=monitor,
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+    reprobe = AsyncMock(side_effect=["gone", "gone"])
+    monkeypatch.setattr(service, "_terminal_still_holds", reprobe)
+    real_writer = service._write_monitor_snapshot_locked
+    writes = 0
+
+    async def _fail_once(payload=None, **kwargs):
+        nonlocal writes
+        writes += 1
+        if writes == 1:
+            raise OSError("store unavailable")
+        await real_writer(payload, **kwargs)
+
+    monkeypatch.setattr(service, "_write_monitor_snapshot_locked", _fail_once)
+    try:
+        await asyncio.wait_for(service._timer(loop, delay=0.0), timeout=_LOST_RUN_SECS)
+        service._cancel_timer(loop.id)
+        assert monitor.terminal_delivered == "success", "the marker cleared in memory only"
+
+        await asyncio.wait_for(service._timer(loop, delay=0.0), timeout=_LOST_RUN_SECS)
+        service._cancel_timer(loop.id)
+    finally:
+        service.stop()
+
+    assert writes == 2
+    assert reprobe.await_count == 2
+    on_fire.assert_not_awaited()
+    assert monitor.terminal_delivered == ""
+    stored = _stored_row(tmp_path)["monitor"]
+    assert stored["terminal_delivered"] == ""
+
+
+@pytest.mark.asyncio
+async def test_MUTATION_a_failed_holds_settlement_write_keeps_memory_store_and_restart_agreed(
+    tmp_path, monkeypatch
+):
+    """A definite-holds settlement reaches memory only after its staged write lands.
+
+    A failed write leaves the live delivered marker and the active loop exactly as
+    the store holds them and a restart loads them, and announces nothing.
+    Deactivating the loop before the write fails here, because memory then says what
+    no store or restart says. The next successful tick settles and announces once.
+    """
+    on_fire = AsyncMock(return_value=True)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    monitor = _structured_monitor(kind="gh-pr", target="acme/widgets#42")
+    monitor.terminal_delivered = "success"
+    loop = NudgeLoop(
+        id="monitor-terminal-holds-write-fails",
+        slot_key="slack:C0123456:1700000000.1",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        cycle_count=1,
+        monitor=monitor,
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+    await asyncio.to_thread(service._save)
+    events: list[str] = []
+    monkeypatch.setattr(service, "_emit", lambda event, _loop: events.append(event))
+    reprobe = AsyncMock(side_effect=["holds", "holds"])
+    monkeypatch.setattr(service, "_terminal_still_holds", reprobe)
+    real_writer = service._write_monitor_snapshot_locked
+    writes = 0
+
+    async def _fail_once(payload=None, **kwargs):
+        nonlocal writes
+        writes += 1
+        if writes == 1:
+            raise OSError("store unavailable")
+        await real_writer(payload, **kwargs)
+
+    monkeypatch.setattr(service, "_write_monitor_snapshot_locked", _fail_once)
+    try:
+        await asyncio.wait_for(service._timer(loop, delay=0.0), timeout=_LOST_RUN_SECS)
+        service._cancel_timer(loop.id)
+        assert writes == 1
+        assert "expired" not in events, "a finish must not be announced unpersisted"
+        assert loop.active is True, "the loop deactivated in memory only"
+        assert monitor.outcome is None
+        assert monitor.terminal_delivered == "success", "the marker cleared in memory only"
+        stored = _stored_row(tmp_path)
+        assert stored["active"] is True
+        assert stored["monitor"]["terminal_delivered"] == "success"
+
+        restarted = AutoNudgeService(base_dir=tmp_path, on_fire=AsyncMock(return_value=True))
+        await restarted.start()
+        try:
+            restored = restarted.get_by_id(loop.id)
+            assert restored is not None and restored.monitor is not None
+            restarted._cancel_timer(restored.id)
+            assert restored.active is True
+            assert restored.monitor.outcome is None
+            assert restored.monitor.terminal_delivered == "success"
+        finally:
+            await asyncio.wait_for(restarted.shutdown(), timeout=_LOST_RUN_SECS)
+
+        await asyncio.wait_for(service._timer(loop, delay=0.0), timeout=_LOST_RUN_SECS)
+        service._cancel_timer(loop.id)
+    finally:
+        service.stop()
+
+    assert writes == 2
+    assert reprobe.await_count == 2
+    on_fire.assert_not_awaited()
+    assert events.count("expired") == 1
+    assert loop.active is False
+    assert monitor.outcome is MonitorOutcome.SUCCESS
+    assert monitor.terminal_delivered == ""
+    stored = _stored_row(tmp_path)
+    assert stored["active"] is False
+    assert stored["monitor"]["terminal_delivered"] == ""
+
+
+@pytest.mark.asyncio
+async def test_restart_settles_a_delivered_terminal_without_refiring(tmp_path, monkeypatch):
+    await _write_terminal_restart_row(tmp_path, delivered="success", cycle_count=1)
+    on_fire = AsyncMock(return_value=True)
+    restarted = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    monkeypatch.setattr(_an.irq, "poll", _terminal_poll())
+    await restarted.start()
+    loop = restarted.get_by_id("monitor-terminal-restart")
+    assert loop is not None and loop.monitor is not None
+    restarted._cancel_timer(loop.id)
+    probe = AsyncMock(return_value="holds")
+    monkeypatch.setattr(restarted, "_terminal_still_holds", probe)
+
+    await asyncio.wait_for(restarted._timer(loop, delay=0.0), timeout=_LOST_RUN_SECS)
+
+    on_fire.assert_not_awaited()
+    probe.assert_awaited_once_with(loop, loop.monitor)
+    assert loop.active is False
+    assert loop.monitor.outcome is MonitorOutcome.SUCCESS
+    assert loop.monitor.terminal_delivered == ""
+    assert loop.cycle_count == 1
+    await restarted.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_restart_legacy_terminal_marker_still_delivers_once(tmp_path, monkeypatch):
+    await _write_terminal_restart_row(tmp_path, "success", cycle_count=0)
+    on_fire = AsyncMock(return_value=True)
+    restarted = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    monkeypatch.setattr(_an.irq, "poll", _terminal_poll())
+    await restarted.start()
+    loop = restarted.get_by_id("monitor-terminal-restart")
+    assert loop is not None and loop.monitor is not None
+    restarted._cancel_timer(loop.id)
+
+    await asyncio.wait_for(restarted._timer(loop, delay=0.0), timeout=_LOST_RUN_SECS)
+
+    on_fire.assert_awaited_once_with(loop)
+    assert loop.active is False
+    assert loop.monitor.outcome is MonitorOutcome.SUCCESS
+    assert loop.monitor.terminal_pending == ""
+    assert loop.cycle_count == 1
+    await restarted.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_restart_reopened_delivered_terminal_clears_without_refiring(tmp_path, monkeypatch):
+    await _write_terminal_restart_row(tmp_path, delivered="blocked", cycle_count=1)
+    on_fire = AsyncMock(return_value=True)
+    restarted = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    monkeypatch.setattr(_an.irq, "poll", _terminal_poll("OPEN"))
+    await restarted.start()
+    loop = restarted.get_by_id("monitor-terminal-restart")
+    assert loop is not None and loop.monitor is not None
+    restarted._cancel_timer(loop.id)
+    probe = AsyncMock(return_value="gone")
+    monkeypatch.setattr(restarted, "_terminal_still_holds", probe)
+
+    await asyncio.wait_for(restarted._timer(loop, delay=0.0), timeout=_LOST_RUN_SECS)
+
+    on_fire.assert_not_awaited()
+    probe.assert_awaited_once_with(loop, loop.monitor)
+    assert loop.active is True
+    assert loop.monitor.outcome is None
+    assert loop.monitor.terminal_delivered == ""
+    assert loop.cycle_count == 1
+    await restarted.shutdown()
 
 
 @pytest.mark.asyncio
@@ -2493,9 +6166,9 @@ async def test_the_terminal_settlement_is_serialized_against_update(tmp_path, mo
     held: list[str] = []
     real_acquire = service._acquire_mutation_lock
 
-    async def _tracking_acquire(loop_id):
+    async def _tracking_acquire(loop_id, **kwargs):
         held.append(loop_id)
-        return await real_acquire(loop_id)
+        return await asyncio.wait_for(real_acquire(loop_id, **kwargs), timeout=_LOST_RUN_SECS)
 
     monkeypatch.setattr(service, "_acquire_mutation_lock", _tracking_acquire)
 
@@ -2533,9 +6206,9 @@ async def test_the_terminal_transition_is_on_disk_before_the_user_is_told(tmp_pa
     service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
     real_persist = service._write_monitor_snapshot_locked
 
-    async def _tracking_persist(payload=None):
+    async def _tracking_persist(payload=None, **kwargs):
         order.append("persist")
-        await real_persist(payload)
+        await real_persist(payload, **kwargs)
 
     monkeypatch.setattr(service, "_write_monitor_snapshot_locked", _tracking_persist)
     monkeypatch.setattr(service, "_emit", lambda event, loop: order.append(f"emit:{event}"))
@@ -2618,7 +6291,7 @@ async def test_a_failed_terminal_write_keeps_the_watch_alive(tmp_path, monkeypat
     )
     service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
 
-    async def _explode(payload=None):
+    async def _explode(payload=None, **_kwargs):
         raise OSError("disk full")
 
     monkeypatch.setattr(service, "_write_monitor_snapshot_locked", _explode)
@@ -3746,7 +7419,9 @@ async def test_revival_runs_a_fresh_budget_and_a_running_save_keeps_the_old_one(
 
     async def settle(loop_id: str) -> None:
         # A loop the timer re-stops cancels its own task; the count below is the verdict.
-        await asyncio.gather(svc._timers[loop_id], return_exceptions=True)
+        await asyncio.wait_for(
+            asyncio.gather(svc._timers[loop_id], return_exceptions=True), timeout=_LOST_RUN_SECS
+        )
 
     capped = await svc.add(slot_key="chat-1-301", message="go", idle_secs=15, max_cycles=1)
     await settle(capped.id)
@@ -3805,7 +7480,9 @@ async def test_a_bare_revival_keeps_the_count_so_a_reconciler_cannot_mint_a_fres
     await svc.start()
 
     async def settle(loop_id: str) -> None:
-        await asyncio.gather(svc._timers[loop_id], return_exceptions=True)
+        await asyncio.wait_for(
+            asyncio.gather(svc._timers[loop_id], return_exceptions=True), timeout=_LOST_RUN_SECS
+        )
 
     capped = await svc.add(slot_key="research-c1", message="go", idle_secs=15, max_cycles=1)
     await settle(capped.id)
@@ -4295,7 +7972,9 @@ async def test_add_monitor_conditionally_replaces_one_terminal_generation(svc):
             expected_existing_config_generation=expected_generation,
         )
 
-    results = await asyncio.gather(restart(), restart(), return_exceptions=True)
+    results = await asyncio.wait_for(
+        asyncio.gather(restart(), restart(), return_exceptions=True), timeout=_LOST_RUN_SECS
+    )
     winners = [result for result in results if isinstance(result, NudgeLoop)]
     conflicts = [result for result in results if isinstance(result, MonitorUpdateConflict)]
 
@@ -4322,7 +8001,7 @@ async def test_add_monitor_persistence_failure_keeps_existing_monitor_running(sv
     )
     persisted_before = svc._path.read_bytes()
 
-    async def fail_snapshot(_payload):
+    async def fail_snapshot(_payload, **_kwargs):
         raise OSError("disk full")
 
     monkeypatch.setattr(svc, "_write_monitor_snapshot_locked", fail_snapshot)
@@ -4797,7 +8476,9 @@ async def test_skip_when_delivery_returns_false(svc, monkeypatch):
     async def _sleep(secs):
         sleep_calls.append(secs)
         if len(sleep_calls) >= 2:
-            await gate.wait()  # halt the re-arm chain so the test is bounded
+            await asyncio.wait_for(
+                gate.wait(), timeout=_LOST_RUN_SECS
+            )  # halt the re-arm chain so the test is bounded
         return None
 
     monkeypatch.setattr(_an.asyncio, "sleep", _sleep)
@@ -4850,7 +8531,7 @@ async def test_fire_callback_exception_does_not_deactivate(svc, monkeypatch):
     async def _sleep(secs):
         sleep_calls.append(secs)
         if len(sleep_calls) >= 2:
-            await gate.wait()
+            await asyncio.wait_for(gate.wait(), timeout=_LOST_RUN_SECS)
         return None
 
     monkeypatch.setattr(_an.asyncio, "sleep", _sleep)
@@ -5796,7 +9477,7 @@ class TestAutonudgeUpdateConcurrency:
         gate = asyncio.Event()
 
         async def on_fire(_loop):
-            await gate.wait()
+            await asyncio.wait_for(gate.wait(), timeout=_LOST_RUN_SECS)
             return True
 
         svc = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
@@ -5866,7 +9547,7 @@ class TestAutonudgeUpdateConcurrency:
 
         async def on_fire(_loop):
             started.set()
-            await release.wait()
+            await asyncio.wait_for(release.wait(), timeout=_LOST_RUN_SECS)
             return False  # delivery failed (e.g. slot busy)
 
         svc = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
@@ -6012,9 +9693,12 @@ class TestAutonudgeUpdateConcurrency:
             assert stored["message"] == "second", "a stale snapshot replaced the newer state"
         finally:
             gate.set()
-            await asyncio.gather(
-                *(task for task in (first, second) if task is not None),
-                return_exceptions=True,
+            await asyncio.wait_for(
+                asyncio.gather(
+                    *(task for task in (first, second) if task is not None),
+                    return_exceptions=True,
+                ),
+                timeout=_LOST_RUN_SECS,
             )
             svc.stop()
 
@@ -6660,6 +10344,28 @@ class TestPersistenceIsOffLoopAndOrdered:
         writes.clear()
         await svc.remove("does-not-exist")
         assert writes == []
+
+    @pytest.mark.asyncio
+    async def test_removal_submission_failure_restores_the_live_row(self, tmp_path, monkeypatch):
+        svc = AutoNudgeService(base_dir=tmp_path)
+        try:
+            loop = await svc.add(slot_key="dashboard:x", message="go", idle_secs=60)
+            persisted_before = svc._path.read_bytes()
+
+            def _refuse_submission(*_args, **_kwargs):
+                raise OSError("executor unavailable")
+
+            monkeypatch.setattr(svc, "_start_persistence", _refuse_submission)
+
+            with pytest.raises(OSError, match="executor unavailable"):
+                await svc.remove(loop.id)
+
+            assert svc.get_by_id(loop.id) is loop
+            assert loop.active is True
+            assert loop.id in svc._timers
+            assert svc._path.read_bytes() == persisted_before
+        finally:
+            svc.stop()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("delay_start", [False, True])

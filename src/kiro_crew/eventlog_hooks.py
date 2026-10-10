@@ -543,8 +543,11 @@ def reconcile_members_at_startup(cfg, state, autonudge_svc) -> int:
       edited while the gateway was down lands a correcting member/config;
     * write CLOSERS for durable facts the log still believes are open but the
       live process does not back:
-        - ``wake.patrol == 'armed'`` with NO live auto-nudge loop for
-          ``wake.slot_key`` -> PATROL_STOPPED {slot_key, reason: 'interrupted'};
+        - ``wake.patrol == 'armed'`` with NO auto-nudge loop for
+          ``wake.slot_key``, or an inactive loop carrying the provisional
+          stale-sentinel cleanup-failure reason -> PATROL_STOPPED
+          {slot_key, reason: 'interrupted'}, only if the guarded append re-reads
+          the live loop as still absent or still in that provisional state;
         - each ``driving.open`` slot_key absent from ``state._slots`` ->
           SLOT_CLOSED {slot_key, reason: 'interrupted'}.
 
@@ -555,6 +558,9 @@ def reconcile_members_at_startup(cfg, state, autonudge_svc) -> int:
     closers = 0
     try:
         from kiro_crew import members as members_mod
+        from kiro_crew.autonudge_service.model import (
+            STALE_SENTINEL_CLEANUP_FAILED_REASON,
+        )
         from kiro_crew.crew_log.errors import CrewLogError
         from kiro_crew.eventlog import types
         from kiro_crew.eventlog.service import CloserTailContention, get_service
@@ -617,8 +623,31 @@ def reconcile_members_at_startup(cfg, state, autonudge_svc) -> int:
                 "degraded to defaults" if unfaithful else "unnamed by any content",
             )
 
-        def _patrol_is_still_armed(values: dict, observed: dict) -> bool:
-            return _patrol_is_still_armed_at(values, observed)
+        def _loop_for_wake_slot(wake_slot: str | None) -> tuple[object | None, bool]:
+            loop = None
+            if autonudge_svc is not None and wake_slot:
+                try:
+                    get_by_slot = getattr(autonudge_svc, "get_by_slot", None)
+                    loop = get_by_slot(wake_slot) if callable(get_by_slot) else None
+                except Exception:
+                    return None, False
+            return loop, True
+
+        def _patrol_is_still_armed(
+            wake_slot: str | None,
+        ) -> Callable[[dict, dict], bool]:
+            def _still_armed(values: dict, observed: dict) -> bool:
+                if not _patrol_is_still_armed_at(values, observed):
+                    return False
+                loop, live_read_succeeded = _loop_for_wake_slot(wake_slot)
+                if not live_read_succeeded:
+                    return False
+                return loop is None or bool(
+                    not getattr(loop, "active", False)
+                    and getattr(loop, "stopped_reason", "") == STALE_SENTINEL_CLEANUP_FAILED_REASON
+                )
+
+            return _still_armed
 
         def _slot_is_still_open(slot_key: str) -> Callable[[dict, dict], bool]:
             # A factory, not a closure over the loop variable: a predicate evaluated
@@ -677,23 +706,22 @@ def reconcile_members_at_startup(cfg, state, autonudge_svc) -> int:
             wake = values.get(types.PROJ_WAKE, {}) or {}
             if wake.get("patrol") == "armed":
                 wake_slot = wake.get("slot_key")
-                has_loop = False
-                if autonudge_svc is not None and wake_slot:
-                    try:
-                        get_by_slot = getattr(autonudge_svc, "get_by_slot", None)
-                        has_loop = bool(get_by_slot(wake_slot)) if callable(get_by_slot) else False
-                    except Exception:
-                        has_loop = False
-                if not has_loop:
-                    # Re-asked under the write lock: this decision came from a
-                    # snapshot, and the gateway is going live concurrently, so a
-                    # patrol re-armed in between must not be closed by it.
+                loop, _live_read_succeeded = _loop_for_wake_slot(wake_slot)
+                failed_provisional = bool(
+                    loop
+                    and not getattr(loop, "active", False)
+                    and getattr(loop, "stopped_reason", "") == STALE_SENTINEL_CLEANUP_FAILED_REASON
+                )
+                if loop is None or failed_provisional:
+                    # Re-asked under the write lock: both the log episode and the
+                    # live loop may have changed while the gateway went live, so an
+                    # activated retained row must not be closed by this snapshot.
                     try:
                         if svc.append_closer_if_still_applies(
                             slug,
                             types.PATROL_STOPPED,
                             {"slot_key": wake_slot, "reason": "interrupted"},
-                            still_applies=_patrol_is_still_armed,
+                            still_applies=_patrol_is_still_armed(wake_slot),
                             observed=values,
                         ):
                             closers += 1

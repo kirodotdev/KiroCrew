@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+from unittest.mock import AsyncMock
 
 import pytest
 
 from kiro_crew import autonudge as _an
 from kiro_crew.autonudge import APPROVAL_STALL_REASON, AutoNudgeService, NudgeLoop
+from kiro_crew.monitoring.models import MonitorOutcome, MonitorState
 
 
 @pytest.fixture(autouse=True)
@@ -387,8 +390,8 @@ async def test_stall_hook_ignores_unknown_and_inactive_loops(svc, _nosleep):
 async def test_a_settings_save_on_an_active_loop_keeps_the_evidence(svc, _nosleep):
     """Only an actual revival spends the evidence, not any ``active=True``.
 
-    The goal popover sends ``active: true`` on every edit of an existing loop, so
-    a save landing between the stall and the next wake would otherwise erase
+    A caller may repeat ``active: true`` while revising an existing active loop,
+    so a settings edit landing between the stall and the next wake must not erase
     evidence recorded moments earlier and let one more doomed cycle fire.
     """
     loop = await _armed(svc)
@@ -486,6 +489,50 @@ def test_monitor_inspect_reading_shows_the_hold():
 
 
 @pytest.mark.asyncio
+async def test_MUTATION_cancelled_release_waiting_on_lock_still_persists(svc, store_dir):
+    class _ObservedLock(asyncio.Lock):
+        def __init__(self) -> None:
+            super().__init__()
+            self.contended = asyncio.Event()
+
+        async def acquire(self) -> bool:
+            if self.locked():
+                self.contended.set()
+            return await super().acquire()
+
+    await svc.start()
+    loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=600)
+    await _stall(svc)
+    svc._cancel_timer(loop.id)
+    lock = _ObservedLock()
+    svc._lock = lock
+    await asyncio.wait_for(lock.acquire(), timeout=_LOST_RUN_SECS)
+    caller = asyncio.create_task(svc.release_approval_hold("chat-1-123", why="test", arm=False))
+    registered: set[asyncio.Future] = set()
+    try:
+        await asyncio.wait_for(lock.contended.wait(), timeout=_LOST_RUN_SECS)
+        registered = set(svc._inflight_adds)
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(caller, timeout=_LOST_RUN_SECS)
+        assert loop.approval_stalled is True
+    finally:
+        if lock.locked():
+            lock.release()
+
+    await asyncio.wait_for(
+        asyncio.gather(*registered, return_exceptions=True),
+        timeout=_LOST_RUN_SECS,
+    )
+    await _wait_until(lambda: not svc._inflight_adds, "cancelled release settlement")
+    assert loop.approval_stalled is False
+    assert loop.approval_stalled_at == 0.0
+    stored = await _stored(store_dir)
+    assert stored[loop.slot_key].approval_stalled is False
+    await _stop_and_drain(svc)
+
+
+@pytest.mark.asyncio
 async def test_a_failed_release_write_keeps_the_hold_and_publishes_nothing(
     svc, _nosleep, monkeypatch
 ):
@@ -521,7 +568,7 @@ def _observing_writer(svc, loop_id: str, seen: list):
     """Wrap the snapshot writer: record the live loop and the written row mid-write."""
     real = svc._write_monitor_snapshot_locked
 
-    async def _write(payload=None):
+    async def _write(payload=None, *, admission=None):
         live = svc._loops[loop_id]
         row = None
         if payload is not None:
@@ -532,7 +579,7 @@ def _observing_writer(svc, loop_id: str, seen: list):
                 None if row is None else (row["approval_stalled"], row["approval_stalled_at"]),
             )
         )
-        await real(payload)
+        await real(payload, admission=admission)
 
     return _write
 
@@ -621,3 +668,272 @@ async def test_a_structured_monitor_records_the_stall_but_never_holds(svc, _nosl
     assert svc._loops[loop.id].approval_stalled_at == 0.0
     assert "held" not in events and "updated" not in events
     await _stop_and_drain(svc)
+
+
+#: Lost-run ceiling for synchronization the test itself must release. It is a
+#: hang guard whose expiry fails at the awaited line, never a performance
+#: assertion, and is at most half the repository's ``--timeout=120``.
+_LOST_RUN_SECS = 10.0
+
+
+async def _wait_until(predicate, what: str) -> None:
+    """Wait until *predicate* is true, failing by name if the run is wedged."""
+
+    async def _spin() -> None:
+        while not predicate():
+            await asyncio.sleep(0)
+
+    try:
+        await asyncio.wait_for(_spin(), timeout=_LOST_RUN_SECS)
+    except asyncio.TimeoutError:
+        pytest.fail(f"{what} did not happen within the lost-run ceiling")
+
+
+async def _stored(store_dir) -> dict[str, NudgeLoop]:
+    """The loops the store holds, read by a fresh service off the event loop."""
+    reader = AutoNudgeService(base_dir=store_dir)
+    await asyncio.to_thread(reader._load)
+    return {loop.slot_key: loop for loop in reader.list_all()}
+
+
+def _record_arms_after_closure(svc: AutoNudgeService, monkeypatch) -> list[str]:
+    """Record every timer coroutine created once shutdown has closed admission.
+
+    Read at creation rather than off the timer table, because ``shutdown()``
+    ends with ``stop()``, which empties that table whatever was armed into it.
+    """
+    real_timer = svc._timer
+    armed: list[str] = []
+
+    def _recording_timer(loop, delay=None):
+        if not svc._accepting_mutations:
+            armed.append(loop.id)
+        return real_timer(loop, delay)
+
+    monkeypatch.setattr(svc, "_timer", _recording_timer)
+    return armed
+
+
+@pytest.mark.asyncio
+async def test_MUTATION_shutdown_drains_a_hold_registered_before_its_first_step(store_dir):
+    """The notifier registers its task before shutdown can take its first snapshot."""
+    svc = AutoNudgeService(base_dir=store_dir)
+    await svc.start()
+    loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=600)
+    controls = [
+        task for task in (svc._reconciler, *svc._timers.values()) if isinstance(task, asyncio.Task)
+    ]
+    svc.stop(preserve_admitted=True)
+    await asyncio.wait_for(
+        asyncio.gather(*controls, return_exceptions=True),
+        timeout=_LOST_RUN_SECS,
+    )
+    tasks_before = asyncio.all_tasks()
+
+    try:
+        svc.notify_approval_stalled("chat-1-123")
+        await svc.shutdown()
+
+        assert loop.approval_stalled is True
+        assert loop.approval_stalled_at > 0
+        stored = await _stored(store_dir)
+        assert stored[loop.slot_key].approval_stalled is True
+        assert stored[loop.slot_key].approval_stalled_at == loop.approval_stalled_at
+    finally:
+        unregistered = [
+            task
+            for task in asyncio.all_tasks() - tasks_before
+            if task is not asyncio.current_task() and not task.done()
+        ]
+        for task in unregistered:
+            task.cancel()
+        if unregistered:
+            await asyncio.wait_for(
+                asyncio.gather(*unregistered, return_exceptions=True),
+                timeout=_LOST_RUN_SECS,
+            )
+
+
+@pytest.mark.asyncio
+async def test_a_hold_admitted_before_shutdown_lands_and_one_after_is_dropped(store_dir, caplog):
+    """The hold is evidence about the NEXT wake, so it is admitted where it arrives.
+
+    One recorded before shutdown closes admission is drained to disk, because after
+    a shutdown the only next wake is the restart that reads the row. The lock is held
+    so that hold parks BEFORE it submits its write, which is the one place admission
+    decides whether the write may land. One that arrives after closure has no wake
+    left to hold: it schedules nothing, writes nothing, announces nothing, and is
+    logged at DEBUG rather than raised into the approval path.
+    """
+    caplog.set_level(logging.DEBUG, logger="kiro_crew.autonudge")
+    svc = AutoNudgeService(base_dir=store_dir)
+    await svc.start()
+    before = await svc.add(slot_key="chat-1-123", message="go", idle_secs=600)
+    after = await svc.add(slot_key="chat-2-456", message="go", idle_secs=600)
+    events: list[tuple[str, str]] = []
+    svc.subscribe(lambda ev, lp: events.append((ev, lp.id if lp else "")))
+
+    await asyncio.wait_for(svc._lock.acquire(), timeout=_LOST_RUN_SECS)
+    try:
+        svc.notify_approval_stalled("chat-1-123")
+        shutdown = asyncio.create_task(svc.shutdown())
+        await _wait_until(lambda: not svc._accepting_mutations, "shutdown admission closure")
+        assert not shutdown.done(), "shutdown must drain the hold admitted before closure"
+
+        scheduled = set(svc._inflight_adds)
+        svc.notify_approval_stalled("chat-2-456")
+        assert set(svc._inflight_adds) == scheduled, "a hold after closure schedules nothing"
+    finally:
+        svc._lock.release()
+    await asyncio.wait_for(shutdown, timeout=_LOST_RUN_SECS)
+
+    rows = await _stored(store_dir)
+    assert rows["chat-1-123"].approval_stalled is True, "the admitted hold reached the store"
+    assert rows["chat-2-456"].approval_stalled is False
+    assert after.approval_stalled is False, "nor did it change the loop in memory"
+    assert ("held", before.id) in events
+    assert ("held", after.id) not in events and ("updated", after.id) not in events
+    assert any(
+        r.levelno == logging.DEBUG
+        and "not recording the approval hold for chat-2-456" in r.getMessage()
+        for r in caplog.records
+    )
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING and r.exc_info]
+
+
+@pytest.mark.asyncio
+async def test_a_release_admitted_before_shutdown_lands_and_one_after_is_dropped(store_dir, caplog):
+    """The release takes its lease where the person's action arrives.
+
+    A release scheduled before closure is drained to disk, so a restart does not
+    hold a loop a person already answered for. One scheduled after closure is
+    dropped at DEBUG and leaves the hold exactly as the store has it.
+    """
+    caplog.set_level(logging.DEBUG, logger="kiro_crew.autonudge")
+    svc = AutoNudgeService(base_dir=store_dir)
+    await svc.start()
+    released = await svc.add(slot_key="chat-1-123", message="go", idle_secs=600)
+    kept = await svc.add(slot_key="chat-2-456", message="go", idle_secs=600)
+    await _stall(svc, "chat-1-123")
+    await _stall(svc, "chat-2-456")
+    created = released.created_ts
+
+    await asyncio.wait_for(svc._lock.acquire(), timeout=_LOST_RUN_SECS)
+    try:
+        _an.release_approval_hold_for("chat-1-123", why="an approval was answered")
+        shutdown = asyncio.create_task(svc.shutdown())
+        await _wait_until(lambda: not svc._accepting_mutations, "shutdown admission closure")
+        assert not shutdown.done(), "shutdown must drain the release admitted before closure"
+
+        scheduled = set(svc._inflight_adds)
+        _an.release_approval_hold_for("chat-2-456", why="an approval was answered")
+        assert set(svc._inflight_adds) == scheduled, "a release after closure schedules nothing"
+    finally:
+        svc._lock.release()
+    await asyncio.wait_for(shutdown, timeout=_LOST_RUN_SECS)
+
+    rows = await _stored(store_dir)
+    assert rows["chat-1-123"].approval_stalled is False, "the admitted release reached the store"
+    assert rows["chat-1-123"].created_ts >= created
+    assert rows["chat-2-456"].approval_stalled is True
+    assert kept.approval_stalled is True
+    assert any(
+        r.levelno == logging.DEBUG
+        and "not releasing the approval hold for chat-2-456" in r.getMessage()
+        for r in caplog.records
+    )
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING and r.exc_info]
+
+
+@pytest.mark.asyncio
+async def test_a_release_that_lands_after_closure_arms_nothing(store_dir, monkeypatch):
+    """A drained release ends the hold durably and stops there.
+
+    ``release_approval_hold_for`` asks for the re-arm, and the release reaches its
+    arm step only after shutdown closed admission. Arming then would leave a timer
+    behind the teardown, so the arm guard refuses it.
+    """
+    svc = AutoNudgeService(base_dir=store_dir)
+    await svc.start()
+    loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=600)
+    await _stall(svc)
+    events: list[tuple[str, str]] = []
+    svc.subscribe(lambda ev, lp: events.append((ev, lp.id if lp else "")))
+    armed_after_closure = _record_arms_after_closure(svc, monkeypatch)
+
+    await asyncio.wait_for(svc._lock.acquire(), timeout=_LOST_RUN_SECS)
+    try:
+        _an.release_approval_hold_for("chat-1-123", why="an approval was answered")
+        shutdown = asyncio.create_task(svc.shutdown())
+        await _wait_until(lambda: not svc._accepting_mutations, "shutdown admission closure")
+    finally:
+        svc._lock.release()
+    await asyncio.wait_for(shutdown, timeout=_LOST_RUN_SECS)
+
+    assert loop.approval_stalled is False
+    assert ("updated", loop.id) in events, "the release landed and was announced"
+    assert armed_after_closure == [], "nothing may be armed after admission closed"
+    assert loop.id not in svc._rearm_pending
+
+
+@pytest.mark.asyncio
+async def test_a_held_delivered_terminal_settles_once_after_release_without_a_turn(
+    store_dir, monkeypatch
+):
+    """The hold sits ahead of the delivered-marker settlement, and they never mix.
+
+    A loop held while its owed terminal turn is already DELIVERED neither fires nor
+    re-probes on the hold tick. The release moves only the hold fields and the
+    budget clock (``created_ts``): the delivered marker is a separate monitor field
+    it never writes. The first tick after the release then settles the terminal
+    through the delivered path, with one re-probe and no second model turn.
+    """
+    on_fire = AsyncMock(return_value=True)
+    svc = AutoNudgeService(base_dir=store_dir, on_fire=on_fire)
+    reprobe = AsyncMock(return_value="holds")
+    monkeypatch.setattr(svc, "_terminal_still_holds", reprobe)
+    monitor = MonitorState(
+        kind="gh-pr",
+        target="acme/widgets#42",
+        objective="review_ready",
+        created_ts=1_000.0,
+    )
+    monitor.terminal_delivered = "success"
+    loop = NudgeLoop(
+        id="held-delivered",
+        slot_key="chat-1-123",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=600,
+        cycle_count=1,
+        created_ts=1_000.0,
+        approval_stalled=True,
+        approval_stalled_at=1_000.0,
+        monitor=monitor,
+        gate=True,
+    )
+    svc._loops[loop.id] = loop
+
+    try:
+        await asyncio.wait_for(svc._timer(loop, delay=0.0), timeout=_LOST_RUN_SECS)
+        assert loop.active is True and loop.approval_stalled is True
+        reprobe.assert_not_awaited()
+        on_fire.assert_not_awaited()
+        assert monitor.terminal_delivered == "success"
+
+        assert await svc.release_approval_hold("chat-1-123", why="test", arm=False) is True
+        assert loop.approval_stalled is False
+        assert loop.created_ts > 1_000.0, "the held time was handed back to the budget"
+        assert monitor.terminal_delivered == "success", "the release leaves the marker"
+        stored = (await _stored(store_dir))["chat-1-123"]
+        assert stored.monitor is not None
+        assert stored.monitor.terminal_delivered == "success"
+
+        await asyncio.wait_for(svc._timer(loop, delay=0.0), timeout=_LOST_RUN_SECS)
+    finally:
+        svc.stop()
+
+    reprobe.assert_awaited_once_with(loop, monitor)
+    on_fire.assert_not_awaited()
+    assert loop.active is False
+    assert monitor.outcome is MonitorOutcome.SUCCESS
+    assert monitor.terminal_delivered == ""

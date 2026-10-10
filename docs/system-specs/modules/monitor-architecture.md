@@ -141,7 +141,9 @@ alone, so a bind never stacks a second loop or revives a person's stop. The one
 re-arm is the gateway's own default patrol stopped by the system (its budget or
 cap ran out, the `_stopped_row_is_replaceable` allowlist): a new bind is new work,
 so it is replaced by a fresh default. A refusal is logged at WARNING and the bind
-still succeeds; the bind reply carries `patrol: armed | existing | refused |
+still succeeds; the shutdown refusal a bind racing the gateway's teardown meets
+(the arm is an ordinary admitted `add`, refused once admission closed) is logged
+at DEBUG instead. The bind reply carries `patrol: armed | existing | refused |
 unsupported`, plus a `patrol_note` telling the conductor to arm its own
 `monitor_start` in the same turn whenever no `work-ledger` watch is active after
 the bind. The armed loop carries `default_patrol: true`, and that tag is the one
