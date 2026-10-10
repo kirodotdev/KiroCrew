@@ -336,7 +336,7 @@ jobs:
           && (
           github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
           )
-        uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029 # v1.0.239
+        uses: anthropics/claude-code-action@6c690188da61cf16ee7debb28383ba67f02abb4c # v1.0.242
         with:
           # Inference via Amazon Bedrock (region from the AWS creds step above).
           use_bedrock: "true"
