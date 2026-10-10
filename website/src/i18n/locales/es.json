@@ -6403,6 +6403,8 @@
       "session_control_ready": "Listo",
       "session_control_chip_label": "{{label}} — {{detail}}",
       "agent_inherited_default": "Esta sesión sigue el agente predeterminado ({{name}}). No tiene un agente propio, así que cambia si cambia el predeterminado. Haz clic para fijar uno.",
+      "agent_cycle_hint": "Agente siguiente: Alt+Mayús+A · Anterior: Alt+Mayús+Z",
+      "agent_cycle_hint_mac": "Agente siguiente: ⌥⇧A · Anterior: ⌥⇧Z",
       "compacting_context_stop_unavailable": "Compactando el contexto — no se puede detener hasta que termine",
       "click_again_to_force_stop_resets_session": "Haz clic de nuevo para forzar la detención (reinicia la sesión; tus mensajes se quedan, el agente conserva un extracto reciente)",
       "model_inherited_default": "Esta sesión usa el modelo predeterminado ({{name}}). No tiene un modelo propio, así que cambia si cambia el predeterminado. Haz clic para fijar uno.",

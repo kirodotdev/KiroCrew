@@ -6403,6 +6403,8 @@
       "session_control_ready": "Pronto",
       "session_control_chip_label": "{{label}} — {{detail}}",
       "agent_inherited_default": "Esta sessão segue o agente padrão ({{name}}). Não tem um agente próprio, então muda se o padrão mudar. Clique para fixar um.",
+      "agent_cycle_hint": "Próximo agente: Alt+Shift+A · Anterior: Alt+Shift+Z",
+      "agent_cycle_hint_mac": "Próximo agente: ⌥⇧A · Anterior: ⌥⇧Z",
       "compacting_context_stop_unavailable": "Compactando o contexto — não é possível parar até terminar",
       "click_again_to_force_stop_resets_session": "Clique novamente para forçar a parada (reinicia a sessão; suas mensagens ficam, o agente mantém um trecho recente)",
       "model_inherited_default": "Esta sessão usa o modelo padrão ({{name}}). Não tem um modelo próprio, então muda se o padrão mudar. Clique para fixar um.",

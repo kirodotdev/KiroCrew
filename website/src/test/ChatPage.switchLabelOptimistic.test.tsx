@@ -243,7 +243,7 @@ describe('ChatPage — switch labels update without a slot-list round trip (#452
   it('agent pick writes agent AND workspace to the store without a slot-list round trip (#5120)', async () => {
     const store = await renderChat()
     const slotsFetchesBeforePick = vi.mocked(api.chatSlots).mock.calls.length
-    const chip = screen.getByTitle('Agent: kirocrew')
+    const chip = screen.getByTitle(/^Agent: kirocrew(?:\s|$)/)
     await act(async () => { fireEvent.click(chip) })
     const option = await waitFor(() => screen.getByRole('option', { name: /researcher/ }))
     await act(async () => { fireEvent.click(option) })
@@ -257,20 +257,20 @@ describe('ChatPage — switch labels update without a slot-list round trip (#452
     // …and not because anything re-fetched the slot list (no websocket
     // exists in this harness to push one either).
     expect(vi.mocked(api.chatSlots).mock.calls.length).toBe(slotsFetchesBeforePick)
-    expect(await waitFor(() => screen.getByTitle('Agent: researcher'))).toBeTruthy()
+    expect(await waitFor(() => screen.getByTitle(/^Agent: researcher(?:\s|$)/))).toBeTruthy()
   })
 
   it('keeps the pre-switch agent when the agent switch fails (#5120)', async () => {
     vi.mocked(api.chatSlotAgent).mockRejectedValueOnce(new Error('boom'))
     const store = await renderChat()
-    const chip = screen.getByTitle('Agent: kirocrew')
+    const chip = screen.getByTitle(/^Agent: kirocrew(?:\s|$)/)
     await act(async () => { fireEvent.click(chip) })
     const option = await waitFor(() => screen.getByRole('option', { name: /researcher/ }))
     await act(async () => { fireEvent.click(option) })
 
     await waitFor(() => expect(api.chatSlotAgent).toHaveBeenCalled())
     expect(store.getState().dashboard.slots.find(s => s.key === 'slot-a')?.agent).toBe('kirocrew')
-    expect(screen.getByTitle('Agent: kirocrew')).toBeTruthy()
+    expect(screen.getByTitle(/^Agent: kirocrew(?:\s|$)/)).toBeTruthy()
   })
 })
 

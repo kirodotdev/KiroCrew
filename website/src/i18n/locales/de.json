@@ -6302,6 +6302,8 @@
       "session_control_ready": "Bereit",
       "session_control_chip_label": "{{label}} — {{detail}}",
       "agent_inherited_default": "Diese Sitzung folgt dem Standard-Agenten ({{name}}). Sie hat keinen eigenen Agenten, ändert sich also mit dem Standard. Zum Anheften klicken.",
+      "agent_cycle_hint": "Nächster Agent: Alt+Umschalt+A · Vorheriger: Alt+Umschalt+Z",
+      "agent_cycle_hint_mac": "Nächster Agent: ⌥⇧A · Vorheriger: ⌥⇧Z",
       "compacting_context_stop_unavailable": "Kontext wird komprimiert — Stoppen ist erst nach Abschluss möglich",
       "click_again_to_force_stop_resets_session": "Erneut klicken, um den Stopp zu erzwingen (startet die Sitzung neu; deine Nachrichten bleiben, der Agent behält einen aktuellen Auszug)",
       "model_inherited_default": "Diese Sitzung läuft auf dem Standardmodell ({{name}}). Sie hat kein eigenes Modell, ändert sich also, wenn sich der Standard ändert. Klicken, um eines festzulegen.",

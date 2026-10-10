@@ -9,6 +9,8 @@ import { fmtPercent } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import type { ComposerControl } from '../composerControl'
 import { usePressActivation } from '../../hooks/usePressActivation'
+import { useActionShortcutHint } from '../../hooks/useActionShortcutHint'
+import { IS_MAC } from '../../hooks/useKeyboardShortcuts'
 import type { ChatInputProps } from './props'
 import type { useAutoCompactThreshold } from './autoCompact'
 import { uiLocation } from '../../uiLocations/uiLocation'
@@ -157,26 +159,35 @@ export function AgentChip({ agentName, agentLabel, agentIsInheritedDefault, agen
   // Opens on the mouse press (usePressActivation); keyboard and touch on click.
   const bindPress = usePressActivation()
   const press = bindPress<HTMLButtonElement>(el => onAgentClick(el.getBoundingClientRect(), el))
+  // Inherited default: explain what the ` . default` marker means, on
+  // hover (title) AND keyboard focus / screen readers (aria-label),
+  // because the marker alone reads as opaque. No glyph, no
+  // layout change -- text on demand. A pinned chip keeps the plain
+  // switch hint; it has nothing to explain.
+  const label = isRunning
+    ? i18nT('components.chatInput.stop_the_current_response_to_switch_agents')
+    : agentIsInheritedDefault
+      ? i18nT('components.chatInput.agent_inherited_default', { name: agentName })
+      : i18nT('components.chatInput.agent', { name: agentName })
+  // The chip is the only visible place an agent switch happens, so it is where
+  // the keyboard route to the same switch gets taught: a second tooltip line
+  // naming the cycle chords. Spelled by a catalog string per platform, so it
+  // is shown only while both chords are still the factory defaults; the live
+  // chord reaches assistive tech through aria-keyshortcuts either way. Hidden
+  // while a turn runs, when the chip itself is disabled.
+  const nextHint = useActionShortcutHint('cycle-agent')
+  const prevHint = useActionShortcutHint('cycle-prev-agent')
+  const cycleLine = !isRunning && nextHint?.isFactory && prevHint?.isFactory
+    ? i18nT(IS_MAC ? 'components.chatInput.agent_cycle_hint_mac' : 'components.chatInput.agent_cycle_hint')
+    : null
   return (
     <button
       className={`inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] px-2.5 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent ${agentSource === 'package' ? 'text-[var(--aim)] hover:text-[var(--aim)]' : 'text-muted hover:text-text disabled:hover:text-muted'}`}
       {...press}
       disabled={isRunning}
-      // Inherited default: explain what the ` . default` marker means, on
-      // hover (title) AND keyboard focus / screen readers (aria-label),
-      // because the marker alone reads as opaque. No glyph, no
-      // layout change -- text on demand. A pinned chip keeps the plain
-      // switch hint; it has nothing to explain.
-      title={isRunning
-        ? i18nT('components.chatInput.stop_the_current_response_to_switch_agents')
-        : agentIsInheritedDefault
-          ? i18nT('components.chatInput.agent_inherited_default', { name: agentName })
-          : i18nT('components.chatInput.agent', { name: agentName })}
-      aria-label={isRunning
-        ? i18nT('components.chatInput.stop_the_current_response_to_switch_agents')
-        : agentIsInheritedDefault
-          ? i18nT('components.chatInput.agent_inherited_default', { name: agentName })
-          : i18nT('components.chatInput.agent', { name: agentName })}
+      title={cycleLine ? `${label}\n${cycleLine}` : label}
+      aria-label={label}
+      aria-keyshortcuts={!isRunning && nextHint ? nextHint.ariaKeyshortcuts : undefined}
     >
       <Bot size={13} className="shrink-0 opacity-70" />
       {!shelfCompact && <span className="truncate max-w-[160px]">{agentLabel ?? agentName}</span>}

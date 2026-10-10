@@ -2034,6 +2034,8 @@
       "drop_to_attach": "Drop to attach",
       "agent": "Agent: {{name}}",
       "agent_inherited_default": "This session follows the default agent ({{name}}). It has no agent of its own, so it changes if the default does. Click to pin one.",
+      "agent_cycle_hint": "Next agent: Alt+Shift+A · Previous: Alt+Shift+Z",
+      "agent_cycle_hint_mac": "Next agent: ⌥⇧A · Previous: ⌥⇧Z",
       "model_inherited_default": "This session runs on the default model ({{name}}). It has no model of its own, so it changes if the default does. Click to pin one.",
       "approve_sub_agent": "Approve sub-agent: {{name}}",
       "branch": "Branch: {{branch}}",

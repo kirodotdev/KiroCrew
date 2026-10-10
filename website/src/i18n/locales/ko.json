@@ -6201,6 +6201,8 @@
       "session_control_ready": "준비됨",
       "session_control_chip_label": "{{label}} — {{detail}}",
       "agent_inherited_default": "이 세션은 기본 에이전트({{name}})를 따릅니다. 자체 에이전트가 없어 기본값이 바뀌면 함께 바뀝니다. 고정하려면 클릭하세요.",
+      "agent_cycle_hint": "다음 에이전트: Alt+Shift+A · 이전: Alt+Shift+Z",
+      "agent_cycle_hint_mac": "다음 에이전트: ⌥⇧A · 이전: ⌥⇧Z",
       "compacting_context_stop_unavailable": "컨텍스트 압축 중 — 완료될 때까지 중지할 수 없습니다",
       "click_again_to_force_stop_resets_session": "다시 클릭하면 강제 중지됩니다 (세션이 재시작됩니다. 메시지는 남고 에이전트는 최근 발췌를 유지합니다)",
       "model_inherited_default": "이 세션은 기본 모델({{name}})로 실행됩니다. 자체 모델이 없어 기본값이 바뀌면 함께 바뀝니다. 고정하려면 클릭하세요.",

@@ -125,7 +125,7 @@ async function keyboardCloses(anchor: ReturnType<typeof anchorChip>, nextY: numb
 describe('ChatPane composer pickers follow their chip while open (#10616)', () => {
   it('agent picker remeasures when the visual viewport changes', async () => {
     renderPane('pane-1')
-    const chip = await waitFor(() => screen.getByTitle('Agent: default'))
+    const chip = await waitFor(() => screen.getByTitle(/^Agent: default(?:\s|$)/))
     const anchor = anchorChip(chip, 600)
 
     await act(async () => { fireEvent.click(chip) })

@@ -6201,6 +6201,8 @@
       "session_control_ready": "準備完了",
       "session_control_chip_label": "{{label}} — {{detail}}",
       "agent_inherited_default": "このセッションはデフォルトエージェント（{{name}}）に従います。独自のエージェントを持たないため、デフォルトが変わると変わります。固定するにはクリックしてください。",
+      "agent_cycle_hint": "次のエージェント: Alt+Shift+A · 前へ: Alt+Shift+Z",
+      "agent_cycle_hint_mac": "次のエージェント: ⌥⇧A · 前へ: ⌥⇧Z",
       "compacting_context_stop_unavailable": "コンテキストを圧縮中 — 完了するまで停止できません",
       "click_again_to_force_stop_resets_session": "もう一度クリックして強制停止（セッションを再起動します。メッセージは残り、エージェントは最近の抜粋を保持します）",
       "model_inherited_default": "このセッションはデフォルトモデル（{{name}}）で動作します。独自のモデルを持たないため、デフォルトが変わると変わります。固定するにはクリックしてください。",
