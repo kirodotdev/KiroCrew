@@ -17948,7 +17948,13 @@
       "dashboard_render_error": "Nao foi possivel desenhar este painel.",
       "dashboard_frame_title": "Painel de {{crew}}",
       "dashboard_rendering": "Desenhando o painel…",
-      "back_to_roster": "Voltar aos colegas"
+      "back_to_roster": "Voltar aos colegas",
+      "dashboard_lock_page": "Bloquear painel",
+      "dashboard_unlock_page": "Desbloquear painel",
+      "dashboard_lock_hint": "Bloqueie este painel para que este membro não o substitua por outro layout nem restaure um anterior.",
+      "dashboard_locked_status": "Bloqueado: este membro ainda pode atualizar os valores exibidos, mas não pode mudar nem restaurar o layout.",
+      "dashboard_lock_failed": "Não foi possível bloquear o painel. Ele continua desbloqueado. Tente novamente.",
+      "dashboard_unlock_failed": "Não foi possível desbloquear o painel. Ele continua bloqueado. Tente novamente."
     },
     "tasksCapacityCard": {
       "title": "Tarefas e capacidade",

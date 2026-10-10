@@ -1872,6 +1872,10 @@ def _instance_refusal(exc: Exception) -> web.Response:
     """
     from kiro_crew.dashboard_templates import instance as instance_store
 
+    if isinstance(exc, instance_store.InstanceLocked):
+        # Its own code: the agent's next step is to ask the person, not to retry or
+        # change its arguments, and a client can only tell that apart by the code.
+        return web.json_response({"error": str(exc), "code": "dashboard_locked"}, status=423)
     if isinstance(exc, instance_store.InstanceRefused):
         return web.json_response({"error": str(exc), "code": "refused"}, status=400)
     logger.warning("a dashboard instance call failed", exc_info=True)

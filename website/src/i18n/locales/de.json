@@ -17690,7 +17690,13 @@
       "dashboard_render_error": "Dieses Dashboard konnte nicht gezeichnet werden.",
       "dashboard_frame_title": "Dashboard von {{crew}}",
       "dashboard_rendering": "Dashboard wird gezeichnet…",
-      "back_to_roster": "Zurück zu den Crewmates"
+      "back_to_roster": "Zurück zu den Crewmates",
+      "dashboard_lock_page": "Dashboard sperren",
+      "dashboard_unlock_page": "Dashboard entsperren",
+      "dashboard_lock_hint": "Sperre dieses Dashboard, damit dieses Crewmitglied es nicht durch ein anderes Layout ersetzt oder ein älteres wiederherstellt.",
+      "dashboard_locked_status": "Gesperrt: Dieses Crewmitglied kann die angezeigten Werte weiter aktualisieren, aber das Layout nicht ändern oder wiederherstellen.",
+      "dashboard_lock_failed": "Das Dashboard konnte nicht gesperrt werden und bleibt entsperrt. Versuche es erneut.",
+      "dashboard_unlock_failed": "Das Dashboard konnte nicht entsperrt werden und bleibt gesperrt. Versuche es erneut."
     },
     "tasksCapacityCard": {
       "title": "Aufgaben & Kapazität",

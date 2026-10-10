@@ -17432,7 +17432,13 @@
       "dashboard_render_error": "이 대시보드를 그릴 수 없습니다.",
       "dashboard_frame_title": "{{crew}}의 대시보드",
       "dashboard_rendering": "대시보드 그리는 중…",
-      "back_to_roster": "크루메이트 목록으로"
+      "back_to_roster": "크루메이트 목록으로",
+      "dashboard_lock_page": "대시보드 잠금",
+      "dashboard_unlock_page": "대시보드 잠금 해제",
+      "dashboard_lock_hint": "잠그면 이 크루메이트가 이 대시보드를 다른 레이아웃으로 바꾸거나 이전 것으로 되돌릴 수 없습니다.",
+      "dashboard_locked_status": "잠김: 이 크루메이트는 표시된 값은 계속 새로 고치지만 레이아웃을 바꾸거나 되돌릴 수는 없습니다.",
+      "dashboard_lock_failed": "대시보드를 잠그지 못했습니다. 아직 잠기지 않았습니다. 다시 시도하세요.",
+      "dashboard_unlock_failed": "대시보드 잠금을 해제하지 못했습니다. 아직 잠겨 있습니다. 다시 시도하세요."
     },
     "tasksCapacityCard": {
       "title": "작업 및 용량",

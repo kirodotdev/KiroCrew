@@ -7719,7 +7719,13 @@
       "dashboard_unavailable": "This dashboard could not be loaded.",
       "dashboard_render_error": "This dashboard could not be drawn.",
       "dashboard_frame_title": "Dashboard for {{crew}}",
-      "dashboard_rendering": "Drawing the dashboard…"
+      "dashboard_rendering": "Drawing the dashboard…",
+      "dashboard_lock_page": "Lock dashboard",
+      "dashboard_unlock_page": "Unlock dashboard",
+      "dashboard_lock_hint": "Lock this dashboard so this crewmate can't replace it with a different layout or restore an older one.",
+      "dashboard_locked_status": "Locked: this crewmate can still refresh the values shown, but can't change or restore the layout.",
+      "dashboard_lock_failed": "Couldn't lock the dashboard. It's still unlocked. Try again.",
+      "dashboard_unlock_failed": "Couldn't unlock the dashboard. It's still locked. Try again."
     },
     "migrationPage": {
       "app_migration": "App Migration",

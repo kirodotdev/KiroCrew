@@ -286,7 +286,14 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, sessio
         rendered_html?: string
         manifest: DashboardManifest
         state: 'empty' | 'live' | 'stale' | 'error'
+        /** The person's layout lock: while true the crewmate cannot apply or roll back a page. */
+        structure_locked?: boolean
       } | null>,
+    // Set or clear that lock. Owner-only on the gateway, and refused to an agent's
+    // internal-secret caller: only the person, from this tab, can move it.
+    memberDashboardLock: (slug: string, member: string, locked: boolean) =>
+      post('/api/members/' + encodeURIComponent(slug) + '/dashboard/lock?member=' + encodeURIComponent(member), { locked })
+        .then(j) as Promise<{ ok: boolean; structure_locked: boolean }>,
     // The crewmate's self-maintained briefing markdown. Read-only from the UI
     // (no editor: the file is agent-written and edited where the crewmate keeps
     // it). `member` is the exact crew name (slugs are lossy).
