@@ -310,6 +310,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     TURN_END_WIRE_CLS,
     ResetCause,
     _append_compaction_notice,
+    _append_recap_notice,
     _apply_incognito_prefix,
     _broadcast_auto_tool,
     _broadcast_compaction_result,
@@ -6109,7 +6110,7 @@ async def _spawn_admitted_prefetch(
         # get_or_create's docstring.
         _requested_model = slot.model or agent_model or default_model or ""
         try:
-            _, is_new, resumed = await sessions.get_or_create(
+            provider, is_new, resumed = await sessions.get_or_create(
                 session_key,
                 agent=kiro_agent or slot.agent or None,
                 # Canonical crew identity — the resolver's alias, which
@@ -6199,6 +6200,7 @@ async def _spawn_admitted_prefetch(
     )
     if allow_resume and resumed:
         _schedule_prefetch_ttl(state, slot, session_key)
+        _surface_resume_recap(state, slot, provider)
     # Fresh and resumed sessions alike count against the live-
     # population cap: without this, sequential slot signals (create,
     # agent/project set) stack one unclaimed agent process per slot
@@ -6216,6 +6218,20 @@ async def _spawn_admitted_prefetch(
     # claimable fallback session ever exists — a real turn queued
     # during the load would otherwise claim it and strand its
     # exchanges behind the preserved old sid.
+
+
+def _surface_resume_recap(state: "DashboardState", slot: "_ChatSlot", provider: Any) -> None:
+    """Show the recap KAS replayed during a resume prefetch, before any new prompt.
+
+    This prefetch is the recap's only surface. Skipped while a turn owns the
+    slot: that turn's message is already in the transcript, so the recap is
+    not shown at all (it stays parked and the runtime drops it later).
+    """
+    if slot.running:
+        return
+    recap = provider.take_session_recap()
+    if isinstance(recap, str) and recap:
+        _append_recap_notice(state, slot, recap)
 
 
 def _schedule_prefetch_ttl(state: "DashboardState", slot: "_ChatSlot", session_key: str) -> None:

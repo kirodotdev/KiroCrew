@@ -148,6 +148,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("chat_runner.py", "_drain_parked_queues"),
                 ("chat_runner.py", "_eager_spawn"),
                 ("chat_runner.py", "_prefetch_ttl"),
+                # The resume prefetch shows the KAS recap only while no turn has
+                # been admitted: a dispatched message is already in the transcript.
+                ("chat_runner.py", "_surface_resume_recap"),
                 ("handlers/autonudge.py", "api_autonudge_fire"),
                 ("handlers/mcp_apps.py", "api_mcp_apps_message"),
                 ("handlers/members.py", "api_member_thread"),

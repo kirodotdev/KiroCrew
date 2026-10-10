@@ -1131,6 +1131,86 @@ class TestResumePrefetchWiring:
         assert getattr(slot, "_prefetch_ttl_task", None) is None
 
     @pytest.mark.asyncio
+    async def test_resumed_prefetch_shows_the_recap_before_any_prompt(self):
+        """The recap KAS replayed during the speculative load lands in the
+        transcript now, while the user has not typed anything yet."""
+        slot = _ChatSlot("t1")
+        state = _mock_state(slot)
+        provider = MagicMock()
+        provider.take_session_recap = MagicMock(return_value="Goal: X. Next: Y.")
+        state.sessions.get_or_create = AsyncMock(return_value=(provider, True, True))
+        with (
+            patch.object(chat_runner.KiroCrewConfig, "load", _native_resume_cfg()),
+            patch.object(chat_runner, "_append_recap_notice") as notice,
+        ):
+            await chat_runner._eager_spawn(state, slot, allow_resume=True)
+        notice.assert_called_once_with(state, slot, "Goal: X. Next: Y.")
+        slot._prefetch_ttl_task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_a_turn_that_owns_the_slot_keeps_the_recap_parked(self):
+        """A message sent during the load is already in the transcript; the
+        recap stays parked so that turn shows it at its start instead."""
+        slot = _ChatSlot("t1")
+        state = _mock_state(slot)
+        provider = MagicMock()
+        provider.take_session_recap = MagicMock(return_value="Goal: X. Next: Y.")
+        # slot.running derives from slot.task being a live task.
+        _turn = asyncio.get_running_loop().create_future()
+        _task = asyncio.ensure_future(_turn)
+
+        async def _claim(*_a, **_kw):
+            slot.task = _task  # the user's message started a turn mid-load
+            return (provider, True, True)
+
+        state.sessions.get_or_create = AsyncMock(side_effect=_claim)
+        try:
+            with (
+                patch.object(chat_runner.KiroCrewConfig, "load", _native_resume_cfg()),
+                patch.object(chat_runner, "_append_recap_notice") as notice,
+            ):
+                await chat_runner._eager_spawn(state, slot, allow_resume=True)
+        finally:
+            _turn.set_result(None)
+            await _task
+        state.sessions.get_or_create.assert_awaited_once()
+        assert (
+            getattr(slot, "_prefetch_ttl_task", None) is not None
+        ), "the resumed path was not reached"
+        slot._prefetch_ttl_task.cancel()
+        notice.assert_not_called()
+        provider.take_session_recap.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_recap_shows_nothing(self):
+        slot = _ChatSlot("t1")
+        state = _mock_state(slot)
+        provider = MagicMock()
+        provider.take_session_recap = MagicMock(return_value=None)
+        state.sessions.get_or_create = AsyncMock(return_value=(provider, True, True))
+        with (
+            patch.object(chat_runner.KiroCrewConfig, "load", _native_resume_cfg()),
+            patch.object(chat_runner, "_append_recap_notice") as notice,
+        ):
+            await chat_runner._eager_spawn(state, slot, allow_resume=True)
+        notice.assert_not_called()
+        slot._prefetch_ttl_task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_a_fresh_prefetch_never_reads_a_recap(self):
+        slot = _ChatSlot("t1")
+        state = _mock_state(slot)
+        provider = MagicMock()
+        state.sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
+        with (
+            patch.object(chat_runner.KiroCrewConfig, "load", _native_resume_cfg()),
+            patch.object(chat_runner, "_append_recap_notice") as notice,
+        ):
+            await chat_runner._eager_spawn(state, slot, allow_resume=True)
+        provider.take_session_recap.assert_not_called()
+        notice.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_prefetch_ttl_removes_unclaimed_session(self, monkeypatch):
         monkeypatch.setattr(chat_runner, "_RESUME_PREFETCH_TTL_SECS", 0)
         slot = _ChatSlot("t1")

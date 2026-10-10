@@ -1403,6 +1403,22 @@ class AgentConfig:
             "default.",
         ),
     )
+    session_recap: bool = field(
+        default=False,
+        metadata=_meta(
+            "Session Recap",
+            "Show a short recap of where a KAS chat left off when you reopen it "
+            "in the dashboard. KAS receives the opt-in in the ACP initialize "
+            "request and then generates a recap after every turn, one extra "
+            "model call per turn on every KAS session, although only a reopened "
+            "dashboard chat shows the recap. The recap appears before your first "
+            "new message when the reopened chat's session is prefetched, which "
+            "needs session.eager_spawn (on by default); without that prefetch it "
+            "is not shown. "
+            "Applies to KAS sessions started after the change. "
+            "No effect on any other ACP backend.",
+        ),
+    )
     session_sharing: bool = field(
         default=True,
         metadata=_meta(

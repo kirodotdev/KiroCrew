@@ -505,7 +505,9 @@ class TestKasInvocation:
         finally:
             await runtime.kill()
 
-    async def _handshake_settings(self, tmp_path, monkeypatch, *, tools, tool_search):
+    async def _handshake_settings(
+        self, tmp_path, monkeypatch, *, tools, tool_search, session_recap=False
+    ):
         """Spawn the stub with ``kirocrew``'s spec granting *tools* and return the
         ``_meta.kiro.settings`` the stub saw on ``initialize``."""
         spec = {**_STUB_AGENT_SPEC, "tools": tools}
@@ -525,6 +527,7 @@ class TestKasInvocation:
             sandbox_mode="off",
             acp_backend=ACP_BACKEND_KAS,
             tool_search=tool_search,
+            session_recap=session_recap,
         )
         try:
             await runtime.spawn()
@@ -607,6 +610,35 @@ class TestKasInvocation:
             tmp_path, monkeypatch, tools=["fs_read", "tool_search"], tool_search=None
         )
         assert settings == {}
+
+    @pytest.mark.asyncio
+    async def test_the_session_recap_opt_in_rides_the_handshake(
+        self, kas_stub, tmp_path, monkeypatch
+    ):
+        """``agent.session_recap`` on: KAS generates recaps only when the
+        initialize settings carry ``sessionRecap.enabled``, so the handshake
+        must carry it, and nothing else changes."""
+        settings = await self._handshake_settings(
+            tmp_path, monkeypatch, tools=["fs_read"], tool_search=None, session_recap=True
+        )
+        assert settings == {"sessionRecap": {"enabled": True}}
+
+    @pytest.mark.asyncio
+    async def test_the_session_recap_opt_in_sits_beside_tool_search(
+        self, kas_stub, tmp_path, monkeypatch
+    ):
+        settings = await self._handshake_settings(
+            tmp_path,
+            monkeypatch,
+            tools=["fs_read", "tool_search"],
+            tool_search=ToolSearchSettings(True, 5, 50_000),
+            session_recap=True,
+        )
+        assert settings == {
+            "sessionRecap": {"enabled": True},
+            "toolSearch": {"enabled": True, "minPct": 5, "minTokens": 50_000},
+        }
+        assert KAS_CLIENT_CAPABILITIES["_meta"]["kiro"]["settings"] == {}
 
     @pytest.mark.asyncio
     async def test_crew_owned_spawn_answers_the_credential_callback_before_initialize(

@@ -359,6 +359,92 @@ def test_session_info_unhandled_kind_is_dropped() -> None:
     assert events == []
 
 
+# ── recap text normalization (the runtime's load-window slot) ────────────────
+
+
+def _recap_update(text: object) -> dict:
+    return {"sessionUpdate": "session_info_update", "_meta": {"kiro": {"kind": "recap", "text": text}}}
+
+
+def test_recap_text_is_kept_as_sent() -> None:
+    from kiro_crew.acp.session_handle import _normalize_kas_recap_text
+
+    text = "Goal: X. Task: Y. Next: Z."
+    assert _normalize_kas_recap_text(_recap_update(text)) == text
+
+
+def test_recap_text_is_redacted() -> None:
+    # Backend-echoed, LLM-influenced text must pass the same scrub as the
+    # summarization/steering kinds before reaching any surface.
+    from kiro_crew.acp.session_handle import _normalize_kas_recap_text
+
+    out = _normalize_kas_recap_text(_recap_update("resume; found key AKIAIOSFODNN7EXAMPLE in output"))
+    assert out.startswith("resume;")
+    assert "AKIAIOSFODNN7EXAMPLE" not in out
+
+
+def test_recap_empty_or_non_string_text_is_dropped() -> None:
+    from kiro_crew.acp.session_handle import _normalize_kas_recap_text
+
+    for text in ("", "   ", None, 7, {"unexpected": "shape"}):
+        assert _normalize_kas_recap_text(_recap_update(text)) == ""
+
+
+def test_a_non_recap_kind_yields_no_recap_text() -> None:
+    from kiro_crew.acp.session_handle import _normalize_kas_recap_text
+
+    update = {"sessionUpdate": "session_info_update", "_meta": {"kiro": {"kind": "focus_update", "text": "x"}}}
+    assert _normalize_kas_recap_text(update) == ""
+
+
+def test_recap_over_redaction_bound_is_dropped() -> None:
+    from kiro_crew.acp.session_handle import (
+        _RECAP_REDACT_INPUT_MAX_CHARS,
+        _normalize_kas_recap_text,
+    )
+
+    secret = "AKIAIOSFODNN7EXAMPLE"
+    prefix = "x" * (_RECAP_REDACT_INPUT_MAX_CHARS - len(secret) // 2)
+    credential_crossing_bound = prefix + secret + "y"
+    for text in ("x" * (_RECAP_REDACT_INPUT_MAX_CHARS + 1), credential_crossing_bound):
+        assert _normalize_kas_recap_text(_recap_update(text)) == ""
+
+
+def test_recap_text_is_bounded_before_retention() -> None:
+    # Backend-supplied recap text is persisted per transcript row, so an
+    # accepted value is capped before the runtime parks it.
+    from kiro_crew.acp.session_handle import (
+        _RECAP_MAX_CHARS,
+        _RECAP_REDACT_INPUT_MAX_CHARS,
+        _normalize_kas_recap_text,
+    )
+
+    accepted_length = min(_RECAP_MAX_CHARS * 2, _RECAP_REDACT_INPUT_MAX_CHARS)
+    out = _normalize_kas_recap_text(_recap_update("x" * accepted_length))
+    assert len(out) == _RECAP_MAX_CHARS
+
+
+def test_recap_is_redacted_before_the_retention_cap() -> None:
+    from kiro_crew.acp.session_handle import (
+        _RECAP_MAX_CHARS,
+        _RECAP_REDACT_INPUT_MAX_CHARS,
+        _normalize_kas_recap_text,
+    )
+
+    secret = "AKIAIOSFODNN7EXAMPLE"
+    prefix = "x" * (_RECAP_MAX_CHARS - len(secret) // 2)
+    text = (prefix + secret + ("y" * _RECAP_REDACT_INPUT_MAX_CHARS))[
+        :_RECAP_REDACT_INPUT_MAX_CHARS
+    ]
+
+    out = _normalize_kas_recap_text(_recap_update(text))
+
+    assert out
+    assert len(out) <= _RECAP_MAX_CHARS
+    for fragment in ("AKIA", "IOSF", "ODNN", "7EXA", "MPLE"):
+        assert fragment not in out
+
+
 # ── available_commands_update → recognized-and-dropped ───────────────────────
 
 

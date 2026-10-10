@@ -25,6 +25,7 @@ def _bare_runtime(pid: int = 54321) -> rt.AcpRuntime:
     r._dead = False
     r._pending_requests = {}
     r._pending_init_notifications = deque()
+    r._kas_load_recaps = {}
     r._routed_requests = {}
     r._session_queues = {}
     r._stderr_lines = []

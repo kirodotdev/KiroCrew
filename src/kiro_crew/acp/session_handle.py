@@ -584,6 +584,27 @@ _COMMAND_TURN_TIMEOUT_SECS = 60.0
 # the real post-compaction contextUsagePercentage ~1s after the completed
 # status (live-probe confirmed). Mirrors AcpClient's constant.
 _POST_COMPACTION_METADATA_GRACE_SECS = 5.0
+# Maximum backend-supplied recap text the redactor accepts. Wrong-typed or
+# longer values are dropped whole so a pre-redaction cut cannot split a
+# credential into an unrecognizable fragment.
+_RECAP_REDACT_INPUT_MAX_CHARS = 4096
+# Maximum backend-supplied recap text retained in a frame, event, or transcript.
+_RECAP_MAX_CHARS = 1200
+
+
+def _normalize_kas_recap_text(update: object) -> str:
+    """Return redacted, bounded text from a KAS recap update."""
+    if not isinstance(update, dict):
+        return ""
+    kiro = kas_wire.kiro_meta(update)
+    if kiro is None or kiro.get(kas_wire.FIELD_KIND) != kas_wire.KIND_RECAP:
+        return ""
+    text = kiro.get(kas_wire.FIELD_TEXT)
+    if not isinstance(text, str) or len(text) > _RECAP_REDACT_INPUT_MAX_CHARS:
+        return ""
+    return redact_text(text)[:_RECAP_MAX_CHARS].strip()
+
+
 # MCP-server-init drain (parity with AcpClient._drain_notifications): after
 # set_mode, briefly consume the session queue so MCP-init/oauth/config frames
 # are processed before the first prompt, instead of racing into the first turn.
@@ -976,6 +997,10 @@ class AcpRuntimeProtocol(Protocol):
     def begin_mcp_sign_in(self, session_id: str, server_name: str) -> bool: ...
 
     def mcp_sign_in_holds(self, session_id: str, server_name: str) -> bool: ...
+
+    def take_kas_load_recap(self, session_id: str) -> str | None:
+        """Pop recap text captured before session/load registered its queue."""
+        ...
 
     def unregister_session(self, session_id: str) -> None: ...
 
@@ -1908,6 +1933,12 @@ class AcpSessionHandle:
                 # covered by the WARNING + SEL record.
                 if _stale_sid and _stale_sid != self._session_id:
                     self._pending_reject_notices.append((_stale_sid, str(_stale_title)))
+            elif stale is not None and self._is_kas_recap_frame(stale):
+                # With the opt-in on, KAS sends a recap after every turn, so one
+                # waits here by design. It is dropped without counting toward
+                # the leftover warning below. Only the recap KAS replays during
+                # session/load is shown, from the runtime's load slot.
+                logger.debug("pre-turn drain: dropped a post-turn KAS recap")
             else:
                 # Everything that is not a permission request is DISCARDED, which
                 # is correct (it belongs to a turn nobody is reading any more) but
@@ -6463,6 +6494,26 @@ class AcpSessionHandle:
         # nothing to render and no separate branch is needed.
         return None
 
+    def take_session_recap(self) -> str | None:
+        """Pop the recap KAS replayed while this session loaded, or ``None``.
+
+        The runtime's reader parks it during ``session/load``. The dashboard's
+        resume prefetch is its only reader and shows it before the user types.
+        A recap no prefetch takes is never shown: it stays parked until the
+        runtime drops it (``unregister_session``, slot eviction, or death).
+        """
+        if self._runtime.acp_backend == ACP_BACKEND_KAS:
+            return self._runtime.take_kas_load_recap(self._session_id)
+        return None
+
+    def _is_kas_recap_frame(self, msg: "JsonRpcMessage | None") -> bool:
+        """True for a session/update notification carrying a KAS recap union."""
+        if msg is None:
+            return False
+        if self._runtime.acp_backend == ACP_BACKEND_KAS:
+            return kas_wire.is_recap_update(msg.params)
+        return False
+
     def _handle_kas_session_info(self, update: dict) -> list[AcpEvent]:
         """Map a KAS ``session_info_update`` (``_meta.kiro`` union) to events.
 
@@ -6539,6 +6590,9 @@ class AcpSessionHandle:
                 else EVENT_STEER_QUEUED
             )
             return [AcpEvent(kind=steer_kind, text=text)]
+        # ``recap`` lands here too and is dropped: only the recap KAS replays
+        # during session/load is shown, and the runtime parks that one before
+        # any turn exists.
         return []
 
     def _handle_kas_subagent(self, update: dict) -> list[AcpEvent] | None:

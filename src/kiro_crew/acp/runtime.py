@@ -32,7 +32,7 @@ from types import ModuleType
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, NamedTuple, TypeVar
 
 from kiro_crew import acp_tool_gate, agent_scratch, platform_compat, runtime_death
-from kiro_crew.acp import runtime_process_tree, runtime_start
+from kiro_crew.acp import kas_wire, runtime_process_tree, runtime_start
 from kiro_crew.acp._dispatch import (
     agent_version_from_init,
     attach_kas_custom_agents,
@@ -106,6 +106,7 @@ from kiro_crew.acp.session_handle import (
     AcpRuntimeProtocol,
     AcpSessionHandle,
     _load_watchdog_settings,
+    _normalize_kas_recap_text,
     advertised_models_from_session,
 )
 from kiro_crew.acp.session_mcp import (
@@ -151,6 +152,7 @@ from kiro_crew.acp.types import (
     METHOD_REQUEST_PERMISSION,
     METHOD_SESSION_LOAD,
     METHOD_SESSION_NEW,
+    METHOD_SESSION_UPDATE,
     METHOD_SET_MODE,
     JsonRpcMessage,
     JsonRpcRequest,
@@ -1065,6 +1067,7 @@ class AcpRuntime:
         memory_mode: str = "persistent",
         tool_search: ToolSearchSettings | None = None,
         shared_scratch: Path | None = None,
+        session_recap: bool = False,
     ):
         if work_dir:
             self._work_dir = Path(work_dir)
@@ -1089,6 +1092,10 @@ class AcpRuntime:
         # setting it inherits (see create_session).
         self._tool_search = tool_search
         self._tool_search_wire: dict[str, Any] = {}
+        # The operator's session-recap opt-in (``agent.session_recap``), sent on
+        # the same settings channel. Process-wide: every session this process
+        # serves gets KAS's per-turn recap once the handshake carries it.
+        self._session_recap = session_recap
         # Resolved on FIRST USE, never here: ``ACP_BACKENDS_KNOWN`` admits
         # backends the shared-process runtime has no harness for, and provider
         # safety constructs a runtime for every one of them to prove the reader
@@ -1247,6 +1254,11 @@ class AcpRuntime:
         self._pending_init_notifications: deque[JsonRpcMessage] = deque(
             maxlen=_INIT_NOTIFICATION_BUFFER_LIMIT
         )
+        # KAS session/load recaps arrive before a session queue exists. Keep
+        # normalized text outside the init-frame buffer so load_session keeps
+        # its unconditional queue-transfer path. The reader is the only
+        # inserter; turn and lifecycle paths only pop or clear entries.
+        self._kas_load_recaps: dict[str, str] = {}
         self._next_id = 1
         self._initialized = False
         # Whether kiro-cli advertised session/load support in its initialize
@@ -4144,6 +4156,25 @@ class AcpRuntime:
                         or self._start_collectors
                     ):
                         self._stage_init_frame(msg)
+                    elif (
+                        self._session_inits_in_flight
+                        and self._acp_backend == ACP_BACKEND_KAS
+                        and isinstance(session_id, str)
+                        and len(session_id) <= MAX_ACP_SESSION_ID_LEN
+                        and msg.is_method(METHOD_SESSION_UPDATE)
+                        and kas_wire.is_recap_update(msg.params)
+                    ):
+                        _params = msg.params if isinstance(msg.params, dict) else {}
+                        _update = _params.get("update")
+                        _recap_text = _normalize_kas_recap_text(_update)
+                        if _recap_text:
+                            # Reinsert a repeated id so it becomes the newest entry.
+                            self._kas_load_recaps.pop(session_id, None)
+                            self._kas_load_recaps[session_id] = _recap_text
+                            if len(self._kas_load_recaps) > _INIT_NOTIFICATION_BUFFER_LIMIT:
+                                _evicted_session_id = next(iter(self._kas_load_recaps))
+                                self._kas_load_recaps.pop(_evicted_session_id)
+                                self._note_dropped_frame(_evicted_session_id, METHOD_SESSION_UPDATE)
                     else:
                         # Counted, not logged per frame: this is the measured
                         # flood (transcript replay during session/load, plus any
@@ -4834,6 +4865,7 @@ class AcpRuntime:
                 future.set_exception(exc)
         self._pending_requests.clear()
         self._pending_init_notifications.clear()
+        self._kas_load_recaps.clear()
         # Also drop routed-request correlations: on death no reader will pop
         # them, and if a session is never destroyed the entry would otherwise
         # linger. unregister_session() also sweeps these per-session; this is
@@ -5412,9 +5444,14 @@ class AcpRuntime:
             self._mark_dead(f"pipe broken: {exc}")
             raise AcpRuntimeDead(f"pipe broken: {exc}") from exc
 
+    def take_kas_load_recap(self, session_id: str) -> str | None:
+        """Pop the normalized recap parked during KAS session/load."""
+        return self._kas_load_recaps.pop(session_id, None)
+
     def unregister_session(self, session_id: str) -> None:
         """Unregister a session queue (called by AcpSessionHandle.destroy)."""
         self._session_queues.pop(session_id, None)
+        self._kas_load_recaps.pop(session_id, None)
         # Clean up any pending routed requests for this session
         stale = [k for k, v in self._routed_requests.items() if v == session_id]
         for k in stale:
@@ -6209,8 +6246,9 @@ class AcpRuntime:
 
         The harness declares the shape; this fills ``_meta.kiro.settings`` ONLY
         for a host that reads it (``client_meta_settings``) and only with values
-        the operator threaded in. Today that is MCP Tool Search, and the value
-        sent is gated on the spawn agent's spec granting the ``tool_search``
+        the operator threaded in. Today those are the session recap
+        (``agent.session_recap``, sent only when on) and MCP Tool Search, whose
+        value is gated on the spawn agent's spec granting the ``tool_search``
         loader: KAS defers every MCP spec when told to and never checks that a
         loader is mounted, so a spec without the grant would run with its MCP
         tools deferred and no way to load one. ``enabled`` therefore goes out as
@@ -6224,6 +6262,13 @@ class AcpRuntime:
         An unreadable spec grants nothing (fail closed: ``enabled: false``).
         """
         base = self._harness.client_capabilities
+        recap = kas_wire.session_recap_settings(self._session_recap)
+        if recap:
+            base = with_client_meta_settings(base, recap)
+            logger.info(
+                "AcpRuntime handshake: session recap enabled for agent=%s",
+                self._agent or "<none>",
+            )
         if self._tool_search is None:
             return base
         spec = await asyncio.to_thread(self._projected_spawn_spec)

@@ -3127,6 +3127,7 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         tool_search=bool(section.get("tool_search")),
         tool_search_min_pct=section.read("tool_search_min_pct", _safe_int),
         tool_search_min_tokens=section.read("tool_search_min_tokens", _safe_int),
+        session_recap=bool(section.get("session_recap")),
         session_sharing=bool(section.get("session_sharing")),
         max_subagents=section.read("max_subagents", _safe_int, 0, SUBAGENT_AUTO_MAX_CEILING),
         max_stop_hook_nudges=section.read("max_stop_hook_nudges", _safe_int, 0),
@@ -4668,6 +4669,7 @@ class KiroCrewConfig:
         tool_search = self.agent.tool_search
         tool_search_min_pct = self.agent.tool_search_min_pct
         tool_search_min_tokens = self.agent.tool_search_min_tokens
+        session_recap = self.agent.session_recap
 
         # MCP gateway: resolve overlay + socket once, iff some server is stubbed
         # through the gateway. Routing is what puts a stub in the path, and the
@@ -4843,6 +4845,7 @@ class KiroCrewConfig:
                 tool_search=tool_search,
                 tool_search_min_pct=tool_search_min_pct,
                 tool_search_min_tokens=tool_search_min_tokens,
+                session_recap=session_recap,
                 mcp_gateway_overlay=_gw_overlay,
                 mcp_gateway_socket=_gw_socket,
                 permission_mode=resolve_cc_permission_mode(permission_mode, _backend),

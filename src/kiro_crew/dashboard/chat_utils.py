@@ -654,6 +654,38 @@ def _append_compaction_notice(state: DashboardState, slot: _ChatSlot, msg_text: 
     append_and_surface(state, slot, "assistant", msg_text, "msg msg-a", meta=meta)
 
 
+def _append_recap_notice(state: DashboardState, slot: _ChatSlot, recap_text: str) -> None:
+    """Append a session-recap notice as an assistant status row and broadcast it.
+
+    Mirrors ``_append_compaction_notice``: ``kind="recap"`` in ``meta``, which
+    both the history reload and the live websocket frame carry, so the
+    dashboard renders it as a muted system notice rather than a real assistant
+    turn, and ``deriveFollowUpOptions`` skips over it the same way it skips
+    compaction notices.
+
+    Single chokepoint for the recap surface: the resume prefetch
+    (``chat_runner._surface_resume_recap``) is its only caller. Defense-in-depth:
+    the runtime's normalizer already redacts, but this chokepoint posts to an
+    external surface, so the redaction is reapplied — both passes are idempotent.
+    """
+    recap_text, _ = redact_credentials(recap_text)
+    recap_text, _ = redact_exfiltration_urls(recap_text)
+    recap_text = recap_text.strip()
+    if not recap_text:
+        return
+    # Backend-composed English line, matching the compaction-notice family
+    # (those are backend strings too) — no per-kind frontend label surface.
+    # No leading glyph: ``kind="recap"`` renders through NoticeCard, which
+    # paints its own Lucide icon, so an emoji here would sit beside it as a
+    # second status indicator (AUTOSDE no-emoji-as-icons). The label names the
+    # past: the row lands at the tail of the reopened transcript, so it reads as
+    # a summary of the turns above it, where an unanchored "Next: X" would read
+    # as a plan.
+    msg_text = f"Where you left off: {recap_text}"
+    meta = {"kind": "recap"}
+    append_and_surface(state, slot, "assistant", msg_text, "msg msg-a", meta=meta)
+
+
 def _broadcast_compaction_result(
     state: DashboardState, slot: _ChatSlot, event: "LLMEvent"
 ) -> str | None:

@@ -46,6 +46,7 @@
         "tool_search": true,
         "tool_search_min_pct": 5,
         "tool_search_min_tokens": 50000,
+        "session_recap": false,
         "session_sharing": true,
         "max_subagents": 0,
         "max_stop_hook_nudges": 100,
@@ -669,6 +670,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 50000
+    },
+    {
+      "path": "agent.session_recap",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Session Recap",
+      "help": "Show a short recap of where a KAS chat left off when you reopen it in the dashboard. KAS receives the opt-in in the ACP initialize request and then generates a recap after every turn, one extra model call per turn on every KAS session, although only a reopened dashboard chat shows the recap. The recap appears before your first new message when the reopened chat's session is prefetched, which needs session.eager_spawn (on by default); without that prefetch it is not shown. Applies to KAS sessions started after the change. No effect on any other ACP backend.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "agent.session_sharing",

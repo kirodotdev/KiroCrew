@@ -414,6 +414,11 @@ class AcpSessionProvider(LLMProvider):
         value = getattr(self._handle, "kas_projected_agent", "")
         return value if isinstance(value, str) else ""
 
+    def take_session_recap(self) -> str | None:
+        """See ``AcpSessionHandle.take_session_recap``."""
+        recap = self._handle.take_session_recap()
+        return recap if isinstance(recap, str) and recap else None
+
     @property
     def work_scratch_dir(self) -> Path | None:
         """The session tree's ``$KIROCREW_SCRATCH`` directory (see ``AcpRuntime.work_scratch_dir``)."""

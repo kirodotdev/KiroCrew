@@ -854,6 +854,29 @@ class TestBoolValidator:
         assert tmp_config.read_bytes() == before
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", [False, True])
+    async def test_session_recap_toggle_round_trips(self, tmp_config, value) -> None:
+        data = _seed_config()
+        data["agent"]["session_recap"] = not value
+        tmp_config.write_text(json.dumps(data), encoding="utf-8")
+        async with TestClient(TestServer(_make_app())) as client:
+            response = await _patch(client, "agent.session_recap", value)
+            assert response.status == 200
+            assert (await response.json())["agent"]["session_recap"] is value
+        data["agent"]["session_recap"] = value
+        assert json.loads(tmp_config.read_text(encoding="utf-8"))["agent"] == data["agent"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", ["true", 1, None])
+    async def test_session_recap_rejects_non_boolean(self, tmp_config, value) -> None:
+        before = tmp_config.read_bytes()
+        async with TestClient(TestServer(_make_app())) as client:
+            response = await _patch(client, "agent.session_recap", value)
+            assert response.status == 400
+            assert (await response.json())["error"] == "must be a boolean"
+        assert tmp_config.read_bytes() == before
+
+    @pytest.mark.asyncio
     async def test_valid_bool_passes(self, tmp_config) -> None:
         async with TestClient(TestServer(_make_app())) as c:
             resp = await _patch(c, "auto_update", True)

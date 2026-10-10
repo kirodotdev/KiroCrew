@@ -1,9 +1,9 @@
 """Assistant-role system notices the gateway injects into a slot's feed.
 
-Status reports -- the auto-compaction notices and the session-reload
-confirmation -- not real turns. Every scan that walks for "the last real
-message" (the conversation floor, the sidebar preview, backfill replay) must
-skip them, and the frontend keeps a twin of this set
+Status reports -- the auto-compaction notices, the session-reload
+confirmation and the session recap -- not real turns. Every scan that walks
+for "the last real message" (the conversation floor, the sidebar preview,
+backfill replay) must skip them, and the frontend keeps a twin of this set
 (``website/src/lib/systemNotice.ts``): a kind skipped on one side but not the
 other leaves the sidebar showing notice boilerplate while the chat pane shows
 the real turn, or vice versa.
@@ -19,8 +19,11 @@ from kiro_crew.constants import (
 from kiro_crew.preview_text import drop_format_chars
 
 SESSION_RELOAD_KIND = "session_reload"
+SESSION_RECAP_KIND = "recap"
 
-SYSTEM_NOTICE_KINDS: frozenset[str] = frozenset({"compaction", SESSION_RELOAD_KIND})
+SYSTEM_NOTICE_KINDS: frozenset[str] = frozenset(
+    {"compaction", SESSION_RELOAD_KIND, SESSION_RECAP_KIND}
+)
 
 
 def is_system_notice(role: object, meta: object) -> bool:

@@ -715,6 +715,14 @@
       "route": "/settings/chat/composer?highlight=chat.send-shortcut"
     },
     {
+      "id": "chat.session-recap",
+      "label": "Session recap",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=key%3Aagent.session_recap",
+      "description": "Adds one line to the chat. Session summaries write a fuller summary in the side panel. Shows where a chat left off when you reopen it. KAS harness only, one more model call per turn.",
+      "configKey": "agent.session_recap"
+    },
+    {
       "id": "chat.session-summaries",
       "label": "Session summaries",
       "tab": "chat",

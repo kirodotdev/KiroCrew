@@ -176,6 +176,7 @@ type KirocrewConfigShape = {
     completion_keep_chars?: number
     fallback_model?: string
     refusal_fallback_model?: string
+    session_recap?: boolean
   }
   dashboard?: { user_role?: string; user_role_other?: string; user_technical_level?: string; prevent_sleep?: boolean; title_refresh_every_turns?: number }
 }
@@ -767,6 +768,14 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
   }
   /** What the title-refresh readout shows for 0, the built-in schedule. */
   const titleRefreshDefault = i18nT('pages.settings.chatPanel.title_refresh_default')
+
+  // ── Session recap (server-side; KAS makes one more model call per turn) ──
+  const recapEnabled = mcCfg?.agent?.session_recap ?? false
+  const recapMut = useMutation({
+    mutationFn: (v: boolean) => api.patchConfig('agent.session_recap', v),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
+    onError: () => setSaveError(i18nT('pages.settings.chatPanel.failed_to_save_session_recap')),
+  })
 
   // "Other" reveals a free-text role. Typed locally and committed on blur /
   // Enter so a PATCH does not fire per keystroke; seeded from the server once
@@ -1891,6 +1900,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
             <SettingsSelect label={i18nT('pages.settings.chatPanel.restore_window')} hint={i18nT('pages.settings.chatPanel.time_window_for_session_restoration')} value={String(dashCfg.restore_window_minutes)} options={RESTORE_OPTIONS} optionLabels={restoreLabels()} onChange={v => setDash({ restore_window_minutes: Number(v) })} disabled={dashDisabled} />
           )}
           <SettingsToggle label={i18nT('pages.settings.chatPanel.session_summaries')} description={i18nT('pages.settings.chatPanel.summarize_each_session_by_intent_in_the_right_pa')} hint={i18nT('pages.settings.chatPanel.summarize_each_session_by_intent_hint')} checked={summaryEnabled} onChange={v => summaryMut.mutate(v)} disabled={!mcQ.isSuccess || summaryMut.isPending} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.session_recap')} description={i18nT('pages.settings.chatPanel.session_recap_desc')} hint={i18nT('pages.settings.chatPanel.session_recap_hint')} checked={recapEnabled} onChange={v => recapMut.mutate(v)} disabled={!mcQ.isSuccess || recapMut.isPending} configKey="agent.session_recap" />
           {/* 0 is the built-in schedule and reads as "Default", so + leaves it
               for the minimum cadence, − at the minimum returns to it, and − at
               Default is disabled: there is nothing below it. A plain +/− stepper

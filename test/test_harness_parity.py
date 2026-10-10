@@ -1017,6 +1017,14 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     "property means 'this host needs its agent re-sent'. Adding one would cost the "
     "kiro path an awaited step it does not need (H13).",
     (
+        "src/kiro_crew/acp/runtime.py",
+        "_reader_loop",
+    ): "The load-window recap is a KAS notification discriminant "
+    "(``session_info_update`` with ``kind: recap``), not a capability a host opts "
+    "into. The reader parks its normalized text in a bounded runtime slot keyed by "
+    "session id. The positive test keeps every other harness's ``session/update`` "
+    "out of this KAS-owned path (H5/H13).",
+    (
         "src/kiro_crew/acp/session_handle.py",
         "stream_command",
     ): "``_kiro.dev/commands/execute`` is kiro-cli's own RPC. The positive test is what "
@@ -1042,6 +1050,19 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     ): "KAS emits its own notification discriminants. The positive gate restores those "
     "displays without touching the kiro parser, and returns None for anything not "
     "KAS-specific so shared frames still fall through (H5).",
+    (
+        "src/kiro_crew/acp/session_handle.py",
+        "take_session_recap",
+    ): "Only KAS emits the load-window recap held by the runtime slot. The positive "
+    "test keeps every other harness's resume prefetch from calling the "
+    "adapter-owned claim path (H5/H13).",
+    (
+        "src/kiro_crew/acp/session_handle.py",
+        "_is_kas_recap_frame",
+    ): "The pre-turn drain drops a post-turn recap by the same KAS-only discriminant as "
+    "the reader loop's staging branch (``_reader_loop`` above); a frame is a recap only "
+    "on the host whose wire format defines one, so the positive test keeps every other "
+    "harness's ``session/update`` on the drain's ordinary leftover path (H5).",
 }
 
 

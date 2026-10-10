@@ -1285,6 +1285,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.session-recap",
+    "label": "Session recap",
+    "labelKey": "pages.settings.chatPanel.session_recap",
+    "description": "Adds one line to the chat. Session summaries write a fuller summary in the side panel. Shows where a chat left off when you reopen it. KAS harness only, one more model call per turn.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
+    },
+    "configKey": "agent.session_recap"
+  },
+  {
     "id": "chat.session-summaries",
     "label": "Session summaries",
     "labelKey": "pages.settings.chatPanel.session_summaries",

@@ -188,6 +188,7 @@ class TestAdoptOnChange:
             "agent.acp_backend",
             "agent.role_efforts.background",
             "agent.tool_search",
+            "agent.session_recap",
             "agent.sandbox",
             "session.pool_size",
             "session.pool_agent",
