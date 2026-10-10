@@ -2735,6 +2735,80 @@ class TestPromptWriteHardening:
         assert resp.status == 400 and json.loads(resp.body)["code"] == "name_too_long"
         assert _outcomes(mock_sel)[-1] == "bad_request"
 
+    def test_create_maps_a_posix_too_long_joined_path_to_the_coded_400(
+        self, tmp_path, mock_sel, monkeypatch
+    ):
+        """The name fits its budget, but the joined path did not fit this host.
+        No pre-flight length can know that (a long-path-enabled Windows host takes
+        what another refuses), so the create's own refusal is what is classified.
+
+        Driven on the by-name branch (``_DIR_FD_SUPPORTED=False``) so the stub is
+        deterministic on every host -- a host with ``dir_fd`` writes through
+        ``os.write`` and one without through ``Path.open``, and pinning the branch
+        removes that host-dependence rather than skipping the arm it does not take.
+        """
+        monkeypatch.setattr(_prompts_mod, "_DIR_FD_SUPPORTED", False)
+
+        def _boom(self, *a, **kw):
+            raise OSError(errno.ENAMETOOLONG, "File name too long")
+
+        monkeypatch.setattr(Path, "open", _boom)
+        resp = asyncio.run(api_prompts_create(_create_request({"name": "p", "content": "x"})))
+        assert resp.status == 400 and json.loads(resp.body)["code"] == "name_too_long"
+        assert _outcomes(mock_sel)[-1] == "bad_request"
+        assert not (tmp_path / ".kiro" / "prompts" / "p.md").exists()
+
+    def test_create_maps_the_windows_too_long_error_on_the_by_name_branch(
+        self, tmp_path, mock_sel, monkeypatch
+    ):
+        """The branch a Windows host takes (no dir_fd), raising what Windows raises:
+        ``ERROR_FILENAME_EXCED_RANGE`` filed under ``ENOENT``, so ``errno`` alone
+        would misread it as a missing parent."""
+        monkeypatch.setattr(_prompts_mod, "_DIR_FD_SUPPORTED", False)
+
+        def _boom(self, *a, **kw):
+            exc = OSError(errno.ENOENT, "The filename or extension is too long")
+            exc.winerror = _prompts_mod._WINERROR_FILENAME_EXCED_RANGE
+            raise exc
+
+        monkeypatch.setattr(Path, "open", _boom)
+        resp = asyncio.run(api_prompts_create(_create_request({"name": "p", "content": "x"})))
+        assert resp.status == 400 and json.loads(resp.body)["code"] == "name_too_long"
+        assert _outcomes(mock_sel)[-1] == "bad_request"
+        assert not (tmp_path / ".kiro" / "prompts" / "p.md").exists()
+
+    def test_create_leaves_an_ambiguous_windows_error_as_write_failed(
+        self, tmp_path, mock_sel, monkeypatch
+    ):
+        """``ERROR_PATH_NOT_FOUND`` also names a missing parent, so it is not re-read
+        as the length; it keeps the ordinary ``write_failed`` handling."""
+        monkeypatch.setattr(_prompts_mod, "_DIR_FD_SUPPORTED", False)
+
+        def _boom(self, *a, **kw):
+            exc = OSError(errno.ENOENT, "The system cannot find the path specified")
+            exc.winerror = 3
+            raise exc
+
+        monkeypatch.setattr(Path, "open", _boom)
+        resp = asyncio.run(api_prompts_create(_create_request({"name": "p", "content": "x"})))
+        assert resp.status == 500 and json.loads(resp.body)["code"] == "write_failed"
+        assert _outcomes(mock_sel)[-1] == "error"
+
+    def test_create_does_not_classify_a_write_the_host_accepts(
+        self, tmp_path, mock_sel, monkeypatch
+    ):
+        """No pre-flight guess and no spurious refusal: when the filesystem accepts
+        the joined path (no ``OSError`` at all), the create still returns 201, so a
+        host that takes a long path -- a ``LongPathsEnabled`` Windows install, or
+        any POSIX host -- loses nothing to the new classification. Deterministic on
+        every host because it drives a write that simply succeeds rather than
+        probing whether the host tolerates a path past ``MAX_PATH``."""
+        monkeypatch.setattr(_prompts_mod, "_DIR_FD_SUPPORTED", False)
+        name = "p" * 40
+        resp = asyncio.run(api_prompts_create(_create_request({"name": name, "content": "x"})))
+        assert resp.status == 201
+        assert (tmp_path / ".kiro" / "prompts" / f"{name}.md").read_text() == "x"
+
     @pytest.mark.skipif(
         not _prompts_mod._DIR_FD_SUPPORTED,
         reason="the by-name fallback writes through Path.open, not os.write",
