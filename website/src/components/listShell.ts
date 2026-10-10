@@ -38,9 +38,15 @@ export const LIST_BODY_CLS = 'flex-1 min-h-0 overflow-y-auto scrollbar-none p-2 
 
 /** A row's box: the rounded hover/selection surface. */
 export const ROW_BOX_CLS = 'pl-2.5 pr-3 py-2 rounded-md'
-/** A row at rest, and the selected row. */
+/** A row at rest, and the selected row. The selected row carries an inset
+ *  accent ring on top of its tint because the tint alone sat within a shade of
+ *  `hover:bg-bg-hover`, so a pointer resting on another row made two rows look
+ *  selected (#14686). A ring rather than a left bar: the left edge already
+ *  belongs to the session-colour bar (`.session-colored::before`), and an
+ *  inset box-shadow neither shifts the row's layout nor collides with the
+ *  `:focus-visible` outline or the reveal flash, which are outlines. */
 export const ROW_IDLE_CLS = 'text-muted hover:text-text hover:bg-bg-hover'
-export const ROW_ACTIVE_CLS = 'text-text-strong bg-accent-subtle'
+export const ROW_ACTIVE_CLS = 'text-text-strong bg-accent-subtle ring-1 ring-inset ring-accent'
 
 /*
  * Row type scale — three boxes, 12 / 20 / 16, chosen so the secondary line
