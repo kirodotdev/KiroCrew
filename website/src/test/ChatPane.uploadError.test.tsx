@@ -35,6 +35,7 @@ vi.mock('../api/client', () => ({
     workspaces: vi.fn().mockResolvedValue({ workspaces: [] }),
     spawnList: vi.fn().mockResolvedValue({ agents: [] }),
     uploadFiles: vi.fn().mockResolvedValue({ paths: [] }),
+    dashboardConfig: vi.fn().mockResolvedValue({ upload_max_mb: 100 }),
     screenshot: vi.fn().mockResolvedValue({ path: null }),
     fileSearch: vi.fn().mockResolvedValue({ root: '/repo', results: [] }),
     chatSlotAgent: vi.fn().mockResolvedValue(undefined),
@@ -127,10 +128,10 @@ describe('ChatPane upload — a refused upload is surfaced, not silent (#5707)',
 
     await waitFor(() => expect(api.uploadFiles).toHaveBeenCalled())
     // A transport reject must not leak "Failed to fetch" to the user, and must
-    // not claim a 50 MB ceiling either.
+    // not claim a size ceiling either.
     await waitFor(() => expect(screen.getByText(/Connection error/i)).toBeInTheDocument())
     expect(screen.queryByText(/Failed to fetch/)).not.toBeInTheDocument()
-    expect(screen.queryByText(/max 50 MB/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/max \d+ MB/)).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /dismiss/i })).toBeInTheDocument()
   })
 
@@ -145,7 +146,7 @@ describe('ChatPane upload — a refused upload is surfaced, not silent (#5707)',
     await waitFor(() => expect(screen.getByText(/Session expired/)).toBeInTheDocument())
   })
 
-  it('reports a >20-file drop at the banner without calling the server', async () => {
+  it('reports a >20-file drop as a hint without calling the server', async () => {
     const { container } = renderPane('pane-toomany')
     const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement
     const files = Array.from({ length: 21 }, (_, i) => new File(['x'], `f${i}.png`, { type: 'image/png' }))
@@ -159,21 +160,23 @@ describe('ChatPane upload — a refused upload is surfaced, not silent (#5707)',
 
   it('reports an oversized document, and exempts video so its own 413 reports the real cap', async () => {
     const bigDoc = new File(['x'], 'huge.png', { type: 'image/png' })
-    Object.defineProperty(bigDoc, 'size', { value: 60 * 1024 * 1024 })
+    Object.defineProperty(bigDoc, 'size', { value: 101 * 1024 * 1024 })
     const { container, unmount } = renderPane('pane-bigdoc')
+    await waitFor(() => expect(api.dashboardConfig).toHaveBeenCalled())
+    await new Promise(r => setTimeout(r, 0))
     let fileInput = container.querySelector('input[type="file"]') as HTMLInputElement
     Object.defineProperty(fileInput, 'files', { value: [bigDoc] })
     fireEvent.change(fileInput)
 
-    // Was silent before; 50 MB is the true ceiling for a document, so the
-    // message can state it.
-    await waitFor(() => expect(screen.getByText(/File too large: huge\.png/)).toBeInTheDocument())
+    // The gateway served 100 MB, the true ceiling for a document, so the
+    // message can state it, and names the way to get the file in anyway.
+    await waitFor(() => expect(screen.getByText(/File too large: huge\.png \(max 100 MB\)\. Type @ and the file's path to share it without uploading\./)).toBeInTheDocument())
     expect(api.uploadFiles).not.toHaveBeenCalled()
     unmount()
 
     // A recording is exempt from the client guard at ANY size, so it reaches
     // the server and an over-cap one is refused by its own 413 -- which states
-    // the real video ceiling instead of this message's 50 MB.
+    // the real video ceiling instead of this message's document cap.
     const bigVideo = new File(['x'], 'screencap.mp4', { type: 'video/mp4' })
     Object.defineProperty(bigVideo, 'size', { value: 600 * 1024 * 1024 })
     ;(api.uploadFiles as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
@@ -185,7 +188,103 @@ describe('ChatPane upload — a refused upload is surfaced, not silent (#5707)',
     fireEvent.change(fileInput)
     await waitFor(() => expect(api.uploadFiles).toHaveBeenCalled())
     await waitFor(() => expect(screen.getByText(/Video exceeds the 512 MB limit/)).toBeInTheDocument())
-    expect(screen.queryByText(/max 50 MB/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/max \d+ MB/)).not.toBeInTheDocument()
+  })
+
+  it('pre-checks against the gateway-served upload_max_mb and names it', async () => {
+    ;(api.dashboardConfig as ReturnType<typeof vi.fn>).mockResolvedValue({ upload_max_mb: 200 })
+    try {
+      // 150 MB: over the old fixed 50 MB line and the 100 MB default, under the
+      // configured 200 -- reaches the server.
+      const okZip = new File(['x'], 'project.zip', { type: 'application/zip' })
+      Object.defineProperty(okZip, 'size', { value: 150 * 1024 * 1024 })
+      const first = renderPane('pane-cfg-ok')
+      await waitFor(() => expect(api.dashboardConfig).toHaveBeenCalled())
+      // Let the config query settle before the pick, as a real user would.
+      await new Promise(r => setTimeout(r, 0))
+      let fileInput = first.container.querySelector('input[type="file"]') as HTMLInputElement
+      Object.defineProperty(fileInput, 'files', { value: [okZip] })
+      ;(api.uploadFiles as ReturnType<typeof vi.fn>).mockClear()
+      fireEvent.change(fileInput)
+      await waitFor(() => expect(api.uploadFiles).toHaveBeenCalled())
+      first.unmount()
+
+      const bigZip = new File(['x'], 'game.zip', { type: 'application/zip' })
+      Object.defineProperty(bigZip, 'size', { value: 250 * 1024 * 1024 })
+      const second = renderPane('pane-cfg-big')
+      await waitFor(() => expect(api.dashboardConfig).toHaveBeenCalled())
+      await new Promise(r => setTimeout(r, 0))
+      fileInput = second.container.querySelector('input[type="file"]') as HTMLInputElement
+      Object.defineProperty(fileInput, 'files', { value: [bigZip] })
+      ;(api.uploadFiles as ReturnType<typeof vi.fn>).mockClear()
+      fireEvent.change(fileInput)
+      await waitFor(() => expect(screen.getByText(/File too large: game\.zip \(max 200 MB\)/)).toBeInTheDocument())
+      // A pre-check refusal is a validation hint (nothing was sent), not a
+      // failure: it renders as a status notice, never through the error banner.
+      expect(screen.getByTestId('chat-pane-upload-hint')).toHaveAttribute('role', 'status')
+      expect(screen.getByTestId('chat-pane-upload-hint')).toHaveTextContent(/max 200 MB/)
+      expect(screen.queryByTestId('chat-pane-upload-error')).not.toBeInTheDocument()
+      expect(api.uploadFiles).not.toHaveBeenCalled()
+    } finally {
+      ;(api.dashboardConfig as ReturnType<typeof vi.fn>).mockResolvedValue({ upload_max_mb: 100 })
+    }
+  })
+
+  it('skips the pre-check until the config answers, so an early drop is judged by the server', async () => {
+    let release: (v: unknown) => void = () => {}
+    ;(api.dashboardConfig as ReturnType<typeof vi.fn>).mockReturnValue(new Promise(r => { release = r }))
+    try {
+      const zip = new File(['x'], 'early.zip', { type: 'application/zip' })
+      Object.defineProperty(zip, 'size', { value: 150 * 1024 * 1024 })
+      const { container } = renderPane('pane-cfg-pending')
+      const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement
+      Object.defineProperty(fileInput, 'files', { value: [zip] })
+      ;(api.uploadFiles as ReturnType<typeof vi.fn>).mockClear()
+      fireEvent.change(fileInput)
+      // No figure is known yet: the 100 MB default is not presented as the
+      // gateway's limit, so the file goes to the server, which enforces it.
+      await waitFor(() => expect(api.uploadFiles).toHaveBeenCalled())
+      expect(screen.queryByText(/File too large/)).not.toBeInTheDocument()
+    } finally {
+      release({ upload_max_mb: 100 })
+      ;(api.dashboardConfig as ReturnType<typeof vi.fn>).mockResolvedValue({})
+    }
+  })
+
+  it('leaves an unknown limit to the server, and reports a failed settings read', async () => {
+    // A failed settings read and an answer without a usable figure both mean
+    // no limit is known here, so the file goes to the server, whose 413 names
+    // its limit. Only the failed read is an error, and it says so.
+    for (const [key, answer, failed] of [
+      ['pane-cfg-failed', () => Promise.reject(new Error('HTTP 502')), true],
+      ['pane-cfg-nofigure', () => Promise.resolve({}), false],
+    ] as const) {
+      ;(api.dashboardConfig as ReturnType<typeof vi.fn>).mockImplementation(answer)
+      try {
+        const zip = new File(['x'], 'big.zip', { type: 'application/zip' })
+        Object.defineProperty(zip, 'size', { value: 150 * 1024 * 1024 })
+        const { container, unmount } = renderPane(key)
+        await waitFor(() => expect(api.dashboardConfig).toHaveBeenCalled())
+        await new Promise(r => setTimeout(r, 0))
+        const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement
+        Object.defineProperty(fileInput, 'files', { value: [zip] })
+        ;(api.uploadFiles as ReturnType<typeof vi.fn>).mockClear()
+        fireEvent.change(fileInput)
+        await waitFor(() => expect(api.uploadFiles).toHaveBeenCalled())
+        expect(screen.queryByText(/File too large/)).not.toBeInTheDocument()
+        if (failed) {
+          expect(await screen.findByTestId('chat-pane-upload-limit-error')).toHaveTextContent(
+            "Couldn't load the size limit; the server still checks each file on upload.",
+          )
+        } else {
+          expect(screen.queryByTestId('chat-pane-upload-limit-error')).not.toBeInTheDocument()
+        }
+        unmount()
+      } finally {
+        ;(api.dashboardConfig as ReturnType<typeof vi.fn>).mockReset()
+        ;(api.dashboardConfig as ReturnType<typeof vi.fn>).mockResolvedValue({ upload_max_mb: 100 })
+      }
+    }
   })
 
   it('clears a previous refusal on the next attempt, so it cannot misattribute', async () => {

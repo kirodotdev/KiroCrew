@@ -4312,8 +4312,27 @@ the facade or switches slots, and that nothing outside `pages/chat/page/` except
 ### Composer file uploads
 
 `POST /api/upload/file` accepts at most 20 files per request. Images and
-documents use the 50 MB buffered path. Audio uses the same ceiling through the
-media streaming path, while video raises that path's ceiling to 512 MB.
+documents use the buffered path, whose per-file ceiling is
+`dashboard.upload_max_mb` (default 100, loader-bounded to 1-512, read per
+request through `dashboard/upload_limits.py` so an edit applies to the next
+upload). Audio uses the same ceiling through the media streaming path, while
+video raises that path's ceiling to 512 MB. An over-cap buffered file answers
+413 with code `file_too_large` and an error naming the file, the limit, and
+sharing the file by its path with `@` as the way in. The per-upload diagnostic
+(sha256 of the received bytes against a chunked read-back of the stored file)
+runs on a worker thread, so a file near the ceiling never stalls the event loop. `POST /api/knowledge/ingest` enforces the smaller of that ceiling and
+`knowledge.max_ingest_file_mb` (0 disables the second bound), because ingestion
+refuses a staged file over `knowledge.max_ingest_file_mb`; it streams to a staged
+file, so there the ceiling bounds disk rather than memory. `GET
+/api/dashboard/config` serves `upload_max_mb` and `knowledge_upload_max_mb`
+read-only. Both composers pre-check against `upload_max_mb` once the config has
+served a usable figure (before that, only the server's 413 applies), and a
+pre-check refusal renders as a `StatusNotice` hint because nothing was sent. A
+failed config read is reported through an inline `ErrorNotice` saying the server
+still checks each file, in the chat pane and on the Knowledge page, which then
+shows no "Max N MB per file" figure (otherwise it interpolates
+`knowledge_upload_max_mb`). It is separate from `files._MAX_UPLOAD_BYTES` (50 MB), which still bounds
+the in-memory read paths (file-raw, file-download, office and sheet preview).
 Every stored name receives a UUID prefix, and the handler attributes accepted and
 rejected requests through SEL. Binary formats with reliable signatures are
 validated by content before publication under their destination path.

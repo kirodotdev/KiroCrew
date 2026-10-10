@@ -11,6 +11,14 @@ export const IMG_EXT = /\.(png|jpe?g|gif|webp|bmp|svg)$/i
  *  only produces uploads that die at the door. */
 export const VIDEO_EXT = /\.(mp4|m4v|mov|webm)$/i
 
+/** A served MB ceiling (`upload_max_mb`, or `knowledge_upload_max_mb`, which
+ *  may be fractional), or null when the gateway did not serve a usable figure.
+ *  Null means there is no limit to show or pre-check against -- the server
+ *  enforces its own ceiling regardless -- and no default stands in for it. */
+export function servedUploadMb(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null
+}
+
 /** Parse file paths from message meta or [attached_file N] patterns in content. */
 export function parseFiles(content: string, meta?: Record<string, unknown>): string[] {
   const metaFiles = (meta?.files || []) as string[]

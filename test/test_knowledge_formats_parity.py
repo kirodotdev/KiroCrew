@@ -22,7 +22,6 @@ import json
 import re
 from pathlib import Path
 
-from kiro_crew.dashboard.handlers.knowledge import _MAX_INGEST_FILE_SIZE
 from kiro_crew.knowledge.readers import FileReader
 
 _WEBSITE = Path(__file__).resolve().parents[1] / "website"
@@ -81,30 +80,30 @@ def test_docs_supported_listing_matches_backend() -> None:
     )
 
 
-def test_max_file_size_copy_matches_backend_limit() -> None:
-    # The "Max 50 MB per file." sentence is hand-authored catalog copy in every
-    # locale, while the real bound is `_MAX_INGEST_FILE_SIZE` in the knowledge
-    # handler. `/api/knowledge/config` does not serve the limit, so nothing at
-    # runtime reconciles them: changing the constant would leave the page
-    # advertising a stale budget in 12 languages and uploads failing at ingest
-    # for users the copy told were within it. Pin the figure here instead.
-    expected = f"{_MAX_INGEST_FILE_SIZE // (1024 * 1024)} MB"
+def test_max_file_size_copy_interpolates_the_served_limit() -> None:
+    # The "Max N MB per file." sentence is catalog copy in every locale, while
+    # the real bound is `dashboard.upload_max_mb`, which an operator can change.
+    # SourcesList reads it from `/api/dashboard/config` and interpolates it, so
+    # every catalog must carry the `{{max}}` placeholder rather than a literal
+    # figure -- a hard-coded number would advertise a stale budget the moment
+    # the config differs from it.
     checked = 0
     for catalog in sorted(_LOCALES.glob("*.json")):
-        if catalog.name in ("en.json", "en-XA.json"):
-            continue  # generated: key lives in en.manual.json; en-XA accents 'MB'
+        if catalog.name == "en.json":
+            continue  # generated: key lives in en.manual.json
         data = json.loads(catalog.read_text(encoding="utf-8"))
         try:
             value = data["pages"]["knowledge"]["sourcesList"]["max_file_size"]
         except KeyError:
             continue  # a catalog without the key is caught by catalogParity.test.ts
         checked += 1
-        assert expected in value, (
-            f"{catalog.name}: max_file_size copy {value!r} does not carry "
-            f"{expected!r} -- update the catalog (all locales) when "
-            "_MAX_INGEST_FILE_SIZE changes, or serve the limit from "
-            "/api/knowledge/config and interpolate it."
+        assert "{{max}}" in value, (
+            f"{catalog.name}: max_file_size copy {value!r} does not interpolate "
+            "{{max}} -- the limit is served by /api/dashboard/config."
         )
+        assert not re.search(
+            r"\d", value.replace("{{max}}", "")
+        ), f"{catalog.name}: max_file_size copy {value!r} still carries a literal figure"
     # en.manual.json + 11 translations + generated en-XA; a lower count means
     # the key moved and this guard checks nothing.
     assert checked >= 12, f"only {checked} catalogs carried max_file_size"

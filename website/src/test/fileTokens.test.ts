@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { addPendingFile, extendsConsumably, findUnreferencedAttachments, foldWinSep, isWindowsShapedPath, mentionBoundary, mentionBoundaryFor, mentionTokenRegex, normalizeWindowsPath, parseFiles, prepareSendPayload, buildFileLabels, resolveFileSegment, mdImageDest, mdImageDestToPath, restoreQueuedContent, restoreUnreferencedImages, serializeDirTokens } from '../utils/fileTokens'
+import { addPendingFile, extendsConsumably, findUnreferencedAttachments, foldWinSep, isWindowsShapedPath, mentionBoundary, mentionBoundaryFor, mentionTokenRegex, normalizeWindowsPath, parseFiles, prepareSendPayload, buildFileLabels, resolveFileSegment, mdImageDest, mdImageDestToPath, restoreQueuedContent, restoreUnreferencedImages, serializeDirTokens, servedUploadMb } from '../utils/fileTokens'
 
 describe('buildFileLabels uniqueness', () => {
   it('disambiguates paths that share a basename', () => {
@@ -793,5 +793,18 @@ describe('restoreUnreferencedImages (legacy pane rows: image only on meta.files)
 
   it('an image-only legacy row (empty caption) yields just the image line', () => {
     expect(restoreUnreferencedImages('', { files: ['/tmp/a.png'] })).toBe('![image](/tmp/a.png)')
+  })
+})
+
+describe('servedUploadMb', () => {
+  it('passes a positive figure through, fractional included', () => {
+    expect(servedUploadMb(100)).toBe(100)
+    expect(servedUploadMb(0.5)).toBe(0.5)
+  })
+
+  it('answers null for anything unusable, never a default', () => {
+    for (const v of [undefined, null, 0, -1, '100', Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(servedUploadMb(v)).toBeNull()
+    }
   })
 })

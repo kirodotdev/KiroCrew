@@ -23,7 +23,6 @@ if TYPE_CHECKING:
         _ALLOWED_VIDEO_EXT,
         _HEIF_BRANDS,
         _MAGIC_PREFIXES,
-        _MAX_UPLOAD_BYTES,
         _MAX_UPLOAD_FILES,
         _MAX_VIDEO_UPLOAD_BYTES,
         _MEDIA_EXT_MIME,
@@ -40,6 +39,7 @@ if TYPE_CHECKING:
         logger,
         part_stream,
         sniff_raster_mime,
+        upload_max_bytes,
     )
 
 
@@ -59,6 +59,49 @@ def _write_file_restricted(path: Path, data: bytes) -> None:
         os.write(fd, data)
     finally:
         os.close(fd)
+
+
+def _log_upload_diagnostic(dest: Path, data: bytearray, ext: str, safe_name: str) -> None:
+    """Log the received bytes' sha256 against the bytes that landed on disk.
+
+    Pins a later "uploaded .docx is corrupted" report to the upload pipeline or
+    to post-upload tampering. Blocking by design -- callers run it through
+    ``asyncio.to_thread``. ``data`` is hashed in place and the file is hashed in
+    chunks, so no second whole-file copy is held in memory. A failure is logged
+    and never breaks the upload.
+    """
+    try:
+        sent_sha = hashlib.sha256(data).hexdigest()
+        disk_hash = hashlib.sha256()
+        disk_size = 0
+        head = b""
+        with dest.open("rb") as fh:
+            while chunk := fh.read(1024 * 1024):
+                if not head:
+                    head = chunk[:4]
+                disk_hash.update(chunk)
+                disk_size += len(chunk)
+        disk_sha = disk_hash.hexdigest()
+        is_zip = (
+            zipfile.is_zipfile(str(dest))
+            if ext in {".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp", ".zip"}
+            else None
+        )
+        logger.info(
+            "upload.file diagnostic: name=%s ext=%s sent_size=%d disk_size=%d "
+            "sent_sha256=%s disk_sha256=%s match=%s magic=%s is_zipfile=%s",
+            safe_name,
+            ext,
+            len(data),
+            disk_size,
+            sent_sha,
+            disk_sha,
+            sent_sha == disk_sha,
+            head.hex(),
+            is_zip,
+        )
+    except Exception:
+        logger.exception("upload.file diagnostic failed for %s", safe_name)
 
 
 def _content_matches_ext(ext: str, data: bytes) -> bool:
@@ -188,6 +231,10 @@ async def api_upload_file(request: web.Request) -> web.Response:
 
     upload_dir = _upload_dir()
     ensure_directory(upload_dir)  # 0700 in the data home: uploads are user files
+    # Read once per request, off the loop: a config load stats and may parse
+    # files. ``dashboard.upload_max_mb``; video keeps _MAX_VIDEO_UPLOAD_BYTES.
+    max_upload_bytes = await asyncio.to_thread(upload_max_bytes)
+    max_upload_mb = max_upload_bytes // 1024 // 1024
     reader = await request.multipart()
     paths: list[str] = []
     allowed = (
@@ -281,7 +328,7 @@ async def api_upload_file(request: web.Request) -> web.Response:
                 return web.json_response({"error": "Invalid filename"}, status=400)
             if ext in _ALLOWED_VIDEO_EXT or ext in _ALLOWED_AUDIO_EXT:
                 is_video = ext in _ALLOWED_VIDEO_EXT
-                max_bytes = _MAX_VIDEO_UPLOAD_BYTES if is_video else _MAX_UPLOAD_BYTES
+                max_bytes = _MAX_VIDEO_UPLOAD_BYTES if is_video else max_upload_bytes
                 accepted_exts = _ALLOWED_VIDEO_EXT if is_video else _ALLOWED_AUDIO_EXT
                 media_name = "video" if is_video else "audio"
                 # Media streams to an unpublished temp file because neither ACP
@@ -349,7 +396,7 @@ async def api_upload_file(request: web.Request) -> web.Response:
                 if not chunk:
                     break
                 data.extend(chunk)
-                if len(data) > _MAX_UPLOAD_BYTES:
+                if len(data) > max_upload_bytes:
                     await _cleanup()
                     _sel().log_api_access(
                         caller=caller,
@@ -359,7 +406,13 @@ async def api_upload_file(request: web.Request) -> web.Response:
                         resources=f"file:{fname} reason:too_large:{len(data)}",
                     )
                     return web.json_response(
-                        {"error": f"File too large (max {_MAX_UPLOAD_BYTES // 1024 // 1024}MB)"},
+                        {
+                            "error": (
+                                f"File too large: {Path(fname).name} (max {max_upload_mb} MB). "
+                                "Type @ and the file's path to share it without uploading."
+                            ),
+                            "code": "file_too_large",
+                        },
                         status=413,
                     )
             # Content-signature gate (CWE-434): verify magic bytes match the
@@ -404,38 +457,13 @@ async def api_upload_file(request: web.Request) -> web.Response:
             except Exception:
                 await _cleanup(dest)
                 raise
-            # Diagnostic logging for binary uploads. Compares the bytes
-            # we received in memory against the bytes that landed on
-            # disk after _write_file_restricted, so a future report of
-            # "uploaded .docx is corrupted" can be pinned to the
-            # upload pipeline vs post-upload tampering. Logged for
-            # extensions that are binary archives (docx/xlsx/pptx/odt/
-            # zip/pdf etc.) where any byte mismatch breaks the file;
-            # text uploads aren't worth the I/O.
+            # Diagnostic logging for binary uploads (docx/xlsx/pptx/odt/zip/
+            # pdf, images) where any byte mismatch breaks the file; text
+            # uploads aren't worth the I/O. Hashing and reading back a file
+            # of up to the configured ceiling is seconds of CPU and disk, so
+            # it runs on a worker thread, never on the gateway's event loop.
             if ext in _ALLOWED_DOC_EXT or ext in _ALLOWED_IMAGE_EXT:
-                try:
-                    sent_sha = hashlib.sha256(bytes(data)).hexdigest()
-                    on_disk = dest.read_bytes()
-                    disk_sha = hashlib.sha256(on_disk).hexdigest()
-                    head_hex = on_disk[:4].hex() if on_disk else ""
-                    is_zip_ext = ext in {".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp", ".zip"}
-                    is_zip = zipfile.is_zipfile(str(dest)) if is_zip_ext else None
-                    logger.info(
-                        "upload.file diagnostic: name=%s ext=%s sent_size=%d disk_size=%d "
-                        "sent_sha256=%s disk_sha256=%s match=%s magic=%s is_zipfile=%s",
-                        safe_name,
-                        ext,
-                        len(data),
-                        len(on_disk),
-                        sent_sha,
-                        disk_sha,
-                        sent_sha == disk_sha,
-                        head_hex,
-                        is_zip,
-                    )
-                except Exception:
-                    # Diagnostic failure must never break the upload.
-                    logger.exception("upload.file diagnostic failed for %s", safe_name)
+                await asyncio.to_thread(_log_upload_diagnostic, dest, data, ext, safe_name)
             paths.append(str(dest))
     except (Exception, asyncio.CancelledError):
         # Same blind spot as the video branch above: a cancelled request (gateway

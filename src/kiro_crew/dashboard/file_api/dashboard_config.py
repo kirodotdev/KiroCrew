@@ -17,6 +17,8 @@ if TYPE_CHECKING:
         VALID_MEMORY_MODES,
         _body_err_code,
         _sel,
+        bytes_to_mb_figure,
+        knowledge_ceiling_bytes,
         link_pattern_url_ok,
         logger,
         read_bounded_json,
@@ -106,6 +108,8 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "decisions_enabled",
             "model_picker_hidden_models",
             "model_picker_configured",
+            "upload_max_mb",
+            "knowledge_upload_max_mb",
         }
         body = {
             k: v
@@ -613,6 +617,18 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             # Same discipline for Jira: Atlassian Cloud (*.atlassian.net) is
             # auto-recognized; self-hosted instances need explicit allowlisting.
             "jira_hosts": list(cfg.dashboard.jira_hosts),
+            # Read-only: the per-file upload ceiling (`dashboard.upload_max_mb`).
+            # Both composers pre-check against it and name it in their refusal;
+            # the upload handlers enforce it again server-side.
+            "upload_max_mb": cfg.dashboard.upload_max_mb,
+            # Read-only: the Knowledge upload ceiling, which ingestion's own
+            # `knowledge.max_ingest_file_mb` also bounds. The Knowledge page
+            # shows it; the ingest handler enforces the same figure.
+            "knowledge_upload_max_mb": bytes_to_mb_figure(
+                knowledge_ceiling_bytes(
+                    cfg.dashboard.upload_max_mb, float(cfg.knowledge.max_ingest_file_mb)
+                )
+            ),
             # Read-only: the `capabilities.social_share` governance answer. False
             # withdraws the "Share as image" menu entry; there is no toggle behind
             # it, so nothing here is writable.

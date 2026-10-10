@@ -29,7 +29,7 @@ import { openActivityPanel } from '../../store/chatSlice'
 import type { ChatMessage } from '../../types'
 import { mergeIntoDraft, setDraft } from '../../utils/chatDrafts'
 import { classifyDrop } from '../../utils/dropClassify'
-import { spliceDirTokens, VIDEO_EXT } from '../../utils/fileTokens'
+import { servedUploadMb, spliceDirTokens, VIDEO_EXT } from '../../utils/fileTokens'
 import {
   adoptSourceSelections,
   commitSourceSelection,
@@ -164,7 +164,7 @@ export function useChatPageResourcesController({
   // on each tick. Instead the WS 'slots' push carries the allowlist generation
   // (see useWebSocket), which invalidates this query only when the allowlist
   // actually changes — an edit on disk still propagates, without the churn.
-  const { data: sourceHostCfg, error: sourceHostError, errorUpdatedAt: sourceHostErrorAt } = useQuery<{ gitlab_hosts?: string[]; jira_hosts?: string[] }>({
+  const { data: sourceHostCfg, error: sourceHostError, errorUpdatedAt: sourceHostErrorAt } = useQuery<{ gitlab_hosts?: string[]; jira_hosts?: string[]; upload_max_mb?: number }>({
     queryKey: ['dashboardConfig'],
     queryFn: fetchDashboardConfig,
     staleTime: 30_000,
@@ -692,12 +692,16 @@ export function useChatPageResourcesController({
     setUploadHint('')
     if (files.length > 20) { setUploadHint(i18nT('pages.chatPage.too_many_files_max_20')); return }
     // Video is deliberately exempt from this pre-check: it has a much larger
-    // server-side ceiling and streams to disk there, so the 50 MB figure this
-    // message states would be a lie for a recording. Its own 413 carries the
-    // real cap and surfaces through the `upload_failed_error` branch below,
-    // the same route every other server-side rejection already takes.
-    const big = files.find(f => !VIDEO_EXT.test(f.name) && f.size > 50 * 1024 * 1024)
-    if (big) { setUploadHint(i18nT('pages.chatPage.file_too_large', { name: big.name })); return }
+    // server-side ceiling and streams to disk there, so the per-file figure
+    // this message states would be a lie for a recording. Its own 413 carries
+    // the real cap and surfaces through the `upload_failed_error` branch below,
+    // the same route every other server-side rejection already takes. The cap
+    // is the gateway's `dashboard.upload_max_mb` (same shared config query);
+    // until that query has served a usable figure, the server's own 413 is
+    // the only check.
+    const maxMb = servedUploadMb(sourceHostCfg?.upload_max_mb)
+    const big = maxMb === null ? undefined : files.find(f => !VIDEO_EXT.test(f.name) && f.size > maxMb * 1024 * 1024)
+    if (big) { setUploadHint(i18nT('pages.chatPage.file_too_large', { name: big.name, max: maxMb })); return }
     setUploading(true)
     holdComposerSend(requestSlot)
     const controller = new AbortController()
@@ -730,7 +734,7 @@ export function useChatPageResourcesController({
       // alone deliberately -- the cancel control reads the registry, not this.
       setUploading(false)
     }
-  }, [activeSlotRef, setUploadError, setUploadHint, setUploading, setResizedInfo])
+  }, [activeSlotRef, setUploadError, setUploadHint, setUploading, setResizedInfo, sourceHostCfg])
 
   /** The overlay's crop: `uploadFiles` takes its own hold synchronously (before
    *  its first await) and only then is the snip's released, so Send is never

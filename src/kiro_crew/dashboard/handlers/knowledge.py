@@ -39,6 +39,7 @@ from kiro_crew.dashboard.handlers.files import (
     _content_matches_ext,
 )
 from kiro_crew.dashboard.origin import is_direct_local_request
+from kiro_crew.dashboard.upload_limits import bytes_to_mb_figure, knowledge_upload_max_bytes
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.knowledge.agent_fetch import fetch_url_content
 from kiro_crew.knowledge.agent_source import add_agent_document
@@ -2213,7 +2214,10 @@ async def get_stats(request: web.Request) -> web.Response:
 # ---------- Ingestion ----------
 
 
-_MAX_INGEST_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
+# The per-file ingest ceiling is ``upload_limits.knowledge_upload_max_bytes``
+# (read per request): the smaller of ``dashboard.upload_max_mb`` and
+# ``knowledge.max_ingest_file_mb``, the same figure the Knowledge page shows. An
+# ingest upload streams to a staged file, so the ceiling bounds disk, not memory.
 # Decompression-bomb bounds for zip-container uploads (.docx/.xlsx/.pptx/...).
 # A valid PK signature passes the magic-byte gate but the archive can still be
 # a bomb whose members expand unbounded once a parser (python-docx) opens it
@@ -2283,6 +2287,7 @@ async def ingest_file(request: web.Request) -> web.Response:
     suffix = Path(filename).suffix
     ext = suffix.lower()
     staged = Path(tempfile.gettempdir()) / f"kn_{uuid.uuid4().hex}{suffix}"
+    max_ingest_bytes = await asyncio.to_thread(knowledge_upload_max_bytes)
     try:
         # The signature gate (CWE-434) and the byte ceiling are both enforced by
         # the shared streaming path, which judges the leading bytes while they
@@ -2292,12 +2297,12 @@ async def ingest_file(request: web.Request) -> web.Response:
         await part_stream.stream_part_to_file(
             field,  # type: ignore[arg-type]
             staged,
-            max_bytes=_MAX_INGEST_FILE_SIZE,
+            max_bytes=max_ingest_bytes,
             accepts=lambda head: _content_matches_ext(ext, head),
         )
     except part_stream.PartTooLarge:
         return web.json_response(
-            {"error": f"file too large (max {_MAX_INGEST_FILE_SIZE // (1024 * 1024)} MB)"},
+            {"error": f"file too large (max {bytes_to_mb_figure(max_ingest_bytes)} MB)"},
             status=413,
         )
     except part_stream.PartContentMismatch:

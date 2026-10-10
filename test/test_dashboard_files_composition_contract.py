@@ -1427,8 +1427,9 @@ def test_the_bare_hop_guard_reads_the_file_family(
 
 def test_the_error_code_rows_match_each_owner(tmp_path: Path) -> None:
     """The baseline's per-file rows for the facade and its owners are each one's
-    measured count and sum to the one-module file's 82, and the scan counts a
-    response planted in an owner against that owner."""
+    measured count and sum to the one-module file's 82 less the codes added since
+    (the upload 413's ``file_too_large``), and the scan counts a response planted
+    in an owner against that owner."""
     import json
 
     import test_error_code_contract as guard
@@ -1441,7 +1442,7 @@ def test_the_error_code_rows_match_each_owner(tmp_path: Path) -> None:
     }
     live = guard.tally(guard.scan())
     assert rows == {path: live[path] for path in rows}
-    assert sum(counts.get("missing_code", 0) for counts in rows.values()) == 82
+    assert sum(counts.get("missing_code", 0) for counts in rows.values()) == 81
     assert {path for path in live if path.startswith("dashboard/file_api/")} <= set(rows)
     root = _mirror(tmp_path) / "src/kiro_crew"
     owner = root / "dashboard/file_api/search.py"

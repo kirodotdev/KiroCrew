@@ -7174,6 +7174,7 @@
         "merge_queued_messages": false,
         "title_refresh_every_turns": 0,
         "title_ticket_prefix": false,
+        "upload_max_mb": 100,
         "mcp_probe_timeout_secs": 15,
         "loop_stall_exit_after_secs": null,
         "chat_entry_cache_max_entries": 4096,
@@ -7566,6 +7567,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "dashboard.upload_max_mb",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Upload Size Limit (MB)",
+      "help": "Largest file, in megabytes, the dashboard accepts from the chat composer and the Knowledge upload (1-512). The Knowledge upload is also bounded by knowledge.max_ingest_file_mb. Video keeps its own 512 MB ceiling. A chat upload is held in memory while its type is checked, so a large value costs gateway memory per upload. Takes effect on the next upload; no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 100
     },
     {
       "path": "dashboard.mcp_probe_timeout_secs",
