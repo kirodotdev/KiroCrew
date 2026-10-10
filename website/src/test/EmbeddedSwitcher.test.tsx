@@ -99,10 +99,11 @@ describe('EmbeddedInstanceTabBar (option B)', () => {
     expect(screen.queryByTestId('crew-chip-row')).toBeNull()
   })
 
-  it('offers the stable-order toggle and reflects the relayed value', async () => {
-    // The preference is relayed through the host model (`stableOrder`), so the
-    // embedded switcher shows the same control the local bar does, pre-checked to
-    // the parent's value rather than reading its own cross-origin localStorage.
+  it('no longer offers the stable-order toggle in the embedded switcher menu', async () => {
+    // The "Keep tab order fixed" menu control was removed in the switcher
+    // redesign on every surface, embedded panes included. The ordering engine
+    // and its relay stay (the ordering tests below prove the mechanism); only
+    // the menu affordance is gone.
     const store = createTestStore({
       instances: {
         warm: {}, activeId: null, mru: [], unread: {},
@@ -111,9 +112,8 @@ describe('EmbeddedInstanceTabBar (option B)', () => {
     })
     renderWithProviders(<InstanceTabBar variant="inline" />, { store })
     await userEvent.click(screen.getByRole('button', { name: /Switch crew/i }))
-    const toggle = await screen.findByTestId('crew-stable-order-toggle')
-    expect(toggle).toBeTruthy()
-    expect(toggle.getAttribute('aria-checked')).toBe('true')
+    await screen.findByRole('menuitemradio', { name: /Cloud One/ })
+    expect(screen.queryByTestId('crew-stable-order-toggle')).toBeNull()
   })
 
   it('withholds the stable-order toggle from a host that predates the relay', async () => {
@@ -133,26 +133,6 @@ describe('EmbeddedInstanceTabBar (option B)', () => {
     expect(screen.queryByTestId('crew-stable-order-toggle')).toBeNull()
     // Ordering falls back to the pre-relay default: the active crew still leads.
     expect(container.querySelector('.tb-crew-active-chip')).not.toBeNull()
-  })
-
-  it('relays a stable-order toggle up to the parent instead of writing its own store', async () => {
-    const post = vi.spyOn(window.parent, 'postMessage').mockImplementation(() => {})
-    const store = createTestStore({
-      instances: {
-        warm: {}, activeId: null, mru: [], unread: {},
-        // Relayed value is off, so flipping it must post `on: true` up. Like the
-        // pin, the pane cannot persist the parent-owned preference locally.
-        host: model({ activeId: null, stableOrder: false }),
-      },
-    })
-    renderWithProviders(<InstanceTabBar variant="inline" />, { store })
-
-    await userEvent.click(screen.getByRole('button', { name: /Switch crew/i }))
-    await userEvent.click(await screen.findByTestId('crew-stable-order-toggle'))
-    expect(post).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'mc-set-stable-order', on: true }),
-      '*',
-    )
   })
 
   it('does NOT pull the active pinned crew to a leading chip when stable-order is relayed on', () => {

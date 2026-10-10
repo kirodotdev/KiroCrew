@@ -18,7 +18,7 @@ import { useSyncExternalStore } from 'react'
  * remounts and needs no context provider.
  */
 const RAIL_W_EXPANDED = 236
-const RAIL_W_COLLAPSED = 74
+const RAIL_W_COLLAPSED = 60
 
 /**
  * Duration of the shell's `grid-template-columns` transition (App.tsx), plus a

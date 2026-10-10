@@ -142,7 +142,8 @@ describe('phone chat page: one top bar', () => {
     // Search moved here from the bar, same label, same command palette.
     expect(within(rail).getByTestId('mobile-nav-rail-search')).toHaveAccessibleName('Search sessions, files, and commands')
     // The brand mark is a control (home = chat root), not an inert picture in
-    // the position every other app puts a tappable logo.
+    // the position every other app puts a tappable logo. The crew switcher
+    // leads the DESKTOP rail header only; the phone rail keeps Home.
     expect(within(rail).getByTestId('mobile-nav-rail-home')).toHaveAccessibleName()
     // Every tile carries a visible caption: a finger cannot summon the desktop
     // rail's hover tip, so the full Customize name stays visible.

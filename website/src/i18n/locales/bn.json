@@ -6902,6 +6902,7 @@
       "unknown_error": "ইমপোর্ট ব্যর্থ হয়েছে"
     },
     "instanceTabBar": {
+      "add_remote_crew": "রিমোট ক্রু যোগ করো",
       "chain_via": "{{via}} › {{name}}",
       "connected": "সংযুক্ত",
       "connected_refresh": "সংযুক্ত · রিফ্রেশ {{time}}",
@@ -6918,7 +6919,10 @@
       "tunnel_error": "টানেল ত্রুটি",
       "tunnel_state": "টানেল {{state}}।",
       "n_unread": "{{n}} অপঠিত",
+      "pinned_crews": "পিন করা ক্রু",
       "switch_crew": "ক্রু বদলান",
+      "switch_to_crew": "{{name}} ({{host}})-এ যান",
+      "switch_to_local": "লোকালে যান",
       "switch_crew_unread": "ক্রু বদলান, অন্যত্র {{n}}টি অপঠিত",
       "stopped": "বন্ধ",
       "pin_crew": "{{name}} হেডারে পিন করুন",

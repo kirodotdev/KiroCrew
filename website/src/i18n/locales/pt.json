@@ -7014,6 +7014,7 @@
       "unknown_error": "A importação falhou"
     },
     "instanceTabBar": {
+      "add_remote_crew": "Adicionar crew remota",
       "chain_via": "{{via}} › {{name}}",
       "connected": "conectado",
       "connected_refresh": "conectado · atualização {{time}}",
@@ -7030,7 +7031,10 @@
       "tunnel_error": "erro no túnel",
       "tunnel_state": "Túnel {{state}}.",
       "n_unread": "Não lidas: {{n}}",
+      "pinned_crews": "Crews fixadas",
       "switch_crew": "Trocar de crew",
+      "switch_to_crew": "Mudar para {{name}} ({{host}})",
+      "switch_to_local": "Mudar para Local",
       "switch_crew_unread": "Trocar de crew, {{n}} não lidos em outro lugar",
       "stopped": "parado",
       "pin_crew": "Fixar {{name}} no cabeçalho",

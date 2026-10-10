@@ -142,9 +142,14 @@ function renderApp(seed?: (qc: QueryClient) => void) {
   return qc
 }
 
-/** The Discover nav row. Regex name: with a badge present, the badge span's
- *  aria-label joins the row's accessible name ("Discover 1 updates"). */
+/** The Discover nav row. On the fixed-collapsed desktop rail the row carries
+ *  its own `aria-label="Discover"`, so its accessible name is just "Discover"
+ *  and the badge does NOT join it — the count lives on the badge dot instead. */
 const discoverRow = () => screen.getByRole('button', { name: /Discover/ })
+/** The update-count badge dot. On the collapsed rail BadgeIndicator renders a
+ *  dot with `role="status"` whose aria-label is `"<count> <label>"` (no visible
+ *  number); `null` when the count is zero. Assert the count off that name. */
+const discoverBadge = () => within(discoverRow()).queryByRole('status')
 
 const secretaryRegistry: RegistryRow = { name: 'secretary', version: '1.1.0', updateAvailable: true }
 const radarRegistry: RegistryRow = { name: 'radar', version: '2.1.0', updateAvailable: true }
@@ -163,9 +168,11 @@ describe('Sidebar Discover badge — pending app updates', () => {
     renderApp(qc => seedAppsData(qc, [secretaryRegistry, radarRegistry], [secretaryInstalled, radarInstalled]))
     await waitFor(() => expect(discoverRow()).toBeInTheDocument())
     // 1, not 2: radar's pending update is self-managed and the Updates page
-    // would not list it — the badge and the page must agree. findBy: the
-    // installed rows arrive via App's own listApps fetch.
-    expect(await within(discoverRow()).findByText('1')).toBeInTheDocument()
+    // would not list it — the badge and the page must agree. The desktop rail
+    // is fixed-collapsed, so the count is the badge dot's aria-label ("1 …"),
+    // not visible text. waitFor: the installed rows arrive via App's own
+    // listApps fetch.
+    await waitFor(() => expect(discoverBadge()).toHaveAttribute('aria-label', expect.stringMatching(/^1\b/)))
   })
 
   it('renders NO badge when nothing is updatable (hidden at zero, not "0")', async () => {
@@ -178,7 +185,7 @@ describe('Sidebar Discover badge — pending app updates', () => {
     // Wait for the listApps fetch to have landed, so this pins "computed 0 →
     // hidden" rather than "not computed yet".
     await waitFor(() => expect(api.listApps).toHaveBeenCalled())
-    expect(within(discoverRow()).queryByText(/^\d+$/)).not.toBeInTheDocument()
+    expect(discoverBadge()).not.toBeInTheDocument()
   })
 
   it('a fresh session fetches the registry itself and shows the badge (no store page visit)', async () => {
@@ -193,20 +200,20 @@ describe('Sidebar Discover badge — pending app updates', () => {
     renderApp()
     await waitFor(() => expect(discoverRow()).toBeInTheDocument())
     await waitFor(() => expect(api.listRegistry).toHaveBeenCalled())
-    await waitFor(() => expect(within(discoverRow()).getByText('1')).toBeInTheDocument())
+    await waitFor(() => expect(discoverBadge()).toHaveAttribute('aria-label', expect.stringMatching(/^1\b/)))
   })
 
   it('an empty registry answer keeps the badge hidden', async () => {
     renderApp()
     await waitFor(() => expect(discoverRow()).toBeInTheDocument())
     await waitFor(() => expect(api.listRegistry).toHaveBeenCalled())
-    expect(within(discoverRow()).queryByText(/^\d+$/)).not.toBeInTheDocument()
+    expect(discoverBadge()).not.toBeInTheDocument()
   })
 
   it('a cache write after mount updates the badge live (no remount)', async () => {
     const qc = renderApp()
     await waitFor(() => expect(discoverRow()).toBeInTheDocument())
-    expect(within(discoverRow()).queryByText(/^\d+$/)).not.toBeInTheDocument()
+    expect(discoverBadge()).not.toBeInTheDocument()
 
     // The mc:apps-changed refetch path lands new payloads in the caches; the
     // badge subscribes to the query cache, so it must pick this up in place.
@@ -214,6 +221,6 @@ describe('Sidebar Discover badge — pending app updates', () => {
       qc.setQueryData(['registry'], { apps: [secretaryRegistry, radarRegistry] })
       qc.setQueryData(['apps'], [secretaryInstalled, { ...radarInstalled, lifecycle: 'gateway' }])
     })
-    await waitFor(() => expect(within(discoverRow()).getByText('2')).toBeInTheDocument())
+    await waitFor(() => expect(discoverBadge()).toHaveAttribute('aria-label', expect.stringMatching(/^2\b/)))
   })
 })

@@ -7126,6 +7126,7 @@
       "unknown_error": "Не удалось выполнить импорт"
     },
     "instanceTabBar": {
+      "add_remote_crew": "Добавить удалённую команду",
       "chain_via": "{{via}} › {{name}}",
       "connected": "подключено",
       "connected_refresh": "подключено · обновление {{time}}",
@@ -7142,7 +7143,10 @@
       "tunnel_error": "ошибка туннеля",
       "tunnel_state": "Туннель {{state}}.",
       "n_unread": "Непрочитанных: {{n}}",
+      "pinned_crews": "Закреплённые команды",
       "switch_crew": "Переключить команду",
+      "switch_to_crew": "Переключиться на {{name}} ({{host}})",
+      "switch_to_local": "Переключиться на локальную",
       "switch_crew_unread": "Переключить команду, {{n}} непрочитанных в другом месте",
       "stopped": "остановлен",
       "pin_crew": "Закрепить {{name}} в заголовке",

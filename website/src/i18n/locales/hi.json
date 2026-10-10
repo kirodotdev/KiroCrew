@@ -6902,6 +6902,7 @@
       "unknown_error": "इंपोर्ट विफल रहा"
     },
     "instanceTabBar": {
+      "add_remote_crew": "रिमोट क्रू जोड़ो",
       "chain_via": "{{via}} › {{name}}",
       "connected": "कनेक्टेड",
       "connected_refresh": "कनेक्ट है · रिफ़्रेश {{time}}",
@@ -6918,7 +6919,10 @@
       "tunnel_error": "टनल त्रुटि",
       "tunnel_state": "टनल {{state}}।",
       "n_unread": "{{n}} अपठित",
+      "pinned_crews": "पिन किए गए क्रू",
       "switch_crew": "क्रू बदलें",
+      "switch_to_crew": "{{name}} ({{host}}) पर स्विच करो",
+      "switch_to_local": "लोकल पर स्विच करो",
       "switch_crew_unread": "क्रू बदलें, अन्यत्र {{n}} अपठित",
       "stopped": "रुका हुआ",
       "pin_crew": "{{name}} को हेडर में पिन करें",

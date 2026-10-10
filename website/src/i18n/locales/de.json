@@ -6902,6 +6902,7 @@
       "unknown_error": "Der Import ist fehlgeschlagen"
     },
     "instanceTabBar": {
+      "add_remote_crew": "Remote-Crew hinzufügen",
       "chain_via": "{{via}} › {{name}}",
       "connected": "verbunden",
       "connected_refresh": "verbunden · Aktualisierung {{time}}",
@@ -6918,7 +6919,10 @@
       "tunnel_error": "Tunnel-Fehler",
       "tunnel_state": "Tunnel {{state}}.",
       "n_unread": "{{n}} ungelesen",
+      "pinned_crews": "Angepinnte Crews",
       "switch_crew": "Crew wechseln",
+      "switch_to_crew": "Zu {{name}} ({{host}}) wechseln",
+      "switch_to_local": "Zu Lokal wechseln",
       "switch_crew_unread": "Crew wechseln, {{n}} ungelesen an anderer Stelle",
       "stopped": "gestoppt",
       "pin_crew": "{{name}} an die Kopfzeile anpinnen",

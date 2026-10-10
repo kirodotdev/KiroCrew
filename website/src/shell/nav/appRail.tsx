@@ -13,7 +13,7 @@ import { surfacePreviewEnabled } from '../../surfaces/registry'
 import { safeSetItem } from '../../utils/safeStorage'
 import { i18nT } from '../../i18n/t'
 import { NAV_ITEMS } from './navItems'
-import { useNavTip } from './navTip'
+import { useNavTip } from '../../hooks/useNavTip'
 
 /** One app row as the rail's Apps group lists it. */
 export interface AppNavRow { path: string; id: string; label: string; group: string; icon: React.ReactElement; appName?: string }
@@ -181,6 +181,13 @@ export function SortableAppNavRow({ id, children }: { id: string; children: Reac
     <div
       ref={setNodeRef}
       role="presentation"
+      // w-full so the inner NavItem fills the rail: the collapsed/compact rail
+      // centers an icon via `.nav-item{justify-content:center;width:100%}`, but
+      // `width:100%` resolves against THIS wrapper — without w-full the wrapper
+      // shrinks to the icon and the app icon sits left of the rail centre while
+      // the unwrapped Main-group rows (no wrapper) stay centred. See index.css
+      // `.dashboard-navigation[data-compact="true"] .nav-item`.
+      className="w-full min-w-0"
       style={{
         transform: transform ? CSS.Transform.toString(transform) : undefined,
         transition: transition || undefined,

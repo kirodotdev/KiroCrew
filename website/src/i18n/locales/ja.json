@@ -6790,6 +6790,7 @@
       "unknown_error": "インポートに失敗しました"
     },
     "instanceTabBar": {
+      "add_remote_crew": "リモートクルーを追加",
       "chain_via": "{{via}} › {{name}}",
       "connected": "接続済み",
       "connected_refresh": "接続済み · {{time}} に更新",
@@ -6806,7 +6807,10 @@
       "tunnel_error": "トンネルエラー",
       "tunnel_state": "トンネル{{state}}。",
       "n_unread": "未読 {{n}} 件",
+      "pinned_crews": "ピン留めしたクルー",
       "switch_crew": "クルーを切り替え",
+      "switch_to_crew": "{{name}}（{{host}}）に切り替え",
+      "switch_to_local": "ローカルに切り替え",
       "switch_crew_unread": "クルーを切り替え、他に {{n}} 件の未読",
       "stopped": "停止中",
       "pin_crew": "{{name}} をヘッダーにピン留め",

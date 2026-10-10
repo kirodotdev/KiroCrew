@@ -5489,7 +5489,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         )}
       </AnimatePresence>
       {embedMode === 'chat' ? null : embedMode === 'sessions' ? (
-        <div className="flex-1 min-w-0 h-full overflow-hidden [&_.sidebar-inner]:!w-full [&_.sidebar-inner]:!border-0 [&_.sidebar-inner]:!rounded-none [&_.sidebar-inner]:!shrink [&_.sidebar-inner]:!bg-bg [--folder-row-sticky-bg:var(--bg)] [&_.sidebar-resize-handle]:!hidden">
+        <div className="chat-sessions-rail flex-1 min-w-0 h-full overflow-hidden [&_.sidebar-inner]:!w-full [&_.sidebar-inner]:!border-0 [&_.sidebar-inner]:!rounded-none [&_.sidebar-inner]:!shrink [&_.sidebar-inner]:!bg-bg [--folder-row-sticky-bg:var(--bg)] [&_.sidebar-resize-handle]:!hidden">
           <ChatSidebar
             slots={filteredSlots}
             activeSlot={null}
@@ -5536,7 +5536,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         // covers the whole safe-area height like the App nav drawer it
         // replaces on this route -- the rail's brand mark then sits where
         // that drawer's did. Close: scrim tap, swipe, Back -- all unchanged.
-        morph={!isMobile} morphTarget={TOGGLE_RECT} expandFrom={expandFrom} contentH={Math.max(0, containerH - 8)} className={isMobile ? `mobile-sessions-overlay fixed ${titleInTopbar ? 'top-safe' : 'top-safe-offset-[42px]'} bottom-safe left-safe z-50 bg-bg-elevated !py-0 rounded-r-xl shadow-lg [&>*]:!rounded-none [&>*]:!border-0 [&>*]:!m-0` : ''}>
+        morph={!isMobile} morphTarget={TOGGLE_RECT} expandFrom={expandFrom} contentH={Math.max(0, containerH)} flush={!isMobile} className={isMobile ? `mobile-sessions-overlay fixed ${titleInTopbar ? 'top-safe' : 'top-safe-offset-[42px]'} bottom-safe left-safe z-50 bg-bg-elevated !py-0 rounded-r-xl shadow-lg [&>*]:!rounded-none [&>*]:!border-0 [&>*]:!m-0` : ''}>
         {/* Phone chat page: ONE drawer holds the shell's navigation rail (72px,
             from MobileNavRailContext) beside the sessions pane, Discord-style, so
             the bar above needs no second drawer trigger. The pane keeps its
@@ -5580,9 +5580,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             {/* The drawer's `[&>*]` resets (no card border/radius/margin on the
                 sidebar root) reach only its direct child, which is now this
                 wrapper -- so the wrapper carries the same resets one level down. */}
-            <div className="flex-1 min-w-0 h-full min-h-0 flex flex-col overflow-hidden bg-bg-elevated [&_.sidebar-inner]:!bg-bg-elevated [&_.sidebar-inner]:!w-full [&_.sidebar-inner]:!min-w-0 [&_.sidebar-inner]:!shrink [&>*]:!rounded-none [&>*]:!border-0 [&>*]:!m-0">{sessionsPane}</div>
+            <div className="chat-sessions-rail flex-1 min-w-0 h-full min-h-0 flex flex-col overflow-hidden bg-bg-elevated [&_.sidebar-inner]:!bg-bg-elevated [&_.sidebar-inner]:!w-full [&_.sidebar-inner]:!min-w-0 [&_.sidebar-inner]:!shrink [&>*]:!rounded-none [&>*]:!border-0 [&>*]:!m-0">{sessionsPane}</div>
           </div>
-        ) : sessionsPane
+        ) : (
+          // Desktop: the sessions column docks INSIDE the chrome surface, so it
+          // must not read as a floating card. Strip the LIST_SHELL rounding,
+          // shadow, and top/bottom/left borders — but KEEP the right border as
+          // the deliberate divider between the session list and the content.
+          <div className="chat-sessions-rail h-full min-h-0 flex flex-col overflow-hidden [&_.sidebar-inner]:!border-t-0 [&_.sidebar-inner]:!border-b-0 [&_.sidebar-inner]:!border-l-0 [&_.sidebar-inner]:!rounded-none [&_.sidebar-inner]:!shadow-none">{sessionsPane}</div>
+        )
         })()}
       </OverlayDrawer>
       </GuideRevealScope>

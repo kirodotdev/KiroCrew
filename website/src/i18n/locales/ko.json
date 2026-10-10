@@ -6790,6 +6790,7 @@
       "unknown_error": "가져오기에 실패했습니다"
     },
     "instanceTabBar": {
+      "add_remote_crew": "원격 크루 추가",
       "chain_via": "{{via}} › {{name}}",
       "connected": "연결됨",
       "connected_refresh": "연결됨 · 갱신 {{time}}",
@@ -6806,7 +6807,10 @@
       "tunnel_error": "터널 오류",
       "tunnel_state": "터널 {{state}}.",
       "n_unread": "읽지 않음 {{n}}개",
+      "pinned_crews": "고정된 크루",
       "switch_crew": "크루 전환",
+      "switch_to_crew": "{{name}}({{host}})(으)로 전환",
+      "switch_to_local": "로컬로 전환",
       "switch_crew_unread": "크루 전환, 다른 곳에 읽지 않은 항목 {{n}}개",
       "stopped": "중지됨",
       "pin_crew": "{{name}}을(를) 헤더에 고정",

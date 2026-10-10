@@ -2500,6 +2500,76 @@ file-tree-container{
   backface-visibility:hidden;
   transition:background-color .25s ease}
 
+/* ── Dashboard chrome ──
+   The nav rail and top bar form one continuous `--chrome` surface, with the
+   real page inset to its right as a bordered, top-rounded panel. Mobile drawers
+   and focus overlays keep their own frame. Ported from feat/grabber-dashboard-layout. */
+.grabber-shell{background:var(--chrome);color:var(--text)}
+.grabber-shell > header.topbar-glass{background:var(--chrome);color:var(--text);box-shadow:none;position:relative;z-index:2}
+/* The glass pills restored on the chrome bar sit flush against `.tb-right`'s
+   bottom clip edge (its shared rule reserves only top/right, for the bell
+   badge). Give the chrome bar's trailing group a matching BOTTOM reserve so the
+   pills' rounded bottom + soft shadow are not clipped — equal negative margin
+   keeps the 42px bar height unchanged, same trick as the shared rule's top edge. */
+.grabber-shell .tb-right{padding-bottom:6px;margin-bottom:-6px}
+.grabber-shell > .dashboard-surface{border-top:1px solid var(--border);border-left:1px solid var(--border);border-right:1px solid var(--border);border-radius:8px 8px 0 0;margin-right:6px;overflow:hidden;background:var(--bg);color:var(--text)}
+.grabber-shell .dashboard-navigation{background:var(--chrome);color:var(--text)}
+/* Docked, the rail IS the chrome surface — not a floating card. The
+   `.focus-chrome-rail` border/radius below is for the focus-mode OVERLAY rail
+   (summoned outside `.grabber-shell`); inside the shell drop it so the rail
+   reads flush with the continuous surface instead of a bordered rounded pill. */
+.grabber-shell .focus-chrome-rail{border:0;border-radius:0}
+/* The focus-mode overlay rail is summoned OUTSIDE the chrome shell (focusActive
+   drops both `grabber-shell` and `mobile-chrome` from the shell grid), so the
+   `.grabber-shell .dashboard-navigation` paint above cannot reach it and only
+   the kiro-light theme rule below gives it a surface. Paint it here so the
+   summoned rail reads as a solid panel on every theme, not transparent over the
+   scrolling transcript. */
+.focus-chrome-rail{background:var(--chrome);border:1px solid var(--border);border-radius:12px}
+.dashboard-navigation .nav-item{height:36px;padding:2px 9px;gap:10px;flex-shrink:0}
+.dashboard-navigation .nav-item > .app-icon-nav{width:32px;height:32px;border-radius:8px}
+.dashboard-navigation .nav-item > .app-icon-nav > svg{width:18px;height:18px}
+/* Selection belongs to the icon tile, never a rail-wide saturated slab. The
+   shell selector intentionally outranks each theme's generic .nav-active.
+   `{iconEl}` renders as a DIRECT child of `.nav-item` (class `app-icon-nav`),
+   so the tile rules target it directly rather than a `.nav-icon-frame` wrapper
+   that NavItem never renders. */
+.dashboard-navigation .nav-item.nav-active{background:transparent;color:var(--text);filter:none}
+.dashboard-navigation .nav-item.nav-active > .app-icon-nav{background:var(--accent-subtle);color:var(--accent)}
+.dashboard-navigation .nav-item:hover{background:transparent}
+/* Hover answers immediately on the compact tile, independently of the label
+   delay. A neutral inset edge remains visible in low-contrast light palettes;
+   selected tiles keep their accent fill. Neither cue changes geometry. */
+.dashboard-navigation .nav-item:hover > .app-icon-nav{opacity:1;box-shadow:inset 0 0 0 1px var(--border-strong)}
+.dashboard-navigation .nav-item:not(.nav-active):hover > .app-icon-nav{background:var(--bg-hover)}
+.dashboard-navigation[data-compact="true"] .nav-item{justify-content:center;padding-left:0;padding-right:0;width:100%}
+.dashboard-navigation[data-compact="true"] .nav-section{overflow:hidden}
+.dashboard-navigation .nav-item > span:not(.app-icon-nav){min-width:0}
+/* The sessions sidebar is the first column INSIDE the surface. Drop its card
+   rounding and shadow and its top/bottom/left borders so it sits flush against
+   the surface's rounded corner, but KEEP its right border — that divider between
+   the session list and the content is deliberate (matches the source branch,
+   which zeroes only top/bottom/left + radius). Scoped to the chat sessions rail
+   (`.chat-sessions-rail`) so it does NOT reach other `.sidebar-inner` list shells
+   under the surface — e.g. the Members roster `<aside>`, which keeps its card. */
+.grabber-shell .chat-sessions-rail .sidebar-inner{border-top:0;border-bottom:0;border-left:0;border-radius:0;box-shadow:none}
+@media(prefers-reduced-motion:reduce){
+  .grabber-shell{transition:none!important}
+}
+
+/* Phones keep all reading width: continuous chrome and one top divider, but
+   no desktop gutter or persistent rail. */
+.mobile-chrome{background:var(--chrome);color:var(--text)}
+.mobile-chrome > header.topbar-glass{background:var(--chrome);color:var(--text);box-shadow:none}
+.mobile-chrome > .dashboard-surface{border-top:1px solid var(--border);border-radius:8px 8px 0 0;overflow:hidden;background:var(--bg);color:var(--text)}
+.mobile-navigation-rail .nav-item.nav-active{background:transparent;color:var(--text);filter:none}
+/* The top bar's readout capsule (tokens + system metrics) and the Request a
+   Feature pill keep their Liquid Glass material on the chrome top bar — the
+   same glass the search trigger wears — so the three top-bar pills read as one
+   consistent set rather than two flat shapes beside a glass one. (An earlier
+   iteration flattened these two against the --chrome surface; reversed by
+   maintainer decision — see rfc-dashboard-chrome-shell goal set.) */
+
 /* ── Frameless Electron window (macOS) ──
    The SPA header row doubles as the title bar; the native traffic lights are
    inset at the window's top-left (electron/main.js trafficLightPositionForZoom),
@@ -3505,6 +3575,11 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
  * chip, unchanged on focus. */
 .glass-shadow { box-shadow: 0 0 18px rgba(0, 0, 0, 0.06); transition: box-shadow 0.18s ease; }
 [data-mode="dark"] .glass-shadow { box-shadow: 0 0 18px rgba(0, 0, 0, 0.30); }
+/* On the flat chrome top bar the pills sit 7px above the content surface's
+   divider; the base 18px glow feathers down to that line and reads as a smudge
+   against it. Contain it to a soft, small shadow that stays within the gap. */
+.grabber-shell > header.topbar-glass .glass-shadow { box-shadow: 0 1px 4px rgba(0, 0, 0, 0.05); }
+[data-mode="dark"] .grabber-shell > header.topbar-glass .glass-shadow { box-shadow: 0 1px 4px rgba(0, 0, 0, 0.28); }
 /* A pending approval swaps the pane's shadow for the warm glow. */
 .glass-shadow.approval-glow { box-shadow: var(--approval-shadow); }
 

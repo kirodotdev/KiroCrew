@@ -7,10 +7,8 @@ import { renderWithProviders, createTestStore } from './helpers'
 import App, { NavBadge } from '../App'
 import { sseConnected, sseDisconnected, markSlotUnread } from '../store/dashboardSlice'
 import { openActivityPanel, sseSubagentQueued } from '../store/chatSlice'
-import { SHORTCUTS_ENABLED_KEY } from '../hooks/useKeyboardShortcuts'
 import SegmentedControl from '../components/SegmentedControl'
 import { ApiError } from '../api/client'
-import { safeSetItem } from '../utils/safeStorage'
 import { FEATURE_REQUEST_PROMPT_FALLBACK } from '../prompts/featureRequest'
 import { consumeChatHandoff } from '../utils/errorReport'
 
@@ -483,8 +481,8 @@ describe('App routing', () => {
       expect(screen.getByRole('button', { name: 'Try Again' })).toBeInTheDocument()
       expect(screen.getByRole('button', { name: 'Reload page' })).toBeInTheDocument()
       // The nav rail is still rendered around the failed route.
-      expect(screen.getByText('Sessions')).toBeInTheDocument()
-      expect(screen.getByText('Settings')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Sessions' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument()
 
       fireEvent.click(within(notice).getByRole('button', { name: 'Ask the agent' }))
       expect(consumeChatHandoff()).toContain(`- Message: ${caughtDiagnostic}`)
@@ -510,47 +508,70 @@ describe('App routing', () => {
 
   it('renders nav items', () => {
     renderWithProviders(<App />, { route: '/chat' })
-    expect(screen.getByText('Sessions')).toBeInTheDocument()
-    expect(screen.getByText('Customize')).toBeInTheDocument()
-    expect(screen.getByText('Settings')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Sessions' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Customize' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument()
     // PR1 App Store split: the single 'Explore' entry is gone — the sidebar
     // now carries TWO App Store rows, Discover (/apps) and Library
-    // (/apps/library).
-    expect(screen.getByText('Discover')).toBeInTheDocument()
-    expect(screen.getByText('Library')).toBeInTheDocument()
-    // The bottom-pinned community row: the GitHub mark fronts a "Star us" link
-    // plus a "Report issue" BUTTON (it opens the diagnostics flow rather than
-    // navigating to the issue list), and the icon-only Discord link. The
-    // kiro.dev link was removed.
-    expect(screen.getByText('Star us')).toBeInTheDocument()
-    expect(screen.getByText('Report issue')).toBeInTheDocument()
+    // (/apps/library). Icon-only on the collapsed desktop rail, so matched by
+    // their aria-label (role=button) rather than visible text.
+    expect(screen.getByRole('button', { name: 'Discover' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Library' })).toBeInTheDocument()
+    // The bottom-pinned community row. On the fixed-collapsed desktop rail it
+    // shows TWO icon-only external links — "Star us" (GitHub) and Discord —
+    // matched by their aria-label (the text labels show only on the expanded
+    // mobile rail). Report-a-problem is NOT on the collapsed rail: a third peer
+    // button would break AUTOSDE max-two-buttons-per-row on the width-pressured
+    // rail, and it keeps its canonical home at Settings › About › Support (and
+    // the top-bar feedback pill).
     expect(screen.getByLabelText('Star Kiro Crew on GitHub')).toBeInTheDocument()
     expect(
-      screen.getByLabelText(
+      screen.queryByLabelText(
         'Report a problem — collects logs and crash reports, secrets removed',
       ),
-    ).toBeInTheDocument()
+    ).not.toBeInTheDocument()
     // The old bare link to the issue list is gone — reporting now goes through
-    // the collector so triage gets logs instead of an empty issue form.
+    // the collector (reached from Settings), not an empty issue form.
     expect(screen.queryByLabelText('Report an issue on GitHub')).not.toBeInTheDocument()
     expect(screen.getByLabelText('Kiro Discord community')).toBeInTheDocument()
     expect(screen.queryByLabelText('Kiro website (kiro.dev)')).not.toBeInTheDocument()
   })
 
-  it('rail "Report issue" opens the diagnostics Report a Problem modal', async () => {
-    // The rail entry used to be an <a> to /issues, which lost exactly what
-    // triage needs. It must now mount the same shared modal as
-    // Settings › About › Support.
+  it('toggles the sessions side panel when the already-active Sessions rail row is clicked', async () => {
+    // On the fixed-collapsed rail the Sessions row cannot navigate anywhere
+    // once /chat is already active, so a second click must do something useful
+    // rather than nothing: it toggles the sessions side panel via the shared
+    // `toggle-pin-chat-sidebar` event (the same one the Alt+ chord fires and
+    // ChatPage listens for). This is a drawer toggle, not a rail-width expand.
     renderWithProviders(<App />, { route: '/chat' })
-    const trigger = screen.getByLabelText(
-      'Report a problem — collects logs and crash reports, secrets removed',
-    )
-    expect(trigger.tagName).toBe('BUTTON')
-    expect(trigger).not.toHaveAttribute('href')
+    const sessions = await screen.findByRole('button', { name: 'Sessions' })
+    let toggles = 0
+    const onToggle = () => { toggles += 1 }
+    window.addEventListener('toggle-pin-chat-sidebar', onToggle)
+    try {
+      fireEvent.click(sessions)
+      expect(toggles).toBe(1)
+    } finally {
+      window.removeEventListener('toggle-pin-chat-sidebar', onToggle)
+    }
+  })
 
-    fireEvent.click(trigger)
-    expect(await screen.findByText('What happened?')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /create report/i })).toBeInTheDocument()
+  it('does not put "Report issue" on the fixed-collapsed desktop rail', () => {
+    // The desktop rail is the collapsed icon rail, and its community row is
+    // capped at two peer buttons (AUTOSDE max-two-buttons-per-row): Star +
+    // Discord. Report-a-problem would be the third, so it is NOT on the rail —
+    // it keeps its canonical home at Settings › About › Support and the top-bar
+    // feedback pill, both of which open the same ReportProblemModal.
+    renderWithProviders(<App />, { route: '/chat' })
+    const nav = screen.getByRole('navigation', { name: 'Main navigation' })
+    expect(
+      within(nav).queryByLabelText(
+        'Report a problem — collects logs and crash reports, secrets removed',
+      ),
+    ).not.toBeInTheDocument()
+    // The two community links that DO remain are present on the collapsed rail.
+    expect(within(nav).getByLabelText('Star Kiro Crew on GitHub')).toBeInTheDocument()
+    expect(within(nav).getByLabelText('Kiro Discord community')).toBeInTheDocument()
   })
 
   it('renders the registry-derived Artifacts nav item, without a Knowledge rail item', () => {
@@ -562,8 +583,8 @@ describe('App routing', () => {
     // item — it lives as a tab inside Agent Capabilities and /knowledge
     // redirects there — so a rail entry reappearing is itself a regression.
     renderWithProviders(<App />, { route: '/chat' })
-    expect(screen.getByText('Artifacts')).toBeInTheDocument()
-    expect(screen.queryByText('Knowledge')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Artifacts' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Knowledge' })).not.toBeInTheDocument()
   })
 
   it('does not double-render Secretary when the builtin Secretary app is enabled', async () => {
@@ -585,11 +606,11 @@ describe('App routing', () => {
     ])
     renderWithProviders(<App />, { route: '/chat' })
     // Wait for refreshAppNav() to complete and merge into the rail.
-    await screen.findByText('Secretary')
+    await screen.findByRole('button', { name: 'Secretary' })
     // Exactly one nav entry — never two. The duplicate-key React warning
     // would silently fire if both NAV_ITEMS and appNavItems contributed an
     // entry; this assertion catches the visible regression.
-    expect(screen.getAllByText('Secretary')).toHaveLength(1)
+    expect(screen.getAllByRole('button', { name: 'Secretary' })).toHaveLength(1)
   })
 
   it('collapses a long Apps list behind a "more" toggle so the nav cannot grow unbounded', async () => {
@@ -614,7 +635,7 @@ describe('App routing', () => {
     expect(screen.queryByText('App 9')).not.toBeInTheDocument()
     // ...and revealed after expanding.
     act(() => { moreToggle.click() })
-    expect(await screen.findByText('App 9')).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'App 9' })).toBeInTheDocument()
     // Toggle now offers to collapse again.
     expect(screen.getByTitle(/show fewer apps/i)).toBeInTheDocument()
   })
@@ -658,15 +679,15 @@ describe('App routing', () => {
     const store = createTestStore()
     renderWithProviders(<App />, { route: '/chat', store })
     // Let the (empty) mount fetch settle; the app is absent.
-    await waitFor(() => expect(screen.getByText('Sessions')).toBeInTheDocument())
-    expect(screen.queryByText('Late App')).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Sessions' })).toBeInTheDocument())
+    expect(screen.queryByRole('button', { name: 'Late App' })).not.toBeInTheDocument()
     // Simulate a `kirocrew update` restart: the WS connects, drops, reconnects.
     // Only the reconnect (after a drop) refetches the Apps nav — the rail
     // self-heals without a manual reload.
     act(() => { store.dispatch(sseConnected()) })
     act(() => { store.dispatch(sseDisconnected()) })
     act(() => { store.dispatch(sseConnected()) })
-    expect(await screen.findByText('Late App')).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Late App' })).toBeInTheDocument()
   })
 
   it('retries the initial Apps-nav fetch after a transient failure', async () => {
@@ -687,7 +708,7 @@ describe('App routing', () => {
       // Flush the rejected mount fetch, then advance past the first backoff
       // (500ms base) so the retry fires and resolves with the app.
       await act(async () => { await vi.advanceTimersByTimeAsync(600) })
-      expect(screen.getByText('Retry App')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Retry App' })).toBeInTheDocument()
     } finally {
       vi.useRealTimers()
     }
@@ -717,7 +738,7 @@ describe('App routing', () => {
       act(() => { window.dispatchEvent(new Event('mc:apps-changed')) })
       // Advance well past the original retry's deadline; it must NOT fire.
       await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
-      expect(screen.getByText('Event App')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Event App' })).toBeInTheDocument()
       // Exactly two fetches: the failed mount + the re-trigger. The orphaned
       // retry was cancelled, so no third (empty) fetch overwrote the nav.
       expect(listApps).toHaveBeenCalledTimes(2)
@@ -798,55 +819,21 @@ describe('App routing', () => {
     expect(await screen.findByLabelText('Sessions')).toBeInTheDocument()
     expect(screen.queryByLabelText('2 subagents in flight')).not.toBeInTheDocument()
   })
-
-  it('keeps the sub-agent bot and count in the expanded Sessions rail item', async () => {
-    localStorage.removeItem('mc-nav')
+  it('shows the unread count as a collapsed badge dot on the Sessions rail item', async () => {
+    // The desktop rail is the fixed collapsed icon rail, so the unread badge
+    // renders as BadgeIndicator's collapsed dot (aria-label carries the count).
+    // The expanded in-flow pill + shortcut-hint layout, and the sub-agent
+    // ActivityIndicator, do not exist on the collapsed rail (ActivityIndicator
+    // returns null when collapsed) — that behaviour is mobile-rail only now.
     const store = createTestStore()
-
     renderWithProviders(<App />, { route: '/chat', store })
-
-    // Seed AFTER the mount fetch settles. `fetchSlots.fulfilled` is an
-    // authoritative slot-list writer, so queued-subagent state for a slot the
-    // fetched list does not name is residue and is evicted — seeding before the
-    // fetch would have this test depend on that eviction not happening.
-    expect(await screen.findByLabelText('Sessions')).toBeInTheDocument()
-    act(() => { store.dispatch(sseSubagentQueued({ slot: 'background', queued: 2 })) })
-
-    expect(await screen.findByLabelText('2 subagents in flight')).toBeInTheDocument()
-    // In flow beside the unread badge and the shortcut hint, not `absolute
-    // right-8` layered over them — see the overlap regression test below.
-    expect((await screen.findByLabelText('2 subagents in flight')).className).not.toContain('absolute')
-  })
-
-  it('keeps the expanded unread badge and the row shortcut hint out of each others space', async () => {
-    // Regression: the badge was `absolute right-2`, i.e. OUT of the row's flex
-    // line, while the shortcut hint is an in-flow span at the row's right edge —
-    // so on a Sessions row with one unread the badge painted ON TOP of the chord
-    // and the row advertised a keystroke you could not read.
-    //
-    // Pinned two ways, because either assertion alone still passes against the
-    // bug: the badge must be IN FLOW (an absolute badge overlaps a sibling at any
-    // count width, and jsdom computes no layout so a geometry check would be
-    // vacuous here), AND it must follow the chord in the same flex line, so the
-    // fix is not "the chord is the thing pushed off the right edge instead".
-    localStorage.removeItem('mc-nav')
-    localStorage.removeItem(SHORTCUTS_ENABLED_KEY)
-    const store = createTestStore()
-
-    renderWithProviders(<App />, { route: '/chat', store })
-
-    // The chord's presence is the precondition: with shortcuts off there is
-    // nothing for the badge to cover and the rest of this would pass vacuously.
-    const chord = await screen.findByTestId('nav-shortcut-chat')
-    // Seed the unread AFTER the mount slot fetch settles — `fetchSlots.fulfilled`
-    // drains unread keys naming no live slot, so seeding earlier would race it.
+    expect(await screen.findByRole('button', { name: 'Sessions' })).toBeInTheDocument()
     await waitFor(() => expect(store.getState().dashboard.slotsLoaded).toBe(true))
     act(() => { store.dispatch(markSlotUnread({ slot: 'background', ts: '2026-01-01T00:00:05Z' })) })
-
     const badge = await screen.findByLabelText('1 unread conversations')
-    expect(badge.className).not.toContain('absolute')
-    expect(badge.parentElement).toBe(chord.parentElement)
-    expect(chord.compareDocumentPosition(badge) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // Collapsed badge is the small accent dot (w-2 h-2 rounded-full), positioned
+    // on the icon tile.
+    expect(badge.className).toContain('rounded-full')
   })
 
   it('keeps an app rows run-state mark in the same flex line as its count pill', async () => {
@@ -872,34 +859,13 @@ describe('App routing', () => {
     expect(mark.parentElement).toBe(pill.parentElement)
   })
 
-  it('names what each right-edge count is counting, for sighted users too', async () => {
-    // The two indicators are now reliably CO-VISIBLE (that is the point of the
-    // fix above), so a bare "1" pill beside a bare bot glyph and "2" has to be
-    // tellable apart without a screen reader. Both carry the label as `title`.
-    //
-    // The title is the label ALONE, deliberately: the labels are plural phrases,
-    // so reusing the aria string would render a visible "1 unread conversations"
-    // at count 1. The count is already in the pill, so the title does not repeat
-    // it — asserted below, or the grammar defect returns the moment someone
-    // "helpfully" switches these back to ariaLabel.
-    localStorage.removeItem('mc-nav')
-    const store = createTestStore()
-
-    renderWithProviders(<App />, { route: '/chat', store })
-
-    await waitFor(() => expect(store.getState().dashboard.slotsLoaded).toBe(true))
-    act(() => { store.dispatch(markSlotUnread({ slot: 'background', ts: '2026-01-01T00:00:05Z' })) })
-    act(() => { store.dispatch(sseSubagentQueued({ slot: 'background', queued: 2 })) })
-
-    const badge = await screen.findByLabelText('1 unread conversations')
-    const activity = await screen.findByLabelText('2 subagents in flight')
-    expect(badge).toHaveAttribute('title', 'unread conversations')
-    expect(activity).toHaveAttribute('title', 'subagents in flight')
-    // Count 1 against a plural phrase is the case that reads wrong, so pin that
-    // the title carries no digit rather than only pinning the happy string.
-    expect(badge.getAttribute('title')).not.toMatch(/\d/)
-    expect(activity.getAttribute('title')).not.toMatch(/\d/)
-  })
+  // Removed: 'names what each right-edge count is counting, for sighted users
+  // too' — it asserted the EXPANDED in-flow unread pill + sub-agent
+  // ActivityIndicator co-visible with their titles. On the fixed-collapsed
+  // desktop rail ActivityIndicator renders null and the unread badge is a dot
+  // (covered by 'shows the unread count as a collapsed badge dot'), so the
+  // expanded co-visibility this pinned no longer exists on desktop. The expanded
+  // layout survives only on the mobile rail, exercised by the mobile suites.
 
   it('surfaces the collapsed hover label on keyboard focus and is Enter-activatable', async () => {
     // Keyboard-only users (no pointer) must still be able to identify icon-only
@@ -965,15 +931,18 @@ describe('App routing', () => {
   })
 
   it('renders Kiro Crew branding', () => {
-    localStorage.removeItem('mc-nav') // expanded sidebar shows the brand text
+    localStorage.removeItem('mc-nav')
     renderWithProviders(<App />, { route: '/chat' })
-    // Brand (logo + name) moved from the top bar into the sidebar menu row.
-    // The wordmark renders as two colored segments ('Kiro ' + 'Crew').
-    expect(screen.getAllByText('Crew').length).toBeGreaterThan(0)
+    // The chrome rail header is the crew identity switcher, not the brand
+    // wordmark: the brand toggle was replaced by the switcher, and the product
+    // name now lives in the document title (asserted elsewhere) rather than the
+    // rail. The switcher trigger is present and names the switch action.
+    const nav = screen.getByRole('navigation', { name: 'Main navigation' })
+    expect(within(nav).getByTestId('navigation-crew-switcher')).toBeInTheDocument()
     localStorage.removeItem('mc-nav')
   })
 
-  it('uses installed theme branding in the left rail and browser favicon', async () => {
+  it('uses installed theme branding for the browser favicon', async () => {
     const { api } = await import('../api/client')
     localStorage.removeItem('mc-nav')
     localStorage.setItem('mc-color-theme', 'custom-pearce')
@@ -999,15 +968,14 @@ describe('App routing', () => {
 
     const view = renderWithProviders(<App />, { route: '/chat' })
     try {
-      const nav = screen.getByRole('navigation', { name: 'Main navigation' })
-      const brand = within(nav).getByRole('button', { name: 'Collapse sidebar' })
-      await waitFor(() => expect(brand).toHaveTextContent('KIRO CREW'))
-      expect(brand.querySelector('img')).toHaveAttribute(
-        'src',
-        '/api/theme/pearce/assets/branding/logo.svg',
-      )
-      const favicon = document.getElementById('mc-theme-favicon') as HTMLLinkElement | null
-      expect(favicon).not.toBeNull()
+      // The chrome rail header is the crew switcher, not the brand logo, so the
+      // installed theme's branding no longer paints a rail glyph. The favicon
+      // wiring is independent of the rail and still applies.
+      const favicon = await waitFor(() => {
+        const el = document.getElementById('mc-theme-favicon') as HTMLLinkElement | null
+        expect(el).not.toBeNull()
+        return el!
+      })
       expect(favicon).toHaveAttribute(
         'href',
         '/api/theme/pearce/assets/branding/favicon.svg',
@@ -1289,28 +1257,23 @@ describe('App routing', () => {
     expect(MOBILE_BREAKPOINT).toBeGreaterThanOrEqual(640)
   })
 
-  it('resizes the sidebar and main body together with a quick shell transition', () => {
-    localStorage.removeItem('mc-nav')
-    // Regression (PR #94): the width transition was gated on a 180ms pulse AND
-    // the Activity panel being closed, so the sidebar snapped instead of
-    // animating whenever Activity was open (or a slow frame ate the pulse).
-    // The transition must now be unconditional — including with Activity open.
+  it('renders the desktop shell at the fixed collapsed rail width with a column transition', () => {
+    // The desktop rail is permanently collapsed, so the shell's nav column is
+    // the 60px collapsed track (never 236px). The grid-template-columns
+    // transition stays unconditional (including with the Activity panel open) so
+    // the auto track animates smoothly when the panel opens/closes.
     const store = createTestStore()
     store.dispatch(openActivityPanel())
     renderWithProviders(<App />, { route: '/chat', store })
 
     const shell = screen.getByTestId('dashboard-shell')
     expect(shell).toHaveStyle({
-      gridTemplateColumns: '236px minmax(0,1fr) auto',
+      gridTemplateColumns: '60px minmax(0,1fr) auto',
       transition: 'grid-template-columns 150ms cubic-bezier(0.2, 0, 0, 1)',
     })
-
-    fireEvent.click(screen.getByRole('button', { name: 'Collapse sidebar' }))
-    expect(shell).toHaveStyle({
-      gridTemplateColumns: '74px minmax(0,1fr) auto',
-      transition: 'grid-template-columns 150ms cubic-bezier(0.2, 0, 0, 1)',
-    })
-    localStorage.removeItem('mc-nav')
+    // No collapse toggle on desktop — the rail cannot be widened.
+    const nav = screen.getByRole('navigation', { name: 'Main navigation' })
+    expect(within(nav).queryByRole('button', { name: 'Collapse sidebar' })).not.toBeInTheDocument()
   })
 
   // ── Shell entrance animation is one-shot ──────────────────────────────────
@@ -1376,98 +1339,55 @@ describe('App routing', () => {
     }
   })
 
-  it('hosts the collapse control in the nav menu row and hides the Main group heading', () => {
+  it('fixes the desktop rail to the collapsed icon rail with no expand toggle', () => {
     localStorage.removeItem('mc-nav')
     renderWithProviders(<App />, { route: '/chat' })
 
     const nav = screen.getByRole('navigation', { name: 'Main navigation' })
-    // Brand (logo + name) now lives in the rail's menu row, replacing the old
-    // hamburger; the collapse control is an arrow-left-to-line button.
-    expect(within(nav).getByText('Crew')).toBeInTheDocument()
-    const collapse = within(nav).getByRole('button', { name: 'Collapse sidebar' })
+    // The desktop rail header is the crew switcher only. The expandable rail is
+    // a mobile affordance, so there is NO expand/collapse control on desktop and
+    // no "Main" group heading (icon rail), and the rail cannot be widened.
+    expect(within(nav).getByTestId('navigation-crew-switcher')).toBeInTheDocument()
+    expect(within(nav).queryByRole('button', { name: 'Collapse sidebar' })).not.toBeInTheDocument()
+    expect(within(nav).queryByRole('button', { name: 'Expand sidebar' })).not.toBeInTheDocument()
     expect(within(nav).queryByRole('button', { name: 'Toggle sidebar' })).not.toBeInTheDocument()
     expect(within(nav).queryByText('Main')).not.toBeInTheDocument()
+    localStorage.removeItem('mc-nav')
+  })
 
-    fireEvent.click(collapse)
-    // Collapsed: the brand shrinks to a clickable logo that expands the rail;
-    // the collapse control unmounts.
-    expect(within(nav).getByRole('button', { name: 'Expand sidebar' })).toBeInTheDocument()
+  it('keeps the wide rail collapsed after preview expand mode ends (never widens on its own)', () => {
+    renderWithProviders(<App />, { route: '/chat' })
+    const nav = screen.getByRole('navigation', { name: 'Main navigation' })
+    // Desktop rail is fixed-collapsed: no expand/collapse control at any time.
     expect(within(nav).queryByRole('button', { name: 'Collapse sidebar' })).not.toBeInTheDocument()
-    expect(localStorage.getItem('mc-nav')).toBe('1')
-    localStorage.removeItem('mc-nav')
-  })
-
-  it('lets the brand toggle expand the rail while preview expand mode is active', () => {
-    localStorage.removeItem('mc-nav')
-    renderWithProviders(<App />, { route: '/chat' })
-    const nav = screen.getByRole('navigation', { name: 'Main navigation' })
-
-    // Entering the Web Preview's expand mode collapses the rail.
-    act(() => {
-      window.dispatchEvent(new CustomEvent('kirocrew-preview-expand', { detail: { expanded: true } }))
-    })
-    expect(within(nav).getByRole('button', { name: 'Expand sidebar' })).toBeInTheDocument()
-
-    // The logo keeps its standard behavior inside expand mode: it expands.
-    fireEvent.click(within(nav).getByRole('button', { name: 'Expand sidebar' }))
-    expect(within(nav).getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
-
-    // Leaving expand mode must not undo that explicit choice.
-    act(() => {
-      window.dispatchEvent(new CustomEvent('kirocrew-preview-expand', { detail: { expanded: false } }))
-    })
-    expect(within(nav).getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
-    localStorage.removeItem('mc-nav')
-  })
-
-  it('restores the pre-expand rail state when preview expand mode ends untouched', () => {
-    localStorage.removeItem('mc-nav') // start expanded
-    renderWithProviders(<App />, { route: '/chat' })
-    const nav = screen.getByRole('navigation', { name: 'Main navigation' })
-    expect(within(nav).getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
+    expect(within(nav).queryByRole('button', { name: 'Expand sidebar' })).not.toBeInTheDocument()
 
     act(() => {
       window.dispatchEvent(new CustomEvent('kirocrew-preview-expand', { detail: { expanded: true } }))
     })
-    expect(within(nav).getByRole('button', { name: 'Expand sidebar' })).toBeInTheDocument()
-
     act(() => {
       window.dispatchEvent(new CustomEvent('kirocrew-preview-expand', { detail: { expanded: false } }))
     })
-    expect(within(nav).getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
-    // The auto-collapse is transient: it never writes the persisted preference.
+    // A preview teardown never widens the desktop rail: still no expand control,
+    // and the auto behaviour never writes the persisted preference.
+    expect(within(nav).queryByRole('button', { name: 'Expand sidebar' })).not.toBeInTheDocument()
     expect(localStorage.getItem('mc-nav')).toBeNull()
   })
 
-  it('hides the community row when the sidebar is collapsed', () => {
-    localStorage.removeItem('mc-nav')
+  it('shows the community row links on the desktop rail', () => {
     renderWithProviders(<App />, { route: '/chat' })
     const nav = screen.getByRole('navigation', { name: 'Main navigation' })
-    const contact = within(nav).getByText('Star us')
-    expect(contact).toBeVisible()
-    fireEvent.click(within(nav).getByRole('button', { name: 'Collapse sidebar' }))
-    // The row folds away (max-h-0 + opacity-0 + inert) instead of unmounting.
-    const wrapper = contact.closest('[class*="max-h-0"]')
-    expect(wrapper).not.toBeNull()
-    expect(wrapper).toHaveAttribute('inert')
-    localStorage.removeItem('mc-nav')
+    // The community row's icon links are present on the rail (matched by their
+    // aria-labels, which are stable across collapse state).
+    expect(within(nav).getByLabelText('Star Kiro Crew on GitHub')).toBeInTheDocument()
+    expect(within(nav).getByLabelText('Kiro Discord community')).toBeInTheDocument()
   })
 
-  it('keeps Request a Feature visible in the header actions cluster in both sidebar states', () => {
-    safeSetItem('mc-nav', '1')
+  it('keeps Request a Feature visible in the header actions cluster', () => {
     renderWithProviders(<App />, { route: '/chat' })
-
-    // Request a Feature moved out of the brand region into its own pill in the
-    // header's right-side actions cluster; it stays visible regardless of the
-    // sidebar's collapsed/expanded state.
+    // Request a Feature lives in the header's right-side actions cluster, not the
+    // rail, so it is unaffected by the (now fixed-collapsed) desktop rail.
     expect(screen.getByRole('button', { name: 'Request a Feature' })).toBeInTheDocument()
-
-    const nav = screen.getByRole('navigation', { name: 'Main navigation' })
-    fireEvent.click(within(nav).getByRole('button', { name: 'Expand sidebar' }))
-    expect(within(nav).getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Request a Feature' })).toBeInTheDocument()
-    expect(localStorage.getItem('mc-nav')).toBe('0')
-    localStorage.removeItem('mc-nav')
   })
 
   it('keeps feature-request instructions hidden from the persisted user message', async () => {
@@ -1519,7 +1439,7 @@ describe('App routing', () => {
   it('keeps theme controls available from Settings', () => {
     renderWithProviders(<App />, { route: '/chat' })
     // Theme controls live in Settings > Display rather than the shell header.
-    expect(screen.getByText('Settings')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument()
   })
 
   it('renders approval mode buttons with tooltips', () => {

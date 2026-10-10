@@ -6790,6 +6790,7 @@
       "unknown_error": "导入失败"
     },
     "instanceTabBar": {
+      "add_remote_crew": "添加远程 Crew",
       "chain_via": "{{via}} › {{name}}",
       "connected": "已连接",
       "connected_refresh": "已连接 · {{time}} 后刷新",
@@ -6806,7 +6807,10 @@
       "tunnel_error": "隧道错误",
       "tunnel_state": "隧道{{state}}。",
       "n_unread": "{{n}} 条未读",
+      "pinned_crews": "已置顶的 Crew",
       "switch_crew": "切换 Crew",
+      "switch_to_crew": "切换到 {{name}}（{{host}}）",
+      "switch_to_local": "切换到本地",
       "switch_crew_unread": "切换 Crew，其他处有 {{n}} 条未读",
       "stopped": "已停止",
       "pin_crew": "将 {{name}} 置顶到顶栅",

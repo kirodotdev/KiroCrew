@@ -94,8 +94,8 @@ export function RailBrandToggle({ effectiveCollapsed, toggleNav, avatar, brandin
         aria-expanded={!effectiveCollapsed}
         {...uiLocation('shell.nav-toggle')}
       >
-        <span className={`flex items-center gap-2.5 min-w-0 transition-[margin] duration-300 ${effectiveCollapsed ? 'mt-1' : ''}`}>
-          <RailHeaderGlyph avatar={avatar} boxClass={branding?.logoClass ?? (effectiveCollapsed ? 'w-9 h-9' : 'w-7 h-7')} iconSize={effectiveCollapsed ? 24 : 18} />
+        <span className={`flex items-center gap-2.5 min-w-0 transition-[margin] duration-300 ${effectiveCollapsed ? 'mt-2' : ''}`}>
+          <RailHeaderGlyph avatar={avatar} boxClass={branding?.logoClass ?? (effectiveCollapsed ? 'w-8 h-8' : 'w-7 h-7')} iconSize={effectiveCollapsed ? 24 : 18} />
           <AnimatePresence initial={false}>
             {!effectiveCollapsed && (
               <motion.span
@@ -203,8 +203,23 @@ export function RailCommunityLinks({ effectiveCollapsed, setReportProblemOpen }:
    * alone names no target. Hidden while the rail is collapsed (folds
    * away via max-height so the collapse stays smooth).
    */
+  // Collapsed (the fixed desktop icon rail): the full label row would fold to
+  // max-h-0 + inert, leaving the community links unviewable and unfocusable.
+  // Render a compact icon row instead so they stay reachable. TWO controls only
+  // (AUTOSDE max-two-buttons-per-row): the two external community links. Report
+  // a problem is NOT here — it keeps its canonical home at Settings › About ›
+  // Support, where the diagnostics collector lives, so nothing is lost.
+  if (effectiveCollapsed) {
+    return (
+      <div className="flex flex-col items-center gap-0.5 border-t border-border pt-2 pb-0.5 mt-1">
+        <a href="https://github.com/kirodotdev/KiroCrew" target="_blank" rel="noopener noreferrer" title={i18nT('app.star_kirocrew_on_github')} aria-label={i18nT('app.star_kirocrew_on_github')} className="flex items-center justify-center w-8 h-8 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors shrink-0"><GithubIcon size={16} /></a>
+        <a href="https://kiro.dev/discord/" target="_blank" rel="noopener noreferrer" title={i18nT('app.discord_community')} aria-label={i18nT('app.kiro_discord_community')} className="flex items-center justify-center w-8 h-8 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors shrink-0"><DiscordIcon size={16} /></a>
+      </div>
+    )
+  }
+
   return (
-    <div {...(effectiveCollapsed ? { inert: '' } : {})} className={`overflow-hidden transition-all duration-200 ${effectiveCollapsed ? 'max-h-0 opacity-0' : 'max-h-16 opacity-100 mt-1'}`}>
+    <div className="overflow-hidden transition-all duration-200 max-h-16 opacity-100 mt-1">
       <div className="flex items-center border-t border-border pl-3 pr-0.5 pt-2.5 pb-0.5 whitespace-nowrap">
         {/* pl-3 puts the mark on the same 12px x-offset as the
             nav-item icons above. No `gap` on this row ON PURPOSE: a row
