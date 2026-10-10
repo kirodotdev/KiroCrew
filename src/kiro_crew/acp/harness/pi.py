@@ -566,7 +566,10 @@ def _verify_pi_gate(
     # and the gateway's own secrets must not reach a foreign binary a few lines
     # ahead of the code that strips them.
     env = scrub_agent_subprocess_env(
-        _resolve_spawn_env({**os.environ, **session._extra_env}, kiro_api_key=False)
+        _resolve_spawn_env(
+            {**os.environ, **session._agent_env_for_spawn(), **session._extra_env},
+            kiro_api_key=False,
+        )
     )
     env["PATH"] = augmented_path(env.get("PATH", ""))
     # Offline for the read-back only: pi's startup network work (update checks,

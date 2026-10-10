@@ -826,6 +826,8 @@ class LaunchTools:
     bind_voice_safe_agent_workspace_async: Callable[[Any], Awaitable[tuple[str, int | None]]]
     create_subprocess_limited: Callable[..., Awaitable[asyncio.subprocess.Process]]
     retrying_spawn_factory: Callable[..., Awaitable[asyncio.subprocess.Process]] | None = None
+    #: ``agent.env`` (``acp.agent_env.agent_env_overlay``); blocking, run off-loop.
+    agent_env_overlay: Callable[[], dict[str, str]] = field(default=dict)
 
 
 def _unscoped(argv: list[str]) -> tuple[list[str], str]:
@@ -871,6 +873,10 @@ class LaunchRequest:
     env_after_marker: Callable[[dict[str, str]], None] = field(default=_no_env_step)
     env_after_scratch: Callable[[dict[str, str]], None] = field(default=_no_env_step)
     scope_argv: Callable[[list[str]], tuple[list[str], str]] = field(default=_unscoped)
+    #: ``agent.env`` as the driver already read it for this spawn, or ``None`` to
+    #: read it here. A driver whose harness verifies its config before the spawn
+    #: passes the snapshot that verification used, so both see the same values.
+    agent_env: Mapping[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -992,6 +998,16 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
     argv, scope_unit = request.scope_argv(argv)
 
     env = {**os.environ}
+    # ``agent.env``: the operator's variables for everything the agent runs, over
+    # the inherited gateway environment and under everything below -- the
+    # driver's ``extra_env``, its session identity and credential repair, and the
+    # scrub, which still removes any denied name. Off-loop (reads config);
+    # guarded because the sandbox launcher above is live. A driver that already
+    # read it for this spawn hands that snapshot over instead.
+    if request.agent_env is not None:
+        env.update(request.agent_env)
+    else:
+        env.update(await host._to_thread_guarding_sandbox(tools.agent_env_overlay))
     if request.extra_env:
         env.update(request.extra_env)
     env["PATH"] = tools.augmented_path(env.get("PATH", ""))

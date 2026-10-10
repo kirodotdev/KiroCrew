@@ -142,6 +142,10 @@ class ProcessSession(Protocol):
     _pi_gate_nonce: str
     _deepseek_gate_nonce: str
 
+    def _agent_env_for_spawn(self) -> dict[str, str]:
+        """``agent.env`` for the spawn in progress, read at most once per spawn: a
+        tool-gate read-back and the launch tail see the same values."""
+
     def _scrub_observed(self, value: object) -> object:
         """*value*, a string the harness reported back, with credentials and exfil URLs
         redacted, before a refusal quotes it or a log line records it."""

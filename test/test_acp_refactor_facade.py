@@ -1820,6 +1820,7 @@ _SHARED_BINDINGS_PATCHED: frozenset[tuple[str, str]] = frozenset(
         ("kiro_crew.acp.runtime", "_get_child_pids"),
         ("kiro_crew.acp.runtime", "agent_scratch"),
         ("kiro_crew.acp.runtime", "launch"),
+        ("kiro_crew.acp.runtime", "scrub_agent_subprocess_env"),
         ("kiro_crew.acp.runtime", "wrap_argv"),
         ("kiro_crew.acp.runtime", "wrap_argv_async"),
     }

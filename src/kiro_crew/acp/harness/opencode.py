@@ -429,8 +429,9 @@ def _verify_opencode_routing(
     from kiro_crew.acp.client import _resolve_spawn_env, augmented_path
 
     setting_key, _required = acp_tool_gate.permission_setting_for(backend)
-    # The SAME environment the spawn builds, in both directions. The per-session
-    # overlay (``_extra_env``, a cron job's ``env`` among its sources) is applied
+    # The SAME environment the spawn builds, in both directions. ``agent.env`` and
+    # the per-session overlay (``_extra_env``, a cron job's ``env`` among its
+    # sources) are applied, in the launch tail's order,
     # because this harness reads its config LOCATION from the environment --
     # ``XDG_CONFIG_HOME``, ``OPENCODE_CONFIG`` -- so a read-back without the overlay
     # would resolve a different set of config files than the session it vouches
@@ -441,7 +442,10 @@ def _verify_opencode_routing(
     # inheriting the environment verbatim would hand a child every one of them a
     # few lines ahead of the code that strips them.
     env = scrub_agent_subprocess_env(
-        _resolve_spawn_env({**os.environ, **session._extra_env}, kiro_api_key=False)
+        _resolve_spawn_env(
+            {**os.environ, **session._agent_env_for_spawn(), **session._extra_env},
+            kiro_api_key=False,
+        )
     )
     env["PATH"] = augmented_path(env.get("PATH", ""))
     env[_ENV_OPENCODE_CONFIG_CONTENT] = config_content

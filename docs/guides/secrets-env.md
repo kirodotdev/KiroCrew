@@ -149,6 +149,36 @@ topologies and resolves the value only on the trusted side of the server spawn.
 
 ---
 
+## Non-secret environment for the agent: `agent.env`
+
+`agent.env` in `config.json` sets environment variables on every agent process
+Kiro Crew starts for a chat session, background session or subagent, on every
+backend, so shell tool calls and the MCP servers the agent starts inherit them.
+The gateway itself and MCP servers the gateway hosts do not get them. Use it for configuration, never for credentials:
+
+```bash
+kirocrew config set agent.env '{"HTTPS_PROXY": "http://proxy.example:3128", "NO_PROXY": "localhost,127.0.0.1", "NODE_EXTRA_CA_CERTS": "/etc/ssl/certs/corp.pem", "AWS_PROFILE": "dev"}'
+```
+
+- A value here wins over the same variable in the gateway's own environment;
+  the variables Kiro Crew sets for the session itself still win over it.
+- Values are stored in plaintext, so a credential-shaped name (containing `KEY`,
+  `TOKEN`, `SECRET`, `PASSWORD`, `CREDENTIAL` or `PRIVATE`) is ignored with a
+  warning. Put credentials in the vault and reference them with `secret://`.
+- Names Kiro Crew, the sandbox or a runtime loader owns (`PATH`, `HOME`,
+  `TMPDIR`, `LD_*`, `DYLD_*`, `PYTHON*`, `NODE_OPTIONS`, `BASH_ENV`,
+  `KIROCREW_*`, `KIRO_*`, and similar) are ignored with a warning, as are the
+  variables that move a coding agent's sign-in directory (`CLAUDE_CONFIG_DIR`,
+  `CODEX_HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, and similar) and any name the
+  agent environment scrub removes.
+- A variable such as `GIT_SSH_COMMAND` replaces the sandbox's own default for
+  it.
+- A change applies to agent processes started after it, and warm pooled
+  processes are replaced; a running session keeps the environment it started
+  with.
+
+---
+
 ## What NOT to do
 
 - **Do not** put secrets as plain string values inside
@@ -158,6 +188,9 @@ topologies and resolves the value only on the trusted side of the server spawn.
   agent-isolated — the gateway loads them and propagates them to all child
   processes including the agent. A warning is logged, but the key still reaches
   the process tree. Use the vault instead.
+- **Do not** use `.env` just to give the agent non-secret settings such as a
+  proxy, a CA bundle or `AWS_PROFILE`. Set them in `agent.env` instead (see
+  below): they then reach only the agent and what it runs, not the gateway.
 - **Do not** store MCP secrets in user-readable paths — a file at
   `~/.kiro/crew/mcp-secrets.env` or `~/.kiro/.env` is accessible to the agent
   via filesystem reads. A root-owned service environment file does not fix the

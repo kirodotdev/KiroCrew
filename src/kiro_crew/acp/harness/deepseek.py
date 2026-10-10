@@ -40,6 +40,7 @@ from kiro_crew.acp.harness.base import ProcessAdapter, ProcessSession, SpawnCont
 from kiro_crew.acp.transport_errors import AcpToolGateUnroutable
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_DEEPSEEK
 from kiro_crew.config.paths import config_dir
+from kiro_crew.config.sections import AGENT_ENV_NAME_GRAMMAR
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.mcp_gateway.secret_uri import SECRET_URI_PREFIX, resolve_secret_uris
 from kiro_crew.sandbox import (
@@ -157,7 +158,7 @@ _DEEPSEEK_ENV_CHILD_SCRUB_CLASS = re.compile("KEY|PASSWORD|SECRET|TOKEN", re.IGN
 # (``@deepseek-ai/dsh-credentials``'s ``credentialRef``). Matched with ``fullmatch``
 # rather than a ``$``-anchored pattern, which in Python would also accept a trailing
 # newline -- and a name with one is not the variable the operator wrote.
-_DEEPSEEK_ENV_NAME_GRAMMAR = re.compile("[A-Za-z_][A-Za-z0-9_]*")
+_DEEPSEEK_ENV_NAME_GRAMMAR = AGENT_ENV_NAME_GRAMMAR
 
 # Namespaces on this child that a provider-key mapping may not enter: the harness's
 # own, which it scrubs from its children itself, and Crew's own, which carries this
@@ -511,7 +512,10 @@ def _verify_deepseek_gate(
     # session's ``DSH_HOME``, so a probe reading the ambient one would compose a
     # different profile from the child it speaks for.
     env = scrub_agent_subprocess_env(
-        _resolve_spawn_env({**os.environ, **session._extra_env}, kiro_api_key=False)
+        _resolve_spawn_env(
+            {**os.environ, **session._agent_env_for_spawn(), **session._extra_env},
+            kiro_api_key=False,
+        )
     )
     env["PATH"] = augmented_path(env.get("PATH", ""))
     env[_ENV_DSH_GATE_MARKER] = marker_path

@@ -189,6 +189,7 @@ class TestAdoptOnChange:
             "agent.role_efforts.background",
             "agent.tool_search",
             "agent.sandbox",
+            "agent.env.HTTPS_PROXY",
             "session.pool_size",
             "session.pool_agent",
             "session.pool_ttl_secs",

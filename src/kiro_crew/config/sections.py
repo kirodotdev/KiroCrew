@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os as _os
 import re as _re
 import unicodedata as _unicodedata
 from collections.abc import Callable, Mapping
@@ -432,6 +433,156 @@ def coerce_child_env_defaults(raw: object) -> dict[str, str]:
             )
             continue
         out[key] = str(count)
+    return out
+
+
+#: The grammar of an ``agent.env`` name: a POSIX shell identifier. Matched with
+#: ``fullmatch`` so a trailing newline is not accepted.
+AGENT_ENV_NAME_GRAMMAR = _re.compile("[A-Za-z_][A-Za-z0-9_]*")
+
+#: ``agent.env`` names refused outright, compared upper-cased (Windows treats
+#: environment names case-insensitively, so ``path`` is ``PATH`` there). Each one
+#: is a variable Kiro Crew sets on the child itself, one the platform owns, or one
+#: that makes the dynamic loader, a shell or a language runtime execute code the
+#: operator did not name -- reaching the sandbox launcher as well as the agent.
+AGENT_ENV_DENIED_NAMES = frozenset(
+    {
+        # Process identity and paths Kiro Crew or the sandbox sets or remaps.
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "PWD",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "USERPROFILE",
+        "SYSTEMROOT",
+        "COMSPEC",
+        "XDG_RUNTIME_DIR",
+        "KRB5CCNAME",
+        # Code that runs at process or shell start.
+        "BASH_ENV",
+        "ENV",
+        "PROMPT_COMMAND",
+        "NODE_OPTIONS",
+        "NODE_PATH",
+        "PERL5OPT",
+        "PERL5LIB",
+        "PERLLIB",
+        "RUBYOPT",
+        "RUBYLIB",
+        "JAVA_TOOL_OPTIONS",
+        "JDK_JAVA_OPTIONS",
+        "_JAVA_OPTIONS",
+        # Read by CPython's macOS framework launcher before the interpreter starts.
+        "__PYVENV_LAUNCHER__",
+        # Read by the C library, or by the launcher tools that run BEFORE the
+        # sandbox confines the child (the cgroup scope talks to the user bus).
+        "GCONV_PATH",
+        "GLIBC_TUNABLES",
+        "LOCPATH",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "DBUS_SYSTEM_BUS_ADDRESS",
+    }
+)
+
+#: ``agent.env`` name prefixes refused outright (upper-cased compare): Kiro Crew's
+#: and kiro-cli's own namespaces, the DeepSeek Harness's, the dynamic loaders',
+#: the Python interpreter's, and systemd's.
+AGENT_ENV_DENIED_PREFIXES = (
+    "KIROCREW_",
+    "KIRO_",
+    "DSH_",
+    "LD_",
+    "DYLD_",
+    "PYTHON",
+    "SYSTEMD_",
+)
+
+#: Names in this class look like credentials. ``agent.env`` values are stored in
+#: plaintext in ``config.json`` and reach every process the agent runs, so a
+#: credential belongs in the vault (``secret://`` on the MCP server that needs it).
+AGENT_ENV_CREDENTIAL_CLASS = _re.compile(
+    "KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|PRIVATE", _re.IGNORECASE
+)
+
+
+def _agent_env_home_override_names() -> frozenset[str]:
+    """Upper-cased ``$HOME``-override variables the harness auth table declares.
+
+    The credential read gate anchors each harness's sign-in directory from these
+    variables in the gateway's own environment, so a value set only for the agent
+    child would move that directory out from under the fence. Derived from the
+    table, so a harness added there is refused here too.
+    """
+    from kiro_crew.agent_sdk.host_auth import home_override_env_vars
+
+    return frozenset(name.upper() for name in home_override_env_vars())
+
+
+def agent_env_refusal(name: str) -> str | None:
+    """Why ``agent.env`` refuses *name*, or ``None`` when it is accepted.
+
+    The reason is a short phrase for a log line; it never carries the value.
+    """
+    if not AGENT_ENV_NAME_GRAMMAR.fullmatch(name):
+        return "it is not an environment-variable name ([A-Za-z_][A-Za-z0-9_]*)"
+    upper = name.upper()
+    if upper in AGENT_ENV_DENIED_NAMES or upper.startswith(AGENT_ENV_DENIED_PREFIXES):
+        return "Kiro Crew, the sandbox or a runtime loader owns that name"
+    if upper in _agent_env_home_override_names():
+        return (
+            "it relocates a harness's sign-in directory, which the credential "
+            "read gate resolves from the gateway's own environment"
+        )
+    if AGENT_ENV_CREDENTIAL_CLASS.search(name):
+        return (
+            "the name looks like a credential; agent.env is stored in plaintext, "
+            "so keep credentials in Settings > Secrets"
+        )
+    return None
+
+
+def coerce_agent_env(raw: object) -> dict[str, str]:
+    """Normalize ``agent.env`` to the name -> value map the agent child receives.
+
+    An invalid entry is DROPPED with a warning naming the key, never the value,
+    following :func:`coerce_child_env_defaults`: a typo or a refused name costs
+    that one variable, never a session. Refused: a name outside the POSIX
+    identifier grammar, a name :func:`agent_env_refusal` reserves, a non-string
+    value, and a value containing a NUL (no process environment can hold one).
+    Nothing is stripped. The agent environment scrub runs after this map is
+    applied, so a name it removes is also dropped -- at spawn, by
+    ``acp.agent_env``, because that list lives in the sandbox module.
+    """
+    if not isinstance(raw, dict):
+        if raw is not None:
+            logger.warning("agent.env is not a mapping; ignoring it")
+        return {}
+    out: dict[str, str] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str):
+            logger.warning("agent.env: ignoring a %s key", type(key).__name__)
+            continue
+        reason = agent_env_refusal(key)
+        if reason is not None:
+            logger.warning("agent.env: ignoring %r, %s", key, reason)
+            continue
+        if not isinstance(value, str) or "\x00" in value:
+            logger.warning("agent.env: ignoring %r, the value must be a string with no NUL", key)
+            continue
+        try:
+            # The spawn encodes environment values exactly this way; a value it
+            # cannot encode (a lone surrogate on POSIX) would fail every agent launch.
+            _os.fsencode(value)
+        except UnicodeEncodeError:
+            logger.warning(
+                "agent.env: ignoring %r, the value cannot be encoded for a process environment", key
+            )
+            continue
+        out[key] = value
     return out
 
 
@@ -1652,6 +1803,36 @@ class AgentConfig:
             "next spawn.",
         ),
     )
+    env: dict[str, str] = field(
+        default_factory=dict,
+        metadata=_meta(
+            "Agent Environment Variables",
+            "Environment variables set on every agent process Kiro Crew starts for "
+            "a chat session, background session or subagent, on every backend, and "
+            "therefore inherited by everything that agent runs: shell tool calls, "
+            "the MCP servers the agent itself starts, and their children. Not the "
+            "gateway, MCP servers the gateway hosts, or Kiro Crew's own one-shot "
+            "helper commands. For non-sensitive configuration such as a proxy, a CA "
+            "bundle, an AWS profile or a package registry, e.g. "
+            '{"HTTPS_PROXY": "http://proxy.example:3128", "NO_PROXY": '
+            '"localhost,127.0.0.1", "AWS_PROFILE": "dev"}. A value set here wins '
+            "over the same variable "
+            "in the gateway's own environment; variables Kiro Crew sets for the "
+            "session itself still win over this map. Values are stored in "
+            "plaintext, so a name that looks like a credential (KEY, TOKEN, "
+            "SECRET, PASSWORD, CREDENTIAL, PRIVATE) is ignored: keep credentials "
+            "under Settings > Secrets. Also ignored, with a warning naming the "
+            "key: names Kiro Crew, the sandbox or a runtime loader owns (PATH, "
+            "HOME, TMPDIR, LD_*, DYLD_*, PYTHON*, NODE_OPTIONS, BASH_ENV, "
+            "DBUS_*_BUS_ADDRESS, KIROCREW_*, KIRO_*, ...), the variables that move "
+            "a harness's sign-in directory (CLAUDE_CONFIG_DIR, CODEX_HOME, "
+            "XDG_CONFIG_HOME, XDG_DATA_HOME, ...) and names the agent environment scrub "
+            "removes. A variable such as GIT_SSH_COMMAND replaces the sandbox's "
+            "own default for it. Takes effect on the next agent spawn (warm pooled "
+            "processes are replaced); a running session keeps the environment it "
+            "started with.",
+        ),
+    )
     cold_start_concurrency: int | str = field(
         default="auto",
         metadata=_meta(
@@ -2089,6 +2270,7 @@ class AgentConfig:
         # coerce_deepseek_env.
         self.deepseek_env = coerce_deepseek_env(self.deepseek_env)
         self.child_env_defaults = coerce_child_env_defaults(self.child_env_defaults)
+        self.env = coerce_agent_env(self.env)
         # Same defensive coercion for the throttle-fallback model: normalize to
         # ""/"auto"/acp id, so consumers can trust the stored shape.
         self.fallback_model = coerce_fallback_model(self.fallback_model)
