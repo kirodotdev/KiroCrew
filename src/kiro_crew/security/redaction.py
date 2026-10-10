@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import base64
 import bisect
+import contextvars
 import functools
 import hashlib
 import hmac
@@ -30,6 +31,7 @@ import os
 import posixpath
 import re
 import secrets
+import zlib
 from collections import Counter
 from collections.abc import Callable, Iterator
 from typing import NamedTuple
@@ -1051,15 +1053,24 @@ def _text_contains_bare_secret(text: str) -> bool:
 # run only when the run lies wholly inside a match of `_DOCUMENT_LINK_RE`, which
 # admits nothing but a fixed route on a fixed host:
 #   * HTTPS, a lowercase literal host right after the scheme (no userinfo, no
-#     port), `docs.google.com`, `drive.google.com` or `<tenant>.atlassian.net`;
+#     port), `docs.google.com`, `drive.google.com`, `<tenant>.atlassian.net`, or
+#     a PlantUML server: a host whose first label is `plantuml` (after an
+#     optional `www.`), such as `www.plantuml.com`;
 #   * every path segment fixed or drawn from a closed class: a Google id is
 #     25-72 chars of `[A-Za-z0-9_-]`, a Confluence space key is alphanumeric, a
-#     page id is digits;
+#     page id is digits, a PlantUML diagram is `[/plantuml]/<png|svg|txt|uml>/`
+#     then its deflate text in PlantUML's `[0-9A-Za-z_-]` alphabet;
 #   * no piece of the link is a whole key: a piece exactly 40 characters long
 #     voids the match when `_looks_like_secret_key` accepts it. Pieces are cut
 #     twice, once at every non-run character (`/`, `-`, `_`, `%`, `.`, `~`)
 #     and once also at `+`, the space of a Confluence title slug, so a key
-#     pasted in as the id or as a title word is still redacted;
+#     pasted in as the id or as a title word is still redacted. A PlantUML
+#     diagram is random-looking by construction, so it is judged by decoding
+#     instead: it must inflate, whole, to printable text with nothing after the
+#     stream but the encoder's zero padding, and every credential pass must
+#     leave that text unchanged. The text inflated per call is capped (see
+#     `_PLANTUML_SOURCE_CAP`). A key as the diagram, glued to one, or written
+#     in its source voids the match;
 #   * the link ends where the route ends, with one optional trailing `/`: a
 #     further base64-alphabet character (a glued key, another `/segment`)
 #     fails the match.
@@ -1074,6 +1085,7 @@ def _text_contains_bare_secret(text: str) -> bool:
 # and pass 3 is no control against a deliberate one: a single `-` already
 # splits any run.
 _DOCUMENT_ID = r"[A-Za-z0-9_-]{25,72}"
+_PLANTUML_DIAGRAM = r"[A-Za-z0-9_-]{1,16384}"
 _GOOGLE_USER = r"(?:u/[0-9]{1,2}/)?"
 _RUN_PIECE_RES = (re.compile(r"[A-Za-z0-9+]+"), re.compile(r"[A-Za-z0-9]+"))
 _DOCUMENT_LINK_RE = re.compile(
@@ -1092,21 +1104,84 @@ _DOCUMENT_LINK_RE = re.compile(
     r"|[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.atlassian\.net/wiki/spaces/~?[A-Za-z0-9]{1,64}/"
     r"(?:overview|pages/(?:edit-v2/)?[0-9]{1,20}"
     r"(?:/[A-Za-z0-9+%._~-]{1,255})?)"
+    r"|(?:www\.)?plantuml(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+(?:/plantuml)?/(?:png|svg|txt|uml)/"
+    r"(?P<diagram>" + _PLANTUML_DIAGRAM + r")"
     r")/?(?![A-Za-z0-9+/_-])"
 )
+_PLANTUML_ALPHABET = {
+    c: i for i, c in enumerate("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_")
+}
+#: Decoded diagram text one call may inflate, in total, and per encoded
+#: character. Real diagrams stay under 10x; anything larger keeps its link
+#: masked, which is how it was judged before this route. The total bounds the
+#: extra scan a call can be made to do to that of a plain text this long.
+_PLANTUML_SOURCE_CAP = 16384
+_PLANTUML_RATIO_CAP = 16
+#: Set while a decoded diagram is being scanned, so a diagram link inside it is
+#: judged as any other link and decoding never nests.
+_IN_DIAGRAM_SCAN: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_IN_DIAGRAM_SCAN", default=False
+)
+
+
+def _plantuml_source(encoded: str, limit: int) -> str | None:
+    """Return the diagram text *encoded* inflates to, whole, or None."""
+    if limit <= 0 or len(encoded) % 4:
+        return None
+    bits = [_PLANTUML_ALPHABET[c] for c in encoded]
+    raw = bytearray()
+    for i in range(0, len(bits), 4):
+        word = bits[i] << 18 | bits[i + 1] << 12 | bits[i + 2] << 6 | bits[i + 3]
+        raw += word.to_bytes(3, "big")
+    inflater = zlib.decompressobj(-zlib.MAX_WBITS)
+    try:
+        source = inflater.decompress(bytes(raw), limit).decode("utf-8")
+    except (zlib.error, UnicodeDecodeError):
+        return None
+    # The encoder emits whole 4-character groups and pads only the last one,
+    # with at most two zero bytes. A further group, a stream cut short, or one
+    # over the limit is not a whole diagram, so text glued after a diagram, or a
+    # diagram cut mid-group, is never kept.
+    padding = inflater.unused_data
+    if not inflater.eof or len(padding) > 2 or padding.strip(b"\0") or not source.strip():
+        return None
+    if not all(c.isprintable() or c in "\t\n\r" for c in source):
+        return None
+    return source
+
+
+def _plantuml_verdict(encoded: str, limit: int) -> tuple[bool, int]:
+    """Judge one diagram; also return how much text was inflated for it."""
+    source = _plantuml_source(encoded, min(limit, _PLANTUML_RATIO_CAP * len(encoded)))
+    if source is None:
+        return False, min(limit, _PLANTUML_RATIO_CAP * len(encoded))
+    # The link carries its source, so the source is judged by every credential
+    # pass; anything they would mask leaves the link masked.
+    previous = _IN_DIAGRAM_SCAN.get()
+    _IN_DIAGRAM_SCAN.set(True)
+    try:
+        return redact_credentials(source)[0] == source, len(source)
+    finally:
+        _IN_DIAGRAM_SCAN.set(previous)
 
 
 def _document_link_spans(text: str) -> list[tuple[int, int]]:
     """Return the spans of the :data:`_DOCUMENT_LINK_RE` matches that hold no key."""
-    return [
-        m.span()
-        for m in _DOCUMENT_LINK_RE.finditer(text)
-        if not any(
-            len(piece) == _SECRET_KEY_LEN and _looks_like_secret_key(piece)
-            for piece_re in _RUN_PIECE_RES
-            for piece in piece_re.findall(m.group())
-        )
-    ]
+    spans = []
+    budget = 0 if _IN_DIAGRAM_SCAN.get() else _PLANTUML_SOURCE_CAP
+    for m in _DOCUMENT_LINK_RE.finditer(text):
+        if m["diagram"]:
+            kept, spent = _plantuml_verdict(m["diagram"], budget)
+            budget -= spent
+        else:
+            kept = not any(
+                len(piece) == _SECRET_KEY_LEN and _looks_like_secret_key(piece)
+                for piece_re in _RUN_PIECE_RES
+                for piece in piece_re.findall(m.group())
+            )
+        if kept:
+            spans.append(m.span())
+    return spans
 
 
 #: Code-point ranges of the printable-ASCII tail of the standard baseline JPEG AC
