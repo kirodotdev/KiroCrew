@@ -3494,6 +3494,11 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             if folder_err:
                 return f"Error: {folder_err}"
         try:
+            # A member-named ``agent`` must record a member selection, not a bare
+            # template id the reply path cannot resolve.
+            from kiro_crew.cron_service.identity import split_cron_agent_member
+
+            _agent_id, _member_id = split_cron_agent_member(agent or "", args.get("member_id", ""))
             job = svc.add_job(
                 name=n,
                 message=msg,
@@ -3505,8 +3510,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 delete_after_run=bool(at_ts),
                 timezone=tz,
                 skip_dates=skip_dates,
-                agent_id=agent or "",
-                member_id=args.get("member_id", ""),
+                agent_id=_agent_id,
+                member_id=_member_id,
                 approval_mode=approval_mode or "",
                 model=model_arg,
                 silent=bool(silent),

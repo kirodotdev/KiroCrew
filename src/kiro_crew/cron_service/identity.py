@@ -39,6 +39,51 @@ def agent_sequence_dispatches(seq: list[str]) -> bool:
     return len(seq) > 1
 
 
+def split_cron_agent_member(agent_id: str, member_id: str) -> tuple[str, str]:
+    """Classify a cron create's agent name as a provider template OR a member.
+
+    ``--agent`` / the ``agent`` field is the one slot every create surface offers
+    for naming either a provider template or a crew member. The dashboard's own UI
+    resolves a member pick client-side and sends a separate ``member_id``; the CLI,
+    the MCP ``cron_add`` tool and a scripted dashboard POST do not, so a member name
+    arrives in ``agent_id`` and is captured as ``selection_kind='template'`` with the
+    member name mistaken for a provider template -- which the cron chat's reply path
+    then cannot resolve, failing to bind the agent on every reply.
+
+    Resolve that split ONCE, here, so every entry point agrees: when ``member_id`` is
+    not already given, defer the classification to the live resolver
+    (:func:`kiro_crew.config.loader._resolve_agent_selection`) and read its result,
+    rather than re-coding the precedence. The resolver checks the crew-member alias
+    FIRST -- a name in ``config.agents`` is an alias hit regardless of whether a
+    materialized provider template of the same name also exists -- so a member whose
+    name also ships a ``~/.kiro/agents/<name>.json`` spec (e.g. ``kirocrew-conductor``)
+    still classifies as a member, not a template. When the resolver reports an alias
+    hit carrying a durable ``member_id`` we return it as the member (``agent_id``
+    cleared, ``member_id`` set); a name that resolves to a bare provider template, and
+    an explicit ``member_id`` the caller already resolved, are returned unchanged.
+
+    This is a CREATE-only fix: it runs at the three owner-driven create callers
+    (CLI ``cron add``, MCP ``cron_add``, dashboard ``POST /api/crons``) that know
+    the user just picked an agent. The App Kit SDK (``ctx.cron.add_job``)
+    deliberately does NOT call this -- apps are confined and must not reach a
+    member's private memory by naming it. It leaves ``bind_cron_memory``'s
+    record-level ``agent_id``-is-a-template contract untouched -- the promotion
+    never happens inside ``add_job`` -- so editing an existing schedule's
+    ``agent`` field to a member name still records a template (the update paths
+    are out of scope).
+    """
+    from kiro_crew.config.loader import KiroCrewConfig, _resolve_agent_selection
+
+    if member_id or not agent_id:
+        return agent_id, member_id
+    config = KiroCrewConfig.load()
+    _record, alias, _passthrough, _resolved = _resolve_agent_selection(config, agent_id)
+    aliased = config.agents.get(alias) if alias == agent_id else None
+    if aliased is not None and aliased.member_id:
+        return "", agent_id
+    return agent_id, member_id
+
+
 def build_cron_session_context(job: CronJob) -> tuple[str, str]:
     """Compute (session_key, prompt) for one cron run.
 

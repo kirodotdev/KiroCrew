@@ -368,6 +368,12 @@ class CronSDK:
           30s for a script when it is unset, so without it an app cannot create
           a command job with a wake budget under 305s at all.
         """
+        # An app-created cron is NOT promoted to a member selection even when
+        # ``agent`` names a crew member: apps are confined (as Spawn SDK confines
+        # them with an agent-scope check) and must not reach a member's private
+        # memory by naming it. The name is passed through as ``agent_id``, so an
+        # app cron behaves exactly as it does on main and can only reach global
+        # V1 memory.
         return dict(
             name=name,
             message=message,

@@ -918,6 +918,13 @@ async def api_crons_create(request: web.Request) -> web.Response:
     # mutating the returned job and calling a bare, unlocked `_save()`) closes
     # the data-loss race: two concurrent creates could interleave at the
     # `await`, and the unlocked save could overwrite the other request's job.
+    # The UI resolves a member pick to ``member_id`` client-side, but a scripted
+    # POST can still send a member NAME in ``agent``; resolve the split here so
+    # that path records a member selection too, not a template id the cron chat's
+    # reply path cannot bind. An explicit ``member_id`` is left as the caller set it.
+    from kiro_crew.cron_service.identity import split_cron_agent_member
+
+    agent_id, member_id = split_cron_agent_member(agent_id or "", member_id or "")
     add_kwargs: dict[str, Any] = {
         "channel": channel,
         "agent_id": (agent_id or ""),
