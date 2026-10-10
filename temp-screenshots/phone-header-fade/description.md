@@ -1,0 +1,1 @@
+Screenshot evidence: ![phone one line pinned card](temp-screenshots/phone-header-fade/phone-one-line-pinned-card.png) ![phone no pinned card](temp-screenshots/phone-header-fade/phone-no-pinned-card.png)

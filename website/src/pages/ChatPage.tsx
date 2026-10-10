@@ -5923,10 +5923,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               <EdgeFade side="top" anchor="below" />
               </div>
               )}
-              {titleInTopbar && <EdgeFade side="top" anchor="below" />}
               {/* Fold sentinel — zero-height, always mounted. Its top edge is the
                   line the pinned prompt sticks to (see updatePinnedPrompt). */}
               <div ref={pinFoldRef} aria-hidden className="h-0" />
+              {/* Anchor the phone fade at the fold so its opaque edge stays behind
+                  the card instead of masking the transcript below it. */}
+              {titleInTopbar && (
+                <div className="relative h-0">
+                  <EdgeFade side="top" />
+                </div>
+              )}
               {pinned && (
                 <PinnedPrompt
                   text={pinned.text}
