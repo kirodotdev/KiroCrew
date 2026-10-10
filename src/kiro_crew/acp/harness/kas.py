@@ -43,6 +43,11 @@ from kiro_crew.acp.harness.base import (
 from kiro_crew.acp.kas_agents import KasAgentTranslationError, KasReservedAgentIdError
 from kiro_crew.acp.kas_host_auth import answer_get_access_token, vault_holds_identity_off_loop
 from kiro_crew.acp.kas_transport import METHOD_KAS_AUTH_GET_ACCESS_TOKEN, build_kas_argv
+from kiro_crew.acp.session_mcp import (
+    _project_restrictions,
+    _with_restrictions,
+    project_agent_spec,
+)
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKENDS_HOST_AUTH_CALLBACK,
@@ -58,7 +63,7 @@ from kiro_crew.mcp_gateway import session_servers as session_servers_mod
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["PROTOCOL_VERSION_KAS", "KasHarness"]
+__all__ = ["PROTOCOL_VERSION_KAS", "KasHarness", "resolve_projected_spec"]
 
 #: KAS numbers ACP revisions. It rejects the date-string spelling kiro-cli takes,
 #: so the TYPE here is part of the contract, not an encoding detail.
@@ -74,6 +79,93 @@ def _is_operator_override(binary: str, environ: Mapping[str, str]) -> bool:
     """
     override = (environ.get("KIROCREW_KIRO_BIN") or "").strip()
     return bool(override) and os.path.abspath(binary) == os.path.abspath(override)
+
+
+#: The keys a checkout's own agent spec decides for a KAS session. An allow list:
+#: each one shapes what the agent says or which tools it can SEE, and none of them
+#: grants anything. A spec inside a cloned repository is untrusted input
+#: (``acp.session_mcp._project_mcp_trusted``), and every key left out either
+#: launches a command, approves a call or reads a file on the session's behalf:
+#: ``mcpServers`` (a server is a command KAS launches at ``session/new``),
+#: ``allowedTools`` and ``permissions`` (auto-approval), ``hooks`` (commands Crew
+#: runs), ``includeMcpJson`` and ``includePowers`` (load the checkout's own server
+#: configuration), ``resources`` (files read into context) and every key added
+#: later. A tool the honoured ``tools`` list reveals still resolves to ``ask``.
+PROJECT_SPEC_HONOURED_KEYS = ("name", "description", "prompt", "tools", "excludedTools", "model")
+
+
+def _servers_of(spec: dict[str, Any] | None) -> dict[str, Any]:
+    raw = spec.get("mcpServers") if isinstance(spec, dict) else None
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
+def resolve_projected_spec(
+    agents_dir: Path, agent: str, work_dir: str | Path | None
+) -> tuple[dict[str, Any], Path]:
+    """The spec KAS is handed for *agent*, and the directory its prompt anchors to.
+
+    Nearest first, as kiro-cli resolves ``--agent``: a checkout declaring *agent*
+    under ``<work_dir>/.kiro/agents/`` is matched by the same resolver the
+    mirrored hosts use (``acp.session_mcp.project_agent_spec``), and only when it
+    declares none is the user-level spec in *agents_dir* read.
+
+    A checkout's spec contributes :data:`PROJECT_SPEC_HONOURED_KEYS` and nothing
+    else. Its servers come from the user-level spec of the same name, if one
+    exists, with the checkout's switch-off keys layered on
+    (``acp.session_mcp._project_restrictions``) -- the rule the mirrored hosts
+    apply -- so a checkout can mute a server but never add one. That keeps the
+    servers this session runs user-level, which is why the broker-overlay lookup
+    stays unscoped for this host (``agent_sdk.backends.overlay_project_scope``).
+
+    Its ``file://`` prompt anchors to the checkout's agents directory and may not
+    leave it: an absolute path is refused, because the resolved text is shipped
+    over the wire and a cloned repository must not choose which of the user's
+    files that is.
+
+    A checkout spec that exists but cannot be read raises
+    :class:`KasAgentTranslationError` rather than falling back: kiro-cli would not
+    run the user-level agent in its place either.
+    """
+    declared, project = project_agent_spec(agent, work_dir)
+    if not declared:
+        return kas_agents_mod.load_agent_spec(agents_dir, agent), agents_dir
+    if project is None:
+        raise KasAgentTranslationError(
+            f"agent {agent!r} is declared by {work_dir}/.kiro/agents but that spec is unreadable"
+        )
+    prompt = project.get("prompt")
+    if isinstance(prompt, str) and prompt.startswith(kas_agents_mod._PROMPT_FILE_SCHEME):
+        ref = prompt[len(kas_agents_mod._PROMPT_FILE_SCHEME) :]
+        if Path(ref).expanduser().is_absolute():
+            raise KasAgentTranslationError(
+                f"agent {agent!r} is declared by a project checkout, so its prompt must be "
+                f"a path inside that checkout's .kiro/agents, not {ref!r}"
+            )
+    user = (
+        None
+        if kas_agents_mod.agent_spec_absent(agents_dir, agent)
+        else kas_agents_mod.load_agent_spec(agents_dir, agent)
+    )
+    user_servers = _servers_of(user)
+    # A switch-off for a server the user level does not declare mounts nothing, so
+    # only the names the user level declares are kept.
+    layered = _servers_of(
+        _with_restrictions({"mcpServers": user_servers}, _project_restrictions(project))
+    )
+    servers = {name: entry for name, entry in layered.items() if name in user_servers}
+    dropped = sorted(k for k in project if k not in PROJECT_SPEC_HONOURED_KEYS)
+    if dropped:
+        logger.info(
+            "agent %r: the project checkout's spec is not trusted to grant; ignored keys: %s",
+            agent,
+            ", ".join(dropped),
+        )
+    spec: dict[str, Any] = {k: project[k] for k in PROJECT_SPEC_HONOURED_KEYS if k in project}
+    if servers:
+        spec["mcpServers"] = servers
+    if work_dir is None:  # unreachable: ``project_agent_spec`` declares nothing without one
+        return spec, agents_dir
+    return spec, Path(work_dir) / ".kiro" / "agents"
 
 
 class KasHarness(MembershipHarness):
@@ -256,13 +348,12 @@ class KasHarness(MembershipHarness):
             # reach the session as its whole tool surface as though it had been checked.
             # No lock closes that -- both halves are this process's own reads -- so the
             # second read is removed rather than re-verified. Every other agent mirrors
-            # nothing, has no snapshot, and is read here as before.
+            # nothing, has no snapshot, and is resolved nearest-first here.
             agents_dir = paths_mod.kiro_agents_dir()
-            spec = (
-                snapshot.spec
-                if snapshot is not None and snapshot.spec is not None
-                else kas_agents_mod.load_agent_spec(agents_dir, agent)
-            )
+            if snapshot is not None and snapshot.spec is not None:
+                spec, prompt_dir = snapshot.spec, agents_dir
+            else:
+                spec, prompt_dir = resolve_projected_spec(agents_dir, agent, work_dir)
             try:
                 # A session-injected server outranks an agent-declared one, so
                 # declaring both is a double registration. Only the caller holds
@@ -270,12 +361,9 @@ class KasHarness(MembershipHarness):
                 stubbed = session_servers_mod.injection_server_names(
                     mcp_gateway_overlay,
                     agent,
-                    # Deliberately UNSCOPED. The projection above is built from
-                    # ``paths.kiro_agents_dir()`` alone, so the agent this session
-                    # runs is the user-level one even when the checkout declares a
-                    # file of the same name -- KAS refuses a project-only agent at
-                    # session start rather than projecting it
-                    # (``agent_discovery.project_agent_files``). Handing the
+                    # Deliberately UNSCOPED. A checkout spec of this name sets the
+                    # prompt and tools but never the servers: those stay the
+                    # user-level spec's (``resolve_projected_spec``). Handing the
                     # checkout to a name-keyed lookup over that same user-level
                     # directory would collapse this set to empty, project the
                     # user-level servers un-subtracted, and run them outside the
@@ -315,7 +403,7 @@ class KasHarness(MembershipHarness):
             # fresh read of the file.
             return (
                 kas_agents_mod.build_kas_custom_agents(
-                    agents_dir,
+                    prompt_dir,
                     agent,
                     spec,
                     stub_server_names=stubbed,
