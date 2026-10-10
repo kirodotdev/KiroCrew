@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, waitFor, cleanup } from '@testing-library/react'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import { __resetPathKindCache } from '../hooks/usePathKind'
+import { stubPathKinds } from './pathKindStub'
 
 /**
  * Golden DOM for the markdown pipeline as a whole.
@@ -59,9 +60,7 @@ function stubMissing() {
 
 /** Every probe confirms a file. */
 function stubFile() {
-  globalThis.fetch = vi.fn(() =>
-    Promise.resolve({ ok: true, status: 200, headers: new Headers({ 'X-Path-Kind': 'file' }) } as Response),
-  ) as unknown as typeof fetch
+  stubPathKinds(() => 'file')
 }
 
 beforeEach(() => {

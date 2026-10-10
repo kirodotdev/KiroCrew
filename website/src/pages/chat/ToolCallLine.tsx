@@ -1,5 +1,4 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { useQuery } from '@tanstack/react-query'
 import { shallowEqual } from 'react-redux'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { clearFocusToolCallId, mcpAppKey } from '../../store/chatSlice'
@@ -22,7 +21,7 @@ import { extractToolFilePath } from '../../utils/toolFilePath'
 import { countDiffStats } from '../../utils/diffLineCounts'
 import { isWaitToolTitle } from '../../utils/waitToolTitle'
 import { isSafePath } from '../../utils/safePath'
-import { fileReadUrl } from '../../utils/fileReadUrl'
+import { usePathKind } from '../../hooks/usePathKind'
 import McpAppFrame from '../../components/McpAppFrame'
 import DiffBlock, { extractFilePath as extractDiffHeaderPath } from '../../components/DiffBlock'
 import { presentToolDiff } from './toolDiff'
@@ -731,26 +730,17 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
         ? { ...diffView, opensCard: false }
         : null
   const probeEnabled = !!filePath && isSafePath(filePath) && !!onFileOpen
-  // HEAD-probe via React Query (project guideline: no manual useState/useEffect
-  // fetch for server state). Gives request dedup across pills touching the same
-  // file and stale-while-revalidate caching so re-renders don't re-probe —
-  // replacing the manual AbortController + onFileOpenRef + setFileExists dance.
+  // The existence probe shares the transcript-wide cache and batch the markdown
+  // chips and diff headers use, so a file a chip already resolved costs no
+  // request and N pills for one path ask once.
   //
-  // The query's error is deliberately NOT read: this gates an affordance (the
-  // Open-file pill), it is not something the person asked for. A refused probe
-  // collapses to `fileExists = false` on purpose — the pill is simply not
-  // offered, which is the same outcome as the file not being there, and a
-  // failed-probe notice on every tool row would be noise about a link nobody
-  // clicked. Opening the file itself reports its own failure when pressed.
-  const { data: fileExists = false } = useQuery({
-    queryKey: ['tool-pill-file-exists', filePath],
-    queryFn: async ({ signal }) => {
-      const r = await fetch(fileReadUrl(filePath!), { method: 'HEAD', signal })
-      return r.ok
-    },
-    enabled: probeEnabled,
-    staleTime: 30_000,
-  })
+  // A refused probe collapses to "not a file" on purpose: this gates an
+  // affordance (the Open-file pill), it is not something the person asked for.
+  // The pill is simply not offered, which is the same outcome as the file not
+  // being there, and a failed-probe notice on every tool row would be noise
+  // about a link nobody clicked. Opening the file itself reports its own
+  // failure when pressed.
+  const fileExists = usePathKind(probeEnabled ? filePath : null) === 'file'
   const showFileOpen = probeEnabled && fileExists
 
   const Icon = isDone

@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react'
-import { fileReadUrl } from '../utils/fileReadUrl'
 
 /**
  * What a chip-candidate string actually is on disk.
@@ -9,20 +8,20 @@ import { fileReadUrl } from '../utils/fileReadUrl'
  * the endpoint schema, and a network failure all collapse to `missing`. That
  * keeps the probe from becoming an existence oracle — a caller cannot tell
  * "~/.ssh/id_rsa exists" from "~/.ssh/id_rsa does not exist", because the
- * backend 400s both identically and we report both as `missing`.
+ * backend answers both identically and we report both as `missing`.
  */
 export type PathKind = 'file' | 'dir' | 'missing'
 
 /**
- * Resolved probes, keyed by the raw chip text.
+ * Resolved probes, keyed by the raw path text.
  *
- * Module-level for two reasons. A transcript re-renders on every stream chunk,
- * so per-component state would re-probe continuously; and the same path is
- * usually mentioned many times across a conversation, so one probe should serve
- * every chip. Deliberately NOT react-query: `MarkdownRenderer` is rendered
- * outside any `QueryClientProvider` in ~30 places (including 9 test files that
- * render it bare), and `useQuery` throws without a provider. `DiffBlock`'s HEAD
- * probe sets the same precedent with a plain fetch.
+ * Module-level, and shared by every surface that asks whether a transcript path
+ * exists -- markdown chips, diff-block headers and tool-call lines -- so a path
+ * mentioned in all three is asked about once. A transcript re-renders on every
+ * stream chunk, so per-component state would re-probe continuously. Deliberately
+ * NOT react-query: `MarkdownRenderer` is rendered outside any
+ * `QueryClientProvider` in ~30 places (including 9 test files that render it
+ * bare), and `useQuery` throws without a provider.
  */
 const kindCache = new Map<string, { kind: PathKind; at: number }>()
 /** In-flight probes, so N chips for one path issue exactly one request. */
@@ -62,25 +61,89 @@ function remember(path: string, kind: PathKind): void {
   kindCache.set(path, { kind, at: Date.now() })
 }
 
+/** Most paths one batch request names; mirrors the endpoint's own cap. */
+const MAX_BATCH_PATHS = 100
+
+/** Keep a batch body well under the endpoint's 64 KB JSON body bound. */
+const MAX_BATCH_BYTES = 48 * 1024
+
+/** Paths waiting for the next batch request, each with the settle function of
+ *  the promise its callers share. */
+let pending = new Map<string, (kind: PathKind) => void>()
+let flushQueued = false
+
 /**
- * Ask the backend what `path` is. Resolves, never rejects.
+ * Ask the backend what each of `paths` is, in one request. Never rejects.
  *
- * Uses HEAD so a 500KB file is not transferred just to classify it. The
- * endpoint reports the answer in `X-Path-Kind`; a response without the header
- * (older backend, proxy that strips it, any non-2xx we did not anticipate) is
- * treated as `missing` so the UI fails closed to "no affordance".
+ * `POST /api/file-kinds` applies the per-path `HEAD /api/file-read` rules to
+ * every entry, relative paths resolved against the project as `resolve=1`
+ * would. Any answer that is not a well-formed batch reply -- a refusal, a
+ * network failure, an unknown kind -- reads as `missing`, so the UI fails
+ * closed to "no affordance".
  */
-async function probe(path: string): Promise<PathKind> {
+async function probeBatch(paths: string[]): Promise<Record<string, PathKind>> {
+  const out: Record<string, PathKind> = {}
+  for (const p of paths) out[p] = 'missing'
   try {
-    const res = await fetch(fileReadUrl(path), { method: 'HEAD' })
-    const header = res.headers.get('X-Path-Kind')
-    if (header === 'file' || header === 'dir') return header
-    // A 200 without the header still means a readable regular file — that is
-    // what `file-read` returns content for.
-    return res.ok ? 'file' : 'missing'
-  } catch {
-    return 'missing'
+    const res = await fetch('/api/file-kinds', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Session-Key': 'dashboard:ui' },
+      body: JSON.stringify({ paths }),
+    })
+    if (!res.ok) return out
+    const body = (await res.json()) as { kinds?: Record<string, unknown> }
+    const kinds = body && typeof body.kinds === 'object' && body.kinds ? body.kinds : {}
+    for (const p of paths) {
+      const k = kinds[p]
+      if (k === 'file' || k === 'dir') out[p] = k
+    }
+  } catch { /* every path stays `missing` */ }
+  return out
+}
+
+/** Split the queued paths into requests that respect both batch bounds. */
+function chunk(paths: string[]): string[][] {
+  const chunks: string[][] = []
+  let cur: string[] = []
+  let bytes = 0
+  for (const p of paths) {
+    const size = JSON.stringify(p).length + 1
+    if (cur.length && (cur.length >= MAX_BATCH_PATHS || bytes + size > MAX_BATCH_BYTES)) {
+      chunks.push(cur)
+      cur = []
+      bytes = 0
+    }
+    cur.push(p)
+    bytes += size
   }
+  if (cur.length) chunks.push(cur)
+  return chunks
+}
+
+/**
+ * Send everything queued since the last flush. Runs as a microtask, so every
+ * consumer whose effect ran in the same React commit -- every chip, diff header
+ * and tool line one view mounts -- joins one request.
+ */
+function flush(): void {
+  flushQueued = false
+  const batch = pending
+  pending = new Map()
+  for (const paths of chunk([...batch.keys()])) {
+    void probeBatch(paths).then(kinds => {
+      for (const p of paths) batch.get(p)?.(kinds[p])
+    })
+  }
+}
+
+function enqueue(path: string): Promise<PathKind> {
+  return new Promise<PathKind>(settle => {
+    pending.set(path, settle)
+    if (!flushQueued) {
+      flushQueued = true
+      queueMicrotask(flush)
+    }
+  })
 }
 
 /** Shared probe path used by both the hook and its synchronous cache peek. */
@@ -89,7 +152,7 @@ function resolveKind(path: string): PathKind | Promise<PathKind> {
   if (cached) return cached
   let p = inflight.get(path)
   if (!p) {
-    p = probe(path).then(kind => {
+    p = enqueue(path).then(kind => {
       remember(path, kind)
       inflight.delete(path)
       return kind
@@ -142,4 +205,6 @@ export function usePathKind(path: string | null): PathKind | undefined {
 export function __resetPathKindCache(): void {
   kindCache.clear()
   inflight.clear()
+  pending = new Map()
+  flushQueued = false
 }

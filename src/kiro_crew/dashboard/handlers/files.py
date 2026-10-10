@@ -152,6 +152,7 @@ from kiro_crew.dashboard.file_api.path_complete import (  # noqa: F401
 )
 from kiro_crew.dashboard.file_api.pinned_io import (  # noqa: F401
     _CheckedFile,
+    _classify_request_paths,
     _file_write_blocking,
     _open_checked,
     _open_checked_file,
@@ -162,6 +163,7 @@ from kiro_crew.dashboard.file_api.pinned_io import (  # noqa: F401
     _read_request_path,
     _resolve_project_relative,
     _TextRead,
+    api_file_kinds,
 )
 from kiro_crew.dashboard.file_api.project_dirs import (  # noqa: F401
     _git_head_path,
@@ -2002,6 +2004,12 @@ def _probe_request_path(raw: str) -> _PathProbe:
     if not path:
         return _PathProbe("", False, False)
     return _PathProbe(path, os.path.isfile(path), os.path.isdir(path))
+
+
+#: Most paths one ``POST /api/file-kinds`` request may name. A transcript view
+#: asks for a few dozen; the cap bounds how long one request holds its probe
+#: worker, and the client splits a larger set across requests.
+_FILE_KINDS_MAX_PATHS = 100
 
 
 #: How much of a file /api/file-read returns, in CHARACTERS -- the unit matters,

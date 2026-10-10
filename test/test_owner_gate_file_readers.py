@@ -65,6 +65,7 @@ def _app() -> web.Application:
     for route, handler, _ in GET_ROUTES:
         app.router.add_get(route, handler)
     app.router.add_post("/api/file-grep", files_mod.api_file_grep)
+    app.router.add_post("/api/file-kinds", files_mod.api_file_kinds)
     return app
 
 
@@ -82,6 +83,10 @@ def planted(tmp_path):
 async def _call(client: TestClient, route: str, kind: str, planted, headers: dict):
     if route == "/api/file-grep":
         return await client.post(route, json={"root": str(planted), "q": SECRET}, headers=headers)
+    if route == "/api/file-kinds":
+        return await client.post(
+            route, json={"paths": [str(planted / "notes.txt")]}, headers=headers
+        )
     if kind == "search":
         # Fuzzy FILENAME search, so the query is the planted name, not its bytes.
         return await client.get(
@@ -100,8 +105,8 @@ async def _assert_owner_only(resp) -> None:
     assert "notes.txt" not in body
 
 
-ALL_ROUTES = [r for r, _, _ in GET_ROUTES] + ["/api/file-grep"]
-KIND = {r: k for r, _, k in GET_ROUTES} | {"/api/file-grep": "dir"}
+ALL_ROUTES = [r for r, _, _ in GET_ROUTES] + ["/api/file-grep", "/api/file-kinds"]
+KIND = {r: k for r, _, k in GET_ROUTES} | {"/api/file-grep": "dir", "/api/file-kinds": "path"}
 
 
 @pytest.mark.asyncio
@@ -126,6 +131,9 @@ async def test_owner_passes_the_gate(route, planted):
             if route in ("/api/file-read", "/api/file-download", "/api/file-raw", "/api/file-grep"):
                 assert resp.status == 200, route
                 assert SECRET in body, route
+            if route == "/api/file-kinds":
+                assert resp.status == 200
+                assert '"file"' in body
             if route == "/api/browse-files":
                 assert resp.status == 200
                 assert "notes.txt" in body

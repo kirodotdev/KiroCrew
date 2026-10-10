@@ -36,6 +36,7 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/taskrunner/{task_id}/execute", handlers.api_taskrunner_execute_plan)
     app.router.add_post("/api/reveal", handlers.api_reveal_path)
     app.router.add_get("/api/file-read", handlers.api_file_read)
+    app.router.add_post("/api/file-kinds", handlers.api_file_kinds)
     app.router.add_get("/api/file-download", handlers.api_file_download)
     app.router.add_get("/api/file-office-preview", handlers.api_file_office_preview)
     app.router.add_get("/api/file-office-slides", handlers.api_file_office_slides)

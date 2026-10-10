@@ -5,6 +5,8 @@ import ToolCallLine from '../pages/chat/ToolCallLine'
 import { resolveByApprovalId, sseToolResult } from '../store/chatSlice'
 import type { RootState } from '../store'
 import type { ChatMessage } from '../types'
+import { __resetPathKindCache } from '../hooks/usePathKind'
+import { stubPathKinds } from './pathKindStub'
 
 type ChatState = RootState['chat']
 
@@ -479,7 +481,8 @@ describe('ToolCallLine inline expansion', () => {
 
 describe('ToolCallLine file-open icon', () => {
   beforeEach(() => {
-    globalThis.fetch = vi.fn(() => Promise.resolve({ ok: true, status: 200 })) as unknown as typeof fetch
+    __resetPathKindCache()
+    stubPathKinds(() => 'file')
   })
 
   function fileMsg(overrides: Partial<ChatMessage> = {}): ChatMessage {
@@ -543,8 +546,8 @@ describe('ToolCallLine file-open icon', () => {
     expect(screen.queryByTitle(/in side panel$/)).toBeNull()
   })
 
-  it('does not render the icon when the file does not exist (HEAD 404)', async () => {
-    globalThis.fetch = vi.fn(() => Promise.resolve({ ok: false, status: 404 })) as unknown as typeof fetch
+  it('does not render the icon when the file does not exist', async () => {
+    stubPathKinds(() => null)
     const store = fileStore('{"path":"/etc/hosts"}')
     renderWithProviders(<ToolCallLine message={fileMsg()} running={false} onFileOpen={vi.fn()} />, { store })
     await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled())

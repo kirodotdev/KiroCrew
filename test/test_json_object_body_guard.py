@@ -389,6 +389,8 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "handlers/files.py::api_file_write": ("None", _UNBOUNDED_USER_CONTENT),
     # a root path and a query the handler caps at 200 characters
     "handlers/files.py::api_file_grep": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    # a capped list of paths, each a FILE_READ_SCHEMA path
+    "file_api/pinned_io.py::api_file_kinds": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "file_api/dashboard_config.py::api_dashboard_config": ("<default>", _BOUNDED_CONTROL_FIELDS),
 }
 
