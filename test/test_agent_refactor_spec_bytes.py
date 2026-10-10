@@ -451,7 +451,7 @@ GOLDEN: dict[str, dict[str, Any]] = {
         "unrefreshed": [],
     },
     "forks": {
-        "events": "69ccf91fca126b49eb87a7fff1bbc60fcb77257837ba68b80e430e0e7663513e",
+        "events": "9811eba75892bc0be08d97cb46c1612832aad204ef88189171b06dbe42034103",
         "files": {
             "kirocrew-conductor.json": "e24b43a5a754dac6db3f3a09c1df61373039985002d279b001348c23847447f9",
             "kirocrew-dashboard-author.json": "359ad2ebfe08f8a558f0323f5eabf2a734d11ca4ed27c2bcfd7c2a49de328941",

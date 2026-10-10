@@ -155,6 +155,15 @@ filter in the step reads `mcpServers` alone: a server arriving through the
 global merge would pass all of them. `test/test_governed_spec_tail.py` fails if
 any writer in the package calls the write primitive directly.
 
+A crew's fork of a custom template gets the same pin on every refresh. A server
+such a fork reached only through the global `mcp.json` is therefore not loaded
+for it: list that server in the fork's own `mcpServers` instead. Setting
+`includeMcpJson` back to `true` in the fork does not stick, because the next
+refresh sets it to `false` again. Each time a refresh turns the merge off on a
+fork whose `includeMcpJson` was `true` or unset, the gateway logs a warning that
+names the fork and writes a `fork_mcp_json_merge_disabled` SEL record with the
+same text. A fork already at `false` records nothing.
+
 ### Managed servers
 
 `agent._MANAGED_MCP_SERVERS` holds the nine servers the gateway owns end to

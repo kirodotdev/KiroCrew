@@ -481,10 +481,28 @@ def test_the_tail_is_idempotent() -> None:
 # -- the fork refresh is a caller too ---------------------------------------------
 
 
-def test_a_fork_of_a_custom_template_has_the_merge_pinned_off(
+class _SelRecorder:
+    """Collects every SEL ``api_access`` record a refresh emits."""
+
+    def __init__(self) -> None:
+        self.records: list[dict[str, Any]] = []
+
+    def log_api_access(self, **kw: Any) -> None:
+        self.records.append(kw)
+
+    def merge_records(self) -> list[dict[str, Any]]:
+        return [r for r in self.records if r["operation"] == "fork_mcp_json_merge_disabled"]
+
+
+@pytest.fixture
+def custom_fork(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """No plumbing refresh runs for this fork, so the tail is what pins the merge."""
+) -> Callable[[dict[str, Any]], tuple[dict[str, Any], _SelRecorder]]:
+    """Refresh one crew fork of a custom (not owned) template; return what landed.
+
+    A fork of a custom template gets no plumbing refresh, so everything the refresh
+    writes into it comes from the governed tail.
+    """
     monkeypatch.setattr(agent, "_fork_refresh_failed", frozenset())
     monkeypatch.setattr(
         agent_state,
@@ -501,25 +519,82 @@ def test_a_fork_of_a_custom_template_has_the_merge_pinned_off(
     )
     monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
     spec = tmp_path / "crewfork.json"
-    kept = {"rules": [{"capability": "fs_read", "effect": "allow"}]}
-    spec.write_text(
-        json.dumps(
-            {
-                "name": "crewfork",
-                "tools": [],
-                "allowedTools": [],
-                "includeMcpJson": True,
-                "useLegacyMcpJson": True,
-                "permissions": kept,
-            }
-        ),
-        encoding="utf-8",
-    )
     monkeypatch.setattr(agent, "agent_spec_path", lambda _name: spec)
-    fork_refresh._refresh_forked_templates_locked(gated_off=frozenset())
-    written = json.loads(spec.read_text(encoding="utf-8"))
+    recorder = _SelRecorder()
+    monkeypatch.setattr(agent, "sel", lambda: recorder)
+
+    def refresh(fork_spec: dict[str, Any]) -> tuple[dict[str, Any], _SelRecorder]:
+        spec.write_text(json.dumps({"name": "crewfork", **fork_spec}), encoding="utf-8")
+        fork_refresh._refresh_forked_templates_locked(gated_off=frozenset())
+        assert agent._fork_refresh_failed == frozenset()
+        return json.loads(spec.read_text(encoding="utf-8")), recorder
+
+    return refresh
+
+
+def test_a_fork_of_a_custom_template_has_the_merge_pinned_off(
+    custom_fork: Callable[[dict[str, Any]], tuple[dict[str, Any], _SelRecorder]],
+) -> None:
+    """No plumbing refresh runs for this fork, so the tail is what pins the merge."""
+    kept = {"rules": [{"capability": "fs_read", "effect": "allow"}]}
+    written, _ = custom_fork(
+        {
+            "tools": [],
+            "allowedTools": [],
+            "includeMcpJson": True,
+            "useLegacyMcpJson": True,
+            "permissions": kept,
+        }
+    )
     assert written["includeMcpJson"] is False
     assert "useLegacyMcpJson" not in written
     # A fork is the user's file: its KAS block is seeded when absent, never edited.
     assert written["permissions"] == kept
-    assert agent._fork_refresh_failed == frozenset()
+
+
+@pytest.mark.parametrize(
+    "merge", [{"includeMcpJson": True}, {}], ids=["true", "absent-reads-as-true"]
+)
+def test_pinning_a_forks_merge_off_is_logged_and_audited_by_name(
+    custom_fork: Callable[[dict[str, Any]], tuple[dict[str, Any], _SelRecorder]],
+    merge: dict[str, Any],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The refresh says which fork lost the global ``mcp.json`` merge, and the remedy."""
+    with caplog.at_level("WARNING", logger=agent.logger.name):
+        written, recorder = custom_fork({"tools": [], "allowedTools": [], **merge})
+    assert written["includeMcpJson"] is False
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any("crewfork" in m and "mcpServers" in m for m in warnings), warnings
+    [record] = recorder.merge_records()
+    assert record["source"] == "fork-refresh:crewfork"
+    assert "crewfork" in record["resources"]
+    assert "mcpServers" in record["resources"]
+
+
+def test_a_fork_whose_merge_is_already_off_records_nothing(
+    custom_fork: Callable[[dict[str, Any]], tuple[dict[str, Any], _SelRecorder]],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Only a flip is reported, so a refresh of an unchanged fork stays quiet."""
+    with caplog.at_level("WARNING", logger=agent.logger.name):
+        _, recorder = custom_fork({"tools": [], "allowedTools": [], "includeMcpJson": False})
+    assert recorder.merge_records() == []
+    assert not [r for r in caplog.records if "mcp.json" in r.getMessage()]
+
+
+def test_a_forks_seeded_kas_block_is_the_derivation_of_its_filtered_grants(
+    custom_fork: Callable[[dict[str, Any]], tuple[dict[str, Any], _SelRecorder]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fork with no block gets the block of what the ceiling left, and nothing more."""
+    monkeypatch.setattr(auto_approve, "_may_auto_approve", lambda ref: ref != "execute_bash")
+    written, _ = custom_fork(
+        {
+            "tools": ["fs_read", "execute_bash"],
+            "allowedTools": ["fs_read", "execute_bash"],
+            "includeMcpJson": False,
+        }
+    )
+    assert written["allowedTools"] == ["fs_read"]
+    assert written["permissions"] == _derive({"allowedTools": ["fs_read"]}, "crewfork.json")
