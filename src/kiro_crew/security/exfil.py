@@ -17,6 +17,7 @@ anything here.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import contextvars
 import fnmatch
@@ -291,6 +292,12 @@ _OAUTH_AUTHORIZATION_ENDPOINTS: frozenset[tuple[str, str]] = frozenset(
         # MCP authorization server here too.
         ("access.stripe.com", "/mcp/oauth2/authorize"),
         ("gitlab.com", "/oauth/authorize"),
+        # ClickUp's authorization_endpoint per its RFC 8414 metadata at
+        # https://mcp.clickup.com/.well-known/oauth-authorization-server, reached
+        # by RFC 9728 discovery from https://mcp.clickup.com/mcp. Its dynamic
+        # client registration issues a compact-JWS ``client_id``, which is why
+        # the entropy carve-out covers that parameter.
+        ("mcp.clickup.com", "/oauth/authorize"),
         ("mcp.auth.mail.superhuman.com", "/oauth2/authorize"),
         ("mcp.linear.app", "/authorize"),
         # Miro's authorization_endpoint per its RFC 8414 metadata at
@@ -1573,6 +1580,32 @@ _OAUTH_ENTROPY_QUERY_PARAMS = frozenset({"code_challenge", "nonce", "state"})
 # challenge is base64url of a 32-byte digest -- exactly 43 characters.
 _OAUTH_S256_CHALLENGE_RE = re.compile(r"[A-Za-z0-9_-]{43}\Z")
 
+# A compact JWS (RFC 7515 s3.1) is three `.`-separated base64url segments, and a
+# provider prefix may sit inside the first one. RFC 7591 constrains the format of
+# a dynamically registered ``client_id`` not at all, so a provider may issue an
+# identifier of this shape -- which carries the JWT signature even though the
+# value authenticates nothing by itself and is being sent to the very issuer that
+# minted it. The alphabet is pinned to base64url so a standard-base64 run cannot
+# ride this shape, and exactly two separators are required so a singly dotted
+# identifier does not match. An identifier without this shape is left verbatim
+# and needs no exemption: only the three-segment shape trips the signature.
+#
+# The shape is checked by splitting on ``.`` into exactly three segments and
+# testing each one with a character-set membership check, never with a regex. A
+# compound ``[A-Za-z0-9_-]+\.[...]+\.[...]+`` -- and even a single anchored
+# ``[A-Za-z0-9_-]+\Z`` -- is flagged py/polynomial-redos, because a ``+`` run
+# against a user-provided value can backtrack before the anchor. ``set``
+# membership over the alphabet is unambiguously linear and carries no anchor.
+_OAUTH_JWS_CLIENT_ID_ALPHABET = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+)
+
+# A real JOSE header is a handful of short members (``alg``, ``kid``, ``typ``);
+# even a liberal one stays well under this. Capping the located ``eyJ`` run at
+# this many base64url chars before decoding keeps a hostile ``client_id`` from
+# handing a multi-kilobyte or deeply nested payload to ``json.loads``.
+_OAUTH_JWS_HEADER_MAX_RUN = 1024
+
 
 def _oauth_entropy_form_is_protocol_shaped(key: str, form: str) -> bool:
     """Return True when ONE decoded form of a value keeps a protocol shape."""
@@ -1614,24 +1647,26 @@ def _oauth_credential_scan_target(
 ) -> str:
     """Blank entropy-bearing OAuth values before the markerless URL scan.
 
-    Fixed credential signatures are checked against the raw and decoded URL
-    before this target is built. At an exact approved endpoint, only the
-    code-owned state, nonce, and PKCE challenge fields are omitted from the
-    markerless bare-secret heuristic, and only when the value carries a shape
-    the protocol can emit (see
-    :func:`_oauth_entropy_value_is_protocol_shaped`). Other recognized values,
-    parameter names, unknown parameters, and every non-query URL component
-    remain in the scan target.
+    At an exact approved endpoint, the code-owned state, nonce, and PKCE
+    challenge fields are omitted from the markerless bare-secret heuristic, and
+    only when the value carries a shape the protocol can emit (see
+    :func:`_oauth_entropy_value_is_protocol_shaped`). A ``client_id`` is omitted
+    on the narrower condition that it keeps the compact-JWS shape, which is the
+    one identifier form the credential signature cannot tell apart from a bearer
+    token. Other recognized values, parameter names, unknown parameters, and
+    every non-query URL component remain in the scan target.
     """
     if not approved_endpoint or not query:
         return url
 
     sanitized_segments: list[str] = []
     for key, separator, value in (segment.partition("=") for segment in query.split("&")):
-        approved_value = (
-            bool(separator)
-            and key in _OAUTH_ENTROPY_QUERY_PARAMS
-            and _oauth_entropy_value_is_protocol_shaped(key, value)
+        approved_value = bool(separator) and (
+            (
+                key in _OAUTH_ENTROPY_QUERY_PARAMS
+                and _oauth_entropy_value_is_protocol_shaped(key, value)
+            )
+            or (key == "client_id" and _oauth_client_id_is_jws_shaped(value))
         )
         sanitized_segments.append(
             f"{key}{separator}" if approved_value else f"{key}{separator}{value}"
@@ -1644,6 +1679,140 @@ def _oauth_credential_scan_target(
     suffix = "" if fragment_start == -1 else url[fragment_start:]
     sanitized_query = "&".join(sanitized_segments)
     return url[: query_start + 1] + sanitized_query + suffix
+
+
+def _oauth_jws_header_is_authentic(segment: str) -> bool:
+    """Return True when *segment* carries a real JOSE header (RFC 7515 s4).
+
+    A genuine compact JWS opens with a base64url-encoded JSON object carrying an
+    ``alg`` member. A provider may prepend a label (e.g. ``mcp-client-eyJ...``),
+    so the header is located by its ``eyJ`` opener (base64url of ``{"``) rather
+    than assumed to start at offset 0, and the run from there is decoded. This is
+    the one property an attacker cannot fake while also smuggling a bearer token:
+    the located run must decode to a small well-formed JOSE object, not to
+    credential bytes. Requiring it tells a real signature apart from an arbitrary
+    ``a.b.c`` run.
+
+    The run is length-capped BEFORE it is decoded, and both ``ValueError`` and
+    ``RecursionError`` are caught. A real JOSE header is small, so a run longer
+    than ``_OAUTH_JWS_HEADER_MAX_RUN`` is rejected outright rather than decoded;
+    and deeply nested JSON (``{"alg":[[[...]]]}``) makes ``json.loads`` raise
+    ``RecursionError``, which is not a ``ValueError`` -- left uncaught it would
+    escape the gate and crash the OAuth banner, mint and warm paths instead of
+    rejecting the URL. This function never raises out.
+    """
+    marker = segment.find("eyJ")
+    if marker == -1:
+        return False
+    run = segment[marker:]
+    if len(run) > _OAUTH_JWS_HEADER_MAX_RUN:
+        return False
+    try:
+        padded = run + "=" * (-len(run) % 4)
+        decoded = base64.urlsafe_b64decode(padded)
+        header = json.loads(decoded)
+    except (ValueError, RecursionError):
+        return False
+    return isinstance(header, dict) and "alg" in header
+
+
+def _oauth_client_id_is_jws_shaped(value: str) -> bool:
+    """Return True when *value* is a genuine compact JWS in every decoded form.
+
+    EVERY decoded form must keep the shape, for the same reason
+    :func:`_oauth_entropy_value_is_protocol_shaped` requires it: a
+    double-encoded payload (``%252F`` -> ``%2F`` -> ``/``) survives one pass, so
+    a raw-plus-one-decode test would let the standard-base64 alphabet smuggle a
+    credential-shaped run into the blanked value. A value that is still decodable
+    when the budget runs out was never seen in plaintext and does not earn the
+    exemption.
+
+    The exemption covers only the signature's own false positive, never a value
+    that merely *looks* like three segments. Two guards keep it that narrow: the
+    first segment must be an authentic JOSE header (so ``a.b.ghp_...`` is not a
+    JWS and stays in scope), and no segment may carry a fixed credential (so a
+    token hidden in any part of a real-headed value is still caught). Without
+    these a ``client_id`` such as ``eyJhbGci....<aws-key>`` would hide a bearer
+    secret from every fixed-credential scan at an approved endpoint.
+    """
+    candidate = value
+    for _ in range(_MAX_URL_DECODE_PASSES):
+        segments = candidate.split(".")
+        if (
+            len(segments) != 3
+            or not all(
+                segment and _OAUTH_JWS_CLIENT_ID_ALPHABET.issuperset(segment)
+                for segment in segments
+            )
+            or not _oauth_jws_header_is_authentic(segments[0])
+            or any(_contains_fixed_credential(segment) for segment in segments)
+        ):
+            return False
+        decoded = unquote(candidate)
+        if decoded == candidate:
+            return True
+        candidate = decoded
+    return False
+
+
+def _blank_jws_client_id(query: str) -> str:
+    """Return *query* with a compact-JWS ``client_id`` value blanked.
+
+    Only that one identifier is removed. Entropy-bearing parameters stay
+    verbatim, so the credential signatures still scan them and a marker hidden in
+    ``state`` is still caught. Names are matched literally and case-sensitively,
+    so an encoded or mixed-case alias keeps its value and stays in scope.
+    """
+    segments: list[str] = []
+    for segment in query.split("&"):
+        key, separator, value = segment.partition("=")
+        blank = key == "client_id" and bool(separator) and _oauth_client_id_is_jws_shaped(value)
+        segments.append(f"{key}{separator}" if blank else segment)
+    return "&".join(segments)
+
+
+def _oauth_url_endpoint_approved(url: str, *, assume_approved_endpoint: bool) -> bool:
+    """Return True when *url*'s endpoint earns the OAuth entropy carve-outs.
+
+    One spelling of endpoint approval for the whole gate: the same https / no
+    explicit port / hostname / allowlist test that :func:`diagnose_oauth_url_credential`
+    applies, and it honors ``assume_approved_endpoint`` so a rejection surface's
+    ``oauth_endpoints.json`` remedy is answered identically here. A URL that does
+    not parse earns nothing, so the structural rules below still reject it with
+    their own diagnostic and keep their precedence.
+    """
+    try:
+        parsed = urlparse(url)
+        port = parsed.port
+    except ValueError:
+        return False
+    if parsed.scheme.lower() != "https" or port is not None or not parsed.hostname:
+        return False
+    return assume_approved_endpoint or _approved_oauth_authorization_endpoint(
+        parsed.hostname.lower(), parsed.path
+    )
+
+
+def _oauth_blank_jws_client_id_in_url(url: str) -> str:
+    """Return *url* with a compact-JWS ``client_id`` value blanked in its query.
+
+    Byte-identical to *url* unless the query carries such an identifier. The
+    caller gates this on endpoint approval, so the blanking happens in one place
+    and the fixed-credential checks, the markerless scan and the exfil warning
+    all read the same target.
+    """
+    query_start = url.find("?")
+    if query_start == -1:
+        return url
+    fragment_start = url.find("#", query_start + 1)
+    query = (
+        url[query_start + 1 :] if fragment_start == -1 else url[query_start + 1 : fragment_start]
+    )
+    blanked = _blank_jws_client_id(query)
+    if blanked == query:
+        return url
+    suffix = "" if fragment_start == -1 else url[fragment_start:]
+    return url[: query_start + 1] + blanked + suffix
 
 
 def diagnose_oauth_url_credential(
@@ -1678,18 +1847,29 @@ def diagnose_oauth_url_credential(
             lambda value: "\\" in value,
             decoder=unquote,
         )
-    if _contains_fixed_credential(url):
+    # Evaluate the fixed-credential signature against the same target the
+    # markerless scan uses, so an approved endpoint's protocol-shaped values are
+    # subtracted once rather than judged here under a rule that cannot consult
+    # endpoint approval. Endpoint approval is computed once here (honoring
+    # ``assume_approved_endpoint``) and reused below; for any URL that is not an
+    # approved authorization endpoint the target is the URL itself.
+    approved_endpoint = _oauth_url_endpoint_approved(
+        url, assume_approved_endpoint=assume_approved_endpoint
+    )
+    credential_target = _oauth_blank_jws_client_id_in_url(url) if approved_endpoint else url
+    if _contains_fixed_credential(credential_target):
         return _oauth_url_payload_diagnostic(
             "fixed_credential_raw",
             url,
-            url,
+            credential_target,
             _contains_fixed_credential,
         )
-    if _contains_fixed_credential(decoded_url):
+    decoded_credential_target = unquote(credential_target)
+    if _contains_fixed_credential(decoded_credential_target):
         return _oauth_url_payload_diagnostic(
             "fixed_credential_decoded",
             url,
-            decoded_url,
+            decoded_credential_target,
             _contains_fixed_credential,
             decoder=unquote,
         )
@@ -1719,14 +1899,6 @@ def diagnose_oauth_url_credential(
             decoded_netloc.rpartition("@")[0],
         )
 
-    approved_endpoint = (
-        parsed.scheme.lower() == "https"
-        and not port
-        and (
-            assume_approved_endpoint
-            or _approved_oauth_authorization_endpoint(parsed.hostname.lower(), parsed.path)
-        )
-    )
     scan_target = _oauth_credential_scan_target(
         url,
         parsed.query,
@@ -1763,8 +1935,13 @@ def diagnose_oauth_url_credential(
         return _oauth_diagnostic("fragment", "fragment", parsed.fragment)
 
     path_and_query = parsed.path
-    if parsed.query:
-        path_and_query += f"?{parsed.query}"
+    # The exfil warning's credential signatures are unconditional by design --
+    # they are the backstop that still catches a marker hidden inside an
+    # entropy-bearing parameter. Only the approved endpoint's JWS identifier is
+    # withheld from them; every other parameter is handed over verbatim.
+    exfil_query = _blank_jws_client_id(parsed.query) if approved_endpoint else parsed.query
+    if exfil_query:
+        path_and_query += f"?{exfil_query}"
     rules: list[str] = []
     warning = _exfil_url_warning(
         parsed.hostname,
