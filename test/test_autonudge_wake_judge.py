@@ -8,6 +8,7 @@ the real mapping and the real tick without a network request.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import inspect
 import pathlib
 import re
@@ -2493,8 +2494,11 @@ def _service() -> AutoNudgeService:
     # land, so leaving these out would make every quiet tick here report a fire and
     # hide what the test is actually about.
     svc._inflight_adds = set()
+    # The mutation-admission lease a timer callback carries: unset here, as on a
+    # tick driven outside a timer task.
+    svc._mutation_admission = contextvars.ContextVar("test_admission", default=None)
 
-    async def _no_disk() -> None:
+    async def _no_disk(**_kwargs: Any) -> None:
         return None
 
     svc._persist_locked = _no_disk  # type: ignore[method-assign]
@@ -2713,7 +2717,7 @@ class TestTickVerdicts:
         """
         svc, loop = self._armed(None)
 
-        async def refuse() -> None:
+        async def refuse(**_kwargs: Any) -> None:
             raise OSError("disk is gone")
 
         svc._persist_locked = refuse  # type: ignore[method-assign]
@@ -2725,7 +2729,7 @@ class TestTickVerdicts:
         svc, loop = self._armed(None)
         calls: list[int] = []
 
-        async def landed() -> None:
+        async def landed(**_kwargs: Any) -> None:
             calls.append(1)
 
         svc._persist_locked = landed  # type: ignore[method-assign]
@@ -4396,7 +4400,7 @@ class TestTheReadingHappensBeforeTheJudge:
         real = service._write_monitor_snapshot_locked
         seen: list[tuple[dict, dict]] = []
 
-        async def _write(payload: dict | None = None) -> None:
+        async def _write(payload: dict | None = None, **kwargs: Any) -> None:
             # A payload-less call serializes live state, which by definition carries the
             # baseline memory already holds; only a staged payload can be a commit.
             row = None
@@ -4408,7 +4412,7 @@ class TestTheReadingHappensBeforeTheJudge:
                     if on_refuse is not None:
                         on_refuse()
                     raise OSError("disk went away")
-            await real(payload)
+            await real(payload, **kwargs)
 
         service._write_monitor_snapshot_locked = _write  # type: ignore[method-assign]
         return seen
@@ -4631,8 +4635,8 @@ class TestTheReadingHappensBeforeTheJudge:
 
         real = service._write_monitor_snapshot_locked
 
-        async def _turn_lands_mid_write(payload: dict | None = None) -> None:
-            await real(payload)
+        async def _turn_lands_mid_write(payload: dict | None = None, **kwargs: Any) -> None:
+            await real(payload, **kwargs)
             if payload is None:
                 return
             row = next(r for r in payload["loops"] if r["id"] == loop.id)
@@ -4684,8 +4688,8 @@ class TestTheReadingHappensBeforeTheJudge:
 
         real = service._write_monitor_snapshot_locked
 
-        async def _lands_then_cancelled(payload: dict | None = None) -> None:
-            await real(payload)
+        async def _lands_then_cancelled(payload: dict | None = None, **kwargs: Any) -> None:
+            await real(payload, **kwargs)
             # A payload-less write serializes live state; the reading's own write stages
             # a payload too. The commit is the one whose row carries a baseline memory
             # does not yet hold.

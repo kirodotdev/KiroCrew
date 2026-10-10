@@ -25,18 +25,28 @@ import logging
 import uuid
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Callable, Protocol, runtime_checkable
+from typing import Any, Callable, Literal, Protocol, runtime_checkable
 
 from kiro_crew import autonudge_provider_trust
 from kiro_crew.autonudge import (
     MAX_BANNER_CHARS,
     AutoNudgeStaleBaseline,
     MonitorUpdateConflict,
+    NudgeAdmissionReason,
     NudgeAdmissionRefused,
     is_channel_key,
     scrub_loop_text,
 )
 from kiro_crew.autonudge_selfarm import WAKE_RESET_AGENTS, forget_self_arm, record_self_arm
+from kiro_crew.autonudge_service.model import (
+    SERVICE_SHUTTING_DOWN_MESSAGE,
+    MonitorCredentialFollowUpFailed,
+    MonitorCredentialRollbackFailed,
+)
+from kiro_crew.autonudge_service.monitor_records import (
+    _monitor_update_post_commit,
+    _rollback_monitor_update_locked,
+)
 from kiro_crew.config.loader import workspace_dir_for
 from kiro_crew.monitoring.limits import validate_runtime_secs
 from kiro_crew.monitoring.models import (
@@ -104,6 +114,15 @@ class NudgeAuthzState(Protocol):
     channel_transports: Any
 
 
+def admission_refusal_status(exc: NudgeAdmissionRefused) -> int:
+    """Map only caller-facing admission causes; internal lease misuse still raises."""
+    if exc.reason is NudgeAdmissionReason.SERVICE_SHUTTING_DOWN:
+        return 503
+    if exc.reason is NudgeAdmissionReason.SESSION_CHANGED:
+        return 409
+    raise exc
+
+
 async def authorize_and_update_monitor(
     *,
     svc: Any,
@@ -146,6 +165,10 @@ async def authorize_and_update_monitor(
             return False
         return True
 
+    async def _deny(reason: str, status: int) -> tuple[None, str, int]:
+        await _audit("denied", reason)
+        return None, reason, status
+
     if (
         isinstance(wake_instructions, str)
         and len(wake_instructions) > MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS
@@ -180,30 +203,137 @@ async def authorize_and_update_monitor(
             error = "incognito and temporary sessions cannot host automation loops"
             await _audit("denied", error)
             return None, error, 403
-    prior_loop = None
     credential_update_needs_rollback = grant_owner_provider_credentials or "target" in safe_patch
+
     if credential_update_needs_rollback:
         rollback_update = getattr(svc, "rollback_monitor_update", None)
         if not callable(rollback_update):
             error = "monitor authorization requires a rollback-capable loop store"
             await _audit("denied", error)
             return None, error, 503
-    try:
-        if credential_update_needs_rollback:
-            prior_snapshots: list[Any] = []
-            loop = await svc.update_monitor(
-                loop_id,
-                _prior_snapshot_out=prior_snapshots,
-                **safe_patch,
+    credential_kind: Literal["grant", "revoke"] = (
+        "grant" if grant_owner_provider_credentials else "revoke"
+    )
+
+    async def _update_owner_credentials(
+        updated_loop: Any,
+        prior_loop: Any,
+        admission: Any,
+    ) -> None:
+        failed_update = deepcopy(updated_loop)
+        try:
+            had_exact_grant = False
+            if grant_owner_provider_credentials:
+                failed_monitor = getattr(failed_update, "monitor", None)
+                prior_monitor = getattr(prior_loop, "monitor", None)
+                had_exact_grant = (
+                    isinstance(failed_monitor, MonitorState)
+                    and isinstance(prior_monitor, MonitorState)
+                    and await asyncio.to_thread(
+                        autonudge_provider_trust.is_monitor_owner_credentials_recorded,
+                        prior_loop.id,
+                        prior_loop.slot_key,
+                        prior_monitor.kind,
+                        prior_monitor.target,
+                    )
+                )
+            # The identity recheck and the trust write share one ``_lock`` hold. A
+            # removal revokes the row's trust only once it holds the lock, so it
+            # either lands first (the recheck sees the row gone and writes nothing)
+            # or after this write completed, and never between the two.
+            async with svc._lock:
+                if svc._loops.get(updated_loop.id) is not updated_loop:
+                    return
+                if had_exact_grant:
+                    assert isinstance(failed_monitor, MonitorState)
+                    await asyncio.to_thread(
+                        autonudge_provider_trust.record_monitor_owner_credentials,
+                        failed_update.id,
+                        failed_update.slot_key,
+                        failed_monitor.kind,
+                        failed_monitor.target,
+                    )
+                else:
+                    await asyncio.to_thread(
+                        autonudge_provider_trust.forget_monitor_owner_credentials,
+                        updated_loop.id,
+                    )
+        except Exception as follow_up_error:
+            logger.error(
+                (
+                    "monitor credential provenance unavailable after update"
+                    if credential_kind == "grant"
+                    else "monitor credential revocation unavailable after update"
+                ),
+                exc_info=True,
             )
-            if prior_snapshots:
-                prior_loop = prior_snapshots[0]
-        else:
-            loop = await svc.update_monitor(loop_id, **safe_patch)
+            try:
+                async with svc._lock:
+                    rolled_back = await _rollback_monitor_update_locked(
+                        svc,
+                        updated_loop.id,
+                        prior_loop,
+                        failed_update,
+                        admission=admission,
+                    )
+            except Exception as rollback_error:
+                logger.error(
+                    (
+                        "monitor rollback failed after credential update failure"
+                        if credential_kind == "grant"
+                        else "monitor rollback failed after credential revocation failure"
+                    ),
+                    exc_info=True,
+                )
+                raise MonitorCredentialRollbackFailed(
+                    updated_loop,
+                    kind=credential_kind,
+                ) from rollback_error
+            raise MonitorCredentialFollowUpFailed(
+                updated_loop,
+                kind=credential_kind,
+                rolled_back=rolled_back,
+            ) from follow_up_error
+
+    post_commit = _update_owner_credentials if credential_update_needs_rollback else None
+    prior_snapshots: list[Any] = []
+    unacknowledged_update: Any | None = None
+    try:
+        with _monitor_update_post_commit(post_commit) as post_commit_scope:
+            if credential_update_needs_rollback:
+                loop = await svc.update_monitor(
+                    loop_id,
+                    _prior_snapshot_out=prior_snapshots,
+                    **safe_patch,
+                )
+            else:
+                loop = await svc.update_monitor(loop_id, **safe_patch)
+            if credential_update_needs_rollback and not post_commit_scope.ran and loop is not None:
+                unacknowledged_update = deepcopy(loop)
+    except NudgeAdmissionRefused as exc:
+        return await _deny(str(exc), admission_refusal_status(exc))
     except MonitorUpdateConflict as exc:
-        error = str(exc)
-        await _audit("denied", error)
-        return None, error, 409
+        return await _deny(str(exc), 409)
+    except MonitorCredentialFollowUpFailed as exc:
+        if not exc.rolled_back:
+            if exc.kind == "grant":
+                return None, "monitor changed while credential authorization failed", 409
+            return None, "monitor changed while credential revocation failed", 409
+        if exc.kind == "grant":
+            return (
+                None,
+                "monitor credential authorization unavailable — prior monitor restored",
+                503,
+            )
+        return (
+            None,
+            "monitor credential revocation unavailable — prior monitor restored",
+            503,
+        )
+    except MonitorCredentialRollbackFailed as exc:
+        if exc.kind == "grant":
+            return exc.loop, "monitor credential authorization and rollback unavailable", 503
+        return exc.loop, "monitor credential revocation and rollback unavailable", 503
     except ValueError as exc:
         # The store's own bounds (the runtime ceiling checked against a budget
         # the patch supplies, an unknown budget field) are a client error with
@@ -215,99 +345,72 @@ async def authorize_and_update_monitor(
         error = "structured monitor not found or already terminal"
         await _audit("denied", error)
         return None, error, 404
-    monitor = getattr(loop, "monitor", None)
-    if isinstance(monitor, MonitorState):
-        if grant_owner_provider_credentials:
-            failed_update = deepcopy(loop)
+    if credential_update_needs_rollback and not post_commit_scope.ran:
+        audit_error = "monitor authorization requires a rollback-capable loop store"
+        prior_loop = prior_snapshots[0] if prior_snapshots else None
+        assert unacknowledged_update is not None
+        assert callable(rollback_update)
+        if prior_loop is None:
+            logger.error(
+                "monitor rollback failed after credential update failure: no prior snapshot"
+            )
+            response = (
+                loop,
+                (
+                    "monitor credential authorization and rollback unavailable"
+                    if credential_kind == "grant"
+                    else "monitor credential revocation and rollback unavailable"
+                ),
+                503,
+            )
+        else:
             try:
-                prior_monitor = getattr(prior_loop, "monitor", None)
-                had_exact_grant = (
-                    prior_loop is not None
-                    and isinstance(prior_monitor, MonitorState)
-                    and await asyncio.to_thread(
-                        autonudge_provider_trust.is_monitor_owner_credentials_recorded,
-                        prior_loop.id,
-                        prior_loop.slot_key,
-                        prior_monitor.kind,
-                        prior_monitor.target,
-                    )
+                rolled_back = await rollback_update(
+                    loop.id,
+                    prior_loop,
+                    unacknowledged_update,
                 )
-                if had_exact_grant:
-                    await asyncio.to_thread(
-                        autonudge_provider_trust.record_monitor_owner_credentials,
-                        loop.id,
-                        loop.slot_key,
-                        monitor.kind,
-                        monitor.target,
+            except Exception:
+                logger.error(
+                    (
+                        "monitor rollback failed after credential update failure"
+                        if credential_kind == "grant"
+                        else "monitor rollback failed after credential revocation failure"
+                    ),
+                    exc_info=True,
+                )
+                response = (
+                    loop,
+                    (
+                        "monitor credential authorization and rollback unavailable"
+                        if credential_kind == "grant"
+                        else "monitor credential revocation and rollback unavailable"
+                    ),
+                    503,
+                )
+            else:
+                if not rolled_back:
+                    response = (
+                        None,
+                        (
+                            "monitor changed while credential authorization failed"
+                            if credential_kind == "grant"
+                            else "monitor changed while credential revocation failed"
+                        ),
+                        409,
                     )
                 else:
-                    await asyncio.to_thread(
-                        autonudge_provider_trust.forget_monitor_owner_credentials,
-                        loop.id,
+                    response = (
+                        None,
+                        (
+                            "monitor credential authorization unavailable — prior monitor restored"
+                            if credential_kind == "grant"
+                            else "monitor credential revocation unavailable — prior monitor restored"
+                        ),
+                        503,
                     )
-            except OSError:
-                logger.error(
-                    "monitor credential provenance unavailable after update",
-                    exc_info=True,
-                )
-                if prior_loop is None:
-                    return loop, "monitor credential authorization unavailable", 503
-                try:
-                    rolled_back = await svc.rollback_monitor_update(
-                        loop.id,
-                        prior_loop,
-                        failed_update,
-                    )
-                except Exception:  # noqa: BLE001 - report committed state honestly
-                    logger.error(
-                        "monitor rollback failed after credential update failure",
-                        exc_info=True,
-                    )
-                    return loop, "monitor credential authorization and rollback unavailable", 503
-                if not rolled_back:
-                    return None, "monitor changed while credential authorization failed", 409
-                return (
-                    None,
-                    "monitor credential authorization unavailable — prior monitor restored",
-                    503,
-                )
-        elif "target" in safe_patch:
-            # A non-dashboard target change must not retain a grant for a
-            # previous dashboard-selected identity. The exact-match read is
-            # already fail closed; revocation also prevents a forged rollback
-            # of the agent-writable target from reviving the old grant.
-            failed_update = deepcopy(loop)
-            try:
-                await asyncio.to_thread(
-                    autonudge_provider_trust.forget_monitor_owner_credentials,
-                    loop.id,
-                )
-            except OSError:
-                logger.error(
-                    "monitor credential revocation unavailable after update",
-                    exc_info=True,
-                )
-                if prior_loop is None:
-                    return loop, "monitor credential revocation unavailable", 503
-                try:
-                    rolled_back = await svc.rollback_monitor_update(
-                        loop.id,
-                        prior_loop,
-                        failed_update,
-                    )
-                except Exception:  # noqa: BLE001 - report committed state honestly
-                    logger.error(
-                        "monitor rollback failed after credential revocation failure",
-                        exc_info=True,
-                    )
-                    return loop, "monitor credential revocation and rollback unavailable", 503
-                if not rolled_back:
-                    return None, "monitor changed while credential revocation failed", 409
-                return (
-                    None,
-                    "monitor credential revocation unavailable — prior monitor restored",
-                    503,
-                )
+        await _audit("denied", audit_error)
+        return response
     return loop, None, 200
 
 
@@ -321,23 +424,37 @@ async def authorize_and_stop_monitor(
     user_reason: str = "",
 ) -> tuple[Any | None, str | None, int]:
     """Audit before retaining one ownership-resolved user-stop outcome."""
-    try:
-        await asyncio.to_thread(
-            lambda: sel().log_tool_invocation(
-                session_key=session_key,
-                source=source,
-                tool_name="monitor_stop",
-                outcome="invoked",
-                critical=True,
-                metadata={"caller": caller},
+
+    async def _audit(outcome: str, error: str = "", *, critical: bool = False) -> bool:
+        try:
+            await asyncio.to_thread(
+                lambda: sel().log_tool_invocation(
+                    session_key=session_key,
+                    source=source,
+                    tool_name="monitor_stop",
+                    outcome=outcome,
+                    error=error,
+                    critical=critical,
+                    metadata={"caller": caller},
+                )
             )
-        )
-    except Exception:
-        logger.error("monitor stop denied: SEL audit unavailable", exc_info=True)
+        except Exception:
+            logger.error("monitor stop SEL audit unavailable", exc_info=True)
+            return False
+        return True
+
+    async def _deny(reason: str, status: int) -> tuple[None, str, int]:
+        await _audit("denied", reason)
+        return None, reason, status
+
+    if not await _audit("invoked", critical=True):
         return None, "audit log unavailable — monitor not stopped", 503
-    loop = await svc.stop_monitor(loop_id, user_reason=user_reason)
+    try:
+        loop = await svc.stop_monitor(loop_id, user_reason=user_reason)
+    except NudgeAdmissionRefused as exc:
+        return await _deny(str(exc), admission_refusal_status(exc))
     if loop is None:
-        return None, "structured monitor not found", 404
+        return await _deny("structured monitor not found", 404)
     return loop, None, 200
 
 
@@ -418,7 +535,13 @@ async def authorize_and_clear_monitor(
     # The checks above were taken BEFORE the audit's ``to_thread`` yielded, so
     # they are re-taken atomically inside the removal's own lock hold: a
     # concurrent close-rollback restore in that window must not be deleted.
-    if not await svc.clear_terminal_monitor(loop_id):
+    try:
+        cleared = await svc.clear_terminal_monitor(loop_id)
+    except NudgeAdmissionRefused as exc:
+        error = str(exc)
+        await _audit("denied", error)
+        return False, error, admission_refusal_status(exc)
+    if not cleared:
         error = "monitor changed before the clear committed"
         await _audit("denied", error)
         return False, error, 409
@@ -800,6 +923,8 @@ async def authorize_and_update_nudge(
             "and choose.",
             409,
         )
+    except NudgeAdmissionRefused as exc:
+        return _deny(str(exc), admission_refusal_status(exc))
     except ValueError as exc:
         return _deny(str(exc), 400)
     except Exception as exc:  # noqa: BLE001 - audit the failure, then propagate
@@ -925,6 +1050,8 @@ async def authorize_and_add_nudge(
     if svc is None:
         _audit("error", "autonudge disabled")
         return None, "auto-nudge disabled (KIROCREW_AUTONUDGE is 0/false/no)", 503
+    if not getattr(svc, "accepting_mutations", True):
+        return _deny(SERVICE_SHUTTING_DOWN_MESSAGE, 503)
     monitor_wake_instructions = ""
     if monitor is not None:
         monitor_wake_instructions = monitor.wake_instructions
@@ -1129,6 +1256,7 @@ async def authorize_and_add_nudge(
                 "existing monitor cannot be replaced while a wake is in flight",
                 409,
             )
+    stale_default_sentinel: Path | None = None
     if monitor is None:
         # ``banner`` is optional and display-only, so absent/blank is not an error —
         # it means "show the message, as always". Validated HERE rather than beside
@@ -1143,8 +1271,11 @@ async def authorize_and_add_nudge(
         stop_sentinel_path = (stop_sentinel_path or "").strip()
         if stop_sentinel_path and is_sensitive_path(stop_sentinel_path):
             return _deny("stop_sentinel_path points to a sensitive location", 400)
-        # Auto-default: per-session sentinel so multiple loops don't clash. The
-        # unlink is filesystem I/O — offloaded (no-blocking-call-on-event-loop).
+        # Auto-default: one per-session sentinel so multiple loops do not clash.
+        # Keep the path only: ``add`` removes the stale file inside its admitted
+        # transaction once the new row is durable, so an admission refusal or a
+        # failed write cannot erase an existing loop's stop, and a cancelled caller
+        # cannot leave the file behind.
         if not stop_sentinel_path:
             if is_channel_key(slot_key):
                 stop_sentinel_path = resolve_stop_sentinel(slot_key)
@@ -1155,12 +1286,7 @@ async def authorize_and_add_nudge(
                         slot_key, getattr(slot, "workspace", "default")
                     )
             if stop_sentinel_path:
-                sentinel = Path(stop_sentinel_path)
-
-                def _unlink_sentinel() -> None:
-                    sentinel.unlink(missing_ok=True)
-
-                await asyncio.get_running_loop().run_in_executor(None, _unlink_sentinel)
+                stale_default_sentinel = Path(stop_sentinel_path)
 
     # AUDIT-OR-DENY: the loop must never be armed unaudited. Emit a CRITICAL
     # ``invoked`` event BEFORE svc.add — ``critical=True`` writes synchronously
@@ -1313,6 +1439,10 @@ async def authorize_and_add_nudge(
                 "gate": gate,
                 "creation_surface": creation_surface,
             }
+            if stale_default_sentinel is not None:
+                # Conditional, like ``judge`` below: an arm with no default
+                # sentinel produces the kwargs it produced before this field existed.
+                add_kwargs["retire_stale_stop_sentinel"] = stale_default_sentinel
             if not replace_existing:
                 add_kwargs["replace_existing"] = False
             if judge:
@@ -1369,9 +1499,15 @@ async def authorize_and_add_nudge(
             loop = await svc.add_monitor(
                 **add_monitor_kwargs,
             )
-    except NudgeAdmissionRefused:
+    except NudgeAdmissionRefused as exc:
         await asyncio.to_thread(_forget_orphaned_trust)
-        return _deny("session changed before nudge arm committed", 409)
+        status = admission_refusal_status(exc)
+        error = (
+            "session changed before nudge arm committed"
+            if exc.reason is NudgeAdmissionReason.SESSION_CHANGED
+            else str(exc)
+        )
+        return _deny(error, status)
     except MonitorUpdateConflict as exc:
         await asyncio.to_thread(_forget_orphaned_trust)
         return _deny(str(exc), 409)

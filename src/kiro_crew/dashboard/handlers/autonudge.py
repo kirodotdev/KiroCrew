@@ -10,14 +10,21 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew.autonudge import binding_key_for
+from kiro_crew.autonudge import (
+    NudgeAdmissionReason,
+    NudgeAdmissionRefused,
+    binding_key_for,
+)
 from kiro_crew.autonudge import get_instance as _autonudge_get
-from kiro_crew.autonudge import is_structured_monitor_loop
+from kiro_crew.autonudge import (
+    is_structured_monitor_loop,
+)
 
 # The security chokepoint lives in the transport-agnostic module (see its
 # docstring); re-exported here so existing importers keep working. This file
 # is intentionally a THIN HTTP mapping over it.
 from kiro_crew.autonudge_authz import (  # noqa: F401 - re-exported
+    admission_refusal_status,
     authorize_and_add_nudge,
     authorize_and_clear_monitor,
     authorize_and_stop_monitor,
@@ -25,6 +32,7 @@ from kiro_crew.autonudge_authz import (  # noqa: F401 - re-exported
     authorize_and_update_nudge,
     resolve_stop_sentinel,
 )
+from kiro_crew.autonudge_service.model import SERVICE_SHUTTING_DOWN_MESSAGE
 from kiro_crew.dashboard.handlers import source_providers
 from kiro_crew.dashboard.handlers.source_providers import (
     is_owner_dashboard_request,
@@ -1194,7 +1202,29 @@ async def api_autonudge_delete(request: web.Request) -> web.Response:
     denied = await _require_monitor_owner(request, "autonudge_delete")
     if denied is not None:
         return denied
-    await svc.remove(loop_id, stop_reason="dashboard_delete")
+
+    def _audit_denial(error: str) -> None:
+        try:
+            sel().log_tool_invocation(
+                session_key=existing.slot_key if existing else "",
+                source="dashboard",
+                tool_name="autonudge_delete",
+                outcome="denied",
+                error=error,
+                metadata={"loop_id": loop_id, "caller": request.remote or ""},
+            )
+        except Exception:  # noqa: BLE001 - a denial audit must not mask the refusal
+            logger.warning("autonudge delete denial audit failed", exc_info=True)
+
+    try:
+        await svc.remove(loop_id, stop_reason="dashboard_delete")
+    except NudgeAdmissionRefused as exc:
+        error = str(exc)
+        _audit_denial(error)
+        return web.json_response(
+            {"error": error, "code": "autonudge_delete_denied"},
+            status=admission_refusal_status(exc),
+        )
     sel().log_tool_invocation(
         session_key=existing.slot_key if existing else "",
         source="dashboard",
@@ -1396,6 +1426,26 @@ async def api_autonudge_fire(request: web.Request) -> web.Response:
     # because fire_now arms the tick itself.
     try:
         await svc.release_approval_hold(existing.slot_key, why="fired by hand", arm=False)
+    except NudgeAdmissionRefused as exc:
+        if exc.reason is NudgeAdmissionReason.SERVICE_SHUTTING_DOWN:
+            await _audit("denied", existing.slot_key, SERVICE_SHUTTING_DOWN_MESSAGE)
+            return web.json_response(
+                {
+                    "error": SERVICE_SHUTTING_DOWN_MESSAGE,
+                    "code": "shutting_down",
+                },
+                status=503,
+            )
+        logger.warning("autonudge: releasing the approval hold failed", exc_info=True)
+        await _audit("denied", existing.slot_key, "approval_hold_release_failed")
+        return web.json_response(
+            {
+                "error": "nudge not sent: the loop is paused for approval and could "
+                "not be resumed, so press again",
+                "code": "approval_hold_release_failed",
+            },
+            status=503,
+        )
     except Exception:
         # The hold stays as the store has it, so a fire now would only hold
         # again: refuse it out loud rather than report a press that did nothing.
@@ -1417,10 +1467,14 @@ async def api_autonudge_fire(request: web.Request) -> web.Response:
         # statuses for a stated reason — computing one is how the coded-response
         # ratchet gets defeated while looking like ordinary refactoring — so the
         # pairing is written out where a reader and a static check can both see
-        # it. Both arms are kept even though this route answers ``not found``
+        # it. All arms are kept even though this route answers ``not found``
         # itself above: relying on the 404 being unreachable would make a later
-        # edit to that guard silently change this response's status.
+        # edit to that guard silently change this response's status. The 503
+        # uses the dashboard's existing shutdown code so clients do not need a
+        # second identity for the same gateway state.
         if status == 404:
             return web.json_response({"error": error, "code": "autonudge_not_found"}, status=404)
+        if status == 503:
+            return web.json_response({"error": error, "code": "shutting_down"}, status=503)
         return web.json_response({"error": error, "code": "autonudge_not_fired"}, status=409)
     return web.json_response({"ok": True, "loop": _serialize(loop)})

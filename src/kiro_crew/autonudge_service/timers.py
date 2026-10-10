@@ -18,17 +18,24 @@ plain helpers beside them are imported directly by the owners that use them.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import time
+from collections.abc import Awaitable, Callable, Coroutine
+from contextlib import contextmanager
 from copy import deepcopy
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Concatenate, Iterator, ParamSpec, TypeVar
 
 from kiro_crew import shutdown_event
+from kiro_crew.autonudge_service.maintenance import _DurabilityDrain
 from kiro_crew.autonudge_service.model import (
     _CONSECUTIVE_FAILURE_STANDDOWN_AFTER,
     _START_FAILURE_BACKOFF_AFTER,
     _START_FAILURE_STANDDOWN_AFTER,
+    NudgeAdmissionRefused,
     NudgeLoop,
+    _MutationAdmission,
+    _TransactionSubmissions,
     is_structured_monitor_loop,
 )
 from kiro_crew.monitoring.models import MONITOR_STATE_VERSION, MonitorDispatchResult
@@ -90,6 +97,171 @@ def _current_task_or_none() -> "asyncio.Task[Any] | None":
         return None
 
 
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+class _RegisteredSectionCompletion(asyncio.Future[None]):
+    """Completion signal mapping one caller-owned boundary into the drain."""
+
+    def __init__(self, owner_task: asyncio.Task[Any] | None) -> None:
+        super().__init__()
+        self.owner_task = owner_task
+
+
+@contextmanager
+def _drain_registered_section(
+    svc: AutoNudgeService,
+    *,
+    cancel_callback_on_exit: bool = False,
+) -> Iterator[None]:
+    """Register only this section, not its caller's remaining task lifetime."""
+    completion = _RegisteredSectionCompletion(_current_task_or_none())
+    svc._inflight_adds.add(completion)
+
+    def resolve() -> None:
+        if not completion.done():
+            completion.set_result(None)
+        svc._inflight_adds.discard(completion)
+
+    try:
+        yield
+    finally:
+        owner = completion.owner_task
+        if (
+            cancel_callback_on_exit
+            and not svc._accepting_mutations
+            and owner is not None
+            and owner in svc._running_callbacks
+        ):
+            owner.cancel()
+            # Let the callback receive that cancellation and register any exit
+            # bookkeeping before shutdown wakes on this section's completion.
+            completion.get_loop().call_soon(resolve)
+        else:
+            resolve()
+
+
+async def _run_admitted_transaction(
+    svc: AutoNudgeService,
+    transaction: Coroutine[Any, Any, _R],
+    *,
+    cancel_callback_on_exit: bool = False,
+    on_failure_log: str,
+    expected: tuple[type[BaseException], ...] = (),
+) -> _R:
+    """Run one admitted transaction in a supervised, shielded child task.
+
+    A caller cancelled before THIS transaction submitted its write stops only its
+    wait: the child remains registered in ``_inflight_adds`` and completes the
+    admitted mutation. A caller cancelled once this transaction submitted a write
+    is held until the transaction settles and then receives the ``CancelledError``,
+    as it was when the transaction ran inline; like every drain wait that follows a
+    cancellation, that hold ends after the post-cancellation window even when the
+    write is wedged, and the child stays registered either way. The transaction's
+    submissions are counted on a token carried only in the child's context, so a
+    detached write made under the same callback lease is never this transaction's.
+    A companion completion keeps the original timer callback visible to shutdown
+    while the child runs. When admission has closed, such a callback receives
+    cancellation only after the child settles and only while it is still awaiting
+    that transaction, preserving the registered-section exit rule.
+    """
+    # Criterion: an admitted write whose awaiting task can be cancelled by
+    # anything other than shutdown's own drain before persistence lands uses
+    # this detached, registered-child path.
+    owner = _current_task_or_none()
+    completion = _RegisteredSectionCompletion(owner)
+    awaiting_transaction = False
+    submissions = _TransactionSubmissions()
+    owner_token = svc._admitted_transaction_owner.set(owner)
+    submissions_token = svc._admitted_transaction_submissions.set(submissions)
+    try:
+        inner: asyncio.Task[_R] = asyncio.ensure_future(transaction)
+    finally:
+        svc._admitted_transaction_submissions.reset(submissions_token)
+        svc._admitted_transaction_owner.reset(owner_token)
+    svc._inflight_adds.add(completion)
+    svc._inflight_adds.add(inner)
+
+    def resolve() -> None:
+        if not completion.done():
+            completion.set_result(None)
+        svc._inflight_adds.discard(completion)
+
+    def _finish(t: asyncio.Task[_R]) -> None:
+        svc._inflight_adds.discard(t)
+        exc = None if t.cancelled() else t.exception()
+        if exc is not None and not isinstance(exc, expected):
+            logger.warning(on_failure_log, exc_info=exc)
+        if (
+            awaiting_transaction
+            and cancel_callback_on_exit
+            and not svc._accepting_mutations
+            and owner is not None
+            and owner in svc._running_callbacks
+        ):
+            owner.cancel()
+            # Let the callback receive cancellation before shutdown wakes on the
+            # transaction's original-owner completion record.
+            completion.get_loop().call_soon(resolve)
+        else:
+            resolve()
+
+    inner.add_done_callback(_finish)
+    awaiting_transaction = True
+    try:
+        try:
+            return await asyncio.shield(inner)
+        except asyncio.CancelledError:
+            if submissions.count:
+                # This transaction has a write in flight: hold its caller until
+                # the transaction settles, as the inline transaction did.
+                # ``awaiting_transaction`` stays set through the hold, so a
+                # post-closure ``owner.cancel()`` from ``_finish`` lands here and
+                # the caller still sees one ``CancelledError``.
+                drain = _DurabilityDrain()
+                drain.note_cancelled()
+                await drain.settle(inner)
+            raise
+    finally:
+        awaiting_transaction = False
+
+
+def _drain_registered_owners(svc: AutoNudgeService) -> set[asyncio.Task[Any]]:
+    """Running callbacks that own a drain-protected section or transaction."""
+    owners: set[asyncio.Task[Any]] = set()
+    for completion in svc._inflight_adds:
+        if (
+            isinstance(completion, _RegisteredSectionCompletion)
+            and completion.owner_task is not None
+        ):
+            owners.add(completion.owner_task)
+    return owners
+
+
+def _drained_bookkeeping(
+    fn: Callable[Concatenate[AutoNudgeService, _P], Awaitable[_R]],
+) -> Callable[Concatenate[AutoNudgeService, _P], Coroutine[Any, Any, _R]]:
+    """Register *fn*'s section in the shutdown drain while it runs.
+
+    ``shutdown()`` cancels a running timer callback exactly like a dormant timer, so a
+    gateway stop never waits on a delivery, a probe or a judge call. Bookkeeping a
+    delivery has already earned -- the fire cycle's settlement, a structured monitor's
+    dispatch record -- must not be cut that way, so for exactly as long as *fn* runs
+    its completion future sits in ``_inflight_adds``, where shutdown drains the
+    section instead of the caller's remaining task lifetime. None of these sections
+    leads into a new delivery, and none contains a provider probe: a terminal
+    settlement's re-probe runs between two of them, where shutdown cancels it.
+    """
+
+    @functools.wraps(fn)
+    async def wrapper(self: AutoNudgeService, /, *args: _P.args, **kwargs: _P.kwargs) -> _R:
+        with _drain_registered_section(self):
+            return await fn(self, *args, **kwargs)
+
+    return wrapper
+
+
 def notify_approval_stalled(self: AutoNudgeService, slot_key: str) -> None:
     """Record that a tool approval in *slot_key* went unanswered: hold the loop.
 
@@ -120,12 +292,29 @@ def notify_approval_stalled(self: AutoNudgeService, slot_key: str) -> None:
     slot -- whereas the alternative needs a reliable "is this turn a nudge
     cycle?" test, which the fire window does not provide for dashboard slots
     (their turn outlives it).
+
+    Admitted here, where the evidence arrives, before anything is scheduled. A
+    hold that arrives before gateway shutdown closes admission carries that
+    lease into its write and is drained with the other admitted owners, so it is
+    on disk before ``shutdown()`` returns: the hold is about the loop's NEXT
+    wake, and after a shutdown the only next wake is the restart that reads the
+    row. One that arrives after closure is dropped at DEBUG, because no wake is
+    left for it to hold. Either way nothing raises into the approval path that
+    called this.
     """
     loop = self._find_by_slot(slot_key)
     if not loop or not loop.active or loop.approval_stalled:
         return
     try:
-        task = asyncio.ensure_future(_record_approval_hold(self, slot_key))
+        admission = self._admit_mutation()
+    except NudgeAdmissionRefused:
+        logger.debug(
+            "AutoNudge: shutting down -- not recording the approval hold for %s",
+            slot_key,
+        )
+        return
+    try:
+        task = asyncio.ensure_future(_record_approval_hold(self, slot_key, admission=admission))
     except RuntimeError:
         # No running loop to write on. The hold is not recorded, which costs at
         # most one more declined cycle, and the next unanswered prompt records it.
@@ -145,7 +334,12 @@ def notify_approval_stalled(self: AutoNudgeService, slot_key: str) -> None:
     task.add_done_callback(_finish)
 
 
-async def _record_approval_hold(svc: AutoNudgeService, slot_key: str) -> None:
+async def _record_approval_hold(
+    svc: AutoNudgeService,
+    slot_key: str,
+    *,
+    admission: _MutationAdmission | None = None,
+) -> None:
     """Set *slot_key*'s approval hold durably, then announce it.
 
     Persist before publishing, the same shape as ``release_approval_hold``: the
@@ -156,7 +350,23 @@ async def _record_approval_hold(svc: AutoNudgeService, slot_key: str) -> None:
     accepted is never shown or acted on -- not even during the write.
     A ``CancelledError`` from the writer arrives only after the write settled, so
     the hold is kept; only the announcement is skipped.
+
+    Admitted before the first await: ``notify_approval_stalled`` passes the lease
+    it took where the evidence arrived and registers the task in
+    ``_inflight_adds`` before the task's first step. ``shutdown()`` re-snapshots
+    that registry until the task and any write it starts settle, so a hold admitted
+    before shutdown closed admission lands before ``shutdown()`` returns. A hold
+    refused admission writes and announces nothing and is logged at DEBUG.
     """
+    if admission is None:
+        try:
+            admission = svc._admit_mutation()
+        except NudgeAdmissionRefused:
+            logger.debug(
+                "AutoNudge: shutting down -- not recording the approval hold for %s",
+                slot_key,
+            )
+            return
     async with svc._lock:
         loop = svc._find_by_slot(slot_key)
         if not loop or not loop.active or loop.approval_stalled:
@@ -172,13 +382,22 @@ async def _record_approval_hold(svc: AutoNudgeService, slot_key: str) -> None:
         staged.approval_stalled_at = stalled_at
         try:
             await svc._write_monitor_snapshot_locked(
-                svc._monitor_snapshot_with_replacement(loop, staged)
+                svc._monitor_snapshot_with_replacement(loop, staged),
+                admission=admission,
             )
         except asyncio.CancelledError:
             # The writer re-raises only after the write settled: the hold is on
             # disk, so memory takes it too, and only the announcement is skipped.
             loop.approval_stalled, loop.approval_stalled_at = True, stalled_at
             raise
+        except NudgeAdmissionRefused:
+            # The lease belongs to a generation a restart has since replaced.
+            # Nothing reached the store and the live row was never touched.
+            logger.debug(
+                "AutoNudge: the approval hold for %s was refused admission -- not recorded",
+                slot_key,
+            )
+            return
         # Only the two hold fields are applied: a lock-free writer (the
         # turn-completion path) may have moved another field during the await.
         loop.approval_stalled, loop.approval_stalled_at = True, stalled_at
@@ -198,7 +417,12 @@ async def _record_approval_hold(svc: AutoNudgeService, slot_key: str) -> None:
 
 
 async def release_approval_hold(
-    self: AutoNudgeService, slot_key: str, *, why: str, arm: bool = True
+    self: AutoNudgeService,
+    slot_key: str,
+    *,
+    why: str,
+    arm: bool = True,
+    admission: _MutationAdmission | None = None,
 ) -> bool:
     """End *slot_key*'s approval hold, because a person is back. True if one ended.
 
@@ -226,9 +450,63 @@ async def release_approval_hold(
     skipped then, and the reconciler re-arms the loop, which is not held any more.
     A structured monitor never holds (its tick path does not read the flag), so
     it is left alone.
+
+    Admitted before the first await, like every public mutation: ``_schedule_release``
+    passes the lease it took where the person's action arrived, and a direct caller
+    is admitted here. The admitted body runs in a detached registered child, so a
+    cancelled handler cannot cut the release before persistence: one still waiting
+    for the lock stops waiting at once, and one cancelled once the write is in
+    flight is held until it settles and then receives the cancellation.
+    Shutdown drains that child and arms nothing, because ``_arm_from_deadline``
+    refuses after closure. After closure a direct caller whose loop is held gets
+    ``NudgeAdmissionRefused`` (the popover's manual fire answers 503) and nothing
+    is written; one with no hold to end still gets False.
     """
-    async with self._lock:
-        loop = self._find_by_slot(slot_key)
+    if admission is None:
+        try:
+            admission = self._admit_mutation()
+        except NudgeAdmissionRefused:
+            current = self._find_by_slot(slot_key)
+            if (
+                not current
+                or not current.active
+                or not current.approval_stalled
+                or is_structured_monitor_loop(current)
+            ):
+                return False
+            logger.debug(
+                "AutoNudge: shutting down -- not releasing the approval hold for %s (%s)",
+                slot_key,
+                why,
+            )
+            raise
+    assert admission is not None
+    return await _run_admitted_transaction(
+        self,
+        _release_approval_hold_admitted(
+            self,
+            slot_key,
+            why=why,
+            arm=arm,
+            admission=admission,
+        ),
+        cancel_callback_on_exit=True,
+        on_failure_log="AutoNudge: detached approval-hold release failed",
+        expected=(NudgeAdmissionRefused,),
+    )
+
+
+async def _release_approval_hold_admitted(
+    svc: AutoNudgeService,
+    slot_key: str,
+    *,
+    why: str,
+    arm: bool,
+    admission: _MutationAdmission,
+) -> bool:
+    """The approval-hold release transaction once its caller is admitted."""
+    async with svc._lock:
+        loop = svc._find_by_slot(slot_key)
         if (
             not loop
             or not loop.active
@@ -267,8 +545,9 @@ async def release_approval_hold(
             pw_since += now - max(pw_since, since)
         staged.waiting_on_person_at = pw_since
         try:
-            await self._write_monitor_snapshot_locked(
-                self._monitor_snapshot_with_replacement(loop, staged)
+            await svc._write_monitor_snapshot_locked(
+                svc._monitor_snapshot_with_replacement(loop, staged),
+                admission=admission,
             )
         except asyncio.CancelledError:
             # Settled before the re-raise: the release is durable, so keep it.
@@ -283,12 +562,12 @@ async def release_approval_hold(
         held,
         why,
     )
-    self._emit("updated", loop)
-    if arm and loop.active and loop.id in self._loops:
-        if loop.id in self._firing:
-            self._rearm_pending.add(loop.id)
+    svc._emit("updated", loop)
+    if arm and loop.active and loop.id in svc._loops:
+        if loop.id in svc._firing:
+            svc._rearm_pending.add(loop.id)
         else:
-            self._arm_from_deadline(loop)
+            svc._arm_from_deadline(loop)
     return True
 
 
@@ -300,6 +579,11 @@ def _schedule_release(svc: AutoNudgeService, slot_key: str, *, why: str, arm: bo
     plain helper rather than a service member, for the reason
     ``_wake_bound_conductor`` gives. Never raises: the approval and message paths
     that call it must not fail because a release could not be scheduled.
+
+    Admitted here, where the person's action arrives, and the lease rides into
+    the release. A release scheduled after gateway shutdown closes admission is
+    dropped at DEBUG, as is one whose lease a restart has since replaced: the hold
+    stays exactly as the store has it, and the next sign of a person releases it.
     """
     if not slot_key:
         return
@@ -307,7 +591,18 @@ def _schedule_release(svc: AutoNudgeService, slot_key: str, *, why: str, arm: bo
     if loop is None or not loop.approval_stalled:
         return
     try:
-        task = asyncio.ensure_future(svc.release_approval_hold(slot_key, why=why, arm=arm))
+        admission = svc._admit_mutation()
+    except NudgeAdmissionRefused:
+        logger.debug(
+            "AutoNudge: shutting down -- not releasing the approval hold for %s (%s)",
+            slot_key,
+            why,
+        )
+        return
+    try:
+        task = asyncio.ensure_future(
+            svc.release_approval_hold(slot_key, why=why, arm=arm, admission=admission)
+        )
     except RuntimeError:
         # No running loop: nothing to schedule onto, and the hold stays until the
         # next sign of a person -- the harmless direction.
@@ -316,12 +611,23 @@ def _schedule_release(svc: AutoNudgeService, slot_key: str, *, why: str, arm: bo
 
     def _finish(t: "asyncio.Task[bool]") -> None:
         svc._inflight_adds.discard(t)
-        if not t.cancelled() and t.exception() is not None:
-            logger.warning(
-                "AutoNudge: approval-hold release for %s failed; the loop stays paused",
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc is None:
+            return
+        if isinstance(exc, NudgeAdmissionRefused):
+            logger.debug(
+                "AutoNudge: approval-hold release for %s was refused admission; "
+                "the loop stays paused",
                 slot_key,
-                exc_info=t.exception(),
             )
+            return
+        logger.warning(
+            "AutoNudge: approval-hold release for %s failed; the loop stays paused",
+            slot_key,
+            exc_info=exc,
+        )
 
     task.add_done_callback(_finish)
 
@@ -725,12 +1031,21 @@ def notify_user_input(self: AutoNudgeService, slot_key: str, *, human: bool = Fa
 def _cancel_timer(self: AutoNudgeService, loop_id: str, *, drop_claims: bool = True) -> None:
     """Retire one loop's timer task. The single cancellation policy.
 
-    Two conditions make a cancel wrong rather than merely redundant, and both are
-    stated here so no caller has to remember either:
+    Three conditions make a cancel wrong rather than merely redundant, and all are
+    stated here so no caller has to remember them:
 
     * **The currently running timer task** (a self-re-arm from inside ``_timer``) is
       about to return on its own, and cancelling it would inject a spurious
       ``CancelledError`` into the finishing task.
+    * **A timer callback whose admitted transaction runs in a detached child.** The
+      child inherits ``_admitted_transaction_owner`` so removal, structured-stop or
+      turn-completion bookkeeping still recognizes the original callback as
+      self-cancellation.
+      ``_emit`` clears it for its observers, so a task an observer creates from the
+      child is not mistaken for that callback. The
+      shared transaction helper cancels that callback after the child settles, only
+      while the callback is still awaiting the transaction, if shutdown has closed
+      admission.
     * **A task whose event loop has already closed.** ``Task.cancel`` schedules the
       cancellation through ``loop.call_soon``, which raises ``RuntimeError: Event loop
       is closed`` — so this raises out of ``remove``/``remove_sync`` and the dashboard
@@ -759,7 +1074,8 @@ def _cancel_timer(self: AutoNudgeService, loop_id: str, *, drop_claims: bool = T
             loop_id,
         )
         return
-    if t is _current_task_or_none():
+    current = _current_task_or_none()
+    if t is current or t is self._admitted_transaction_owner.get():
         return
     t.cancel()
     if not drop_claims:
@@ -783,6 +1099,9 @@ def _cancel_timer(self: AutoNudgeService, loop_id: str, *, drop_claims: bool = T
 
 
 def _arm_timer(self: AutoNudgeService, loop: NudgeLoop, delay: float | None = None) -> None:
+    # A drained owner must not repopulate the timer table shutdown just emptied.
+    if not self._accepting_mutations:
+        return
     self._cancel_timer(loop.id, drop_claims=False)
     # Any arm replaces the armed timer, so a push mark naming the old one is stale. A
     # push re-sets it right after this call.
@@ -823,9 +1142,15 @@ def _arm_from_deadline(self: AutoNudgeService, loop: NudgeLoop) -> None:
     the record: the stored ``active`` intent belongs to the gateway that
     wrote it and must survive the downgrade so an upgrade resumes the watch.
     Inertness is the local consequence, not a change of intent.
+
+    After ``shutdown()`` closes admission nothing is armed, so a drained owner
+    cannot leave a timer -- or the deadline persist that comes with one --
+    behind the teardown.
     """
     from kiro_crew import autonudge as seams  # read at call time: the facade imports us
 
+    if not self._accepting_mutations:
+        return
     monitor = loop.monitor
     if monitor is not None and monitor.version != MONITOR_STATE_VERSION:
         logger.info(

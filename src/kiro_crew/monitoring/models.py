@@ -1039,6 +1039,17 @@ class MonitorState:
     #: because no outcome is recorded in the meantime a restart in the window finds
     #: a plain live loop rather than one tagged as finished and refused revival.
     terminal_pending: str = ""
+    #: Non-empty once that owed turn LANDED but its settlement has not: the delivery
+    #: moves the outcome out of ``terminal_pending`` into this field, so a restart
+    #: in the window settles without repeating the channel turn. A separate field,
+    #: not a new value of ``terminal_pending``, so a gateway that predates it files
+    #: the key under ``extra_fields`` and writes it back untouched, reads nothing
+    #: owed, and keeps the monitor running at the same state version.
+    terminal_delivered: str = ""
+    #: Consecutive indeterminate settlement-only re-probes for a delivered
+    #: terminal marker. A definite answer resets it; the gate uses the persisted
+    #: count to bound how long delivery suppresses ordinary subject observation.
+    terminal_reprobe_unknowns: int = 0
     next_probe_at: float = 0.0
     outcome: MonitorOutcome | None = None
     stopped_reason: str = ""
@@ -1091,6 +1102,7 @@ class MonitorState:
             "quiet_streak",
             "floor_ticks",
             "stall_streak",
+            "terminal_reprobe_unknowns",
         ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
@@ -1121,6 +1133,8 @@ class MonitorState:
         # look rather than a false all-clear.
         if not isinstance(self.terminal_pending, str):
             self.terminal_pending = "blocked" if self.terminal_pending else ""
+        if not isinstance(self.terminal_delivered, str):
+            self.terminal_delivered = "blocked" if self.terminal_delivered else ""
         if not isinstance(self.budgets, MonitorBudgets):
             raise ValueError("budgets must be MonitorBudgets")
         if not isinstance(self.creation_surface, MonitorCreationSurface):

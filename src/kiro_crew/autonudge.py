@@ -39,15 +39,16 @@ before those owners moved out still resolves here as the same object its owner h
 and so does every public name it imported from the rest of the package and every
 other import callers and tests read off it. The names moved code reads through this
 module on each call -- so a patch here reaches it -- are
-``_OVERDUE_REARM_SECS``, ``_RECONCILE_INTERVAL_SECS``, ``replace_with_retry``,
-``fsync_dir``, ``scrubbed_judge_spec``, ``_INSTANCE``, ``_MAINTENANCE_LOCKS`` and
-``_MUTATION_LOCK_OWNERS``. Every other name the owners read is their own global, which
-a patch here does not reach.
+``_OVERDUE_REARM_SECS``, ``_RECONCILE_INTERVAL_SECS``, ``_DRAIN_CANCEL_GRACE_SECS``,
+``replace_with_retry``, ``fsync_dir``, ``scrubbed_judge_spec``, ``_INSTANCE``,
+``_MAINTENANCE_LOCKS`` and ``_MUTATION_LOCK_OWNERS``. Every other name the owners
+read is their own global, which a patch here does not reach.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import math
@@ -79,10 +80,12 @@ from kiro_crew.autonudge_service.gate import (  # noqa: F401 -- re-exported
     _WAKE_FOLLOWUP_TICKS,
 )
 from kiro_crew.autonudge_service.maintenance import (  # noqa: F401 -- re-exported
+    _DRAIN_CANCEL_GRACE_SECS,
     _assert_mutation_lock_owned,
     _AutoNudgeMaintenanceView,
     _cancel_and_drain_tasks,
     _claim_mutation_lock,
+    _DurabilityDrain,
     _maintenance_lock,
     _release_mutation_lock,
     _unclaim_mutation_lock,
@@ -107,16 +110,20 @@ from kiro_crew.autonudge_service.model import (  # noqa: F401 -- re-exported
     NUDGE_RENEW_DUE_SHARE,
     RUNTIME_BUDGET_REASON,
     SENTINEL_DROPPED_REASON,
+    SERVICE_SHUTTING_DOWN_MESSAGE,
     SESSION_START_FAILURE_REASON,
     STOP_SENTINEL_REASON,
     STRUCTURAL_TERMINAL_REASON,
     AutoNudgeStaleBaseline,
     AutoNudgeStoreUnvetted,
     MonitorUpdateConflict,
+    NudgeAdmissionReason,
     NudgeAdmissionRefused,
     NudgeLoop,
+    _MutationAdmission,
     _positive_number,
     _stopped_row_is_replaceable,
+    _TransactionSubmissions,
     is_channel_key,
     is_structured_monitor_loop,
     new_goal_token,
@@ -862,6 +869,10 @@ class AutoNudgeService:
         # fire callback runs the unattended turn INLINE, so cancelling it kills
         # the in-flight turn and loses its transcript and cycle bookkeeping.
         self._firing: set[str] = set()
+        # Loop ids whose delivered-terminal ``holds`` snapshot is being written.
+        # A manual fire in this window must refuse rather than arm a timer that
+        # publishing the staged stop immediately retires.
+        self._terminal_settlement_writes: set[str] = set()
         # Loop ids owned by an administrative cleanup. Public mutations on the
         # same firing loop must not wait for the maintenance mutex: the cleanup
         # is waiting for that timer to finish, so waiting would invert the lock.
@@ -883,10 +894,56 @@ class AutoNudgeService:
         # good. Not persisted: a restart re-arms on a fresh full interval anyway,
         # so the worst a lost entry costs is one extra deferral.
         self._start_failure_deferred: dict[str, int] = {}
-        # Strong refs to in-flight shielded add() tasks: keeps a detached
-        # mutation supervised (no GC, failures logged) even when every awaiting
-        # caller was cancelled. Discarded on completion.
-        self._inflight_adds: set = set()
+        # Closed synchronously at shutdown entry, before any drain awaits. New
+        # callers are refused after closure; a lease captured before closure
+        # remains valid for one persistence submission in this generation.
+        self._accepting_mutations = True
+        self._mutation_generation = 0
+        # A timer callback admitted before closure keeps using the same
+        # generation lease for the writes its own task makes, including the
+        # bookkeeping a delivery cancelled by shutdown performs on its way out.
+        # A task it spawns sees the lease but is not its owner, so it does not
+        # inherit it; ordinary public mutations still receive a
+        # single-persistence lease from `_admit_mutation`.
+        self._mutation_admission: contextvars.ContextVar[_MutationAdmission | None] = (
+            contextvars.ContextVar(
+                f"autonudge_mutation_admission_{id(self)}",
+                default=None,
+            )
+        )
+        # A remove-class transaction runs in a detached child, but timer
+        # cancellation must still recognize the callback task that owns it as
+        # self-cancellation. Set only in that child's copied context.
+        self._admitted_transaction_owner: contextvars.ContextVar[asyncio.Task[Any] | None] = (
+            contextvars.ContextVar(
+                f"autonudge_admitted_transaction_owner_{id(self)}",
+                default=None,
+            )
+        )
+        # The writes one admitted transaction has started, carried in the same
+        # child context. The caller's cancellation hold reads it, so a detached
+        # write under the callback's shared lease, which runs in its own context,
+        # cannot pass for this transaction's submission.
+        self._admitted_transaction_submissions: contextvars.ContextVar[
+            _TransactionSubmissions | None
+        ] = contextvars.ContextVar(
+            f"autonudge_admitted_transaction_submissions_{id(self)}",
+            default=None,
+        )
+        # Strong refs to owned mutation tasks and owner-completion futures:
+        # keep detached mutations supervised (no GC, failures logged) and let
+        # shutdown map a drained section or transaction back to its timer callback
+        # without waiting on that callback's whole lifetime. Discarded on completion.
+        self._inflight_adds: set[asyncio.Future[Any]] = set()
+        # Timer tasks past their sleep. Shutdown cancels them like dormant timers,
+        # including one whose own loop was removed mid-callback and so has left
+        # ``_timers``; only a callback identified by a registered drain-owner
+        # completion in ``_inflight_adds`` is drained instead.
+        self._running_callbacks: set[asyncio.Task[Any]] = set()
+        # Executor-backed writes outlive cancellation of their asyncio waiter.
+        # Track the raw futures separately so shutdown can prove the durable
+        # boundary before the store path is released.
+        self._inflight_persistence: set[asyncio.Future[Any]] = set()
         # Structured replacements whose prior row must keep its protected trust
         # until the caller completes a second durable authorization step. The
         # monitor snapshot and the protected trust record are separate files, so
@@ -910,8 +967,19 @@ class AutoNudgeService:
         # so any sign of life restarts the two-pass clock. Not persisted --
         # after a restart, start() re-arms every active loop anyway.
         self._reconcile_candidates: set[str] = set()
+        # One lock per structured monitor orders its durable patch and any
+        # credential continuation as one transaction. The map lookup is protected
+        # by ``_lock``; callers then acquire this lock before re-entering ``_lock``.
+        # Registered users keep an entry stable across a concurrent row removal.
+        self._monitor_mutation_locks: dict[str, asyncio.Lock] = {}
+        self._monitor_mutation_lock_users: dict[str, int] = {}
         self._observers: list[Callable[[str, NudgeLoop | None], None]] = []
         self._lock = asyncio.Lock()
+
+    @property
+    def accepting_mutations(self) -> bool:
+        """Whether this service generation admits a new public mutation."""
+        return self._accepting_mutations
 
     @property
     def _path(self) -> Path:
@@ -924,6 +992,86 @@ class AutoNudgeService:
         return self._store.path
 
     # ── Persistence ──
+
+    def _admit_mutation(
+        self,
+        *,
+        allow_multiple_persistence: bool = False,
+    ) -> _MutationAdmission:
+        """Capture mutation authority before the caller reaches its first await."""
+        current = _current_task_or_none()
+        inherited = self._mutation_admission.get()
+        if inherited is not None and inherited.owner_task is current:
+            return inherited
+        if not self._accepting_mutations:
+            raise NudgeAdmissionRefused(
+                SERVICE_SHUTTING_DOWN_MESSAGE,
+                reason=NudgeAdmissionReason.SERVICE_SHUTTING_DOWN,
+            )
+        return _MutationAdmission(
+            self._mutation_generation,
+            owner_task=current,
+            allow_multiple_persistence=allow_multiple_persistence,
+        )
+
+    def _effective_admission(
+        self,
+        admission: _MutationAdmission | None,
+    ) -> _MutationAdmission | None:
+        """The explicit lease, else the one the current timer task inherited."""
+        if admission is not None:
+            return admission
+        inherited = self._mutation_admission.get()
+        if inherited is None or inherited.owner_task is not _current_task_or_none():
+            return None
+        return inherited
+
+    def _mutation_allowed(self, admission: _MutationAdmission | None) -> bool:
+        effective = self._effective_admission(admission)
+        if effective is None:
+            return self._accepting_mutations
+        return effective.generation == self._mutation_generation
+
+    def _start_persistence(
+        self,
+        payload: dict,
+        *,
+        admission: _MutationAdmission | None = None,
+    ) -> asyncio.Future[None]:
+        """Start one off-loop write under live or already-admitted authority.
+
+        The single submission point for an executor-backed store write, so the
+        raw future is registered where ``shutdown()`` drains it even when every
+        asyncio waiter of the write was cancelled.
+        """
+        effective = self._effective_admission(admission)
+        if not self._mutation_allowed(effective):
+            raise NudgeAdmissionRefused(
+                SERVICE_SHUTTING_DOWN_MESSAGE,
+                reason=NudgeAdmissionReason.SERVICE_SHUTTING_DOWN,
+            )
+        if (
+            effective is not None
+            and effective.persistence_submitted
+            and not effective.allow_multiple_persistence
+        ):
+            raise NudgeAdmissionRefused(
+                "mutation persistence lease is already consumed",
+                reason=NudgeAdmissionReason.PERSISTENCE_LEASE_CONSUMED,
+            )
+        future = asyncio.get_running_loop().run_in_executor(
+            None,
+            self._write_state,
+            payload,
+        )
+        if effective is not None:
+            effective.persistence_submitted = True
+        submissions = self._admitted_transaction_submissions.get()
+        if submissions is not None:
+            submissions.count += 1
+        self._inflight_persistence.add(future)
+        future.add_done_callback(self._inflight_persistence.discard)
+        return future
 
     def _load(self) -> None:
         """Read the store and repair each entry. BLOCKING — see ``start()``.
@@ -1626,11 +1774,27 @@ class AutoNudgeService:
         self._observers.append(cb)
 
     def _emit(self, event: str, loop: NudgeLoop | None) -> None:
-        for cb in self._observers:
-            try:
-                cb(event, loop)
-            except Exception:
-                logger.warning("AutoNudge observer failed", exc_info=True)
+        # A detached admitted child carries its owner in ``_admitted_transaction_owner``
+        # for its own timer cancellations only, its submission token in
+        # ``_admitted_transaction_submissions`` for its own writes only, and a monitor
+        # update's post-commit handle for its own credential continuation only. An
+        # observer runs in the emitter's context and a task it creates copies that
+        # context, so all three are cleared for the observers: their follow-up must not
+        # pass for the owner's callback, a write it starts must not count as the
+        # transaction's own, and nothing it starts may reach the update's continuation.
+        owner_token = self._admitted_transaction_owner.set(None)
+        submissions_token = self._admitted_transaction_submissions.set(None)
+        post_commit_token = _monitor_records._MONITOR_UPDATE_POST_COMMIT.set(None)
+        try:
+            for cb in self._observers:
+                try:
+                    cb(event, loop)
+                except Exception:
+                    logger.warning("AutoNudge observer failed", exc_info=True)
+        finally:
+            _monitor_records._MONITOR_UPDATE_POST_COMMIT.reset(post_commit_token)
+            self._admitted_transaction_submissions.reset(submissions_token)
+            self._admitted_transaction_owner.reset(owner_token)
 
     # ── Lifecycle ──
 
@@ -1638,6 +1802,11 @@ class AutoNudgeService:
         if not enabled():
             logger.info("AutoNudge disabled (KIROCREW_AUTONUDGE is 0/false/no)")
             return
+        # A restart after shutdown() opens a NEW generation, so a lease captured
+        # before the previous closure cannot write into this one.
+        if not self._accepting_mutations:
+            self._mutation_generation += 1
+        self._accepting_mutations = True
         # This lock spans load, repair, timer arming and singleton publication.
         # Disabled-mode maintenance that got here first finishes its whole
         # read/modify/write transaction before startup loads; maintenance that
@@ -1709,7 +1878,7 @@ class AutoNudgeService:
             self._reconciler = asyncio.create_task(self._reconcile_forever())
         logger.info("AutoNudge started")
 
-    def stop(self) -> None:
+    def stop(self, *, preserve_admitted: bool = False) -> None:
         # Retire the reconciler first so a pass cannot re-arm a timer this
         # method is about to cancel. Same closed-loop guard as _cancel_timer:
         # stop() runs from synchronous shutdown paths where the task's loop
@@ -1721,14 +1890,27 @@ class AutoNudgeService:
         # Through _cancel_timer, not a bare t.cancel() loop: shutdown is the likeliest
         # moment for a timer's loop to be closing already, and one cancellation policy
         # means this path inherits both of its guards instead of restating neither.
-        # It pops as it goes, so iterate over a snapshot of the keys.
+        # A timer identified by a drain-owner completion is inside bookkeeping
+        # or a detached admitted transaction. Async shutdown detaches and drains
+        # that boundary; synchronous stop keeps its historical cancel-all behavior.
+        drained_callback_owners = _timers._drain_registered_owners(self)
         for loop_id in list(self._timers):
+            timer = self._timers.get(loop_id)
+            if preserve_admitted and timer in drained_callback_owners:
+                self._timers.pop(loop_id, None)
+                continue
             self._cancel_timer(loop_id)
         self._timers.clear()
+        if preserve_admitted:
+            return
         self._reconcile_candidates.clear()
         self._accepted_monitor_turns.clear()
         self._maintenance_quiescing.clear()
         self._maintenance_quiesce_events.clear()
+        self._unpublish()
+
+    def _unpublish(self) -> None:
+        """Withdraw the singleton, so no late caller reaches this service."""
         global _INSTANCE
         if _INSTANCE is self:
             _INSTANCE = None
@@ -1739,7 +1921,100 @@ class AutoNudgeService:
 
             conductor_wake.dispose_all()
 
-    async def _persist_locked(self) -> None:
+    async def shutdown(self) -> None:
+        """Close admission, cancel every timer outside drained bookkeeping, drain the rest.
+
+        A running callback is cancelled exactly like a dormant timer, so a gateway stop
+        never waits on a delivery, a probe or a judge call. The exception is a callback
+        owning a registered bookkeeping section or detached admitted transaction: that
+        boundary is drained with the other owners instead, without extending the drain
+        through the callback's remaining lifetime. A terminal settlement's provider
+        re-probe runs outside every registered section, so it is cancelled with its
+        callback: the delivered marker persisted before it stays owed, and the next
+        start settles it without another turn.
+        """
+        self._accepting_mutations = False
+        current = _current_task_or_none()
+        armed = {task for task in self._timers.values() if isinstance(task, asyncio.Task)}
+        all_controls = {
+            task
+            for task in (self._reconciler, *armed, *self._running_callbacks)
+            if isinstance(task, asyncio.Task)
+            and task is not current
+            and not task.done()
+            and not task.get_loop().is_closed()
+        }
+        # A callback whose own loop was removed mid-callback has left the timer table,
+        # so ``stop()`` cannot reach it; it is cancelled here on the same terms. A
+        # registered callback is represented by its drain-owner completion future
+        # instead of by the task's whole remaining lifetime.
+        drained_callback_owners = _timers._drain_registered_owners(self)
+        controls = all_controls - drained_callback_owners
+        unarmed_callbacks = {task for task in controls - armed if task in self._running_callbacks}
+        self.stop(preserve_admitted=True)
+        for task in unarmed_callbacks:
+            task.cancel()
+        drain = _DurabilityDrain()
+        settled = await drain.settle(*controls)
+
+        # Public mutations and timer callbacks share the same drain registry.
+        # Re-snapshot until no task/future remains: an admitted section may start
+        # its raw executor write after shutdown takes the first snapshot. The
+        # loop ends early only when the drain's post-cancellation window has
+        # closed -- re-snapshotting the same wedged write would otherwise grant
+        # it a fresh window on every pass.
+        pending: set[asyncio.Future[Any]] = set()
+        while settled:
+            mutations = {
+                task for task in self._inflight_adds if task is not current and not task.done()
+            }
+            writes = {future for future in self._inflight_persistence if not future.done()}
+            pending = {*mutations, *writes}
+            if not pending:
+                break
+            settled = await drain.settle(*pending)
+
+        if not settled:
+            # Not a lost write: the executor thread keeps running and the store
+            # write is atomic, so the file holds the new state or the previous
+            # complete one. What is lost is the wait, which the supervisor's kill
+            # would have ended less gracefully.
+            logger.warning(
+                "AutoNudge shutdown stopped waiting on %d owned task(s)/write(s) still "
+                "pending %.1fs after cancellation; each store write is atomic",
+                sum(1 for future in {*controls, *pending} if not future.done()),
+                _DRAIN_CANCEL_GRACE_SECS,
+            )
+
+        # Filter only settled entries in place. Pending admitted tasks must stay
+        # registered for their done callbacks and any work still reading this set.
+        self._inflight_adds.difference_update({task for task in self._inflight_adds if task.done()})
+        self._inflight_persistence.difference_update(
+            {future for future in self._inflight_persistence if future.done()}
+        )
+        if settled:
+            # Callback bookkeeping may release the runtime claim sets only after
+            # every admitted owner and write has settled. Finalize here, before
+            # callers close the stores and sessions those callbacks use, but keep
+            # the closed service published until the gateway has closed its
+            # dashboard. Slot retirement in that window must reach this service
+            # and fail loudly, not mistake an absent singleton for no loop.
+            self._reconcile_candidates.clear()
+            self._accepted_monitor_turns.clear()
+            self._maintenance_quiescing.clear()
+            self._maintenance_quiesce_events.clear()
+        # Work the drain stopped waiting on may still read the claim sets, so an
+        # unsettled drain leaves those sets intact. Both outcomes keep the
+        # singleton and its crew-log subscriptions published; gateway teardown
+        # withdraws them only after the dashboard runner has stopped serving.
+        if drain.interrupted:
+            raise asyncio.CancelledError()
+
+    async def _persist_locked(
+        self,
+        *,
+        admission: _MutationAdmission | None = None,
+    ) -> None:
         """Snapshot under the service lock and write on a worker thread.
 
         The SINGLE async persistence path for post-arm mutations. Two properties
@@ -1756,7 +2031,7 @@ class AutoNudgeService:
         """
         async with self._lock:
             payload = self._serialize_state()
-            await asyncio.get_running_loop().run_in_executor(None, self._write_state, payload)
+            await asyncio.shield(self._start_persistence(payload, admission=admission))
 
     def get_by_id(self, loop_id: str) -> NudgeLoop | None:
         """The loop with this id, or ``None``.
@@ -1790,11 +2065,16 @@ class AutoNudgeService:
         """
         return self._pending_monitor_wake.get(loop_id, "")
 
-    async def _write_monitor_snapshot_locked(self, payload: dict | None = None) -> None:
+    async def _write_monitor_snapshot_locked(
+        self,
+        payload: dict | None = None,
+        *,
+        admission: _MutationAdmission | None = None,
+    ) -> None:
         """Persist a monitor transition without releasing ``_lock`` mid-write."""
         if payload is None:
             payload = self._serialize_state()
-        future = asyncio.get_running_loop().run_in_executor(None, self._write_state, payload)
+        future = self._start_persistence(payload, admission=admission)
         cancelled = False
         while not future.done():
             try:
@@ -1845,9 +2125,20 @@ class AutoNudgeService:
         supervised — strong ref in ``_inflight_adds`` plus failure logging —
         so the assignment reaches the store and a restart resumes the
         countdown. A lost write degrades to a fresh full countdown after
-        restart, never a premature or dropped fire.
+        restart, never a premature or dropped fire. After shutdown closes
+        admission the persist is skipped unless the caller is an admitted timer
+        callback, whose lease the detached write inherits explicitly. A task
+        created inside an admitted transaction clears only that transaction's
+        submission token, so its write cannot count as the child's own.
         """
-        task = asyncio.create_task(self._persist_locked())
+        admission = self._effective_admission(None)
+        if not self._accepting_mutations and admission is None:
+            return
+        submissions_token = self._admitted_transaction_submissions.set(None)
+        try:
+            task = asyncio.create_task(self._persist_locked(admission=admission))
+        finally:
+            self._admitted_transaction_submissions.reset(submissions_token)
         self._inflight_adds.add(task)
 
         def _finish(t: "asyncio.Task[None]") -> None:
@@ -1953,6 +2244,7 @@ class AutoNudgeService:
     _commit_judge_pr_seen = _gate._commit_judge_pr_seen
     _publish_pr_observation = _gate._publish_pr_observation
     _monitor_tick_is_quiet = _gate._monitor_tick_is_quiet
+    _settle_delivered_terminal = _gate._settle_delivered_terminal
     _terminal_still_holds = _gate._terminal_still_holds
     # autonudge_service.judge_tick
     _judge_quiet_streak_floor = _judge_tick._judge_quiet_streak_floor
@@ -1965,9 +2257,12 @@ class AutoNudgeService:
     _persist_judge_state = _judge_tick._persist_judge_state
     # autonudge_service.firing
     _timer = _firing._timer
+    _run_timer_callback = _firing._run_timer_callback
     _extend_for_open_ledger = _firing._extend_for_open_ledger
     _holds_for_person_wait = _firing._holds_for_person_wait
     _run_fire_cycle = _firing._run_fire_cycle
+    _settle_fire_cycle = _firing._settle_fire_cycle
+    _finish_fire_cycle = _firing._finish_fire_cycle
     fire_now = _firing.fire_now
     # autonudge_service.mutations
     add = _mutations.add
@@ -2001,15 +2296,20 @@ class AutoNudgeService:
     stop_monitor_if_budget_exhausted = _monitor_records.stop_monitor_if_budget_exhausted
     _set_monitor_deadline = _monitor_records._set_monitor_deadline
     stop_monitor = _monitor_records.stop_monitor
+    _stop_monitor_admitted = _monitor_records._stop_monitor_admitted
     mark_terminal_notification_delivered = _monitor_records.mark_terminal_notification_delivered
     retire_monitor_for_session_close = _monitor_records.retire_monitor_for_session_close
     restore_monitor_after_failed_session_close = (
         _monitor_records.restore_monitor_after_failed_session_close
     )
     update_monitor = _monitor_records.update_monitor
+    _update_monitor_admitted = _monitor_records._update_monitor_admitted
     rollback_monitor_update = _monitor_records.rollback_monitor_update
     mark_monitor_action_in_flight = _monitor_records.mark_monitor_action_in_flight
     record_monitor_turn_completion = _monitor_records.record_monitor_turn_completion
+    _record_monitor_turn_completion_admitted = (
+        _monitor_records._record_monitor_turn_completion_admitted
+    )
     _apply_monitor_budget_stop = _monitor_records._apply_monitor_budget_stop
     _apply_monitor_user_stop = _monitor_records._apply_monitor_user_stop
     _retain_accepted_terminal_completion = _monitor_records._retain_accepted_terminal_completion
