@@ -21,6 +21,7 @@ from kiro_crew.agent import (
     agents_spec_lock,
     kiro_agents_dir_path,
 )
+from kiro_crew.agent_capabilities import CapabilityError
 from kiro_crew.agent_discovery import _read_agent_spec, list_agents
 from kiro_crew.config.loader import KiroCrewConfig, data_home
 from kiro_crew.dashboard.state import DashboardState
@@ -31,6 +32,7 @@ from kiro_crew.permission_floor import (
     OUTCOME_REJECTED_TRANSPORT_FLOOR,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.session_capabilities import CapabilityStartupError
 from kiro_crew.tool_gate_busy import hook_gate_busy
 from kiro_crew.validation import sanitize_string
 
@@ -1172,6 +1174,41 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
 _EVENT_PERMISSION_REQUEST_KIND = "permission_request"
 
 
+def _capability_refusal_text(
+    exc: CapabilityError | CapabilityStartupError, agent: str | None
+) -> str:
+    """The run result for a member start the capability check stopped.
+
+    Both exception types carry only a bounded machine code, never file bytes,
+    so the code is safe to show. The member comes from the refusal when the
+    check recorded it, otherwise from the hook's own destination agent.
+
+    A ``CapabilityError`` refuses the member's saved spec, which the user fixes
+    in Capabilities. A ``CapabilityStartupError`` can also be a start that raced
+    a save or could not be verified after the process ran, which a resend may
+    clear, so its text asks for a resend first.
+    """
+    member = (getattr(exc, "member", "") or agent or "").strip() or "this crew member"
+    if isinstance(exc, CapabilityStartupError):
+        return (
+            f"Hook agent did not run: the start of {member} could not be verified "
+            f"({exc}). Send the webhook again; if it repeats, check {member} > Capabilities."
+        )
+    if exc.code == "materialization_changed":
+        filename = exc.file
+        where = f" ({filename})" if filename else ""
+        return (
+            f"Hook agent did not start: the agent file{where} for {member} was edited "
+            f"outside the Capabilities page. Open {member} > Capabilities, review the "
+            "change and save it, then send the webhook again."
+        )
+    return (
+        f"Hook agent did not start: the capability check for {member} refused the "
+        f"start ({exc.code}). Open {member} > Capabilities to see what needs fixing, "
+        "then send the webhook again."
+    )
+
+
 async def _run_hook_inner(
     state: DashboardState,
     session_key: str,
@@ -1544,6 +1581,15 @@ async def _run_hook_agent(
         result_text = f"Hook agent timed out after {timeout_secs}s"
         detail = result_text
         logger.warning("Hook agent timeout: %s", session_key)
+        await state.sessions.record_failure(session_key)
+    except (CapabilityError, CapabilityStartupError) as exc:
+        # The member's capability check stopped the start. The run record and
+        # the delivered result name the refusal and what to do about it, which
+        # the generic arm below cannot.
+        outcome = "error"
+        result_text = _capability_refusal_text(exc, agent)
+        detail = result_text
+        logger.warning("Hook agent %s did not start: %s", session_key, exc)
         await state.sessions.record_failure(session_key)
     except Exception:
         outcome = "error"
