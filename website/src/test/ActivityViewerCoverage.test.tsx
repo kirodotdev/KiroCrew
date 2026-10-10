@@ -1073,3 +1073,105 @@ describe('ActivityViewer — subagent panes render markdown', () => {
     expect(screen.getByTestId('subagent-output-body').textContent).toContain('Result:')
   })
 })
+
+/* ── Subagent card: tool-call timeline (#13628) ─────────────────────────────*/
+
+describe('ActivityViewer — subagent tool-call timeline', () => {
+  it('lists each tool call and says how many it leaves out', () => {
+    renderPanel(
+      <ActivityViewer
+        {...baseProps}
+        view="subagents"
+        subagents={{ s1: mkAgent('s1', {
+          status: 'tool', streaming: 'x', lastTool: 'Running: npm test', toolCount: 5,
+          toolCalls: [{ tool: 'Reading src/a.ts' }, { tool: 'Running: npm test' }],
+        }) }}
+      />,
+    )
+    const list = screen.getByTestId('subagent-tool-calls')
+    // The count (5 counted, 2 listed) sits in the heading, outside the
+    // scrolling list, so following the newest call never scrolls it away.
+    const unlisted = within(list).getByTestId('subagent-tool-calls-unlisted')
+    expect(unlisted).toHaveTextContent('3 earlier calls not shown')
+    expect(unlisted.closest('ol')).toBeNull()
+    // Same tone as the rows, not the heading's faint label tone.
+    expect(unlisted).toHaveClass('text-muted/70')
+    const items = within(list).getAllByRole('listitem')
+    expect(items).toHaveLength(2)
+    expect(items[0]).toHaveTextContent('Reading src/a.ts')
+    expect(items[1].textContent?.trim()).toBe('npm test')
+    expect(items[1]).toHaveAttribute('aria-current', 'step')
+  })
+
+  it('drops the "Running:" prefix from every row, the live one marked by aria-current instead', () => {
+    renderPanel(
+      <ActivityViewer
+        {...baseProps}
+        view="subagents"
+        subagents={{ s1: mkAgent('s1', {
+          status: 'tool', streaming: 'x', lastTool: 'Running: npm test', toolCount: 2,
+          toolCalls: [{ tool: 'Running: git status' }, { tool: 'Running: npm test' }],
+        }) }}
+      />,
+    )
+    const items = within(screen.getByTestId('subagent-tool-calls')).getAllByRole('listitem')
+    expect(items[0].textContent?.trim()).toBe('git status')
+    expect(items[0]).toHaveAttribute('title', 'git status')
+    expect(items[1].textContent?.trim()).toBe('npm test')
+    expect(items[1]).toHaveAttribute('aria-current', 'step')
+  })
+
+  it('a finished card shows no row as still running', () => {
+    renderPanel(
+      <ActivityViewer
+        {...baseProps}
+        view="subagents"
+        subagents={{ s1: mkAgent('s1', {
+          status: 'done', result: 'ok', toolCount: 1,
+          toolCalls: [{ tool: 'Running: npm test' }],
+        }) }}
+      />,
+    )
+    // A finished card starts collapsed; open it.
+    fireEvent.click(screen.getByRole('button', { expanded: false }))
+    const items = within(screen.getByTestId('subagent-tool-calls')).getAllByRole('listitem')
+    expect(items[0].textContent?.trim()).toBe('npm test')
+    expect(items[0]).not.toHaveAttribute('aria-current')
+  })
+
+  it('fades the top edge once rows sit above the scroll box', () => {
+    renderPanel(
+      <ActivityViewer
+        {...baseProps}
+        view="subagents"
+        subagents={{ s1: mkAgent('s1', {
+          status: 'tool', streaming: 'x', toolCount: 2,
+          toolCalls: [{ tool: 'a' }, { tool: 'b' }],
+        }) }}
+      />,
+    )
+    const ol = within(screen.getByTestId('subagent-tool-calls')).getByRole('list')
+    expect(ol).not.toHaveAttribute('data-fade-top')
+    // The mask sits on the bare scroller; the solid box around it stays solid.
+    expect(ol).not.toHaveClass('bg-bg')
+    expect(ol.parentElement).toHaveClass('bg-bg')
+    ol.scrollTop = 40
+    fireEvent.scroll(ol)
+    expect(ol).toHaveAttribute('data-fade-top')
+    ol.scrollTop = 0
+    fireEvent.scroll(ol)
+    expect(ol).not.toHaveAttribute('data-fade-top')
+  })
+
+  it('keeps the single last-tool line when no timeline was recorded', () => {
+    renderPanel(
+      <ActivityViewer
+        {...baseProps}
+        view="subagents"
+        subagents={{ s1: mkAgent('s1', { status: 'tool', streaming: 'x', lastTool: 'Terminal' }) }}
+      />,
+    )
+    expect(screen.queryByTestId('subagent-tool-calls')).toBeNull()
+    expect(screen.getByTestId('subagent-output-body')).toHaveTextContent('Terminal')
+  })
+})

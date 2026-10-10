@@ -577,7 +577,7 @@ export function useWebSocket() {
             break
           }
           case 'subagent_tool':
-            dispatch(sseSubagentTool(data as { slot: string; id: string; tool: string; turns?: number; tool_count?: number }))
+            dispatch(sseSubagentTool(data as { slot: string; id: string; tool: string; turns?: number; tool_count?: number; tool_call_id?: string }))
             break
           case 'subagent_stalled':
             dispatch(sseSubagentStalled(data as { slot: string; id: string; stalled: boolean; idle_secs?: number }))

@@ -10502,6 +10502,8 @@
         "model_label": "模型：{{model}}",
         "model_downgraded": "请求 {{requested}}，实际 {{resolved}}",
         "model_effective": "正在 {{model}} 上运行（后端选择模型）",
+        "tool_calls": "工具调用",
+        "tool_calls_not_listed_other": "更早的 {{count}} 个调用未显示",
         "waiting_for_output": "等待输出…",
         "waiting_to_start_queued_behind_the_concurrency_l": "等待开始 — 受并发上限限制正在排队",
         "workflows": "工作流",

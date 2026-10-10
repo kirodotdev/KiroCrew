@@ -97,6 +97,53 @@ function upsertSlotSub(state: ChatState, slot: string, id: string): SubagentActi
   })
 }
 
+/** Most tool calls a card keeps in its timeline (#13628). Older calls fall off
+ *  the front; the card states how many it is not listing, from `toolCount`. */
+export const SUBAGENT_TOOL_CALLS_CAP = 50
+
+/** Record one `subagent_tool` frame in the card's tool-call timeline (#13628).
+ *
+ *  `lastTool` alone is overwritten by every frame, so a long run showed one
+ *  tool name and nothing else. This keeps the recent calls in order.
+ *
+ *  One gated call sends TWO frames: the tool_call update (which bumps
+ *  `tool_count`) and then its permission request. Both carry the call's
+ *  `tool_call_id`, so a frame naming the newest entry's id updates that entry
+ *  instead of listing the call again, and a frame with a DIFFERENT id is a new
+ *  call even when `tool_count` did not move -- a backend child's permission
+ *  request is counted only at approval, so its count stays put. A frame with no
+ *  id (an older gateway) falls back to the count: an unmoved count is the
+ *  second frame of the newest call. A frame with neither id nor count (native
+ *  kiro-cli cards, which `_native_subagent_sync` re-sends on every
+ *  `list_update`) is not listed again when its title equals the newest entry.
+ *
+ *  Above the coalescing threshold the backend merges frames (latest wins), so
+ *  intermediate calls never reach the client; `toolCount` still counts them,
+ *  and the card reports the difference rather than implying a complete list.
+ *  A reconnect clears running cards (`clearSubagentsForSnapshot`), so the
+ *  timeline restarts there too.
+ *  Must run BEFORE the caller stores the frame's `tool_count`. */
+function recordToolCall(a: SubagentActivity, tool: string, toolCount: number | undefined, callId: string | undefined) {
+  const calls = (a.toolCalls ??= [])
+  const newest = calls[calls.length - 1]
+  const id = callId || undefined
+  let same: boolean
+  if (id && newest?.id) same = newest.id === id
+  // A replay seeds its one row without an id, so an id-bearing frame after it
+  // is a call of its own: the count cannot tell it apart, because a child's
+  // permission request does not move `tool_count`.
+  else if (id && newest) same = false
+  else if (typeof toolCount === 'number') same = !!newest && toolCount === a.toolCount
+  else same = newest?.tool === tool
+  if (same && newest) {
+    newest.tool = tool
+    if (id) newest.id = id
+    return
+  }
+  calls.push(id ? { tool, id } : { tool })
+  if (calls.length > SUBAGENT_TOOL_CALLS_CAP) calls.splice(0, calls.length - SUBAGENT_TOOL_CALLS_CAP)
+}
+
 /**
  * Live "sub-agents running" signal for a slot, derived from the
  * subagent_spawn/tool/done WS events (the only real-time source — see the
@@ -404,12 +451,13 @@ export const subagentReducers = {
       toolCount: 0, stalled: false,
     }
   },
-  sseSubagentTool(state: ChatState, action: PayloadAction<{ slot: string; id: string; tool: string; turns?: number; tool_count?: number }>) {
+  sseSubagentTool(state: ChatState, action: PayloadAction<{ slot: string; id: string; tool: string; turns?: number; tool_count?: number; tool_call_id?: string }>) {
     const { slot, id } = action.payload
     // Prototype-pollution guard is centralized in upsertSlotSub, which also
     // creates the entry when this is the first frame naming the agent.
     const a = upsertSlotSub(state, slot, id)
     if (a) {
+      if (action.payload.tool) recordToolCall(a, action.payload.tool, action.payload.tool_count, action.payload.tool_call_id)
       a.lastTool = action.payload.tool; a.status = 'tool'
       if (typeof action.payload.tool_count === 'number') a.toolCount = action.payload.tool_count
       a.stalled = false
@@ -447,14 +495,14 @@ export const subagentReducers = {
   /** One coalesced ~1s frame carrying the latest delta per agent (scale
    *  plumbing — replaces per-event tool/stalled/retrying frames when many
    *  agents run). Field presence decides what to apply; latest wins. */
-  sseSubagentBatchUpdate(state: ChatState, action: PayloadAction<{ updates: { id: string; slot: string; tool?: string; tool_count?: number; stalled?: boolean; idle_secs?: number; attempt?: number }[] }>) {
+  sseSubagentBatchUpdate(state: ChatState, action: PayloadAction<{ updates: { id: string; slot: string; tool?: string; tool_count?: number; tool_call_id?: string; stalled?: boolean; idle_secs?: number; attempt?: number }[] }>) {
     for (const u of action.payload.updates || []) {
       const a = upsertSlotSub(state, u.slot, u.id)
       if (!a) continue
       // Order matters: retrying (attempt) applies FIRST so a tool field in
       // the same merged entry — meaning work resumed — clears it last.
       if (typeof u.attempt === 'number') { a.retrying = true; a.stalled = false; a.idleSecs = undefined; a.stalledAt = undefined }
-      if (typeof u.tool === 'string' && u.tool) { a.lastTool = u.tool; if (a.status === 'running') a.status = 'tool'; a.retrying = false }
+      if (typeof u.tool === 'string' && u.tool) { recordToolCall(a, u.tool, u.tool_count, u.tool_call_id); a.lastTool = u.tool; if (a.status === 'running') a.status = 'tool'; a.retrying = false }
       if (typeof u.tool_count === 'number') a.toolCount = u.tool_count
       if (typeof u.stalled === 'boolean') {
         a.stalled = u.stalled
@@ -602,6 +650,10 @@ export const subagentReducers = {
       childSession: d.child_session || existing?.childSession || undefined,
       batchId: d.batch_id || existing?.batchId || undefined,
       status: d.last_tool ? 'tool' : 'running', streaming: d.streaming, lastTool: d.last_tool,
+      // A replay carries only the latest tool. On a real reconnect
+      // `clearSubagentsForSnapshot` has already dropped the running card, so the
+      // timeline restarts from that tool; an entry that survived keeps its list.
+      toolCalls: existing?.toolCalls?.length ? existing.toolCalls : (d.last_tool ? [{ tool: d.last_tool }] : undefined),
       startedAt: d.started * 1000, elapsed: 0,
       toolCount: d.tool_count ?? 0, stalled,
       // Same pairing rule as sseSubagentStalled: the idle span lives and dies

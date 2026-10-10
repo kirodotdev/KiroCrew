@@ -3163,6 +3163,11 @@ class RunEventCoordinator(ManagerComponent):
                         "tool_kind": event.tool_kind,
                         "turns": info.turns,
                         "tool_count": info.tool_count,
+                        # Lets the card's tool-call list tell this request apart
+                        # from the parent's own call that announced it (same id,
+                        # same tool_count) and from a child's request (other id,
+                        # tool_count unchanged).
+                        "tool_call_id": _redact(event.tool_call_id or ""),
                     },
                 )
                 if turns > turn_limit:
@@ -3206,6 +3211,7 @@ class RunEventCoordinator(ManagerComponent):
                         "tool_kind": event.tool_kind,
                         "turns": info.turns,
                         "tool_count": info.tool_count,
+                        "tool_call_id": _redact(event.tool_call_id or ""),
                     },
                 )
                 # Fire PreToolUse hooks for auto-approved tools (informational only).

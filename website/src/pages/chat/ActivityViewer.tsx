@@ -42,6 +42,7 @@ import { isModelDowngrade } from './subagentCompletion'
 import { normalizeModelKey } from '../../lib/model'
 import { fmtCredits } from '../../i18n/format'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
+import { sanitizeLlmOutput } from '../../utils/sanitize'
 const STATUS = {
   pending: <Lock size={12} className="text-muted" />,
   running: <LoaderIcon size={12} className="text-accent animate-spin" />,
@@ -107,6 +108,62 @@ function DiskLoader({ id, autoLoad }: { id: string; autoLoad?: boolean }) {
     </span>
   )
   return <button className="text-accent/70 hover:text-accent text-[12px] underline cursor-pointer bg-transparent border-none p-0 font-mono" onClick={e => { e.stopPropagation(); load() }}>{i18nT('pages.chat.activityViewer.load_output_from_disk')}</button>
+}
+
+const RUNNING_PREFIX = /^Running: /
+
+function SubagentToolCalls({ a, isRunning }: { a: SubagentActivity; isRunning: boolean }) {
+  const calls = a.toolCalls ?? []
+  // Follow the newest call the way the output body does: stay pinned to the
+  // bottom unless the user scrolled up to read an earlier one.
+  const listRef = useRef<HTMLOListElement>(null)
+  const follow = useRef(true)
+  // Rows scrolled out above the box are cut mid-line; fade that edge so the
+  // cut reads as "more above" rather than a rendering fault.
+  const [fadeTop, setFadeTop] = useState(false)
+  const newestTool = calls[calls.length - 1]?.tool
+  useEffect(() => {
+    const el = listRef.current
+    if (el && follow.current) el.scrollTop = el.scrollHeight
+    if (el) setFadeTop(el.scrollTop > 0)
+  }, [calls.length, newestTool])
+  if (!calls.length) return null
+  // `toolCount` is the backend's own count; the timeline is capped and can
+  // miss frames the scale coalescer merged, so say how many it leaves out
+  // instead of implying the list is the whole run. The count sits in the
+  // heading, outside the scroller: the list follows the newest call, so a row
+  // at its top would scroll away on exactly the long, capped runs it is for.
+  const unlisted = Math.max(0, (a.toolCount ?? 0) - calls.length)
+  const fade = fadeTop ? 'linear-gradient(to bottom,transparent,#000 24px)' : undefined
+  return (
+    <div className="px-3 pb-2" data-testid="subagent-tool-calls">
+      <div className="text-[10px] text-muted/40 uppercase tracking-wider mb-1">
+        {i18nT('pages.chat.activityViewer.tool_calls')}
+        {unlisted > 0 && <span className="normal-case tracking-normal text-muted/70" data-testid="subagent-tool-calls-unlisted"> · {i18nT('pages.chat.activityViewer.tool_calls_not_listed', { count: unlisted })}</span>}
+      </div>
+      {/* The solid box stays put; only the inner scroller is masked, so the
+          fade dims rows sliding out of view rather than the box's own edge. */}
+      <div className="px-2.5 py-2 bg-bg rounded-md">
+      <ol ref={listRef} onScroll={e => { const el = e.currentTarget; follow.current = el.scrollHeight - el.scrollTop - el.clientHeight < 8; setFadeTop(el.scrollTop > 0) }} data-fade-top={fadeTop || undefined} style={fade ? { maskImage: fade, WebkitMaskImage: fade } : undefined} className="text-[12px] font-mono max-h-[144px] overflow-y-auto space-y-0.5 list-none m-0 p-0">
+        {calls.map((c, i) => {
+          const current = isRunning && i === calls.length - 1
+          const tool = sanitizeLlmOutput(c.tool)
+          // Native titles carry kiro-cli's "Running: " status prefix. It is
+          // false on finished rows and redundant on the live one, which the
+          // spinner, accent colour and aria-current already mark.
+          const label = tool.replace(RUNNING_PREFIX, '')
+          return (
+            <li key={i} className={`truncate ${current ? 'text-accent' : 'text-muted/70'}`} title={label} aria-current={current ? 'step' : undefined}>
+              {current
+                ? <LoaderIcon className="lucide-inline animate-spin" aria-hidden="true" />
+                : <Wrench className="lucide-inline" aria-hidden="true" />} {label}
+            </li>
+          )
+        })}
+      </ol>
+      </div>
+    </div>
+  )
 }
 
 function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slot: string; onClick: () => void; selected?: boolean }) {
@@ -350,9 +407,10 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
             half-typed fence until it closes. */}
         <div ref={bodyRef} onScroll={onScroll} data-testid="subagent-output-body" className="px-2.5 py-2 bg-bg rounded-md text-[12px] break-words max-h-[240px] overflow-y-auto text-muted/80 leading-relaxed">
           {(a.streaming || a.result) ? <MarkdownRenderer content={a.streaming || a.result || ''} streaming={isRunning && !!a.streaming} softBreaks readOnlyCode /> : (isDone ? (isNative ? <span className="text-muted/30 italic">{i18nT('pages.chat.activityViewer.output_shown_in_chat')}</span> : <DiskLoader id={a.id} autoLoad={selected} />) : <span className="text-muted/30 italic">{i18nT('pages.chat.activityViewer.waiting_for_output')}</span>)}
-          {a.lastTool && <div className="text-accent mt-1 font-mono"><Wrench className="lucide-inline" /> {a.lastTool}</div>}
+          {a.lastTool && !a.toolCalls?.length && <div className="text-accent mt-1 font-mono"><Wrench className="lucide-inline" /> {sanitizeLlmOutput(a.lastTool)}</div>}
         </div>
       </div>
+      <SubagentToolCalls a={a} isRunning={isRunning} />
       {/* Error details — a backend-reported subagent failure, so it takes the
           shared notice (hand-off on: nothing in this panel is unsaved). */}
       {a.error && (

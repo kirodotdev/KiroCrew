@@ -2046,3 +2046,47 @@ async def test_control_tag_only_output_still_fails():
 
     assert info.outcome == "failed"
     assert info.error
+
+
+@pytest.mark.asyncio
+async def test_subagent_tool_frames_carry_the_tool_call_id():
+    """Both ``subagent_tool`` fire sites send the call's ``tool_call_id``.
+
+    The Subagents card lists each call once by matching that id: a gated call's
+    ``EVENT_TOOL_CALL`` frame and its permission-request frame share it and the
+    same ``tool_count``, while a backend child's permission request has its own
+    id but an unchanged count. Without the id on the wire the card can only
+    compare counts, and the child's request overwrites the parent's last call.
+    """
+    from kiro_crew.providers.base import EVENT_PERMISSION_REQUEST, EVENT_TOOL_CALL, LLMEvent
+
+    async def stream(*_args, **_kwargs):
+        yield LLMEvent(
+            kind=EVENT_TOOL_CALL, title="Terminal", tool_call_id="call-1", tool_kind="execute"
+        )
+        yield LLMEvent(
+            kind=EVENT_PERMISSION_REQUEST,
+            title="Running: git status",
+            request_id=1,
+            tool_call_id="call-1",
+            tool_kind="execute",
+        )
+        yield _text_event("done")
+        yield _complete_event()
+
+    mgr = _manager(_mock_sessions(stream))
+    frames: list[dict] = []
+    _orig_fire = mgr._fire_event
+
+    async def _spy(etype, info, extra=None):
+        if etype == "subagent_tool":
+            frames.append(dict(extra or {}))
+        await _orig_fire(etype, info, extra)
+
+    mgr._fire_event = _spy
+    info = await _spawn_and_wait(mgr)
+
+    assert info.error == ""
+    assert [f.get("tool_call_id") for f in frames] == ["call-1", "call-1"]
+    # Same call, same count: the second frame must not look like a new call.
+    assert frames[0]["tool_count"] == frames[1]["tool_count"] == 1
