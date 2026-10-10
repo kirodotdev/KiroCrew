@@ -47,6 +47,17 @@ const L = (k: string, v?: Record<string, unknown>) => i18nT(`components.guideLay
 async function tickTracker(ticks = 1) {
   await act(async () => { await vi.advanceTimersByTimeAsync(GUIDE_TRACK_TICK_MS * ticks) })
 }
+/**
+ * Resolve once the last step watches its control's press. The watch is a
+ * passive effect of the render that outlines the target, and the tracker's
+ * tick renders outside act: the outline can be in the DOM while that effect
+ * is still queued, and a press in that gap is never seen. The empty act runs
+ * after the queued effect, so the press that follows is watched.
+ */
+async function untilPressWatched() {
+  await screen.findByTestId('guide-target-outline')
+  await act(async () => {})
+}
 const waitFor: typeof rtlWaitFor = (callback, options) => rtlWaitFor(async () => {
   await act(async () => { await vi.advanceTimersByTimeAsync(GUIDE_TRACK_TICK_MS) })
   return callback()
@@ -2794,6 +2805,7 @@ describe('ui.show: point at an indexed location, never click it', () => {
     fireEvent.click(await screen.findByTestId('guide-start'))
     expect(await screen.findByText(L('step_ui_show_here', { label: 'Older Sessions' }))).toBeTruthy()
     expect(screen.queryByTestId('guide-step-caution')).toBeNull()
+    await untilPressWatched()
     expect(writes('/api/guide/progress')).toHaveLength(1)
     fireEvent.click(screen.getByTestId('older-sessions'))
     // The control still does its own thing, and the guide ends on the press.
@@ -2823,6 +2835,7 @@ describe('ui.show: point at an indexed location, never click it', () => {
       fireEvent.click(await screen.findByTestId('guide-start'))
       expect(await screen.findByText(L('step_ui_show_here', { label: 'Older Sessions' }))).toBeTruthy()
       expect(screen.getByTestId('guide-step-caution').textContent).toBe(L('step_caution'))
+      await untilPressWatched()
       expect(writes('/api/guide/progress')).toHaveLength(1)
       fireEvent.click(screen.getByTestId('older-sessions'))
       // The control does its own thing; the guide does not end on the press.
@@ -2902,6 +2915,7 @@ describe('ui.show: point at an indexed location, never click it', () => {
       renderGuide('/chat/slot-A', <ConfirmHost />)
       fireEvent.click(await screen.findByTestId('guide-start'))
       expect(await screen.findByTestId('guide-step-caution')).toBeTruthy()
+      await untilPressWatched()
       // A cancel is not a confirm: the step stays.
       fireEvent.click(screen.getByTestId('older-sessions'))
       expect(await screen.findByRole('alertdialog')).toBeTruthy()
@@ -2950,7 +2964,7 @@ describe('ui.show: point at an indexed location, never click it', () => {
       renderGuide('/chat/slot-A', <FormDialog />)
       fireEvent.click(await screen.findByTestId('guide-start'))
       expect(await screen.findByTestId('guide-step-caution')).toBeTruthy()
-      await screen.findByTestId('guide-target-outline')
+      await untilPressWatched()
       expect(writes('/api/guide/progress')).toHaveLength(1)
       fireEvent.click(screen.getByTestId('older-sessions'))
       if (marked) {
