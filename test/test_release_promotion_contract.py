@@ -861,3 +861,23 @@ def test_a_published_release_is_never_uploaded_to_again() -> None:
     # into two notions of "completed".
     predicate = '[ "$drafted" = "false" ] && [ "$marked" = "true" ]'
     assert predicate in _completion_step("Reconcile an interrupted or repeated run")["run"]
+
+
+def test_release_assets_upload_one_at_a_time() -> None:
+    """The release page uploads its assets serially, never all at once.
+
+    ``action-gh-release`` starts every upload in parallel unless
+    ``preserve_order`` is set. Since 0.9.0 the set carries three macOS DMG/zip
+    pairs of about 1 GB each, and on v0.9.0-insider.3 the step stopped twice
+    with no error after only part of the assets landed. ``overwrite_files``
+    (the action's default) deletes each asset just before re-uploading it, so a
+    parallel rerun first empties the page; serially, at most one asset is
+    missing at any moment. A glob that matches nothing must fail rather than
+    publish an empty page.
+    """
+    job = _workflow(RELEASE)["jobs"]["github-release"]
+    create = _step(RELEASE, "github-release", "Create GitHub Release")
+    assert create["with"]["preserve_order"] is True
+    assert create["with"]["fail_on_unmatched_files"] is True
+    # Serial uploads of several GB need more than the old 20 minutes.
+    assert job["timeout-minutes"] >= 60
