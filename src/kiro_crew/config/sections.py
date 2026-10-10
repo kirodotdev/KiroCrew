@@ -2140,10 +2140,12 @@ class SessionConfig:
             "cron job that runs without one, keeps running even after its job is deleted, "
             "so take a deleted job's key off the list. The RSS limit or a gateway restart "
             "still ends it. On the kiro-cli or KAS backend, a Kiro sign-out from the dashboard "
-            "ends it at once, whatever account it signed in with, and the next dashboard chat "
-            "turn ends it after any other switch or sign-out of the Kiro account it signed in "
-            "with. A session that is mid-turn then ends later instead, when its next turn "
-            "starts or at a later dashboard chat turn. At most 10 keys are kept.",
+            "ends it at once, whatever account it signed in with. After any other switch or "
+            "sign-out of the Kiro account it signed in with, the next dashboard chat turn ends "
+            "it, and so does the next agent cron run unless Kiro Crew then cannot tell which "
+            "account is signed in, as with a social login. A session that "
+            "is mid-turn then ends later instead, when its next turn starts or at a later "
+            "dashboard chat turn or agent cron run. At most 10 keys are kept.",
         ),
     )
     empty_response_auto_continue: bool = field(

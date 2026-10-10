@@ -137,6 +137,7 @@ from kiro_crew.dashboard.chat_runner import (
     _arm_queued_delivery_settlement,
     _auto_approve_reason,
     _resolve_channel_target,
+    _retire_sessions_on_identity_change,
     _run_chat,
     _slot_is_trusted,
     drain_idle_parent_queue_for_stall,
@@ -4710,6 +4711,19 @@ class GatewayOrchestrator:
                         expected=bound_execution,
                     )
 
+                # The dashboard's per-turn account gate, run before acquiring as
+                # _run_chat runs it. A `cron:` key never claims a warm-pool
+                # process, but a fire whose sub-agents are still running skips the
+                # reset in its `finally`, and the next fire of a
+                # `persistent_session` job, or of the same `agent_sequence` step,
+                # reuses that live session. After an account switch or
+                # `kiro-cli logout` outside the dashboard it still holds the
+                # previous account, and a host where only crons run has no
+                # dashboard turn to retire it. Passed as unattended: when the gate
+                # cannot identify the signed-in account (a social login, an
+                # unreadable store) the fire touches no session, since it could
+                # not tell a stale one from a healthy one on any fire.
+                await _retire_sessions_on_identity_change(self.dashboard_state, unattended=True)
                 try:
                     client, is_new, resumed = await self.sessions.get_or_create(
                         key,
