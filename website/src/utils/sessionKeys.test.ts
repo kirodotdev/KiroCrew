@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 
-import { canonicalChatHref, chatHrefSid, namesASession, sessionKeyFrom, sessionKeyFromChatHref, sessionKeyFromShort } from './sessionKeys'
+import { canonicalChatHref, chatHrefSid, classifyShortName, namesASession, sessionKeyFrom, sessionKeyFromChatHref, sessionKeyFromShort } from './sessionKeys'
 import { sessionRefUrl } from './sessionRefs'
 import { buildShareableUrl } from './shareUrl'
 
@@ -281,6 +281,48 @@ describe('sessionKeyFromShort', () => {
     it('does not apply to a FULL key, which names its generation exactly', () => {
       expect(sessionKeyFrom('chat-1380-1789049480')).toBe('chat-1380-1789049480')
     })
+  })
+})
+
+describe('classifyShortName', () => {
+  // The reason WHY a short name did not resolve, which a disabled-link tooltip
+  // needs to tell "the session is not open" (true) from "cannot pin which open
+  // slot it names" (would be a false claim of not-open).
+  const ROSTER = ['chat-1380-1789049480', 'chat-7-1699999999']
+  const WRITTEN = 1789049999
+
+  it('resolves to the one open slot answering to the name', () => {
+    expect(classifyShortName('chat-1380', ROSTER, WRITTEN)).toEqual({ kind: 'resolved', key: 'chat-1380-1789049480' })
+  })
+
+  it('reports no-match when no open slot carries the number', () => {
+    // This is the only short-name case that earns a "not open" tooltip.
+    expect(classifyShortName('chat-999', ROSTER, WRITTEN)).toEqual({ kind: 'no-match' })
+    expect(classifyShortName('chat-1380', [], WRITTEN)).toEqual({ kind: 'no-match' })
+  })
+
+  it('reports ambiguous when two open slots share the number', () => {
+    expect(classifyShortName('chat-1380', ['chat-1380-1789049480', 'chat-1380-1700000000'], WRITTEN))
+      .toEqual({ kind: 'ambiguous' })
+  })
+
+  it('reports no-timestamp when the write time is unknown', () => {
+    expect(classifyShortName('chat-1380', ROSTER, undefined)).toEqual({ kind: 'no-timestamp' })
+  })
+
+  it('reports not-short for a full key or a non-session span', () => {
+    expect(classifyShortName('chat-1380-1789049480', ROSTER, WRITTEN)).toEqual({ kind: 'not-short' })
+    expect(classifyShortName('not a session', ROSTER, WRITTEN)).toEqual({ kind: 'not-short' })
+  })
+
+  it('agrees with sessionKeyFromShort on which key resolves', () => {
+    // sessionKeyFromShort delegates to this, so a resolved key must match and
+    // every non-resolved outcome must fold to null.
+    for (const raw of ['chat-1380', 'chat-999', 'chat-1380-1789049480']) {
+      const outcome = classifyShortName(raw, ROSTER, WRITTEN)
+      const key = sessionKeyFromShort(raw, ROSTER, WRITTEN)
+      expect(key).toBe(outcome.kind === 'resolved' ? outcome.key : null)
+    }
   })
 })
 

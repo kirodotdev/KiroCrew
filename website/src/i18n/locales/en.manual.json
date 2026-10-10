@@ -2788,6 +2788,7 @@
       "click_to_open_shift_click_to_open_in_file_explorer": "Click to open / Shift+click to open in File Explorer",
       "click_to_open_shift_click_to_show_in_file_manager": "Click to open / Shift+click to show in file manager",
       "click_to_switch_to_this_session": "Click to switch to this session",
+      "session_closed_link_disabled": "Session not open — link disabled",
       "reset_zoom": "Reset zoom (0)",
       "zoom_in": "Zoom in (+)",
       "zoom_out": "Zoom out (-)",

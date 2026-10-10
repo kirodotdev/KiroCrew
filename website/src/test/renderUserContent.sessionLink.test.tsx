@@ -17,6 +17,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, fireEvent } from '@testing-library/react'
 import { renderUserContent } from '../pages/chat/ChatPageMessageContent'
+import { i18nT } from '../i18n/t'
 
 const noop = () => {}
 
@@ -67,6 +68,8 @@ describe('a /chat?sid= link in a user message (#8253)', () => {
     )
     const anchor = container.querySelector('a')!
     expect(anchor).toHaveAttribute('target', '_blank')
+    // The session you are already in is not "closed", so it is deliberately left
+    // without the disabled-link explanation — only a closed/unknown key gets it.
     expect(anchor.getAttribute('title')).toBeNull()
     const notCancelled = fireEvent.click(anchor)
     expect(notCancelled).toBe(false)
@@ -83,8 +86,8 @@ describe('a /chat?sid= link in a user message (#8253)', () => {
       <>{renderUserContent({ content: `see [gone](/chat?sid=${UNKNOWN})`, meta: undefined, ...triple(onSessionOpen) })}</>,
     )
     const anchor = container.querySelector('a')!
-    // Unresolvable: no switch tooltip, and it does not open in place.
-    expect(anchor.getAttribute('title')).toBeNull()
+    // Unresolvable: no switch tooltip. Hover now explains why nothing happens.
+    expect(anchor.getAttribute('title')).toBe(i18nT('components.markdownRenderer.session_closed_link_disabled'))
     expect(onSessionOpen).not.toHaveBeenCalled()
     // The plain primary click is cancelled — the browser does not follow the
     // raw href to an unresolvable sid. fireEvent.click returns false when a
