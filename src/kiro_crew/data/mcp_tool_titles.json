@@ -40,6 +40,7 @@
     "delete_message": "Delete message",
     "update_message": "Edit message",
     "read_slack_profile": "Read Slack profile",
+    "read_slack_history": "Read Slack history",
     "file_send": "Send file",
     "artifact_save": "Save artifact",
     "artifact_get": "Read artifact",

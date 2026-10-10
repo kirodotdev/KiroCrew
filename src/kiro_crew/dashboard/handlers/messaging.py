@@ -1468,6 +1468,156 @@ async def api_slack_profile(request: web.Request) -> web.Response:
     return web.json_response({"profile": profile})
 
 
+async def api_slack_history(request: web.Request) -> web.Response:
+    """POST /api/slack-history — read recent messages from a channel/DM.
+
+    MCP-only (the read_slack_history tool). Returns the most recent messages as
+    [{user, text, ts}], newest first, with the bot's own messages filtered out
+    unless include_bot is set. Message text is redacted before return.
+    """
+    from kiro_crew.security import redact_credentials, redact_exfiltration_urls  # noqa: F811
+    from kiro_crew.slack.handler import is_tracked_channel  # noqa: F811
+    from kiro_crew.validation import CHANNEL_ID_RE, CHANNEL_MAX_LEN  # noqa: F811
+
+    state: DashboardState = request.app["state"]
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+
+    channel = str(body.get("channel", "") or "").strip()
+    if not channel:
+        return web.json_response(
+            {"error": "channel required", "code": "channel_required"}, status=400
+        )
+    if len(channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(channel):
+        return web.json_response(
+            {"error": "invalid channel ID format", "code": "invalid_channel"}, status=400
+        )
+
+    # Authorization first (deny-by-default) — reject before any side effects.
+    # Same tracked-channel allowlist posture as api_slack_pins / api_slack_reactions,
+    # the other channel-reading routes: an agent may read history only from a
+    # channel the operator already tracks, so this grants no read access beyond
+    # what the existing Slack tools already have. Owner-DM reads are deliberately
+    # NOT included here — that is a separate, broader authorization decision left
+    # to a maintainer follow-up.
+    if not is_tracked_channel(channel):
+        _sel().log_tool_invocation(
+            session_key="dashboard",
+            tool_name="read_slack_history",
+            outcome="denied",
+            downstream_service="slack",
+            resources=f"channel={channel} reason=not_tracked",
+        )
+        return web.json_response(
+            {"error": f"channel {channel} not in tracked channels", "code": "channel_not_tracked"},
+            status=403,
+        )
+
+    try:
+        limit = int(body.get("limit", 20))
+    except (TypeError, ValueError):
+        limit = 20
+    limit = max(1, min(limit, 100))
+    thread_ts = str(body.get("thread_ts", "") or "").strip() or None
+    oldest = str(body.get("oldest", "") or "").strip() or None
+    include_bot = bool(body.get("include_bot"))
+
+    if not state.slack_client:
+        _sel().log_tool_invocation(
+            session_key="dashboard",
+            tool_name="read_slack_history",
+            outcome="error",
+            downstream_service="slack",
+            resources=f"channel={channel} reason=slack_not_connected",
+        )
+        return web.json_response(
+            {"error": "Slack not connected", "code": "slack_not_connected"}, status=503
+        )
+
+    try:
+        if thread_ts:
+            raw = await state.slack_client.fetch_thread_history(
+                channel, thread_ts, limit=limit, oldest=oldest
+            )
+        else:
+            raw = await state.slack_client.fetch_channel_history(
+                channel, limit=limit, oldest=oldest
+            )
+    except Exception as exc:
+        from slack_sdk.errors import SlackApiError  # noqa: F811
+
+        if isinstance(exc, SlackApiError):
+            response = exc.response  # type: ignore[attr-defined]
+            slack_error = str(response.get("error", "") or "") if response else ""
+            if slack_error in ("missing_scope", "not_in_channel", "channel_not_found"):
+                needed = str(response.get("needed", "") or "") if response else ""
+                logger.warning(
+                    "slack-history: %s (needed=%s) for %s",
+                    slack_error,
+                    needed or "?",
+                    channel,
+                )
+                _sel().log_tool_invocation(
+                    session_key="dashboard",
+                    tool_name="read_slack_history",
+                    outcome="error",
+                    downstream_service="slack",
+                    resources=f"channel={channel} reason={slack_error} needed={needed}",
+                )
+                if slack_error == "missing_scope":
+                    needed, _ = redact_credentials(needed)
+                    needed, _ = redact_exfiltration_urls(needed)
+                    return web.json_response(
+                        {"error": _missing_scope_message(needed), "code": "missing_scope"},
+                        status=403,
+                    )
+                return web.json_response(
+                    {
+                        "error": f"cannot read channel ({slack_error})",
+                        "code": "cannot_read_channel",
+                    },
+                    status=403,
+                )
+        logger.exception("slack-history: failed for %s", channel)
+        _sel().log_tool_invocation(
+            session_key="dashboard",
+            tool_name="read_slack_history",
+            outcome="error",
+            downstream_service="slack",
+            resources=f"channel={channel}",
+        )
+        return web.json_response(
+            {"error": "Slack API error", "code": "slack_api_error"}, status=502
+        )
+
+    # Normalize to {user, text, ts}; drop the bot's own messages by default so a
+    # caller reading for a human reply is not confused by the bot's notification.
+    messages: list[dict] = []
+    for m in raw:
+        if not include_bot and (m.get("bot_id") or m.get("subtype") == "bot_message"):
+            continue
+        text = m.get("text", "") or ""
+        if isinstance(text, str):
+            text, _ = redact_exfiltration_urls(text)
+            text, _ = redact_credentials(text)
+        messages.append({"user": m.get("user", ""), "text": text, "ts": m.get("ts", "")})
+    # Newest first (conversations.history is already newest-first; replies are
+    # oldest-first, so sort by ts descending for a consistent contract).
+    messages.sort(key=lambda x: x.get("ts", ""), reverse=True)
+    messages = messages[:limit]
+
+    _sel().log_tool_invocation(
+        session_key="dashboard",
+        tool_name="read_slack_history",
+        outcome="completed",
+        downstream_service="slack",
+        resources=f"channel={channel} count={len(messages)}",
+    )
+    return web.json_response({"messages": messages})
+
+
 def _deny_non_owner_browser_request(request: web.Request, operation: str) -> web.Response | None:
     """Require the dashboard owner on browser MUTATION endpoints. 403 or None.
 
