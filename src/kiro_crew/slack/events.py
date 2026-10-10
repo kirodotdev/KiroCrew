@@ -2165,6 +2165,48 @@ def _extract_blocks_text(blocks: list[dict]) -> str:
                     )
                     if inline:
                         parts.append(inline)
+        elif block_type == "table":
+            rows = block.get("rows", [])
+            if isinstance(rows, list):
+                for row in rows:
+                    if not isinstance(row, list):
+                        continue
+                    cell_texts: list[str] = []
+                    for cell in row:
+                        if isinstance(cell, dict):
+                            cell_type = cell.get("type")
+                            if cell_type == "rich_text":
+                                cell_elements = cell.get("elements", [])
+                                if isinstance(cell_elements, list):
+                                    cell_inlines: list[str] = []
+                                    for sub in cell_elements:
+                                        if isinstance(sub, dict):
+                                            sub_child = sub.get("elements", [])
+                                            if isinstance(sub_child, list):
+                                                cell_inlines.append(
+                                                    "".join(
+                                                        _render_rich_text_element(el)
+                                                        for el in sub_child
+                                                    )
+                                                )
+                                            else:
+                                                cell_inlines.append(_render_rich_text_element(sub))
+                                    cell_texts.append("".join(cell_inlines).strip())
+                                else:
+                                    cell_texts.append("")
+                            elif cell_type == "raw_number":
+                                val = cell.get("value")
+                                if val is None:
+                                    val = cell.get("text", "")
+                                cell_texts.append(str(val))
+                            else:
+                                cell_texts.append(str(cell.get("text", "")))
+                        elif cell is None:
+                            cell_texts.append("")
+                        else:
+                            cell_texts.append(str(cell))
+                    if any(cell_texts):
+                        parts.append(" | ".join(cell_texts))
         elif block_type == "section":
             text_obj = block.get("text")
             if isinstance(text_obj, dict):
@@ -2366,6 +2408,11 @@ async def _route_message(
     if not text or text in _SLACK_BLOCK_FALLBACKS:
         fallback = "" if text in _SLACK_BLOCK_FALLBACKS else text
         text = _extract_shared_text(event) or fallback
+    elif any(isinstance(b, dict) and b.get("type") == "table" for b in (event.get("blocks") or [])):
+        table_blocks = [b for b in (event.get("blocks") or []) if isinstance(b, dict) and b.get("type") == "table"]
+        extracted_tables = _extract_blocks_text(table_blocks)
+        if extracted_tables and extracted_tables not in text:
+            text = f"{text}\n\n{extracted_tables}".strip()
 
     logger.debug("Stream debug: team_id=%s user_id=%s channel=%s", team_id, sender_id, channel)
 
