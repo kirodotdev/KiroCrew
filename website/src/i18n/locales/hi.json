@@ -15461,7 +15461,7 @@
         "immediate": "तुरंत",
         "immediate_mode_shows_raw_chunks_as_they_arrive_s": "इमीडिएट मोड चंक्स को आते ही कच्चे रूप में दिखाता है। स्मूद मोड उन्हें बफ़र करता है और टेक्स्ट को एक समान गति से फ़ेड-इन करता है।",
         "it_ops": "IT / ऑप्स",
-        "keep_your_computer_awake_while_a_task_is_running": "जब कोई कार्य चल रहा हो तो अपने कंप्यूटर को जागृत रखें",
+        "keep_your_computer_awake_while_a_task_is_running": "जब कोई कार्य चल रहा हो तो अपने कंप्यूटर को जागृत रखो। कुछ Windows लैपटॉप (Modern Standby) पर स्क्रीन लॉक करने पर यह फिर भी स्लीप में जा सकता है, इसलिए लंबे कार्यों के दौरान स्क्रीन अनलॉक रखो।",
         "kiro_matches_vocabulary_and_examples_to_your_pro": "Kiro शब्दावली और उदाहरणों को आपकी पेशेवर पृष्ठभूमि के अनुरूप ढालता है",
         "kiro_quotes_this_back_to_itself_when_calibrating": "Kiro इस विवरण का उपयोग तुम्हारी भूमिका के अनुसार शब्दावली और उदाहरणों को ढालने के लिए करता है।",
         "knowledge_library": "ज्ञान पुस्तकालय",

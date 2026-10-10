@@ -98,10 +98,13 @@ const CATALOG = 'website/src/i18n/locales/hi.json'
  * whole Devanagari words. The pronoun check above already covers आप itself; this
  * catches the pronoun-less formal imperative ("फिर से प्रयास करें"). Every form is
  * a verb, so a plural noun in `-ें` (फ़ाइलें) is not in reach, and the boundaries
- * keep `दें` from matching inside a longer word.
+ * keep `दें` from matching inside a longer word. The boundary class is the
+ * Devanagari block minus the danda and double danda (U+0964, U+0965): those
+ * are punctuation, and a sentence-final imperative (`रखें।`) is the commonest
+ * place the formal form appears.
  */
 const FORMAL_IMPERATIVE =
-  /(?<![\u0900-\u097f])(?:करें|देखें|चुनें|खोलें|सहेजें|भरें|लिखें|रखें|पढ़ें|दें|लें|जाएं|जाएँ|बनाएं|बनाएँ|हटाएं|हटाएँ|लगाएं|लगाएँ|चलाएं|चलाएँ|बताएं|बताएँ|दबाएं|दबाएँ|कीजिए|कीजिये|करिए)(?![\u0900-\u097f])/
+  /(?<![\u0900-\u0963\u0966-\u097f])(?:करें|देखें|चुनें|खोलें|सहेजें|भरें|लिखें|रखें|पढ़ें|दें|लें|जाएं|जाएँ|बनाएं|बनाएँ|हटाएं|हटाएँ|लगाएं|लगाएँ|चलाएं|चलाएँ|बताएं|बताएँ|दबाएं|दबाएँ|कीजिए|कीजिये|करिए)(?![\u0900-\u0963\u0966-\u097f])/
 
 /**
  * The hi values this branch added or edited, or null when there is nothing to

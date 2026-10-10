@@ -29,10 +29,12 @@ function report(bad: string[], limit = 6): string {
 
 describe('pt regional variant (style/pt.md §1)', () => {
   it('uses Brazilian Portuguese vocabulary, not European', () => {
-    // Common European Portuguese words that should be Brazilian
+    // Common European Portuguese words that should be Brazilian. `\b` is an
+    // ASCII word boundary, so it never fires after `ã`; the screen pattern
+    // spells its boundaries as Unicode letters instead.
     const EU_WORDS: Array<[RegExp, string]> = [
       [/\bficheiro/i, 'arquivo (BR)'],
-      [/\becr[ãa]\b/i, 'tela (BR)'],
+      [/(?<!\p{L})ecr[ãa](?!\p{L})/iu, 'tela (BR)'],
       [/\bdescarregar\b/i, 'baixar (BR)'],
       [/\btelemovel\b/i, 'celular (BR)'],
       [/\bordenador\b/i, 'computador (BR)'],
