@@ -256,7 +256,7 @@ import { Composer, type ComposerHandle, type ComposerVoiceOptions } from '../cha
 import { createComposerDraftStore, useComposerDraft, useComposerDraftSelector, type ComposerDraftStore } from '../chat-core/composer/draftStore'
 import { ChatFooter, AssistantMessage, UserMessage, PinnedPrompt } from './chat'
 import { pinCandidateKey } from './chat/usePinnedPrompt'
-import { useStreamIdle } from './chat/ChatFooter'
+import { turnContentLength, useStreamIdle } from './chat/ChatFooter'
 import type { TurnStats } from './chat/AssistantMessage'
 import { prevUserTextFor } from './chat/share/shareSupport'
 import { turnHadPolicyBlock } from '../app-sdk/turnPolicyBlock'
@@ -3421,6 +3421,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // ToolCallLine to gate its height animations — see `transcriptHot` there.
   const transcriptIdle = useStreamIdle(heatTickRef.current, slotRunning)
   const transcriptHot = slotRunning && !transcriptIdle
+  // Lets ChatFooter flag a running turn that has gone silent, e.g. a backend
+  // quietly retrying a throttled model call. Keyed on CONTENT (row count, the
+  // current turn's total text, slot state), not on the heat tick above: the
+  // tick also advances when a refetch hands back an identical transcript as a
+  // new array, which would reset the stall clock with no real progress. The
+  // turn total matters because a reasoning burst grows a 'thinking' row that
+  // is spliced BEFORE the trailing streaming row, so the last row alone holds
+  // still while the model is visibly working.
+  const footerActivityKey = `${messages.length}:${lastMsg?.role ?? ''}:${turnContentLength(messages)}:${slotState}`
   // Precompute: index of last finalized assistant message (tools after this are "trailing")
   // The activity panel has exactly two modes, and the question that picks one
   // is NOT "how wide is the window" — it is "how much width is left for the
@@ -6050,7 +6059,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 scrollerEl={() => scrollerRef.current}
               />
               {/* Footer */}
-              <ChatFooter running={slotRunning} stopping={slotStopping} state={slotState} lastRole={lastRole} streamTick={streamTick} regenerating={regenerating} stopState={currentSlot?.stop_state} sendUnconfirmed={sendUnconfirmed} />
+              <ChatFooter running={slotRunning} stopping={slotStopping} state={slotState} lastRole={lastRole} streamTick={streamTick} regenerating={regenerating} stopState={currentSlot?.stop_state} sendUnconfirmed={sendUnconfirmed} activityKey={footerActivityKey} onStop={stopTurn} />
               {activeSlot && !slotLoading && !embedded && !popout && slotSwitchTarget !== activeSlot && (
                 <div className="px-4 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
                   <SessionPulseSurveyCard

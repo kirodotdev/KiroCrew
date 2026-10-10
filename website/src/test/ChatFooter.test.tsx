@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { render, screen, act, fireEvent } from '@testing-library/react'
-import ChatFooter, { pickDistinct, resolveLoader, resolveLoaderIcons, SwapCarousel, STREAM_IDLE_MS } from '../pages/chat/ChatFooter'
+import ChatFooter, { pickDistinct, resolveLoader, resolveLoaderIcons, SwapCarousel, STREAM_IDLE_MS, STALL_MS, formatStall, turnContentLength } from '../pages/chat/ChatFooter'
 import { GHOST_POSE_ICONS, GHOST_POSE_URLS } from '../components/GhostPoses'
 import { registerThemeBranding } from '../themeBranding'
 import { THEME_LOADER_ICONS } from '../themeLoaderIcons'
@@ -474,5 +474,102 @@ describe('pickDistinct', () => {
     const got = pickDistinct(3)
     expect(got).toHaveLength(3)
     expect(new Set(got).size).toBe(3)
+  })
+})
+
+// A running turn that produces nothing at all, e.g. the backend silently
+// retrying a throttled Bedrock call, must eventually say so instead of leaving
+// the user watching the loader for minutes.
+describe('ChatFooter stall notice', () => {
+  const running = { ...base, running: true, lastRole: 'user', state: 'thinking' }
+
+  it('appears after STALL_MS with no activity and ticks the elapsed time', () => {
+    vi.useFakeTimers()
+    try {
+      render(<ChatFooter {...running} activityKey="3:10:thinking" onStop={() => {}} />)
+      expect(screen.queryByTestId('chat-footer-stall')).toBeNull()
+      act(() => { vi.advanceTimersByTime(STALL_MS + 10) })
+      expect(screen.getByTestId('chat-footer-stall')).toBeInTheDocument()
+      expect(screen.getByTestId('chat-footer-stall-elapsed').textContent).toMatch(/45s/)
+      act(() => { vi.advanceTimersByTime(25_000) })
+      expect(screen.getByTestId('chat-footer-stall-elapsed').textContent).toMatch(/1m 10s/)
+      // The loader keeps running underneath: the turn is not over.
+      expect(document.querySelector('.csb4')).toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('clears as soon as any activity arrives', () => {
+    vi.useFakeTimers()
+    try {
+      const { rerender } = render(<ChatFooter {...running} activityKey="3:10:thinking" />)
+      act(() => { vi.advanceTimersByTime(STALL_MS + 10) })
+      expect(screen.getByTestId('chat-footer-stall')).toBeInTheDocument()
+      rerender(<ChatFooter {...running} activityKey="4:0:thinking" />)
+      expect(screen.queryByTestId('chat-footer-stall')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('never flags a long-running tool', () => {
+    vi.useFakeTimers()
+    try {
+      render(<ChatFooter {...running} state="tool_running" lastRole="tool" activityKey="3:10:tool_running" />)
+      act(() => { vi.advanceTimersByTime(STALL_MS * 4) })
+      expect(screen.queryByTestId('chat-footer-stall')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stays off for callers that pass no activityKey', () => {
+    vi.useFakeTimers()
+    try {
+      render(<ChatFooter {...running} />)
+      act(() => { vi.advanceTimersByTime(STALL_MS * 2) })
+      expect(screen.queryByTestId('chat-footer-stall')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('Stop turn calls onStop', () => {
+    vi.useFakeTimers()
+    try {
+      const onStop = vi.fn()
+      render(<ChatFooter {...running} activityKey="k" onStop={onStop} />)
+      act(() => { vi.advanceTimersByTime(STALL_MS + 10) })
+      act(() => { screen.getByRole('button', { name: /stop/i }).click() })
+      expect(onStop).toHaveBeenCalledOnce()
+      // Hidden at once, before the server confirms the stop, so the button
+      // can never take a second (escalating) press.
+      expect(screen.queryByTestId('chat-footer-stall')).toBeNull()
+      act(() => { vi.advanceTimersByTime(STALL_MS * 2) })
+      expect(screen.queryByTestId('chat-footer-stall')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('counts text across the whole current turn, so a reasoning burst before the last row is progress', () => {
+    const before = [{ role: 'user', content: 'q' }, { role: 'thinking', content: 'ab' }, { role: 'streaming', content: '' }]
+    const after = [{ role: 'user', content: 'q' }, { role: 'thinking', content: 'abcd' }, { role: 'streaming', content: '' }]
+    expect(turnContentLength(after)).toBeGreaterThan(turnContentLength(before))
+    expect(turnContentLength([{ role: 'assistant', content: 'old' }, { role: 'user', content: 'q' }])).toBe(0)
+    // A confirmed steer does not end the turn: reasoning that keeps growing
+    // above it still counts.
+    const steer = { role: 'user', content: 's', meta: { steer: true } }
+    expect(turnContentLength([{ role: 'user', content: 'q' }, { role: 'thinking', content: 'abcd' }, steer]))
+      .toBeGreaterThan(turnContentLength([{ role: 'user', content: 'q' }, { role: 'thinking', content: 'ab' }, steer]))
+    // An optimistic steer is still a boundary.
+    expect(turnContentLength([{ role: 'thinking', content: 'abcd' }, { role: 'user', content: 's', meta: { steer: true, optimistic: true } }])).toBe(0)
+  })
+
+  it('formats durations', () => {
+    expect(formatStall(45_000)).toBe('45s')
+    expect(formatStall(70_000)).toBe('1m 10s')
+    expect(formatStall(260_000)).toBe('4m 20s')
   })
 })

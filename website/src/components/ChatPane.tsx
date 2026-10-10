@@ -31,7 +31,7 @@ import SubagentProgressBar from '../pages/chat/SubagentProgressBar'
 import CommandCenterDock from '../pages/chat/command-center/CommandCenterDock'
 import { usePreviewFlag } from '../hooks/usePreviewFlag'
 import { PREVIEW_DASHBOARD } from '../utils/previewFlags'
-import ChatFooter from '../pages/chat/ChatFooter'
+import ChatFooter, { turnContentLength } from '../pages/chat/ChatFooter'
 import PinnedPrompt from '../pages/chat/PinnedPrompt'
 import SessionTitleControl from '../pages/chat/SessionTitleControl'
 import { pinCandidateKey, usePinnedPrompt } from '../pages/chat/usePinnedPrompt'
@@ -1886,6 +1886,12 @@ export default function ChatPane({
                     ? (messages[messages.length - 1]?.content.length ?? 0)
                     : 0
                 }
+                activityKey={`${messages.length}:${messages[messages.length - 1]?.role ?? ''}:${turnContentLength(messages)}:${streamState}`}
+                // The pane's guarded press protocol, not a bare stop(false): a
+                // repeat bare soft press is escalated server-side to a
+                // queue-clearing hard kill with no arming warning (#9547).
+                onStop={onStop}
+                stopState={paneStopState}
               />
               </>
             ),
