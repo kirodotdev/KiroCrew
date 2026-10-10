@@ -55,6 +55,14 @@ src/kiro_crew/dashboard_card_pages/*.html text eol=lf
 # Keep checkout conversion from changing it under core.autocrlf=true.
 /config-baseline.json text eol=lf
 
+# The committed settings extraction is compared byte-for-byte too: the website
+# build (website/scripts/gen-ui-index.mjs) reads this file from disk and checks
+# it against the LF output the live extraction produces in memory. Its sibling
+# settingsRegistry.gen.ts is already pinned by website/.gitattributes; this one
+# lives outside that scope, so under core.autocrlf=true a Windows checkout gives
+# it CRLF and the Nightly / Build Windows Desktop jobs fail there and only there.
+src/kiro_crew/docs/settings-registry.generated.json text eol=lf
+
 # The ACP frame corpus is line-oriented data on both sides: a `.jsonl` fixture is read
 # ONE LINE AT A TIME as a separate JSON document, and its `.expected.json` snapshot is
 # compared against output written with an explicit LF. The snapshot writer and the host
