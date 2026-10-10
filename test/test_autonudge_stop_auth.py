@@ -298,12 +298,14 @@ class _FakeMonitor:
     """The two monitor fields the paused-loop branch reads about a subject.
 
     ``terminal_pending`` is the owed final turn (``"success"``/``"blocked"``) a
-    channel loop records on observing a terminal subject; ``outcome`` is the
-    settled classification written once that turn lands.
+    channel loop records on observing a terminal subject, ``terminal_delivered``
+    the same outcome once that turn landed and only its settlement remains, and
+    ``outcome`` is the settled classification written once the settlement runs.
     """
 
-    def __init__(self, *, terminal_pending="", outcome=None):
+    def __init__(self, *, terminal_pending="", terminal_delivered="", outcome=None):
         self.terminal_pending = terminal_pending
+        self.terminal_delivered = terminal_delivered
         self.outcome = outcome
 
 
@@ -732,7 +734,8 @@ def test_a_probe_state_double_is_a_legacy_loop_only_while_it_carries_the_gate():
     assert not is_structured_monitor_loop(plain_prompt_loop)
 
 
-def test_applier_owed_terminal_turn_is_not_reported_as_a_spent_cap(monkeypatch):
+@pytest.mark.parametrize(("pending", "delivered"), [("success", ""), ("", "success")])
+def test_applier_owed_terminal_turn_is_not_reported_as_a_spent_cap(monkeypatch, pending, delivered):
     """A channel loop whose subject MERGED must not be told it ran out of cycles.
 
     A channel-bound loop does not settle on observation: the probe records the owed
@@ -751,7 +754,7 @@ def test_applier_owed_terminal_turn_is_not_reported_as_a_spent_cap(monkeypatch):
         active=False,
         stopped_reason="cycle_cap",
         slot_key="slack:C123:170.5",
-        monitor=_FakeMonitor(terminal_pending="success"),
+        monitor=_FakeMonitor(terminal_pending=pending, terminal_delivered=delivered),
         gate=True,
     )
     svc = _FakeSvc(loop)
@@ -772,7 +775,8 @@ def test_applier_owed_terminal_turn_is_not_reported_as_a_spent_cap(monkeypatch):
     assert "monitor_start" in result
 
 
-def test_applier_owed_blocked_turn_is_not_reported_as_a_merge(monkeypatch):
+@pytest.mark.parametrize(("pending", "delivered"), [("blocked", ""), ("", "blocked")])
+def test_applier_owed_blocked_turn_is_not_reported_as_a_merge(monkeypatch, pending, delivered):
     """A subject closed WITHOUT merging is terminal but is not good news.
 
     It stopped on a question the operator has to answer — reopen, or abandon — so it
@@ -786,7 +790,7 @@ def test_applier_owed_blocked_turn_is_not_reported_as_a_merge(monkeypatch):
         active=False,
         stopped_reason="cycle_cap",
         slot_key="slack:C123:170.5",
-        monitor=_FakeMonitor(terminal_pending="blocked"),
+        monitor=_FakeMonitor(terminal_pending=pending, terminal_delivered=delivered),
         gate=True,
     )
     svc = _FakeSvc(loop)

@@ -893,3 +893,61 @@ async def test_a_deliberate_close_still_succeeds_when_the_removed_edge_write_is_
     assert (
         state.get_slot(NAME) is None
     ), "the close must still remove the slot when the edge is dropped"
+
+
+@pytest.mark.asyncio
+async def test_close_after_drain_before_gateway_unpublish_aborts_with_active_row_intact(
+    tmp_path, monkeypatch
+) -> None:
+    """A teardown-window close cannot mistake the active loop for no loop."""
+    _LOST_RUN_SECS = 60.0
+
+    async def bounded(awaitable, what: str):
+        try:
+            return await asyncio.wait_for(awaitable, timeout=_LOST_RUN_SECS)
+        except asyncio.TimeoutError:
+            pytest.fail(f"{what} did not finish within the {_LOST_RUN_SECS:.0f}s lost-run ceiling")
+
+    state = _state_with_slot(tmp_path)
+    slot = state.get_slot(NAME)
+    assert slot is not None
+    svc = await _service(tmp_path, monkeypatch)
+    try:
+        loop = await bounded(
+            svc.add(NAME, "check the PR", idle_secs=300, max_cycles=24),
+            "the teardown-window loop arm",
+        )
+        await bounded(svc.shutdown(), "the AutoNudge durability drain")
+        assert (
+            autonudge.get_instance() is svc
+        ), "shutdown withdrew the singleton while the dashboard can still close slots"
+
+        response = await bounded(
+            handlers.api_chat_slot_delete(_Req(state, NAME)),
+            "the teardown-window slot close",
+        )
+
+        assert response.status == 500
+        assert json.loads(response.body)["code"] == "nudge_retire_failed"
+        assert state.get_slot(NAME) is slot, "the refused close persisted the slot as closed"
+        assert slot.is_closing is False
+        live = svc.get_by_slot(NAME)
+        assert live is loop and live.active, "the refusal lost the active in-memory loop"
+        metadata = await bounded(
+            asyncio.to_thread(
+                state.conversation_log.get_metadata,
+                f"dashboard:{NAME}",
+            ),
+            "the open transcript metadata read",
+        )
+        assert not metadata.get(
+            "closed"
+        ), "the refused close wrote a closed transcript beside an active loop"
+        restored = AutoNudgeService(base_dir=tmp_path)
+        await bounded(asyncio.to_thread(restored._load), "the durable loop-row read")
+        persisted = restored.get_by_slot(NAME)
+        assert (
+            persisted is not None and persisted.active
+        ), "the shutdown refusal did not preserve the durable active loop row"
+    finally:
+        svc.stop()

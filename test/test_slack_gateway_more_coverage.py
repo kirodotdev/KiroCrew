@@ -1256,21 +1256,33 @@ class TestNotifyNudgeExpired:
         assert title == "Monitoring loop finished — it reported done"
 
     @pytest.mark.parametrize(
-        ("pending", "expected_title", "expected_body"),
+        ("pending", "delivered", "expected_title", "expected_body"),
         [
-            ("success", "Monitoring loop finished — what it was watching is done", "merged"),
-            ("blocked", "Monitoring loop stopped — its subject was closed unmerged", "WITHOUT"),
+            ("success", "", "Monitoring loop finished — what it was watching is done", "merged"),
+            ("", "success", "Monitoring loop finished — what it was watching is done", "merged"),
+            (
+                "blocked",
+                "",
+                "Monitoring loop stopped — its subject was closed unmerged",
+                "WITHOUT",
+            ),
+            (
+                "",
+                "blocked",
+                "Monitoring loop stopped — its subject was closed unmerged",
+                "WITHOUT",
+            ),
         ],
     )
     def test_an_owed_legacy_terminal_turn_outranks_the_cycle_cap(
-        self, pending, expected_title, expected_body
+        self, pending, delivered, expected_title, expected_body
     ):
         """A gated legacy loop keeps terminal truth even when its cap wins the race."""
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()
         orch.dashboard_state = ds
         loop = NudgeLoop(
-            id=f"loop-owed-{pending}",
+            id=f"loop-owed-{pending or delivered}",
             slot_key="slack:C123:456.789",
             message="watch https://github.com/acme/widgets/pull/42 until green",
             max_cycles=4,
@@ -1283,6 +1295,7 @@ class TestNotifyNudgeExpired:
                 objective="watch until green",
                 created_ts=0.0,
                 terminal_pending=pending,
+                terminal_delivered=delivered,
             ),
         )
 

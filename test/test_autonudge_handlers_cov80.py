@@ -1658,6 +1658,32 @@ async def test_delete_503_when_service_absent(monkeypatch: pytest.MonkeyPatch) -
 
 
 @pytest.mark.asyncio
+async def test_legacy_delete_maps_closed_admission_to_503(
+    monkeypatch: pytest.MonkeyPatch,
+    sel_mock: MagicMock,
+    tmp_path: Any,
+) -> None:
+    svc = AutoNudgeService(base_dir=tmp_path)
+    await svc.shutdown()
+    loop = _loop("lp-1", "chat-5-555")
+    svc._loops[loop.id] = loop
+    _svc(monkeypatch, svc)
+    sel_mock.log_tool_invocation.side_effect = RuntimeError("audit unavailable")
+
+    response = await h.api_autonudge_delete(
+        _mk("DELETE", "/api/autonudge/lp-1", match={"loop_id": loop.id})
+    )
+
+    assert response.status == 503
+    assert _body(response) == {
+        "error": "AutoNudge service is shutting down",
+        "code": "autonudge_delete_denied",
+    }
+    assert svc.get_by_id(loop.id) is loop
+    assert sel_mock.log_tool_invocation.call_args.kwargs["outcome"] == "denied"
+
+
+@pytest.mark.asyncio
 async def test_delete_removes_and_audits_the_owning_slot(
     monkeypatch: pytest.MonkeyPatch, sel_mock: MagicMock
 ) -> None:
@@ -1672,6 +1698,21 @@ async def test_delete_removes_and_audits_the_owning_slot(
     assert kwargs["tool_name"] == "autonudge_delete"
     assert kwargs["outcome"] == "success"
     assert kwargs["metadata"]["loop_id"] == "lp-1"
+
+
+@pytest.mark.asyncio
+async def test_MUTATION_legacy_delete_success_audit_failure_propagates(
+    monkeypatch: pytest.MonkeyPatch, sel_mock: MagicMock
+) -> None:
+    svc = _svc(monkeypatch, _FakeSvc([_loop("lp-1", "chat-5-555")]))
+    sel_mock.log_tool_invocation.side_effect = RuntimeError("audit unavailable")
+    request = _mk("DELETE", "/api/autonudge/lp-1", match={"loop_id": "lp-1"})
+
+    with pytest.raises(RuntimeError, match="audit unavailable"):
+        await h.api_autonudge_delete(request)
+
+    assert svc.removed == ["lp-1"]
+    assert svc.notes == [("lp-1", "dashboard_delete")]
 
 
 @pytest.mark.asyncio

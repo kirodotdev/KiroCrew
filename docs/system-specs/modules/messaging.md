@@ -235,7 +235,15 @@ the event's `TurnUsage` and a disposition derived from its stop reason. ACP's
 stale-stream compatibility completion reuses `end_turn`, so that reason remains
 uncharged until the event carries provenance that distinguishes it from a provider
 result. Completion accounting therefore survives failure or cancellation during
-renderer finalization. A normal handler return, command intercept, stream exception,
+renderer finalization. At callback entry it captures the existing AutoNudge
+service-generation admission and starts one shielded accounting transaction in
+the shared mutation-owner registry. If shutdown closes while that transaction is
+waiting on the monitor lock or executor write, AutoNudge drains it to durability
+before session/channel storage closes; caller cancellation is propagated only
+after the write settles, or after the drain's post-cancellation window when the
+write cannot finish. A callback that had not started when admission closed is
+refused rather than creating new accounting or rearming work during teardown.
+A normal handler return, command intercept, stream exception,
 or ACP-synthesized terminal does not manufacture completion evidence. Callback
 failure is logged and cannot
 change the channel turn's output or error behavior. The hook is absent from ordinary inbound turns
@@ -4305,7 +4313,12 @@ at 1 per session, deny-by-default on timeout, and a timeout also signals
 `AutoNudgeService.notify_approval_stalled` (`autonudge_service/timers.py`) so an unattended
 loop pauses (stays active, fires nothing) instead of
 burning its cycle budget being denied; a human's answer through the same registry
-releases that hold (`release_approval_hold`), and the loop resumes on its own. The card's nonce is minted by that registry
+releases that hold (`release_approval_hold`), and the loop resumes on its own. Both
+signals take AutoNudge's service-generation admission where they arrive. One that
+arrives before gateway shutdown closes admission is drained to the store before
+session and channel storage close (a release that lands after closure re-arms
+nothing). One that arrives after closure is dropped at DEBUG, so the approval path
+never sees a shutdown refusal. The card's nonce is minted by that registry
 against the pending entry and validated INSIDE `resolve()`, as a precondition:
 checking it around the call would approve the tool first and only then discover
 the press was stale. A press carrying no nonce or request id fails closed, and
