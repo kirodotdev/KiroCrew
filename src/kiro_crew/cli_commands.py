@@ -112,7 +112,7 @@ from kiro_crew.embeddings import (
 from kiro_crew.eval.judge import LLMJudge
 from kiro_crew.eval.runner import EvalRunner, format_results, score_by_dimension
 from kiro_crew.eval.scenario import AssertionType, load_scenario, load_scenarios
-from kiro_crew.external_text import external_text_requires_redaction
+from kiro_crew.external_text import external_text_requires_redaction, scrub_untrusted_text
 from kiro_crew.history import ConversationLog
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.learn import LessonStore
@@ -161,7 +161,6 @@ from kiro_crew.sel import sel
 from kiro_crew.skills import SkillsLoader
 from kiro_crew.subagent_wait_reasons import queued_wait_text
 from kiro_crew.terminal_safe import _TERMINAL_CTRL_RE, safe_terminal_line
-from kiro_crew.untrusted_text import scrub_untrusted_text
 from kiro_crew.validation import (
     _AGENT_NAME_RE,
     _MODEL_NAME_RE,

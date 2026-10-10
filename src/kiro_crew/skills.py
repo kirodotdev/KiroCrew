@@ -59,6 +59,7 @@ from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.cron import referenced_skill_names  # noqa: F401
 from kiro_crew.dep_sync import normalize as normalize_distribution_name
 from kiro_crew.deploy import _SKILLS_DIR as _DEPLOY_SKILLS_DIR
+from kiro_crew.external_text import scrub_untrusted_text
 from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
 from kiro_crew.hooks import (  # noqa: F401
     FileTooLargeError,
@@ -131,7 +132,6 @@ from kiro_crew.skill_usage import names_skill_file  # noqa: F401  (read_credit r
 from kiro_crew.skill_usage import SKILL_USAGE_FILENAME, SkillUsageLedger
 from kiro_crew.skills_script_validator import MAX_SCRIPT_BYTES, validate_scripts
 from kiro_crew.trigger_match import MIN_TRIGGER_OVERLAP, trigger_score, words_of
-from kiro_crew.untrusted_text import scrub_untrusted_text
 
 logger = logging.getLogger(__name__)
 
@@ -476,12 +476,20 @@ def _is_link_stat(st: os.stat_result) -> bool:
 def _pending_candidate_shape(child: Path) -> str | None:
     """Classify a pending entry without following any link: ``"plain"``, ``"link"`` or ``None``.
 
-    Every probe is ``lstat``. A candidate directory the agent turned into a
-    symlink or reparse point (a UNC target would make Windows authenticate to
-    that host) is ``"link"``: still listed, so the dashboard can show its
-    failing verdict and dismiss it, but nothing is opened through it. A real
-    directory is ``"plain"`` when an entry named ``SKILL.md`` exists in it,
-    whatever its type; the verdict reports a linked or non-regular one.
+    A candidate directory the agent turned into a symlink or reparse point (a
+    UNC target would make Windows authenticate to that host) is ``"link"``:
+    still listed, so the dashboard can show its failing verdict and dismiss it,
+    but nothing is opened through it. A real directory is ``"plain"`` when an
+    entry named ``SKILL.md`` exists in it, whatever its type; the verdict
+    reports a linked or non-regular one.
+
+    The ``SKILL.md`` probe never re-resolves ``child`` by name: the directory
+    could be swapped for a link between the two checks. It is opened once with
+    ``O_NOFOLLOW``, its identity is matched against the first ``lstat``, and the
+    probe runs relative to that descriptor. A platform without descriptor-relative
+    stat (Windows) skips the probe: a real directory is ``"plain"`` and the
+    pinned verdict reports a missing ``SKILL.md``, because any by-name probe there
+    would traverse whatever reparse point sits at ``child``.
     """
     try:
         dir_st = os.lstat(child)
@@ -491,11 +499,22 @@ def _pending_candidate_shape(child: Path) -> str | None:
         return "link"
     if not stat.S_ISDIR(dir_st.st_mode):
         return None
+    if not pinned_fs.supports_pinned_tree_walk():
+        return "plain"
     try:
-        os.lstat(child / "SKILL.md")
+        fd = os.open(child, pinned_fs.dir_flags())
+    except OSError:
+        # ELOOP/ENOTDIR: the name became a link or a non-directory after the lstat.
+        return "link"
+    try:
+        held = os.fstat(fd)
+        if (held.st_dev, held.st_ino) != (dir_st.st_dev, dir_st.st_ino):
+            return "link"
+        return "plain" if pinned_fs.stat_at(fd, "SKILL.md") is not None else None
     except OSError:
         return None
-    return "plain"
+    finally:
+        os.close(fd)
 
 
 class SkillContextCapacityError(ValueError):

@@ -840,7 +840,7 @@ def pending_candidate_is_staged(loader: SkillsLoader, slug: str) -> bool:
     caller that renders both as "approved or dismissed elsewhere" tells the user
     their candidate is gone while it sits in the list. This separates them.
 
-    It uses the same lstat-only shape check as pending enumeration. That preserves
+    It uses the same link-free shape check as pending enumeration. That preserves
     the message distinction without following a candidate directory or ``SKILL.md``
     link by name before the descriptor-pinned reader makes the security decision.
     """

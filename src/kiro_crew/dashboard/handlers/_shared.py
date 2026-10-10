@@ -42,6 +42,7 @@ from kiro_crew.dashboard.token_auth import (
     _b64url_decode,
     required_peer_key_unverified,
 )
+from kiro_crew.external_text import scrub_untrusted_text
 from kiro_crew.history import TRANSCRIPT_HEADER_MAX_BYTES, memory_mode_from_header_line
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.loop_lock import LoopBoundLock
@@ -52,7 +53,6 @@ from kiro_crew.messaging.privacy_mode import is_temporary as is_thread_temporary
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.skill_trust import is_project_trusted as _is_project_trusted
 from kiro_crew.skills import _trusted_skill_roots, _with_canonical_globs, skills_dir
-from kiro_crew.untrusted_text import scrub_untrusted_text
 
 if TYPE_CHECKING:
     from kiro_crew.execution_context import ExecutionContext
@@ -89,7 +89,7 @@ def _scrub_text(val: str) -> str:
     an invisible character can destroy a boundary a pattern requires, so a token the
     stored text matches can stop matching once the copy is joined up.
 
-    The pass order lives in ``kiro_crew.untrusted_text.scrub_untrusted_text``,
+    The pass order lives in ``kiro_crew.external_text.scrub_untrusted_text``,
     shared with the ``kirocrew skills`` terminal output.
     """
     return scrub_untrusted_text(val)

@@ -428,24 +428,30 @@ class SkillSearchIndex:
             if db is None:
                 return {}
             try:
+                # Every retained column is bounded in SQLite, before Python holds
+                # it: the table is agent-writable, so an oversized path or
+                # fingerprint must be a cache miss just like oversized metadata.
+                bounded = (
+                    "SELECT path, fingerprint, metadata FROM skill_metadata "
+                    "WHERE length(CAST(metadata AS BLOB)) <= ?"
+                    " AND length(CAST(path AS BLOB)) <= ?"
+                    " AND length(CAST(fingerprint AS BLOB)) <= ?"
+                )
+                caps = (
+                    LISTING_ROW_MAX_FILE_BYTES,
+                    _MAX_CATALOG_FIELD_CHARS,
+                    _MAX_CATALOG_FIELD_CHARS,
+                )
                 queries: list[tuple[str, tuple[object, ...]]]
                 if paths is None:
-                    queries = [
-                        (
-                            "SELECT path, fingerprint, metadata FROM skill_metadata "
-                            "WHERE length(CAST(metadata AS BLOB)) <= ?",
-                            (LISTING_ROW_MAX_FILE_BYTES,),
-                        )
-                    ]
+                    queries = [(bounded, caps)]
                 else:
                     wanted = list(dict.fromkeys(paths))
                     # SQLite caps bound parameters per statement, so read in chunks.
                     queries = [
                         (
-                            "SELECT path, fingerprint, metadata FROM skill_metadata "
-                            "WHERE length(CAST(metadata AS BLOB)) <= ?"
-                            f" AND path IN ({','.join('?' * len(chunk))})",
-                            (LISTING_ROW_MAX_FILE_BYTES, *chunk),
+                            f"{bounded} AND path IN ({','.join('?' * len(chunk))})",
+                            (*caps, *chunk),
                         )
                         for chunk in (
                             wanted[i : i + _METADATA_READ_CHUNK]

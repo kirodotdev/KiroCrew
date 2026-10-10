@@ -701,6 +701,66 @@ def test_pending_listing_never_reads_through_a_linked_candidate_directory(
             assert linked["script_validation"]["ok"] is False
 
 
+def test_candidate_swapped_for_a_link_after_lstat_is_not_probed_through(
+    loader, tmp_path, monkeypatch
+):
+    if not pinned_fs.supports_pinned_tree_walk():
+        pytest.skip("descriptor-relative stat is unavailable on this platform")
+    _stage(loader, "swapped-candidate")
+    child = loader._pending_root() / "swapped-candidate"
+    outside = tmp_path / "outside-candidate"
+    outside.mkdir()
+    (outside / "SKILL.md").write_text("---\nname: x\ndescription: x\n---\n")
+    real_lstat = os.lstat
+    swapped = []
+
+    def lstat_then_swap(path, *args, **kwargs):
+        result = real_lstat(path, *args, **kwargs)
+        if Path(path) == child and not swapped:
+            # The swap lands between the directory check and the SKILL.md probe.
+            child.rename(tmp_path / "moved-away")
+            os.symlink(outside, child, target_is_directory=True)
+            swapped.append(True)
+        return result
+
+    monkeypatch.setattr(os, "lstat", lstat_then_swap)
+
+    assert skills_mod._pending_candidate_shape(child) == "link"
+    assert swapped
+
+
+def test_metadata_snapshot_bounds_path_and_fingerprint_in_sqlite(loader):
+    import sqlite3
+    from contextlib import closing
+
+    from kiro_crew import skill_search_index as skill_search_index_module
+
+    loader.create_skill("live-a", "---\nname: live-a\ndescription: trusted\n---\n")
+    loader.list_skills()
+    index = loader._search_index
+    if index is None:
+        pytest.skip("search index unavailable on this host")
+    wide = skill_search_index_module._MAX_CATALOG_FIELD_CHARS + 1
+    meta = json.dumps({"name": "forged"})
+    with closing(sqlite3.connect(loader._dir.parent / "skill_search_index.sqlite3")) as db:
+        with db:
+            db.execute(
+                "INSERT INTO skill_metadata(path, fingerprint, metadata) VALUES (?, ?, ?)",
+                ("/forged/wide-fingerprint", "f" * wide, meta),
+            )
+            db.execute(
+                "INSERT INTO skill_metadata(path, fingerprint, metadata) VALUES (?, ?, ?)",
+                ("/" + "p" * wide, "fp", meta),
+            )
+
+    for snapshot in (
+        index.metadata_snapshot(),
+        index.metadata_snapshot(["/forged/wide-fingerprint", "/" + "p" * wide]),
+    ):
+        assert "/forged/wide-fingerprint" not in snapshot
+        assert all(len(path) < wide for path in snapshot)
+
+
 def test_pending_slug_that_looks_like_a_credential_is_redacted(loader):
     _stage(loader, "pypi-publish-checklist")
 
