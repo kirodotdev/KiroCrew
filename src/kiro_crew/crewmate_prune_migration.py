@@ -364,6 +364,31 @@ def _is_fresh_sync_shape(raw: dict, *, kiro_agent: str) -> bool:
     return True
 
 
+def _default_agent_candidates(base: dict, overlay: object) -> frozenset[str]:
+    """The row names the loader would select as the default crew.
+
+    ``base`` and ``overlay`` are ``config.json`` and ``config.local.json`` as
+    read under their locks, merged as the loader merges them: an overlay
+    ``default_agent`` key replaces the base value whatever it holds, and the
+    rows are the base ``agents`` followed by the overlay's new names. When the
+    merged value is not a row name, the loader falls back to ``default`` if
+    that row exists, else the first row. ``default`` is always in the set: the
+    scan never judges that row either.
+    """
+    overlay_doc = overlay if isinstance(overlay, dict) else {}
+    names: list[str] = list(coerce_dict_section(dict(base), "agents"))
+    overlay_agents = overlay_doc.get("agents")
+    if isinstance(overlay_agents, dict):
+        names += [n for n in overlay_agents if n not in names]
+    source = overlay_doc if "default_agent" in overlay_doc else base
+    merged = source.get("default_agent")
+    if isinstance(merged, str) and merged and merged in names:
+        return frozenset({"default", merged})
+    if "default" not in names and names:
+        return frozenset({"default", names[0]})
+    return frozenset({"default"})
+
+
 def _teamed_names() -> frozenset[str]:
     """Every crewmate name some team lists, as ``crew-teams/teams.json`` holds it.
 
@@ -773,6 +798,14 @@ def remove_never_chatted(
                 except (OSError, ConfigReadError, TeamsUnreadable):
                     return None
                 if _name in teamed:
+                    return None
+                # The default crew can be selected in the overlay alone
+                # (``config set --local default_agent``), or fall back to
+                # ``default`` / the first row when the stored value is empty or
+                # names no row; resolve it as the loader does, from both
+                # documents read under their locks, so the row the loader would
+                # select is refused, not deleted.
+                if _name in _default_agent_candidates(doc, overlay):
                     return None
                 if _skill_view:
                     # No spec to re-read: discovery never lists an alias. The
