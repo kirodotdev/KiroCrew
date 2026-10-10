@@ -174,6 +174,16 @@ turn, the conductor's `work-ledger` watch holds: no turns, no extension, and
 the goal popover says it is waiting on you. A worker's new report releases it;
 the conductor's own writes do not.
 
+**A report is the only thing that wakes a conductor.** `blocked`, `question`
+and `done` pull its `work-ledger` loop forward to within seconds. `progress`
+does not, which is what makes a pause cheap: a worker that stops to wait reports
+`progress` and its conductor spends no turn hearing it. A worker turn that ends
+having reported nothing wakes nobody, and neither does a worker's session
+closing. What covers a worker that crashed or went silent is the item's own
+`stale` and `orphaned` flags, read on the conductor's ordinary patrol tick;
+those also cover a worker whose process died with its session still open, which
+no wake ever did.
+
 Reports belong at real milestones, not on a timer.
 `summary` is capped at 500 characters.
 A longer one is **cut to the cap, not refused**: the stored value carries a note

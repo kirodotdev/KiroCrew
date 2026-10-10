@@ -32,6 +32,7 @@ import time
 from typing import Any
 
 from kiro_crew import irq, platform_compat
+from kiro_crew.work_vocab import WORK_WAKE_STATUSES
 
 logger = logging.getLogger(__name__)
 
@@ -44,17 +45,15 @@ logger = logging.getLogger(__name__)
 #: if the source cap ever grows past this derivation.
 _MAX_ITEMS_PER_CONDUCTOR = 32
 
-#: Worker statuses whose ARRIVAL needs the conductor. ``done`` is a claim it must
-#: verify, ``blocked`` an external dependency it must clear, ``question`` a
-#: decision only it can make. ``progress`` is deliberately absent: it advances the
-#: revision so it reaches the conductor on the next real wake, and charging a turn
-#: for it would rebuild the polling this gate exists to remove.
+#: Worker statuses whose ARRIVAL needs the conductor, as this gate reads them.
 #:
-#: Phase 5's ``request`` belongs here too and is NOT listed, because it does not
-#: exist on this base: ``work_ledger.WORKER_STATUSES`` is exactly
-#: ``{progress, done, blocked, question}``. Add it in the change that adds the
-#: status, so the set and the vocabulary never disagree.
-WAKE_STATUSES = frozenset({"done", "blocked", "question"})
+#: DERIVED, not restated: ``work_vocab.WORK_WAKE_STATUSES`` is the set, and the
+#: trigger that pulls a conductor's loop forward reads the same tuple. A second
+#: spelling here would let a trigger push for news this gate refuses -- a turn's
+#: worth of latency bought for nothing, and invisible from either side. The import
+#: costs this module nothing it was avoiding: ``work_vocab`` is a leaf with no
+#: imports of its own.
+WAKE_STATUSES = frozenset(WORK_WAKE_STATUSES)
 
 #: Event kinds a worker can produce. Only ``report`` is one -- every other kind in
 #: ``work_ledger.EVENT_KINDS`` (``create``, ``bind``, ``decision``, ``verdict``,
@@ -246,6 +245,9 @@ def is_actionable_event(kind: str, status: str | None) -> bool:
     checked as well as the status because a conductor's own ``verdict`` event also
     carries a status-shaped field, and a gate woken by its owner's writes would
     wake on every ruling it made.
+
+    A worker that stopped to wait reports ``progress``, which is not a waking status,
+    so a pause is refused here by the status alone and needs no clause of its own.
     """
     if (kind or "").strip() not in WORKER_EVENT_KINDS:
         return False
