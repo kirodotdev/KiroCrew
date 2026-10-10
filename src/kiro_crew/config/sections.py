@@ -4574,6 +4574,63 @@ def _validate_tracking_channels(raw: list) -> list[dict]:
     return result
 
 
+def _validate_allowed_users(raw: list) -> list[dict]:
+    """Validate and coerce ``slack.allowed_users`` entries to the canonical shape.
+
+    The canonical entry is ``{"slack_id": "U...", "name": "..."}`` — the key the
+    allowlist writer persists and every reader looks up. ``slack/gateway.py`` builds
+    a ``set`` of these ids, so a non-string ``slack_id`` (a list or dict from a
+    hand-edited config) would raise ``TypeError: unhashable type`` at gateway
+    startup; the id must therefore be a non-empty string to be kept.
+
+    A ``user_id`` key with no usable ``slack_id`` is the common near-miss spelling.
+    Its value moves under ``slack_id`` rather than being dropped: a dropped entry
+    makes ``config get slack.allowed_users`` read back ``[]`` while the write
+    succeeded, which reads as a failed save. Coercion emits one warning.
+
+    Accepted:
+    - ``{"slack_id": "U...", ...}`` with a non-empty string ``slack_id`` — passed
+      through (``name`` and any extra keys kept)
+    - ``{"user_id": "U...", ...}`` whose ``slack_id`` is absent or unusable and whose
+      ``user_id`` is a non-empty string — the ``user_id`` value becomes ``slack_id``,
+      with a warning; other keys except ``slack_id``/``user_id`` are kept
+
+    Any other entry is ignored.
+    """
+    if not raw:
+        return []
+
+    def _usable_id(value: object) -> str | None:
+        return value if isinstance(value, str) and value else None
+
+    result: list[dict] = []
+    coerced = 0
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        if _usable_id(entry.get("slack_id")) is not None:
+            result.append(entry)
+            continue
+        user_id = _usable_id(entry.get("user_id"))
+        if user_id is not None:
+            # Move the near-miss ``user_id`` value under ``slack_id``. Build a new
+            # dict so the original is untouched and the key order reads ``slack_id``
+            # first; drop the source ``user_id`` and any unusable ``slack_id`` so
+            # neither clobbers the resolved id.
+            renamed = {"slack_id": user_id}
+            renamed.update({k: v for k, v in entry.items() if k not in ("user_id", "slack_id")})
+            result.append(renamed)
+            coerced += 1
+    if coerced:
+        logger.warning(
+            'Config: slack.allowed_users has %d entry(ies) with a "user_id" key — '
+            'auto-coerced to {"slack_id": "..."} format. '
+            'Prefer: [{"slack_id": "U...", "name": "..."}]',
+            coerced,
+        )
+    return result
+
+
 def _migrate_workspaces(raw_workspaces: dict) -> dict[str, WorkspaceConfig]:
     """Auto-migrate workspaces from flat or structured format.
 

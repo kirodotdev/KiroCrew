@@ -90,6 +90,7 @@ from kiro_crew.config.sections import (
     _coerce_whatsapp_groups,
     _parse_telegram_accounts,
     _threshold_pct,
+    _validate_allowed_users,
     _validate_telegram_activation,
     _validate_tracking_channels,
     _validated_stt_model,
@@ -525,9 +526,7 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
     section = SectionReader(SlackConfig, slack_data)
     return SlackConfig(
         session_folder=_coerce_session_folder(section.get("session_folder")),
-        allowed_users=[
-            u for u in section.get("allowed_users") if isinstance(u, dict) and u.get("slack_id")
-        ],
+        allowed_users=_validate_allowed_users(section.get("allowed_users")),
         tracking_channels=_validate_tracking_channels(section.get("tracking_channels")),
         open_channels=[c for c in section.get("open_channels") if isinstance(c, str)],
         command=section.get("command"),
