@@ -7,10 +7,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from hypothesis import given, settings
@@ -72,6 +73,13 @@ class MockCronService:
     def __init__(self) -> None:
         self._jobs: list[MockCronJob] = []
         self._next_id = 1
+        # Claim bookkeeping for the manual-run surface: job id -> attached task
+        # (None until attach_run_task hands one in), matching CronService's
+        # "membership means the job is running" reading of its own claims.
+        self._claims: dict[str, Any] = {}
+        self.runs: list[str] = []
+        self.run_duration = 0.0
+        self.run_raises: BaseException | None = None
 
     def add_job(self, **kwargs: Any) -> MockCronJob:
         # Mirror CronService.add_job / _build_job: enabled=False creates the job
@@ -160,6 +168,65 @@ class MockCronService:
 
     async def update_job_async(self, job_id: str, **kwargs: Any) -> MockCronJob | None:
         return self.update_job(job_id, **kwargs)
+
+    # ── Manual-run surface (mirrors CronService's claim bookkeeping) ──
+    #
+    # run_job is a plain ``def`` returning a coroutine, exactly as CronService
+    # declares it: the claim is taken while the call expression is evaluated,
+    # before the caller's create_task has scheduled anything. A mock that made it
+    # ``async def`` would move the claim past the first await and stop testing
+    # the atomicity the real guard depends on.
+
+    def is_running(self, job_id: str) -> bool:
+        return job_id in self._claims
+
+    def discard_finished_run(self, job_id: str) -> bool:
+        task = self._claims.get(job_id)
+        if task is not None and task.done():
+            del self._claims[job_id]
+            return True
+        return False
+
+    def attach_run_task(self, job_id: str, task: Any) -> None:
+        if job_id in self._claims and self._claims[job_id] is None:
+            self._claims[job_id] = task
+
+    # The REAL check-and-claim section, run against this mock's claim
+    # primitives, so the SDK tests exercise the one shared copy rather than a
+    # stand-in that could drift from it.
+    trigger_run = CronService.trigger_run
+    _push_refresh = None
+
+    def run_job(
+        self,
+        job_id: str,
+        *,
+        expected_owner: str | None = None,
+        started: asyncio.Future[bool] | None = None,
+    ) -> Any:
+        if job_id in self._claims:
+            return self._refused()
+        self._claims[job_id] = None
+        self.runs.append(job_id)
+        return self._run_claimed(job_id, started)
+
+    async def _refused(self) -> bool:
+        return False
+
+    async def _run_claimed(
+        self, job_id: str, started: asyncio.Future[bool] | None = None
+    ) -> bool:
+        # The mock's run always spawns, so it reports a start at once, as the
+        # real service does right after it spawns the run; a run_raises failure
+        # is then a failure of a started run.
+        if started is not None and not started.done():
+            started.set_result(True)
+        if self.run_raises is not None:
+            self._claims.pop(job_id, None)
+            raise self.run_raises
+        await asyncio.sleep(self.run_duration)
+        self._claims.pop(job_id, None)
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -1095,3 +1162,721 @@ class TestOwnedCronToggle:
     def test_toggle_requires_boolean(self, service, value):
         with pytest.raises(ValueError, match="boolean"):
             CronSDK("example", service).set_enabled("missing", value)
+
+
+class TestOwnedCronManualRun:
+    """``run_job_async``: run an owned job off schedule, without mutating it.
+
+    The verb exists because an app observes work is ready in its OWN loop, not
+    on the job's schedule, and the only lever before it was lowering
+    ``every_secs`` until the next-due calculation landed in the past -- which
+    persists a transient intent and is floored at 60s.
+    """
+
+    @pytest.fixture
+    def svc(self) -> MockCronService:
+        return MockCronService()
+
+    @pytest.fixture
+    def sdk(self, svc: MockCronService) -> CronSDK:
+        return CronSDK("example", svc)
+
+    async def _owned(self, sdk: CronSDK, **kwargs: Any) -> MockCronJob:
+        """Create the owned job through the async form: these tests run ON the
+        loop, where the synchronous ``add_job`` is refused by design."""
+        return await sdk.add_job_async(
+            name="example/poll", message="go", every_secs=3600, **kwargs
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_owned_job_is_dispatched(self, svc, sdk):
+        """A run is claimed and started, and the call reports the dispatch."""
+        job = await self._owned(sdk)
+        assert await sdk.run_job_async(job.id) is True
+        assert svc.runs == [job.id]
+
+    @pytest.mark.asyncio
+    async def test_the_schedule_is_not_mutated_by_a_run(self, svc, sdk):
+        """The whole point of the verb: a one-off run leaves the schedule alone.
+
+        A fast-forward implemented by lowering ``every_secs`` would show up here
+        as a changed interval or an ``update_job`` call, which is what this
+        pins against.
+        """
+        job = await self._owned(sdk)
+        before = (job.every_secs, job.cron_expr, job.enabled, job.user_paused)
+        await sdk.run_job_async(job.id)
+        assert (job.every_secs, job.cron_expr, job.enabled, job.user_paused) == before
+
+    @pytest.mark.asyncio
+    async def test_a_second_run_is_refused_while_one_is_in_flight(self, svc, sdk):
+        """An overlapping run is refused rather than orphaning the first task."""
+        job = await self._owned(sdk)
+        svc.run_duration = 5.0
+        first = asyncio.create_task(sdk.run_job_async(job.id))
+        await asyncio.sleep(0)  # let the first dispatch take the claim
+        assert await sdk.run_job_async(job.id) is False
+        assert svc.runs == [job.id]  # the refusal never reached run_job
+        assert await first is True
+        svc._claims.clear()
+
+    @pytest.mark.asyncio
+    async def test_a_finished_run_does_not_block_the_next_one(self, svc, sdk):
+        """A claim left behind by an already-finished task is dropped, not obeyed.
+
+        Without the ``discard_finished_run`` call the guard alone would refuse
+        every later run until the reaper sweep met the finished task.
+        """
+        job = await self._owned(sdk)
+        done: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+        done.set_result(True)
+        svc._claims[job.id] = done  # a stale claim tracking a finished task
+        assert await sdk.run_job_async(job.id) is True
+        assert svc.runs == [job.id]
+
+    @pytest.mark.asyncio
+    async def test_foreign_and_missing_ids_refuse_and_audit(self, svc, monkeypatch):
+        """Ownership is enforced before anything is claimed or dispatched."""
+        from unittest.mock import Mock
+
+        audit = Mock()
+        monkeypatch.setattr("kiro_crew.apps.cron_sdk.sel", lambda: audit)
+        other = await CronSDK("other", svc).add_job_async(
+            name="other/poll", message="go", every_secs=3600
+        )
+        sdk = CronSDK("example", svc)
+        for job_id in [other.id, "missing"]:
+            with pytest.raises(PermissionError):
+                await sdk.run_job_async(job_id)
+            kwargs = audit.log_api_access.call_args.kwargs
+            assert (kwargs["operation"], kwargs["outcome"]) == ("cron_run_job", "denied")
+        assert svc.runs == []
+
+    @pytest.mark.asyncio
+    async def test_dispatch_and_refusal_are_both_audited(self, svc, sdk, monkeypatch):
+        """Both outcomes leave a record, so a refusal is not a silent no-op."""
+        from unittest.mock import Mock
+
+        job = await self._owned(sdk)
+        audit = Mock()
+        monkeypatch.setattr("kiro_crew.apps.cron_sdk.sel", lambda: audit)
+        svc.run_duration = 5.0
+        assert await sdk.run_job_async(job.id) is True  # returns once started
+        assert audit.log_api_access.call_args.kwargs["outcome"] == "ok"
+        assert await sdk.run_job_async(job.id) is False  # the first still runs
+        assert audit.log_api_access.call_args.kwargs["outcome"] == "refused"
+        svc._claims.clear()
+
+    @pytest.mark.asyncio
+    async def test_a_failing_run_is_logged_against_the_app(self, svc, sdk, caplog):
+        """Nobody awaits the dispatched run, so its failure is consumed here.
+
+        Left unconsumed it would surface as asyncio's "Task exception was never
+        retrieved" with no app or job named.
+        """
+        job = await self._owned(sdk)
+        svc.run_raises = RuntimeError("boom")
+        with caplog.at_level(logging.ERROR, logger="kiro_crew.apps.cron_sdk"):
+            assert await sdk.run_job_async(job.id) is True
+            for _ in range(200):  # the done callback lands on a later loop pass
+                if caplog.text:
+                    break
+                await asyncio.sleep(0.01)
+        assert "example" in caplog.text and job.id in caplog.text
+        assert "boom" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_an_app_triggered_run_refreshes_the_schedule_page(self, svc, sdk):
+        """A run an app starts shows up on the Schedule page like a Run click.
+
+        The refresh lives in the shared ``CronService.trigger_run``; while the
+        SDK kept its own copy of the section it had no refresh, so an
+        app-triggered run started invisibly.
+        """
+        from unittest.mock import Mock
+
+        job = await self._owned(sdk)
+        svc._push_refresh = Mock()
+        assert await sdk.run_job_async(job.id) is True
+        svc._push_refresh.assert_called_once_with("crons")
+
+    @pytest.mark.asyncio
+    async def test_the_sdk_claims_through_the_shared_section(self, svc, sdk):
+        """The verb defers the guard and the claim to ``CronService.trigger_run``.
+
+        One copy of the section, shared with the manual-run route, so a fix to
+        it cannot land at one trigger and miss the other.
+        """
+        from unittest.mock import Mock
+
+        job = await self._owned(sdk)
+        svc.trigger_run = Mock(return_value=None)  # the shared section refuses
+        assert await sdk.run_job_async(job.id) is False
+        svc.trigger_run.assert_called_once_with(
+            job.id, expected_owner="app:example", started=ANY
+        )
+        assert svc.runs == []
+
+    def test_there_is_no_sync_sibling(self):
+        """Async-only on purpose: a sync form would return an un-awaited coroutine.
+
+        Running a job is not a store write a loop-less caller can block on --
+        ``CronService.run_job`` claims on the loop and spawns a loop task -- so a
+        ``run_job`` added for symmetry with the other verbs would hand an app a
+        coroutine that never runs.
+        """
+        assert not hasattr(CronSDK, "run_job")
+
+    @pytest.mark.asyncio
+    async def test_a_real_run_reaches_execution_and_keeps_the_interval(self, tmp_path):
+        """Against the real service: the job fires and its interval is unchanged."""
+        fired: list[str] = []
+
+        async def on_job(job: Any) -> None:
+            fired.append(job.id)
+
+        service = CronService(base_dir=tmp_path, on_job=on_job)
+        service._dir.mkdir(parents=True, exist_ok=True)
+        sdk = CronSDK("example", service)
+        job = await sdk.add_job_async(name="example/poll", message="go", every_secs=3600)
+
+        assert await sdk.run_job_async(job.id) is True
+
+        # Wait for the run's RESULT to reach the store, not for the callback to
+        # be entered. ``fired`` fills inside the callback, but ``last_status``
+        # is set only after the callback returns and is persisted after that,
+        # so a wait on ``fired`` raced the persist and lost on a slow disk.
+        async def _saved_job() -> dict[str, Any]:
+            raw = await asyncio.to_thread(service._path.read_text, encoding="utf-8")
+            return json.loads(raw)["jobs"][0]
+
+        saved = await _saved_job()
+        for _ in range(500):  # the dispatched run owns its own task
+            if saved.get("last_status") is not None:
+                break
+            await asyncio.sleep(0.01)
+            saved = await _saved_job()
+        assert fired == [job.id]
+        assert saved["schedule"] == {
+            "kind": "every",
+            "every_secs": 3600,
+            "at_ts": None,
+            "cron_expr": None,
+        }
+        assert saved["id"] == job.id
+        assert saved["last_status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_a_real_foreign_job_is_refused_without_touching_the_store(
+        self, tmp_path
+    ):
+        """Ownership is checked against the store, and a refusal writes nothing."""
+        service = CronService(base_dir=tmp_path)
+        service._dir.mkdir(parents=True, exist_ok=True)
+        other = await CronSDK("other", service).add_job_async(
+            name="other/poll", message="go", every_secs=3600
+        )
+        before = await asyncio.to_thread(service._path.read_bytes)
+        with pytest.raises(PermissionError):
+            await CronSDK("example", service).run_job_async(other.id)
+        assert await asyncio.to_thread(service._path.read_bytes) == before
+
+    @pytest.mark.asyncio
+    async def test_a_stale_cache_cannot_start_another_owners_job(self, tmp_path, monkeypatch):
+        """Ownership is re-checked on the job the run resolves from the store.
+
+        ``_assert_owned`` reads the cache-only snapshot, which can trail the
+        store by a poll interval. Here the cache still says this app owns the
+        job while the store on disk records another owner: the run must not
+        start, and its claim must be released so the job is not left occupied.
+        The same job with its owner unchanged runs, so this is the owner check
+        refusing and not a run that never worked. The refusal is SEL-audited as
+        a ``cron_run_job`` denial, because the SDK had already audited the
+        dispatch as ``ok`` off its cached check.
+        """
+        from unittest.mock import Mock
+
+        audit = Mock()
+        monkeypatch.setattr("kiro_crew.cron.sel.sel", lambda: audit)
+        fired: list[str] = []
+
+        async def on_job(job: Any) -> None:
+            fired.append(job.id)
+
+        service = CronService(base_dir=tmp_path, on_job=on_job)
+        service._dir.mkdir(parents=True, exist_ok=True)
+        sdk = CronSDK("example", service)
+        job = await sdk.add_job_async(name="example/poll", message="go", every_secs=3600)
+
+        def _rewrite_owner(owner: str) -> None:
+            data = json.loads(service._path.read_text(encoding="utf-8"))
+            data["jobs"][0]["created_by"] = owner
+            service._path.write_text(json.dumps(data), encoding="utf-8")
+
+        # Another writer changes the owner on disk; the cache is not refreshed.
+        await asyncio.to_thread(_rewrite_owner, "app:other")
+        assert service.get_job(job.id).created_by == "app:example"
+
+        # The call answers only after the re-check, so it reports the refusal
+        # rather than the claim. Bounded: a refusal that left the answer
+        # unresolved would hang here instead of failing.
+        assert await asyncio.wait_for(sdk.run_job_async(job.id), 10) is False
+        assert not service.is_running(job.id)  # the claim was released
+        assert fired == []  # and the other owner's job never executed
+        denials = [
+            c.kwargs
+            for c in audit.log_api_access.call_args_list
+            if c.kwargs.get("outcome") == "denied"
+        ]
+        assert [(d["caller"], d["operation"], d["resources"]) for d in denials] == [
+            ("app:example", "cron_run_job", job.id)
+        ]
+
+        # Control arm: with the owner back, the same path does run the job.
+        # The refused run's refresh synced the cache to "app:other", so read
+        # the store once more before the SDK's cache-only check.
+        await asyncio.to_thread(_rewrite_owner, "app:example")
+        await service.get_job_async(job.id)
+        assert await asyncio.wait_for(sdk.run_job_async(job.id), 10) is True
+        for _ in range(500):
+            if fired:
+                break
+            await asyncio.sleep(0.01)
+        assert fired == [job.id]
+
+    @pytest.mark.asyncio
+    async def test_a_contended_store_does_not_fall_back_to_the_cache(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """The owner re-check fails closed when the store lock is contended.
+
+        A plain manual-run refresh degrades to the cache when it cannot lock
+        the store, but that cache is what ``_assert_owned`` already read. Here
+        the store records another owner and the lock is contended: the run must
+        not start, must release its claim, and must leave a denial record.
+        """
+        from contextlib import contextmanager
+        from unittest.mock import Mock
+
+        from kiro_crew.cron_service.store import CronStoreBusy
+
+        fired: list[str] = []
+
+        async def on_job(job: Any) -> None:
+            fired.append(job.id)
+
+        service = CronService(base_dir=tmp_path, on_job=on_job)
+        service._dir.mkdir(parents=True, exist_ok=True)
+        sdk = CronSDK("example", service)
+        job = await sdk.add_job_async(name="example/poll", message="go", every_secs=3600)
+
+        def _rewrite_owner(owner: str) -> None:
+            data = json.loads(service._path.read_text(encoding="utf-8"))
+            data["jobs"][0]["created_by"] = owner
+            service._path.write_text(json.dumps(data), encoding="utf-8")
+
+        await asyncio.to_thread(_rewrite_owner, "app:other")
+
+        @contextmanager
+        def _contended():
+            raise CronStoreBusy("contended")
+            yield  # pragma: no cover
+
+        monkeypatch.setattr(service, "_file_lock", _contended)
+        audit = Mock()
+        monkeypatch.setattr("kiro_crew.cron.sel.sel", lambda: audit)
+
+        with caplog.at_level(logging.ERROR, logger="kiro_crew.apps.cron_sdk"):
+            # A busy store is reported as no run, so the app can try again.
+            assert await asyncio.wait_for(sdk.run_job_async(job.id), 10) is False
+            for _ in range(500):
+                if not service.is_running(job.id) and caplog.text:
+                    break
+                await asyncio.sleep(0.01)
+        assert not service.is_running(job.id)  # the claim was released
+        assert fired == []  # the cached owner was not trusted
+        denials = [
+            c.kwargs
+            for c in audit.log_api_access.call_args_list
+            if c.kwargs.get("outcome") == "denied"
+        ]
+        assert [(d["caller"], d["resources"]) for d in denials] == [("app:example", job.id)]
+        assert "store busy" in denials[0]["error"]
+        assert job.id in caplog.text  # the SDK logs the failed run against the job
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_store_does_not_fall_back_to_the_cache(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """The owner re-check fails closed when the store cannot be READ at all.
+
+        The sibling above covers the contended lock. This is the OTHER way the
+        strict refresh fails to produce store-backed state, and the quiet one:
+        ``_sync`` catches the ``OSError`` from ``read_bytes``, latches
+        ``_load_failed`` and RETURNS normally, deliberately keeping the cached
+        jobs so an unsaved reaper mutation is not lost. The snapshot therefore
+        comes back indistinguishable from a successful read of the store, and
+        what it carries is the very cache ``_assert_owned`` already trusted.
+
+        The harm that makes this more than hygiene: on disk the job has been
+        reassigned to another owner, so the former owner's ``expected_owner``
+        matches the stale cache and nothing else. Without the refusal the
+        re-check passes on that cache and this app starts a job it does not
+        own, with nothing in the log or the audit to say it happened.
+
+        Injected at the filesystem boundary rather than by raising
+        ``CronStoreUnreadable``, so the real ``_sync`` -> latch -> refusal chain
+        runs. A genuinely corrupt document would NOT pin this: ``_load``'s parse
+        paths empty the job list, so the run would be refused by the
+        missing-job branch and the test would pass with the fix reverted.
+        """
+        import contextlib
+        import errno
+        from unittest.mock import Mock
+
+        fired: list[str] = []
+
+        async def on_job(job: Any) -> None:
+            fired.append(job.id)
+
+        service = CronService(base_dir=tmp_path, on_job=on_job)
+        service._dir.mkdir(parents=True, exist_ok=True)
+        sdk = CronSDK("example", service)
+        job = await sdk.add_job_async(name="example/poll", message="go", every_secs=3600)
+
+        def _rewrite_owner(owner: str) -> None:
+            data = json.loads(service._path.read_text(encoding="utf-8"))
+            data["jobs"][0]["created_by"] = owner
+            service._path.write_text(json.dumps(data), encoding="utf-8")
+
+        # Another writer reassigns the job, and the cache is not told.
+        await asyncio.to_thread(_rewrite_owner, "app:other")
+        assert [j.created_by for j in service.list_jobs(True)] == [
+            "app:example"
+        ], "precondition: the cache must still name THIS app as the owner"
+
+        @contextlib.contextmanager
+        def _read_failures_on(target: Path):
+            """``read_bytes()`` raises EIO for *target* only; writes keep working."""
+            real = Path.read_bytes
+
+            def failing(self: Path) -> bytes:
+                if self == target:
+                    raise OSError(errno.EIO, "Input/output error")
+                return real(self)
+
+            Path.read_bytes = failing  # type: ignore[method-assign]
+            try:
+                yield
+            finally:
+                Path.read_bytes = real  # type: ignore[method-assign]
+
+        audit = Mock()
+        monkeypatch.setattr("kiro_crew.cron.sel.sel", lambda: audit)
+
+        with _read_failures_on(service._path):
+            with caplog.at_level(logging.ERROR, logger="kiro_crew.apps.cron_sdk"):
+                # An unreadable store is reported as no run, like a busy one.
+                assert await asyncio.wait_for(sdk.run_job_async(job.id), 10) is False
+                for _ in range(500):
+                    if not service.is_running(job.id) and caplog.text:
+                        break
+                    await asyncio.sleep(0.01)
+            assert service._load_failed, "the read failure itself must set the latch"
+
+        assert not service.is_running(job.id)  # the claim was released
+        assert fired == []  # the cached owner was not trusted
+        denials = [
+            c.kwargs
+            for c in audit.log_api_access.call_args_list
+            if c.kwargs.get("outcome") == "denied"
+        ]
+        assert [(d["caller"], d["resources"]) for d in denials] == [("app:example", job.id)]
+        assert "store unreadable" in denials[0]["error"]
+        assert job.id in caplog.text  # the SDK logs the failed run against the job
+
+    @pytest.mark.asyncio
+    async def test_a_missing_store_does_not_fall_back_to_the_cache(self, tmp_path):
+        """The owner re-check fails closed when the store file is GONE.
+
+        The third way a strict refresh fails to produce store-backed state, and
+        the only one neither sibling above covers. A missing store is not an
+        unreadable one, so ``_sync`` takes its missing-file branch: it CLEARS
+        the ``_load_failed`` latch and returns, keeping the cached jobs so an
+        unsaved reaper mutation survives. ``raise_if_store_unreadable`` then has
+        nothing to fire on and the cache reaches the re-check looking exactly
+        like a store-backed read.
+
+        The harm is worse than the unreadable case. The run does not merely
+        start on a cache nothing confirmed: ``_merge_job_result`` saves when it
+        ends, so the cached job is written back and a job an external writer
+        deleted is resurrected.
+        """
+        fired: list[str] = []
+
+        async def on_job(job: Any) -> None:
+            fired.append(job.id)
+
+        service = CronService(base_dir=tmp_path, on_job=on_job)
+        service._dir.mkdir(parents=True, exist_ok=True)
+        sdk = CronSDK("example", service)
+        job = await sdk.add_job_async(name="example/poll", message="go", every_secs=3600)
+
+        # An external writer removes the store, and the cache is not told.
+        await asyncio.to_thread(service._path.unlink)
+        assert [j.id for j in service.list_jobs(True)] == [
+            job.id
+        ], "precondition: the cache must still hold the job the store no longer has"
+
+        # Nothing in the store backs this app's ownership, so no run starts.
+        assert await asyncio.wait_for(sdk.run_job_async(job.id), 10) is False
+        for _ in range(500):
+            if not service.is_running(job.id):
+                break
+            await asyncio.sleep(0.01)
+
+        assert not service.is_running(job.id)  # the claim was released
+        assert fired == []  # the cached job was not trusted
+        assert not service._path.exists()  # and the deleted job was not resurrected
+
+    @pytest.mark.asyncio
+    async def test_a_run_parked_in_its_store_refresh_is_tracked(self, tmp_path):
+        """The dispatched wrapper is attached to the claim before it can park.
+
+        ``run_job``'s coroutine spends its first phase in an offloaded store
+        refresh, and only after that does it set the claim's task to the inner
+        run. ``attach_run_task`` is what occupies that window: without it the
+        claim carries no task at all while the refresh is in flight, so
+        ``stop()`` (which cancels and awaits exactly the claims' tasks) and
+        ``discard_finished_run`` (which asks whether the claim's task is done)
+        both have nothing to act on for a run that is genuinely in progress.
+
+        This is the mutation pin for that one line: deleting
+        ``attach_run_task`` passes every other test in this class.
+        """
+        service = CronService(base_dir=tmp_path)
+        service._dir.mkdir(parents=True, exist_ok=True)
+        sdk = CronSDK("example", service)
+        job = await sdk.add_job_async(name="example/poll", message="go", every_secs=3600)
+
+        import threading
+
+        refreshing = threading.Event()  # the worker thread reached the refresh
+        release = threading.Event()  # the test lets the refresh finish
+        real_snapshot = service._synced_snapshot
+
+        def parked_snapshot(*args: Any, **kwargs: Any) -> Any:
+            refreshing.set()
+            release.wait(10)
+            return real_snapshot(*args, **kwargs)
+
+        service._synced_snapshot = parked_snapshot  # type: ignore[method-assign]
+        # The call waits for the refresh it is parked in, so it runs as a task.
+        call = asyncio.create_task(sdk.run_job_async(job.id))
+        for _ in range(500):  # the refresh runs on a worker thread
+            if refreshing.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert refreshing.is_set()
+
+        tracked = service._claims[job.id].task
+        assert tracked is not None  # reds when attach_run_task is deleted
+        assert not tracked.done()
+        # The healthy side: once the refresh completes the run finishes and the
+        # claim is released, so the pin is not passing on a permanently stuck run.
+        assert not call.done()  # no answer before the refresh has finished
+        release.set()
+        assert await asyncio.wait_for(call, 10) is True
+        await asyncio.wait_for(tracked, 10)
+        for _ in range(500):
+            if job.id not in service._claims:
+                break
+            await asyncio.sleep(0.01)
+        assert job.id not in service._claims
+
+    @pytest.mark.asyncio
+    async def test_a_run_cancelled_before_its_first_step_is_not_reported_started(
+        self, tmp_path, monkeypatch
+    ):
+        """A run taken before its first step answers False, not True.
+
+        ``stop()`` at shutdown or ``cancel()`` can cancel the spawned run after
+        ``create_task`` but before its first timeslice. Such a run executes
+        nothing and writes no history, so a ``True`` resolved at spawn would
+        tell the app a run started that never did. ``started`` is resolved by
+        the run's own first step instead, and the wrapper's done callback
+        answers False when that step never comes.
+        """
+        fired: list[str] = []
+
+        async def on_job(job: Any) -> None:
+            fired.append(job.id)
+
+        service = CronService(base_dir=tmp_path, on_job=on_job)
+        service._dir.mkdir(parents=True, exist_ok=True)
+        sdk = CronSDK("example", service)
+        job = await sdk.add_job_async(name="example/poll", message="go", every_secs=3600)
+
+        real_create_task = asyncio.create_task
+
+        def create_then_cancel(coro: Any, *args: Any, **kwargs: Any) -> Any:
+            # Stand-in for stop() landing in the gap: the inner run's task is
+            # cancelled before the loop gives it its first step.
+            task = real_create_task(coro, *args, **kwargs)
+            if getattr(coro, "__qualname__", "").endswith("_run_job_isolated"):
+                task.cancel()
+            return task
+
+        # A scoped context, not ``monkeypatch.undo()``: the autouse fixtures
+        # patch their MCP-approval and session-lock globals onto this same
+        # shared instance, so undoing it would restore those too and run the
+        # control call below with its fixture isolation already removed. The
+        # context owns only this one replacement and reverts only that.
+        with monkeypatch.context() as patched:
+            patched.setattr(asyncio, "create_task", create_then_cancel)
+            assert await asyncio.wait_for(sdk.run_job_async(job.id), 10) is False
+
+        assert fired == []
+        for _ in range(500):
+            if job.id not in service._claims:
+                break
+            await asyncio.sleep(0.01)
+        assert job.id not in service._claims
+        raw = await asyncio.to_thread(service._path.read_text, encoding="utf-8")
+        assert json.loads(raw)["jobs"][0].get("last_status") is None
+        # The healthy side: the same job, uncancelled, starts and reports True.
+        assert await asyncio.wait_for(sdk.run_job_async(job.id), 10) is True
+
+    @pytest.mark.asyncio
+    async def test_a_caller_cancelled_while_waiting_still_leaves_an_audit(
+        self, tmp_path, monkeypatch
+    ):
+        """The dispatch is audited before the wait, so cancelling the caller
+        cannot leave a detached run with no ``cron_run_job`` record.
+        """
+        import threading
+        from unittest.mock import Mock
+
+        service = CronService(base_dir=tmp_path)
+        service._dir.mkdir(parents=True, exist_ok=True)
+        sdk = CronSDK("example", service)
+        job = await sdk.add_job_async(name="example/poll", message="go", every_secs=3600)
+
+        audit = Mock()
+        monkeypatch.setattr("kiro_crew.apps.cron_sdk.sel", lambda: audit)
+        refreshing = threading.Event()
+        release = threading.Event()
+        real_snapshot = service._synced_snapshot
+
+        def parked_snapshot(*args: Any, **kwargs: Any) -> Any:
+            refreshing.set()
+            release.wait(10)
+            return real_snapshot(*args, **kwargs)
+
+        service._synced_snapshot = parked_snapshot  # type: ignore[method-assign]
+        call = asyncio.create_task(sdk.run_job_async(job.id))
+        for _ in range(500):
+            if refreshing.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert refreshing.is_set()
+        tracked = service._claims[job.id].task
+
+        call.cancel()  # a timeout around the caller, mid-wait
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        outcomes = [
+            c.kwargs["outcome"]
+            for c in audit.log_api_access.call_args_list
+            if c.kwargs.get("operation") == "cron_run_job"
+        ]
+        assert outcomes == ["ok"]  # reds when the audit follows the wait
+        # The run is detached from the caller and goes on regardless.
+        release.set()
+        await asyncio.wait_for(tracked, 10)
+
+    @pytest.mark.asyncio
+    async def test_a_disabled_apps_job_does_not_run_however_it_is_triggered(
+        self, tmp_path
+    ):
+        """Measures the claim the docstring and the specs make about the gate.
+
+        Both say a manual run takes the same cron callback, so
+        ``vet_job_at_fire_time`` still decides execution and a job owned by a
+        DISABLED app does not run however it was triggered. That is a
+        consequence an app author can act on, so it is measured through the real
+        gateway callback and the real gate rather than restated.
+
+        Both directions are asserted: disabled refuses and records the refusal,
+        enabled executes. A one-directional test would also pass on a gate that
+        refused everything.
+        """
+        from test_cron_gateway_integration import _make_gw
+
+        app = "example"
+
+        async def _callback_from_gateway() -> Any:
+            """The gateway's own cron callback, captured as it builds it."""
+            gw = _make_gw()
+            captured: dict[str, Any] = {}
+
+            def capture_cron(on_job: Any = None, **kwargs: Any) -> Any:
+                captured["cb"] = on_job
+                svc = MagicMock()
+                svc.start = AsyncMock()
+                svc.remove_job_async = AsyncMock(return_value=True)
+                return svc
+
+            with patch("kiro_crew.slack.gateway.CronService") as mock_cron_cls:
+                mock_cron_cls.create = AsyncMock(side_effect=capture_cron)
+                await gw._init_cron()
+            assert captured.get("cb") is not None
+            return captured["cb"]
+
+        async def _run_with_app_enabled(enabled: bool) -> tuple[Any, Any]:
+            service = CronService(base_dir=tmp_path / str(enabled), on_job=await _callback_from_gateway())
+            service._dir.mkdir(parents=True, exist_ok=True)
+            sdk = CronSDK(app, service)
+            job = await sdk.add_job_async(
+                name=f"{app}/dispatch", message="", command="echo hello", every_secs=3600
+            )
+            # ``run_job_async`` answers once the run has STARTED, so neither it
+            # nor ``mock_run.called`` means the callback has finished recording.
+            # The run's own task does, so capture it where the dispatch attaches
+            # it and await that instead of sleeping a fixed delay: waiting a
+            # guessed 50ms let the patch context close over a still-live
+            # detached run, which then raced teardown.
+            dispatched: list[Any] = []
+            real_attach = service.attach_run_task
+
+            def capture_attach(job_id: str, task: Any) -> None:
+                dispatched.append(task)
+                real_attach(job_id, task)
+
+            service.attach_run_task = capture_attach  # type: ignore[method-assign]
+            with (
+                patch(
+                    "kiro_crew.slack.gateway.run_command_sandboxed",
+                    return_value={"status": "ok", "output": "hello\n", "exit_code": 0},
+                ) as mock_run,
+                patch("kiro_crew.slack.gateway.sel"),
+                # Neutralize the sibling fire-time gates so only the app gate decides.
+                patch(
+                    "kiro_crew.mcp_cron._vet_cron_capability_governance", return_value=None
+                ),
+                patch("kiro_crew.mcp_cron._vet_command_governance", return_value=None),
+                patch("kiro_crew.apps.manager.app_enabled_state", return_value=enabled),
+            ):
+                assert await sdk.run_job_async(job.id) is True
+                assert dispatched  # reds when the dispatch stops owning a task
+                await asyncio.wait_for(dispatched[0], 10)
+            return job, mock_run
+
+        job, mock_run = await _run_with_app_enabled(False)
+        mock_run.assert_not_called()  # the manual run did not execute
+        assert job.last_status == "error"
+        assert app in (job.last_error or "")
+        assert "disabled" in (job.last_error or "")
+
+        job, mock_run = await _run_with_app_enabled(True)
+        mock_run.assert_called_once()  # the falsified direction: the gate still passes work

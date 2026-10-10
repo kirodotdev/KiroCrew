@@ -39,6 +39,12 @@ event loop.
   ``CronStoreBusy`` — never a partial state that leaves some app jobs orphaned
   and still ENABLED. ``CronStoreBusy`` propagates so cleanup failure is
   reported, not masked as 0.
+* ``run_job_async`` has NO sync sibling, and that is not an omission. The other
+  mutators are store writes a loop-less caller can block on; running a job is
+  not a store write. ``CronService.run_job`` takes the run claim on the event
+  loop and spawns the run as a loop task, so there is nothing for a loop-less
+  caller to await. It returns once the run has started or been refused, and
+  does not wait for the run to finish.
 * CronService uses atomic_write (write-to-tmp + os.replace) for persistence;
   cross-process safety is handled by its ``fcntl.flock`` store lock.
 * Timer (re)arming after a mutation is owned by CronService itself (via
@@ -50,6 +56,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from functools import partial
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
@@ -725,6 +732,121 @@ class CronSDK:
             resources=job_id,
         )
         logger.info("App %s updated cron job: %s", self._app_name, job_id)
+
+    # ── Run now (off schedule) ──
+
+    async def run_job_async(self, job_id: str) -> bool:
+        """Run a job this app owns NOW, regardless of its schedule.
+
+        An app that owns a scheduled job observes in its own loop that there is
+        work ready, and that observation does not happen on the job's schedule.
+        Without this verb the only lever is to lower ``every_secs`` until the
+        next-due calculation lands in the past, which mutates the schedule to
+        express a one-off action, persists a transient intent, and cannot react
+        faster than ``_MIN_INTERVAL_SECS`` (60s). This verb says "run now" and
+        leaves the schedule alone.
+
+        **Async only, and there is no sync sibling.** The other mutators have a
+        synchronous form because they are store writes a loop-less caller (CLI,
+        MCP process, worker thread) can block on. This one is not a store write:
+        ``CronService.run_job`` takes the run claim on the event loop and spawns
+        the run as a loop task, so a loop-less caller has no loop to spawn it on
+        and nothing to await. An app hook already runs on the gateway loop, which
+        is the only context this verb is for.
+
+        The returned bool reports whether a run really STARTED, not whether it
+        finished. The call waits only for the run's store refresh and the checks
+        on the job it resolves, then returns; the run itself goes on in the
+        background. This is a stronger answer than the dashboard Run button
+        gives, which reports a dispatch: the ownership check above reads the
+        cache, and the run re-checks the job on disk before it starts, so a
+        ``True`` given before that re-check could describe a run that never
+        happened and leave the app no reason to try again.
+
+        * ``True`` — the run started. The outcome lands in the job's own
+          history, including a refusal by the fire-time gate described below.
+        * ``False`` — no run started. Either a run of this job is already in
+          flight, or the run was refused before it started: the job is missing
+          from the store (including a store file that is gone), the store now
+          records a different owner, or the store could not be read to re-check
+          the owner (too busy to lock, or unreadable). Those write nothing to
+          the job's history. One case does write: a :meth:`CronService.cancel`
+          landing while this call is parked in its store refresh takes the
+          claim and records a ``cancelled`` entry, and this call then reports
+          that no run started. Refusing an
+          overlapping run is deliberate: a second run would orphan the first
+          task's handle, leaving nothing able to track, cancel or join it. A
+          busy store is worth retrying; an unreadable one stays refused until
+          the file is moved aside, and the other refusals are not worth
+          retrying.
+
+        Raises ``PermissionError`` (SEL-audited) for a job owned by another app
+        or absent from the store, exactly as the other owned verbs do. That
+        check reads the cache, so a job deleted after it but before the run's
+        store refresh is not raised on: the call returns ``False`` instead.
+
+        This is not a way around the gates a scheduled fire passes. A manual run
+        goes through the same cron callback, so ``vet_job_at_fire_time`` still
+        decides whether it executes -- a job owned by a DISABLED app does not
+        run however it was triggered. A user-PAUSED job can be run on demand,
+        matching the dashboard's Run button on a paused row: pausing stops the
+        schedule, it does not revoke the owner's ability to run it.
+        """
+        self._assert_owned(job_id, "cron_run_job")
+        # The check-and-claim section is CronService.trigger_run, shared with
+        # the manual-run route so the two cannot drift. It is await-free, and so
+        # is this method between the ownership check and that call, so the
+        # guard and the claim stay atomic against the due-scan and a second
+        # trigger. It also tells the Schedule page a run started.
+        # expected_owner makes the run re-check ownership on the job it resolves
+        # from the refreshed store: _assert_owned read the cache, which can be
+        # up to a poll interval stale. started reports whether that re-check
+        # passed and the run really began, so the answer below is not a claim
+        # the run may go on to refuse.
+        started: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+        task = self._cron.trigger_run(
+            job_id, expected_owner=self._owner_prefix, started=started
+        )
+        if task is None:
+            self._audit_run(job_id, "refused")
+            return False
+        # Nobody awaits the wrapper, so a failure in it would surface only as
+        # asyncio's "Task exception was never retrieved" with no owner named.
+        # Consume it here and log it against the app and job instead.
+        task.add_done_callback(partial(self._log_run_outcome, job_id))
+        # Audit the dispatch BEFORE waiting. The run is detached: if this
+        # caller is cancelled during the wait (a timeout around the call), the
+        # run still goes on, and an "ok" written only after the wait would
+        # never be written. A run the store then refuses gets a second record
+        # below, and the service writes its own "denied" for an owner it could
+        # not confirm.
+        self._audit_run(job_id, "ok")
+        # The claim is taken, so the await-free section is over and waiting is
+        # safe. The future is always resolved: True by the run's first step,
+        # False from the task's done callback when it ends before that step.
+        if not await started:
+            self._audit_run(job_id, "refused")
+            return False
+        return True
+
+    def _log_run_outcome(self, job_id: str, task: asyncio.Task[Any]) -> None:
+        """Consume the dispatched run's exception so it is logged, not orphaned."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error(
+                "App %s manual cron run failed: %s", self._app_name, job_id, exc_info=exc
+            )
+
+    def _audit_run(self, job_id: str, outcome: str) -> None:
+        sel().log_api_access(
+            caller=f"app:{self._app_name}",
+            operation="cron_run_job",
+            outcome=outcome,
+            resources=job_id,
+        )
+        logger.info("App %s ran cron job: %s (%s)", self._app_name, job_id, outcome)
 
     # ── Remove all (atomic) ──
 
