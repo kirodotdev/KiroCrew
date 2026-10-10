@@ -1588,7 +1588,19 @@ export default function MembersPage() {
   // desktop the roster column is the only way out of `/members?team=<id>` and
   // stays beside the pane there, pinned or not.
   const [rosterPinned, setRosterPinned] = useState(false)
-  const rosterShown = !activeName || rosterPinned
+  // A desktop landing that has not opened its crewmate YET. The URL sync
+  // effect below opens one on every desktop visit that names no team (the
+  // URL's member, else the remembered or last-chatted one), but an effect runs
+  // after paint, so `activeName` is '' on the first frame even when the
+  // roster is cached. Read as "nothing open", that frame drew the full roster
+  // column and the next one folded it: the flash on every switch to this tab.
+  // Treated as already folded until the open lands. Not pending once the
+  // effect can open no one: a failed read, an empty roster (the hero), a
+  // phone (no auto-open), or a team view.
+  const landingPending =
+    !isMobile && !activeName && !urlTeam && !loadError && !(loaded && hasNoCrewmates(members))
+  const rosterFolded = (!!activeName || landingPending) && !rosterPinned
+  const rosterShown = !rosterFolded
   const beside = panelSitsBeside({ winW, rosterW: rosterShown ? roster.width : 0, isMobile })
   // On a phone the overlay must FILL its scrim. SidePanel's own mobile
   // fallback is `width: 100%`, which cannot resolve here: the overlay's inner
@@ -2036,6 +2048,13 @@ export default function MembersPage() {
   const dismissDefaultAgentNotice = useCallback(() => setDefaultAgentDismissedAt(defaultAgentRead.errorUpdatedAt), [defaultAgentRead.errorUpdatedAt])
   // Settled = an answer or a terminal failure (retries keep it pending).
   const defaultAgentSettled = defaultAgentRead.data !== undefined || defaultAgentRead.isError
+  // The rows wait for the team read: one team turns the flat list into
+  // groups, so a list drawn before it answered reshuffled under team headers
+  // a beat later. The default-crew read does not hold them: the listing rule
+  // reads an unknown default as '' and a failed one as list-everything, by
+  // design. A cached read (any return to this tab) is settled on the first
+  // render, so this holds only a cold load.
+  const rowsReady = teamsQ.data !== undefined || teamsQ.isError
   const defaultAgent: string | null = defaultAgentFailed ? null : defaultAgentRead.data ?? ''
   // Named apart from `rosterQuery` above: that one is the React Query READ of
   // the roster, this one is the user's filter/sort question asked of it.
@@ -3019,12 +3038,12 @@ export default function MembersPage() {
   // copy would be wrong then, since the roster is not empty. Judged against
   // the shown population: hidden rows are not "filtered out", they are unlisted.
   const filteredOut =
-    loaded && !loadError && shownMembers.length > 0 && sortedMembers.length === 0 && !filter.trim()
+    rowsReady && loaded && !loadError && shownMembers.length > 0 && sortedMembers.length === 0 && !filter.trim()
   // Every crewmate exists but the listing rule hides them all (none chatted
   // with, none starred): say so and name the search as
   // the way in, rather than an empty list under "0 crewmates".
   const allHidden =
-    loaded && !loadError && !filter.trim() && shownMembers.length === 0 && !hasNoCrewmates(members)
+    rowsReady && loaded && !loadError && !filter.trim() && shownMembers.length === 0 && !hasNoCrewmates(members)
   // Relative times in the Profile Schedules tab move while the card is open.
   const [nowTs, setNowTs] = useState(() => Date.now() / 1000)
   useEffect(() => {
@@ -3598,7 +3617,7 @@ export default function MembersPage() {
         // `md:hidden`, so without the column a desktop `/members?team=<id>`
         // had no way back to the roster.
         className={`${
-          activeName && !activeTeam && !rosterPinned
+          rosterFolded && !activeTeam
             ? 'hidden'
             : activeName || activeTeam || guided.open || createOpen || postCreateError?.kind === 'roster'
               ? 'hidden md:flex'
@@ -4002,7 +4021,7 @@ export default function MembersPage() {
               muted "No team" group. With no teams the list is flat, as it was
               before teams -- one anonymous group and no header. A collapsed
               group hides its rows; the fold persists per team. */}
-          {rosterGroups.map((group) => {
+          {rowsReady && rosterGroups.map((group) => {
             const collapsed = grouped && collapsedTeams.has(group.id)
             return (
               <Fragment key={group.id}>
