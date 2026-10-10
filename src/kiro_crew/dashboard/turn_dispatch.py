@@ -61,6 +61,19 @@ def _turn_budget_remaining() -> float | None:
     return deadline - loop.time()
 
 
+def turn_deadline_passed() -> bool:
+    """Whether the running turn's wall-clock ceiling has been reached.
+
+    Reads the deadline :func:`_bounded_turn` publishes for the turn it guards.
+    False when no ceiling is armed (a turn run outside the guard), so a caller
+    that cannot tell the ceiling's cancel from another cancel can ask here: at
+    or past the deadline the ceiling fired; before it, something else
+    cancelled the turn.
+    """
+    remaining = _turn_budget_remaining()
+    return remaining is not None and remaining <= 0
+
+
 def _acp_prompt_ceiling() -> float:
     """The transport's own per-prompt timeout.
 
