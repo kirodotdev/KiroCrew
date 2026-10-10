@@ -988,12 +988,30 @@ class CompactionCoordinator:
             await asyncio.wait_for(session.semaphore.acquire(), timeout=timeout)
         except asyncio.TimeoutError:
             return "busy"
+        # The same three guards as ``_compact_in_place``, for the same Stop. Read
+        # AFTER the permit is held: a Stop that ended the turn this waited behind
+        # is not this recycle's cancel.
+        stop_gen = self._stop_generation(key)
+        # Named where ``reset`` looks (``_orphan_turn_holder``), so a hard Stop
+        # during the wait below records this task as the holder of the permit it
+        # hands to a woken claimant.
+        session.turn_owner = asyncio.current_task()
         try:
             # The restart ends this process and every sub-agent that shares it.
-            await self._await_cotenants(key, pct)
+            if not await self._await_cotenants(
+                key, pct, stopped=lambda: self._stop_generation(key) > stop_gen
+            ):
+                # A Stop landed during the wait. A force Stop has already reset the
+                # parent and respawned its successor, so this restart is stale, and
+                # the sub-agents it would stop are the user's live work.
+                return await self._settle_cancelled(key, pct)
             await self._owner._recycle_held(key, session, pct, uncompactable=True)
         finally:
-            session.semaphore.release()
+            # Release ONLY a permit this task still owns. A hard Stop during the
+            # wait popped the session and handed its permit to a woken claimant;
+            # a second release here would raise in that claimant's own release.
+            if not self._owner.absorb_orphaned_release(key):
+                session.semaphore.release()
         return "recycled"
 
     async def _compact_in_place(self, key: str, session: Any, pct: float) -> str:

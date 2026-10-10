@@ -34,6 +34,8 @@ from kiro_crew.session import SessionManager
 from kiro_crew.session_compaction import (
     COMPACT_OUTCOME_CANCELLED,
     COMPACT_OUTCOME_RECYCLED,
+    COMPACT_OUTCOME_RESTARTED_UNCOMPACTABLE,
+    COMPACT_OUTCOME_WAITING_FOR_SUBAGENTS,
 )
 
 KEY = "dashboard:chat-14841"
@@ -2312,3 +2314,139 @@ def test_the_shared_channel_decline_arms_nothing_when_the_send_reports_nothing_l
     assert sl._stop_declined_markers == {}
     assert sl.consume_stop_declined("telegram:2", "u1") is False
     sessions.clear_queue.assert_not_called()
+
+
+# -- the uncompactable restart (no /compact to run) honours a Stop the same way --
+
+
+class _SharedSubagent:
+    """One sub-agent live on the parent's process until ``gate`` is set: the slice
+    of ``SubagentManager`` the restart's cotenant wait reads and ends."""
+
+    def __init__(self, key: str, gate: asyncio.Event) -> None:
+        self.gate = gate
+        self.child = SimpleNamespace(
+            id="a1", parent_session_key=key, conversation_key="", _stop_origin=""
+        )
+
+    @property
+    def running(self):
+        return [] if self.gate.is_set() else [self.child]
+
+    def has_live_shared_session(self, _k):
+        return not self.gate.is_set()
+
+    def snapshot_teardown_children(self, _p):
+        return ()
+
+    async def cancel(self, _i):
+        self.gate.set()
+        return True
+
+    async def cancel_for_teardown(self, ids, *, parent_session_key, verb=""):
+        return len(ids)
+
+
+async def _uncompactable_restart(wait_secs: float):
+    """Start ``_recycle_unmanaged`` with one live shared sub-agent; return once it
+    holds the permit and waits in ``_await_cotenants``."""
+    mgr, key, _compact, order, notices = await _setup()
+    session = mgr._sessions[key]
+    gate = asyncio.Event()
+    mgr.set_child_teardown_handler(_SharedSubagent(key, gate))
+    mgr._compaction._deps = dataclasses.replace(
+        mgr._compaction._deps, cotenant_wait_secs=wait_secs, cotenant_poll_secs=0.01
+    )
+    task = asyncio.ensure_future(mgr._compaction._recycle_unmanaged(key, session, 95.0))
+    # The wait announces itself before its first poll, with the permit held.
+    async with asyncio.timeout(5):
+        while (False, COMPACT_OUTCOME_WAITING_FOR_SUBAGENTS) not in notices:
+            await asyncio.sleep(0)
+    return mgr, key, session, gate, task, order, notices
+
+
+async def _parked_on(session) -> None:
+    """Return once a claimant is parked on *session*'s turn permit."""
+    async with asyncio.timeout(5):
+        while not session.semaphore._waiters:
+            await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_a_hard_stop_during_the_uncompactable_restart_wait_settles_cancelled():
+    """The restart for a backend with no ``/compact`` holds the permit while it
+    waits for sub-agents. A force Stop there resets the session and hands the
+    permit to a parked claimant; the restart must settle cancelled, spare the
+    live sub-agent, and not release the claimant's permit a second time."""
+    mgr, key, session, gate, task, order, notices = await _uncompactable_restart(30.0)
+    assert not task.done()
+    holds = asyncio.Event()
+    let_go = asyncio.Event()
+
+    async def _claimant() -> str:
+        await session.semaphore.acquire()
+        holds.set()
+        await let_go.wait()  # holds the permit while the restart's finally runs
+        try:
+            session.semaphore.release()
+        except ValueError as exc:
+            return f"ValueError: {exc}"
+        return "released-cleanly"
+
+    claimant = asyncio.ensure_future(_claimant())
+    await _parked_on(session)
+    assert not claimant.done()
+
+    assert await mgr.stop_turn(KEY, force=True) == "hard"
+    assert mgr._sessions.get(key) is not session
+    await asyncio.wait_for(holds.wait(), timeout=2)
+    done, _ = await asyncio.wait({task}, timeout=5)
+    assert done, "the restart kept waiting for the sub-agent after the Stop"
+    let_go.set()
+
+    assert task.result() == "cancelled"
+    assert not gate.is_set(), "the live sub-agent was cancelled"
+    assert await asyncio.wait_for(claimant, timeout=5) == "released-cleanly"
+    assert notices[-1] == (False, COMPACT_OUTCOME_CANCELLED)
+    gate.set()
+    await mgr.close_all()
+
+
+@pytest.mark.asyncio
+async def test_a_stop_recorded_during_the_uncompactable_restart_wait_releases_the_permit():
+    """A Stop recorded with no reset taken ends the wait as cancelled. The permit is
+    still this task's, so the restart releases it and a parked claimant wakes."""
+    mgr, key, session, gate, task, order, notices = await _uncompactable_restart(30.0)
+    assert not task.done()
+    woke = asyncio.Event()
+
+    async def _claimant():
+        await session.semaphore.acquire()
+        woke.set()
+        session.semaphore.release()
+
+    claimant = asyncio.ensure_future(_claimant())
+    await _parked_on(session)
+    assert mgr.note_stop(KEY) is True
+    done, _ = await asyncio.wait({task}, timeout=5)
+    assert done, "the restart kept waiting for the sub-agent after the Stop"
+
+    assert task.result() == "cancelled"
+    assert not gate.is_set(), "the sub-agent was cancelled"
+    assert order == [], "the session was shut down"
+    await asyncio.wait_for(woke.wait(), timeout=2)
+    await claimant
+    gate.set()
+    await mgr.close_all()
+
+
+@pytest.mark.asyncio
+async def test_an_unstopped_uncompactable_restart_still_stops_the_subagent_and_recycles():
+    """Control: with no Stop the wait runs out, stops the sub-agent and recycles."""
+    mgr, key, session, gate, task, order, notices = await _uncompactable_restart(0.5)
+    assert await asyncio.wait_for(task, timeout=5) == "recycled"
+    assert gate.is_set(), "the sub-agent was not stopped at the deadline"
+    assert order == ["shutdown"]
+    assert notices[-1] == (True, COMPACT_OUTCOME_RESTARTED_UNCOMPACTABLE)
+    assert not session.semaphore.locked(), "the permit was not released"
+    await mgr.close_all()
