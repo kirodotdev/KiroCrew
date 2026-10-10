@@ -106,8 +106,11 @@ export default function WakaTimeTab() {
   const stats = data.stats ?? {}
   const languages = stats.languages ?? []
   const projects = stats.projects ?? []
-  const total = stats.total_seconds ?? 0
-  const dailyAvg = stats.daily_average ?? 0
+  // Prefer the include-other totals so the headline matches the Languages bars
+  // and WakaTime.com (both count the "Other" bucket). Fall back to the
+  // classified-only field when the include-other variant is null (free accounts).
+  const total = stats.total_seconds_including_other_language ?? stats.total_seconds ?? 0
+  const dailyAvg = stats.daily_average_including_other_language ?? stats.daily_average ?? 0
   const hasActivity = total > 0 || languages.length > 0 || projects.length > 0
 
   const download = async (format: 'csv' | 'json') => {

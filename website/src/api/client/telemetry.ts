@@ -24,6 +24,14 @@ export type WakaTimeStats = {
   stats?: {
     total_seconds?: number
     daily_average?: number
+    // WakaTime's headline and KiroCrew's Languages bars count the uncategorised
+    // "Other" bucket; total_seconds / daily_average omit it. On an account that
+    // sends most time without a recognised language (agent heartbeats land in
+    // Other), the classified-only figure is a fraction of the real total. These
+    // are the include-other variants WakaTime.com's own headline uses; they can
+    // be null on free accounts, so the reader falls back to the classified field.
+    total_seconds_including_other_language?: number | null
+    daily_average_including_other_language?: number | null
     languages?: WakaTimeStatsEntry[]
     projects?: WakaTimeStatsEntry[]
   }

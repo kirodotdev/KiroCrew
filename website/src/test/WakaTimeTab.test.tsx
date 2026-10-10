@@ -58,6 +58,48 @@ describe('WakaTimeTab', () => {
     expect(screen.getAllByText('1h').length).toBeGreaterThan(0)
   })
 
+  it('headline reads the include-other total so it matches WakaTime.com and the Languages bars', async () => {
+    // The classified-only total_seconds (3600 = 1h) omits the Other bucket.
+    // The headline must report the include-other total (10800 = 3h), the figure
+    // WakaTime.com's own headline and the Languages bars use.
+    wakatimeStats.mockResolvedValue({
+      configured: true,
+      range: 'last_7_days',
+      stats: {
+        total_seconds: 3600,
+        daily_average: 3600,
+        total_seconds_including_other_language: 10800,
+        daily_average_including_other_language: 10800,
+        languages: [{ name: 'Python', total_seconds: 10800 }],
+        projects: [{ name: 'noscere', total_seconds: 10800 }],
+      },
+    })
+    mount()
+    await screen.findByText('Python')
+    expect(screen.getAllByText('3h').length).toBeGreaterThan(0)
+    expect(screen.queryByText('1h')).not.toBeInTheDocument()
+  })
+
+  it('falls back to the classified total when the include-other field is null (free account)', async () => {
+    // Free WakaTime accounts return null for the include-other variant. The
+    // headline must fall back to total_seconds rather than render zero.
+    wakatimeStats.mockResolvedValue({
+      configured: true,
+      range: 'last_7_days',
+      stats: {
+        total_seconds: 7200,
+        daily_average: 7200,
+        total_seconds_including_other_language: null,
+        daily_average_including_other_language: null,
+        languages: [{ name: 'Python', total_seconds: 7200 }],
+        projects: [],
+      },
+    })
+    mount()
+    await screen.findByText('Python')
+    expect(screen.getAllByText('2h').length).toBeGreaterThan(0)
+  })
+
   it('rounds total minutes so a near-hour value never shows 60 minutes', async () => {
     wakatimeStats.mockResolvedValue({
       configured: true,
