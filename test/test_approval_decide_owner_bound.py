@@ -30,8 +30,8 @@ SLOT = "dashboard:selected"
 
 
 @pytest.fixture(autouse=True)
-def _hermetic_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+def _hermetic_home(tmp_path, _floor_monkeypatch):
+    _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
 
 
 @pytest.fixture
