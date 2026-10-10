@@ -189,6 +189,79 @@ def _tool_definitions() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "dashboard_save",
+            "description": (
+                "SAVE the page you composed as YOUR crewmate's Dashboard. A page "
+                "is three declarations and this call stores all three at once: a "
+                "`model` naming the fields the page holds and where each value "
+                "comes from, a `view` laying out the blocks that draw them, and a "
+                "`theme` of tokens. Read dashboard_fields first -- it tells you "
+                "the page in force -- and ASK the person before you save, because "
+                "the page is theirs and one changed without asking is one they "
+                "have to undo. A field reads either from a crew-log fold "
+                '(`{"fold": <name>, "path": <dotted keys>}`, filled by the '
+                'gateway) or from you (`{"agentic": true}`) -- never a number you '
+                "type into the layout, which would be true only at the moment you "
+                "typed it. The "
+                "block types and data types come from a CLOSED catalog, so a "
+                "package naming one that does not exist is refused and the refusal "
+                "lists the ones that do: recompose from that list. NAME YOUR FIELDS "
+                "AND BLOCKS FOR A READER -- `open_prs`, not a token. A name a "
+                "redactor would mask is refused, because a name is a key the page "
+                "joins its cells by and cannot be rewritten on the way out; the "
+                "refusal tells you which position to rename. A save is a new "
+                "VERSION only when the model, the view or the theme actually "
+                "changed, so re-saving the same layout costs nothing. Values never "
+                "version and never belong in a package. Once saved, this page is "
+                "the one in force: dashboard_write type-checks your values against "
+                "THIS model instead of the template's, so fill your `agentic` "
+                "fields with it exactly as before. Two things still belong to the "
+                "template path -- dashboard_fields lists the TEMPLATE page's "
+                "fields, and dashboard_rollback restores a template version, not "
+                "one of yours -- so re-save the layout you want rather than "
+                "rolling back to reach an earlier one. The Dashboard tab draws this "
+                "page once it is saved, and keeps it current as the folds your "
+                "fields read advance, so point the person at their tab rather than "
+                "describing what they would have seen."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "model": {
+                        "type": "object",
+                        "description": (
+                            "The fields the page holds, as "
+                            '`{"types": {<field_name>: {...}}}`. Each field names '
+                            "a data type (`number`, `text`, `bool`, `timestamp`, "
+                            "`enum`) and a `source`, and may carry a `label` and "
+                            "`description` a reader sees. Field names are "
+                            "lowercase letters, digits and underscores."
+                        ),
+                    },
+                    "view": {
+                        "type": "object",
+                        "description": (
+                            'The layout, as `{"blocks": [...]}`, in the order a '
+                            "reader meets them -- that order IS the layout. Each "
+                            "block carries an `id`, a `type` from the block "
+                            "catalog, the `fields` it draws (every one declared by "
+                            "the model) and an optional `title`."
+                        ),
+                    },
+                    "theme": {
+                        "type": "object",
+                        "description": (
+                            'Look, as `{"tokens": {"--name": "value"}}`. None of '
+                            "the look is fixed by the product, so this is where "
+                            "you set it. An empty `tokens` object is valid and "
+                            "takes the defaults."
+                        ),
+                    },
+                },
+                "required": ["model", "view", "theme"],
+            },
+        },
+        {
             "name": "dashboard_templates",
             "description": (
                 "List or SEARCH the dashboard pages this gateway can give your "
@@ -407,6 +480,36 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             + (" It corrected an earlier refused write." if d.get("corrected") else "")
         )
 
+    if name == "dashboard_save":
+        # THE THREE, named one by one rather than forwarded as ``args``. The
+        # gateway fills the package's other two keys -- ``kind`` and the
+        # ``bound_to`` that decides whose tab renders this page -- from the caller
+        # it vetted, so building the payload from an explicit list is what makes a
+        # fourth key impossible to pass through from here. The gateway refuses one
+        # too; this is the half that cannot send it.
+        page: dict[str, Any] = {}
+        for key in ("model", "view", "theme"):
+            part = args.get(key)
+            if not isinstance(part, dict):
+                return (
+                    f"Error: `{key}` must be an object -- a page is a `model`, a "
+                    "`view` and a `theme`, and all three are saved together"
+                )
+            page[key] = part
+        sk, err = _strict_session_key()
+        if err:
+            return err
+        d = _post("/api/agent-panel/dashboard/save", page, session_key=sk)
+        api_err = d.get("error")
+        if api_err:
+            # WHOLE, like a refused write. A package refusal names the key path,
+            # what was wrong with it, and for a closed catalog the values that
+            # would have been taken -- which is the list the next compose is built
+            # from. Shortened to a generic failure it would cost a cycle and teach
+            # nothing.
+            return redact(f"Error: {api_err}")
+        return redact(_render_saved(d.get("saved") or {}))
+
     if name == "dashboard_templates":
         query = args.get("query")
         if query is not None and not isinstance(query, str):
@@ -479,6 +582,47 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         )
 
     return f"Error: unknown tool '{name}'"
+
+
+def _render_saved(saved: dict[str, Any]) -> str:
+    """What landed, and whether it cut a version.
+
+    The version sentence is here because a save is the one panel call whose
+    outcome an agent cannot predict: it composed a page and the STORE decided
+    whether that is a new version, by comparing the layout rather than by taking
+    the caller's word. Saying "no new version" out loud is what stops an agent
+    reading an unmoved number as a failed save and sending the same package again.
+
+    The last lines sort the three neighbouring verbs into the one that now follows
+    a save and the two that do not, because getting that wrong is expensive in
+    both directions. ``dashboard_write`` DOES fill a saved page's ``agentic``
+    fields: the write path reads the package first and falls back to the template
+    only when no package is bound, so telling an agent to avoid it would steer it
+    off the only verb that fills the fields it just declared. ``dashboard_fields``
+    reads the template instance, and ``dashboard_rollback`` restores an instance
+    version and never reaches this artifact's own, so an agent reaching for
+    either expecting its saved page gets the template's answer.
+    """
+    version = saved.get("version")
+    lines = [
+        f"Saved your crewmate's Dashboard page: {saved.get('fields')} field(s) in "
+        f"{saved.get('blocks')} block(s), now at version {version}. The tab draws "
+        "this page now, and this package is the model your values are checked "
+        "against from now on."
+    ]
+    if saved.get("versioned") is False:
+        lines.append(
+            "No new version: the model, view and theme match the page that was "
+            "already stored, so there was no layout change to record."
+        )
+    lines.append("")
+    lines.append(
+        "Next: dashboard_write fills the fields you declared `agentic`, checked "
+        "against THIS package. Do not use dashboard_fields or dashboard_rollback "
+        "for this page -- both answer for the template one -- and to get back an "
+        "earlier layout, save it again."
+    )
+    return "\n".join(lines)
 
 
 def _render_templates(payload: dict[str, Any]) -> str:

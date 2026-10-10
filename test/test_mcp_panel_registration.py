@@ -310,6 +310,7 @@ class TestWhatThisSetGrants:
         "panel_templates",
         "dashboard_fields",
         "dashboard_write",
+        "dashboard_save",
         "dashboard_templates",
         "dashboard_preview",
         "dashboard_apply",
