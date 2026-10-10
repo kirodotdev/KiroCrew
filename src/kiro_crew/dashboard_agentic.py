@@ -1,6 +1,6 @@
 """The agent's half of a dynamic dashboard: what it may write, and what it is told.
 
-A dashboard field comes from one of two places, and the template's manifest says
+A dashboard field comes from one of two places, and the page's own Model says
 which. A ``{"fold", "path"}`` field is read out of the crew log and no agent can
 touch it. An ``{"agentic": true}`` field is one the crewmate writes itself, and
 this module is the whole of that path: it checks a write against the live
@@ -32,7 +32,7 @@ was told had succeeded.
 What this module does NOT do
 ----------------------------
 It computes no dashboard value. That is part 1's rule -- "no provider: no host
-Python computes values" -- and it is what keeps a user-supplied template safe to
+Python computes values" -- and it is what keeps an agent-composed page safe to
 load at run time: the gateway never runs agent-authored fold code and never
 evaluates an agent-authored expression. Every number on a page is either folded
 from the log or written through here as a literal.
@@ -117,8 +117,8 @@ class WriteRefused(ValueError):
 class Instance:
     """The crewmate's own dashboard, as this module needs to see it.
 
-    A NARROW view of worker C's instance: the manifest to check against, the
-    version to stamp a write with, and the template's identity for the message. It
+    A NARROW view of worker C's instance: the Model to check against, the
+    version to stamp a write with, and the page's identity for the message. It
     is a dataclass rather than the raw route payload so the type checker can see
     what this module depends on -- and so the parts of C's payload this module must
     NOT reach (the html, the state) are absent by construction rather than by
@@ -354,15 +354,15 @@ def check_write(
         raise WriteRefused(
             "no_instance",
             field,
-            "this crewmate has no dashboard yet, so it has no field to write: adopt a "
-            "template first, then write its agentic fields",
+            "this crewmate has no dashboard yet, so it has no field to write: compose "
+            "one first -- a Model, a View and a theme -- then write its agentic fields",
         )
     writable = agentic_fields(instance.manifest)
     if field not in instance.manifest.fields:
         raise WriteRefused(
             "unknown_field",
             field,
-            f"{field!r} is not a field of template {instance.manifest.id!r} "
+            f"{field!r} is not a field of dashboard {instance.manifest.id!r} "
             f"(version {instance.manifest.version}). " + _advice(writable, mistakes, field),
         )
     spec = instance.manifest.fields[field]
@@ -399,7 +399,7 @@ def check_write(
                 "wrong_shape",
                 field,
                 (
-                    f"{field!r} does not match the shape template "
+                    f"{field!r} does not match the shape dashboard "
                     f"{instance.manifest.id!r} draws: "
                     + "; ".join(problems)
                     + ". "
@@ -469,14 +469,14 @@ def _advice(
     contract says to take the valid names from the folds and the manifest rather
     than from any document.
 
-    An EMPTY list is its own sentence. A template with no agentic field at all is
+    An EMPTY list is its own sentence. A dashboard with no agentic field at all is
     not a mistake the agent can fix by picking a better name, and telling it to
     choose from nothing would send it round the retry budget for no reason.
     """
     repeat = _repeat_note(mistakes, "", field)
     if not writable:
         return (
-            "This template has no agentic field, so no value here is the agent's to "
+            "This dashboard has no agentic field, so no value here is the agent's to "
             "write; every field is read from a fold. " + repeat
         ).strip()
     names = ", ".join(f"{name} ({spec.type})" for name, spec in sorted(writable.items()))
@@ -747,9 +747,11 @@ def turn_block(slug: str) -> str:
     writes = ", ".join(names) if names else "none (every field is folded)"
     return (
         "[DASHBOARD]\n"
-        f"Your Dashboard tab shows template {manifest.id} v{manifest.version}.\n"
+        f"Your Dashboard tab shows {manifest.id} v{manifest.version}, the page you "
+        "composed.\n"
         f"Fields you write: {writes}. Call dashboard_fields for their shapes and "
-        "current values before dashboard_write."
+        "current values before dashboard_write. To change the page itself -- its "
+        "fields, its blocks or its theme -- load the `dashboard-manager` skill."
     )
 
 

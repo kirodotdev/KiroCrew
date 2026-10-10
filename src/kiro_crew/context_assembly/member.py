@@ -283,7 +283,7 @@ _MEMBER_BRIEFING_ITEM_UNAVAILABLE = """
    RULES] outranks anything you write for yourself."""
 
 # Item 7 — the crewmate's own Dashboard page. Appended to BOTH briefing variants,
-# unlike item 6: the tab is rendered by the gateway from the instance store and does
+# unlike item 6: the tab is rendered by the gateway from the stored page and does
 # not depend on layer 4, so a platform whose briefing reads fail closed still has a
 # page and still has the two tools that fill it.
 #
@@ -299,27 +299,31 @@ _MEMBER_BRIEFING_ITEM_UNAVAILABLE = """
 # ``test_dashboard_manager_agent.py::test_the_base_prompt_names_the_agent_the_installer_writes``
 # reads the name off the installed spec and asserts it appears in this prompt.
 #
-# THE CREWMATE drives its own page, which is a correction. An earlier wording sent
-# every page request to the `kirocrew-dashboard-manager` subagent and told the
-# crewmate it had no tools for it -- while ``_MEMBER_PANEL_GRANTS`` grants it all six
-# verbs. The crewmate is also the only one of the two whose identity the panel's
+# THE CREWMATE drives its own page. ``_MEMBER_PANEL_GRANTS`` grants it every page
+# verb the `kirocrew-dashboard-manager` subagent holds, so a wording that handed
+# every page request over would take a working path away and point at a weaker one.
+# The crewmate is also the only one of the two whose identity the panel's
 # tools can resolve: they go through ``mcp_core.require_strict_session_key``, which
 # resolves the CALLING session and never a parent through a ``/proc`` walk, because
 # that walk is how a subagent would reach a page that is not its own. A member DM
 # session has that identity; a subagent is a weaker place to stand. So the subagent is
 # extra capacity for a long page job, and the crewmate's own hands are the path.
 _MEMBER_DASHBOARD_ITEM = """
-7. You have a Dashboard tab of your own, and it is yours to change. `dashboard_fields`
-   lists its fields and `dashboard_write` fills the ones that are yours, so anything a
-   person must ACT on goes there and not only into your reply — the tab is what they
-   read when they are not reading this thread. To change the PAGE itself, load the
-   `dashboard` skill and follow it: `dashboard_templates` to search, `dashboard_preview`
-   to stage one, `dashboard_apply` once they say yes, `dashboard_rollback` to go back.
-   ALWAYS show the preview link and ask first — the page is the reader's to approve, and
-   one swapped without asking is one they have to undo. You cannot write a page
-   yourself; previewing takes a template id, and the tool says so if you try. A long
-   page job may go to the `kirocrew-dashboard-manager` subagent, which holds the same
-   tools, but you do not need it to answer "show me another one"."""
+7. You have a Dashboard tab of your own, and the page is yours to compose.
+   `dashboard_fields` lists its fields and `dashboard_write` fills the ones that are
+   yours, so anything a person must ACT on goes there and not only into your reply —
+   the tab is what they read when they are not reading this thread. To change the
+   PAGE itself, load the `dashboard-manager` skill and follow it: you declare the
+   fields the page holds — each one a `number`, `text`, `bool`, `timestamp` or `enum`,
+   read from a fold or filled by you — lay out the blocks that draw them, set the
+   theme tokens, and save the three as your page; `dashboard_rollback` goes back to an
+   earlier version. `dashboard_templates`, `dashboard_preview` and `dashboard_apply`
+   are on the same panel and compose nothing — they hand you a page out of a fixed
+   catalog — so they answer none of this. ALWAYS say what the new page will show and
+   ask first — the page is the reader's to approve, and one changed without asking is
+   one they have to undo. A long page job may go to the `kirocrew-dashboard-manager`
+   subagent, which holds the same tools, but you do not need it to answer "show me
+   another one"."""
 
 
 # The full protocol: the shared items, the briefing item, and the page item. The
@@ -474,7 +478,7 @@ def build_member_section(
             _MEMBER_HOW_YOU_WORK
             if briefing_ok
             # Item 7 rides on BOTH variants: the Dashboard tab is rendered by the
-            # gateway from the instance store, so it exists on a platform whose
+            # gateway from the stored page, so it exists on a platform whose
             # briefing reads fail closed exactly as it does anywhere else.
             else _MEMBER_HOW_YOU_WORK_COMMON
             + _MEMBER_BRIEFING_ITEM_UNAVAILABLE

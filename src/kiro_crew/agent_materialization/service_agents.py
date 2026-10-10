@@ -178,11 +178,11 @@ def _install_dashboard_manager_agent() -> None:
       tool, and this agent is dispatched with nothing to answer with.
     * ``fs_read`` because the two skills it works from are files it must read, and
       because the fold catalogue it must not guess a path out of is one of them.
-    * No ``fs_write`` and no ``execute_bash``. Every page this agent produces goes
-      through ``dashboard_preview``, which validates the pair and stages it where
-      only ``dashboard_apply`` can commit it. A file-writing tool would let it put
-      a template into the user catalogue directly, skipping the validation and the
-      person's yes -- which are the two things the preview step exists to be.
+    * No ``fs_write`` and no ``execute_bash``. Every page this agent produces
+      goes through the store's own write path, which checks the Model, the View
+      and the theme against the catalogues before anything lands. A file-writing
+      tool would let it drop a page on disk directly, skipping both that check
+      and the person's yes.
     * No ``@kirocrew-core`` and no ``@kirocrew-dashboard``: it neither dispatches
       work nor reads anybody's sessions. A page is all it touches.
 
@@ -206,9 +206,10 @@ def _install_dashboard_manager_agent() -> None:
     config: dict[str, object] = {
         "name": agent_mod.DASHBOARD_MANAGER_AGENT_NAME,
         "description": (
-            "Changes ONE crewmate's Dashboard page on request: searches the "
-            "template catalog, stages a preview, asks before keeping it, and "
-            "rolls back to an earlier version. Never does the crewmate's own work."
+            "Composes ONE crewmate's Dashboard page on request: declares the "
+            "fields it holds, lays out the blocks that draw them, asks before "
+            "saving, and rolls back to an earlier version. Never does the "
+            "crewmate's own work."
         ),
         "model": model,
         "includeMcpJson": False,
