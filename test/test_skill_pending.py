@@ -866,3 +866,145 @@ def test_nested_meta_credentials_redacted(loader):
     )
     detail = loader.get_pending_skill(slug)
     assert secret not in _json.dumps(detail["meta"])
+
+
+# -- The document cap ---------------------------------------------------------------
+#
+# The detail read bounds the candidate's PROSE and METADATA files (SKILL.md,
+# .meta.json) with their own cap, derived from the generator's procedure limit,
+# and bundled scripts with MAX_SCRIPT_BYTES. Under one shared number a valid
+# generated document over 4 KiB is unreadable and Approve stays disabled, so the
+# two caps are separate and these tests hold them apart.
+
+#: A generated SKILL.md over the 4 KiB bundled-script cap and far under the
+#: generator's own 10,240-character procedure limit, the size a reporter hit.
+_REPORTED_DOCUMENT_BYTES = 6_713
+
+
+def _stage_with_document_of(loader, slug, size):
+    """Stage *slug* through the generator so its SKILL.md is exactly *size* bytes on disk.
+
+    The generator writes in text mode, so every newline in its content lands as
+    ``os.linesep``; the padding is sized against that on-disk length, not the
+    character count, so the fixture is exact on Windows too. The procedure is
+    ASCII, so one padding character is one byte, and the helper asserts the size
+    it produced: a test cannot pass on a document smaller than the one it names.
+    Returns the staged procedure.
+    """
+    from kiro_crew import skills as sk
+
+    prov = _prov()
+    heading = "## Steps\n\n"
+
+    def on_disk(procedure):
+        content = sk._build_auto_skill_content(
+            slug=slug,
+            description=f"desc {slug}",
+            triggers=slug,
+            procedure_md=procedure,
+            provenance=prov,
+        )
+        return len(content.encode("utf-8")) + content.count("\n") * (len(os.linesep) - 1)
+
+    procedure = heading + "x" * (size - on_disk(heading + "x") + 1)
+    assert on_disk(procedure) == size
+    assert len(procedure) <= sk.AUTO_SKILL_MAX_PROCEDURE_CHARS, "fixture past the generator limit"
+    assert (
+        loader.stage_skill_candidate(
+            slug, description=f"desc {slug}", triggers=slug, procedure_md=procedure, provenance=prov
+        )
+        == f"auto/{slug}"
+    )
+    assert (loader._pending_root() / slug / "SKILL.md").stat().st_size == size
+    return procedure
+
+
+def test_detail_serves_a_generated_document_over_the_script_cap(loader):
+    """A valid generated SKILL.md over 4 KiB opens for review.
+
+    The generator may write a procedure of ``AUTO_SKILL_MAX_PROCEDURE_CHARS``, so
+    the detail read bounds the document with its own cap rather than
+    ``MAX_SCRIPT_BYTES``, the cap for bundled scripts: under the script cap a
+    6,713-byte candidate is unreadable and the dashboard holds Approve disabled.
+    The whole body is served, not a view cut at the script cap, and the approve
+    the detail informs goes through.
+    """
+    from kiro_crew.skills_script_validator import MAX_SCRIPT_BYTES
+
+    assert _REPORTED_DOCUMENT_BYTES > MAX_SCRIPT_BYTES, "the fixture is under the old cap"
+    procedure = _stage_with_document_of(loader, "long-doc", _REPORTED_DOCUMENT_BYTES)
+
+    detail = loader.get_pending_skill("long-doc")
+
+    assert detail is not None, "a valid generated document over the script cap was refused"
+    assert detail["content"].endswith(procedure + "\n"), "the body was served in part"
+    assert detail["meta"]["slug"] == "long-doc"
+    assert loader.approve_pending_skill_checked("long-doc") == "auto/long-doc"
+
+
+def test_a_bundled_script_over_the_script_cap_is_refused(loader):
+    """The script cap is independent of the document cap.
+
+    The SAME 6,713 bytes the document read accepts are over the bound for an
+    executable under ``scripts/``, and the refusal is of the whole candidate, not
+    an omission of the one script.
+    """
+    from kiro_crew.skills_script_validator import MAX_SCRIPT_BYTES
+
+    assert MAX_SCRIPT_BYTES == 4096, "the bundled-script cap is not 4 KiB"
+    _stage(loader, "big-script")
+    pdir = loader._pending_root() / "big-script"
+    (pdir / "scripts").mkdir(exist_ok=True)
+    (pdir / "scripts" / "big.py").write_text("#" * _REPORTED_DOCUMENT_BYTES, encoding="utf-8")
+
+    assert loader.get_pending_skill("big-script") is None
+    assert loader.pending_candidate_is_staged("big-script") is True
+
+
+def test_a_document_over_the_document_cap_is_refused_whole(loader):
+    """The document read is bounded, and the bound is exact.
+
+    A ``SKILL.md`` AT the cap is served; one byte over refuses the candidate,
+    which stays staged (the dashboard's ``pending_skill_unreadable`` case), and
+    nothing is served in part: the refusal is the whole detail, not a cut body.
+    """
+    from kiro_crew import skills as sk
+
+    _stage(loader, "cap-doc")
+    pdir = loader._pending_root() / "cap-doc"
+    shell = b"---\nname: auto/cap-doc\n---\n\n# cap-doc\n\n"
+    # Bytes, not text: a text-mode write would land each newline as ``os.linesep``
+    # and move the fixture off the cap on Windows.
+    (pdir / "SKILL.md").write_bytes(shell + b"x" * (sk._PENDING_DOCUMENT_MAX_BYTES - len(shell)))
+    assert (pdir / "SKILL.md").stat().st_size == sk._PENDING_DOCUMENT_MAX_BYTES
+    at_cap = loader.get_pending_skill("cap-doc")
+    assert at_cap is not None, "exactly the document cap was refused"
+    assert len(at_cap["content"]) == sk._PENDING_DOCUMENT_MAX_BYTES
+
+    with (pdir / "SKILL.md").open("ab") as fh:
+        fh.write(b"x")
+    assert (pdir / "SKILL.md").stat().st_size == sk._PENDING_DOCUMENT_MAX_BYTES + 1
+
+    assert loader.get_pending_skill("cap-doc") is None
+    assert loader.pending_candidate_is_staged("cap-doc") is True
+
+
+def test_metadata_over_the_document_cap_refuses_the_candidate(loader):
+    """``.meta.json`` reads under the same document cap, and over it is a refusal.
+
+    Unreadable through the pin is a fence signal: the candidate is refused rather
+    than served with empty metadata, the same answer a linked ``.meta.json`` gets.
+    """
+    import json as _json
+
+    from kiro_crew import skills as sk
+
+    _stage(loader, "cap-meta")
+    pdir = loader._pending_root() / "cap-meta"
+    (pdir / ".meta.json").write_text(
+        _json.dumps({"slug": "cap-meta", "pad": "x" * sk._PENDING_DOCUMENT_MAX_BYTES}),
+        encoding="utf-8",
+    )
+
+    assert loader.get_pending_skill("cap-meta") is None
+    assert loader.pending_candidate_is_staged("cap-meta") is True

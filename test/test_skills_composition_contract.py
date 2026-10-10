@@ -314,8 +314,9 @@ _CRON_SOURCE_MAX_BYTES _DIR_FD_SUPPORTED _DISCOVERY_IN_PROGRESS_NOTICE
 _DOLLAR_SKILL_PATTERN _FAMILY_LINE_MAX_LABELS _FINGERPRINT_MAX_BYTES
 _FINGERPRINT_MAX_ENTRIES _ITER_CACHE_TTL_SECS _MAPPED_BLOCK_OVERHEAD_BYTES
 _MAX_DOLLAR_SKILLS _MIN_TRIGGER_OVERLAP _NEW_SKILL_BOOST_WINDOW_SECS
-_PENDING_CONSUMED_HOOK _PENDING_SCRIPT_MAX_DEPTH _PENDING_SCRIPT_MAX_ENTRIES
-_PENDING_STAGED_HOOK _PROJECT_DIR_OPEN_FLAGS _PROJECT_SKILL_MAX_DEPTH _PROVENANCE_FORMAT
+_PENDING_CONSUMED_HOOK _PENDING_DOCUMENT_MAX_BYTES _PENDING_SCRIPT_MAX_DEPTH
+_PENDING_SCRIPT_MAX_ENTRIES _PENDING_STAGED_HOOK _PROJECT_DIR_OPEN_FLAGS
+_PROJECT_SKILL_MAX_DEPTH _PROVENANCE_FORMAT
 _PROVENANCE_MARKER _RELOCATED_SKILLS _RETIRED_CONDUCTOR_SKILL_MAX_BYTES
 _SHELL_READ_VERBS _SHELL_SEGMENT_RE _SHELL_SKILL_PATH_RE _SHORT_DESC_CHARS _SKILL_FILE
 _ScopedSkillEntry _TOOL_READ_PATH_KEYS _VALIDATION_REPORT_MAX_FINDINGS
@@ -1457,10 +1458,20 @@ class TestThePinnedPendingRead:
         assert detail is not None and detail["meta"] == {} and detail["kind"] == "new"
 
     def test_an_oversized_body_refuses_the_candidate(self, make_loader) -> None:
+        """The DOCUMENT cap bounds ``SKILL.md``, not the bundled-script cap.
+
+        A body over ``MAX_SCRIPT_BYTES`` is a document, not a script, and is served;
+        one over ``_PENDING_DOCUMENT_MAX_BYTES``, derived from the generator's
+        procedure limit, refuses the candidate whole.
+        """
         from kiro_crew.skills_script_validator import MAX_SCRIPT_BYTES
 
         loader, pdir = self._candidate(make_loader)
-        (pdir / "SKILL.md").write_text("# pad\n" * (MAX_SCRIPT_BYTES // 6 + 10), encoding="utf-8")
+        over_script_cap = "# pad\n" * (MAX_SCRIPT_BYTES // 6 + 10)
+        assert len(over_script_cap) > MAX_SCRIPT_BYTES
+        (pdir / "SKILL.md").write_text(over_script_cap, encoding="utf-8")
+        assert loader.get_pending_skill("cand") is not None, "a document was read as a script"
+        (pdir / "SKILL.md").write_text("x" * (sk._PENDING_DOCUMENT_MAX_BYTES + 1), encoding="utf-8")
         assert loader.get_pending_skill("cand") is None
 
     def test_staged_probe_only_names_a_candidate_by_its_safe_slug(self, make_loader) -> None:

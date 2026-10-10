@@ -586,6 +586,29 @@ AUTO_SKILL_SOURCE_VALUE = "auto"
 # the aux LLM failed to stay on-task and should be rejected.
 AUTO_SKILL_MAX_PROCEDURE_CHARS = 10_240
 
+# Byte bound on a pending candidate's two DOCUMENT files, ``SKILL.md`` and
+# ``.meta.json``, for the detail read that informs approval. Derived from the
+# limit above rather than chosen: the procedure is bounded in characters and a
+# UTF-8 character is at most four bytes, so the body alone may legitimately
+# reach four times the limit; the frontmatter around it (name, the one-line
+# description and trigger list, the provenance fields, the heading) gets one
+# more limit's worth of headroom, many times what the generator asks of those
+# fields (a description of at most 150 characters, three to eight triggers),
+# and ``.meta.json``, which repeats the description and triggers beside at most
+# ``_PENDING_SCRIPT_MAX_ENTRIES`` script names and carries no procedure, fits
+# under the same number. Staging bounds only the procedure, so a candidate whose
+# frontmatter or metadata runs past the headroom is refused by this cap like any
+# other over-cap document. It is a separate cap from ``MAX_SCRIPT_BYTES``,
+# which bounds a bundled EXECUTABLE script and is the per-file cap under
+# ``scripts/``: a document read under that cap refuses every valid generated
+# skill whose SKILL.md is over 4 KiB as unreadable, with Approve disabled, for a
+# candidate approve would promote. A document over this cap is refused whole;
+# the read is bounded and never serves a partial view.
+_PENDING_DOCUMENT_MAX_BYTES = (
+    AUTO_SKILL_MAX_PROCEDURE_CHARS * 4  # the procedure, at UTF-8's four bytes per character
+    + AUTO_SKILL_MAX_PROCEDURE_CHARS  # frontmatter headroom
+)
+
 # Regex for auto-generated skill name segment validation.  Deliberately
 # restrictive — we control the generator so we don't need to accept
 # arbitrary unicode.  ``_safe_name`` already rejects ``..`` and ``\``;
@@ -4400,6 +4423,12 @@ class SkillsLoader:
         is the whole top level, not only the names this reads: the approve path
         refuses an unexpected top-level entry outright, so a detail read that served
         one would be MORE permissive than the approve it exists to inform.
+
+        Two byte caps, one per kind of file. ``SKILL.md`` and ``.meta.json`` are
+        documents and read under ``_PENDING_DOCUMENT_MAX_BYTES``, derived from what
+        the generator may write; every file under ``scripts/`` is an executable and
+        read under ``MAX_SCRIPT_BYTES``, the verdict walk's own per-file cap. Either
+        cap refuses the candidate whole: the read is bounded, never partial.
         """
         try:
             pinned = pinned_directory(pdir)
@@ -4427,18 +4456,22 @@ class SkillsLoader:
             if any(pinned.is_link(name) for name in names):
                 return None
             try:
-                body = pinned.read_text("SKILL.md", max_bytes=MAX_SCRIPT_BYTES)
+                # The DOCUMENT cap, not the script cap: a generated procedure may run
+                # to AUTO_SKILL_MAX_PROCEDURE_CHARS characters, several times what a
+                # bundled script may hold, and a valid candidate must open for review.
+                body = pinned.read_text("SKILL.md", max_bytes=_PENDING_DOCUMENT_MAX_BYTES)
             except (OSError, UnicodeDecodeError):
                 return None
             meta: dict = {}
             if ".meta.json" in names:
                 try:
-                    raw = pinned.read_text(".meta.json", max_bytes=MAX_SCRIPT_BYTES)
+                    raw = pinned.read_text(".meta.json", max_bytes=_PENDING_DOCUMENT_MAX_BYTES)
                 except (OSError, UnicodeDecodeError):
                     # Unreadable THROUGH THE PIN is a fence signal, not bad content:
                     # the name is not the plain file it screened as, which is the same
-                    # class as SKILL.md failing above. Refuse the candidate rather
-                    # than serve it with empty metadata.
+                    # class as SKILL.md failing above, and over the document cap is
+                    # refused the same way. Refuse the candidate rather than serve it
+                    # with empty metadata.
                     return None
                 try:
                     parsed = json.loads(raw)
