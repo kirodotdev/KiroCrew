@@ -2836,6 +2836,18 @@ class DashboardConfig:
             restart=True,
         ),
     )
+    idle_slot_sweep_days: int = field(
+        default=7,
+        metadata=_meta(
+            "Archive Idle Sessions After Days",
+            "When 450 or more sessions are open, archive sessions idle for this many "
+            "days to history, hourly, and post a notification. Pinned sessions, app "
+            "sessions, the open session, sessions with a running turn, a pending "
+            "approval or sub-agents, crew worker sessions and sessions an auto-nudge "
+            "loop drives are kept. 0 = never.",
+            restart=True,
+        ),
+    )
     surface_channel_sessions: bool = field(
         default=True,
         metadata=_meta(

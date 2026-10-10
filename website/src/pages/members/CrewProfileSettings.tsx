@@ -11,6 +11,8 @@ import { useAvailableModelsQuery } from '../../hooks/useAvailableModels'
 import { EFFORT_LEVELS, effortLabel, modelSupportsEffort } from '../../lib/effort'
 import { crewDisplayName } from '../../components/AgentSelector'
 import { Field, ModelField } from '../KiroCrewAgentsPage'
+import { uiLocation } from '../../uiLocations/uiLocation'
+import { GuideTrustRootRegion } from '../../guide/trustRoot'
 
 /** The approval modes a crewmate's record may pin, in label order; YOLO is process-global. */
 const MODES = ['normal', 'trust_reads', 'trust'] as const
@@ -119,15 +121,20 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
     <section className="rounded-2xl border border-border bg-bg px-3.5 py-3" data-testid="crew-profile-settings">
       {waiting && <p className="mb-2 text-[12px] text-muted" role="status" data-testid="crew-profile-settings-waiting">{t('pages.membersPage.profile_settings_waiting')}</p>}
       <fieldset disabled={saving || waiting} aria-busy={saving || waiting} className="flex flex-col gap-3 min-w-0 border-0 p-0 m-0">
-      <Field label={t('pages.membersPage.profile_permissions')} hint={modeHint}>
-        <SimpleSelect
-          options={[...MODES]}
-          optionLabels={[t('components.approvalModePicker.normal_label'), t('components.approvalModePicker.reads_label'), t('components.approvalModePicker.trust_label')]}
-          value={mode}
-          onChange={(v) => void save('approval_mode', v)}
-          aria-label={t('pages.membersPage.profile_permissions')}
-        />
-      </Field>
+      {/* The crewmate's approval mode is its own ceiling: no guide points at it,
+          by location id or by name, and its portalled options carry the mark too. */}
+      <GuideTrustRootRegion>
+        <Field label={t('pages.membersPage.profile_permissions')} hint={modeHint}>
+          <SimpleSelect
+            options={[...MODES]}
+            optionLabels={[t('components.approvalModePicker.normal_label'), t('components.approvalModePicker.reads_label'), t('components.approvalModePicker.trust_label')]}
+            value={mode}
+            onChange={(v) => void save('approval_mode', v)}
+            aria-label={t('pages.membersPage.profile_permissions')}
+            {...uiLocation('members.permissions')}
+          />
+        </Field>
+      </GuideTrustRootRegion>
       {/* "Inherited" alone does not say what runs: name the model it resolves to. */}
       <ModelField
         options={modelOptions}

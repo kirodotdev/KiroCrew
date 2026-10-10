@@ -1306,8 +1306,9 @@ def test_no_owner_captures_a_name_tests_rebind_on_the_facade() -> None:
 #: layer and the factory that built it. The order is a security contract: latency is
 #: outermost, the deny-audit boundary is outer to every barrier that can refuse, the
 #: SEL request audit is inner to them, the per-slot ownership checkpoint is inner to
-#: token auth and the audit record, and the workflow and crewmate-prune gates are
-#: appended after the explicit list.
+#: token auth and the audit record, and the workflow and crewmate-prune gates and the
+#: change-card hook (innermost, after auth has classified the caller) are appended
+#: after the explicit list.
 _DASHBOARD_CHAIN = (
     ("route_latency_middleware", "make_route_latency_middleware.<locals>."),
     ("deny_audit_middleware", "_make_deny_audit_middleware.<locals>."),
@@ -1408,7 +1409,10 @@ _DASHBOARD_BOOT = tuple("""
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred
-    _deferred _deferred _deferred _deferred _deferred _deferred
+    _deferred _deferred _deferred _deferred
+    _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
+    _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
+    _deferred _deferred
     register_all subprocess_executor subprocess_executor subprocess_executor
     subprocess_executor subprocess_executor subprocess_executor _register_deploy_routes
     setup_knowledge_routes setup_weixin_routes setup_feedback_routes
@@ -1470,7 +1474,10 @@ _API_BOOT = tuple("""
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred
-    _deferred _deferred _deferred _deferred _deferred _deferred
+    _deferred _deferred _deferred _deferred
+    _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
+    _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
+    _deferred _deferred
     _register_deploy_routes _register_stt_hooks _register_own_host_warm
     _register_config_watch _register_prevent_sleep_shutdown
     _register_listener_guard_shutdown _register_browser_install_cleanup
@@ -1684,8 +1691,8 @@ def _routes(app: web.Application) -> list[tuple[str, str, str]]:
 #: SHA-256 of the MCP route table's ``"<method> <path> <handler>"`` rows in
 #: registration order, and their count. The table is shared by both entrypoints, so a
 #: route added to it on purpose updates these with it.
-_MCP_TABLE_ROWS = 247
-_MCP_TABLE_DIGEST = "b5e2a820d407a995beede16df4762f44d7656e90be6a48fe9e29e04c23a2a49e"
+_MCP_TABLE_ROWS = 263
+_MCP_TABLE_DIGEST = "e5288be5d1c4ffa54e5acad402079508f90da02e2b45709ef2759245dbc4e3a8"
 
 
 def test_the_mcp_route_table_keeps_its_rows_and_order() -> None:

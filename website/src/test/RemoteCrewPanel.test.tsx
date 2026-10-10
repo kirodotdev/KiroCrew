@@ -1826,3 +1826,43 @@ describe('RemoteCrewPanel', () => {
     })
   })
 })
+
+describe('RemoteCrewPanel per-crew enable toggle', () => {
+  beforeEach(() => {
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+    vi.mocked(api.updateInstance).mockResolvedValue({ ...MANUAL_INSTANCE } as never)
+    vi.mocked(api.connectInstance).mockResolvedValue({ instance_id: 'm1', state: 'connected' } as never)
+  })
+
+  it('turns an enabled crew off without connecting it', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [MANUAL_INSTANCE] })
+    renderWithProviders(<RemoteCrewPanel />)
+    const sw = await screen.findByRole('switch', { name: 'dev-box-1 enabled' })
+    expect(sw).toHaveAttribute('aria-checked', 'true')
+    await userEvent.setup().click(sw)
+    await waitFor(() => expect(api.updateInstance).toHaveBeenCalledWith('m1', { disabled: true }))
+    expect(api.connectInstance).not.toHaveBeenCalled()
+  })
+
+  it('gives a disabled crew one control, its switch, and one status', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue({
+      active: true, warm_set_cap: 5, instances: [{ ...MANUAL_INSTANCE, disabled: true }],
+    })
+    renderWithProviders(<RemoteCrewPanel />)
+    const sw = await screen.findByRole('switch', { name: 'dev-box-1 enabled' })
+    expect(sw).toHaveAttribute('aria-checked', 'false')
+    expect(screen.queryByRole('button', { name: /^Connect/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Turn on/ })).toBeNull()
+    expect(screen.queryByText('Disconnected')).toBeNull()
+  })
+
+  it('turns a disabled crew back on from its switch, which reconnects', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue({
+      active: true, warm_set_cap: 5, instances: [{ ...MANUAL_INSTANCE, disabled: true }],
+    })
+    renderWithProviders(<RemoteCrewPanel />)
+    await userEvent.setup().click(await screen.findByRole('switch', { name: 'dev-box-1 enabled' }))
+    await waitFor(() => expect(api.connectInstance).toHaveBeenCalledWith('m1'))
+    expect(api.updateInstance).toHaveBeenCalledWith('m1', { disabled: false })
+  })
+})

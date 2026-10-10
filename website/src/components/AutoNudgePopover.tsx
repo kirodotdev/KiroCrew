@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, Goal, Pause, Play, Radar, X, Zap } from 'lucide-react'
+import { uiLocation } from '../uiLocations/uiLocation'
 import { Popover, PopoverTrigger, PopoverContent } from './ui/popover'
 import { Btn } from './ui'
 import ErrorNotice from './ErrorNotice'
@@ -897,7 +898,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
                 would refuse the resume anyway, and a live Play here would promise
                 one. Clear is the only way on; a new goal is set after it. */}
             <div className="flex items-center gap-2" data-testid="auto-nudge-controls">
-              <Btn type="button" className={ICON_BTN} onClick={pause} disabled={saving || writeDisabled || !loop.active} aria-label={pauseName} title={pauseName}>
+              <Btn type="button" className={ICON_BTN} onClick={pause} disabled={saving || writeDisabled || !loop.active} aria-label={i18nT('components.autoNudgePopover.pause_loop')} title={pauseName} {...uiLocation('composer.automation.pause')}>
                 <Pause size={14} aria-hidden />
               </Btn>
               <Btn

@@ -193,6 +193,7 @@ from kiro_crew.mcp_gateway.daemon.identity import (  # noqa: F401
     _conn_index_add,
     _conn_index_discard,
     _peer_admitted,
+    _pid_live_tenants,
     _register_pids,
     _resolve_peer_identity,
     _resolve_register_identity,

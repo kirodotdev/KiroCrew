@@ -11,6 +11,7 @@ import { useSandboxDoc } from "../../hooks/useSandboxDoc";
 import { buildSrcdoc, readThemeVars } from "../../lib/widgetSrcdoc";
 import { i18nT } from "../../i18n/t";
 import { fmtDateTime, fmtRelative, toDate } from "../../i18n/format";
+import CrewDashboardEmpty from "./CrewDashboardEmpty";
 
 /**
  * The sandbox grants for a crew's webview, and the ONE line of this file that is
@@ -1014,7 +1015,22 @@ function CrewWebviewView({ slug, member, onSetUp, onLiveFrameChange }: CrewWebvi
  * mints afresh. It mints on mount rather than on Expand, because being on
  * screen is the only reason this component exists.
  */
-export function CrewDashboardFrame(props: CrewWebviewProps) {
+export interface CrewDashboardFrameProps extends CrewWebviewProps {
+  /**
+   * The crew record's `avatar` field, verbatim, for the empty state's face.
+   * The empty state is the crewmate speaking for itself, so it wears the face
+   * the roster row wears; absent, the name-seeded ghost, like everywhere else.
+   */
+  avatar?: unknown;
+  /**
+   * Put a suggested prompt into this crewmate's chat box; the person sends it.
+   * The empty state's prompts are shown only when this is given, because a
+   * prompt with nowhere to land is a dead control.
+   */
+  onAct?: (text: string) => void;
+}
+
+export function CrewDashboardFrame(props: CrewDashboardFrameProps) {
   // Keyed on the exact identity for the drawer's reason: slugs are lossy.
   return (
     <CrewDashboardFrameView
@@ -1024,7 +1040,7 @@ export function CrewDashboardFrame(props: CrewWebviewProps) {
   );
 }
 
-function CrewDashboardFrameView({ slug, member, displayName }: CrewWebviewProps) {
+function CrewDashboardFrameView({ slug, member, displayName, avatar, onAct }: CrewDashboardFrameProps) {
   const { theme, colorTheme, themeVersion } = useTheme();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const themeVars = useMemo(() => readThemeVars(), [theme, colorTheme, themeVersion]);
@@ -1072,14 +1088,11 @@ function CrewDashboardFrameView({ slug, member, displayName }: CrewWebviewProps)
     );
   }
   if (!html) {
-    return (
-      // No set-up control: the crew editor has nothing that makes a crewmate
-      // publish. It publishes through `panel_publish` when asked or on its own
-      // cycle, so the honest next step is asking it in the chat beside this.
-      <div className="p-4 text-[13px] text-muted" data-testid="crew-webview-empty">
-        {i18nT("pages.membersPage.dashboard_empty", { name: displayName || member })}
-      </div>
-    );
+    // No set-up control: the crew editor has nothing that makes a crewmate
+    // publish. It publishes through `panel_publish` when asked or on its own
+    // cycle, so the honest next step is asking it in the chat beside this --
+    // which is what the empty state's prompts are, pre-written.
+    return <CrewDashboardEmpty member={member} displayName={displayName} avatar={avatar} onAct={onAct} />;
   }
   return (
     <div className="h-full min-h-0 flex flex-col" data-testid="crew-dashboard-frame">

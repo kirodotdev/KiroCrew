@@ -1205,6 +1205,55 @@ class TestImportBundle:
         assert "REDACTED" in named[0]["items"]
 
     @pytest.mark.asyncio
+    async def test_an_undeclared_source_entry_is_redacted_in_the_response(self, store):
+        """The account entry for a state row whose source the bundle never declares
+        carries that source id and the document key in the bundle's own words."""
+        bundle = {
+            "sources": [
+                {
+                    "id": "s1",
+                    "name": "Auto-added",
+                    "source_type": "agent",
+                    "uri": "agent://",
+                    "created_at": "2024-01-01T00:00:00",
+                }
+            ],
+            "items": [
+                {
+                    "id": "i1",
+                    "title": "T",
+                    "content": "body",
+                    "item_type": "document",
+                    "source_id": "s1",
+                }
+            ],
+            "agent_item_state": [
+                {
+                    "source_id": "src-AKIAIOSFODNN7EXAMPLE",
+                    "slug": "doc-AKIAIOSFODNN7EXAMPLE",
+                    "content_hash": "h",
+                    "item_ids": json.dumps(["i1"]),
+                    "updated_at": "2024-01-01T00:00:00",
+                    "name": "N",
+                }
+            ],
+        }
+        async with _client(_make_app(store)) as client:
+            resp = await client.post("/api/knowledge/import", json=bundle)
+            assert resp.status == 200
+            result = await resp.json()
+
+        named = [
+            w for w in result["withheld"] if w.get("reason") == "ownership_row_source_undeclared"
+        ]
+        assert named, f"fixture must produce a withheld entry: {result['withheld']}"
+        assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(
+            result
+        ), "bundle-authored credential text reached the import response"
+        assert "REDACTED" in named[0]["source_id"]
+        assert "REDACTED" in named[0]["key"]
+
+    @pytest.mark.asyncio
     async def test_the_stored_document_key_stays_byte_exact(self, store):
         """The control on the other side: redaction belongs to the RESPONSE. The store
         matches this key against a PRIMARY KEY, so a redacted one would not find its own

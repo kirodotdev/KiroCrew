@@ -64,6 +64,7 @@ from kiro_crew.dashboard import (  # noqa: F401
 )
 from kiro_crew.dashboard import server_runtime as _server_runtime
 from kiro_crew.dashboard import (  # noqa: F401
+    slot_retention,
     tailnet,
     tailnet_serve,
 )
@@ -1202,7 +1203,9 @@ async def _revive_intended_instances(
     policy — which instances are picked and the per-instance failure isolation —
     is unit-testable without standing up the whole app.
     """
-    intended = [inst for inst in registry.list() if inst.was_connected]
+    # A disabled crew keeps its intent so enabling it brings it back, but it is
+    # not revived while it stays disabled.
+    intended = [inst for inst in registry.list() if inst.was_connected and not inst.disabled]
     if not intended:
         return
     logger.info("Auto-reconnecting %d instance(s) on startup", len(intended))

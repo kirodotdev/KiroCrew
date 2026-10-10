@@ -317,9 +317,9 @@ The same reading applies at the TOP of a chat that a host crowns with a glass
 chip: the Members page's DM header (the Glass identity pill, the switcher, the
 panel opener) floats over the pane's top edge and the conversation scrolls under
 it (#18325). `ChatPane` takes the band's measured height as `topInset` and pads
-its scroller's rows below it (and hangs its pinned-prompt band under it by the
-same offset); the host measures the header with `useMeasuredHeight`, never a
-constant. Anything with controls that sits between such a header and the pane
+its scroller's rows below it (a crewmate's chat draws no pinned-prompt band,
+#18346, so the inset is the only thing it pays); the host measures the header
+with `useMeasuredHeight`, never a constant. Anything with controls that sits between such a header and the pane
 (a notice, a greeting card) stays in flow, padded below the header, and the pane
 then takes no inset: a control under the glass is an ambiguous tap. The row and
 its cells pass pointer events through; only the controls catch them. Details:

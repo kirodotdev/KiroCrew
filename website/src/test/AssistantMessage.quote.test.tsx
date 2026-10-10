@@ -1,7 +1,7 @@
 /**
  * Quote a whole reply: the row reads seat + Copy + More on every reply shape
  * (the seat is Quote, or Regenerate / Fork / Reply in thread when one holds
- * it), and the bubble's right-click / long-press menu.
+ * it), and the bubble's right-click menu (pointer devices only).
  */
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
@@ -157,5 +157,63 @@ describe('AssistantMessage context menu', () => {
     expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual(['Quote message', 'Copy text', 'Copy link to message', 'Pin message', 'Show raw markdown'])
     fireEvent.click(screen.getByTestId('message-context-copy'))
     expect(copyToClipboard).toHaveBeenCalledWith(LONG)
+  })
+})
+
+/**
+ * On a touch device the bubble belongs to the platform's own long-press
+ * selection: Radix's 700 ms long-press menu (which opened over the fresh
+ * selection and collapsed it) is not drawn, and the selection actions dock
+ * above the composer instead of floating over the platform's handles.
+ */
+describe('AssistantMessage on a touch device', () => {
+  beforeEach(() => {
+    vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => ({
+      matches: query === '(pointer: coarse)' || query === '(hover: none)',
+      media: query, onchange: null,
+      addListener: () => {}, removeListener: () => {},
+      addEventListener: () => {}, removeEventListener: () => {}, dispatchEvent: () => false,
+    }) as MediaQueryList)
+    if (!Range.prototype.getBoundingClientRect) {
+      Range.prototype.getBoundingClientRect = () => new DOMRect(10, 10, 100, 20)
+    }
+  })
+  afterEach(() => { vi.mocked(window.matchMedia).mockRestore(); window.getSelection()?.removeAllRanges() })
+
+  it('draws no bubble menu and leaves the platform callout enabled', () => {
+    render(<AssistantMessage content={LONG} isStreaming={false} slotRunning={false} messageTs="t1" slotKey="chat-1" onTogglePin={() => {}} onQuoteMessage={() => {}} />)
+    const bubble = screen.getByTestId('message-bubble')
+    // The callout opt-out is the trigger's own inline style, so a bare bubble
+    // carries no style attribute from it at all.
+    expect(bubble.getAttribute('style') ?? '').not.toMatch(/touch-callout/i)
+    fireEvent.contextMenu(bubble)
+    expect(screen.queryByTestId('message-context-menu')).not.toBeInTheDocument()
+  })
+
+  it('docks Quote / Ask above the composer instead of floating at a touch selection, and leaves Copy to the platform', () => {
+    render(
+      <>
+        <AssistantMessage content={LONG} isStreaming={false} slotRunning={false} onQuote={() => {}} onAsk={() => {}} />
+        <div data-testid="composer-area" className="input-area" />
+      </>
+    )
+    const composer = screen.getByTestId('composer-area')
+    composer.getBoundingClientRect = () => new DOMRect(0, 700, 400, 80)
+    const md = screen.getByTestId('md')
+    const range = document.createRange()
+    range.selectNodeContents(md)
+    window.getSelection()!.removeAllRanges()
+    window.getSelection()!.addRange(range)
+    act(() => { document.dispatchEvent(new Event('selectionchange')) })
+    act(() => { vi.advanceTimersByTime(400) })
+    const dock = screen.getByTestId('selection-dock')
+    expect(screen.getByRole('button', { name: 'Ask about this' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Quote' })).toBeInTheDocument()
+    // Copy is the platform callout's job on touch.
+    expect(dock.querySelector('button[aria-label="Copy"]')).toBeNull()
+    // Bottom edge above the composer's top (700), not hung off the selection rect (y 10..30).
+    const box = dock.parentElement as HTMLElement
+    expect(parseFloat(box.style.top)).toBeGreaterThan(30)
+    expect(parseFloat(box.style.top)).toBeLessThan(700)
   })
 })

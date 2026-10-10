@@ -695,7 +695,7 @@ command or script runners may access member memory.
 - **Script-mode MCP reads**: `McpToolClient` decodes the server's stdout as UTF-8 with replacement and reads it through `json_line.parse_json_object_line`, so a banner or log line on stdout, a scalar, or a line nested past the decoder's ceiling is skipped instead of failing the handshake or the call. Every line read, a skipped one included, counts toward `_rpc`'s 1000-line cap, so a server that writes only noise fails the call rather than holding it until the job timeout.
 - **Script-mode MCP server lifetime**: `ctx.call_tool()` starts a server on the first call to it and keeps it for the run's later calls to the same server name, so a server that signs in to a service when it starts signs in once per run rather than once per call (a Slack server signing in once per call drew HTTP 429 on most calls of a once-a-minute cron, #16659). At most one server per name is kept. A call the server answers with a tool error (a JSON-RPC `error` reply or an `isError` result, raised as `McpToolError`) keeps the server; a call that fails any other way stops its server and the next call starts a fresh one; a kept server whose process has exited is replaced; a call made while another call to the same server is still running starts a server of its own, so a call the script has given up on never holds up a later one. A server whose start-up sign-in failed and that reports the failure as a tool error is therefore kept as well, and this is accepted. Its own retry rules decide when it signs in again, and one that never retries keeps failing only until the run ends, since the next run starts fresh servers. Restarting it after each such error would sign in again at once, which is the repeated sign-in that keeping servers avoids. The launcher calls `ScriptContext.close()` in a `finally` once the script function returns, which stops every kept server; it never raises, and calls after it keep nothing. A kept server therefore lives until the run ends rather than for one call. A run killed at its timeout never reaches that `finally`, but its kept servers still stop: each runs inside the script child's process group, which the timeout `SIGKILL`s on POSIX, and inside the child's process tree, which `taskkill /T` reaps on Windows (`_kill_proc_group`). Only a server that starts a session of its own (`setsid`) outlives the kill, and it lives until it reads end-of-file on its stdin. `kirocrew cron preview` runs its script on the same `KeptMcpServers` lifecycle, so a previewed call signs in as often as the production run does. Pinned by `test/test_cron_script.py` (`TestScriptContextKeepsServers`, including `test_a_tool_error_keeps_its_server_for_the_next_call`, and `test_the_launcher_closes_the_context_however_the_script_ends`).
 - **Script-mode `notify()` credential**: `ctx.notify()` authenticates `/api/send-message` with an `X-Internal-Secret` the child reads from a 0600 temp file the parent writes at spawn (`_KIROCREW_SECRET_FILE`; the value is scrubbed from the child env by `_CRON_ENV_DENY`). The in-process cron scheduler runs inside the gateway, so `run_script_sandboxed` takes an `internal_secret_provider` callable that returns the gateway's LIVE in-memory secret — the same `app["local_secret"]` the auth middleware compares against — and writes THAT into the file. Deriving the value from `KIROCREW_INTERNAL_SECRET` or the per-port `run/gateway-<port>.secret` file (`_resolve_internal_secret`, env-first then file) is the FALLBACK, correct only for a runner built outside a gateway process (`kirocrew cron preview`, tests) or a gateway started with no dashboard (`--no-dashboard` / API-only). A gateway that re-derived instead of using its own value would mint its child a credential from any stale env var (operator shell, distribution wrapper) or stale file, which the middleware rejects `403 Forbidden` — the failure mode this provider closes. The provided secret is written only to the temp file; it is never logged, placed in the child env or argv, or put in an error string.
-- **Script-mode dashboard sessions**: a dispatcher script lists the folder it files sessions in, opens a session there and seeds it with a first message through `ctx.list_session_folders()`, `ctx.create_session_folder(name)`, `ctx.open_session(name="", *, folder_id="", agent="", model="")` (returns the slot key), `ctx.send_to_session(slot, message)` (returns the gateway's receipt: `{ok, slot}` when the slot is idle and the turn starts, `{ok, queued, queue_id}` when the slot is busy and the turn runs after its current one; nothing streams back either way) and `ctx.set_session_mode(slot, mode)` (sets the session's tool approval mode so unattended work does not wait on a prompt; returns `{ok, mode}`). Folder and session names are redacted like the message and `notify()` text, because they render in the sidebar. They call `GET /api/chat/folders`, `POST /api/chat/folders`, `POST /api/chat/slots`, `POST /api/chat?ws=1` and `POST /api/chat/mode`, all under the `/api/chat` entry of `_MIXED_INTERNAL_API_PATHS`, with the SAME credential `notify()` presents (`X-Internal-Secret` from the 0600 file, `X-Session-Key: cron:<job id>`) plus `X-Session-Token`, the run's signed token from `KIROCREW_STUB_SESSION_TOKEN`, which `ScriptContext` reads and does not pop because `call_tool()`'s MCP children inherit it. The token is load-bearing on these routes: `private_chat_route_refusal` runs `member_request_scope`, which accepts a declared `cron:` key only behind `session_key_is_attested`, and over loopback TCP the signed token is the only attestation a script child has; an absent token and an unverifiable one are refused alike, so sending it on every call, `notify()` included, can only widen what is admitted, never narrow it. Each raises `RuntimeError` on a refusal or transport error, like `notify()`, and a refusal keeps the gateway's own reason (`HTTP 403: {"error": ...}`), redacted. **No dashboard token is involved, by design.** The previous way for a script to reach these routes was to shell out to `kirocrew token`, which `POST /api/token/local` refuses from a sandboxed cron child with `403 member_owner_token_refused`; see [security](security.md) for why that refusal stays and why a cron-registry accept branch was rejected (an owner token would let an agent-written cron set `disable_all`). The internal secret is NOT scoped to these five routes: every sandboxed process that can read the secret file already reaches every entry of the two internal allowlists, so a per-cron credential scoped to five routes would narrow nothing while the same child can read the file. What keeps the secret away from the owner-only surface is the allowlists themselves (no entry is `/api/security`, `/api/governance` or an ancestor of either, and `internal_path_matches` accepts exact or child matches only) plus the owner gates (`require_owner_dashboard_request` needs a `user` claim the internal branch never sets). A cron bound to a crew member runs the folder calls under the member admission in `private_chat_route_refusal` and is refused on `open_session` / `send_to_session` / `set_session_mode`, exactly as that gate answers any member caller on `POST /api/chat/slots`, `POST /api/chat` and `POST /api/chat/mode`. When `agent.session_control` is false the gateway refuses `open_session`, `send_to_session` and `set_session_mode` with `session_control_disabled`, and each method raises `RuntimeError` carrying that code. That check keys on the `cron:` key the caller presents, so it is a courtesy for `ScriptContext` callers and does not stop a holder of the internal secret; [session-control](session-control.md) states the rule. The same three routes apply session-control's creator fence to that key: `open_session`, `send_to_session` and `set_session_mode` reach only slots the same job created, live or persisted, and any other named slot answers 403 `not_creator`, which the method raises as `RuntimeError`. A name no slot or transcript uses still mints the job's own slot on the first two; the mode route mints nothing, so a name no live slot carries answers its ordinary `400 unknown slot` there. The folder methods are not gated, because folders are not session control. **`set_session_mode` sets one slot-scoped posture and nothing else.** On `POST /api/chat/mode` a caller that presents a `cron:` key is held by `cron_mode_refusal` (`handlers/_shared.py`) to `trust` and `trust_reads`, the two postures that leave the process-global override alone: any other mode, `yolo` and `normal` included, answers 403 `mode_not_allowed` before the request reaches the `approval_modes` governance read or `safety_override`, so a cron's `yolo` is refused as a cron's whatever the policy says, and a request that names no slot answers 400 `slot_required` instead of the owner's all-slots grant. The mode is judged before the slot, the slot resolves next, and the creator fence runs on the resolved live slot with no await in between, so the fence judges the slot object the grant is written to. An admitted call is the ordinary slot-scoped grant: the slot's `_trust` or `_trust_reads` is set, the session approval policy is propagated as for the owner, and the global grant is left alone whether it was armed ad hoc or declared in owner config: the declared-grant exemption that lets the owner's slot-scoped `trust` end a declared grant does not reach a `cron:` caller (`and not cron_creator` in `api_chat_mode`), because a scheduled run asking for auto-approval on its own session is not the operator selecting another mode. The allowlist is the handler's own `_SLOT_SCOPED_TRUST_MODES` tuple, now defined in `handlers/_shared.py` and imported by `chat_handlers.py`, so one constant names the slot-scoped modes for both readers; a tuple, so a body whose `mode` is not a string, a list say, answers the audited 403 instead of raising. Every admitted call is recorded as `mode_change:<mode>` with the cron's `cron:<job id>` key as the caller and the slot as the resource, and every refusal, the switch, the mode rule and the fence alike, is recorded by `_audit_cron_chat_denial` as a `chat.control` denial naming the route, the slot and, for the mode rule, the mode. Owner and app callers are not judged by any of these checks and keep today's behaviour on the route; no in-tree caller other than `ScriptContext` presents a `cron:` key to it. A slot `open_session` mints, or `send_to_session` mints by naming a slot that does not exist yet, is labelled cron-created: `origin` `CRON` and `_created_by` set to the `cron:<job id>` key, so it is not counted as a user-created session and the `slots:user` scope does not expose it, while the owner sees it in the sidebar as any cron tab. The seeded first message is still queued as a user-role turn. Pinned by `test/test_cron_script_sessions.py` (request shape, redaction, refusals, the mode call and its refusal codes), `test/test_script_cron_owner_bootstrap.py` (the mint still refuses a live cron child and its descendants) and `test/integration/test_script_cron_sessions.py` (a cron credential gets 403 on `PATCH /api/security/denied-commands/disable-all` and leaves `denied_commands.json` unchanged; a real `ScriptContext` lists, creates, opens, seeds and sets `trust` and `trust_reads` against the booted gateway, is refused `yolo` and `normal` with the override still off, is refused on the owner's slot, another job's slot and an unnamed slot, and is refused the mode route while the switch is off, while the owner still sets and clears every mode on a cron-opened slot). The cron rules on the mode route are pinned at handler level by `test/test_chat_mode_cron.py` (each refusal and its audit record, a non-string `mode` refused rather than raised, the admitted grant under the cron's key, a live and a declared global grant left alone while the owner's slot-scoped `trust` still ends a declared one, and the owner path unchanged) and at gate level by `test/test_chat_routes_cron_switch.py` (`cron_mode_refusal` and the switch on `POST /api/chat/mode`). The gateway refusal under the switch is pinned by `test/test_chat_routes_cron_switch.py` and, against the booted gateway, by `test/integration/test_script_cron_sessions.py`. With the switch off, the booted gateway refuses the cron key on both routes and still admits the owner. The cron-created labelling of an opened slot, the owner's slot staying `USER`, and the creator fence, a cron refused on the owner's slot and on another job's slot with the transcript unchanged, admitted to its own slot and to a slot from its earlier run, and the owner admitted to a cron-opened slot with the switch on and off, are pinned by the same two files.
+- **Script-mode dashboard sessions**: a dispatcher script lists the folder it files sessions in, opens a session there and seeds it with a first message through `ctx.list_session_folders()`, `ctx.create_session_folder(name)`, `ctx.open_session(name="", *, folder_id="", agent="", model="")` (returns the slot key), `ctx.send_to_session(slot, message)` (returns the gateway's receipt: `{ok, slot}` when the slot is idle and the turn starts, `{ok, queued, queue_id}` when the slot is busy and the turn runs after its current one; nothing streams back either way) and `ctx.set_session_mode(slot, mode)` (sets the session's tool approval mode so unattended work does not wait on a prompt; returns `{ok, mode}`). Folder and session names are redacted like the message and `notify()` text, because they render in the sidebar. They call `GET /api/chat/folders`, `POST /api/chat/folders`, `POST /api/chat/slots`, `POST /api/chat?ws=1` and `POST /api/chat/mode`, all under the `/api/chat` entry of `_MIXED_INTERNAL_API_PATHS`, with the SAME credential `notify()` presents (`X-Internal-Secret` from the 0600 file, `X-Session-Key: cron:<job id>`) plus `X-Session-Token`, the run's signed token from `KIROCREW_STUB_SESSION_TOKEN`, which `ScriptContext` reads and does not pop because `call_tool()`'s MCP children inherit it. The token is load-bearing on these routes: `private_chat_route_refusal` runs `member_request_scope`, which accepts a declared `cron:` key only behind `session_key_is_attested`, and over loopback TCP the signed token is the only attestation a script child has; an absent token and an unverifiable one are refused alike, so sending it on every call, `notify()` included, can only widen what is admitted, never narrow it. Each raises `RuntimeError` on a refusal or transport error, like `notify()`, and a refusal keeps the gateway's own reason (`HTTP 403: {"error": ...}`), redacted. The dict `_exchange` hands back for a refusal also carries `status_code` and, when the body names an identifier-shaped one (`[a-z0-9_.-]{1,64}`), the gateway's `code`, so a script that calls `ctx._post` itself, for example on `POST /api/crons/{id}/run`, can tell 409 `member_identity_unavailable` (the owner-surface guard's answer to an unattested `cron:` key) from a job that is already running (409 with no `code`); a transport failure carries neither and stays `{"error": str(exc)}`. **No dashboard token is involved, by design.** The previous way for a script to reach these routes was to shell out to `kirocrew token`, which `POST /api/token/local` refuses from a sandboxed cron child with `403 member_owner_token_refused`; see [security](security.md) for why that refusal stays and why a cron-registry accept branch was rejected (an owner token would let an agent-written cron set `disable_all`). The internal secret is NOT scoped to these five routes: every sandboxed process that can read the secret file already reaches every entry of the two internal allowlists, so a per-cron credential scoped to five routes would narrow nothing while the same child can read the file. What keeps the secret away from the owner-only surface is the allowlists themselves (no entry is `/api/security`, `/api/governance` or an ancestor of either, and `internal_path_matches` accepts exact or child matches only) plus the owner gates (`require_owner_dashboard_request` needs a `user` claim the internal branch never sets). A cron bound to a crew member runs the folder calls under the member admission in `private_chat_route_refusal` and is refused on `open_session` / `send_to_session` / `set_session_mode`, exactly as that gate answers any member caller on `POST /api/chat/slots`, `POST /api/chat` and `POST /api/chat/mode`. When `agent.session_control` is false the gateway refuses `open_session`, `send_to_session` and `set_session_mode` with `session_control_disabled`, and each method raises `RuntimeError` carrying that code. That check keys on the `cron:` key the caller presents, so it is a courtesy for `ScriptContext` callers and does not stop a holder of the internal secret; [session-control](session-control.md) states the rule. The same three routes apply session-control's creator fence to that key: `open_session`, `send_to_session` and `set_session_mode` reach only slots the same job created, live or persisted, and any other named slot answers 403 `not_creator`, which the method raises as `RuntimeError`. A name no slot or transcript uses still mints the job's own slot on the first two; the mode route mints nothing, so a name no live slot carries answers its ordinary `400 unknown slot` there. The folder methods are not gated, because folders are not session control. **`set_session_mode` sets one slot-scoped posture and nothing else.** On `POST /api/chat/mode` a caller that presents a `cron:` key is held by `cron_mode_refusal` (`handlers/_shared.py`) to `trust` and `trust_reads`, the two postures that leave the process-global override alone: any other mode, `yolo` and `normal` included, answers 403 `mode_not_allowed` before the request reaches the `approval_modes` governance read or `safety_override`, so a cron's `yolo` is refused as a cron's whatever the policy says, and a request that names no slot answers 400 `slot_required` instead of the owner's all-slots grant. The mode is judged before the slot, the slot resolves next, and the creator fence runs on the resolved live slot with no await in between, so the fence judges the slot object the grant is written to. An admitted call is the ordinary slot-scoped grant: the slot's `_trust` or `_trust_reads` is set, the session approval policy is propagated as for the owner, and the global grant is left alone whether it was armed ad hoc or declared in owner config: the declared-grant exemption that lets the owner's slot-scoped `trust` end a declared grant does not reach a `cron:` caller (`and not cron_creator` in `api_chat_mode`), because a scheduled run asking for auto-approval on its own session is not the operator selecting another mode. The allowlist is the handler's own `_SLOT_SCOPED_TRUST_MODES` tuple, now defined in `handlers/_shared.py` and imported by `chat_handlers.py`, so one constant names the slot-scoped modes for both readers; a tuple, so a body whose `mode` is not a string, a list say, answers the audited 403 instead of raising. Every admitted call is recorded as `mode_change:<mode>` with the cron's `cron:<job id>` key as the caller and the slot as the resource, and every refusal, the switch, the mode rule and the fence alike, is recorded by `_audit_cron_chat_denial` as a `chat.control` denial naming the route, the slot and, for the mode rule, the mode. Owner and app callers are not judged by any of these checks and keep today's behaviour on the route; no in-tree caller other than `ScriptContext` presents a `cron:` key to it. A slot `open_session` mints, or `send_to_session` mints by naming a slot that does not exist yet, is labelled cron-created: `origin` `CRON` and `_created_by` set to the `cron:<job id>` key, so it is not counted as a user-created session and the `slots:user` scope does not expose it, while the owner sees it in the sidebar as any cron tab. The seeded first message is still queued as a user-role turn. Pinned by `test/test_cron_script_sessions.py` (request shape, redaction, refusals, the mode call and its refusal codes), `test/test_script_cron_owner_bootstrap.py` (the mint still refuses a live cron child and its descendants) and `test/integration/test_script_cron_sessions.py` (a cron credential gets 403 on `PATCH /api/security/denied-commands/disable-all` and leaves `denied_commands.json` unchanged; a real `ScriptContext` lists, creates, opens, seeds and sets `trust` and `trust_reads` against the booted gateway, is refused `yolo` and `normal` with the override still off, is refused on the owner's slot, another job's slot and an unnamed slot, and is refused the mode route while the switch is off, while the owner still sets and clears every mode on a cron-opened slot). The cron rules on the mode route are pinned at handler level by `test/test_chat_mode_cron.py` (each refusal and its audit record, a non-string `mode` refused rather than raised, the admitted grant under the cron's key, a live and a declared global grant left alone while the owner's slot-scoped `trust` still ends a declared one, and the owner path unchanged) and at gate level by `test/test_chat_routes_cron_switch.py` (`cron_mode_refusal` and the switch on `POST /api/chat/mode`). The gateway refusal under the switch is pinned by `test/test_chat_routes_cron_switch.py` and, against the booted gateway, by `test/integration/test_script_cron_sessions.py`. With the switch off, the booted gateway refuses the cron key on both routes and still admits the owner. The cron-created labelling of an opened slot, the owner's slot staying `USER`, and the creator fence, a cron refused on the owner's slot and on another job's slot with the transcript unchanged, admitted to its own slot and to a slot from its earlier run, and the owner admitted to a cron-opened slot with the switch on and off, are pinned by the same two files.
 - **Command mode**: `command` field specifies a shell command to run (mutually exclusive with `script`). Stdout captured as result. The shell is `/bin/sh` or `/usr/bin/sh` only (`cron_script._resolve_command_shell`), never a `PATH` lookup; a candidate the probe finds brace-expanding (a bash under the `sh` name) runs with `+B`. `_vet_shell_command` vets the body at storage and again at fire time, so a command stored before a rule existed fails its run (audited, job kept) rather than running under old rules. It refuses bash brace expansion (`{a,b}`, `{1..9}`), including a quoted regex interval such as `grep -E '[0-9]{1,3}'`, since a nested shell re-parsing the argument would expand it (the remedy for a basic-regex tool is the escaped `"[0-9]\{1,3\}"` in double quotes); a command longer than `_CRON_MAX_COMMAND_SCAN` (8192 characters); and one whose brace scan exhausts its step budget ("too complex to vet"). Each refusal points to a `script` job, whose body is scanned in full.
 - **Timeout**: configurable per job (default 30s for scripts, 300s for commands).
 - **Temp directory**: every run re-validates `tempfile`'s default directory (`_default_temp_dir`): a cached directory that has vanished, such as a reclaimed agent scratch dir inherited at gateway start, is dropped and re-resolved through `tempfile`'s own candidate chain, never recreated. `_clean_cron_env` re-points every present `TMPDIR`/`TMP`/`TEMP` key of the child env at that directory.
@@ -1362,6 +1362,7 @@ specified compatibility change.
 
 - `state.py` — `_ChatSlot` and `DashboardState` data classes; in-memory message buffer (`_MAX_SLOT_MESSAGES` per slot; `append` front-trims to it); `_ChatSlot.append` stamps every non-wire row with `meta.mid`, a per-row **delivery identity** (random, not a counter — a counter rebased after a restore could reissue an id a restored row already holds, and a colliding id makes a client DROP a real message). It is the only thing that lets a client tell one row's second delivery from a different row that looks identical: `ts` cannot (a coarse OS clock stamps same-tick appends identically) and content cannot (two identical messages are legitimate). Preserved when supplied, so it survives the JSONL round trip; the appended row is returned, so a dual-writer (the cron/workflow/crew injectors) reads the minted id off the return and stamps its durable `ConversationLog` copy with the SAME `meta.mid`; skipped for `chunk`/`done`/`streaming`, which are never broadcast as a `chat_message` nor persisted and would pay a uuid4 per streamed token; WS client tracking (`_ws_clients`, `_ws_log_subscribers`); `_broadcast()` sends to both SSE queues and WS clients (dual path — both doors read the SAME note and serialise it through ONE helper, `chat_message_frame(note, *, include_metadata)`, so a field added to the frame cannot reach one transport and miss the other; `cls`/`meta` are carried when the note has them and omitted entirely when it does not, never as an empty key. `include_metadata` names a property of the TRANSPORT, not a preference: the WS arm passes `True` because it filters per socket downstream (`_send_ws_all` → `_ws_client_allowed`, deny-by-default event scope), while `api_stream` passes it only for a dashboard-user token because the SSE fan-out has NO per-app filtering — `meta` carries `tool_input` / a live `oauth_url` / `approval_id`, so an unconditional pass there would expose it to any app token granted that route whatever its `slots:*` scope, the same class as GPT #6789. Enrichment belongs on the door that filters); `broadcast_ws()` for WS-only events (chat_chunk, chat_done, refine); `close_all_ws()` for clean shutdown; `_slack_linked` bool on `_ChatSlot` (set from `SessionMap.get_slack_link()` on slot init); `linked_session_key` str on `_ChatSlot` (when set, `_run_chat` uses this as session key instead of deriving from slot name — enables cron slots to share the cron's persistent session); `_artifact` str on `_ChatSlot` (companion chat: the artifact slug this slot is bound to; parsed at slot create against the slug grammar, exposed as `artifact` in `to_dict()`/WS `slots`, persisted in history meta — see `modules/artifacts.md` § Companion Chat); `push_artifact_update(slug, version, deleted=False)` broadcasts the typed `artifact_update` WS envelope from the artifact mutation funnel; **approval queue**: `_pending_approvals` dict + `_approval_futures` (asyncio.Future per request); the slot projection also folds a slot's live `ApprovalCoordinator` records (`interaction_coordinator.py`) into `pending_approval` and `pending_approval_info` (`origin: "coordinator"`, since such a record writes no transcript row), and the coordinator pushes slots on request and on resolution; `request_approval(..., is_background=False)` creates future + broadcasts WS `approval` event, `resolve_approval()` resolves future (state-level first, then a bare id-match slot scan — safe only for callers that legitimately own the id: native gateway / Slack click / session-scoped handler). `resolve_state_approval()` is the state-level-ONLY variant with no slot scan and thus no cross-slot authority: the slot-approve handler locates the owning slot under a **session-identity** guard (`linked_session_key`/`_history_key_for`) and its no-owner fallback uses `resolve_state_approval` so an ACP `request_id` collision across unrelated slots can't approve a different slot's pending tool. `resolve_slot_approval(slot, id, ..., expected_future=None)` resolves only the named slot's own undone future, never the state registry and never another slot, and with `expected_future` only while the slot still holds that exact future (ids recur within a slot too); the app id-approve route uses it after picking the one controllable slot. Timeout auto-denies AND retires the card (`approval_resolved` clears the client-injected WS approval card; the session key is the requesting slot when live, otherwise `"state"`; SEL records outcome `"expired"`). The coordinator deliberately does not call the permission marker because it owns no slot permission rows and bare ACP ids can collide across the coordinator and chat-runner registries. Interactive sources wait `_APPROVAL_TIMEOUT` (7200s / 2h, pauses for resume); **unattended background sources** (cron/heartbeat/taskrunner — passed `is_background=True` by the gateway) deny-fast after `_BACKGROUND_APPROVAL_TIMEOUT_SECS` (180s / 3 min) since no human is present to respond. **Slot titles**: untitled slots serialize as `NEW_SESSION_TITLE` (`"New Session…"`) via the `_ChatSlot.display_title` property — applied at the serialization boundary so brand-new empty sessions and the pre-LLM-title window all read the same, while slots with a real (non-key) title are unaffected; `push_slot_title(key, title, *, full=True)` broadcasts a title update; callers pass `full=False` to emit only the lightweight `slot_title` event for high-frequency streaming title partials (word-by-word reveal — two characters at a time for a script written without word spaces, where the whole title is one token), then finalize with one default `full=True` call (which also fires a `push_slots_update()`). **Status snapshot**: `status_snapshot()` also carries `branch` and `commit` (from `_build_info`) so clients can detect an actual code update. **Sidebar preview**: `_ChatSlot.to_dict()` skips `assistant`-role turns tagged `meta.kind=="compaction"` (auto-compact notices, `/compact` banners) when picking the `last_message` preview and its OPTIONS, mirroring the frontend's `deriveFollowUpOptions` skip so the sidebar shows the last *real* message
 - `chat.py` — multi-slot chat with per-tab kiro-cli sessions (`dashboard:{slot.key}`), background LLM streaming (survives browser disconnect), session lifecycle management (active ↔ history), chunk cleanup, tool approval flow. Each tab gets its own kiro-cli process for true multi-agent parallelism — tabs can run tools simultaneously. Sessions idle-expire; on restart, the live tab set is restored from `~/.kiro/crew/open_slots.json` (snapshotted on every flush + shutdown by `DashboardState._persist_open_slots()`, which until the boot open-tab restore has run this process MERGES the live keys into the existing on-disk seed rather than pruning it — a flush firing in the pre-restore window, when `_slots` is empty or holds only a tab opened during boot, must not shrink the seed the restore has yet to read, so a crash in that window keeps both the seeded tabs and the boot-time one; the `open_slots_restored` latch, set by both restore drivers on every exit including an early return, flips the writer back to pruning once the live set is authoritative, and a surface that runs no restore stays in the non-pruning merge mode so its writes are never suppressed; replayed on startup by `restore_open_slots()` before the legacy mtime-based `restore_recent_sessions()` so long-running tabs survive regardless of message age; after both restore paths `DashboardState.reseed_slot_counter()` advances `_slot_counter` past the highest restored `chat-<N>-<ts>` index so a newly minted tab can't reuse a low index that collides with a restored tab and scrambles the tab↔session binding), and full tab history is re-injected. `?ws=1` mode returns JSON immediately and pushes chunks via WS. `_prepare_messages()` collapses `chunk` entries into `streaming` role for API responses during active streaming. Timestamp preservation on resume (original `ts` from JSONL) and save (single-pass JSONL write preserving `ts` and `created_at`). **Agent persistence**: `slot.agent` saved to JSONL metadata on close, restored on resume — custom agent sessions survive close/reopen. Pushes `refresh("history")` after chat completion. **Bidirectional Slack sync**: mirrors user messages to linked Slack threads when `slack_client` is available. Stop resets the per-tab session; delete kills the per-tab session via `sessions.remove()` to free resources. **Slash commands**: `_SLASH_COMMANDS` frozenset skips context injection (sent verbatim to kiro-cli). `_BLOCKED_SLASH_COMMANDS` (`/quit`, `/exit`, `/q`, `/chat`, `/paste`, `/reply`, `/editor`, `/tangent`, plus `/todos` on the kiro harness only, which does not implement it; the claude harness forwards it) are rejected before session acquisition — returns warning message without touching kiro-cli — and are excluded from the `GET /api/slash-commands` suggestion payload (both provider paths), so the autocomplete never advertises a command the dashboard rejects. `/compact` is additionally gated as a LOCAL command — above the Slack OPTIONS-expiry boundary and before session acquisition — on the backend's `ACP_BACKENDS_COMPACT` membership (the `manual_compact_unsupported_backend` LLMProvider capability property, peeked off the live session when one exists, else read from the `agent.acp_backend` config the factory would build one with): a backend outside the set (KAS) gets an immediate informational "the <backend> backend manages compaction automatically" assistant message — mirroring the `cc_managed` relationship, not an error — instead of a dispatched prompt whose compaction-status wait would strand for `COMPACT_WAIT_TIMEOUT_SECS` (#7800); because the gate answers before the turn machinery, no session is created and no pending OPTIONS control is struck through. **ACP extension events**: `_run_chat` handles `compaction_status` (shows ✅/❌ completion/failure), `clear_status` (clears slot messages + broadcasts `slot_clear`), `agent_switched` (updates `slot.agent` + resets session + broadcasts `slot_agent_switch`).
+- `slot_retention.py` — keeps the live slot count under `MAX_LIVE_SLOTS` (500) without a click. The open-tab restore builds tabs newest first and stops building ordinary ones at `RESTORE_SLOT_BUDGET` (400); pinned tabs, tabs in a folder (the recent-sessions restore rebuilds those whatever their age), tabs an armed auto-nudge loop drives and crew worker tabs bound to an open work item (`crew_bound_on_disk`; `ledger_wake.worker_closed` reads a worker with no slot as ended) are always built, and the rest stay in history, unrestored and undeleted. If the loop store cannot be read the restore applies no budget. `idle_slot_sweep_loop` runs hourly and, only while the count is at or above `SWEEP_HIGH_WATER` (450, above the restore budget so a fresh boot has headroom), archives slots idle longer than `dashboard.idle_slot_sweep_days` (default 7, 0 = off) through `close_slot`, the tab-✕ path. Whenever the restore leaves tabs in history or the sweep archives some, one `agent` notification (`notify_left_in_history`) says how many and links to `/chat?history=1`. `select_idle_slot_keys` is the one idle selection, shared with the Clean up sessions button (`POST /api/chat/slots/cleanup`): pinned, loop-driven, other-app and unknown-activity slots are kept. The sweep also keeps running and app-owned slots (closing an app slot tells the app the person dismissed it), any slot holding a paused loop (a resume can land while `close_slot` waits to remove it), a slot a connected owner dashboard reports in the foreground (its `slot_focused` frame, cleared on blur and disconnect), a slot with a pending approval of its own or a coordinator approval routed to it (`pending_coordinator_approvals`, which writes no transcript row and does not set `running`), a slot with attached sub-agent work, and a crew worker tab bound to an open work item. The sub-agent check is the shared fail-closed probe the session spec's idle cleanup uses (see session.md "Idle cleanup"): a probe that cannot answer keeps the slot. The selection and the synchronous re-check ask its in-memory half (running children and deliveries in flight); the sweep asks the full `subagents_attached_async` probe, queued children included, right before that re-check. The re-check runs right before `close_slot`, whose first step retires the slot's loop, and again before the pop. The sweep archives nothing while the auto-nudge service is not running. Past the restore budget a tab whose local metadata is unreadable or absent takes the normal path, so an unreadable tab, or a remote-only one after a remote authority restore, stays in the reopen seed.
 - `chat_handlers.py` + `chat_api/` — the chat HTTP handlers' composition.
   `dashboard/chat_handlers.py` is the chat API's only import path and its only
   patch surface (`chat.py` re-exports it). The modules of `dashboard/chat_api/` hold
@@ -4247,7 +4248,7 @@ polled by this watchdog.
 |---|---|
 | `routes.tsx` | `lazyPage` and the query-keeping redirect elements the route table mounts |
 | `boot/terminalRestore.ts` | The two looks at the terminal sessions that rule on the restored docked and side-panel terminal tabs; the ruling stays with `useBottomTerminal` and `usePanelTabs` |
-| `boot/firstRun.tsx`, `boot/startupVideo.tsx` | The first-run chapters (Import setup, Privacy, the Customize tour, Meet CrewMates) in `OnboardingShellHost`; the startup feature clip and what it yields to |
+| `boot/firstRun.tsx`, `boot/startupVideo.tsx` | The first-run chapters (Import setup, Privacy, the Customize tour, Meet CrewMates) in `OnboardingShellHost`; the startup feature clip and what it yields to. In the look-preview frame (`utils/lookPreview.ts`: the scaled dashboard the Customize tour's "Pick your look" step embeds at `/chat?look-preview=1`) `App.tsx` mounts none of these hosts -- one block covering every self-opening launch surface, pinned by `test/App.lookPreviewFrame.test.tsx` -- so nothing ever shows over the dashboard inside its own preview |
 | `nav/navItems.ts`, `nav/navTip.ts`, `nav/appRail.tsx`, `nav/railBadges.ts`, `nav/routeActive.ts`, `nav/railChrome.tsx`, `nav/adaptiveMobileRail.tsx` | The rail (`adaptiveMobileRail` folds the secondary tiles into the Apps scroller on a short phone rail): its static descriptors, the collapsed-row hover label, `advertisedNavItems` and the Apps order (drag reorder, hidden slots), the app, approval, Discover and notification badge maps and the apps' run states (`NavBadge` in `App.tsx` adds the registry's own counts and draws every indicator), the lit row, and the brand row and community links |
 | `nav/mobileConnect.tsx`, `nav/developerMode.ts` | The phone-connection methods behind the "Connect your phone" row, and its dialog; developer mode as the Developer row reads it |
 | `topbar/metricsReadout.tsx`, `topbar/kiroUsageReadout.tsx`, `topbar/requestFeature.ts` | The readout capsule's system-metrics segment and hover card, its Kiro credit segment, and Request a Feature |
@@ -5521,3 +5522,263 @@ Installed skill discovery resolves the signed session's active agent mapping and
 project. Search/list/read share that scope, return stable full keys, and use offset
 pagination. Search responses include an incomplete flag while bounded body indexing
 is still progressing; the MCP renderer makes this visible rather than claiming absence.
+
+### Registered-action guides
+
+Guide-marked HTML is
+parsed in an inert document and has reserved attributes removed without HTML assignment.
+Markdown-link detection scans delimiters linearly, including repeated unmatched brackets.
+
+The optional `kirocrew-guide` server offers an ordered list of registered actions
+through strict-internal `/api/guide/agent/*` routes. The caller's existing slot is
+derived from its verified session identity; a tool payload cannot select another
+slot. App, unattended and unresolved callers are refused. The default `kirocrew`
+template mounts this server and grants automatic approval only to `guide_list_actions`,
+`guide_status` and `guide_start`, filtered through the governance ceiling.
+`guide_start` only offers a card in the slot's chat that the owner must press
+Start on. Cancelling a guide still requires approval; no grant permits
+navigation or a configuration write.
+
+The owner browser reads `/api/guide/pending` and explicitly claims a guide before
+navigation or prefill. Claim, progress, heartbeat, cancel, dismiss, replay, refuse and
+observe are owner-only routes;
+revision checks and a per-tab lease prevent another tab from silently advancing
+it. An explicit takeover is distinct from Start. Pending state is held by this
+gateway, survives a browser reload, and is lost on gateway restart. Guides have
+a finite lifetime and closed-slot guides are retired on the next state check.
+A new offer in the same chat supersedes the chat's unfinished guide (status
+`cancelled`, reason `superseded`), so the chat never holds two live guides and
+the older offer's row settles to its result line.
+Cancellation does not undo an already-submitted save. A guide's offer is a
+row of its chat's conversation at the point it was offered (a `card` transcript row,
+`history.md` "Card rows"), so an ended guide keeps its result line there across a
+reload: `pending` serves each slot's newest ended guide
+for 24 hours (unless a newer guide is in progress, the slot was closed, or the owner
+dismissed it), the row itself records the final status for after that, and ended
+guides are pruned after seven days, within the store's fixed cap. When a cancelled or
+expired guide leaves the creation flow it opened untouched, the Crewmates page
+closes that flow so the chat and its result line show; a flow the user edited
+stays open.
+
+**The offering agent's own words.** The dashboard stays the source of truth for where and
+which control; the offering agent may add plain text of its own. `guide_start`
+takes an optional guide-level `intro` and an optional `note` per action (one
+note per action, never a per-step array: it is shown under the action's final
+step, which every action has and which is the target in every `ui.show`
+placement, so a note cannot outnumber or misalign with the steps).
+`guide_catalog.clean_guide_text` collapses line breaks and tabs to one space and
+REFUSES, with a message naming the field and the limit, rather than truncating:
+over 200 characters (`intro`) or 160 (`note`), any other control character or a
+bidirectional override/isolate, a link (`http(s)://`, `www.`), markup (`<`,
+`>`, a backtick, `[text](target)`), and any text the output redactors would
+change (`guide_catalog.needs_redaction`: the exfiltration-URL scrubber, then the
+credential redactor through the platform context) -- the text is shown as
+written, so a credential is refused (`invalid_text`), never stored redacted. The stored text rides on the guide record
+(`intro`, `actions[i].note`) and is not written to the guide's transcript row or
+the crew log, which keep only action ids. The browser draws it only in the guide
+offer card (the intro, under the title) and the guide panel (the intro on the
+first step of the first action; a note on its action's final step; a step that
+is both shows one block, the note when the action has one, else the intro),
+always below the template line, which stays, and attributed with "From
+{name}" for the crewmate whose pinned thread offered the guide (`GuideAgentNote`,
+the guide's `slot_key` matched against the roster, muted theme tokens), as React
+text; a guide offered from an ordinary chat shows the words without a "From" line.
+
+**Guide panel details.** A select step whose pick was already made is held as a
+confirm step with Next; its line names the list only while the picker is drawn
+(`select_confirm_<entity>`), and while the picker is folded away (a crewmate
+chat hides the roster) the panel floats with `select_confirm_unseen_<entity>`,
+which says what Next does without sending the person to a list they cannot see.
+The finish chip ("Guide complete" plus the way back) shown away from the guide's
+chat leaves by itself `GUIDE_FINISHED_DISMISS_MS` (10 s) after the guide ended
+or on the second move to another page, whichever comes first. The 10 s count
+from the end as `GuideContext` first saw it (`finishedAt`), not from when the
+chip was last drawn, so a route change, the viewed chat settling (which hides
+and re-shows the chip) or a remount re-arms only what is left. Only keyboard
+focus inside the chip holds it (re-armed while a key, not a pointer press, was
+the last input); focus a click left there (Done, then focus following to the
+way back) does not, and when the chip leaves with focus in it focus goes back
+where it was before the panel took it, else to the main region; its X still closes it at once, and none of these
+writes a dismissal, so the chat's result line stays.
+
+The actions are `settings.show`, `crewmate.create`, `mcp.open_add` and `ui.show`.
+Routes and anchors come from product registries, never model-supplied selectors
+or scripts. Settings guidance excludes credential and access-control controls
+and reports no setting values. Crewmate drafts reuse the embedded creation flow.
+`mcp.open_add` carries no parameters and pre-fills nothing: it points at the
+existing MCP servers tab, then its Add Custom button, then the open form's
+server JSON box (where command, args and env go), and completes when the
+person presses Done there. It never reports an installed server; the user fills
+in and saves that form through the unchanged owner-only MCP save handler.
+`ui.show {location_id, pick?}` points at one indexed dashboard location, such as Older
+Sessions in the Sessions sidebar. `pick` (a name, accepted only for a plan with a
+choose step whose list's rows carry their entity's name: `agents.crew-list`,
+`members.roster-list`, `schedule.job-list`, `apps.library.app-list`, `artifacts.list`,
+`UI_SHOW_PICKABLE_PICKERS`) is the
+item the user named: the choose step outlines only the row whose
+registered pick name (`guidePick`) is exactly that name, never a row whose text merely contains
+it; when no row or several carry it, the whole list is outlined for the person
+to choose, never the only row in its place. The step completes only once that
+entity is the one open (or, for a one-job move, the one job ticked). Without a
+pick, the picker's only item is outlined, and the step is passed when that only
+item's next control already shows; a removal still asks the person to confirm
+first, naming the entity actually open. Moving one job to a folder has the
+person tick that job alone (`one_job_checked`), because the folder button moves
+every ticked job; moving them all is `schedule.select-all`'s. In Library, opening
+one app card's ⋯ menu picks that app (`app_tile_menu_open`, the card's name as
+it shows it; the choose step outlines that card's ⋯, its pick control): its
+Details, Disable and Uninstall items are the steps after it, and
+Uninstall, like every removal, never finishes on a press. A built-in app's card
+also registers its manifest name as an alias (`guidePickAlias`), so a pick of
+"Command Bar" finds and binds the card shown as 命令栏, and the panel names the
+card as it is shown. A pick can carry across a route: an artifact is chosen in
+the library (`artifacts.list`, `artifact_open`) by opening it, and its own page
+(`/artifacts/<slug>`, under the same placement route) reports the pick with the
+artifact's name, so Move to folder, Version and Comments stay bound to it there;
+opening another artifact's page is the choice changing, and the guide goes back
+to the choose step even though the library is not drawn. The open session's
+sidebar row is the pick of `session_open` (`aria-current`): a step bound to it
+whose control every row draws (the row's ⋯) points at that row's copy, and the
+open row keeps its actions shown, so Rename and Pin are planned without a
+pointer on the row. An open dialog on top of the target's (a confirm opened
+from inside a job's panel) hides the outline: the topmost modal is the one
+compared. In the crew editor the
+section a control is drawn in (Model, Workspace · Memory, Danger zone) is a
+step of its own, pointed at in the editor's section rail while it is closed. It is accepted only for a location whose
+generated plan ships with the find_ui index; the generator plans a registered
+location only when its prerequisites are a viewport, reveal steps or preview
+flags, it is not destructive (a fixed deny list plus a per-descriptor
+`guide: false`), and it has no guide action of its own. Settings stay with
+`settings.show`. A plan is version 2: one step list per placement (viewport),
+the lists may differ in length, and every step has an id. Starting the guide
+claims the current viewport's placement; the gateway records that placement's
+step ids, and the tab's reports may name only those, so a guide is never walked
+along another placement's list. A takeover from another viewport may switch
+placements only before the guide has moved past the first step of that action.
+The steps are the plan's: each reveal control or menu, then the location. Every
+step but the last names the reveal scope it opens, compiled with the plan from
+the descriptors' `shown_by`, their registered parents and the declared
+`UI_REVEAL_SCOPES`; the generator refuses a reveal cycle or a contradictory
+declaration. A reveal or menu step is done the moment its scope's owner reports
+it open (`<GuideRevealScope>`: the sessions sidebar and drawer in `ChatPage`,
+the shared dropdown menu, popover and tab panel through a `guideScope` prop, and
+the custom menus, sheet and tab of the planned locations at their call sites;
+the message box, the chat side panel, the navigation rail, the docked terminal
+panel, the phone menu and the crewmate roster report their own open state, and
+a disclosure such as Older Sessions reports through one shared disclosure hook),
+or as soon as a later step's control is on screen, so an open sidebar or menu is
+skipped. A reveal control's own runtime conditions (the sessions sidebar toggle
+is drawn only with an open session, in the full dashboard) travel with its step
+as live predicates from a closed vocabulary with one browser evaluator each;
+while the control is absent and a predicate is unmet the guide shows what is
+needed instead of pointing, and its reason reads `predicate_unmet`. A control
+needing a condition outside that vocabulary is not guided at all. A gate the
+path needs (developer mode, a preview flag) is a first step of its own: on, it
+passes at once; off, the guide pauses on a line naming the setting that turns
+it on, its reason reads `gate_off` with that setting's id, and it goes on by
+itself once the gate is on; the guide never changes the setting. A selection the
+path needs (a session, a crewmate or a job open) is a step pointing at that
+page's list with "Choose the <entity> you want…"; it is done only when the page
+reports that one is open, and with nothing to choose it says "There's no
+<entity> yet" (reason `needs_selection`) instead of pointing anywhere. Which
+entity was chosen never leaves the page. When the window crosses the phone
+width mid-guide, the tab asks the gateway to walk the new layout's steps from
+where it is; that is allowed only where both layouts have walked the same
+steps so far, otherwise the step shows its target missing as before. A reveal
+or menu step names where it leads, never the control it points at ("Press the
+highlighted button to show “Older Sessions”."), since an icon-only toggle's
+accessible name means nothing to someone looking at an icon. The last step
+is acknowledged and says what comes next ("“Older Sessions” is highlighted.
+Press it when you're ready, or Done to close the guide."). Pressing that
+highlighted control on a `ui.show` guide's last step ends the guide exactly as
+Done does (the same `observed` report, after the control's own handler), so the
+panel does not stay over whatever the press opened. A destructive control's last
+step (`caution: true` in its plan) is different: the panel adds a warning line in
+the warning tone ("This is a destructive action: anything it deletes or removes
+is gone for good. The guide only points at it; nothing happens unless you press
+it."), and a press on the control never ends the guide by itself. Only a press
+of a registered final control (`guideConfirm()`: a confirm dialog's Delete,
+the job panel's confirm, Library's Uninstall, TeamDialog's final "Delete
+team <name>") ends it (`guideConfirmWatch.ts`), or Done. The pressed control
+vanishing, or the dialog it was pressed in closing, is never read as
+confirmed: an inline confirm (TeamDialog's first "Delete team" only swaps in
+"Keep team" and the real delete) keeps the guide waiting while its dialog is
+open, "Keep team" is no answer, and the dialog closing without the final
+press is unknown. A dialog the press opened that showed a final control and
+closed any other way is cancelled; one that showed none is unknown. The
+settings resolver (`resolveSettingElementStrict`) never takes a
+`data-setting-*` row inside agent or file content (`data-guide-untrusted`),
+and the markdown and SVG sanitizers drop those attributes as they drop the
+guide's own markers. The open session's choice is frozen by its session key
+(`useGuideSelection` `identity`, kept in the tab), so opening another session
+on a later step sends the guide back to choosing. A crewmate's tools are
+reached on the Crewmates page: choose the crewmate, open its profile card from
+the header, then its Permissions row (`members.permissions`), which opens the
+editor. A target is exactly one visible element
+carrying that location's marker, otherwise the step is missing; when several
+copies are visible at once the missing report says so and the guide's reason is
+`ambiguous_target`. The guide opens
+the plan's page for the current viewport, keeps the address when the person is
+already there, and never clicks or saves anything.
+
+A `ui.show` guide carries the build digest of the index the gateway accepted it
+against, the same digest the dashboard bundle was generated with. A tab whose
+bundle carries another refuses the guide with "prepared for a different version
+of the dashboard" and tells the gateway, so the guide's reason reads
+`build_mismatch` until a reloaded tab takes it.
+
+The live UI map (`guide/liveRegistry.ts`) answers, for a curated location, what
+this tab shows right now: `pointable` (one copy, displayed, enabled, in the
+viewport), `offscreen`, `hidden`, `unmounted`, `disabled`, `ambiguous` (several
+displayed copies) or `unknown` (not this build's). It reads the trusted target
+registry the `uiLocation(id)` spread's ref fills (`uiLocations/targetRegistry.ts`),
+so no control registers twice and DOM that only copies the attribute is never a
+copy. An agent's
+`find_ui` asks one tab for these states, and for the open/closed/unknown state
+of the reveal scopes and the met/unmet/unknown state of the predicates on those
+locations' plans, through an owner-only frame and reply (ids and enum states
+only, never text, answered within the request's wait or reported
+`not_observed`); from them it names a result's `blocker`: `gate_off` (with the
+setting id), `needs_selection`, `predicate_unmet`,
+`hidden_in_scope` (a closed sidebar, menu or panel on the path) or
+`not_observed`. A tab that owns a guide and does not answer in time marks it
+`stale_tab` until its next heartbeat. Observations stay in memory and are never
+stored.
+
+`ui.show` also points at an auto location, a control the find_ui auto tier found
+without a registration, but only one the generator judged guidable: drawn by a
+reviewed shared primitive (Btn, SendBtn, IconButton, the Toggle switch, a
+TabsTrigger, a DropdownMenuItem), the only render site behind its search entry,
+not inside a menu, dialog, sheet or tab panel, on pages with no prerequisite of
+their own, not on or reached through the Security, Computer Use, Secrets or
+Instances settings tabs (denied: the agent's own ceiling), not deny-listed, and
+with a label the sensitive-word lint (sign out, approve, import, stop...) does
+not flag. A destructive one (a `danger` prop or variant, a delete/remove/clear
+label, or caution-listed) is guidable with the caution step above. A control a
+file several pages share is indexed under every one of those pages, and its plan
+has one placement per page, all at the same control: the guide walks the
+placement of the page the person is on when it is one of them, else the first,
+and the page's exactly-one rule decides whether the control there is the one
+visible instance. Every other auto location is search-only: find_ui returns it
+without a guide. The build stamps each guidable control with
+a `data-ui-auto` marker carrying its render-site id (a curated control keeps its
+own marker and is never stamped), and the guide is one step: open its page, point
+at that one control. The gateway accepts it only from the auto tier the dashboard
+bundle ships, when that tier was built against the shipped index; the guide then
+carries the auto tier's own digest, and a tab from another build refuses it as
+`build_mismatch`. With no auto tier (a source checkout that was never built), an
+auto location is not guidable at all. The live map reports such a control like a
+curated one, under the same exactly-one rule.
+
+The frontend may acknowledge navigation and form steps, but cannot declare a
+save successful. A guide-scoped request header associates the actual owner save
+with the waiting action before the request runs; only the handler's successful
+response with the created identity advances its commit step. A refused, ambiguous
+or cancelled save never becomes a successful guide result. Completion reports the
+actual saved identity, including a name the user edited in the draft.
+
+Guide instructions occupy space above the page, rather than covering its title.
+Only the non-interactive
+arrow and outline overlay a target. Missing controls stop the guide instead of
+falling back to another element. Existing form drafts and navigation guards remain
+in force.

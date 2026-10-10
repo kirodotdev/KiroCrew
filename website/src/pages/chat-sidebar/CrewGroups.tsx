@@ -9,6 +9,7 @@ import type { CrewBadge, CrewGroup } from '../../hooks/useInstanceSessions'
 import { i18nT } from '../../i18n/t'
 import { safeSetItem } from '../../utils/safeStorage'
 import ErrorNotice from '../../components/ErrorNotice'
+import { Btn } from '../../components/ui'
 import { CREW_COLLAPSED_LS_KEY, readCollapsedCrews } from './persistence'
 import type { Slot } from './types'
 
@@ -24,13 +25,15 @@ const BADGE_CLS: Record<CrewBadge, string> = {
   reconnecting: 'text-warn',
   error: 'text-danger',
   offline: 'text-muted',
+  disabled: 'text-muted',
 }
 
 const badgeLabel = (badge: CrewBadge): string => (
   badge === 'online' ? i18nT('pages.chatSidebar.crew_status_online')
     : badge === 'reconnecting' ? i18nT('pages.chatSidebar.crew_status_reconnecting')
       : badge === 'error' ? i18nT('pages.chatSidebar.crew_status_error')
-        : i18nT('pages.chatSidebar.crew_status_offline')
+        : badge === 'disabled' ? i18nT('pages.chatSidebar.crew_status_disabled')
+          : i18nT('pages.chatSidebar.crew_status_offline')
 )
 
 /** Collapsed crew ids, persisted in localStorage so a reload keeps the user's
@@ -53,6 +56,30 @@ export function useCollapsedCrews(): [ReadonlySet<string>, (id: string) => void,
   return [collapsed, toggle, expand]
 }
 
+/** Enable for a disabled crew, plus the notice for a failed one. The sidebar
+ *  holds it, not the group: once the flag is cleared an unreachable crew with no
+ *  rows drops out of the groups, and its failure must still be on screen. */
+export function useCrewEnable(enable: (id: string) => Promise<unknown>, nameOf: (id: string) => string) {
+  const [failure, setFailure] = useState<{ id: string; message: string } | null>(null)
+  const onEnable = useCallback((id: string) => {
+    setFailure(null)
+    enable(id).catch((e: unknown) => setFailure({ id, message: (e as Error)?.message || String(e) }))
+  }, [enable])
+  const notice = failure && (
+    <ErrorNotice
+      key="crew-enable-error"
+      title={i18nT('pages.chatSidebar.crew_enable_failed', { name: nameOf(failure.id) })}
+      message={failure.message}
+      askAgent
+      actionPlacement="below"
+      className="mx-2 mb-1"
+      testId="crew-enable-error"
+      onDismiss={() => setFailure(null)}
+    />
+  )
+  return { onEnable, notice }
+}
+
 export function LocalGroupHeader() {
   return (
     <div className={HEADER_CLS} data-testid="machine-group-local">
@@ -63,8 +90,10 @@ export function LocalGroupHeader() {
 
 /** One crew's group: header with chevron, name, badge and row count, then its
  *  rows. An offline crew's rows are the last cached answer, drawn dimmed. */
-export function CrewGroupSection({ group, rows, collapsed, onToggle, hideWhenEmpty, chevron, renderRows }: {
+export function CrewGroupSection({ group, rows, collapsed, onToggle, hideWhenEmpty, chevron, renderRows, onEnable }: {
   group: CrewGroup
+  /** Turns a disabled crew back on; it reconnects. */
+  onEnable?: (id: string) => void
   rows: Slot[]
   collapsed: boolean
   /** The sidebar's own disclosure chevron, passed in so this owner draws none. */
@@ -110,7 +139,19 @@ export function CrewGroupSection({ group, rows, collapsed, onToggle, hideWhenEmp
               testId={`crew-group-error-${group.id}`}
             />
           )}
-          {group.offline && (
+          {group.disabled ? (
+            <div className="px-3 pb-1 flex items-center gap-2 text-[11px] text-muted">
+              <span className="min-w-0">{i18nT('pages.chatSidebar.crew_group_disabled')}</span>
+              {onEnable && (
+                <Btn onClick={() => onEnable(group.id)}
+                  data-testid={`crew-group-enable-${group.id}`}
+                  aria-label={i18nT('pages.chatSidebar.crew_enable_named', { name: group.name })}
+                  className="shrink-0 text-[11px] py-0.5 px-2">
+                  {i18nT('pages.chatSidebar.crew_enable')}
+                </Btn>
+              )}
+            </div>
+          ) : group.offline && (
             <div className="px-3 pb-1 text-[11px] text-muted">{i18nT('pages.chatSidebar.crew_group_offline')}</div>
           )}
           {rows.length === 0

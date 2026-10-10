@@ -250,10 +250,10 @@ describe('EmbeddedHostBridge (option B relay)', () => {
     // --mc-win-caption-reserve custom property, so they cannot drift by
     // construction. The main process sets that property inline on <html>
     // (= :root) from its own zoom factor (142/zoom px); the static 142px
-    // default on :root covers the first paint, non-Electron contexts, and the
-    // cross-origin embedded pane (where the host var is not inherited — the
-    // pane's own :root default supplies the prior static reserve, unchanged by
-    // this change). This asserts both halves: the shared variable is used
+    // default on :root covers the first paint and non-Electron contexts; the
+    // cross-origin embedded pane does not inherit the host var, so the bridge
+    // sets the relayed winCaptionReserve on the pane's own <html> and the
+    // :root default covers a host that relays none. This asserts both halves: the shared variable is used
     // everywhere, and the 142px default lives on :root (NOT on .win-electron,
     // which sits on the inner shell div and would shadow the inline <html>
     // value for the header subtree). */
@@ -277,6 +277,44 @@ describe('EmbeddedHostBridge (option B relay)', () => {
     // default (asserted above) means a context without the main-process var
     // lays out exactly as the previous static rule did.
     expect((css.match(reserveRule) || []).length, 'all reserve rules read the shared var').toBeGreaterThanOrEqual(3)
+  })
+
+  it('adopts the host window\'s zoom-aware caption reserve on its own <html>', async () => {
+    // The pane is a separate document: the --mc-win-caption-reserve the main
+    // process sets on the HOST <html> is not inherited, but the pane is painted
+    // at the host's page zoom. Without the relayed value the pane header keeps
+    // the static 142px default, which paints narrower than the caption buttons
+    // below 100% zoom and puts the bell under Minimize.
+    vi.spyOn(window.parent, 'postMessage').mockImplementation(() => {})
+    const store = createTestStore()
+    const { unmount } = renderWithProviders(<EmbeddedHostBridge />, { store })
+    const send = (over: Partial<HostModel>) => act(() => {
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          source: window.parent,
+          data: { type: 'mc-host-model', ...model(over) },
+        }),
+      )
+    })
+    const reserve = () => document.documentElement.style.getPropertyValue('--mc-win-caption-reserve')
+
+    send({ winInset: true, winCaptionReserve: '178px' })
+    await waitFor(() => expect(reserve()).toBe('178px'))
+
+    // A malformed value from across the postMessage boundary is never applied.
+    send({ winInset: true, winCaptionReserve: '1px; color: red' as string })
+    expect(reserve()).toBe('')
+
+    send({ winInset: true, winCaptionReserve: '142px' })
+    expect(reserve()).toBe('142px')
+    // No Windows inset: the pane falls back to its own :root default.
+    send({ winInset: false, winCaptionReserve: '178px' })
+    expect(reserve()).toBe('')
+
+    send({ winInset: true, winCaptionReserve: '178px' })
+    expect(reserve()).toBe('178px')
+    unmount()
+    expect(reserve()).toBe('')
   })
 
   it('reads a model without winInset as false — an older host has no Windows inset to relay', async () => {

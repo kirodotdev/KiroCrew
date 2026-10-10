@@ -146,7 +146,7 @@ describe('SchedulePage jobs table sticky Actions column', () => {
     expect(src).toMatch(/attachJobsScroller\(el\?\.parentElement \?\? null\)/)
     // `[^>]*` admits the resize min-width `style` after the ref; the ref itself
     // must stay the stable wrapper.
-    expect(src).toMatch(/<Table className="table-fixed[^"]*" ref=\{attachJobsTable\}[^>]*>/)
+    expect(src).toMatch(/<Table className="table-fixed[^"]*"[^>]*\{\.\.\.uiLocation\('schedule\.job-list', attachJobsTable\)\}[^>]*>/)
     // The cue is gated on the MEASURED right-overflow flag, never painted
     // unconditionally: a permanent seam lies on a full-width desktop table.
     const cue = src.match(/\{jobsTableEdges\.right && \(\s*<div aria-hidden="true" data-testid="jobs-table-cue-right" className="([^"]*)"/)

@@ -19,6 +19,40 @@ only needs the text of a public page may be answered without the browser at all.
 Driving it is for the cases that need interaction, a logged-in session, or a page
 whose content only exists once its scripts have run.
 
+## Browsing outside the desktop app
+
+Only the desktop app has the built-in browser. In a plain browser tab or on a
+remote gateway, the agent browses through the Playwright agent CLI on the gateway
+host instead, and the **Browser** panel shows a live view of that browser. Check
+whether the CLI is there:
+
+```bash
+command -v playwright-cli
+```
+
+If that prints nothing, install it from **Settings → Browser** in one click, or in
+a terminal (needs Node.js 20 or newer):
+
+```bash
+npm install -g @playwright/cli@latest
+playwright-cli install-browser              # --with-deps on Debian/Ubuntu only
+playwright-cli install --skills agents --global
+```
+
+### The Browser panel stays blank over an SSH tunnel
+
+The live view is served on its own loopback port, which changes on every start,
+so a tunnel that forwards only the dashboard port cannot reach it. Pin it, forward
+it, and restart:
+
+```bash
+kirocrew config set dashboard.browser_view_port 7912     # on the gateway host
+ssh -NL 5476:localhost:5476 -L 7912:127.0.0.1:7912 <host> # from your machine
+kirocrew restart                                         # on the gateway host
+```
+
+Then reopen the dashboard.
+
 ## Local addresses are refused
 
 The agent cannot navigate the panel to `localhost`, a loopback address, or a

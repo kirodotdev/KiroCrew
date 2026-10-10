@@ -4894,7 +4894,7 @@
     "onboardingFlow": {
       "answers_set_how_kiro_explains_things_plain_langu": "Answers set how Kiro explains things — plain language or full technical detail. Saved on this device; change anytime in Settings → Chat.",
       "back": "Back",
-      "choose_a_color_theme_and_mode_you_can_change_it": "Choose a color theme and mode — you can change it anytime.",
+      "choose_a_color_theme_and_mode_you_can_change_it": "Choose a mode, a color theme and translucent panels — you can change it anytime.",
       "color_theme": "Color theme",
       "continue": "Continue",
       "couldn_t_save_your_answers_press_next_to_retry_o": "Couldn't save your answers — press Next to retry, or Skip again to\n            continue without saving.",
@@ -6852,7 +6852,12 @@
       "include_top_level_folders": "Include top-level folders",
       "no_empty_folders": "No empty folders to delete.",
       "some_folders_kept": "Some folders were kept: they are no longer empty.",
-      "deleting_folders": "Deleting…"
+      "deleting_folders": "Deleting…",
+      "crew_status_disabled": "Off",
+      "crew_group_disabled": "Off. No connection until you enable it.",
+      "crew_enable": "Enable",
+      "crew_enable_named": "Enable {{name}}",
+      "crew_enable_failed": "Could not enable {{name}}"
     },
     "contextBreakdown": {
       "axis_turn_n": "Turn {{n}}",
@@ -7526,8 +7531,6 @@
       "deploy_state_unknown": "A deploy finished {{age}} ago in {{region}}. This page cannot tell whether it is still running.",
       "deploy_check_console": "Check the AWS console in {{region}} to see whether it is still running.",
       "deploy_action_manage": "Open Remote Crew in Settings",
-      "meet_crewmates": "Meet CrewMates",
-      "meet_crewmates_hint": "A guided intro that creates your first crewmate.",
       "agent_template": "Built from",
       "roster_load_failed_ask": "Ask {{productName}} about this (opens a chat)",
       "roster_load_retry": "Try again",
@@ -7673,7 +7676,13 @@
       "profile_sessions_tab": "Sessions",
       "profile_goals_tab": "Goals",
       "profile_goals_soon": "Goals are coming soon: set what {{name}} is working toward and follow its progress here.",
-      "dashboard_empty": "{{name}} has not published a dashboard yet. Ask it in this chat, and what it publishes shows here.",
+      "dashboard_empty_region": "{{name}}'s dashboard: nothing published yet",
+      "dashboard_empty_bubble_title": "I haven't published a dashboard yet.",
+      "dashboard_empty_bubble_body": "Once I publish one, it shows here: key numbers, where things stand, what needs your decision. Tell me in the chat what you want on it.",
+      "dashboard_empty_prompts_lead": "Or start from one of these. It goes into your chat box for you to edit and send.",
+      "dashboard_empty_prompt_publish": "Publish a dashboard showing what you're working on, how it's going, and what's next.",
+      "dashboard_empty_prompt_update": "Each time you finish a piece of work, update the dashboard: what you did, the key numbers, and anything you need me to decide.",
+      "dashboard_empty_prompt_pick": "Choose the three numbers I should keep an eye on. Publish just those, with a one-line reason for each.",
       "profile_permissions": "Permissions",
       "profile_effort_hint": "Higher levels think longer, answer slower, and cost more.",
       "profile_settings_waiting": "These unlock once the chat with this crewmate is open.",
@@ -8856,7 +8865,7 @@
         "text_streaming_style": "Text Streaming Style",
         "time_window_for_session_restoration": "Time window for session restoration",
         "when_enabled_inline_tool_pills_show_simplified_t": "When enabled, inline tool pills show simplified tool use purpose instead of the exact command being run",
-        "which_model_new_sessions_start_with_pick_a_model": "Which model new sessions start with when their agent pins none. Set a model per agent under Capabilities → Agents, or pick one inside a session to override it there.",
+        "which_model_new_sessions_start_with_pick_a_model": "Which model new sessions start with when their agent pins none. Set a model per agent under Customize → Crewmates, or pick one inside a session to override it there.",
         "which_part_of_a_subagent_s_stream_to_keep_when_i": "Which part of a subagent's stream to keep when injecting its completion event into the parent session. Head preserves the start (default). Tail preserves the final summary. Both keeps a slice from each end with a marker between them.",
         "widget_density": "Widget Density",
         "your_role": "Your Role",
@@ -9532,7 +9541,12 @@
         "your_code": "Your code: {{code}}",
         "your_crews": "Your crews",
         "reported_host": "{{host}} (reported)",
-        "reported_host_hint": "This crew reports being on this machine. This dashboard has no route to it and never dials it — the connection rides the crew that reaches it."
+        "reported_host_hint": "This crew reports being on this machine. This dashboard has no route to it and never dials it — the connection rides the crew that reaches it.",
+        "crew_enabled": "Connections: On",
+        "crew_disabled": "Connections: Off",
+        "crew_enabled_named": "{{name}} enabled",
+        "crew_toggle_failed": "Could not change {{name}}: {{error}}",
+        "crew_switch_hint": "Off closes this dashboard's connection to that crew and keeps it closed. Sessions on the machine keep running."
       },
       "webhooksPanel": {
         "inbound_webhooks": "Inbound webhooks",
@@ -9943,6 +9957,15 @@
       "secret_value_aria": "Secret value",
       "save_error": "Could not save secret: {{error}}",
       "delete_error": "Could not delete secret: {{error}}"
+    }
+  },
+  "uiLocations": {
+    "description": {
+      "chat_memory_mode": "The memory mode button above the message box. It switches this chat to incognito or temporary memory, or back to persistent.",
+      "chat_model_picker": "The model button in the message box. It shows this chat's model and opens the model picker.",
+      "chat_session_title": "The session's title at the top of the chat. Its text is the session's name; click it to rename the session.",
+      "composer_approval_mode": "The approval-mode picker in the message box's control row. It sets whether tool calls ask first (Normal), run reads without asking (Reads), trust this session (Trust), or auto-approve everything (YOLO).",
+      "composer_voice_input": "The microphone button in the message box. Press it to dictate instead of typing; on a touchscreen it switches between the keyboard and hold-to-talk."
     }
   }
 }

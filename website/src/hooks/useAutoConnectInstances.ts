@@ -19,8 +19,8 @@
  * WHY EACH GUARD EXISTS
  *  - Default-on setting (mc-auto-connect): each connect is a real SSH session +
  *    a remote token mint, so a many-crew user can turn the whole behavior off.
- *  - Per-instance opt-out (mc-auto-connect-exclude): skip a specific crew (a
- *    flaky or rarely-used host) without disabling the rest.
+ *  - Per-crew off switch (the crew record's `disabled`): a crew its owner
+ *    turned off is never a target; the gateway would refuse it anyway.
  *  - Warm-set cap: connecting past the cap would only make the viewport evict
  *    an equal number, so we target at most `warmCap` crews and skip any already
  *    connected — no thrash.
@@ -46,8 +46,6 @@ import { connectInstanceInto } from '../lib/connectInstance'
 
 /** Global default-on switch. Absent key ⇒ on; '0' ⇒ off. */
 export const AUTO_CONNECT_KEY = 'mc-auto-connect'
-/** JSON array of instance ids the user opted OUT of auto-connect for. */
-export const AUTO_CONNECT_EXCLUDE_KEY = 'mc-auto-connect-exclude'
 
 /** How many connects run at once — each is an SSH session + a remote mint. */
 const CONCURRENCY = 3
@@ -62,21 +60,9 @@ export function autoConnectEnabled(): boolean {
   }
 }
 
-/** Read the opt-out id set, tolerant of a missing/corrupt value. */
-export function readAutoConnectExcludes(): Set<string> {
-  try {
-    const raw = localStorage.getItem(AUTO_CONNECT_EXCLUDE_KEY)
-    if (!raw) return new Set()
-    const arr = JSON.parse(raw)
-    return Array.isArray(arr) ? new Set(arr.filter(x => typeof x === 'string')) : new Set()
-  } catch {
-    return new Set()
-  }
-}
-
 /**
  * Pure target picker (unit-tested): the crews auto-connect should raise right
- * now. A crew is a target when it is NOT excluded and NOT already live — "live"
+ * now. A crew is a target when it is NOT turned off and NOT already live — "live"
  * means it has a warm entry AND its polled status is `connected`, mirroring the
  * (re)connect gate in useSelectInstance so a dropped tunnel (warm-but-not-
  * connected) is retried. The cap is a budget of NEW connects against the warm
@@ -87,7 +73,6 @@ export function readAutoConnectExcludes(): Set<string> {
 export function selectAutoConnectTargets(
   instances: InstanceView[],
   warm: Record<string, WarmConn>,
-  excluded: Set<string>,
   warmCap: number,
 ): string[] {
   const isLive = (inst: InstanceView) => !!warm[inst.id] && inst.status?.state === 'connected'
@@ -97,7 +82,8 @@ export function selectAutoConnectTargets(
   const out: string[] = []
   for (const inst of instances) {
     if (out.length >= budget) break
-    if (excluded.has(inst.id)) continue
+    // Turned off by the owner: the gateway would refuse it anyway.
+    if (inst.disabled) continue
     // No pane to warm: a fargate crew's connect is a real SSM session that
     // would only be spent on a card nobody asked to open.
     if (!hasDashboardPane(inst)) continue
@@ -151,9 +137,8 @@ export function useAutoConnectInstances() {
     if (!data?.active || !data.instances?.length) return
 
     const warmCap = data.warm_set_cap || WARM_SET_CAP_AUTO_CEILING
-    const excluded = readAutoConnectExcludes()
     const now = Date.now()
-    const targets = selectAutoConnectTargets(data.instances, warmRef.current, excluded, warmCap)
+    const targets = selectAutoConnectTargets(data.instances, warmRef.current, warmCap)
       // Drop anything attempted within the cooldown so a focus burst can't spam
       // the same host's SSH + mint.
       .filter(id => now - (lastAttempt.current[id] ?? 0) >= COOLDOWN_MS)

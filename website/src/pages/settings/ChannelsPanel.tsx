@@ -172,6 +172,7 @@ export function ChannelsPanel({ basePath }: { basePath?: string } = {}) {
       listLabel={i18nT('pages.settings.channelsPanel.chat_channels')}
       backLabel={i18nT('pages.settings.channelsPanel.channels')}
       basePath={basePath}
+      guideTargetPrefix="settings.sub.channels."
     >
       {active => {
         const selected = CHANNELS.find(c => c.key === active)

@@ -24,6 +24,10 @@ import { setFocusModeEnabled } from '../hooks/useFocusMode'
 
 const MAC_INSET_CLASS = 'embedded-mac-inset'
 const WIN_INSET_CLASS = 'embedded-win-inset'
+const WIN_CAPTION_RESERVE_PROP = '--mc-win-caption-reserve'
+// Whole-pixel lengths only: the value crosses a postMessage boundary and is
+// written into this document's inline style.
+const WIN_CAPTION_RESERVE_RE = /^\d{1,4}px$/
 
 // Backoff (ms) between re-announcements of `mc-embedded-ready`, applied AFTER
 // the initial announce. The handshake is: child posts `mc-embedded-ready`, the
@@ -93,6 +97,9 @@ export function parseHostModel(data: unknown): HostModel | null {
     // Absence -> false is correct here (unlike `focusMode`): an older host that
     // omits the field simply has no Windows caption inset to relay.
     winInset: !!d.winInset,
+    winCaptionReserve: typeof d.winCaptionReserve === 'string' && WIN_CAPTION_RESERVE_RE.test(d.winCaptionReserve)
+      ? d.winCaptionReserve
+      : undefined,
     // Tri-state on purpose: `false` and "the host never sent the field" must
     // not collapse. An older host omits it AND ignores the pane's echoed
     // `mc-set-focus-mode`, so coercing absence to `false` would revert a
@@ -171,6 +178,13 @@ export default function EmbeddedHostBridge() {
       dispatch(setHostModel(model))
       document.documentElement.classList.toggle(MAC_INSET_CLASS, model.macInset)
       document.documentElement.classList.toggle(WIN_INSET_CLASS, model.winInset)
+      // Adopt the host's zoom-aware reserve; without one the pane's own :root
+      // default (142px) applies.
+      if (model.winInset && model.winCaptionReserve) {
+        document.documentElement.style.setProperty(WIN_CAPTION_RESERVE_PROP, model.winCaptionReserve)
+      } else {
+        document.documentElement.style.removeProperty(WIN_CAPTION_RESERVE_PROP)
+      }
       // Adopt the host window's focus mode. `echo: false` because this IS the
       // relayed value — sending it back up is what would make the two frames
       // ping-pong. A toggle the user drives inside this pane still echoes.
@@ -197,6 +211,7 @@ export default function EmbeddedHostBridge() {
       for (const t of retryTimers) window.clearTimeout(t)
       document.documentElement.classList.remove(MAC_INSET_CLASS)
       document.documentElement.classList.remove(WIN_INSET_CLASS)
+      document.documentElement.style.removeProperty(WIN_CAPTION_RESERVE_PROP)
       setFocusModeEnabled(false, { echo: false })
       dispatch(setHostModel(null))
     }

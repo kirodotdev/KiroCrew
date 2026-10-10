@@ -205,7 +205,10 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, sessio
       fetch('/api/agents/catalog', {
         headers: sessionKey ? { 'X-Session-Key': sessionKey } : { ..._sk },
       }).then(j) as Promise<{ agents: KiroCrewAgent[]; default_agent: string }>,
-    createKirocrewAgent: (body: object) => post('/api/agents', body).then(j),
+    /** `extra` carries per-request headers (a guided create's `X-Guide-*`);
+     *  it rides THIS request only, never the shared transport. */
+    createKirocrewAgent: (body: object, extra?: Record<string, string>) =>
+      (extra ? post('/api/agents', body, undefined, extra) : post('/api/agents', body)).then(j),
     // Crew Members page — roster of GLOBAL crews with DM-thread binding and the
     // cheap live-status fields the backend can answer without IO (richer live
     // detail rides the already-subscribed WS `slots` frames).

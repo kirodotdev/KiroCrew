@@ -380,9 +380,16 @@ describe('crew groups', () => {
     expect(crewGroupsFor(list, []).map(g => g.id)).toEqual(['astro'])
     const relay = { executor: 'remote', instance_id: 'chick' }
     expect(crewGroupsFor(list, [relay])).toEqual([
-      { id: 'astro', name: 'astro', badge: 'online', offline: false },
-      { id: 'chick', name: 'chick', badge: 'offline', offline: true },
+      { id: 'astro', name: 'astro', badge: 'online', offline: false, disabled: false },
+      { id: 'chick', name: 'chick', badge: 'offline', offline: true, disabled: false },
     ])
     expect(crewGroupsFor([], [relay, { peer_id: 'astro' }])).toEqual([])
+  })
+
+  it('keeps a group for a disabled crew with no rows, badged disabled', () => {
+    const list = [{ ...OFFLINE, disabled: true }] as unknown as InstanceView[]
+    expect(crewGroupsFor(list, [])).toEqual([
+      { id: 'chick', name: 'chick', badge: 'disabled', offline: true, disabled: true },
+    ])
   })
 })

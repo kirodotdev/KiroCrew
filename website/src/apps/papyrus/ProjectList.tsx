@@ -20,6 +20,7 @@ import { pruneSlots } from './lib'
 
 import { i18nT } from '../../i18n/t'
 import { useImeGuard } from '../../hooks/useImeGuard'
+import { guideCaution } from '../../guide/trustRoot'
 
 export interface ProjectListProps {
   onOpenProject: (name: string) => void
@@ -340,6 +341,7 @@ export default function ProjectList({ onOpenProject }: ProjectListProps) {
                       <button
                         type="button"
                         aria-label={i18nT('apps.papyrus.page.delete_paper', { name: project.name })}
+                        {...guideCaution}
                         title={i18nT('apps.papyrus.page.delete_paper', { name: project.name })}
                         onClick={() => {
                           // Deleting a paper is `rmtree` on the server with no

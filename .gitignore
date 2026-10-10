@@ -65,6 +65,11 @@ src/kiro_crew/static/dist
 # staging lock (src/kiro_crew/frontend.py). An untracked leftover here makes
 # the checkout read as dirty, which fail-closes Dev Fleet's "Prune merged".
 src/kiro_crew/static/.dist.*
+# find_ui's auto tier is a BUILD-TIME artifact (`npm run build` writes it into
+# website/dist, shipped as static/dist/ui-index.auto.json; both dirs are ignored
+# above). Wherever else a hand-run `gen:ui --auto-out` drops it, it is never
+# committed: every new static-label button changes it.
+ui-index.auto.json
 
 # Disposable scratch for Dev Fleet's Pull+Build installability probe
 # (npm_preflight). It lives in the checkout rather than TMPDIR so the rehearsal

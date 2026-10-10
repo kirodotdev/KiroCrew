@@ -3987,9 +3987,20 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                 target_source = (source_id_map.get(raw_source)
                                  if isinstance(raw_source, str) else None)
                 key = _bundle_state_text(f"{table}.{key_col}", row.get(key_col))
-                if target_source is None or not key:
+                if not key:
                     continue
                 group = _bundle_item_group(row.get("item_ids"))
+                if target_source is None:
+                    # A text source id the bundle never declares resolves to no source
+                    # here, so the row is skipped and the items it names arrive unowned.
+                    # The account names the row in the bundle's own words, as every other
+                    # unowned-arrival path does; the handler redacts these fields by name.
+                    stranded = sorted(set(group) & inserted_items)
+                    if isinstance(raw_source, str) and stranded:
+                        dropped.append({"reason": "ownership_row_source_undeclared",
+                                        "table": table, "source_id": raw_source,
+                                        "key": key, "items": ",".join(stranded)})
+                    continue
                 if not group:
                     continue
                 existing = self.db.execute(

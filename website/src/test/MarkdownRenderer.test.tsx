@@ -329,6 +329,20 @@ describe('isPathCandidate — path chip pre-filter', () => {
     expect(isPathCandidate('/home/user/notes/cafe\u0301-menu\u0308')).toBe(true)
     expect(isPathCandidate('~/दस्तावेज़/रिपोर्ट.md')).toBe(true) // Devanagari (virama/matra/nukta)
   })
+  it('accepts emoji segments — pictographs, flags and ZWJ sequences', () => {
+    // Emoji are filename-legal but are neither \p{L}, \p{M} nor \p{N}.
+    // Escapes keep the exact code points visible in review.
+    expect(isPathCandidate('notes/\u{1F389} plan.md')).toBe(true) // pictograph, relative + ext
+    expect(isPathCandidate('~/trips/\u{1F1EF}\u{1F1F5} Japan')).toBe(true) // flag = two regional indicators
+    expect(isPathCandidate('/home/me/\u{1F469}\u200D\u{1F4BB} work/todo.txt')).toBe(true) // ZWJ sequence
+    expect(isPathCandidate('/home/me/party \u{1F389}')).toBe(true) // emoji as the LAST character
+    expect(isPathCandidate('C:\\Users\\me\\\u{1F389}\\plan.md')).toBe(true) // drive-rooted shape
+    // No root and no extension is still prose, emoji or not.
+    expect(isPathCandidate('\u{1F389}/\u{1F38A}')).toBe(false)
+    expect(isPathCandidate('party')).toBe(false)
+    expect(isPathCandidate('\u{1F389}')).toBe(false)
+  })
+
 
   it('accepts a bare relative path whose Unicode basename has an ASCII extension', () => {
     // The extension positive-signal must not require the whole basename to be

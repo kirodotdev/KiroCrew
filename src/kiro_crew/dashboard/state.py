@@ -6226,6 +6226,10 @@ class DashboardState:
         # ``len(_slots)`` alone undercounts by however many imports are in flight,
         # and each concurrent import would then be waved past a full-slot cap.
         self._slots_under_construction: set[str] = set()
+        # The slot each connected owner dashboard reports in the foreground, by
+        # connection (``slot_retention.note_foreground``). The idle sweep never
+        # archives a slot someone is looking at.
+        self._foreground_slots: dict[int, str] = {}
         self._slack_to_slot: dict[str, str] = {}  # Slack session_key → slot name
         # Live OPTIONS controls, keyed by the SESSION KEY that owns them.
         #

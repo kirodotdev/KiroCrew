@@ -43,3 +43,31 @@ export function persistLiquidGlass(on: boolean): void {
     // Storage may be unavailable (private mode, quota); the attribute still applies for this session.
   }
 }
+
+/**
+ * Written once, by the first-run "Pick your look" step, the first time it seeds
+ * the switch for a fresh install (`components/OnboardingFlow.tsx`). Off is
+ * stored as the ABSENT `mc-liquid-glass`, so without this marker a user who
+ * turned the glass off and then reloaded before finishing the tour (or came
+ * Back from step 2) would be read as a fresh install and seeded on again. The
+ * marker, not the key, is what says "the default has been offered here".
+ */
+export const LIQUID_GLASS_SEEDED_KEY = 'mc-liquid-glass-seeded'
+
+/** True when the first-run default was already offered in this browser (or
+ *  the store cannot be read, in which case nothing could persist anyway). */
+export function liquidGlassSeeded(): boolean {
+  try {
+    return localStorage.getItem(LIQUID_GLASS_SEEDED_KEY) !== null
+  } catch {
+    return true
+  }
+}
+
+export function markLiquidGlassSeeded(): void {
+  try {
+    localStorage.setItem(LIQUID_GLASS_SEEDED_KEY, '1')
+  } catch {
+    // Blocked store: the glass setting itself cannot persist either.
+  }
+}

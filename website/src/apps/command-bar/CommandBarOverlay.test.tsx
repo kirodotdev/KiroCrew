@@ -920,6 +920,33 @@ describe('CommandBarOverlay rows', () => {
     expect(dispatch).toHaveBeenCalledWith({ type: 'switchSlot', key: 'slot-a', announceOnMissing: true })
   })
 
+  it('never drops a blocked session: past the cap a final row counts the rest and reveals them', () => {
+    // Eight sessions wait on the reader. The section keeps its cap of six so it stays
+    // a glance, but the seventh and eighth must not vanish from both groups: a row at
+    // the end says how many more are waiting, and pressing it shows every one.
+    storeState.dashboard.slots = Array.from({ length: 8 }, (_, i) => ({
+      key: `slot-${i}`,
+      title: `Blocked ${i}`,
+      pending_approval: true,
+      messages: 2,
+    }))
+    const onClose = mount()
+    const blockedTitles = () =>
+      screen.getAllByRole('option').map(r => r.textContent ?? '').filter(t => /Blocked \d/.test(t))
+    expect(blockedTitles()).toHaveLength(6)
+    const more = rowByText('+2 more blocked')
+    expect(more).toBeTruthy()
+    // It ends the section: the row right after it is no longer a blocked session.
+    const rows = screen.getAllByRole('option')
+    expect(rows.indexOf(more)).toBe(6)
+    fireEvent.mouseDown(more)
+    expect(blockedTitles()).toHaveLength(8)
+    expect(screen.queryByText('+2 more blocked')).toBeNull()
+    // Revealing is in place: the bar stays open and no session was switched to.
+    expect(onClose).not.toHaveBeenCalled()
+    expect(dispatch).not.toHaveBeenCalled()
+  })
+
   it('shows no attention section when nothing is waiting on the user', () => {
     // A section that is always present is a section the user learns to skip; the whole
     // value of this one is that its presence means something. A RUNNING session is not

@@ -43,6 +43,7 @@ vi.mock('../../components/SimpleSelect', () => ({
 }))
 
 import CrewProfileSettings from './CrewProfileSettings'
+import { isTrustRootTarget } from '../../guide/findTargetPolicy'
 import { ApiError } from '../../api/apiError'
 import { MEMBERS_ROSTER_QUERY_KEY } from '../../api/membersQuery'
 
@@ -87,6 +88,13 @@ describe('CrewProfileSettings permission', () => {
   it.each([['normal', 'Normal'], ['trust_reads', 'Reads']])('shows a stored %s as stored, not the default', (mode, label) => {
     setup(member({ approval_mode: mode }))
     expect(screen.getByTestId('value-Permissions')).toHaveTextContent(label)
+  })
+
+  it('keeps the permission picker out of reach of a name-only guide', () => {
+    setup(member())
+    // `members.permissions` is denied by id; a guide that asks for "Permissions"
+    // by name must be refused too, so the picker sits in a trust-root region.
+    expect(isTrustRootTarget(screen.getByTestId('select-Permissions'), 'Permissions')).toBe(true)
   })
 
   it('says under the picker what the chosen mode lets the crewmate do', () => {

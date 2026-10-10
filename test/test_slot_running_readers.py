@@ -169,6 +169,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # Idle-only teardown: the same pre-lock and in-lock probe via
                 # _switch_target_busy, so a reserved slot between stages is busy.
                 ("session_control.py", "reload_target"),
+                # The idle sweep never picks or pops a slot holding a reservation.
+                ("slot_retention.py", "_still_idle_check"),
+                ("slot_retention.py", "select_idle_slot_keys"),
                 ("state.py", "_ChatSlot.enqueue_or_run_prompt"),
                 ("ws.py", "_handle_slot_focused"),
             }
@@ -181,7 +184,7 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # The synthesis outage re-check fires only on an idle slot: a
                 # running TURN, not a reservation, is what it must not overlap.
                 ("chat_runner.py", "_arm_synthesis_recheck"),
-                # A kirocrew-guide tool call is admitted only from the turn this
+                # A guide or card tool call is admitted only from the turn this
                 # slot is executing; a reservation has no tool call yet.
                 ("handlers/guide.py", "_resolve_agent_caller"),
                 ("slot_projection.py", "SlotProjection.to_dict"),

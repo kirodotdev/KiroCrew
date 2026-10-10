@@ -20,6 +20,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { AlertTriangle, CheckCircle2, RefreshCw, ShoppingBag, X } from 'lucide-react'
 import { EmptyState, IconButton, PageHeader, SearchInput } from '../../components/ui'
+import { uiLocation } from '../../uiLocations/uiLocation'
 import SimpleSelect from '../../components/SimpleSelect'
 import { Tabs, TabsContent, TabsCount, TabsList, TabsTrigger } from '../../components/ui/tabs'
 import { TABS_RAIL_ROW_CLASS } from '../../components/ui/tabsPill'
@@ -371,6 +372,7 @@ function DiscoverPageBody() {
               degraded-catalog state it repairs also starves the Updates
               worklist, whose update map derives from the same registry rows. */}
           <IconButton
+            {...uiLocation('apps.refresh-store')}
             aria-label={i18nT('pages.appsPage.refresh_store')}
             title={i18nT('pages.appsPage.refresh_store')}
             onClick={handleRefresh}

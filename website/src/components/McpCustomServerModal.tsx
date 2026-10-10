@@ -23,6 +23,7 @@ import { Btn } from './ui'
 import type { McpCustomSpec } from '../types'
 
 import { i18nT } from '../i18n/t'
+import { guideAnchor, maybe } from '../uiLocations/targetRegistry'
 interface Props {
   open: boolean
   onClose: () => void
@@ -206,7 +207,7 @@ export default function McpCustomServerModal({ open, onClose, editName }: Props)
         : i18nT('components.mcpCustomServerModal.add_custom_server')}
       maxWidth={640}
     >
-      <div className="flex flex-col gap-3 p-1">
+      <div className="flex flex-col gap-3 p-1" {...maybe(editing ? undefined : 'mcp.custom-form', guideAnchor)}>
         {!editing && (
           <p className="text-xs text-muted m-0">
             {i18nT('components.mcpCustomServerModal.paste_an')} <code>{i18nT('components.mcpCustomServerModal.mcpservers')}</code> {i18nT('components.mcpCustomServerModal.block_from_a_readme_a')}{' '}
@@ -241,6 +242,7 @@ export default function McpCustomServerModal({ open, onClose, editName }: Props)
           placeholder={editing ? '' : PLACEHOLDER}
           spellCheck={false}
           aria-label={editing ? i18nT('components.mcpCustomServerModal.server_spec_json') : i18nT('components.mcpCustomServerModal.servers_json')}
+          {...maybe(editing ? undefined : 'mcp.custom-json', guideAnchor)}
           className={`w-full ${editing ? 'min-h-[220px]' : 'min-h-[400px]'} rounded-md border border-border bg-bg px-3 py-2 font-mono text-[12px] text-text focus-ring-accent resize-y`}
         />
 

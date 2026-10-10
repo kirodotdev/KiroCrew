@@ -221,7 +221,7 @@ function listsSessions(inst: InstanceView): boolean {
 /** The badge a crew group header shows, from `TunnelStatus.state`. There is
  *  no "needs auth" badge: an auth failure diagnoses the same as an unreachable
  *  host today. `disconnected` and `stopped` both read as offline. */
-export type CrewBadge = 'online' | 'reconnecting' | 'error' | 'offline'
+export type CrewBadge = 'online' | 'reconnecting' | 'error' | 'offline' | 'disabled'
 
 export function crewBadge(state: string | undefined): CrewBadge | null {
   if (state === 'connected') return 'online'
@@ -238,6 +238,8 @@ export interface CrewGroup {
   name: string
   badge: CrewBadge | null
   offline: boolean
+  /** The owner turned this crew off; the group offers Enable. */
+  disabled: boolean
   /** `TunnelStatus.error`, shown as the badge's tooltip. */
   error?: string
 }
@@ -263,12 +265,14 @@ export function crewGroupsFor(
     if (id) owned.add(id)
   }
   return instances
-    .filter(inst => listsSessions(inst) || owned.has(inst.id))
+    // A disabled crew keeps its group, so the Enable action stays in reach.
+    .filter(inst => listsSessions(inst) || owned.has(inst.id) || !!inst.disabled)
     .map(inst => ({
       id: inst.id,
       name: inst.name || inst.id,
-      badge: crewBadge(inst.status?.state),
+      badge: inst.disabled ? 'disabled' : crewBadge(inst.status?.state),
       offline: !isConnected(inst),
+      disabled: !!inst.disabled,
       ...(inst.status?.error ? { error: inst.status.error } : {}),
     }))
 }

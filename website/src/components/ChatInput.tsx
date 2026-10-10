@@ -1,4 +1,6 @@
 import { useRef, useEffect, useMemo, useCallback, useId, memo, lazy, Suspense } from 'react'
+import { GUIDE_KEEP_CLEAR } from '../guide/trustRoot'
+import { useGuidePredicate } from '../guide/guidePredicates'
 import { markComposerResize } from '../utils/composerResize'
 import { ArrowUp, Loader2, RotateCw, Sparkles, Target, CheckCircle, Lock, FolderOpen, ClipboardList, PenLine, MoreHorizontal, Terminal } from 'lucide-react'
 import SketchDialog from './SketchDialog'
@@ -41,6 +43,7 @@ import { useStopDeclinedHint } from '../hooks/useStopDeclinedHint'
 import { useScrollEdges } from '../hooks/useScrollEdges'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from './ui/dropdown-menu'
 import { i18nT } from '../i18n/t'
+import { uiLocation } from '../uiLocations/uiLocation'
 import { fmtDateFields } from '../i18n/format'
 import SessionRefStrip from './SessionRefStrip'
 import { Glass } from './Glass'
@@ -58,6 +61,7 @@ import { useAutoCompactThreshold } from './chat-input/autoCompact'
 import { AttachMenu, usePlusMenu } from './chat-input/attach'
 import { BusySendControls, CompactingIndicator, useComposerSend } from './chat-input/busySend'
 import { CollapsedComposerBar, collapseMenuRowElement, useComposerCollapse } from './chat-input/collapse'
+import { useGuideRevealScope } from '../guide/GuideRevealScope'
 import { useComposerFocus, useComposerKeyDown, useEditorInput } from './chat-input/keyboard'
 import { INPUT_DRAG_MIN_H, useManualHeight, useStripHeights, useTextareaAutosize } from './chat-input/sizing'
 import { usePromptHistory, useUndoHistory } from './chat-input/draftHistory'
@@ -422,6 +426,8 @@ function ChatInput({
   const { botName } = useBranding()
   const isMobile = useIsMobile()
   const directFilePicker = isMobile || isTouchDevice()
+  // The "+" menu is drawn for a mouse; on touch the file picker opens directly.
+  useGuidePredicate('mouse_input', !isTouchDevice())
   const [attachControlRow, controlRowEdges, remeasureControlRow] = useScrollEdges<HTMLDivElement>()
   // The control row's chips are prop-driven (the auto-nudge loop chip, the
   // approval-mode picker) and appear or change label while the row keeps its
@@ -460,6 +466,9 @@ function ChatInput({
     : 'components.chatInput.continue_thread')
   const autoCompactThreshold = useAutoCompactThreshold({ activeSlot, ctxPopoverOpen, queryClient, dispatch })
   const { composerCollapsed, collapsedBarRef, collapseComposer, expandComposer, collapsedDraftLine } = useComposerCollapse({ collapsible, composerControl, value })
+  // The message box's guide scope (`composer.box`): a step through the
+  // collapsed bar completes the moment the box reads open again.
+  useGuideRevealScope('composer.box', !composerCollapsed)
   const collapseMenuRow = collapsible ? collapseMenuRowElement(() => { setPlusOpen(false); collapseComposer() }) : null
   // Refs mirror frequently-changing props/state read from inside the keydown handler
   // so it doesn't re-create on every keystroke.
@@ -714,6 +723,7 @@ function ChatInput({
       <Glass
         radius={16}
         data-testid="composer-dock"
+        {...GUIDE_KEEP_CLEAR}
         className={hasApproval ? 'glass-shadow approval-glow' : 'glass-shadow'}
       >
       <AnimatePresence>
@@ -1308,6 +1318,7 @@ function ChatInput({
                 title={holdSend ? holdSendReason : undefined}
                 aria-label={i18nT('components.chatInput.send')}
                 {...offlineProps(connected, 'send', 'Send')}
+                {...uiLocation('composer.send')}
               >
                 <ArrowUp size={18} />
               </button>

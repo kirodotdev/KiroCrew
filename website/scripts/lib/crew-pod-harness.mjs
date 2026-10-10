@@ -101,7 +101,7 @@ export async function openMembersDm(page, authed, BASE, member, { theme = 'dark'
   const row = page.locator('#main-content li button', { hasText: member }).first()
   await row.waitFor({ state: 'visible', timeout: 20000 })
   await row.click()
-  await page.getByTestId('member-title-row').waitFor({ state: 'visible', timeout: 10000 })
+  await page.getByTestId('member-identity-pill').waitFor({ state: 'visible', timeout: 10000 })
 }
 
 /**

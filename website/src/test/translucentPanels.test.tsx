@@ -14,8 +14,11 @@ import { describe, it, expect, afterEach } from 'vitest'
 import { act, render, renderHook } from '@testing-library/react'
 
 import {
+  LIQUID_GLASS_SEEDED_KEY,
   LIQUID_GLASS_STORAGE_KEY,
   applyLiquidGlass,
+  liquidGlassSeeded,
+  markLiquidGlassSeeded,
   persistLiquidGlass,
   readLiquidGlass,
 } from '../utils/liquidGlass'
@@ -33,6 +36,7 @@ function blockStorage(): () => void {
 
 afterEach(() => {
   localStorage.removeItem(LIQUID_GLASS_STORAGE_KEY)
+  localStorage.removeItem(LIQUID_GLASS_SEEDED_KEY)
   document.documentElement.removeAttribute('data-reduce-transparency')
 })
 
@@ -58,6 +62,21 @@ describe('liquidGlass utils', () => {
     expect(document.documentElement.dataset.reduceTransparency).toBe('off')
     applyLiquidGlass(false)
     expect(document.documentElement.dataset.reduceTransparency).toBe('on')
+  })
+
+  it('the seeded marker is its own key, absent until marked, and reads as seeded when the store is blocked', () => {
+    expect(LIQUID_GLASS_SEEDED_KEY).toBe('mc-liquid-glass-seeded')
+    expect(liquidGlassSeeded()).toBe(false)
+    markLiquidGlassSeeded()
+    expect(liquidGlassSeeded()).toBe(true)
+    expect(localStorage.getItem(LIQUID_GLASS_STORAGE_KEY)).toBeNull() // the marker never touches the setting
+    const restore = blockStorage()
+    try {
+      expect(liquidGlassSeeded()).toBe(true)
+      expect(() => markLiquidGlassSeeded()).not.toThrow()
+    } finally {
+      restore()
+    }
   })
 
   it('degrades to off (solid) and does not throw when storage is blocked', () => {

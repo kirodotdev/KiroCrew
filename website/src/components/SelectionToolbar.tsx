@@ -400,11 +400,56 @@ interface SelectionToolbarProps {
    * The draft survives the suspension and comes back with the tab.
    */
   suspended?: boolean
+  /**
+   * Touch placement: instead of floating at the selection, the action row
+   * docks above the chat composer (or the bottom safe area when there is
+   * none). A touch selection carries the platform's own handles, magnifier and
+   * Copy callout around it, and a row drawn there takes the taps meant for
+   * them; the dock leaves the selection's surroundings to the platform. Plain
+   * action rows only -- a `composer` host keeps its floating box.
+   */
+  dock?: boolean
+}
+
+/** Gap between the docked row and whatever it sits on (composer or screen edge). */
+const DOCK_GAP_PX = 8
+
+/**
+ * The composer area the docked row sits above: the visible `.input-area` (the
+ * whole composer column, so the follow-up option chips above the input box
+ * stay uncovered) whose column overlaps the selection's container, so a split
+ * view docks over its own pane. Null when no composer is on screen (the row
+ * then sits on the safe area at the bottom of the viewport).
+ */
+function dockAnchorRect(container: HTMLElement | null): DOMRect | null {
+  const c = container?.getBoundingClientRect()
+  let best: DOMRect | null = null
+  // `input-area` is the composer's stable theming hook (website/docs/theming-contract.md).
+  for (const el of Array.from(document.querySelectorAll<HTMLElement>('.input-area'))) {
+    const r = el.getBoundingClientRect()
+    if (r.width === 0 || r.height === 0) continue
+    if (c && c.width > 0 && (r.right <= c.left || r.left >= c.right)) continue
+    if (!best || r.top > best.top) best = r
+  }
+  return best
+}
+
+/** `env(safe-area-inset-bottom)` in px, read through a probe (JS cannot read env() directly). */
+function safeAreaBottomPx(): number {
+  const probe = document.createElement('div')
+  // Out of flow but never pinned to an edge: it only measures its own height.
+  probe.className = 'pointer-events-none invisible fixed h-[env(safe-area-inset-bottom,0px)]'
+  document.body.appendChild(probe)
+  const h = probe.getBoundingClientRect().height
+  probe.remove()
+  return h
 }
 
 /** Generic floating toolbar that appears when user selects text within a container.
  *  Extensible — pass any actions (quote, copy, etc.) via the `actions` prop. */
-export default function SelectionToolbar({ containerRef, actions, externalSelection, composer, suspended = false, externalOnly = false }: SelectionToolbarProps) {
+export default function SelectionToolbar({ containerRef, actions, externalSelection, composer, suspended = false, externalOnly = false, dock: dockProp = false }: SelectionToolbarProps) {
+  // The composer is a floating annotation box by design; it never docks.
+  const dock = dockProp && !composer
   const [visible, setVisible] = useState(false)
   // Mirrors for the document listeners (bound once): whether the box is up,
   // and whether the host has hidden it.
@@ -656,6 +701,20 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
     const margin = 8
     const vw = window.innerWidth
     const vh = window.innerHeight
+    if (dock) {
+      // Centred over the composer the reply belongs to, just above it; the
+      // selection's position plays no part (see `dock`).
+      const anchor = dockAnchorRect(containerRef.current)
+      const floor = anchor ? anchor.top : vh - safeAreaBottomPx()
+      const centre = anchor ? anchor.left + anchor.width / 2 : vw / 2
+      const left = Math.max(margin, Math.min(centre - w / 2, vw - margin - w))
+      const top = Math.max(margin, floor - DOCK_GAP_PX - h)
+      if (left !== clampedRef.current.x || top !== clampedRef.current.y) {
+        clampedRef.current = { x: left, y: top }
+        setClampedPos({ x: left, y: top })
+      }
+      return
+    }
     // `pos.x` is the pill's CENTRE, but the composer's LEFT edge (see checkSelection).
     const desiredLeft = composer ? pos.x : pos.x - w / 2
     // The composer stays inside its container's column when it can: a box that
@@ -697,7 +756,20 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
     // `suspended` likewise: a hidden tab does not render the box, so a resize
     // while hidden leaves `pos` untouched, and resuming must re-clamp against
     // the viewport it comes back to rather than the one it left.
-  }, [visible, pos, composerGrowTick, composer, copyFailed, submitFailed, suspended, containerRef])
+  }, [visible, pos, composerGrowTick, composer, copyFailed, submitFailed, suspended, containerRef, dock])
+
+  // A docked row hangs off the composer, not the selection, so it re-measures
+  // when the viewport changes under it (rotation, the address bar collapsing).
+  useEffect(() => {
+    if (!visible || !dock) return
+    const remeasure = () => setComposerGrowTick(t => t + 1)
+    window.addEventListener('resize', remeasure)
+    window.visualViewport?.addEventListener('resize', remeasure)
+    return () => {
+      window.removeEventListener('resize', remeasure)
+      window.visualViewport?.removeEventListener('resize', remeasure)
+    }
+  }, [visible, dock])
 
   useEffect(() => {
     // Every deferred selection check has to be cancellable. These fire 0-50ms
@@ -1170,11 +1242,14 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
               onDismissSubmitFailed={dismissSubmitFailed}
             />
           ) : (
-          <div className="flex flex-wrap items-center gap-0.5 p-0.5 rounded-lg bg-bg-elevated border border-border shadow-lg">
+          <div
+            data-testid={dock ? 'selection-dock' : undefined}
+            className={`flex flex-wrap items-center gap-0.5 p-0.5 rounded-lg bg-bg-elevated border border-border shadow-lg ${dock ? 'max-w-[calc(100vw-16px)]' : ''}`}
+          >
             {actions.map(action => (
               <Fragment key={action.id}>
                 <button
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[12px] font-medium text-text hover:text-accent hover:bg-bg-hover transition-colors cursor-pointer whitespace-nowrap"
+                  className={`flex items-center gap-1.5 rounded-md font-medium text-text hover:text-accent hover:bg-bg-hover transition-colors cursor-pointer whitespace-nowrap ${dock ? 'px-3.5 min-h-10 text-[13px]' : 'px-2.5 py-1.5 text-[12px]'}`}
                   onMouseDown={e => e.preventDefault()}
                   onClick={() => handleAction(action)}
                   aria-label={action.label}

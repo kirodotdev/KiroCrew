@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { guideConfirm } from '../../uiLocations/targetRegistry'
 import { useTranslation } from 'react-i18next'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, type CrewTeam, type MemberRosterRow } from '../../api/client'
@@ -9,6 +10,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { Btn, Checkbox, Input } from '../../components/ui'
 import { findReport } from '../../utils/errorReport'
 import { teamOfMember } from './teamGroups'
+import { guideCaution } from '../../guide/trustRoot'
 
 /**
  * New team / Edit team. One dialog, two modes: `team` set means edit (name and
@@ -273,7 +275,7 @@ export default function TeamDialog({
                 <Btn type="button" onClick={() => setConfirmDelete(false)} disabled={busy} data-testid="team-dialog-delete-keep">
                   {t('pages.membersPage.team_delete_keep')}
                 </Btn>
-                <Btn type="button" danger onClick={() => remove.mutate()} disabled={busy} data-testid="team-dialog-delete-confirm">
+                <Btn type="button" danger onClick={() => remove.mutate()} disabled={busy} data-testid="team-dialog-delete-confirm" {...guideCaution} {...guideConfirm()}>
                   {t('pages.membersPage.team_delete_named', { name: team?.name ?? '' })}
                 </Btn>
               </>

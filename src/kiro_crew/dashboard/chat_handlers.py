@@ -245,6 +245,10 @@ from kiro_crew.dashboard.slot_projection import (  # noqa: F401
     stop_declined_armed,
 )
 from kiro_crew.dashboard.slot_queue_repository import warn_if_not_durable
+from kiro_crew.dashboard.slot_retention import (  # noqa: F401
+    loop_slot_keys,
+    select_idle_slot_keys,
+)
 from kiro_crew.dashboard.state import (  # noqa: F401
     _MAX_DISMISSED_SOURCE_LINKS,
     DashboardState,
@@ -725,6 +729,20 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     if not isinstance(slot_name, str) and slot_name is not None:
         slot_name = None  # coerce non-string slot to auto-generate
     _requested_key = _normalize_slot_key(slot_name) if slot_name else ""
+    # Which of the owner's tabs is talking in this slot, so a live guide
+    # observation asks that tab and no other (``guide_observe``), and which
+    # language that tab's dashboard shows (``X-UI-Lang``), so ``find_ui`` quotes
+    # labels as that screen spells them. Only the owner's own send, only the
+    # tab id and a shipped-catalog tag, only in memory.
+    _guide_tab = request.headers.get("X-Guide-Tab")
+    _ui_lang = request.headers.get("X-UI-Lang")
+    if _requested_key and (_guide_tab or _ui_lang) and not request.get("app", ""):
+        from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+        if is_owner_dashboard_request(request):
+            from kiro_crew.dashboard.guide_observe import note_chat_sender
+
+            note_chat_sender(state, _requested_key, _guide_tab, _ui_lang)
     # Ownership BEFORE get_or_create_slot below, whose memory-mode and
     # under-construction 409s would otherwise answer an app about a session it
     # may not see. Member, cron and workflow keys are refused here too. The

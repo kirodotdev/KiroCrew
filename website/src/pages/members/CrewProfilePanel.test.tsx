@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { unregisteredMarkers } from '../../test/guideTargets'
 import { render, screen, fireEvent, within, act, waitFor } from '@testing-library/react'
 import type { MemberRosterRow } from '../../api/client'
 import type { CronJob } from '../../types'
@@ -84,6 +85,9 @@ const visibleLabel = (el: HTMLElement) =>
 beforeEach(() => {
   localStorage.clear()
 })
+
+// The forwarding proof: every marker the render drew is registered by its ref.
+afterEach(() => { expect(unregisteredMarkers()).toEqual([]) })
 
 describe('CrewProfilePanel rail (Tablist labels="active")', () => {
   it('has the four tabs in strip order, every one named for assistive tech', () => {
@@ -171,6 +175,11 @@ describe('CrewProfilePanel Profile tab', () => {
     // Changed right here now, so the card no longer sends them to the editor.
     expect(screen.queryByTestId('crew-profile-permissions')).toBeNull()
     expect(screen.queryByTestId('crew-profile-model')).toBeNull()
+  })
+
+  it('carries no guide marker: the permission picker it holds is answered in words, not guided', () => {
+    setup()
+    expect(document.querySelectorAll('[data-ui-location]')).toHaveLength(0)
   })
 
   it('says there is no description instead of rendering an empty card', () => {

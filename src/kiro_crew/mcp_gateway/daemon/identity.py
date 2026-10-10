@@ -74,6 +74,7 @@ class _StubConn:
         "pid_start_ids",
         "tenant_nonce",
         "stub_session_token",
+        "identity_refused",
     )
 
     def __init__(
@@ -90,6 +91,14 @@ class _StubConn:
         self.ancestor_pids = ancestor_pids
         self.pool_label = pool_label
         self.caller = caller
+        #: Set when a claim REFUSED to attribute this connection on a shared
+        #: runtime and cleared its identity. A key-less connection is otherwise
+        #: indistinguishable from one nothing has named yet, and that is the one
+        #: state the stub-initiated recaller is allowed to fill, so without this
+        #: flag a refusal would hand the stub a way to name any session it likes.
+        #: Refused is a VERDICT, not an absence: only claim-push may clear it, by
+        #: naming this connection's own token.
+        self.identity_refused = False
         self.pid_start_ids = pid_start_ids if pid_start_ids is not None else {}
         self.stub_session_token = stub_session_token
         # Namespace separator for a connection whose session the gateway cannot
@@ -158,6 +167,42 @@ def _bind_token(
     _TOKEN_BINDINGS[token] = (caller, pid, pid_start_id)
     while len(_TOKEN_BINDINGS) > _MAX_TOKEN_BINDINGS:
         _TOKEN_BINDINGS.popitem(last=False)
+
+
+def _pid_live_tenants(pid: int, exclude_token: str = "") -> set[str]:
+    """Session keys that hold their OWN token-carrying connection under *pid* now.
+
+    *exclude_token* drops the connections carrying that token, which is how a
+    warm-pool rekey is told from a second tenant: the claim's own stubs still
+    carry the PREVIOUS session's caller at the moment the claim is applied, so
+    counting them would make every rekey of a single-session runtime read as
+    sharing and log at WARNING.
+
+    Read from the live connection index, not from :data:`_TOKEN_BINDINGS`: a
+    binding is append-only until the LRU cap evicts it, so a binding table says
+    which sessions a pid was EVER claimed for, and a warm-pool runtime claimed
+    first by A and later by B would read as two tenants while B is the only one
+    left. Counting live connections answers the question the caller actually
+    asks, "how many sessions does this runtime serve right now", and it needs no
+    process start token: a connection belonging to a dead process is gone from
+    the index, so a recycled pid cannot contribute a stale tenant either.
+
+    Only a TOKEN-CARRYING connection counts. A tokenless connection's current
+    caller is not evidence of a separate live session -- it is whatever the last
+    claim retargeted it to, which on a warm-pool rekey is the session that just
+    handed the runtime over. Counting it would make every rekey look like
+    sharing. A token, by contrast, is minted per ACP session and names one, so a
+    connection that carries one is that session being present.
+    """
+    tenants: set[str] = set()
+    for conn in _CONN_INDEX.get(pid, ()):
+        if not conn.stub_session_token:
+            continue
+        if exclude_token and conn.stub_session_token == exclude_token:
+            continue
+        if conn.caller is not None and conn.caller.session_key:
+            tenants.add(conn.caller.session_key)
+    return tenants
 
 
 def _token_caller(
@@ -540,6 +585,24 @@ def _apply_recaller(msg: dict[str, Any], conn: _StubConn, pool_label: str) -> No
     # ever send a recaller when their Register was key-less, so this
     # never blocks the intended path.
     existing_key = caller.session_key if caller is not None else ""
+    if getattr(conn, "identity_refused", False):
+        # A claim already refused to attribute this connection on a shared
+        # runtime and cleared it. That clearing is a verdict, so the key-less
+        # state it leaves must not read as "nothing has named me yet" and let the
+        # recaller fill it: the recaller key comes from the stub's own
+        # process-tree walk, which on a shared runtime is the very per-runtime
+        # answer the refusal rejected. Only a claim carrying this connection's
+        # own token may name it now.
+        logger.warning(
+            "stub %s sent recaller after a co-tenancy refusal; only claim-push may name it",
+            stub_uuid,
+        )
+        _audit_recaller_rejected(
+            existing_key,
+            pool_label,
+            "recaller on a connection refused for co-tenancy",
+        )
+        return
     if conn.stub_session_token:
         # The recaller key comes from the stub's own process-tree
         # walk, so it is the same per-runtime answer the register

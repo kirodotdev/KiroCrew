@@ -208,7 +208,16 @@ def _url_payload_command(n: int) -> str:
 #: window crossing that commit's opening ``/`` with twelve of its digits, one clause
 #: beside the separator ceiling, and the docstring naming them. No pass widened and
 #: no existing threshold moved.
-_PACKAGE_LINE_BUDGET = 28_631
+#:
+#: Raised again, from 28,631, for the ``-d @`` benign-program carve-out in
+#: ``exfil.py``: the bare-substring data-exfil denial false-positives on GNU
+#: ``date`` epoch conversions and ``grep`` searches for the literal ``-d @``.
+#: The denial is unchanged; the carve-out reuses ``denied_rules._exception_eligible``
+#: and allows the hit only for a single plain command whose first word runs no
+#: subcommand. It is a security-deciding predicate, so it cannot leave the package,
+#: and no dead code remains to offset it. Its first word is split on space and tab
+#: only, the way bash splits, so a Unicode space cannot pose as a word break.
+_PACKAGE_LINE_BUDGET = 28_665
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
