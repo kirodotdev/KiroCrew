@@ -115,7 +115,7 @@ from kiro_crew.owner_only_files import mkdirs_owner_only, owner_only_opener
 from kiro_crew.preview_text import strip_markdown_preview
 from kiro_crew.release_channel import channel as _release_channel_of_build
 from kiro_crew.safety_override import cached_disabled_approval_modes, safety_override
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact, redact_credentials, redact_exfiltration_urls
 from kiro_crew.security.credential_sources import CredentialEvidence
 from kiro_crew.sel import sel
 from kiro_crew.session_compaction import (
@@ -781,8 +781,7 @@ def _redacted_link_target(target: str | None) -> str:
     """Return a non-sensitive tail hint, never a raw conversation id."""
     if not target:
         return "…"
-    safe, _ = redact_exfiltration_urls(target)
-    safe, _ = redact_credentials(safe)
+    safe = redact(target)
     if safe != target:
         return "…redacted"
     if len(safe) <= 6:
@@ -1045,8 +1044,7 @@ def _log_task_exception(task: asyncio.Task[Any]) -> None:
     if exc is not None:
         try:
             tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-            redacted_tb, _ = redact_credentials(tb)
-            redacted_tb, _ = redact_exfiltration_urls(redacted_tb)
+            redacted_tb = redact(tb)
             logger.error("Background task failed:\n%s", redacted_tb)
         except Exception as redaction_err:
             # Include the redaction failure class so bugs in the redactor are visible,
@@ -1080,8 +1078,7 @@ def parse_cls_meta(cls_val: str) -> dict | None:
 
     # Defence-in-depth: sanitize LLM-controlled content at every read boundary
     if isinstance(meta.get("tool_input"), str):
-        sanitized, _ = redact_exfiltration_urls(meta["tool_input"])
-        sanitized, _ = redact_credentials(sanitized)
+        sanitized = redact(meta["tool_input"])
         meta["tool_input"] = sanitized
 
     # Normalize: backend stores as request_id, frontend expects approval_id
@@ -2491,8 +2488,7 @@ _OPTIONS_RE = OPTIONS_RE_LINE
 
 def _redact(text: str) -> str:
     """Sanitise LLM output before surfacing to dashboard."""
-    text, _ = redact_exfiltration_urls(text)
-    text, _ = redact_credentials(text)
+    text = redact(text)
     return text
 
 
@@ -8013,8 +8009,7 @@ class DashboardState:
             # are dashboard-surfaced, so apply the same redaction as explicit
             # title pinning in api_chat_slot_create. ``_titled`` stays False —
             # auto-title and explicit pinning can still override.
-            pretty_title, _ = redact_exfiltration_urls(requested_name)
-            pretty_title, _ = redact_credentials(pretty_title)
+            pretty_title = redact(requested_name)
             slot.title = pretty_title
         slot._tab_id = uuid.uuid4().hex[:12]
         slot._on_message = self._broadcast_chat_message
@@ -8237,8 +8232,7 @@ class DashboardState:
             # (`member_message_payload` -> `speech_preview`) so the folded
             # preview equals what `GET /api/members` reads back.
             def _sanitize_preview(text: str) -> str:
-                text, _ = redact_exfiltration_urls(text)
-                text, _ = redact_credentials(text)
+                text = redact(text)
                 return text
 
             _payload = eventlog_hooks.member_message_payload(
@@ -10661,8 +10655,7 @@ def _redact_note_value(value: Any) -> Any:
     if isinstance(value, str):
         if not value:
             return value
-        value, _ = redact_exfiltration_urls(value)
-        value, _ = redact_credentials(value)
+        value = redact(value)
         return value
     if isinstance(value, list):
         return [_redact_note_value(item) for item in value]

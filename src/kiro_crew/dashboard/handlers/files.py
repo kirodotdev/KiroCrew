@@ -1352,8 +1352,7 @@ async def api_slack_upload_file(request: web.Request) -> web.Response:
         # A Slack SDK / network exception can carry file paths, host and URL
         # fragments, or credentials embedded in a URL. Sanitize before it
         # reaches the client or the audit record (see api_slack_pins).
-        safe_error, _ = redact_credentials(str(e))
-        safe_error, _ = redact_exfiltration_urls(safe_error)
+        safe_error = redact(str(e))
         _audit_file_send(leg="slack", outcome="error", downstream="slack", error=safe_error)
         return web.json_response({"error": safe_error}, status=500)
 
@@ -1439,8 +1438,7 @@ async def api_channel_upload_file(request: web.Request) -> web.Response:
         # A transport / network exception can carry file paths, host and URL
         # fragments, or credentials embedded in a URL. Sanitize before it
         # reaches the client or the audit record (see api_slack_upload_file).
-        safe_error, _ = redact_credentials(str(e))
-        safe_error, _ = redact_exfiltration_urls(safe_error)
+        safe_error = redact(str(e))
         _audit_file_send(
             leg="channel",
             outcome="error",

@@ -390,6 +390,18 @@ class TestFileSendErrorRedaction:
         assert "error=str(e)" not in block
 
     def test_helpers_are_imported(self):
+        """The handler composes through the shared helper rather than its own copy.
+
+        ``files.py`` gets its whole-string redactor as the context-aware
+        ``redact`` shim (``platform.redact_via_context``), so a loaded companion's
+        extra patterns apply. The two raw passes stay bound on the facade for the
+        owner modules that run on its globals (the composition contract pins every
+        base name), while the handler's own redaction composes through the
+        helper instead of hand-sequencing them: a hand-written pair is what
+        the shared composition exists to replace, and writing one here would
+        reintroduce the ordering hazard.
+        """
         from kiro_crew.dashboard.handlers import files as files_mod
+        assert callable(files_mod.redact)
         assert callable(files_mod.redact_credentials)
         assert callable(files_mod.redact_exfiltration_urls)

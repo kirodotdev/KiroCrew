@@ -908,13 +908,12 @@ def _redact_display_text(text: str) -> str:
     ``event.title`` prefers the model's own ``description`` field
     (``_select_tool_title``), so any surface it reaches — a transcript row that
     is broadcast to the dashboard AND persisted to the ConversationLog, or a
-    SEL audit ``tool_name`` — must see it only through this helper. Both
-    redactors return their input unchanged when nothing matches, so clean
-    titles pass through byte-identical.
+    SEL audit ``tool_name`` — must see it only through this helper.
+    ``security.redact`` composes the credential and exfiltration-URL passes
+    in their fixed order, and each returns its input unchanged when nothing
+    matches, so clean titles pass through byte-identical.
     """
-    text, _ = redact_exfiltration_urls(text)
-    text, _ = redact_credentials(text)
-    return text
+    return redact(text)
 
 
 async def _surface_agent_welcome(
@@ -2221,8 +2220,7 @@ def _redact_acp_string(s: str) -> str:
     """
     if not s:
         return s
-    s, _ = redact_credentials(s)
-    s, _ = redact_exfiltration_urls(s)
+    s = redact(s)
     return s
 
 
@@ -4649,8 +4647,7 @@ def _resolve_prompt_mention(
     # line operate on exactly what the agent receives.
     content = _strip_yaml_frontmatter(content)
 
-    content, _ = redact_credentials(content)
-    content, _ = redact_exfiltration_urls(content)
+    content = redact(content)
 
     # Inject SOP as instructions the agent must follow
     expanded = f"Execute the following instructions:\n\n{content}"
@@ -4805,8 +4802,7 @@ def _expand_dollar_skills(
     names: list[str] = []
     snapshots: list[dict[str, str]] = []
     for _token, name, body in resolved:
-        body, _ = redact_credentials(body)
-        body, _ = redact_exfiltration_urls(body)
+        body = redact(body)
         blocks.append(f"[Skill: {name}]\n\n{body}")
         names.append(name)
         snapshots.append({"name": name, "body": body})
@@ -6324,8 +6320,7 @@ async def _handle_workflow_command(
                 f"`{started.get('run_id')}` from revision {started.get('revision')}. "
                 "Its result will appear here when it finishes."
             )
-    text, _ = redact_credentials(text)
-    text, _ = redact_exfiltration_urls(text)
+    text = redact(text)
     slot.append("assistant", text, "msg msg-a")
     sel().log_tool_invocation(
         session_key=session_key,
@@ -9858,8 +9853,7 @@ async def _run_chat(
                 desc = f" — {p['description']}" if p["description"] else ""
                 lines.append(f"- `@{p['fullName']}`{desc}")
         text = "\n".join(lines)
-        text, _ = redact_credentials(text)
-        text, _ = redact_exfiltration_urls(text)
+        text = redact(text)
         slot.append("assistant", text, "msg msg-a")
         sel().log_tool_invocation(
             session_key="",
@@ -15231,8 +15225,7 @@ async def _run_chat(
                     state, slot, "assistant", "🗑️ Conversation cleared.", "msg msg-a"
                 )
             elif event.kind == EVENT_AGENT_SWITCHED:
-                new_agent, _ = redact_credentials(event.text)
-                new_agent, _ = redact_exfiltration_urls(new_agent)
+                new_agent = redact(event.text)
                 if new_agent and (
                     private_member or (slot.mode == "member" and new_agent != slot.agent)
                 ):
@@ -16269,8 +16262,7 @@ async def _run_chat(
                 logger.info("Deferred compaction result: %s", compaction_result)
                 if compaction_result["type"] == "completed":
                     _restore_skills_context_after_compaction()
-                    summary, _ = redact_credentials(compaction_result.get("summary", ""))
-                    summary, _ = redact_exfiltration_urls(summary)
+                    summary = redact(compaction_result.get("summary", ""))
                     msg = (
                         f"✅ Conversation compacted: {summary}"
                         if summary
@@ -16291,8 +16283,7 @@ async def _run_chat(
                     # the text is backend-echoed, so it is not trusted to be
                     # free of credentials or exfiltration URLs even though the
                     # provider already redacts once at its own boundary.
-                    error, _ = redact_credentials(compaction_result.get("summary", ""))
-                    error, _ = redact_exfiltration_urls(error)
+                    error = redact(compaction_result.get("summary", ""))
                     error = error.strip()
                     if len(error) > _COMPACT_FAIL_REASON_MAX_CHARS:
                         # A notice is a one-line receipt, not a log: a provider

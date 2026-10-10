@@ -75,7 +75,7 @@ from kiro_crew.mcp_utils import (
     without_mcp_refs,
 )
 from kiro_crew.platform.governance import may_skip_gate_now
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.user_json import (
     has_json_comments,
@@ -1227,8 +1227,7 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
         _stamp_config_state(d, global_mcps, kirocrew_mcps)
         err = d.get("error")
         if err:
-            err, _ = redact_credentials(err)
-            err, _ = redact_exfiltration_urls(err)
+            err = redact(err)
             d["error"] = err
         result.append(d)
     # Annotated HERE too, not only on the probe endpoints. This is the endpoint

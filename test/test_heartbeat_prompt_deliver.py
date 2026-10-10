@@ -340,7 +340,12 @@ class TestLogTaskException:
 
     @pytest.mark.asyncio()
     async def test_redaction_failure_falls_back_to_raw(self, caplog, monkeypatch):
-        """If redact_credentials raises, fallback logs exc type+message unredacted."""
+        """If the redactor raises, fallback logs exc type+message unredacted.
+
+        The subject is the redactor ``_log_task_exception`` actually calls, which
+        is the shared composition rather than either pass on its own, so patching
+        that is what makes the failure path reachable.
+        """
         import asyncio
         import logging
 
@@ -348,7 +353,7 @@ class TestLogTaskException:
         from kiro_crew.dashboard.state import _log_task_exception
 
         caplog.set_level(logging.ERROR)
-        monkeypatch.setattr(state_mod, "redact_credentials", lambda _tb: (_ for _ in ()).throw(ValueError("boom")))
+        monkeypatch.setattr(state_mod, "redact", lambda _tb: (_ for _ in ()).throw(ValueError("boom")))
 
         async def failing():
             raise RuntimeError("original error")
