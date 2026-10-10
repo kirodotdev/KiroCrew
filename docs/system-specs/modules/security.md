@@ -2421,10 +2421,16 @@ its declared `X-Session-Key`; `caller_record_missing` means the current cron or
 subagent registry record no longer exists. `mcp_core._http_error_body` maps those
 codes to the matching recovery step: restart the gateway and recreate the session,
 restart or replace the mismatched session, or start a new session, respectively. The
-existing `internal_auth_mismatch` mapping remains the wrong-instance diagnostic.
-Unknown codes and uncoded `Forbidden` responses keep the backend wording, so a real
-permission denial is never relabelled as an identity failure. Every branch keeps its
-existing HTTP status, deny decision, ordering, and SEL audit.
+existing `internal_auth_mismatch` mapping remains the wrong-instance diagnostic, and
+`internal_secret_missing` is its sibling for the caller that presented an empty
+secret. Its message states only the observable fact -- no credential was received
+from that client -- and names a withholding sandbox or harness mask or a
+desynchronized listener as possible causes. It promises no restart repair, because
+an enforced-harness child is withheld this credential by design, and explicitly
+does not diagnose a second gateway. Unknown codes and uncoded `Forbidden`
+responses keep the backend wording, so a real permission denial is never
+relabelled as an identity failure. Every branch keeps its existing HTTP status,
+deny decision, ordering, and SEL audit.
 
 Subagent caller lookup uses the original run record when present. If it is
 absent after eviction or gateway restart, exactly one active, non-queued run

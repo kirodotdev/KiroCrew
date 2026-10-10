@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import hashlib
 import io
 import os
 from pathlib import Path
@@ -934,6 +935,111 @@ class TestEveryToolGetsTheExplanation:
             out = learn.learn_add("learn_add", {"rule": "always check the port"})
         assert "wrong Kiro Crew instance" in out
         assert out.strip() != "Error: Forbidden"
+
+    def test_secret_missing_gets_its_own_code_and_honest_message(self) -> None:
+        # The auth layer can tell an unreadable credential (received=absent)
+        # from a stale one; the decoder must not fold the first case into the
+        # second-gateway explanation.
+        out = self._body(b'{"error": "Forbidden", "code": "internal_secret_missing"}')
+        assert "wrong Kiro Crew instance" not in out["error"]
+        assert "no internal credential" in out["error"]
+
+    def test_secret_missing_does_not_promise_a_restart_or_one_cause(self) -> None:
+        # An enforced-harness child is withheld this credential on purpose, so
+        # a restart will not provision it. The gateway also knows only that
+        # nothing arrived; it cannot tell masking from listener desync.
+        out = self._body(b'{"error": "Forbidden", "code": "internal_secret_missing"}')
+        message = out["error"].lower()
+        assert "restart" not in message
+        assert "usually" not in message
+        assert "sandbox or harness mask" in message
+        assert "listener" in message
+        assert "not a second-gateway" in message
+
+
+class TestTheDenyArmsEmitTheCodeOnRealRequests:
+    """Both production deny arms are exercised through the aiohttp middleware."""
+
+    SECRET = "gateway-secret-that-must-not-leak"
+
+    async def _deny_with_empty_secret(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        mixed_non_loopback: bool,
+    ):
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+
+        calls: list[dict] = []
+
+        class _FakeSel:
+            def log_api_access(self, **kwargs):
+                calls.append(kwargs)
+
+        monkeypatch.setattr(token_auth, "_sel_fn", lambda: _FakeSel())
+        kwargs = {"internal_secret": self.SECRET}
+        if mixed_non_loopback:
+            kwargs.update(
+                {
+                    "internal_paths": frozenset({"/api/internal"}),
+                    "mixed_internal_paths": frozenset({"/api/internal"}),
+                    "local_only": False,
+                }
+            )
+            monkeypatch.setattr(token_auth, "is_loopback", lambda _remote: False)
+        else:
+            kwargs["internal_paths"] = frozenset({"/api/internal"})
+
+        async def handler(_request):
+            return web.json_response({"ok": True})
+
+        app = web.Application(middlewares=[token_auth.token_auth_middleware(**kwargs)])
+        app.router.add_get("/api/internal", handler)
+        async with TestClient(TestServer(app)) as client:
+            response = await client.get("/api/internal", headers={"X-Internal-Secret": ""})
+            payload = await response.json()
+        return response, payload, calls
+
+    @pytest.mark.asyncio
+    async def test_loopback_deny_arm_reports_the_absent_credential(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        response, payload, calls = await self._deny_with_empty_secret(
+            monkeypatch, mixed_non_loopback=False
+        )
+        assert response.status == 403
+        assert payload == {
+            "error": "Forbidden",
+            "code": "internal_secret_missing",
+        }
+        expected = hashlib.sha256(self.SECRET.encode()).hexdigest()[:8]
+        assert calls
+        for call in calls:
+            assert call["outcome"] == "denied"
+            assert self.SECRET not in call["error"]
+            assert f"expected={expected}/len={len(self.SECRET)}" in call["error"]
+            assert "received=absent" in call["error"]
+
+    @pytest.mark.asyncio
+    async def test_non_loopback_mixed_deny_arm_reports_the_absent_credential(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        response, payload, calls = await self._deny_with_empty_secret(
+            monkeypatch, mixed_non_loopback=True
+        )
+        assert response.status == 403
+        assert payload == {
+            "error": "Forbidden",
+            "code": "internal_secret_missing",
+        }
+        expected = hashlib.sha256(self.SECRET.encode()).hexdigest()[:8]
+        assert calls
+        for call in calls:
+            assert call["outcome"] == "denied"
+            assert self.SECRET not in call["error"]
+            assert f"expected={expected}/len={len(self.SECRET)}" in call["error"]
+            assert "received=absent" in call["error"]
 
 
 class TestTheSharedHelperOwnsThePairing:
