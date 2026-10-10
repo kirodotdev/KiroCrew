@@ -512,6 +512,7 @@ async def test_send_bundle_remints_once_when_the_peer_rejects_the_credential():
     mgr._tunnel_epoch = {}
     mgr._tokens = {"peer": "stale"}
     mgr._peer_sessions = {}
+    mgr._chained_far_end = {}
     mgr._exchange_link = _identity_exchange  # type: ignore[method-assign]
     mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
         instance_id="peer", state=TunnelState.CONNECTED, local_port=7778
@@ -1102,6 +1103,7 @@ async def test_send_bundle_refuses_when_no_credential_is_held():
     mgr._tunnel_epoch = {}
     mgr._tokens = {}
     mgr._peer_sessions = {}
+    mgr._chained_far_end = {}
     mgr._exchange_link = _identity_exchange  # type: ignore[method-assign]
     mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
         instance_id="peer", state=TunnelState.CONNECTED, local_port=7778
@@ -1128,6 +1130,7 @@ async def test_send_bundle_reports_an_unreachable_peer_without_leaking_the_bundl
     mgr._tunnel_epoch = {}
     mgr._tokens = {"peer": "irrelevant-credential"}
     mgr._peer_sessions = {}
+    mgr._chained_far_end = {}
     mgr._exchange_link = _identity_exchange  # type: ignore[method-assign]
     mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
         instance_id="peer", state=TunnelState.CONNECTED, local_port=1
@@ -1219,6 +1222,7 @@ async def test_send_bundle_names_an_older_peer_when_the_importer_is_missing(stat
     mgr._tunnel_epoch = {}
     mgr._tokens = {"peer": "tok"}
     mgr._peer_sessions = {}
+    mgr._chained_far_end = {}
     mgr._exchange_link = _identity_exchange  # type: ignore[method-assign]
     mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
         instance_id="peer", state=TunnelState.CONNECTED, local_port=7778
@@ -2407,6 +2411,7 @@ async def test_send_bundle_downgrades_to_v1_when_the_peer_refuses_v2():
     mgr._tunnel_epoch = {}
     mgr._tokens = {"peer": "tok"}
     mgr._peer_sessions = {}
+    mgr._chained_far_end = {}
     mgr._exchange_link = _identity_exchange  # type: ignore[method-assign]
     mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
         instance_id="peer", state=TunnelState.CONNECTED, local_port=7778
@@ -2480,6 +2485,7 @@ async def test_send_bundle_downgrades_only_once():
     mgr._tunnel_epoch = {}
     mgr._tokens = {"peer": "tok"}
     mgr._peer_sessions = {}
+    mgr._chained_far_end = {}
     mgr._exchange_link = _identity_exchange  # type: ignore[method-assign]
     mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
         instance_id="peer", state=TunnelState.CONNECTED, local_port=7778
@@ -2542,6 +2548,7 @@ def _size_refusing_peer(refusal_code: str):
     mgr._tunnel_epoch = {}
     mgr._tokens = {"peer": "tok"}
     mgr._peer_sessions = {}
+    mgr._chained_far_end = {}
     mgr._exchange_link = _identity_exchange  # type: ignore[method-assign]
     mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
         instance_id="peer", state=TunnelState.CONNECTED, local_port=7778
@@ -2809,6 +2816,7 @@ async def test_send_bundle_downgrades_a_v2_bundle_that_has_no_layer_b():
     mgr._tunnel_epoch = {}
     mgr._tokens = {"peer": "tok"}
     mgr._peer_sessions = {}
+    mgr._chained_far_end = {}
     mgr._exchange_link = _identity_exchange  # type: ignore[method-assign]
     mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
         instance_id="peer", state=TunnelState.CONNECTED, local_port=7778
