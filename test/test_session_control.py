@@ -4172,6 +4172,7 @@ _DASHBOARD_TOOL_CALLS = {
     "session_release": {"target": "chat-2"},
     "session_read_message": {"target": "chat-2"},
     "session_summary": {"target": "chat-2"},
+    "session_queue": {"target": "chat-2"},
 }
 
 

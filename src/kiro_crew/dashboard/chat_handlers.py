@@ -182,6 +182,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     _redact_meta,
     _redact_meta_for_role,
     _remove_queued_by_id,
+    _reorder_queued_rows,
     _resettle_restricted_key,
     _sync_dashboard_slots,
     drained_to_thread,
@@ -4807,18 +4808,7 @@ async def api_chat_slot_queue_reorder(request: web.Request) -> web.Response:
     remaining = [item for item in slot._queue if item["id"] not in set(order)]
     slot._queue[:] = reordered + remaining
     # Reorder the queued messages in the messages list to match
-    queued_msgs = [m for m in slot.messages if m.get("role") == "queued"]
-    other_msgs = [m for m in slot.messages if m.get("role") != "queued"]
-    queued_by_id: dict[str | None, dict] = {}
-    for m in queued_msgs:
-        try:
-            cls = json.loads(m.get("cls", "{}"))
-            queued_by_id[cls.get("queue_id")] = m
-        except (json.JSONDecodeError, TypeError):
-            pass
-    reordered_msgs = [queued_by_id[qid] for qid in order if qid in queued_by_id]
-    remaining_msgs = [m for m in queued_msgs if m not in reordered_msgs]
-    slot.messages[:] = other_msgs + reordered_msgs + remaining_msgs
+    _reorder_queued_rows(slot.messages, order)
     slot.invalidate_source_links()
     state.broadcast_ws(
         "queue_reorder", {"slot": name, "order": [item["id"] for item in slot._queue]}

@@ -5,12 +5,12 @@ change its model, reload its agent process, and take another one under itself in
 the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 31 of its tools, written for the agent that is about to use them.
+for all 32 of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
 
 - **Session control** — `session_create`, `session_fork`, `session_send`,
-  `session_read_message`, `session_summary`, `session_stop`, `session_end_wait`, `session_retry`,
+  `session_read_message`, `session_summary`, `session_queue`, `session_stop`, `session_end_wait`, `session_retry`,
   `session_set_model`, `session_reload`, `session_close`, `session_revive`, `session_broadcast`,
   `session_status`, `session_adopt`, `session_release`. These reach another session.
 - **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`,
@@ -345,6 +345,52 @@ Each goal carries the panel's state word (`in-progress`, `needs-you`, `done`,
 `dropped`). A completed goal reads `needs-you` only when its verification
 failed (`verified=false`); a completed goal never checked either way reads
 `done`.
+
+### `session_queue`
+
+| Argument | Required | Meaning |
+|---|---|---|
+| `target` | yes | Session key, or its exact title, of a session you created |
+| `action` | no | `list` (default), `cancel` or `move` |
+| `entry` | for `cancel`, `move` | Queue entry id from `list` |
+| `position` | for `move` | 0-based position; 0 runs next, past the end means last |
+
+`session_send` to a busy session answers `started: false` and puts the message in
+the target's queue. `session_queue` is how the sender sees and manages that queue.
+
+```
+📥 `chat-7` — fix the build (still working), 3 queued
+0  q-1a2b  yours   "Also rerun the snapshot tests once the fix lands"
+1  q-3c4d  person  "stop after this one, I'll take over"
+2  q-5e6f  yours   "Ignore the snapshot rerun, CI already did it"
+```
+
+- `list` shows the first 50 queued entries in run order; any beyond that are
+  counted in `omitted`, not listed. `yours` marks entries you queued;
+  `person` marks a message the session's own human typed; `other` is anything
+  else (another session, an app, a scheduled job). Excerpts are redacted and cut
+  to 200 characters.
+- `cancel` removes one of YOUR entries. Open tabs drop its queue card.
+- `move` puts one of YOUR entries at `position`. It can always move later. It can
+  move earlier only past your own entries, so it never jumps ahead of a person's
+  message or another session's (`move_blocked`).
+- A `cancel` or `move` behaves exactly like the queue card's own cancel and
+  drag. It changes the queue in memory, tells open tabs, and is saved by the next
+  periodic flush. A gateway restart before that flush can bring the old queue
+  back, just as it can after a person cancels from the card.
+
+A person's queued message is never cancellable or movable here, and neither is
+another session's (`not_your_entry`). Neither is a steer of yours that missed
+its turn and was put back in the queue: its steer row already promises it will
+run. Ownership is the sender stamp
+`session_send` writes on the entry: your slot key and your tab identity. The
+restore path drops that stamp on purpose, so entries that were queued before a
+gateway restart list as `other` and only the person can cancel them.
+
+The target must be a session you created. It passes the same gate as the other
+session tools: an archived session is not open (`target_not_found`), and
+scheduled-run, incognito, app-scoped, channel-linked and mirrored sessions are
+refused.
 
 ### `session_adopt` and `session_release`
 

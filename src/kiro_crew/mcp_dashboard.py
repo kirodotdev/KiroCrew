@@ -1319,6 +1319,54 @@ def _session_tools() -> tuple[Tool, ...]:
             identity="strict",
             routes=("GET /api/session-control/summary",),
         ),
+        Tool(
+            name="session_queue",
+            description=(
+                "See and manage the messages waiting in the queue of a session YOU created. "
+                "session_send to a busy session queues the message (started: false); this is "
+                "how you see where it sits, take it back when it has gone stale, or move a "
+                "correction ahead of the older message it replaces. action=list returns the "
+                "first 50 queued entries in run order (the rest are counted in `omitted`, not "
+                "listed), each with its id, its position (0 runs next), a "
+                "redacted excerpt and whether YOU queued it. action=cancel removes one entry; "
+                "action=move puts one entry at `position`. cancel and move apply ONLY to "
+                "entries you queued with session_send: a person's queued message, or another "
+                "session's, is never cancellable or movable here. A move to an earlier "
+                "position may pass only your own entries; a move later is always allowed. "
+                "Entries queued before a gateway restart lose their sender stamp and list "
+                "as not yours."
+            ),
+            schema={
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Session key from list_sessions, or its exact title.",
+                    },
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "cancel", "move"],
+                        "description": "list (default), cancel or move.",
+                        "default": "list",
+                    },
+                    "entry": {
+                        "type": "string",
+                        "description": "Queue entry id from action=list. Required for cancel and move.",
+                    },
+                    "position": {
+                        "type": "integer",
+                        "description": (
+                            "move only: the 0-based position to put the entry at (0 runs next). "
+                            "A position past the end moves it to the back."
+                        ),
+                    },
+                },
+                "required": ["target"],
+            },
+            run=_run_session_queue,
+            identity="strict",
+            routes=("POST /api/session-control/queue",),
+        ),
     )
 
 
@@ -3222,6 +3270,57 @@ def _run_session_summary(args: dict[str, Any], ctx: ToolContext) -> str:
     except DashboardError as refused:
         return f"Error: could not read that session's summary: {refused.error}"
     return _render_session_summary(resp)
+
+
+_QUEUE_FROM_LABELS = {"yours": "yours ", "person": "person", "other": "other "}
+
+
+def _render_session_queue(resp: dict[str, Any]) -> str:
+    """Render a ``/api/session-control/queue`` body as compact text.
+
+    The route has already redacted and cut every excerpt; this only formats the
+    listing and leads with what the action did.
+    """
+    state_line = "still working" if resp.get("running") else "idle"
+    count = int(resp.get("count") or 0)
+    # The title is editable text too, so it is collapsed like the entry rows below.
+    target_text = " ".join(str(resp.get("target") or "").split())
+    title_text = " ".join(str(resp.get("title") or "").split())
+    head = f"\U0001f4e5 `{target_text}` — {title_text} ({state_line}), {count} queued"
+    lines: list[str] = []
+    if resp.get("cancelled"):
+        lines.append(f"Cancelled queued entry {resp['cancelled']}.")
+    if resp.get("moved"):
+        lines.append(f"Moved queued entry {resp['moved']} to position {resp.get('position')}.")
+    lines.append(head)
+    entries = [e for e in (resp.get("entries") or []) if isinstance(e, dict)]
+    if not entries:
+        lines.append("The queue is empty.")
+    for e in entries:
+        label = _QUEUE_FROM_LABELS.get(str(e.get("from")), "other ")
+        # Every whitespace run, CR, CRLF and U+2028 included, becomes one space: an
+        # entry's text is untrusted, and a line break in it would render as an extra
+        # listing row with a forged position, id and owner label.
+        excerpt = " ".join(str(e.get("excerpt") or "").split())
+        entry_id = " ".join(str(e.get("id") or "").split())
+        lines.append(f"{e.get('position')}  {entry_id}  {label}  \"{excerpt}\"")
+    if resp.get("omitted"):
+        lines.append(f"({resp['omitted']} more queued entries not shown.)")
+    return "\n".join(lines)
+
+
+def _run_session_queue(args: dict[str, Any], ctx: ToolContext) -> str:
+    action = args.get("action") or "list"
+    body: dict[str, Any] = {"target": args["target"], "action": action}
+    if args.get("entry") is not None:
+        body["entry"] = args["entry"]
+    if args.get("position") is not None:
+        body["position"] = args["position"]
+    try:
+        resp = ctx.client.post("/api/session-control/queue", body, session_key=ctx.caller_key)
+    except DashboardError as refused:
+        return f"Error: could not {action} that session's queue: {refused.error}"
+    return _render_session_queue(resp)
 
 
 def _run_chat_folder_tree(args: dict[str, Any], ctx: ToolContext) -> str:

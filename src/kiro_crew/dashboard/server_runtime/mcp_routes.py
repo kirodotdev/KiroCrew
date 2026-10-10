@@ -337,6 +337,9 @@ def _register_mcp_routes(app: web.Application) -> None:
         "/api/session-control/summary",
         _deferred("session_control", "api_session_control_summary"),
     )
+    app.router.add_post(
+        "/api/session-control/queue", _deferred("session_control", "api_session_control_queue")
+    )
     app.router.add_get("/api/browser/install", handlers.api_browser_install_get)
     app.router.add_put("/api/browser/token", handlers.api_browser_token_put)
     app.router.add_post("/api/browser/install", handlers.api_browser_install_start)
