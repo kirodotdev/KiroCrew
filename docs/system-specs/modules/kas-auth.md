@@ -236,7 +236,12 @@ enters the margin and renews it then, so the stored expiry the sign-in card and
 tick never renews a token outside the margin, does not retry while the
 refresh-rejected marker stands (a new sign-in clears it), backs off from 30s to
 5min on a transient failure, and does not import `kiro_crew.auth` until the vault
-file exists.
+file exists. It renews while the gateway is idle too, so a refused renewal
+surfaces without waiting for a chat turn. Each renewal request is capped at
+8s, and gateway shutdown waits up to 9s (alongside, and inside, the graceful
+shutdown budget) for an in-flight renewal to finish
+(`drain_sign_in_refresher`), so a rotated refresh token is persisted rather
+than consumed at the issuer and lost to the hard exit.
 
 ## Storage
 

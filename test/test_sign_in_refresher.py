@@ -74,10 +74,13 @@ def session(monkeypatch):
     return _script
 
 
-def _token(*, ttl: int, refresh_token: str | None = "rt-old") -> KasToken:
+def _token(
+    *, ttl: int, refresh_token: str | None = "rt-old", now: datetime | None = None
+) -> KasToken:
+    base = now if now is not None else datetime.now(timezone.utc)
     return KasToken(
         access_token="at-old",
-        expires_at=datetime.now(timezone.utc) + timedelta(seconds=ttl),
+        expires_at=base + timedelta(seconds=ttl),
         provider="Google",
         identity="social",
         refresh_token=refresh_token,
@@ -97,13 +100,21 @@ async def test_no_vault_idles_without_touching_the_network(tmp_path: Path, sessi
 
 
 @pytest.mark.asyncio
-async def test_token_outside_margin_sleeps_until_it_is_due(tmp_path: Path, session):
+async def test_token_outside_margin_sleeps_until_it_is_due(tmp_path: Path, session, monkeypatch):
+    frozen = datetime(2030, 1, 1, tzinfo=timezone.utc)
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen if tz is None else frozen.astimezone(tz)
+
+    monkeypatch.setattr(tick, "datetime", _FrozenDatetime)
     fake = session()
-    TokenStore(tmp_path).save(_token(ttl=REFRESH_MARGIN_SECS + 60))
+    TokenStore(tmp_path).save(_token(ttl=REFRESH_MARGIN_SECS + 60, now=frozen))
     delay, failures = await tick.refresh_once(tmp_path)
     assert failures == 0
     # Wakes just past the margin boundary, not at the idle cap.
-    assert 55 <= delay <= 62
+    assert delay == pytest.approx(60 + tick._WAKE_SLACK_SECS)
     assert fake.calls == []
     assert TokenStore(tmp_path).load("social").access_token == "at-old"
 
@@ -233,6 +244,74 @@ async def test_loop_survives_an_unexpected_error(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(tick, "IDLE_INTERVAL_SECS", 0.01)
     await asyncio.wait_for(tick.run_sign_in_refresher(stop), timeout=5)
     assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_shutdown_drain_waits_for_an_in_flight_renewal(tmp_path: Path, monkeypatch):
+    stop = asyncio.Event()
+    started = asyncio.Event()
+    release = asyncio.Event()
+    persisted: list[bool] = []
+
+    async def _once(_home, *, failures=0):
+        started.set()
+        await release.wait()
+        persisted.append(True)
+        return 3600.0, 0
+
+    monkeypatch.setattr(tick, "refresh_once", _once)
+    monkeypatch.setattr(tick, "data_home", lambda: tmp_path)
+    task = asyncio.create_task(tick.run_sign_in_refresher(stop))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        stop.set()
+        drain = asyncio.create_task(tick.drain_sign_in_refresher(task, timeout=5))
+        await asyncio.sleep(0)
+        assert not drain.done()
+        release.set()
+        await asyncio.wait_for(drain, timeout=5)
+        assert persisted == [True]
+        assert task.done()
+    finally:
+        release.set()
+        stop.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_shutdown_drain_is_bounded():
+    hung = asyncio.create_task(asyncio.Event().wait())
+    try:
+        await asyncio.wait_for(tick.drain_sign_in_refresher(hung, timeout=0.05), timeout=5)
+    finally:
+        hung.cancel()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_drain_without_a_task_returns():
+    await tick.drain_sign_in_refresher(None)
+
+
+def test_renewal_request_fits_inside_the_shutdown_drain():
+    from kiro_crew.gateway_shutdown_budget import GRACEFUL_SHUTDOWN_SECS
+
+    assert tick.REQUEST_TIMEOUT_SECS < tick.SHUTDOWN_DRAIN_SECS <= GRACEFUL_SHUTDOWN_SECS
+
+
+@pytest.mark.asyncio
+async def test_renewal_session_carries_the_request_timeout(tmp_path: Path, monkeypatch):
+    seen: dict = {}
+
+    def _factory(*_a, **kw):
+        seen.update(kw)
+        return _FakeSession([_FakeResp(200, _RENEWED)])
+
+    monkeypatch.setattr("aiohttp.ClientSession", _factory)
+    TokenStore(tmp_path).save(_token(ttl=60))
+    await tick.refresh_once(tmp_path)
+    assert seen["timeout"].total == tick.REQUEST_TIMEOUT_SECS
 
 
 def test_importing_the_tick_does_not_load_the_auth_subsystem():

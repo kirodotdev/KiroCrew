@@ -178,7 +178,7 @@ from kiro_crew.dashboard.origin import (
     parse_dashboard_url,
     resolve_dashboard_host,
 )
-from kiro_crew.dashboard.sign_in_refresher import run_sign_in_refresher
+from kiro_crew.dashboard.sign_in_refresher import drain_sign_in_refresher, run_sign_in_refresher
 from kiro_crew.dashboard.stale_asset_watchdog import (
     run_stale_asset_watchdog,
     shutdown_exit_code,
@@ -1057,6 +1057,9 @@ class GatewayOrchestrator:
         # task so _check_console_script can kill and reap its child group.
         self._console_script_repair_task: "asyncio.Task[None] | None" = None
         self._marker_write_task: "asyncio.Task[None] | None" = None
+        # Shutdown waits on this task so an in-flight sign-in renewal can
+        # persist its replacement credential before the hard exit.
+        self._sign_in_refresher_task: "asyncio.Task[None] | None" = None
         # Set by the shutdown path when the marker write is still in flight:
         # tells the writer thread to self-clear after publishing, closing the
         # write-after-clear race without any event-loop dependency.
@@ -13718,6 +13721,7 @@ class GatewayOrchestrator:
         # agent turn asks for a token. Loads the auth subsystem only
         # once a sign-in vault exists; see dashboard/sign_in_refresher.
         _sign_in_refresher = asyncio.create_task(run_sign_in_refresher(shutdown_event))
+        self._sign_in_refresher_task = _sign_in_refresher
         self._background_tasks.add(_sign_in_refresher)
         _sign_in_refresher.add_done_callback(self._background_tasks.discard)
 
@@ -13910,10 +13914,15 @@ class GatewayOrchestrator:
         except Exception:
             logger.debug("Gateway run-marker clear skipped", exc_info=True)
 
+        # The sign-in tick drains alongside the graceful shutdown, inside the
+        # same budget: an in-flight renewal finishes and persists the rotated
+        # refresh credential instead of being cut off by os._exit below.
+        _sign_in_drain = asyncio.create_task(drain_sign_in_refresher(self._sign_in_refresher_task))
         try:
             await asyncio.wait_for(self._shutdown(), timeout=GRACEFUL_SHUTDOWN_SECS)
         except (asyncio.TimeoutError, Exception):
             logger.warning("Graceful shutdown timed out — force exiting")
+        await _sign_in_drain
 
         print("👻 Goodbye!")
         # Kill any kiro-cli processes that survived graceful shutdown.

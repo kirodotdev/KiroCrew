@@ -59,6 +59,16 @@ RETRY_BASE_SECS = 30.0
 #: renews only a token already inside the margin -- sees it as due.
 _WAKE_SLACK_SECS = 1.0
 
+#: Total time one renewal request may take. Kept under
+#: :data:`SHUTDOWN_DRAIN_SECS` so a gateway stop can wait for an in-flight
+#: renewal to finish and persist the replacement token before the process exits.
+REQUEST_TIMEOUT_SECS = 8.0
+
+#: How long gateway shutdown waits for the tick to finish an in-flight renewal.
+#: Runs alongside the gateway's own graceful shutdown and stays inside its
+#: ``GRACEFUL_SHUTDOWN_SECS`` budget.
+SHUTDOWN_DRAIN_SECS = 9.0
+
 
 def _vault_file(home: Path) -> Path:
     """The KAS vault's ciphertext file (``auth/store.TokenStore`` layout)."""
@@ -107,7 +117,8 @@ async def refresh_once(home: Path, *, failures: int = 0) -> tuple[float, int]:
         return IDLE_INTERVAL_SECS, 0
 
     try:
-        async with aiohttp.ClientSession() as session:
+        timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECS)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             renewed = await ensure_fresh(store, token, session=session)
     except asyncio.CancelledError:
         raise
@@ -165,3 +176,29 @@ async def run_sign_in_refresher(shutdown_event: _ShutdownSignal) -> None:
             await asyncio.wait_for(shutdown_event.wait(), timeout=delay)
         except asyncio.TimeoutError:
             continue
+
+
+async def drain_sign_in_refresher(
+    task: asyncio.Task[None] | None, *, timeout: float = SHUTDOWN_DRAIN_SECS
+) -> None:
+    """Wait for the tick to stop once the shutdown event is set.
+
+    An idle tick returns at once. A tick in the middle of a renewal finishes it,
+    so a rotated refresh token is persisted before the gateway's hard exit
+    instead of being consumed at the issuer and lost. Bounded by ``timeout``;
+    never raises except ``asyncio.CancelledError``.
+    """
+    if task is None or task.done():
+        return
+    try:
+        await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.warning(
+            "sign-in refresher: renewal still in flight after %.0fs at shutdown", timeout
+        )
+    except asyncio.CancelledError:
+        if task.cancelled():
+            return
+        raise
+    except Exception:  # noqa: BLE001
+        logger.debug("sign-in refresher: ended with an error at shutdown", exc_info=True)
