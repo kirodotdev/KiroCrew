@@ -10,8 +10,10 @@ transcript, restores the slot, flushes and reads the file back.
 from __future__ import annotations
 
 import json
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from chat_test_helpers import _make_ready_kiro_prerequisite
 
 from kiro_crew.dashboard.chat_persistence import (
@@ -195,3 +197,182 @@ def test_a_channel_window_rebuild_keeps_a_newer_builds_row_field(tmp_path, monke
     assert kept == [
         ["thumbs_up"]
     ], f"the channel window rebuild dropped the newer row field: {kept}"
+
+
+def _restored_with_fields(tmp_path, monkeypatch, user_fields, assistant_fields):
+    state, path = _saved_slot(tmp_path, monkeypatch, ("user", "q1"), ("assistant", "a1"))
+
+    def newer(rows):
+        for row in rows:
+            row.update(user_fields if row["role"] == "user" else assistant_fields)
+
+    _edit_rows(path, newer)
+    return state, path, _restore(state)
+
+
+def test_a_16_mib_field_from_a_newer_build_is_not_kept_in_memory(tmp_path, monkeypatch, caplog):
+    """The over-cap case: the row keeps none of its newer fields, says so, and saves without them."""
+    from kiro_crew.dashboard.chat_utils import UNKNOWN_ROW_FIELDS_KEY
+
+    huge = "x" * (16 * 1024 * 1024)
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.chat_persistence"):
+        state, path, restored = _restored_with_fields(
+            tmp_path, monkeypatch, {"reactions": ["thumbs_up"]}, {"blob": huge}
+        )
+    kept = {m["role"]: m.get(UNKNOWN_ROW_FIELDS_KEY) for m in restored.messages}
+    assert kept["assistant"] is None, "the 16 MiB field stayed in live slot memory"
+    assert kept["user"] == {"reactions": ["thumbs_up"]}, "a row under the cap lost its field"
+    assert "over the" in caplog.text, "the refused row was not logged"
+    restored.append("user", "q2")
+    restored.drain()
+    _save_slot_to_history(state, restored, closed=False)
+    saved = {r["content"]: r for r in _rows(path)}
+    assert "blob" not in saved["a1"]
+    assert saved["q1"]["reactions"] == ["thumbs_up"]
+
+
+def test_the_cap_keeps_a_row_at_the_cap_and_refuses_one_byte_over(tmp_path, monkeypatch):
+    from kiro_crew.dashboard.chat_utils import UNKNOWN_ROW_FIELDS_KEY
+    from kiro_crew.dashboard.slot_persistence.message_entries import MAX_UNKNOWN_ROW_FIELDS_BYTES
+
+    fill = MAX_UNKNOWN_ROW_FIELDS_BYTES - len(json.dumps({"blob": ""}))
+    _state, _path, restored = _restored_with_fields(
+        tmp_path, monkeypatch, {"blob": "x" * fill}, {"blob": "x" * (fill + 1)}
+    )
+    kept = {m["role"]: m.get(UNKNOWN_ROW_FIELDS_KEY) for m in restored.messages}
+    assert len(json.dumps(kept["user"])) == MAX_UNKNOWN_ROW_FIELDS_BYTES
+    assert kept["assistant"] is None
+
+
+def _kept_fields(slot):
+    from kiro_crew.dashboard.chat_utils import UNKNOWN_ROW_FIELDS_KEY
+
+    return [m.get(UNKNOWN_ROW_FIELDS_KEY) for m in slot.messages]
+
+
+def _assert_within_the_slot_budget_oldest_dropped_first(kept):
+    assert kept[-1] is not None, "the newest row lost its field"
+    assert kept[0] is None, "the oldest row still keeps its field: the slot has no budget"
+    from kiro_crew.dashboard.slot_persistence.message_entries import (
+        MAX_UNKNOWN_ROW_FIELDS_SLOT_BYTES,
+    )
+
+    total = sum(len(json.dumps(dict(k))) for k in kept if k is not None)
+    assert total <= MAX_UNKNOWN_ROW_FIELDS_SLOT_BYTES, f"{total} bytes kept in one slot"
+    first = next(i for i, k in enumerate(kept) if k is not None)
+    assert all(
+        k is not None for k in kept[first:]
+    ), "a newer row lost its field before an older one"
+
+
+def test_a_restored_slot_keeps_its_budget_of_newer_fields_and_drops_the_oldest(
+    tmp_path, monkeypatch, caplog
+):
+    """400 rows of 8 KB each: 3.2 MB of newer fields, past the slot's budget."""
+    pairs = [p for i in range(200) for p in (("user", f"q{i}"), ("assistant", f"a{i}"))]
+    state, path = _saved_slot(tmp_path, monkeypatch, *pairs)
+    _edit_rows(path, lambda rows: [row.update(blob="x" * 8000) for row in rows])
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.chat_persistence"):
+        restored = _restore(state)
+    _assert_within_the_slot_budget_oldest_dropped_first(_kept_fields(restored))
+    assert "older row(s)" in caplog.text, "the dropped rows were not logged"
+    restored.append("user", "q-new")
+    restored.drain()
+    _save_slot_to_history(state, restored, closed=False)
+    saved = {r["content"]: r for r in _rows(path)}
+    assert "blob" in saved["a199"] and "blob" not in saved["q0"]
+
+
+def test_a_channel_window_rebuild_past_the_slot_budget_drops_the_oldest_rows_fields(
+    tmp_path, monkeypatch
+):
+    from kiro_crew.dashboard.channel_slots import _rebuild_window
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("slack_2.2", linked_session_key="slack:2.2")
+    rows = [
+        {"role": ("user", "assistant")[i % 2], "content": f"m{i}", "ts": str(i), "blob": "x" * 8000}
+        for i in range(300)
+    ]
+    _rebuild_window(slot, rows)
+    _assert_within_the_slot_budget_oldest_dropped_first(_kept_fields(slot))
+
+
+@pytest.mark.asyncio
+async def test_a_drop_keeps_every_row_the_same_dict(tmp_path, monkeypatch):
+    """Rewind and edit-resend find rows that arrived during an await by ``id(row)``.
+
+    A reconcile that appends past the slot budget must drop the older rows' fields in
+    place: a row replaced by a copy would read as arrived and be re-appended.
+    """
+    from kiro_crew.dashboard.chat_handlers import _reconcile_slot_window
+    from kiro_crew.dashboard.chat_utils import UNKNOWN_ROW_FIELDS_KEY
+
+    pairs = [p for i in range(50) for p in (("user", f"q{i}"), ("assistant", f"a{i}"))]
+    state, path = _saved_slot(tmp_path, monkeypatch, *pairs)
+    _edit_rows(path, lambda rows: [row.update(blob="x" * 8000) for row in rows])
+    restored = _restore(state)
+    before = list(restored.messages)
+    assert all(m.get(UNKNOWN_ROW_FIELDS_KEY) is not None for m in before), "precondition"
+
+    def another_writer(rows):
+        last = rows[-1]
+        for i in range(50):
+            rows.append({**last, "content": f"late{i}", "blob": "x" * 8000})
+
+    _edit_rows(path, another_writer)
+    await _reconcile_slot_window(state, restored)
+    assert len(restored.messages) == len(before) + 50, "precondition: the reconcile appended"
+    kept = _kept_fields(restored)
+    assert kept[0] is None, "precondition: the append passed the budget and dropped fields"
+    now = {id(m) for m in restored.messages}
+    lost = [i for i, m in enumerate(before) if id(m) not in now]
+    assert not lost, f"{len(lost)} rows were replaced by new dicts, first at index {lost[0]}"
+
+
+def test_a_window_rebuild_does_not_count_the_rows_it_replaced(tmp_path, monkeypatch):
+    """A refresh that finds the transcript rotated rebuilds the window from it.
+
+    The rebuild clears the window and appends the transcript again. The rows it
+    cleared must not count against the tab's budget: 200 rows whose fields total
+    802,400 bytes, under the 1 MiB budget, all keep them, and the next save writes
+    every one of them back.
+    """
+    from kiro_crew.dashboard.channel_slots import _rebuild_window, refresh_channel_window
+    from kiro_crew.dashboard.slot_persistence.message_entries import (
+        MAX_UNKNOWN_ROW_FIELDS_SLOT_BYTES,
+    )
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("slack_3.3", linked_session_key="slack:3.3")
+
+    def transcript(prefix, n):
+        return [
+            {
+                "role": ("user", "assistant")[i % 2],
+                "content": f"{prefix}{i}",
+                "ts": str(i),
+                "blob": "x" * 4000,
+            }
+            for i in range(n)
+        ]
+
+    _rebuild_window(slot, transcript("before", 80))
+    after = transcript("after", 200)
+    refresh_channel_window(slot, after, 2.0)  # the window does not match the file: rebuild
+    assert [m["content"] for m in slot.messages] == [
+        r["content"] for r in after
+    ], "precondition: the refresh rebuilt the window from the new transcript"
+    total = sum(len(json.dumps({"blob": r["blob"]})) for r in after)
+    assert total == 802_400 < MAX_UNKNOWN_ROW_FIELDS_SLOT_BYTES, "precondition: under the budget"
+    lost = [i for i, kept in enumerate(_kept_fields(slot)) if kept is None]
+    assert not lost, (
+        f"{len(lost)} of 200 rows lost their fields after a rebuild, with 802,400 bytes "
+        f"held, under the {MAX_UNKNOWN_ROW_FIELDS_SLOT_BYTES}-byte budget"
+    )
+    slot._dirty = True
+    _save_slot_to_history(state, slot)
+    saved = _rows(tmp_path / "slack_3.3.jsonl")
+    assert sum("blob" in r for r in saved) == 200, "the save dropped fields from disk"

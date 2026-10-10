@@ -848,7 +848,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
                                 mint_mid=False,
                             )
                             carry_provenance(slot.messages[-1], msg)
-                            remember_unknown_row_fields(slot.messages[-1], msg)
+                            remember_unknown_row_fields(slot, msg)
                             _attach_variants(slot, msg)
                         # Replayed rows came from disk — drain the replay
                         # frames and mark the window persisted (not dirty) so a

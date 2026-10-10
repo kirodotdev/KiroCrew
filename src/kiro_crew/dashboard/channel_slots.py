@@ -759,7 +759,7 @@ def _rebuild_window(slot: "_ChatSlot", messages: list[dict[str, Any]]) -> None:
         # restamp every line "dashboard".
         carry_provenance(slot.messages[-1], msg)
         # The same save would drop the fields a newer build wrote on the line.
-        remember_unknown_row_fields(slot.messages[-1], msg)
+        remember_unknown_row_fields(slot, msg)
     slot.drain()
     slot._resumed_count = len(slot.messages)
     slot._disk_window_len = len(slot.messages)
@@ -863,7 +863,7 @@ def refresh_channel_window(slot: "_ChatSlot", messages: list[dict[str, Any]], mt
         )
         # See the equivalent call in _rebuild_window.
         carry_provenance(slot.messages[-1], msg)
-        remember_unknown_row_fields(slot.messages[-1], msg)
+        remember_unknown_row_fields(slot, msg)
     slot.drain()
     slot._resumed_count = len(slot.messages)
     slot._disk_window_len = len(slot.messages)

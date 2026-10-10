@@ -175,7 +175,7 @@ async def _reconcile_slot_window(state: DashboardState, slot: "_ChatSlot") -> No
             mint_mid=False,
         )
         carry_provenance(slot.messages[-1], msg)
-        remember_unknown_row_fields(slot.messages[-1], msg)
+        remember_unknown_row_fields(slot, msg)
         _attach_variants(slot, msg)
     # The appended rows came from the file, so drain the replay frames and
     # mark the window as persisted (not dirty) — the next save must not
@@ -660,7 +660,7 @@ def _hydrate_slot_from_history(
         # See the equivalent call in _rehydrate_slot_from_history: resume loads
         # the window that the next save re-serializes.
         carry_provenance(slot.messages[-1], m)
-        remember_unknown_row_fields(slot.messages[-1], m)
+        remember_unknown_row_fields(slot, m)
         _attach_variants(slot, m)
     slot.drain()
     slot._resumed_count = len(slot.messages)

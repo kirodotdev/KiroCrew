@@ -3011,6 +3011,7 @@ class _ChatSlot:
         "_channel_window_mtime",
         "_disk_older_count",
         "_disk_older_durable_count",
+        "_unknown_row_fields_bytes",
         "_disk_window_len",
         "_disk_meta_created_at",
         "_disk_meta_observed",
@@ -3969,6 +3970,9 @@ class _ChatSlot:
         self._disk_older_count: int = (
             0  # count of disk messages OLDER than in-memory window (stable, set at restore/resume)
         )
+        # Bytes of newer-build row fields the messages keep (an upper bound; see
+        # slot_persistence.message_entries.MAX_UNKNOWN_ROW_FIELDS_SLOT_BYTES).
+        self._unknown_row_fields_bytes: int = 0
         # Durable-only frozen-prefix counter: how many durable rows (role not
         # in ``_TRANSIENT_ROLES``) have LEFT the in-memory window off the front.
         # Absolute message positions (``session_control.read_messages``) are
