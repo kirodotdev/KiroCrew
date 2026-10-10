@@ -477,6 +477,56 @@
       ]
     },
     {
+      "name": "outline",
+      "mode": "session",
+      "advertised": false,
+      "affects": [
+        "message/received",
+        "message/sent",
+        "turn/completed",
+        "turn/refused",
+        "turn/started"
+      ],
+      "answers": "The conversation one row per turn: the first line the human typed and the reply the turn settled on, both clipped, with no injected context and no tool output",
+      "fields": [
+        {
+          "name": "dropped",
+          "type": "int",
+          "optional": false
+        },
+        {
+          "name": "first_turn",
+          "type": "unknown",
+          "optional": true
+        },
+        {
+          "name": "last_turn",
+          "type": "unknown",
+          "optional": true
+        },
+        {
+          "name": "limit",
+          "type": "int",
+          "optional": false
+        },
+        {
+          "name": "prompt_chars",
+          "type": "int",
+          "optional": false
+        },
+        {
+          "name": "reply_chars",
+          "type": "int",
+          "optional": false
+        },
+        {
+          "name": "turns",
+          "type": "list",
+          "optional": false
+        }
+      ]
+    },
+    {
       "name": "ledger",
       "mode": "slot",
       "advertised": true,
