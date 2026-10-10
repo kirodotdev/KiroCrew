@@ -3106,7 +3106,10 @@ app-own-server grant, and an `auto_approve_tools` pattern matched against the id
 `Running: @server/tool` / `@server/tool` (never the lossy `mcp__server__tool`
 wire form, under which two identities can collide) INSTEAD of the title, for every caller, and only when the caller also
 threads the event's `mcp_identity_trusted` provenance flag (an identity that is
-present but unproven keeps the title match). The user's `auto_deny_tools` globs
+present but unproven keeps the title match). A `hooks.confirm_tools` match
+outranks that grant: the call asks, and no static grant on its server is
+written (see `docs/architecture/mcp.md`, "Servers the operator asked to
+confirm"). The user's `auto_deny_tools` globs
 — and only those, never the shipped shell regexes — are also matched against
 the same `@server/tool` / `Running: @server/tool` / `@server` spellings whenever
 the server name is present, so a deny written in the spelling the approve loop

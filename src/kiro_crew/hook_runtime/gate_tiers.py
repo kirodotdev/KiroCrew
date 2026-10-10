@@ -854,6 +854,26 @@ def _tier_app_own_server(facts: GateFacts, tier: GateTier) -> ToolHookResult | N
     return None
 
 
+def _operator_confirms(facts: GateFacts, grant_targets: tuple[str, ...]) -> bool:
+    """Whether an operator ``confirm_tools`` pattern names this call.
+
+    Matched against every spelling the grant could be keyed on -- the grant
+    targets, the title, the normalized name and, for an MCP call, the bare
+    ``@server`` -- because this can only withhold a grant, never give one.
+    """
+    patterns = facts.config.confirm_tools
+    if not patterns:
+        return False
+    call = facts.call
+    targets = [*grant_targets, call.title, facts.normalized]
+    if call.mcp_server:
+        tool_ref = mcp_identity_ref(call.mcp_server, call.mcp_tool)
+        targets += [tool_ref, f"Running: {tool_ref}", mcp_identity_ref(call.mcp_server, "")]
+    return any(
+        target and _tool_matches(pattern, target) for pattern in patterns for target in targets
+    )
+
+
 def _tier_operator_grants(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
     """The operator's ``auto_approve_tools`` patterns.
 
@@ -898,6 +918,8 @@ def _tier_operator_grants(facts: GateFacts, tier: GateTier) -> ToolHookResult | 
     else:
         grant_targets = (call.title, facts.normalized)
         identity_grant = False
+    if _operator_confirms(facts, grant_targets):
+        return None
     for pattern in facts.config.auto_approve_tools:
         if any(_tool_matches(pattern, target) for target in grant_targets):
             return ToolHookResult.auto_approve(identity_grant=identity_grant)

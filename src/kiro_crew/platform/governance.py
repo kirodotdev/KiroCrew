@@ -4764,6 +4764,68 @@ def strip_ungoverned_auto_approve(
     return out
 
 
+def _confirm_tool_patterns() -> tuple[str, ...]:
+    """The operator's ``hooks.confirm_tools`` patterns from ``config.json``.
+
+    An unreadable config yields no patterns, which is the behaviour of an
+    operator who never set the key: the list only ever withholds a grant, so
+    reading nothing cannot widen one.
+    """
+    try:
+        from kiro_crew.config import live
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        hooks = (live.snapshot() or KiroCrewConfig.load()).hooks
+        raw = hooks.get("confirm_tools") if isinstance(hooks, dict) else None
+    except Exception:  # noqa: BLE001 — a config read must not break a writer
+        logger.debug("hooks.confirm_tools unreadable; no confirm patterns", exc_info=True)
+        return ()
+    if not isinstance(raw, list):
+        return ()
+    return tuple(p for p in raw if isinstance(p, str))
+
+
+def server_requires_confirmation(server: str, patterns: Sequence[str]) -> bool:
+    """Whether a ``confirm_tools`` pattern can match a call on MCP server ``server``.
+
+    The gate matches a pattern case-insensitively, with ``fnmatch`` wildcards that
+    also consume ``/``, against the call's identity spellings ``@server``,
+    ``@server/tool`` and ``Running: @server/tool``. A static grant hides every one
+    of those calls from the gate, so it is withheld whenever the pattern could
+    match ANY of them, for a tool name not known here.
+
+    The test is on the pattern's literal prefix (the text before its first
+    wildcard): every string the pattern matches starts with that prefix, so a
+    pattern whose prefix is compatible with neither ``@server/`` nor
+    ``running: @server/`` cannot match a call on this server. The test errs
+    toward withholding, which costs a prompt the gate then settles. A pattern
+    with no wildcard is compared exactly. A pattern that names a call only by its
+    model-authored title acts at the gate alone.
+    """
+    target = server.lower()
+    heads = (f"@{target}/", f"running: @{target}/")
+    exact = (f"@{target}", f"running: @{target}")
+    for pattern in patterns:
+        text = pattern.strip().lower()
+        cut = min((i for i, ch in enumerate(text) if ch in "*?["), default=-1)
+        if cut < 0:
+            if text in exact or text.startswith(heads):
+                return True
+            continue
+        prefix = text[:cut]
+        if prefix.startswith(heads) or any(head.startswith(prefix) for head in heads):
+            return True
+    return False
+
+
+def _operator_requires_confirmation(ref: str) -> bool:
+    """Whether ``hooks.confirm_tools`` names the MCP server ``ref`` grants."""
+    if not ref.startswith("@"):
+        return False
+    server = ref[1:].partition("/")[0]
+    return bool(server) and server_requires_confirmation(server, _confirm_tool_patterns())
+
+
 def may_skip_gate_now(ref: str) -> bool:
     """:func:`may_skip_gate` against the CURRENTLY installed ceiling.
 
@@ -4788,6 +4850,10 @@ def may_skip_gate_now(ref: str) -> bool:
         logger.warning("cannot resolve the governance ceiling; not auto-approving %r", ref)
         return False
     if not may_skip_gate(ref, ceiling):
+        return False
+    # The operator's own opt-in: a server ``hooks.confirm_tools`` names asks on
+    # every call, so no writer may grant it statically.
+    if _operator_requires_confirmation(ref):
         return False
     # The POLICY ceiling permits (or is absent) — but governance is
     # ``policy ∩ profile``, and a Level-2 PROFILE can govern this ref even with NO

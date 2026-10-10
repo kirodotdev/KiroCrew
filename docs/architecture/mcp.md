@@ -347,6 +347,29 @@ SEL, `mcp_auto_approve_withheld` when a grant is taken away and
 `mcp_auto_approve_honoured` when an owner-written one is kept, so an operator can
 see both why a template tool prompts and which calls are skipping the gate.
 
+### Servers the operator asked to confirm
+
+A user-added server is granted in `allowedTools` as soon as it is mounted, so
+steering prose such as "confirm before making changes" is the only thing between
+the model and its write tools. `hooks.confirm_tools` in `config.json` is the
+structural opt-in: a list of tool patterns in the `auto_approve_tools` spelling
+(`@server`, `@server/tool*`, `Running: @server/*`, or `*` for every MCP server). The static side withholds a server's grant whenever a pattern could match any of the gate's identity spellings for a call on it (`@server`, `@server/tool`, `Running: @server/tool`, case-insensitive, wildcards spanning `/`), judged from the pattern's literal prefix, so it errs toward a prompt and never keeps a grant the gate would refuse. A pattern that names a call only by its title acts at the gate alone.
+`may_skip_gate_now`, the chokepoint every static grant writer calls (the rebuild's
+shared-server sync and final pass, the dashboard enable paths, app-agent
+materialization and doctor's repair), answers "no" for any `@server` or
+`@server/tool` ref on a server a pattern names. The server stays in `tools`, gets
+no `allowedTools` grant and no `autoApprove` from any writer, and each of its
+calls raises a permission request that reaches the PreToolUse gate. The writers
+record that as their usual `mcp_auto_approve_withheld` event. At the gate a
+`confirm_tools` match outranks an `auto_approve_tools` grant; deny tiers and the
+read-only classifier are unchanged, and a session in Trust or YOLO mode still
+approves what the user told it to.
+
+The gate side follows the live `hooks` section. The spec side is decided when a
+writer runs, so a grant already in `kirocrew.json` is withdrawn at the next
+rebuild (a gateway restart) or the next dashboard enable of that server. With the
+key unset, both the spec and the gate behave as before.
+
 ### Two writers, one lock
 
 `~/.kiro/agents/kirocrew.json` has two independent writers: this whole-file
