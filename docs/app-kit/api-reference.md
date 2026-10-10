@@ -362,6 +362,37 @@ call `await client.authenticate()` before the first request; the context manager
 does not exchange the secret automatically. The same exchange refreshes a token
 after a 401/403 response.
 
+> **Cron children cannot read `.app_secret` from disk.** Inside a cron child — a
+> script cron or a command cron — the whole apps tree is masked and every
+> `.app_secret` is unreadable, the cron's own app included, so a client
+> constructed there with `app_name` set finds no secret to exchange. An app cron
+> reaches the Gateway through its `ScriptContext` instead (`ctx.notify()`,
+> `ctx.call_tool()`), which carries the job's identity without reading a
+> credential off disk. If your app cron previously read `.app_secret` (directly
+> or by constructing a client with `app_name`), move it to `ScriptContext`
+> before upgrading. The cron's own bundle code stays readable so imports resolve
+> (it is sealed read-only, so a cron cannot rewrite what the app's backend later
+> runs), and its `data/` directory stays writable, so durable state is
+> unaffected; only the secret file is masked. Keep each `.app_secret` a single plain
+> file: if your bundle holds a second hard link to any app's secret, that cron is
+> refused with a message naming the linked path, so remove the extra link.
+> A cron that is not that app no longer reaches another app's `data/`: only the
+> owning cron (its script lives in the bundle, or it is the bundle's own job) gets
+> a writable `data/`, so if your cron kept state under a different app's bundle,
+> move it to its own bundle's `data/` before upgrading.
+>
+> **Calling another app's MCP tools from a cron child is refused.** A script cron
+> that calls a DIFFERENT app's MCP server through `ctx.call_tool()` would start
+> that server inside the cron child, where that app's bundle is masked — so the
+> server would read an empty tree (no data, no error) and its writes would be
+> lost in the throwaway mask. That call is now refused with a named error instead
+> of running on nothing (the `mochi` and `auto-improvement` servers, which read
+> and write their own `app_data_dir`, are the in-tree shape of this). Calling your
+> OWN app's tools still works. If a cron needs another app's tools, run them from
+> the Gateway (an agent cron, or the app's own backend) rather than from inside a
+> sandboxed cron child; a Gateway-side path that keeps cross-app `ctx.call_tool()`
+> working is tracked in #18424.
+
 The Gateway names its authentication cookie from the Host header it receives,
 falling back to its own listen port. The Python client normally derives that name
 from `base_url`. For a port-less URL or a reverse proxy that strips or rewrites

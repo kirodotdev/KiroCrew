@@ -201,6 +201,33 @@ jobs:
             exit 1
           fi
 
+      - name: Cron apps-secret mask real-sandbox cases a-f (verbose, so PASSED lines are real)
+        # The sharded run below is `-q` and does not name passing tests, so the
+        # `TestRealSandbox` cases a-f (the only coverage of the mask under real
+        # Seatbelt) produce no per-test PASSED evidence in its log. Run them here
+        # by node id with `-v -rA` so each case's outcome streams to the log, and
+        # assert they actually RAN under the real backend rather than skipping --
+        # a skip exits 0 and would leave this blind. Shard 1 only; the file is one
+        # process either way. Case (a) runs `node`; where node is absent it skips
+        # cleanly, so the floor is 5 (b-f), not 6.
+        if: matrix.group == 1
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: |
+          set -o pipefail
+          echo "::remove-matcher owner=python::"
+          pytest -v -rA -n0 --no-cov --timeout=180 -p no:cacheprovider \
+            "test/test_cron_apps_secret_mask.py::TestRealSandbox" 2>&1 | tee cron-mask.log
+          passed=$(sed -n 's/.*[^0-9]\([0-9][0-9]*\) passed.*/\1/p' cron-mask.log | tail -1)
+          echo "cron apps-secret mask real-sandbox: ${passed:-0} passed"
+          # 5, not 6: case (a) skips cleanly when node is not installed. pipefail
+          # above already reds a real failure; this guards the "did not run" side
+          # (a changed skipif or a collection change that mass-skips the class).
+          if [ "${passed:-0}" -lt 5 ]; then
+            echo "::error::cron apps-secret mask real-sandbox cases reported only ${passed:-0} passes on macOS; expected 5-6 (the class skipped or was not collected under the real backend)"
+            exit 1
+          fi
+
       - name: Run tests (macOS shard ${{ matrix.group }}/${{ env.SHARD_COUNT }})
         # Flags copied verbatim from backend-test-windows, including
         # --max-worker-restart=0. That flag's stated reason is Windows-specific

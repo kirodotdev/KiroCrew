@@ -7608,6 +7608,7 @@ def _spawn_plan(
     extra_visible_dirs: tuple[str, ...] = (),
     extra_private_dirs: tuple[str, ...] = (),
     extra_private_dir_ids: tuple[tuple[str, int, int], ...] = (),
+    extra_readonly_private_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
     fail_closed_file_masks: tuple[tuple[str, int, int], ...] = (),
@@ -7631,6 +7632,7 @@ def _spawn_plan(
         extra_visible_dirs=tuple(extra_visible_dirs),
         extra_private_dirs=tuple(extra_private_dirs),
         extra_private_dir_ids=tuple(extra_private_dir_ids),
+        extra_readonly_private_dirs=tuple(extra_readonly_private_dirs),
         extra_writable_dirs=tuple(extra_writable_dirs),
         extra_expose_files=tuple(extra_expose_files),
         fail_closed_file_masks=tuple(fail_closed_file_masks),
@@ -7654,6 +7656,7 @@ def _build_launcher_script(
     extra_visible_dirs: tuple[str, ...] = (),
     extra_private_dirs: tuple[str, ...] = (),
     extra_private_dir_ids: tuple[tuple[str, int, int], ...] = (),
+    extra_readonly_private_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
     fail_closed_file_masks: tuple[tuple[str, int, int], ...] = (),
@@ -7680,6 +7683,7 @@ def _build_launcher_script(
             extra_visible_dirs=extra_visible_dirs,
             extra_private_dirs=extra_private_dirs,
             extra_private_dir_ids=extra_private_dir_ids,
+            extra_readonly_private_dirs=extra_readonly_private_dirs,
             extra_writable_dirs=extra_writable_dirs,
             extra_expose_files=extra_expose_files,
             fail_closed_file_masks=fail_closed_file_masks,
@@ -7696,6 +7700,7 @@ def _build_seatbelt_profile(
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
     extra_private_dirs: tuple[str, ...] = (),
+    extra_readonly_private_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
 ) -> str:
@@ -7711,6 +7716,7 @@ def _build_seatbelt_profile(
             extra_hidden_dirs=extra_hidden_dirs,
             extra_visible_dirs=extra_visible_dirs,
             extra_private_dirs=extra_private_dirs,
+            extra_readonly_private_dirs=extra_readonly_private_dirs,
             extra_writable_dirs=extra_writable_dirs,
             extra_expose_files=extra_expose_files,
         )
@@ -7729,6 +7735,8 @@ def namespace_argv(
     extra_visible_dirs: tuple[str, ...] = (),
     extra_private_dirs: tuple[str, ...] = (),
     extra_private_dir_ids: tuple[tuple[str, int, int], ...] = (),
+    extra_readonly_private_dirs: tuple[str, ...] = (),
+    extra_required_mask_targets: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
 ) -> list[str]:
@@ -7765,6 +7773,11 @@ def namespace_argv(
     # creatable from any sandbox simply because the data-home ROOT is writable there and
     # an absent name has no mask. Publishing the stub first makes the mask non-vacuous.
     _materialize_live_target_mask_target(_required_targets)
+    # A caller's own fail-closed masks: names it saw PRESENT when it planned the spawn
+    # (a cron child's owning-bundle ``.app_secret``). The launcher refuses when one is
+    # absent at mask time instead of skipping it, so a secret moved aside between the
+    # caller's plan and the bind cannot come back unmasked inside the bundle window.
+    _required_targets.extend(os.path.abspath(path) for path in extra_required_mask_targets)
     # CLEANUP BEFORE THE REFUSAL, and this order is a contract rather than a preference.
     # Both sweeps and the reconciliation remove names that are themselves hard links to a
     # masked credential leaf -- a pre-upgrade orphan is a link to the signing key by
@@ -7872,6 +7885,7 @@ def namespace_argv(
         extra_visible_dirs=extra_visible_dirs,
         extra_private_dirs=extra_private_dirs,
         extra_private_dir_ids=extra_private_dir_ids,
+        extra_readonly_private_dirs=extra_readonly_private_dirs,
         extra_writable_dirs=extra_writable_dirs,
         extra_expose_files=extra_expose_files,
         required_mask_targets=tuple(_required_targets),
@@ -8372,6 +8386,7 @@ def sandbox_exec_argv(
     extra_visible_dirs: tuple[str, ...] = (),
     extra_private_dirs: tuple[str, ...] = (),
     extra_private_dir_ids: tuple[tuple[str, int, int], ...] = (),
+    extra_readonly_private_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
 ) -> tuple[list[str], str | None]:
@@ -8499,6 +8514,7 @@ def sandbox_exec_argv(
         extra_hidden_dirs=extra_hidden_dirs + tuple(m.path for m in alias_masks),
         extra_visible_dirs=extra_visible_dirs,
         extra_private_dirs=extra_private_dirs,
+        extra_readonly_private_dirs=extra_readonly_private_dirs,
         extra_writable_dirs=extra_writable_dirs,
         extra_expose_files=extra_expose_files,
     )
@@ -10182,6 +10198,8 @@ def wrap_argv(
     extra_visible_dirs: tuple[str, ...] = (),
     extra_private_dirs: tuple[str, ...] = (),
     extra_private_dir_ids: tuple[tuple[str, int, int], ...] = (),
+    extra_readonly_private_dirs: tuple[str, ...] = (),
+    extra_required_mask_targets: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
     is_kiro_cli: bool | None = None,
@@ -10549,6 +10567,7 @@ def wrap_argv(
                     extra_visible_dirs=extra_visible_dirs,
                     extra_private_dirs=extra_private_dirs,
                     extra_private_dir_ids=extra_private_dir_ids,
+                    extra_readonly_private_dirs=extra_readonly_private_dirs,
                     extra_writable_dirs=extra_writable_dirs,
                     extra_expose_files=extra_expose_files,
                 )
@@ -10592,6 +10611,8 @@ def wrap_argv(
                 extra_visible_dirs=extra_visible_dirs,
                 extra_private_dirs=extra_private_dirs,
                 extra_private_dir_ids=extra_private_dir_ids,
+                extra_readonly_private_dirs=extra_readonly_private_dirs,
+                extra_required_mask_targets=extra_required_mask_targets,
                 extra_writable_dirs=extra_writable_dirs,
                 extra_expose_files=extra_expose_files,
             )
@@ -10626,6 +10647,7 @@ def wrap_argv(
                 extra_visible_dirs=extra_visible_dirs,
                 extra_private_dirs=extra_private_dirs,
                 extra_private_dir_ids=extra_private_dir_ids,
+                extra_readonly_private_dirs=extra_readonly_private_dirs,
                 extra_writable_dirs=extra_writable_dirs,
                 extra_expose_files=extra_expose_files,
             )

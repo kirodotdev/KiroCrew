@@ -310,6 +310,7 @@ _LAUNCHER_PLAN_GOLDEN: dict[str, Any] = {
     "sensitive_dir_ids": {"<ROOT>/crew/apps": [13, 14]},
     "private_dirs": ["<ROOT>/crew/apps/alpha/data"],
     "private_dir_ids": {"<ROOT>/crew/apps/alpha/data": [11, 12]},
+    "private_readonly_windows": [],
     "readonly_dirs": [
         "<ROOT>/crew/policy_cache",
         "<ROOT>/crew/run",
