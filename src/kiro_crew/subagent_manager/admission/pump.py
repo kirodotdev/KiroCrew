@@ -1387,6 +1387,13 @@ class _PumpMixin(ManagerComponent):
         # same cover the direct paths rely on. One release per pass; the
         # re-arm at the stagger boundary takes the next.
         self._manager._last_spawn_ts = time.monotonic()
+        # A released root member is progress of its lane, where the hold may
+        # keep rows waiting behind it. A child entry also ends the scan above
+        # and is released here; it is not held, so it is not progress.
+        if not self.entry_is_child(params):
+            self._manager._pressure_lane_started(
+                info.parent_session_key, self._manager._last_spawn_ts
+            )
         logger.info(
             "Releasing approved spawn %s into startup (%d left queued, in_startup=%d/%d)",
             info.id,

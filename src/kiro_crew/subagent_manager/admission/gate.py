@@ -1106,8 +1106,7 @@ class _GateMixin(ManagerComponent):
             # A floor wait carries no pressure clock (the hold below is not
             # evaluated for it): one an earlier hold started is dropped, so time
             # spent below the floor never counts toward the hold's bound.
-            self._manager._pressure_holds.pop(agent_id, None)
-            self._manager._pressure_hold_expired.discard(agent_id)
+            self._manager._forget_pressure_clock(agent_id)
             memory_wait = {
                 "reason": QUEUED_REASON_LOW_MEMORY,
                 # No figure when nothing was read: -1 is not an amount. A start
@@ -1272,6 +1271,7 @@ class _GateMixin(ManagerComponent):
                 agent_id,
                 pressure_level,
                 parent_session_key=parent_session_key,
+                batch_id=batch_id,
                 available_gb=avail_gb,
             )
             if pressure_level is not None
@@ -1543,6 +1543,9 @@ class _GateMixin(ManagerComponent):
                 0, int(self._manager._startup_reservations) - 1
             )
         self._manager._last_spawn_ts = time.monotonic()  # stagger gate: one start per interval
+        if not _is_child:
+            # Progress of the lane the pressure hold may keep rows waiting in.
+            self._manager._pressure_lane_started(parent_session_key, self._manager._last_spawn_ts)
         # Batch lifecycle: announce the wave ONCE, on its first member to
         # actually start (queued members haven't started yet — the event marks
         # execution begin, and the UI uses it to key batch progress).
@@ -1732,10 +1735,20 @@ class _GateMixin(ManagerComponent):
                 mgr._admission.taskq_memory_wait_bound_secs(),
                 float(DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS),
             )
+            # A row still in the window is waiting, so its first-hold clock is
+            # never dropped; nor is the clock of a row whose lane has started a
+            # root within the window, since a row waiting its turn behind a
+            # moving lane can rightly outlive it. Dropping either would re-stamp
+            # a live row and make its expiry audit under-report the wait.
+            in_window = {str(p.get("_preassigned_id") or "") for p in mgr._queue}
             for agent_id, since in list(mgr._pressure_holds.items()):
-                if now - since >= prune_after:
-                    del mgr._pressure_holds[agent_id]
-                    mgr._pressure_hold_expired.discard(agent_id)
+                if agent_id in in_window:
+                    continue
+                lane = mgr._pressure_hold_lanes.get(agent_id)
+                lane_started = mgr._pressure_lane_started_at.get(lane) if lane is not None else None
+                last_seen = since if lane_started is None else max(since, lane_started)
+                if now - last_seen >= prune_after:
+                    self._manager._forget_pressure_clock(agent_id)
             return None
         mgr._pressure_hold_on = True
         if not mgr._shutting_down:
@@ -1759,6 +1772,43 @@ class _GateMixin(ManagerComponent):
                 )
         return level
 
+    def _pressure_lane_started_impl(self, parent_session_key: str, started_at: float) -> None:
+        """A root start from *parent_session_key* began at *started_at*.
+
+        That is progress for every row the pressure hold keeps waiting in the
+        same lane: the row's bound counts from this stamp when it is later than
+        its first hold. A lane holding no row keeps no stamp, so the map has an
+        entry only while its lane has a held row, and the entry leaves with the
+        lane's last held row (``_forget_pressure_clock``). A lane
+        joined after this start is clocked from its own first hold, which is
+        later anyway.
+        """
+        from kiro_crew.taskq import lanes as _lanes
+
+        mgr = self._manager
+        lane = _lanes.lane_key_for(parent_session_key)
+        if mgr._pressure_lane_held.get(lane):
+            mgr._pressure_lane_started_at[lane] = started_at
+
+    def _forget_pressure_clock_impl(self, agent_id: str) -> None:
+        """Drop *agent_id*'s pressure-hold clock and its place in its lane.
+
+        When it was the lane's last held row, the lane's progress stamp goes
+        with it: nothing waits behind that lane's starts any more.
+        """
+        mgr = self._manager
+        mgr._pressure_holds.pop(agent_id, None)
+        mgr._pressure_hold_expired.discard(agent_id)
+        lane = mgr._pressure_hold_lanes.pop(agent_id, None)
+        if lane is None:
+            return
+        left = mgr._pressure_lane_held.get(lane, 0) - 1
+        if left > 0:
+            mgr._pressure_lane_held[lane] = left
+        else:
+            mgr._pressure_lane_held.pop(lane, None)
+            mgr._pressure_lane_started_at.pop(lane, None)
+
     def _memory_pressure_holds_impl(
         self,
         agent_id: str,
@@ -1773,8 +1823,8 @@ class _GateMixin(ManagerComponent):
         """What the hold, applying at *level*, does with root start *agent_id*.
 
         ``"held"`` while it waits; ``"expired"`` once its own wait has run out
-        (``agent.subagent_queue_max_wait_secs`` from its first hold, read live;
-        0 is no bound) or the episode has
+        (``agent.subagent_queue_max_wait_secs`` from the later of its first hold
+        and its lane's last root start, read live; 0 is no bound) or the episode has
         outlived that bound (``_pressure_episode_spent``): the caller ends it,
         never started (``MEMORY_PRESSURE_NEVER_STARTED``). *available_gb* is the
         floor's figure when the caller read one (negative: unreadable), None
@@ -1788,9 +1838,29 @@ class _GateMixin(ManagerComponent):
         now = time.monotonic()
         first = agent_id not in mgr._pressure_holds
         since = mgr._pressure_holds.setdefault(agent_id, now)
+        lane = mgr._pressure_hold_lanes.get(agent_id)
+        if lane is None:
+            from kiro_crew.taskq import lanes as _lanes
+
+            # The lane this row waits in: its parent session's, the one the
+            # pump's weighted pick serves FIFO. A held row is a root, so its
+            # lane is its own parent key (no parent chain to walk).
+            lane = _lanes.lane_key_for(parent_session_key)
+            mgr._pressure_hold_lanes[agent_id] = lane
+            mgr._pressure_lane_held[lane] = mgr._pressure_lane_held.get(lane, 0) + 1
         name = platform_compat.memory_pressure_name(level)
         bound = mgr._admission.taskq_memory_wait_bound_secs()
-        own_wait_ran_out = bound > 0 and now - since >= bound
+        # The bound counts time with no root start in this row's lane: from the
+        # later of its first hold and the lane's last root start. A start in the
+        # lane is a row ahead of this one leaving the FIFO queue, whichever
+        # spawn_run wave it came from, so the row is waiting its turn, not
+        # stuck. Another session's starts are another lane's progress and never
+        # extend it. No stamp is its own case, never a 0.0 sentinel: the
+        # monotonic clock can itself be smaller than the bound (a freshly
+        # booted host).
+        lane_started = mgr._pressure_lane_started_at.get(lane)
+        stalled_since = since if lane_started is None else max(since, lane_started)
+        own_wait_ran_out = bound > 0 and now - stalled_since >= bound
         if own_wait_ran_out or mgr._pressure_episode_spent:
             if commit_expiry and agent_id not in mgr._pressure_hold_expired:
                 mgr._pressure_hold_expired.add(agent_id)

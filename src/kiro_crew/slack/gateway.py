@@ -476,6 +476,7 @@ from kiro_crew.subagent_completion_meta import (
     wave_chunk_meta,
     wave_final_meta,
 )
+from kiro_crew.subagent_wait_reasons import QUEUED_WAIT_EXPIRED_TEXT
 from kiro_crew.taskrunner import TaskRunner
 from kiro_crew.tunnel import set_publish_disabled
 from kiro_crew.validation import CHANNEL_ID_RE
@@ -9853,6 +9854,11 @@ class GatewayOrchestrator:
                             "ok": 0,
                             "err": 0,
                             "stopped": 0,
+                            # Failed members a memory wait ended before they
+                            # started: dropped work the parent may resubmit. A
+                            # refusal is not counted; resubmitting it would only
+                            # be refused again.
+                            "not_run": 0,
                             "fail_lines": [],
                             "ok_lines": [],
                             "held_ok_deliveries": [],
@@ -9874,6 +9880,8 @@ class GatewayOrchestrator:
                     bp["stopped"] += 1
                 elif _oc == "failed":
                     bp["err"] += 1
+                    if (info.error or "").startswith(QUEUED_WAIT_EXPIRED_TEXT):
+                        bp["not_run"] += 1
                 else:
                     bp["ok"] += 1
                 # Per-member model provenance in the PARENT-READ digest text: the
@@ -10077,11 +10085,24 @@ class GatewayOrchestrator:
                             )
                         except Exception:
                             _nested_live = False
+                        # Members a memory wait ended are dropped work, not
+                        # done work. After the tally sentence, which the card
+                        # regexes anchor on. "Once memory eases": a member the
+                        # spent episode ended at once is counted too, and a
+                        # resubmit while that episode lasts is ended at once.
+                        _not_run_line = (
+                            f"{bp['not_run']} of the ❌ never started, so their "
+                            f"work was not done: resubmit them once memory "
+                            f"eases if it is still needed. "
+                            if bp.get("not_run")
+                            else ""
+                        )
                         if _nested_live:
                             _completion_line = (
                                 f"These {bp['total']} sub-agents finished: "
                                 f"{bp['ok']} ✅ · {bp['err']} ❌ · "
-                                f"{bp['stopped']} ⏹. Their results are below. "
+                                f"{bp['stopped']} ⏹. {_not_run_line}"
+                                f"Their results are below. "
                                 f"NOTE: a sub-agent in this wave spawned further "
                                 f"work that is still running; that nested work "
                                 f"is tracked as its own wave and reports "
@@ -10095,6 +10116,7 @@ class GatewayOrchestrator:
                                 f"wave finished: "
                                 f"{bp['ok']} ✅ · {bp['err']} ❌ · "
                                 f"{bp['stopped']} ⏹ of {bp['total']} agents. "
+                                f"{_not_run_line}"
                                 f"All results delivered.\n"
                                 f"This run is complete. Finish processing all "
                                 f"results before spawning any follow-up "

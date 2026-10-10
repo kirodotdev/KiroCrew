@@ -1191,9 +1191,10 @@ _RECOVERY_SLOT_WAIT_SECS = 60.0
 # with a warning: an admitted run is never failed on capacity.
 _DEDICATED_TOPUP_WAIT_SECS = 60.0
 _DEDICATED_TOPUP_POLL_SECS = 2.0
-# The most one root start waits on the macOS kernel memory-pressure hold, clocked
-# from its first hold, is ``agent.subagent_queue_max_wait_secs`` (read live off
-# the manager, 0 for no bound); past it the start is ended, never started.
+# The most one root start waits on the macOS kernel memory-pressure hold with no
+# member of its wave beginning, clocked from the later of its first hold and its
+# wave's last start, is ``agent.subagent_queue_max_wait_secs`` (read live off the
+# manager, 0 for no bound); past it the start is ended, never started.
 # A held row's clock older than this many times that bound (the key's default
 # when the bound is lower or off) belongs to a row that left without a
 # registration or a refusal (cancelled in the store by another process); dropped.
@@ -3750,6 +3751,19 @@ class SubagentManager:
         self._pressure_episode_read_at = 0.0
         self._pressure_holds: dict[str, float] = {}
         self._pressure_hold_expired: set[str] = set()
+        # The pressure hold's per-lane progress. A lane is the parent session a
+        # root row waits behind (``taskq.lanes.lane_key_for``), the one the
+        # pump's weighted pick serves FIFO. A held row's bound counts from the
+        # later of its first hold and its lane's last root start, so a lane
+        # that keeps starting rows never expires the rows waiting behind them,
+        # whichever wave they came from, and a lane none of whose rows starts
+        # still ends them after the bound. Another session's starts never
+        # extend it. agent_id -> its lane, lane -> how many rows it holds, and
+        # lane -> its last root start (monotonic), kept only while the lane
+        # holds a row; ``_forget_pressure_clock`` drops all three.
+        self._pressure_hold_lanes: dict[str, str] = {}
+        self._pressure_lane_held: dict[str, int] = {}
+        self._pressure_lane_started_at: dict[str, float] = {}
         # agent_id -> (closed parked time, current park's start, its planned
         # end), all integer ``time.monotonic_ns()`` nanoseconds, for a start
         # with no durable row that waits on the memory floor: the store sweep
@@ -5493,10 +5507,15 @@ class SubagentManager:
             commit_expiry=commit_expiry,
         )
 
+    def _pressure_lane_started(self, parent_session_key: str, started_at: float) -> None:
+        self._admission._pressure_lane_started_impl(parent_session_key, started_at)
+
+    def _forget_pressure_clock(self, agent_id: str) -> None:
+        self._admission._forget_pressure_clock_impl(agent_id)
+
     def _forget_pending_start(self, agent_id: str) -> None:
         """Drop what this process kept for a start that began or never will."""
-        self._pressure_holds.pop(agent_id, None)
-        self._pressure_hold_expired.discard(agent_id)
+        self._forget_pressure_clock(agent_id)
         self._floor_waits.pop(agent_id, None)
         self._held_approval_modes.pop(agent_id, None)
         self._floor_deferred_ids.discard(agent_id)

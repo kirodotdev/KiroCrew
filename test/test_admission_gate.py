@@ -894,6 +894,345 @@ class TestSpawnAdmissionGate:
         assert self._outcomes(mock_sel).count("never_started_memory_pressure") == 1
         assert any("for its whole wait" in r.getMessage() for r in caplog.records)
 
+    def test_a_root_start_in_its_lane_restarts_a_held_rows_bound(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The bound counts time with no root start in the row's lane (its
+        parent session). A row first held longer ago than the bound is still
+        waiting its turn while its lane keeps starting rows; another session's
+        start is not its progress; once its lane has not started a root for
+        the bound, it ends as before."""
+        mgr = self._mgr()
+        now = time.monotonic()
+        with patch("kiro_crew.subagent.sel") as mock_sel:
+            mgr._pressure_holds["tail"] = now - 2 * _HOLD_BOUND_SECS
+            # Another session's lane is moving; it never extends this row.
+            assert mgr._memory_pressure_holds("other-row", 2, parent_session_key="sess-2") == "held"
+            mgr._pressure_lane_started("sess-2", now - 5.0)
+            assert mgr._memory_pressure_holds(
+                "tail", 2, parent_session_key="sess-1", commit_expiry=False
+            ) == ("expired")
+            mgr._pressure_lane_started("sess-1", now - 5.0)
+            assert mgr._memory_pressure_holds("tail", 2, parent_session_key="sess-1") == "held"
+            assert "tail" not in mgr._pressure_hold_expired
+            # The lane stalls: none of its rows starts for the whole bound.
+            mgr._pressure_lane_started_at["sess-1"] = now - _HOLD_BOUND_SECS - 1
+            assert mgr._memory_pressure_holds("tail", 2, parent_session_key="sess-1") == "expired"
+        expired = self._sel_call(mock_sel, "never_started_memory_pressure")
+        assert expired["metadata"]["expired_by"] == "wait"
+        # The audit still reports the row's whole wait, from its first hold.
+        assert expired["metadata"]["waited_secs"] >= 2 * _HOLD_BOUND_SECS
+        # A lane start older than the row's own first hold does not extend it.
+        mgr._pressure_holds["late"] = now - _HOLD_BOUND_SECS - 1
+        with patch("kiro_crew.subagent.sel"):
+            assert mgr._memory_pressure_holds(
+                "late", 2, parent_session_key="sess-1", commit_expiry=False
+            ) == ("expired")
+        mgr._pressure_lane_started_at["sess-1"] = now - 3 * _HOLD_BOUND_SECS
+        with patch("kiro_crew.subagent.sel"):
+            assert mgr._memory_pressure_holds(
+                "late", 2, parent_session_key="sess-1", commit_expiry=False
+            ) == ("expired")
+
+    def test_a_lane_keeps_no_stamp_once_it_holds_no_row(self) -> None:
+        """The progress map has an entry only while its lane holds a row: a
+        start in an empty lane stamps nothing, and the lane's last held row
+        leaving takes the stamp with it, whichever way it leaves."""
+        mgr = self._mgr()
+        now = time.monotonic()
+        mgr._pressure_lane_started("sess-1", now)
+        assert mgr._pressure_lane_started_at == {}
+        with patch("kiro_crew.subagent.sel"):
+            for agent_id in ("a", "b"):
+                assert mgr._memory_pressure_holds(agent_id, 2, parent_session_key="sess-1") == (
+                    "held"
+                )
+        assert mgr._pressure_lane_held == {"sess-1": 2}
+        mgr._pressure_lane_started("sess-1", now)
+        assert mgr._pressure_lane_started_at == {"sess-1": now}
+        mgr._forget_pending_start("a")
+        assert mgr._pressure_lane_started_at == {"sess-1": now}
+        mgr._forget_pending_start("b")
+        assert mgr._pressure_lane_held == {}
+        assert mgr._pressure_lane_started_at == {}
+        assert mgr._pressure_hold_lanes == {}
+        # Forgetting a row twice never drives a lane's count below its rows.
+        mgr._forget_pending_start("b")
+        assert mgr._pressure_lane_held == {}
+
+    def test_a_young_monotonic_clock_still_expires_a_row_with_no_lane_stamp(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A missing lane stamp is its own case, not a 0.0 that would win the
+        max: on a host up for less than the bound, the clock itself is smaller
+        than the bound and a first hold is negative."""
+        from kiro_crew import subagent as subagent_mod
+
+        young = 900.0
+        monkeypatch.setattr(
+            subagent_mod, "time", SimpleNamespace(monotonic=lambda: young, time=time.time)
+        )
+        mgr = self._mgr()
+        with patch("kiro_crew.subagent.sel"):
+            mgr._pressure_holds["solo"] = young - _HOLD_BOUND_SECS - 1
+            assert mgr._memory_pressure_holds("solo", 2, commit_expiry=False) == "expired"
+            mgr._pressure_holds["member"] = young - _HOLD_BOUND_SECS - 1
+            assert (
+                mgr._memory_pressure_holds(
+                    "member", 2, parent_session_key="sess-1", commit_expiry=False
+                )
+                == "expired"
+            )
+
+    def test_a_held_wave_draining_slower_than_the_bound_never_expires(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """End to end: every held member of one wave was first held longer ago
+        than the bound, and our runtime ends so one member starts. That start
+        is its lane's progress, so the members still behind it stay held
+        instead of ending "never started" while the queue is moving. The
+        episode, here older than the bound too, cannot end them either: a root
+        member is only picked on a pass where the hold does not apply, and that
+        read ends the episode."""
+        mgr, started = self._starting_mgr(monkeypatch, shared=False)
+        self._level(monkeypatch, 2)
+
+        async def run() -> tuple[list[Any], float]:
+            with self._gate_patches():
+                busy = mgr.spawn(task="busy", parent_session_key="sess-0")
+                await _wait_for(lambda: busy.id in started, message="the busy run to start")
+                held = [
+                    mgr.spawn(
+                        task=f"t{i}", parent_session_key="sess-1", batch_id="w1", batch_total=3
+                    )
+                    for i in range(3)
+                ]
+                assert all(i.queued_reason == "memory_pressure" for i in held)
+                stale = time.monotonic() - _HOLD_BOUND_SECS - 1
+                for info in held:
+                    mgr._pressure_holds[info.id] = stale
+                mgr._pressure_episode_since = stale
+                assert mgr._memory_pressure_hold() == 2
+                assert mgr._pressure_episode_spent is True
+                self._end_run(mgr, busy)
+                await _wait_for(
+                    lambda: sum(i.id in started for i in held) == 1,
+                    message="exactly one held member to start",
+                )
+                # The pump passes again while the started member runs.
+                mgr._drain_queue()
+            return held, stale
+
+        held, stale = asyncio.run(run())
+        waiting = [i for i in held if i.id not in started]
+        assert len(waiting) == 2
+        for info in waiting:
+            assert not info.done and info.error in (None, "")
+            assert info.id not in mgr._pressure_hold_expired
+        assert mgr._pressure_episode_spent is False
+        assert mgr._pressure_lane_started_at["sess-1"] > stale
+        assert mgr._pressure_lane_held["sess-1"] == 2
+        # The stamp leaves with the lane's last held row.
+        for info in waiting:
+            mgr._forget_pending_start(info.id)
+        assert "sess-1" not in mgr._pressure_lane_started_at
+        assert "sess-1" not in mgr._pressure_lane_held
+
+    @pytest.mark.parametrize("trailing_batch", ["w2", ""], ids=["second-wave", "unbatched"])
+    def test_a_row_behind_a_draining_wave_in_its_own_lane_is_not_expired(
+        self, monkeypatch: pytest.MonkeyPatch, trailing_batch: str
+    ) -> None:
+        """A row of the same session queued behind a draining wave, a second
+        spawn_run wave or an unbatched spawn, waits in the same FIFO lane: the
+        wave's starts are its progress too, so it is not ended while the queue
+        ahead of it moves."""
+        mgr, started = self._starting_mgr(monkeypatch, shared=False)
+        self._level(monkeypatch, 2)
+
+        async def run() -> tuple[list[Any], Any]:
+            with self._gate_patches():
+                busy = mgr.spawn(task="busy", parent_session_key="sess-0")
+                await _wait_for(lambda: busy.id in started, message="the busy run to start")
+                w1 = [
+                    mgr.spawn(
+                        task=f"a{i}", parent_session_key="sess-1", batch_id="w1", batch_total=2
+                    )
+                    for i in range(2)
+                ]
+                tail = mgr.spawn(
+                    task="tail",
+                    parent_session_key="sess-1",
+                    batch_id=trailing_batch,
+                    batch_total=2 if trailing_batch else 0,
+                )
+                assert all(i.queued_reason == "memory_pressure" for i in [*w1, tail])
+                stale = time.monotonic() - _HOLD_BOUND_SECS - 1
+                for info in [*w1, tail]:
+                    mgr._pressure_holds[info.id] = stale
+                mgr._pressure_episode_since = stale
+                self._end_run(mgr, busy)
+                await _wait_for(
+                    lambda: sum(i.id in started for i in w1) == 1,
+                    message="the head of the lane to start",
+                )
+                mgr._drain_queue()
+                await asyncio.sleep(0)
+            return w1, tail
+
+        w1, tail = asyncio.run(run())
+        waiting_w1 = [i for i in w1 if i.id not in started]
+        assert waiting_w1 and all(i.id not in mgr._pressure_hold_expired for i in waiting_w1)
+        rec = mgr._agents.get(tail.id)
+        assert tail.id not in mgr._pressure_hold_expired and not (
+            rec is not None and rec.done
+        ), f"trailing row ended while its lane was draining: {getattr(rec, 'error', None)!r}"
+
+    def test_the_gate_judges_a_held_start_by_its_own_lane(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The gate's hold check and the pump's pick read the same per-lane
+        clock, so the gate passes the start's parent session like the pick
+        does, and the row is counted in that lane."""
+        mgr = self._mgr()
+        self._busy(mgr)
+        self._level(monkeypatch, 2)
+        seen: list[str] = []
+        real = mgr._memory_pressure_holds
+
+        def spy(agent_id: str, level: int, **kw: Any) -> str:
+            seen.append(kw.get("parent_session_key", "<missing>"))
+            return real(agent_id, level, **kw)
+
+        monkeypatch.setattr(mgr, "_memory_pressure_holds", spy)
+        with self._gate_patches():
+            info = mgr.spawn(task="t", parent_session_key="sess-1", batch_id="w9", batch_total=2)
+        assert info.queued_reason == "memory_pressure"
+        assert seen and seen[0] == "sess-1"
+        assert mgr._pressure_hold_lanes[info.id] == "sess-1"
+
+    def test_a_nested_start_is_not_progress_of_a_held_lane(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Nested starts skip the hold, so they cannot show a held lane is
+        moving: only a root start stamps its lane."""
+        mgr, started = self._starting_mgr(monkeypatch, shared=True)
+        # A live parent run that no spawn started here, so nothing stamped yet.
+        self._busy(mgr)
+        # Both lanes hold a row, so either start could stamp its own lane.
+        mgr._pressure_hold_lanes.update({"held-a": "subagent:busy", "held-b": "sess-1"})
+        mgr._pressure_lane_held.update({"subagent:busy": 1, "sess-1": 1})
+
+        async def run() -> None:
+            with self._gate_patches():
+                child = mgr.spawn(
+                    task="nested", parent_session_key="subagent:busy", batch_id="w1", batch_total=2
+                )
+                await _wait_for(lambda: child.id in started, message="the nested run to start")
+                assert mgr._pressure_lane_started_at == {}
+                root = mgr.spawn(
+                    task="root", parent_session_key="sess-1", batch_id="w2", batch_total=2
+                )
+                await _wait_for(lambda: root.id in started, message="the root run to start")
+
+        asyncio.run(run())
+        assert set(mgr._pressure_lane_started_at) == {"sess-1"}
+
+    @pytest.mark.parametrize("child", [False, True])
+    def test_releasing_an_approved_root_member_is_its_lanes_progress(
+        self, monkeypatch: pytest.MonkeyPatch, child: bool
+    ) -> None:
+        from kiro_crew.subagent import SubagentInfo
+
+        mgr = self._mgr()
+        self._level(monkeypatch, 1)
+        if child:
+            monkeypatch.setattr(
+                type(mgr._admission), "entry_is_child", staticmethod(lambda _p: True)
+            )
+        with patch("kiro_crew.subagent.sel"):
+            assert mgr._memory_pressure_holds("waiter", 1, parent_session_key="sess-1") == "held"
+
+        async def run() -> Any:
+            info = SubagentInfo(id="approved", task="t", parent_session_key="sess-1", batch_id="w1")
+            info._start_release = asyncio.get_running_loop().create_future()
+            mgr._queue.append(
+                {
+                    "_resume_id": info.id,
+                    "_startup_release": True,
+                    "_start_info": info,
+                    "parent_session_key": info.parent_session_key,
+                }
+            )
+            with self._gate_patches():
+                mgr._admission._release_admitted_start_impl()
+            return info._start_release
+
+        fut = asyncio.run(run())
+        assert fut.result() is True
+        assert ("sess-1" in mgr._pressure_lane_started_at) is (not child)
+
+    def test_the_stale_prune_drops_only_rows_that_left(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A pause in the hold prunes the clock of a row that left with no
+        registration or refusal. It never drops a live row's first-hold clock:
+        not one still in the window, nor one whose lane has started a root
+        within the window, which can rightly wait longer than it while its
+        lane keeps moving. A pruned row leaves its lane too."""
+        from kiro_crew.subagent import _PRESSURE_HOLD_PRUNE_FACTOR
+
+        mgr = self._mgr()
+        now = time.monotonic()
+        old = now - _PRESSURE_HOLD_PRUNE_FACTOR * _HOLD_BOUND_SECS - 10
+        with patch("kiro_crew.subagent.sel"):
+            for agent_id, lane in (
+                ("gone", "sess-gone"),
+                ("windowed", "sess-gone"),
+                ("moving", "sess-1"),
+            ):
+                assert mgr._memory_pressure_holds(agent_id, 2, parent_session_key=lane) == "held"
+                mgr._pressure_holds[agent_id] = old
+        mgr._queue.append({"_preassigned_id": "windowed", "parent_session_key": "sess-gone"})
+        mgr._pressure_lane_started("sess-1", now - 5.0)
+        mgr._pressure_lane_started(
+            "sess-gone", now - _PRESSURE_HOLD_PRUNE_FACTOR * _HOLD_BOUND_SECS - 1
+        )
+        self._level(monkeypatch, None)
+        with self._gate_patches():
+            assert mgr._memory_pressure_hold() is None
+        assert mgr._pressure_holds == {"windowed": old, "moving": old}
+        assert mgr._pressure_lane_held == {"sess-gone": 1, "sess-1": 1}
+        assert "gone" not in mgr._pressure_hold_lanes
+
+    def test_a_live_held_rows_clock_survives_a_pause_in_a_progressing_lane(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The prune runs on the very passes where the lane makes progress (a
+        pause in the hold), so it must keep the first-hold clock of a row whose
+        lane is moving: the eventual expiry audit reports the whole wait."""
+        from kiro_crew.subagent import _PRESSURE_HOLD_PRUNE_FACTOR
+
+        mgr = self._mgr()
+        now = time.monotonic()
+        first_hold = now - _PRESSURE_HOLD_PRUNE_FACTOR * _HOLD_BOUND_SECS - 10
+        with patch("kiro_crew.subagent.sel"):
+            assert mgr._memory_pressure_holds("tail", 2, parent_session_key="sess-1") == "held"
+        mgr._pressure_holds["tail"] = first_hold
+        mgr._pressure_lane_started("sess-1", now - 5.0)
+        with self._gate_patches():
+            self._level(monkeypatch, None)
+            assert mgr._memory_pressure_hold() is None
+            self._busy(mgr)
+            self._level(monkeypatch, 2)
+            assert mgr._memory_pressure_hold() == 2
+            assert (
+                mgr._memory_pressure_holds(
+                    "tail", 2, parent_session_key="sess-1", commit_expiry=False
+                )
+                == "held"
+            )
+        assert mgr._pressure_holds.get("tail") == first_hold
+
     def test_an_expired_held_row_is_ended_never_started(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1188,8 +1527,8 @@ class TestSpawnAdmissionGate:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A released member that is itself dedicated is a runtime of ours, so the
-        rest wait on it; their clocks keep running across the pause, so the
-        bound holds for the whole wave."""
+        rest wait on it; their first-hold clocks keep running across the pause
+        (the bound counts from the later of that clock and its wave's last start)."""
         mgr, started = self._starting_mgr(monkeypatch, shared=False)
         self._level(monkeypatch, 2)
 
@@ -2207,7 +2546,13 @@ def test_the_user_docs_state_the_hold_bounds_the_code_uses() -> None:
     doc = (root / "src/kiro_crew/docs/subagents.md").read_text(encoding="utf-8")
     assert f"every {MEMORY_PRESSURE_RECHECK_SECS} seconds" in doc
     hold = next(line for line in doc.splitlines() if line.startswith("- **macOS memory pressure**"))
-    assert f"after `agent.subagent_queue_max_wait_secs` ({minutes} minutes by default)" in hold
+    assert f"held for `agent.subagent_queue_max_wait_secs` ({minutes} minutes by default)" in hold
+    # The bound counts time with no start in the row's lane (its chat's queue,
+    # any batch), not time since submission, and the wave's results name what
+    # never started and when to resubmit it.
+    assert "with no other top-level start from the same chat beginning" in hold
+    assert "from any `spawn_run` batch" in hold
+    assert "to resubmit once memory eases" in hold
     reference = (root / "src/kiro_crew/docs/configuration.md").read_text(encoding="utf-8")
     row = next(
         line

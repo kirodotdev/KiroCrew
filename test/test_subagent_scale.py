@@ -1431,6 +1431,74 @@ class TestWaveDigest:
         assert "wave finished" in body
         assert "This run is complete" in body
         assert "All results delivered" in body
+        assert "never started" not in body
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("nested_live", [False, True])
+    async def test_wave_close_digest_names_members_that_never_started(self, nested_live):
+        """A member ended "never started" is a failure the parent must
+        resubmit, not done work. The wave-close line says how many of the
+        failures a memory wait ended, after the tally sentence the card parsers
+        anchor on. A member that failed after it ran is not counted, and
+        neither is a refusal, which resubmitting would only repeat."""
+        import re
+
+        from kiro_crew.subagent_wait_reasons import QUEUED_WAIT_EXPIRED_TEXT
+
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        slot = MagicMock()
+        slot.mode = "chat"
+        slot.running = False
+        slot.task = None
+        slot._subagent_deliveries_inflight = 0
+        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
+        mgr, on_done = self._capture_on_done(orch)
+        total = 4
+        injected: list[str] = []
+
+        async def _fake_run_chat(_state, _slot, text, *, _directive_user_origin, **_kw):
+            injected.append(text)
+
+        ran = self._member(0, total)
+        failed_after_running = self._member(1, total, error="tool crashed")
+        failed_after_running._exec_started = 1.0
+        never_started = self._member(2, total, error=QUEUED_WAIT_EXPIRED_TEXT)
+        never_started.result = ""
+        never_started.result_path = ""
+        refused = self._member(3, total, error="spawn refused: approval denied")
+        refused.result = ""
+        refused.result_path = ""
+        with (
+            patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat),
+            patch("kiro_crew.subagent_persistence.mark_delivered"),
+        ):
+            # Outstanding until the last member reports, which closes the wave
+            # by its own count.
+            mgr.batch_members_pending = MagicMock(return_value=True)
+            mgr.wave_has_live_nested_spawns = MagicMock(return_value=nested_live)
+            for member in (ran, failed_after_running, never_started, refused):
+                await on_done(member)
+                await asyncio.sleep(0)
+            await _settle(lambda: len(injected) >= 1, what="the wave-close digest injected")
+            await _drain_injections(orch)
+
+        body = "\n".join(injected)
+        assert "1 ✅ · 3 ❌ · 0 ⏹" in body
+        assert "1 of the ❌ never started" in body
+        # A member the spent episode ended is counted too, so the advice waits
+        # for memory to ease rather than resubmitting into the same episode.
+        assert "resubmit them once memory eases" in body
+        if not nested_live:
+            # The card's own parser still reads the tally line.
+            assert re.search(
+                r"^Batch results \d+/\d+ — wave finished: 1 ✅ · 3 ❌ · 0 ⏹ of 4 agents\.",
+                body,
+                re.M,
+            )
 
     @pytest.mark.asyncio
     async def test_digest_chunks_inject_in_fifo_order_despite_delayed_dispatch_hop(self):

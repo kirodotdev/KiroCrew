@@ -606,8 +606,29 @@ It keeps a start (`_memory_pressure_holds`) when, in addition:
   a child's parent is a live runtime of ours waiting on it, so holding the
   child would hold the parent on an episode only the child can end;
 - it is not a claim re-entry (`_dispatch_now`), which already holds its slot;
-- the start's own wait has not run out. A row's wait is clocked from the first
-  time it is held, and past `agent.subagent_queue_max_wait_secs` (read live off
+- the start's own wait has not run out. A row's wait is clocked from the later
+  of the first time it is held and its LANE's last root start
+  (`_pressure_lane_started_at`). The lane is the parent session the row waits
+  behind (`taskq.lanes.lane_key_for`, the lane the pump's weighted pick serves
+  FIFO), not its `spawn_run` batch id: a root start in that lane is a row ahead
+  of this one leaving the queue, whichever wave it came from, so a second wave
+  or an unbatched spawn behind a draining wave is waiting its turn too. The
+  stamp is written where a root start registers and where an approval-released
+  root start is let go; a nested start skips the hold, so it is not progress,
+  and another session's starts are another lane's progress and never extend
+  the row. The bound so measures time with no root start in the row's lane: a
+  lane draining slower than the bound keeps its rows waiting while it keeps
+  starting, and a lane none of whose rows starts for the bound still ends what
+  it holds. A lane holds a stamp only while it holds a row: each held row is
+  counted in its lane (`_pressure_hold_lanes`, `_pressure_lane_held`), a start
+  in a lane holding no row stamps nothing, and the lane's last held row
+  leaving (`_forget_pressure_clock`, on every exit through
+  `_forget_pending_start`, a floor wait taking over, or the prune below) drops
+  its count and stamp, so the maps hold at most one entry per held row, keyed
+  by the lane string that row already carries. The trade-off is deliberate: a
+  row has no absolute ceiling while its lane keeps progressing (worst case
+  about the rows ahead of it times the bound); what it is protected from is a
+  lane that has stopped. Past `agent.subagent_queue_max_wait_secs` (read live off
   the manager at each check through `taskq_memory_wait_bound_secs`, the bound
   the store deferrals use; `0` is no bound) it never proceeds
   into the pressure it waited on: it is ended, never started
@@ -626,7 +647,13 @@ It keeps a start (`_memory_pressure_holds`) when, in addition:
   (never inside it), counted ("1 never started — ...") and naming the panel's
   Retry failed control,
   so a mixed wave's "finished" header cannot hide it and the retry is not read
-  as automatic), with a WARNING and
+  as automatic; the wave digest the parent reads says the same after its tally,
+  "K of the ❌ never started", counting members whose error opens with
+  `QUEUED_WAIT_EXPIRED_TEXT` (a refusal is not counted, since resubmitting it
+  would only be refused again; a member the spent episode ended at once IS
+  counted, so the line says to resubmit them "once memory eases", since a
+  resubmit while that episode lasts is ended at once too), so the parent
+  resubmits them rather than reading a finished wave), with a WARNING and
   a `never_started_memory_pressure` SEL row
   (`_pressure_hold_expired`) whose `expired_by` says which bound ended it:
   `wait` (its own wait ran out) or `episode` (the spent episode ended it at
@@ -634,12 +661,17 @@ It keeps a start (`_memory_pressure_holds`) when, in addition:
   length). An approval-released start past its bound ends the same way. The
   pump's pick only classifies an expired row (it is picked); the gate's
   re-check is what ends it and writes the record, so a row whose level eased
-  in between starts with no "never started" audit. The clock survives a pause
-  in the hold, such as our last runtime ending between two of a wave's
-  starts, so a wave released one runtime at a time still meets the bound; only
-  a clock older than `_PRESSURE_HOLD_PRUNE_FACTOR` times the bound (the key's
-  default when the bound is lower or `0`), a row that left with no
-  registration or refusal, is dropped.
+  in between starts with no "never started" audit. The first-hold clock
+  survives a pause in the hold, such as our last runtime ending between two of
+  a lane's starts, so a pause with no start in it does not restart the wait.
+  The prune on such a pause drops a row's clock only by liveness: never for a
+  row still in the window, nor for one whose lane started a root within
+  `_PRESSURE_HOLD_PRUNE_FACTOR` times the bound (the key's default when the
+  bound is lower or `0`), because a row waiting behind a moving lane can rightly
+  outlive that window and re-stamping it would make its expiry audit
+  (`waited_secs`, the WARNING) under-report the wait. Only a clock whose later
+  of first hold and lane start is older than that, a row that left with no
+  registration or refusal, is dropped, with its place in its lane.
 
 **Foreign pressure with a runtime of ours alive, weighed.** The hold cannot
 tell its own load from foreign load (a browser, a build). So with one
