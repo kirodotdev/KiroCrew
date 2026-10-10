@@ -17,6 +17,7 @@ import signal
 import subprocess
 import sys
 import textwrap
+import threading
 from pathlib import Path
 
 import pytest
@@ -287,7 +288,7 @@ class _RecordingHandler(logging.Handler):
         self.records.append(record)
 
 
-def _make_enrich(enrich_after: float = 15.0, stall_after: float = 30.0):
+def _make_enrich(enrich_after: float = 15.0, stall_after: float = 30.0, stack=None):
     """Fixture for the enrichment stage: fake clock, sentinel-guard dump file,
     recording collector + logger; armed timer disabled so nothing touches real
     faulthandler."""
@@ -313,6 +314,7 @@ def _make_enrich(enrich_after: float = 15.0, stall_after: float = 30.0):
         dump_file=dump_file,
         enrich_after=enrich_after,
         enrich=collector,
+        stack=stack or (lambda: ["  (asyncio/events.py:88):_run", "  (wedged.py:7):close"]),
         log=log,
     )
     return wd, clock, dump_file, calls, handler
@@ -334,6 +336,114 @@ def test_enrichment_fires_once_per_episode_at_threshold() -> None:
     clock.advance(5.0)  # still the same episode — no second capture
     wd.check()
     assert len(calls) == 1
+
+
+def test_enrichment_line_carries_the_main_thread_stack_read_during_the_stall() -> None:
+    wd, clock, dump_file, calls, handler = _make_enrich()
+
+    clock.advance(16.0)
+    wd.check()
+
+    (message,) = [m for m in handler.messages if "stall enrichment captured" in m]
+    sockets, _, stack = message.partition("main thread stack, read while the loop is silent")
+    assert "STALL ENRICHMENT (test)" in sockets
+    assert "(outermost call first):" in stack
+    assert stack.rstrip().endswith("  (asyncio/events.py:88):_run\n  (wedged.py:7):close")
+    assert dump_file.written == []
+
+
+def test_enrichment_line_keeps_a_selector_frame_read_during_the_stall() -> None:
+    # Read while the loop is silent, a selector frame is where the loop thread is
+    # blocked, so the stall line prints it; only the lag line treats it as idle.
+    wd, clock, dump_file, calls, handler = _make_enrich(
+        stack=lambda: ["  (asyncio/base_events.py:1961):_run_once", "  (selectors.py:468):select"]
+    )
+
+    clock.advance(16.0)
+    wd.check()
+
+    (message,) = [m for m in handler.messages if "stall enrichment captured" in m]
+    assert message.rstrip().endswith("  (selectors.py:468):select")
+    assert "idle in the event loop's selector" not in message
+
+
+def test_enrichment_line_survives_a_stack_reader_that_raises() -> None:
+    def broken() -> list[str]:
+        raise RuntimeError("frames gone")
+
+    wd, clock, dump_file, calls, handler = _make_enrich(stack=broken)
+
+    clock.advance(16.0)
+    wd.check()  # must not raise
+
+    (message,) = [m for m in handler.messages if "stall enrichment captured" in m]
+    assert "STALL ENRICHMENT (test)" in message
+    assert message.rstrip().endswith("(main-thread stack capture failed)")
+    assert len(calls) == 1
+    assert dump_file.written == []
+
+
+def test_default_stack_reader_reads_the_main_thread_through_the_diag_helper() -> None:
+    # The watchdog's daemon thread reads the loop thread. Here a second thread
+    # reads the main thread while it sits in ``Event.wait`` under ``_park``.
+    from kiro_crew.diag import threads as diag_threads
+
+    captured: list[list[str]] = []
+    done = threading.Event()
+
+    def _park() -> threading.Thread:
+        reader = threading.Thread(
+            target=lambda: (captured.append(loop_watchdog._default_stack_lines()), done.set())
+        )
+        reader.start()
+        assert done.wait(5.0)
+        return reader
+
+    _park().join(5.0)
+
+    (lines,) = captured
+    assert lines and all(line.startswith("  (") for line in lines[-2:])
+    assert lines[-1].endswith("):wait")  # innermost last: the main thread in Event.wait
+    assert any(line.endswith("):_park") for line in lines)
+    assert not any("_default_stack_lines" in line for line in lines)  # not the reader's own
+    assert (
+        len([line for line in lines if line.startswith("  (")]) <= loop_watchdog._STACK_MAX_FRAMES
+    )
+    # Same frame walk as the diag recorder's loop_stall event: same shape, same bound.
+    helper = diag_threads.main_thread_stack(max_depth=loop_watchdog._STACK_MAX_FRAMES)
+    assert all(frame.startswith("(") and "):" in frame for frame in helper["main_thread_stack"])
+
+
+def test_default_stack_reader_marks_a_cut_stack_and_an_absent_frame(monkeypatch) -> None:
+    from kiro_crew.diag import threads as diag_threads
+
+    seen: list[int] = []
+
+    def cut(max_depth: int) -> dict:
+        seen.append(max_depth)
+        return {"main_thread_stack": ["(a.py:1):outer", "(b.py:2):inner"], "stack_truncated": True}
+
+    monkeypatch.setattr(diag_threads, "main_thread_stack", cut)
+    assert loop_watchdog._default_stack_lines() == [
+        "  ... outer frames beyond the innermost 12 omitted",
+        "  (a.py:1):outer",
+        "  (b.py:2):inner",
+    ]
+    assert seen == [loop_watchdog._STACK_MAX_FRAMES]
+
+    monkeypatch.setattr(
+        diag_threads,
+        "main_thread_stack",
+        lambda max_depth: {"main_thread_stack": [], "stack_truncated": False},
+    )
+    assert loop_watchdog._default_stack_lines() == ["(no frame for the main thread)"]
+
+
+def test_loop_idle_predicate_matches_both_idle_shapes_only() -> None:
+    assert loop_watchdog._loop_idle_at("  (python3.12/selectors.py:468):select")
+    assert loop_watchdog._loop_idle_at("  (asyncio/windows_events.py:466):_poll")
+    assert not loop_watchdog._loop_idle_at("  (asyncio/base_events.py:1961):_run_once")
+    assert not loop_watchdog._loop_idle_at("  (security/shell_normalizer.py:1624):_fold")
 
 
 def test_recoverable_stall_leaves_dump_file_untouched() -> None:
@@ -559,7 +669,10 @@ def test_suspend_clock_none_disables_the_comparison() -> None:
     for _ in range(3):
         clock.advance(5.0)
         assert wd.check() is False
-    assert not any("suspend" in m for m in handler.messages)
+    # The resume report is INFO; the WARNING enrichment line carries frame names
+    # (this test's own, which contains the word) and is not under test here.
+    info = [r.getMessage() for r in handler.records if r.levelno == logging.INFO]
+    assert not any("suspend" in m for m in info)
 
 
 class _AlarmSeam:

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import sys
 
+import pytest
+
 from kiro_crew.dashboard.stall_enrichment import (
     _decode_proc_addr,
     _established_lines,
@@ -89,7 +91,7 @@ class _DumpFile:
         raise AssertionError("dump_file must not be used by lag enrichment")
 
 
-def _lag_watchdog(caplog):
+def _lag_watchdog(caplog, stack=None):
     from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog
 
     calls: list[float] = []
@@ -104,6 +106,7 @@ def _lag_watchdog(caplog):
         now=lambda: clock[0],
         dump_file=dump_file,
         enrich=enrich,
+        stack=stack or (lambda: ["  (asyncio/events.py:88):_run", "  (hooks.py:40):is_denied"]),
         arm_later=lambda _t: None,
         cancel_later=lambda: None,
     )
@@ -136,6 +139,83 @@ def test_lag_over_threshold_logs_one_enrichment_line(caplog) -> None:
     assert "=== STALL ENRICHMENT ===" not in lines[0]
     assert calls == [3.2]
     assert dump_file.writes == []
+
+
+def test_lag_line_ends_with_the_main_thread_stack_and_says_when_it_was_read(caplog) -> None:
+    wd, _calls, dump_file, _clock = _lag_watchdog(caplog)
+
+    _beat(wd, 1.3)
+
+    (line,) = _lag_lines(caplog)
+    sockets, _, stack = line.partition("main thread stack at capture time, read after the lag")
+    assert "rx_queue=9B" in sockets
+    assert "only if that block was still running or had recurred" in stack
+    assert stack.rstrip().endswith("  (asyncio/events.py:88):_run\n  (hooks.py:40):is_denied")
+    assert dump_file.writes == []
+
+
+@pytest.mark.parametrize(
+    "innermost",
+    ["  (python3.12/selectors.py:468):select", "  (asyncio/windows_events.py:466):_poll"],
+)
+def test_lag_line_collapses_an_idle_loop_stack_to_one_line(caplog, innermost: str) -> None:
+    idle = [
+        "  (asyncio/base_events.py:645):run_forever",
+        "  (asyncio/base_events.py:1961):_run_once",
+    ]
+    wd, _calls, dump_file, _clock = _lag_watchdog(caplog, stack=lambda: [*idle, innermost])
+
+    _beat(wd, 2.0)
+
+    (line,) = _lag_lines(caplog)
+    assert "rx_queue=9B" in line
+    assert line.rstrip().endswith(
+        "main thread at capture time: idle in the event loop's selector "
+        "(the frame that blocked had already returned)"
+    )
+    assert "main thread stack at capture time" not in line
+    assert "run_forever" not in line
+    assert dump_file.writes == []
+
+
+def test_lag_line_with_the_default_reader_names_this_thread_s_frames(caplog) -> None:
+    from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog
+
+    wd = LoopStallWatchdog(
+        now=lambda: 0.0,
+        dump_file=_DumpFile(),
+        enrich=lambda _lag: ["header", "socket"],
+        arm_later=lambda _t: None,
+        cancel_later=lambda: None,
+    )
+    caplog.set_level("WARNING", logger="kiro_crew.dashboard.loop_watchdog")
+
+    _beat(wd, 2.0)  # read on the main thread, which is this test, so it is not idle
+
+    (line,) = _lag_lines(caplog)
+    frames = [ln for ln in line.splitlines() if ln.startswith("  (")]
+    assert 1 <= len(frames) <= 12
+    assert frames[-1].endswith("):main_thread_stack")
+    assert any(ln.endswith("):log_lag_enrichment") for ln in frames)
+
+
+def test_lag_line_survives_a_stack_reader_that_raises(caplog) -> None:
+    def broken() -> list[str]:
+        raise RuntimeError("frames gone")
+
+    wd, calls, dump_file, _clock = _lag_watchdog(caplog, stack=broken)
+
+    _beat(wd, 2.5)  # must not raise
+
+    (line,) = _lag_lines(caplog)
+    assert "rx_queue=9B" in line
+    assert line.rstrip().endswith("(main-thread stack capture failed)")
+    assert calls == [2.5]
+    assert dump_file.writes == []
+    # The failed read released the in-flight flag, so the next episode captures.
+    _beat(wd, 0.1)
+    _clock[0] = 61.0
+    assert wd.claim_lag_enrichment(2.0)
 
 
 def test_lag_below_threshold_captures_nothing(caplog) -> None:
