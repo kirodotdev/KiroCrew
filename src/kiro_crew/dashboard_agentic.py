@@ -146,6 +146,37 @@ PACKAGE_REFUSALS: Final[dict[str, str]] = {
     "error": "package_model_invalid",
 }
 
+#: The refusal a package-bound write gets while the DISPLAY still selects a different
+#: Model from the one the write would be checked against. Its own code, because the
+#: remedy is neither "create a package" nor "repair this one": the package is fine and
+#: the write is fine, and what is missing is the half that draws it.
+PACKAGE_DISPLAY_PENDING: Final[str] = "package_display_pending"
+
+
+def display_pending_refusal(field: str) -> WriteRefused:
+    """A live package whose values nothing would draw yet.
+
+    Checking a write against the package's Model while the member's page renders from
+    its TEMPLATE instance lets a value land that the display cannot draw -- a string
+    where the page reads a list renders as nothing, so the cards that were there
+    disappear and no error is raised anywhere. The old values are still in the log, but
+    a reader looking at the page cannot tell that from an empty list.
+
+    Refused rather than written, because the two halves disagreeing is not something an
+    agent can see or work around. The caller decides WHEN to ask this: the condition is
+    about the display, which is not this module's to read.
+    """
+    return WriteRefused(
+        PACKAGE_DISPLAY_PENDING,
+        field,
+        "this crewmate's page is composed from a dashboard package, and the display "
+        "still draws it from the template instance -- so a value checked against the "
+        "package could be one the page cannot draw, and writing it would blank what is "
+        "already there. Nothing is wrong with the package or the value: wait for the "
+        "display to read the package, and write it then",
+    )
+
+
 #: What each refusal tells the agent to DO, which is the half a bare state cannot
 #: supply. One sentence per state, and they differ in the action rather than in tone:
 #: create one, tell a human, stop reaching for it.
@@ -493,6 +524,28 @@ def check_write(
             f"is not a storable {spec.type}, so nothing could store or draw it -- send a "
             "value with no credential-like text in it",
         )
+    # The SHAPE is asked again too, and not only the type. The scrub rewrites strings,
+    # so a declared choice that is itself credential-shaped passes the check above --
+    # a placeholder is a perfectly good ``string`` -- and then lands in the cell as a
+    # value the page's own Model says cannot be there. Everything the shape constrains
+    # beyond the type is in the same position: an enum member, a required key under a
+    # scrubbed name, an item in a typed array.
+    if spec.shape is not None:
+        cleaned_problems: list[str] = []
+        shape_problems(spec.shape, cleaned, field, cleaned_problems)
+        if cleaned_problems:
+            raise WriteRefused(
+                "redacted_value_invalid",
+                field,
+                (
+                    f"redacting credentials from this value for {field!r} leaves "
+                    f"something the shape {instance.manifest.id!r} draws does not "
+                    "accept: "
+                    + "; ".join(cleaned_problems)
+                    + ". The STORED value is the scrubbed one, so send a value whose "
+                    "credential-like text is not part of what the shape requires"
+                ).strip(),
+            )
     if cleaned_size > DASHBOARD_VALUE_BYTES:
         raise WriteRefused(
             "redacted_value_too_large",

@@ -954,8 +954,15 @@ class TestSeamReach:
 
 #: Facade-held names an owner also reads through a binding of its own, each a
 #: documented contract: a directly constructed ``ArtifactFolderStore`` takes its
-#: default path from ``folders``' own ``config_dir``.
-_DOCUMENTED_SPLITS = {"config_dir": ["folders"]}
+#: default path from ``folders``' own ``config_dir``, and ``dashboard_package``'s
+#: binding lookup falls back to ``get_default_store`` when no store is passed, so a
+#: caller holding one keeps its own and a caller holding none still reaches the
+#: default. Both reads are deliberate, and a name appearing here without a row is the
+#: case this ratchet exists for: an owner quietly reading the facade.
+_DOCUMENTED_SPLITS = {
+    "config_dir": ["folders"],
+    "get_default_store": ["dashboard_package"],
+}
 
 #: Every spelling a test uses to name the facade module.
 _MENTIONS_THE_FACADE = re.compile(

@@ -42,9 +42,12 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from dataclasses import field as _dc_field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from kiro_crew.artifact_store.model import ArtifactValidationError
+
+if TYPE_CHECKING:  # pragma: no cover - a type-only import, so no cycle at run time
+    from kiro_crew.artifacts import ArtifactStore
 
 #: The artifact kind this module owns. Added to
 #: :data:`kiro_crew.artifact_store.rules.ALLOWED_KINDS`, and deliberately NOT to
@@ -661,8 +664,18 @@ def validate_package(raw: Any) -> dict[str, Any]:
     }
 
 
-def parse_package(content: str) -> dict[str, Any]:
-    """Parse stored dashboard content into a canonical package, or raise."""
+def _decode_package(content: str) -> Any:
+    """Stored dashboard content as plain decoded JSON, or raise.
+
+    The half of :func:`parse_package` that runs BEFORE any validator: the empty
+    check, the surrogate scan, the byte cap, the decode and its two failure
+    modes. It is split out because one caller needs the envelope and must not
+    need the layout inside it to be valid -- see :func:`resolve_bound_slug`.
+
+    Everything here guards the decode itself rather than the package's shape,
+    so a caller that skips validation still cannot be made to exhaust the
+    stack, encode an unpaired surrogate or read an unbounded string.
+    """
     if not isinstance(content, str) or not content.strip():
         raise _refuse("package", "is empty: a dashboard artifact stores a JSON package")
     # The submitted text is scanned before it is MEASURED, because measuring it
@@ -697,7 +710,12 @@ def parse_package(content: str) -> dict[str, Any]:
     # in bytes, and the serializer that writes one, both encode, and an encode
     # that meets an unpaired surrogate raises where nothing catches it.
     _refuse_lone_surrogates(raw)
-    return validate_package(raw)
+    return raw
+
+
+def parse_package(content: str) -> dict[str, Any]:
+    """Parse stored dashboard content into a canonical package, or raise."""
+    return validate_package(_decode_package(content))
 
 
 def dump_package(package: Mapping[str, Any]) -> str:
@@ -799,3 +817,95 @@ def revert_package(stored_content: str, target_content: str) -> str:
         return dump_package(target)
     target["bound_to"] = live["bound_to"]
     return dump_package(target)
+
+
+#: Cap on how many dashboard artifacts :func:`resolve_bound_slug` will open while
+#: looking for a binding. There is one package per crewmate or slot, so a scan past
+#: this is a library problem, not a lookup that deserves more reads.
+MAX_BINDING_SCAN = 256
+
+
+class BindingLookupIncomplete(ArtifactValidationError):
+    """The binding scan could not see every stored package, so "absent" is unproven.
+
+    Raised instead of answering ``None``, because the two are different facts and a
+    caller that cannot tell them apart acts on the wrong one: "this member has no
+    package" sends the write path to a DIFFERENT Model, and a cell declared ``text``
+    by the member's real package can then be replaced by an array.
+    """
+
+
+def resolve_bound_slug(bound_to: str, *, store: "ArtifactStore | None" = None) -> str | None:
+    """The slug of the dashboard artifact bound to ``bound_to``, or ``None``.
+
+    The binding half of the lookup on its own, for a caller that is keyed by a member
+    but needs the artifact. Reads the ``kind="dashboard"`` artifacts newest-first,
+    capped at :data:`MAX_BINDING_SCAN`; there is one package per crewmate or slot, so
+    this ends on its first or second read in practice.
+
+    ``None`` means CONFIRMED absent: every stored dashboard artifact was opened, every
+    envelope was readable, and none of them names this binding. Anything that leaves
+    that unproven raises :class:`BindingLookupIncomplete` instead -- a scan the cap cut
+    short, a record this process could not read, an envelope it could not decode, or a
+    record the listing never showed because its METADATA would not read. That last one
+    does not appear in the scan at all: ``ArtifactStore.list`` drops it with a warning,
+    and a dropped record's ``kind`` is precisely what could not be read, so it may be
+    the dashboard bound here.
+    None of the three may answer ``None``, because a caller reads ``None`` as "this
+    member has no package": the write path then validates against a DIFFERENT Model and
+    a cell declared ``text`` by the member's real package is replaced by an array.
+
+    The binding is matched off the stored ENVELOPE, not off a validated package, so a
+    layout the current validator rejects -- an older schema, or a write that did not
+    finish -- is still FOUND and reported broken by the caller that reads its content.
+
+    A match returns as soon as it is seen, so an unreadable record never hides a
+    package that was found after it.
+    """
+    bound_to = validate_bound_to(bound_to)
+    if store is None:
+        from kiro_crew.artifacts import get_default_store
+
+        store = get_default_store()
+    from kiro_crew.artifacts import ArtifactError
+
+    records = store.list(kind=DASHBOARD_KIND)
+    unread = 0
+    for art in records[:MAX_BINDING_SCAN]:
+        try:
+            loaded = store.get(art.slug)
+            raw = _decode_package(loaded.content or "")
+        except (ArtifactError, OSError):
+            # Counted rather than skipped. A record that cannot be opened or decoded
+            # may BE the one bound here -- that is precisely what could not be read.
+            unread += 1
+            continue
+        # The query is validated, so an equal string is a well-formed binding: a
+        # record whose own ``bound_to`` is malformed cannot match one and needs no
+        # separate check here.
+        if isinstance(raw, Mapping) and raw.get("bound_to") == bound_to:
+            return loaded.slug
+    if len(records) > MAX_BINDING_SCAN:
+        raise BindingLookupIncomplete(
+            f"dashboard package: binding: {len(records)} dashboard artifacts are stored "
+            f"and this lookup opens the newest {MAX_BINDING_SCAN}, so a package bound to "
+            f"{bound_to!r} behind them was not seen. There is one package per crewmate "
+            "or slot, so this many is a library to prune, not a lookup to widen"
+        )
+    if unread:
+        raise BindingLookupIncomplete(
+            f"dashboard package: binding: {unread} of {len(records)} dashboard "
+            f"artifacts could not be read, so nothing proves none of them is bound to "
+            f"{bound_to!r}"
+        )
+    # Asked only once the scan has found nothing, because a MATCH needs no inventory:
+    # the record that answers is in hand either way. A skipped record is invisible to
+    # the loop above, so this is the one check the loop cannot make for itself.
+    skipped = store.unreadable_record_count()
+    if skipped:
+        raise BindingLookupIncomplete(
+            f"dashboard package: binding: {skipped} stored record(s) have metadata that "
+            f"will not read, so the listing never showed them and their kind is unknown; "
+            f"nothing proves none of them is bound to {bound_to!r}"
+        )
+    return None

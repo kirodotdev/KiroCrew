@@ -2419,6 +2419,47 @@ async def test_a_write_is_refused_for_every_package_state_that_has_no_model(
         assert (await resp.json())["code"] == code
 
 
+async def test_a_live_package_is_refused_while_the_display_still_reads_the_template(
+    vetted, monkeypatch
+):
+    """Fails CLOSED on this base, because the two paths select different Models.
+
+    The write would be checked against the PACKAGE's Model, while
+    ``api_member_dashboard`` renders the TEMPLATE instance -- that route reads no
+    package on this base. A package declaring a field with a different type than the
+    displayed template therefore lets a write land that the display cannot draw: a
+    string where the page reads a list empties the cards, with no error anywhere.
+
+    A refusal the agent can act on is the honest answer until the display reads the
+    same package, which is the change that lifts this.
+    """
+    from kiro_crew import dashboard_package
+
+    # A LIVE read of a real PACKAGE, which is exactly what `read_package_model` answers
+    # for one: no Model, because the field table is not translated on this base, and
+    # `from_package` to say where the answer came from. The refusal turns on that flag
+    # and never needs a manifest, so this stand-in carries none either.
+    live = dashboard_package.PackageRead(
+        None,
+        dashboard_package.STATE_LIVE,
+        "package 'dash-atlas' version 2",
+        from_package=True,
+    )
+    monkeypatch.setattr(dashboard_package, "read_package_model", lambda member: live)
+    async with _client() as c:
+        resp = await c.post(
+            WRITE_PATH,
+            json={"field": "for_you", "value": "approve the plan"},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 400, await resp.text()
+        body = await resp.json()
+        assert body["code"] == "package_display_pending", body
+        # The remedy has to name WHY, or an agent reads it as "your value was wrong"
+        # and retries the same write forever.
+        assert "display" in body["error"].lower(), body
+
+
 async def test_the_write_route_asks_for_a_package_by_member_and_not_by_slug(vetted, monkeypatch):
     """This route is keyed by the MEMBER and holds no artifact slug.
 
