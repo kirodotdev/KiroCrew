@@ -577,7 +577,10 @@ from kiro_crew.security import (
     sanitized_oauth_endpoint_display,
 )
 from kiro_crew.security.credential_sources import credential_records
-from kiro_crew.security.exfil import MAX_BLOCKED_LINKS_PER_MESSAGE
+from kiro_crew.security.exfil import (
+    EXFILTRATION_REDACTION_TAG_PREFIX,
+    MAX_BLOCKED_LINKS_PER_MESSAGE,
+)
 from kiro_crew.security.readonly_bash import is_read_only_bash, unsafe_bash_reason
 from kiro_crew.security.redaction import redact_credentials_with_records
 from kiro_crew.sel import SecurityEvent, sel, sel_is_warm
@@ -4253,8 +4256,10 @@ def _redact_segment(slot: _ChatSlot, text: str) -> tuple[str, list[dict], list[d
     seen = {r.get("url") or (r.get("domain"), r.get("path")) for r in blocked_links}
     for record in raw_links:
         key = record.get("url") or (record.get("domain"), record.get("path"))
-        placeholder = f"[REDACTED: suspicious URL to {record.get('domain')}]"
-        if key not in seen and placeholder in redacted:
+        # Paired by host alone: a URL split across stream deltas can trip a different
+        # rule in ``text`` than whole in ``raw``, so the reasons may differ.
+        tag = f"{EXFILTRATION_REDACTION_TAG_PREFIX}{record.get('domain')}"
+        if key not in seen and (tag + "]" in redacted or tag + " (" in redacted):
             if len(blocked_links) >= MAX_BLOCKED_LINKS_PER_MESSAGE:
                 break
             blocked_links.append(record)

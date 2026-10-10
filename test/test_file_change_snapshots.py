@@ -1228,7 +1228,10 @@ class TestContentBlockRedactionAndTruncation:
         assert "corp-laptop" not in before
         assert "/home/alice/.aws/credentials" not in before
         assert "?token=" not in before
-        assert "[REDACTED: suspicious URL to collect.attacker.example]" in before
+        assert (
+            "[REDACTED: suspicious URL to collect.attacker.example (long query, may be legitimate)]"
+            in before
+        )
 
     def test_sensitive_path_refused_even_with_diff_old_text(self):
         """Even when diff_old_text is provided, sensitive paths are refused

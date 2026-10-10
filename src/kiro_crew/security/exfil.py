@@ -1076,7 +1076,7 @@ def scan_exfiltration_urls(text: str) -> list[str]:
 
 #: Stable PREFIX of the substitution :func:`redact_exfiltration_urls` writes in
 #: place of a suspicious URL. The full tag interpolates the redacted URL's
-#: domain (``f"{EXFILTRATION_REDACTION_TAG_PREFIX}{domain}]"``), so unlike the
+#: domain and a fixed reason (:func:`exfiltration_redaction_tag`), so unlike the
 #: constant credential tags it cannot be equality-compared -- which is why it is
 #: a PREFIX constant and deliberately NOT a member of
 #: :data:`kiro_crew.security.redaction.CREDENTIAL_REDACTION_TAGS` (see that
@@ -1085,6 +1085,24 @@ def scan_exfiltration_urls(text: str) -> list[str]:
 #: constant; the substitution below is built from it so the two can never
 #: drift.
 EXFILTRATION_REDACTION_TAG_PREFIX = "[REDACTED: suspicious URL to "
+
+#: The reason a placeholder names, by rule id: fixed words, never URL text, so a
+#: reader can tell a likely secret from a heuristic false positive.
+EXFIL_RULE_LABELS: dict[str, str] = {
+    "exfil_hard_credential": "credential",
+    "exfil_fixed_credential": "credential",
+    "exfil_encoded_credential": "encoded credential",
+    "exfil_decode_saturated": "heavy encoding, may be legitimate",
+    "exfil_percent_encoding": "heavy encoding, may be legitimate",
+    "exfil_query_length": "long query, may be legitimate",
+    "exfil_query_pattern": "random-looking query, may be legitimate",
+}
+
+
+def exfiltration_redaction_tag(domain: str, rule: str | None) -> str:
+    """``[REDACTED: suspicious URL to <domain> (<reason>)]``; no reason for an unknown rule."""
+    label = EXFIL_RULE_LABELS.get(rule or "")
+    return f"{EXFILTRATION_REDACTION_TAG_PREFIX}{domain}{f' ({label})' if label else ''}]"
 
 
 #: What one message may retain about blocked links. The bound belongs at the
@@ -1383,8 +1401,9 @@ def redact_exfiltration_urls_with_records(
 
     A URL string appearing more than once yields ONE record, in first-appearance
     order. There is deliberately no positional index: the placeholder carries
-    only the domain, so two URLs on one domain redact to byte-identical text and
-    a position could pair one link's path with another's.
+    only the domain and a fixed reason, so two URLs on one domain blocked by the
+    same rule redact to byte-identical text and a position could pair one link's
+    path with another's.
     """
     # The warnings come from the same loop, under the same exempt hosts, so a
     # link on a host the reader allowed is neither redacted nor reported.
@@ -1418,7 +1437,9 @@ def redact_exfiltration_urls_with_records(
         matched = match.group(0)
         # replace() rewrites every occurrence of this exact URL, and the loop can
         # revisit it, so the record set is keyed by the matched string.
-        result = result.replace(matched, f"{EXFILTRATION_REDACTION_TAG_PREFIX}{domain}]")
+        result = result.replace(
+            matched, exfiltration_redaction_tag(domain, next(iter(rules), None))
+        )
         if matched in seen:
             continue
         qmark = path_and_query.find("?")
@@ -1501,7 +1522,11 @@ def scoped_exempt_hosts(hosts: frozenset[str]) -> Iterator[None]:
 #: blocked whatever the reader allowed.
 ALLOWABLE_BLOCKED_LINK_RULES = frozenset({"exfil_query_length", "exfil_query_pattern"})
 
-_PLACEHOLDER_RE = re.compile(re.escape(EXFILTRATION_REDACTION_TAG_PREFIX) + r"([^\]\s]+)\]")
+_REASONS = "|".join(map(re.escape, sorted(set(EXFIL_RULE_LABELS.values()))))
+_PLACEHOLDER_RE = re.compile(
+    re.escape(EXFILTRATION_REDACTION_TAG_PREFIX)
+    + rf"(\[[^\]]+\]|[^\]\s]+)(?: \((?:{_REASONS})\))?\]"
+)
 
 
 def restore_allowed_links(

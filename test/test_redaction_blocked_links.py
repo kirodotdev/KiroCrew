@@ -268,7 +268,10 @@ class TestExistingCallersUnaffected:
         cleaned2, warnings2, _ = redact_exfiltration_urls_with_records(text)
 
         assert (cleaned, warnings) == (cleaned2, warnings2)
-        assert f"{EXFILTRATION_REDACTION_TAG_PREFIX}{_DOMAIN}]" in cleaned
+        assert (
+            f"{EXFILTRATION_REDACTION_TAG_PREFIX}{_DOMAIN} (long query, may be legitimate)]"
+            in cleaned
+        )
 
 
 class TestPersistenceAttachesRecords:

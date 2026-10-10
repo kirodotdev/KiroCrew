@@ -1428,10 +1428,16 @@ export function RedactionCardSlot({ ids }: { ids: string }) {
 
 /** Every credential tag the redactor writes, in the order they occur. */
 export const CREDENTIAL_TAG_RE = /\[REDACTED: (?:encoded )?credential\]/g
+/** The reasons the backend may put after the domain, such as `(credential)`: the words
+ *  of `EXFIL_RULE_LABELS` in `security/exfil.py`, pinned by
+ *  `test_exfil_rule_labels.py`. Matched but never captured. */
+const LINK_REASON = /(?: \((?:credential|encoded credential|heavy encoding, may be legitimate|long query, may be legitimate|random-looking query, may be legitimate)\))?/.source
 /** A suspicious-URL placeholder, capturing its domain (a bracketed IPv6
- *  literal first, so the capture never stops inside `[::1]`). */
-export const BLOCKED_LINK_PLACEHOLDER_RE = /\[REDACTED: suspicious URL to (\[[^\]]+\]|[^\]]+)\]/g
-const MARKER_RE = /\[REDACTED: (?:encoded )?credential\]|\[REDACTED: suspicious URL to (\[[^\]]+\]|[^\]]+)\]/g
+ *  literal first, so the capture never stops inside `[::1]`) and matching an
+ *  optional reason, so the capture stays the domain a record pairs with. */
+const LINK_PLACEHOLDER = /\[REDACTED: suspicious URL to (\[[^\]]+\]|[^\]\s]+)/.source + LINK_REASON + /\]/.source
+export const BLOCKED_LINK_PLACEHOLDER_RE = new RegExp(LINK_PLACEHOLDER, 'g')
+const MARKER_RE = new RegExp(/\[REDACTED: (?:encoded )?credential\]|/.source + LINK_PLACEHOLDER, 'g')
 
 type HastParent = HastRoot | HastElement
 

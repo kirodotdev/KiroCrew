@@ -164,6 +164,11 @@ def _url_payload_command(n: int) -> str:
 #: holds the canonical spelling and is off the event loop, so the anchors resolve
 #: inline. No new entry point, no target, no matching rule and no threshold moved.
 #:
+#: Raised again for the rule reason in the suspicious-URL placeholder:
+#: the fixed rule-id-to-words table ``EXFIL_RULE_LABELS``, the one function that
+#: builds the placeholder from it, and the restore matcher accepting those words
+#: and a bracketed IPv6 host.
+#:
 #: The number IS the package's measured total, carrying no spare room: a ratchet with
 #: headroom admits exactly the unreviewed growth it exists to catch, so the next line
 #: added here fails this gate and has to be re-pinned deliberately, with its reason
@@ -217,7 +222,7 @@ def _url_payload_command(n: int) -> str:
 #: subcommand. It is a security-deciding predicate, so it cannot leave the package,
 #: and no dead code remains to offset it. Its first word is split on space and tab
 #: only, the way bash splits, so a Unicode space cannot pose as a word break.
-_PACKAGE_LINE_BUDGET = 28_665
+_PACKAGE_LINE_BUDGET = 28_690
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

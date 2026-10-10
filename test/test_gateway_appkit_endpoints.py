@@ -2014,7 +2014,7 @@ class TestNoteEndpoint:
         visible = slot.messages[0]["content"]
         assert "AKIAIOSFODNN7EXAMPLE" not in visible
         assert "[REDACTED: credential]" in visible
-        assert "[REDACTED: suspicious URL to evil.example.com]" in visible
+        assert "[REDACTED: suspicious URL to evil.example.com (credential)]" in visible
         # Context half: left raw by design (trusted-caller prompt-frame boundary).
         assert slot._pending_context[0]["content"] == raw
 

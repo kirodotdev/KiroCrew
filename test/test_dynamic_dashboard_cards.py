@@ -748,7 +748,8 @@ async def test_model_input_and_published_output_cross_the_registered_redaction_s
         assert exfil_url not in boundary
         assert "corp-laptop" not in boundary
         assert "[REDACTED: credential]" in boundary
-        assert "[REDACTED: suspicious URL to collect.attacker.example]" in boundary
+        # The placeholder may carry a rule reason after the host.
+        assert "[REDACTED: suspicious URL to collect.attacker.example" in boundary
         assert "Release evidence" in boundary
 
 

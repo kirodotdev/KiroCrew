@@ -792,6 +792,15 @@ class TestOnlyRedactorTagsStayWhole:
     def test_every_real_redactor_tag_matches(self, tag):
         assert _REDACTION_TAG.fullmatch(tag) is not None
 
+    def test_the_local_reason_list_covers_every_exfil_rule_label(self):
+        from kiro_crew.security.exfil import EXFIL_RULE_LABELS
+
+        assert set(EXFIL_RULE_LABELS.values()) <= set(display_safety._REDACTION_TAG_REASONS)
+        assert (
+            _REDACTION_TAG.fullmatch(f"{EXFILTRATION_REDACTION_TAG_PREFIX}a.example (see below)]")
+            is None
+        )
+
     @pytest.mark.parametrize("url", IPV6_URLS)
     def test_an_ipv6_redactor_tag_survives_last_resort_paths(self, url):
         tag = _default_redactor(url)
@@ -1044,9 +1053,12 @@ class TestTheFallbackKeepsRedactionTagsWhole:
     _PAST_THE_BOUND = f"{_URL_SPLIT_TRIGGER} {_nested_link(DISPLAY_SETTLING_PASSES + 2)}{_KEY[4:]}"
 
     def test_the_tag_pattern_matches_every_tag_the_redactor_writes(self):
+        from kiro_crew.security.exfil import EXFIL_RULE_LABELS, exfiltration_redaction_tag
+
         for tag in (
             *CREDENTIAL_REDACTION_TAGS,
             f"{EXFILTRATION_REDACTION_TAG_PREFIX}evil.example]",
+            *(exfiltration_redaction_tag("evil.example", rule) for rule in EXFIL_RULE_LABELS),
         ):
             assert _REDACTION_TAG.fullmatch(tag), tag
         assert _REDACTION_TAG.search("[REDACTED: credential](https://u)").group(0) == (

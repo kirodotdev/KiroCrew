@@ -2316,7 +2316,7 @@ class TestThreadTextRedaction:
         raw = fp.read_text("utf-8")
         assert _FAKE_KEY not in raw
         assert f"https://{_EXFIL_HOST}" not in raw
-        assert f"[REDACTED: suspicious URL to {_EXFIL_HOST}]" in raw
+        assert f"[REDACTED: suspicious URL to {_EXFIL_HOST} (credential)]" in raw
         assert "[REDACTED: credential]" not in raw, "credential pass ran first"
 
     def test_clean_text_is_stored_verbatim(self, queued_request):
@@ -2372,7 +2372,7 @@ class TestCommentTextIsRedactedOnTheWayOut:
         )
         assert _FAKE_KEY not in out["comment"]
         assert f"https://{_EXFIL_HOST}" not in out["comment"]
-        assert f"[REDACTED: suspicious URL to {_EXFIL_HOST}]" in out["comment"]
+        assert f"[REDACTED: suspicious URL to {_EXFIL_HOST} (credential)]" in out["comment"]
         assert "[REDACTED: credential]" not in out["comment"], "credential pass ran first"
 
     def test_ordinary_comment_text_is_untouched(self):
@@ -3545,8 +3545,8 @@ class TestThreadRedactionOnRead:
         out = server._summarize(self._req_with_thread([{"role": "agent", "text": f"to {url}"}]))
         text = out["thread"][0]["text"]
         assert _FAKE_KEY not in text
-        assert _EXFIL_HOST not in text.replace(f"[REDACTED: suspicious URL to {_EXFIL_HOST}]", "")
-        assert f"[REDACTED: suspicious URL to {_EXFIL_HOST}]" in text
+        assert _EXFIL_HOST not in text.replace(f"[REDACTED: suspicious URL to {_EXFIL_HOST} (credential)]", "")
+        assert f"[REDACTED: suspicious URL to {_EXFIL_HOST} (credential)]" in text
 
     def test_clean_thread_text_is_untouched(self):
         out = server._summarize(
