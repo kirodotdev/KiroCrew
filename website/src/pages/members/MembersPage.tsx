@@ -137,7 +137,8 @@ import { createPortal } from 'react-dom'
 import { useCrewmateThreadsFlag } from '../../hooks/useCrewmateThreadsFlag'
 import { CrewDashboardFrame } from './CrewWebview'
 import CrewDashboardTab from './CrewDashboardTab'
-import { isDashboardPreview, withoutDashboardPreview } from './dashboardPreview'
+import { DASHBOARD_PREVIEW_PARAM, DASHBOARD_PREVIEW_VALUE, isDashboardPreview, withoutDashboardPreview } from './dashboardPreview'
+import { dashboardPreviewMemberFromRef, dashboardPreviewSlugFromRef } from '../../utils/dashboardPreview'
 import { mergePaneDraft } from '../../utils/chatPaneDrafts'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -3238,6 +3239,47 @@ export default function MembersPage() {
     [activeName, urlMember, isMobile, activate, setSearchParams, leaveGuided],
   )
 
+  // ONE preview surface on this page: a staged-dashboard link clicked in a thread
+  // (either form) opens the named crewmate's Dashboard tab on the staged page, the
+  // same place `?dashboard=preview` lands, never a second side-panel tab. The chat
+  // page keeps its own side-panel preview. Answers whether the reference was one.
+  const openDashboardPreviewHere = useCallback((ref: string): boolean => {
+    const byName = dashboardPreviewMemberFromRef(ref)
+    const bySlug = byName ? null : dashboardPreviewSlugFromRef(ref)
+    if (!byName && !bySlug) return false
+    const matches = byName ? members.filter(m => m.name === byName) : members.filter(m => m.slug === bySlug)
+    if (matches.length !== 1) {
+      showActionError(i18nT('pages.chat.dashboardPreviewPanel.no_member'))
+      return true
+    }
+    const target = matches[0]
+    // Every open re-reads the staged page, as the chat page's opener does: staging
+    // sends no frame and the link never changes, so a cached read could show page A
+    // while B is what `dashboard_apply` would install.
+    void queryClient.invalidateQueries({ queryKey: ['member-dashboard', target.slug] })
+    if (target.name === activeMemberName) {
+      // The URL may already ask for the preview, so the link effect would not run
+      // again: open the tab here as well.
+      const next = new URLSearchParams(searchParams)
+      next.set(DASHBOARD_PREVIEW_PARAM, DASHBOARD_PREVIEW_VALUE)
+      setSearchParams(next, { replace: true, state: location.state })
+      revealPanelAfterOpen()
+      focusPanelTab(CREW_DASHBOARD_TAB_ID)
+      return true
+    }
+    // Another crewmate: through the same switch guards, then the link's own query.
+    void openMember(target).then((ok) => {
+      if (ok) setSearchParams({ [MEMBER_PARAM]: target.name, [DASHBOARD_PREVIEW_PARAM]: DASHBOARD_PREVIEW_VALUE }, { replace: true })
+    })
+    return true
+  }, [members, activeMemberName, queryClient, searchParams, setSearchParams, location.state, revealPanelAfterOpen, focusPanelTab, openMember, showActionError])
+  const openArtifactInThread = useCallback((slug: string) => {
+    if (!openDashboardPreviewHere(slug)) openArtifactGuarded(slug)
+  }, [openDashboardPreviewHere, openArtifactGuarded])
+  const openArtifactInPanel = useCallback((slug: string) => {
+    if (!openDashboardPreviewHere(slug)) void openArtifact(slug)
+  }, [openDashboardPreviewHere, openArtifact])
+
   // The seeded first turn of a just-created crewmate's chat. The receipt is
   // read, not dropped — but only a REFUSED send is said and retried: the
   // server answered no, nothing ran, so re-sending the same text to the same
@@ -4770,7 +4812,7 @@ export default function MembersPage() {
                     openSideChat={openMemberSideChat}
                     threads={threadHooks}
                     onFileOpen={openFileGuarded}
-                    onArtifactOpen={openArtifactGuarded}
+                    onArtifactOpen={openArtifactInThread}
                     onSessionOpen={openSessionGuarded}
                     sessions={connected && slotsLoaded ? sessionRoster : undefined}
                     activeSession={activeSlot}
@@ -5171,7 +5213,7 @@ export default function MembersPage() {
             projectDir,
             onFileOpen: openFile,
             onOpenWorkingTreeDiff: openWorkingTreeDiff,
-            onArtifactOpen: openArtifact,
+            onArtifactOpen: openArtifactInPanel,
             onFileSave: saveFile,
             leadingTabs,
             slotTitle: crewDisplayName(activeView ?? active),

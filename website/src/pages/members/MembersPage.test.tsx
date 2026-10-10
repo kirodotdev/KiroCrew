@@ -3,7 +3,7 @@ import { PREVIEW_DASHBOARD, setPreviewFlag } from '../../utils/previewFlags'
 import { useState } from 'react'
 import { screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import { namedCeiling } from '../../test/namedCeiling'
-import { defaultScheduler, notifyManager } from '@tanstack/react-query'
+import { defaultScheduler, notifyManager, QueryClient } from '@tanstack/react-query'
 import { CREWMATES_PAGE_ENTERED_EVENT } from '../../components/MeetCrewmatesFlow'
 import { Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { renderWithProviders } from '../../test/helpers'
@@ -247,6 +247,14 @@ vi.mock('../../components/ChatPane', async () => {
         <a href="/members?create=1&goal=Second%20idea" data-testid="chat-link-proposal-2">second</a>
         <a href="http://[::1" data-testid="chat-link-malformed">bad</a>
         <a href="https://elsewhere.example/members?create=1&name=evil" data-testid="chat-link-foreign">foreign</a>
+        {/* What the transcript's renderer hands the host for a plain click on either
+            staged-dashboard link form (see dashboardPreview.link.test.tsx). */}
+        {typeof rest.onArtifactOpen === 'function' && (
+          <>
+            <button data-testid="chat-open-preview-member" onClick={() => (rest.onArtifactOpen as (ref: string) => void)('dashboard-preview-member:oncall')}>preview by name</button>
+            <button data-testid="chat-open-preview-slug" onClick={() => (rest.onArtifactOpen as (ref: string) => void)('dashboard-preview:oncall')}>preview by slug</button>
+          </>
+        )}
       </div>
     )
   }
@@ -1388,6 +1396,30 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
       fireEvent.click(await screen.findByTestId('crew-dashboard-stub-exit', undefined, PANE_READY))
       await waitFor(() => expect(currentUrl()).toBe('/members?member=oncall'))
       expect(await screen.findByTestId('crew-dashboard-stub')).toHaveAttribute('data-preview', 'false')
+    })
+
+    it.each([
+      ['the page link', 'chat-open-preview-member'],
+      ['the older JSON-read link', 'chat-open-preview-slug'],
+    ])('%s clicked in the thread opens the Dashboard tab on the staged page, not a second tab', async (_name, control) => {
+      localStorage.setItem(PANEL_OPEN_KEY, '0')
+      await renderPage([row({ name: 'oncall', slug: 'oncall', bound: true, slot_key: 'member-oncall' })], 'kirocrew', { route: '/members?member=oncall' })
+      fireEvent.click(await screen.findByTestId(control, undefined, PANE_READY))
+      await waitFor(() => expect(currentUrl()).toBe('/members?member=oncall&dashboard=preview'))
+      const stub = await screen.findByTestId('crew-dashboard-stub', undefined, PANE_READY)
+      expect(stub).toHaveAttribute('data-preview', 'true')
+      expect(screen.getByTestId(`side-panel-leading-tab-${CREW_DASHBOARD_TAB_ID}`)).toHaveAttribute('aria-selected', 'true')
+      // One preview surface: the chat page's side-panel preview never mounts here.
+      expect(screen.queryByTestId('dashboard-preview-panel')).toBeNull()
+    })
+
+    it('a preview link clicked in the thread re-reads the staged page, so a restaged page is never shown stale', async () => {
+      const invalidate = vi.spyOn(QueryClient.prototype, 'invalidateQueries')
+      await renderPage([row({ name: 'oncall', slug: 'oncall', bound: true, slot_key: 'member-oncall' })], 'kirocrew', { route: '/members?member=oncall' })
+      invalidate.mockClear()
+      fireEvent.click(await screen.findByTestId('chat-open-preview-member', undefined, PANE_READY))
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ['member-dashboard', 'oncall'] })
+      invalidate.mockRestore()
     })
 
     it('a plain member link is the live page', async () => {
