@@ -400,6 +400,7 @@ from kiro_crew.skills import (  # noqa: F401
     SkillsLoader,
     set_pending_consumed_hook,
     set_pending_staged_hook,
+    set_update_auto_applied_hook,
 )
 from kiro_crew.stall_attribution import attribute_dump, describe  # noqa: F401
 from kiro_crew.tunnel.setup import setup_tunnel  # noqa: F401

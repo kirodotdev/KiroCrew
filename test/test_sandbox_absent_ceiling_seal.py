@@ -3191,3 +3191,130 @@ class TestTheLegacyAuthStoreTempSweep:
                 f"{fn.__name__} does not sweep legacy auth-store temps, so an orphan "
                 "holding the signing key stays readable on that platform"
             )
+
+
+@pytest.fixture()
+def authority_home(crew_home, monkeypatch):
+    """``crew_home`` with the skills facade reading the same data home."""
+    from kiro_crew import skills as skills_mod
+
+    monkeypatch.setattr(skills_mod, "config_dir", lambda: crew_home)
+    monkeypatch.setenv("KIROCREW_HOME", str(crew_home))
+    skills_mod._reset_auto_skill_private_authority_for_tests()
+    yield crew_home
+    skills_mod._reset_auto_skill_private_authority_for_tests()
+
+
+def _authority_root(home: Path) -> Path:
+    from kiro_crew import skills as skills_mod
+
+    return (
+        home / skills_mod._AUTHORITY_PROVENANCE_PARENT / skills_mod.AUTO_SKILL_PRIVATE_STATE_DIRNAME
+    )
+
+
+def _initialize_authority(home: Path):
+    """Model the one gateway startup boundary for this data home."""
+    from kiro_crew import skills as skills_mod
+
+    return skills_mod.initialize_auto_skill_private_authority(data_home=home, configured_home=home)
+
+
+@_POSIX_ONLY
+@pytest.mark.usefixtures("no_auto_skill_authority_startup")
+class TestAutoSkillAuthorityNeverGatesASpawn:
+    """The authority lives under the pre-existing ``tag-grants`` mask, so a spawn needs none.
+
+    Auto-skill state is checked by the skill paths that use it, never by the sandbox:
+    a host whose authority is missing, uncertified, or blocked by an obsolete root
+    keeps spawning agents and only loses auto-skill staging and promotion.
+    """
+
+    def test_a_spawn_without_a_certificate_succeeds_and_creates_no_authority(self, authority_home):
+        argv = sandbox.namespace_argv(["/bin/true"])
+        assert argv
+        assert not _authority_root(authority_home).exists()
+
+    def test_the_seatbelt_wrapper_needs_no_certificate_either(self, authority_home):
+        argv, profile_path = sandbox.sandbox_exec_argv(["/bin/true"], "standard")
+        try:
+            assert argv
+        finally:
+            os.unlink(profile_path)
+        assert not _authority_root(authority_home).exists()
+
+    def test_an_obsolete_nested_root_under_a_linked_skills_tree_never_refuses_a_spawn(
+        self, authority_home, tmp_path
+    ):
+        from kiro_crew.constants import AUTO_SKILL_LEGACY_PRIVATE_STATE_LEAF
+
+        elsewhere = tmp_path / "dotfiles-skills"
+        (elsewhere / "auto" / ".private").mkdir(parents=True)
+        (authority_home / "skills").symlink_to(elsewhere, target_is_directory=True)
+        assert (authority_home / AUTO_SKILL_LEGACY_PRIVATE_STATE_LEAF).is_dir()
+
+        assert sandbox.namespace_argv(["/bin/true"])
+        launcher = sandbox._build_launcher_script("standard")
+        obsolete_root = authority_home / AUTO_SKILL_LEGACY_PRIVATE_STATE_LEAF
+        assert str(obsolete_root) not in launcher
+
+    def test_a_surviving_older_mask_already_hides_the_late_authority(self, authority_home):
+        authority_parent = authority_home / "tag-grants"
+        created = sandbox._materialize_maskable_dirs()
+        assert str(authority_parent) in created
+        # The path set a pre-upgrade namespace holds, built before the authority exists.
+        old_hidden = {Path(p) for p in _namespace_plan("standard").sensitive_dirs}
+        assert authority_parent in old_hidden
+
+        binding = _initialize_authority(authority_home)
+
+        root = _authority_root(authority_home)
+        assert binding.root_path == root
+        assert stat.S_IMODE(root.stat().st_mode) == 0o700
+        assert root not in old_hidden
+        assert any(root.is_relative_to(hidden) for hidden in old_hidden)
+
+    def test_a_clean_restart_reuses_the_exact_root_and_record(self, authority_home):
+        from kiro_crew import skills as skills_mod
+
+        first = _initialize_authority(authority_home)
+        record = (
+            authority_home / "tag-grants" / skills_mod._AUTHORITY_PROVENANCE_NAME
+        ).read_bytes()
+        skills_mod._reset_auto_skill_private_authority_for_tests()
+        second = _initialize_authority(authority_home)
+
+        assert second.root_identity == first.root_identity
+        assert (
+            authority_home / "tag-grants" / skills_mod._AUTHORITY_PROVENANCE_NAME
+        ).read_bytes() == record
+
+    @pytest.mark.parametrize("populated", [False, True], ids=["empty", "populated"])
+    def test_an_obsolete_nested_root_refuses_authority_untouched(self, authority_home, populated):
+        from kiro_crew.constants import AUTO_SKILL_LEGACY_PRIVATE_STATE_LEAF
+
+        legacy = authority_home / AUTO_SKILL_LEGACY_PRIVATE_STATE_LEAF
+        legacy.mkdir(parents=True)
+        if populated:
+            (legacy / "sentinel").write_text("keep", encoding="utf-8")
+        identity = legacy.stat().st_ino
+
+        with pytest.raises(OSError, match="stopped-installation"):
+            _initialize_authority(authority_home)
+
+        assert legacy.stat().st_ino == identity
+        assert not populated or (legacy / "sentinel").read_text(encoding="utf-8") == "keep"
+        assert not _authority_root(authority_home).exists()
+
+    def test_an_obsolete_direct_root_refuses_authority_untouched(self, authority_home):
+        from kiro_crew.constants import AUTO_SKILL_PRIVATE_STATE_DIRNAME
+
+        direct = authority_home / AUTO_SKILL_PRIVATE_STATE_DIRNAME
+        direct.mkdir()
+        (direct / "sentinel").write_text("keep", encoding="utf-8")
+
+        with pytest.raises(OSError, match="transitional direct.*stopped-installation"):
+            _initialize_authority(authority_home)
+
+        assert (direct / "sentinel").read_text(encoding="utf-8") == "keep"
+        assert not _authority_root(authority_home).exists()

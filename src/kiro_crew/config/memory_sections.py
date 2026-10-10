@@ -637,6 +637,18 @@ class SkillsConfig:
             "regardless of this flag.",
         ),
     )
+    auto_apply_updates: bool = field(
+        default=False,
+        metadata=_meta(
+            "Auto-Apply Skill Updates",
+            "When true AND approval_required is false, a prose-only update to an "
+            "existing auto-generated skill is applied without review, keeping the "
+            "previous version in version history for rollback. Updates that bundle "
+            "scripts, or whose supplied scripts all fail validation, never auto-apply. "
+            "Ignored while auto_refine_on_deviation is enabled. Disabled by default, "
+            "so turning approval off does not by itself let updates go live.",
+        ),
+    )
     max_auto_skills: int = field(
         default=100,
         metadata=_meta(

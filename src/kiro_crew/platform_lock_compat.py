@@ -477,6 +477,25 @@ def release_lock(fd: int) -> None:
         pass
 
 
+def prepare_lock_file(fd: int) -> None:
+    """Make a dedicated lock-file descriptor usable by every platform.
+
+    ``msvcrt.locking`` locks a byte range and refuses an empty file. Dedicated
+    lock files opened with ``O_CREAT`` therefore need one inert byte before the
+    first Windows acquire. POSIX ``flock`` does not need or want a write, so
+    this helper is a no-op there. Callers must pass a writable descriptor for a
+    dedicated lock file, never an application-data file.
+    """
+    from kiro_crew.platform_compat import IS_WINDOWS
+
+    if not IS_WINDOWS:
+        return
+    if os.fstat(fd).st_size == 0:
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.write(fd, b"\0")
+    os.lseek(fd, 0, os.SEEK_SET)
+
+
 def try_acquire_lock(fd: int, *, exclusive: bool = False) -> bool:
     """Attempt a non-blocking lock acquire. Returns True iff the lock was taken.
 

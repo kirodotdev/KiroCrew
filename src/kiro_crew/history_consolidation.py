@@ -37,7 +37,12 @@ from kiro_crew.llm_helpers import (
 )
 from kiro_crew.project_scope import scope_is_admissible
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
-from kiro_crew.skills import AUTO_SKILL_MAX_PROCEDURE_CHARS, AutoSkillProvenance, ClaimRefusal
+from kiro_crew.skills import (
+    AUTO_SKILL_MAX_PROCEDURE_CHARS,
+    AutoSkillProvenance,
+    ClaimRefusal,
+    canonical_skill_text_hash,
+)
 from kiro_crew.skills_dedupe import (
     VERDICT_DUP,
     VERDICT_NEW,
@@ -574,6 +579,13 @@ def _facade_sel() -> Any:
     return history_facade.sel()
 
 
+def _auto_skill_promotion_disabled_reason() -> str | None:
+    """Why this process cannot stage or promote auto-skills, read at call time."""
+    from kiro_crew import skills as skills_facade  # read through the facade: tests rebind it
+
+    return skills_facade.auto_skill_promotion_disabled_reason()
+
+
 def _facade_stream_and_collect(*args: Any, **kwargs: Any) -> Awaitable[str | None]:
     from kiro_crew import history as history_facade
 
@@ -785,6 +797,7 @@ class HistoryConsolidator:
         auto_similarity_threshold: float = 0.85,
         # ── Staged approval + lifecycle (v2) ──
         approval_required: bool = True,
+        auto_apply_updates: bool = False,
         max_auto_skills: int = 100,
         stale_after_days: int = 30,
         archive_after_days: int = 90,
@@ -804,6 +817,7 @@ class HistoryConsolidator:
         self._auto_min_tool_calls = auto_min_tool_calls
         self._auto_similarity_threshold = auto_similarity_threshold
         self._approval_required = approval_required
+        self._auto_apply_updates = auto_apply_updates
         self._max_auto_skills = max_auto_skills
         self._stale_after_days = stale_after_days
         self._archive_after_days = archive_after_days
@@ -866,6 +880,7 @@ class HistoryConsolidator:
         self._auto_min_tool_calls = int(getattr(skills, "auto_min_tool_calls"))
         self._auto_similarity_threshold = float(getattr(skills, "auto_similarity_threshold"))
         self._approval_required = bool(getattr(skills, "approval_required"))
+        self._auto_apply_updates = bool(getattr(skills, "auto_apply_updates"))
         self._max_auto_skills = int(getattr(skills, "max_auto_skills"))
         self._stale_after_days = int(getattr(skills, "stale_after_days"))
         self._archive_after_days = int(getattr(skills, "archive_after_days"))
@@ -2163,6 +2178,16 @@ class HistoryConsolidator:
         """
         if self._skills_loader is None:
             return
+        # The gateway's contract, applied to every process: where auto-skills
+        # can be neither staged nor promoted (a delegated agent sandbox, a refused
+        # or revoked certificate, a standalone CLI whose certification refused),
+        # auto-skill creation is off for this run. Skip detection entirely: no
+        # aux model call, no candidate that could only be lost, and no marker, so
+        # the same window is judged once creation is available again.
+        disabled = await asyncio.to_thread(_auto_skill_promotion_disabled_reason)
+        if disabled is not None:
+            self._logger.debug("Auto-skill detection skipped for %s: %s", key, disabled)
+            return
         # circular import: kiro_crew.history re-exports this module
         from kiro_crew.history import TranscriptWithheld
 
@@ -3035,6 +3060,7 @@ class HistoryConsolidator:
         guard_publication: bool = False,
         commit_state: _RunCommitState | None = None,
         refusal: ClaimRefusal | None = None,
+        scripts_supplied: bool = False,
     ) -> None:
         """Stage a pending UPDATE candidate for an existing auto-skill.
 
@@ -3043,9 +3069,46 @@ class HistoryConsolidator:
         90s, fail-open); (c) use the redacted merge as the proposed body, else
         fall back to the candidate's own procedure (also on oversize); (d) stage
         under ``<target-slug>-update`` with ``kind='update'`` metadata; (e) SEL
-        audit with outcome ``staged_update``."""
+        audit with outcome ``staged_update``.
+
+        When the update would be applied without review (approval disabled,
+        ``auto_apply_updates`` on, refinement off), an update whose supplied
+        scripts ALL failed validation is rejected outright (reason
+        ``all_scripts_rejected``), the same rule the NEW-candidate path applies:
+        it attempted to add executable content, so it is neither disguised as a
+        prose-only update nor applied with no one looking. Whenever update
+        review is still on, including approval disabled with
+        ``auto_apply_updates`` off, it is staged as prose for a human to inspect.
+
+        ``scripts_supplied`` says the model proposed scripts at all, whether or
+        not any survived validation, so an update that lost every script can
+        never qualify for unattended application."""
         loader = self._skills_loader
         if loader is None:
+            return
+        # Whether this update would be applied without review. Unattended
+        # application needs a SEPARATE opt-in on top of disabled approval:
+        # ``approval_required=false`` covers new prose skills only, so turning it
+        # off must not by itself let an update replace a live skill the operator
+        # already relies on. Refinement mode keeps updates staged because its
+        # writer replaces a full body without a version-aware base check.
+        unattended = (
+            self._auto_apply_updates
+            and not self._approval_required
+            and not self._auto_refine_enabled
+        )
+        if scripts_supplied and not scripts and unattended:
+            self._logger.info(
+                "Skill update for %s rejected: all supplied scripts failed validation",
+                target_key,
+            )
+            _facade_sel().log_tool_invocation(
+                session_key=key,
+                tool_name="auto_skill_create",
+                tool_kind="skills",
+                outcome="rejected",
+                metadata={"target": target_key, "reason": "all_scripts_rejected"},
+            )
             return
 
         def _redact(text: object) -> str:
@@ -3147,6 +3210,9 @@ class HistoryConsolidator:
         _live_description = _frontmatter_value(live_body, "description")
         _staged_triggers = _merge_trigger_lists(_live_triggers, triggers)
         _staged_description = description or _live_description
+        # Only a prose-only update (no script supplied at all) is applied unattended.
+        auto_apply = unattended and not scripts and not scripts_supplied
+        unattended_binding: list[str] = []
         with self._skill_publication_guard(
             key, enabled=guard_publication, commit_state=commit_state
         ) as publication:
@@ -3163,6 +3229,9 @@ class HistoryConsolidator:
                 target=target_key,
                 base_version=base_version,
                 refusal=refusal,
+                notify=not auto_apply,
+                base_content_hash=canonical_skill_text_hash(live_body),
+                unattended_binding_out=unattended_binding if auto_apply else None,
             )
             if name:
                 publication.mark_committed()
@@ -3185,6 +3254,13 @@ class HistoryConsolidator:
                     "merged": used_merge,
                 },
             )
+            if auto_apply and unattended_binding:
+                self._auto_apply_staged_update(
+                    key=key,
+                    staged_name=name,
+                    target_key=target_key,
+                    candidate_binding=unattended_binding[0],
+                )
         else:
             self._logger.info("Skill update staging rejected for target '%s'", target_key)
             _facade_sel().log_tool_invocation(
@@ -3194,6 +3270,118 @@ class HistoryConsolidator:
                 outcome="rejected",
                 metadata={"slug": _update_slug, "reason": "creation_failed"},
             )
+
+    def _auto_apply_staged_update(
+        self,
+        *,
+        key: str,
+        staged_name: str,
+        target_key: str,
+        candidate_binding: str,
+    ) -> None:
+        """Promote one just-staged prose-only update without review.
+
+        Called only after the update was staged with notification suppressed
+        and its candidate binding captured. Any refusal leaves the candidate
+        in the pending queue for a human, with a staged notification emitted
+        by the loader, so an unattended path can never silently drop it.
+        """
+        loader = self._skills_loader
+        if loader is None:
+            return
+        slug = staged_name.split("/", 1)[-1]
+        applied: tuple[str, int] | None = None
+        recovery_pending: list[tuple[str, int]] = []
+        try:
+            applied = loader.auto_apply_pending_update(
+                slug,
+                expected_candidate_binding=candidate_binding,
+                recovery_pending_out=recovery_pending,
+            )
+        except Exception:
+            self._logger.warning(
+                "Auto-apply failed for %s; leaving it pending review",
+                staged_name,
+                exc_info=True,
+            )
+        if applied:
+            applied_name, new_version = applied
+            _facade_sel().log_tool_invocation(
+                session_key=key,
+                tool_name="auto_skill_create",
+                tool_kind="skills",
+                outcome="auto_applied_update",
+                metadata={
+                    "name": applied_name,
+                    "target": target_key,
+                    "new_version": new_version,
+                },
+            )
+            # Mirror the dashboard approve path: bound the live set now, with
+            # the just-updated skill exempted. An update carries the ORIGINAL
+            # created_at forward, so an old zero-hit target would otherwise be
+            # archived by the next lifecycle pass. Best-effort; never fail the
+            # apply that already committed. A failed pass leaves the throttle
+            # stamp unchanged so the periodic path can retry promptly.
+            try:
+                loader.run_skill_lifecycle(
+                    max_auto_skills=self._max_auto_skills,
+                    stale_after_days=self._stale_after_days,
+                    archive_after_days=self._archive_after_days,
+                    exempt={applied_name},
+                )
+            except Exception:  # pragma: no cover - defensive
+                self._logger.debug("Skill lifecycle pass failed after auto-apply", exc_info=True)
+            else:
+                self._last_lifecycle = _time.time()
+            return
+        if recovery_pending:
+            applied_name, new_version = recovery_pending[0]
+            self._logger.warning(
+                "Auto-apply committed for %s; claim consumption is pending restart recovery",
+                staged_name,
+            )
+            _facade_sel().log_tool_invocation(
+                session_key=key,
+                tool_name="auto_skill_create",
+                tool_kind="skills",
+                outcome="auto_apply_committed_recovery_pending",
+                metadata={
+                    "name": staged_name,
+                    "target": applied_name,
+                    "new_version": new_version,
+                    "reason": "claim_consumption_pending_recovery",
+                },
+            )
+            # The prepared claim journal is the durable lifecycle exemption.
+            # Run the normal bound now; it will keep this target live until
+            # recovery retires the claim. A failed pass leaves the throttle
+            # untouched so the periodic consolidation path retries promptly.
+            try:
+                loader.run_skill_lifecycle(
+                    max_auto_skills=self._max_auto_skills,
+                    stale_after_days=self._stale_after_days,
+                    archive_after_days=self._archive_after_days,
+                )
+            except Exception:  # pragma: no cover - defensive
+                self._logger.debug(
+                    "Skill lifecycle pass failed after recovery-pending auto-apply",
+                    exc_info=True,
+                )
+            else:
+                self._last_lifecycle = _time.time()
+            return
+        _facade_sel().log_tool_invocation(
+            session_key=key,
+            tool_name="auto_skill_create",
+            tool_kind="skills",
+            outcome="auto_apply_failed",
+            metadata={
+                "name": staged_name,
+                "target": target_key,
+                "reason": "left_pending_for_review",
+            },
+        )
 
     def _process_auto_skills(
         self,
@@ -3336,6 +3524,7 @@ class HistoryConsolidator:
                         guard_publication=guard_publication,
                         commit_state=commit_state,
                         refusal=refusal,
+                        scripts_supplied=scripts_supplied,
                     )
                 else:
                     provenance = AutoSkillProvenance(

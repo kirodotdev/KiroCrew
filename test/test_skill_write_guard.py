@@ -84,7 +84,7 @@ class TestWriteEndpointsRefuseAppTokens:
 
         loader.create_skill.assert_not_called()
         loader.update_skill.assert_not_called()
-        loader.delete_skill.assert_not_called()
+        loader.delete_skill_checked.assert_not_called()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -112,7 +112,7 @@ class TestWriteEndpointsRefuseAppTokens:
         assert response.status == 403
         assert json.loads(response.body)["code"] == "dashboard_owner_required"
         loader.update_skill.assert_not_called()
-        loader.delete_skill.assert_not_called()
+        loader.delete_skill_checked.assert_not_called()
 
 
 class TestWriteEndpointsRefuseNonOwners:
@@ -145,7 +145,7 @@ class TestWriteEndpointsRefuseNonOwners:
 
         loader.create_skill.assert_not_called()
         loader.update_skill.assert_not_called()
-        loader.delete_skill.assert_not_called()
+        loader.delete_skill_checked.assert_not_called()
 
 
 class TestOwnerWritePathsStillWork:
@@ -192,12 +192,12 @@ class TestOwnerWritePathsStillWork:
 
     @pytest.mark.asyncio
     async def test_owner_delete_is_allowed_and_audited(self, audit):
-        state, loader = _state_with_loader(delete_skill=Mock(return_value=True))
+        state, loader = _state_with_loader(delete_skill_checked=Mock(return_value=True))
         request = _Request({"user": "owner"}, state, method="DELETE")
         response = await prompts.api_skill_detail(request)
         assert response.status == 200
         assert json.loads(response.body) == {"ok": True}
-        loader.delete_skill.assert_called_once_with("demo")
+        loader.delete_skill_checked.assert_called_once_with("demo")
         kwargs = audit.log_tool_invocation.call_args.kwargs
         assert kwargs["tool_name"] == "api_skill_delete"
         assert kwargs["outcome"] == "ok"
@@ -214,7 +214,7 @@ class TestOwnerWritePathsStillWork:
 
         for method, loader_kwargs, tool_name in (
             ("PUT", {"update_skill": Mock(return_value=False)}, "api_skill_update"),
-            ("DELETE", {"delete_skill": Mock(return_value=False)}, "api_skill_delete"),
+            ("DELETE", {"delete_skill_checked": Mock(return_value=False)}, "api_skill_delete"),
         ):
             audit.log_tool_invocation.reset_mock()
             state, _ = _state_with_loader(**loader_kwargs)
@@ -326,7 +326,7 @@ class TestAuditFailureNeverBreaksACommittedMutation:
 
     @pytest.mark.asyncio
     async def test_delete_still_returns_ok(self, broken_audit):
-        state, loader = _state_with_loader(delete_skill=Mock(return_value=True))
+        state, loader = _state_with_loader(delete_skill_checked=Mock(return_value=True))
         request = _Request({"user": "owner"}, state, method="DELETE")
         response = await prompts.api_skill_detail(request)
         assert response.status == 200

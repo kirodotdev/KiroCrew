@@ -27,7 +27,7 @@ import pytest
 
 from kiro_crew import atomic_write as atomic_write_mod
 from kiro_crew import session_storage
-from kiro_crew.atomic_write import fsync_dir
+from kiro_crew.atomic_write import fsync_dir, fsync_dir_fd
 from kiro_crew.session_storage import INCOMING_PREFIX, MANIFEST_NAME, SessionIndex
 
 _NOW = 1_700_000_000.0
@@ -1017,6 +1017,30 @@ class TestFsyncDirDiscriminates:
         )
 
         fsync_dir(tmp_path)
+
+    @_POSIX_DIR_FDS
+    def test_descriptor_sync_ignores_a_substituted_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        parent = tmp_path / "authority"
+        parent.mkdir()
+        held_fd = os.open(parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        held_identity = os.fstat(held_fd).st_ino
+        detached = tmp_path / "authority-detached"
+        replacement = tmp_path / "authority-replacement"
+        replacement.mkdir()
+        replacement_identity = replacement.stat().st_ino
+        parent.rename(detached)
+        replacement.rename(parent)
+        synced: list[int] = []
+        monkeypatch.setattr(os, "fsync", lambda fd: synced.append(os.fstat(fd).st_ino))
+        try:
+            fsync_dir_fd(held_fd, parent)
+        finally:
+            os.close(held_fd)
+
+        assert synced == [held_identity]
+        assert synced != [replacement_identity]
 
     def test_a_directory_that_cannot_be_opened_on_posix_is_raised(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

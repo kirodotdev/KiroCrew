@@ -84,7 +84,11 @@ from kiro_crew.seed import seed_cmd
 from kiro_crew.sel import sel
 from kiro_crew.service.live_target import maybe_reexec
 from kiro_crew.session import SessionManager
-from kiro_crew.skills import SkillsLoader
+from kiro_crew.skills import (
+    SkillsLoader,
+    initialize_gateway_auto_skill_private_authority,
+    retire_auto_skill_private_authority,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -789,6 +793,30 @@ def _knowledge(args) -> None:
         print(f"      keep: {r['winner']}   [{r['reason']}]")
 
 
+def _skills_cmd(args: argparse.Namespace) -> None:
+    """Run operator maintenance for the auto-skill authority."""
+    if getattr(args, "skills_action", None) != "authority-retire":
+        print("Usage: kirocrew skills authority-retire")
+        return
+    try:
+        with GatewayLock(config_dir()):
+            retired_root, retired_record, retired_history = retire_auto_skill_private_authority()
+    except (GatewayLockError, OSError, RuntimeError, ValueError) as exc:
+        print(f"Error: auto-skill authority was not retired: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None
+    print("Auto-skill authority retired for inspection:")
+    print(f"  root: {retired_root}")
+    print(f"  record: {retired_record if retired_record is not None else '(none present)'}")
+    for quarantine in retired_history or ("(none present)",):
+        print(f"  quarantine: {quarantine}")
+    print(
+        "The public quarantines moved aside with the root, so a fresh authority starts "
+        "with no claim history; nothing was deleted. To requeue a candidate left in one, "
+        "move its <slug>--<token> directory back to skills/auto/.pending/<slug>."
+    )
+    print("By-name live mutations and pending dismissal can now resume on this data home.")
+
+
 def _consolidate_cmd(args) -> None:
     """Force history consolidation (and auto-skill extraction) for sessions."""
 
@@ -816,6 +844,19 @@ def _consolidate_cmd(args) -> None:
         print("\nRun with a session key or --all to consolidate.")
         return
 
+    # A standalone CLI process does not pass through gateway startup, so attempt
+    # the same certification here. As on the gateway, a refusal never stops the
+    # command: the initializer records the reason, every staging and promotion
+    # path refuses, and the consolidator skips skill detection for this run
+    # while memory consolidation proceeds.
+    try:
+        initialize_gateway_auto_skill_private_authority()
+    except Exception as exc:  # noqa: BLE001 -- auto-skills fail closed, consolidation does not
+        if cfg.skills.auto_create_from_sessions:
+            print(f"Auto-skill creation is off for this run: {exc}", file=sys.stderr)
+        else:
+            logger.debug("Auto-skill authority unavailable: %s", exc)
+
     # Heavy machinery only for actual consolidation
     mem = MemoryStore()
     mem.init()
@@ -834,6 +875,7 @@ def _consolidate_cmd(args) -> None:
         auto_min_tool_calls=cfg.skills.auto_min_tool_calls,
         auto_similarity_threshold=cfg.skills.auto_similarity_threshold,
         approval_required=cfg.skills.approval_required,
+        auto_apply_updates=cfg.skills.auto_apply_updates,
         max_auto_skills=cfg.skills.max_auto_skills,
         stale_after_days=cfg.skills.stale_after_days,
         archive_after_days=cfg.skills.archive_after_days,
@@ -2243,6 +2285,16 @@ Examples:
     register_perf_parser(sub)
     register_bench_parser(sub)
     register_desktop_parser(sub)
+
+    skills_parser = cli_help.add_command(sub, "skills")
+    skills_sub = skills_parser.add_subparsers(dest="skills_action")
+    skills_sub.add_parser(
+        "authority-retire",
+        help=(
+            "Move an idle auto-skill authority aside after stopping every "
+            "gateway and agent on this data home"
+        ),
+    )
 
     kn_parser = cli_help.add_command(sub, "knowledge")
     kn_sub = kn_parser.add_subparsers(dest="knowledge_action")
@@ -3744,6 +3796,8 @@ env var overrides it.
         from kiro_crew.cli_commands import _policy
 
         _policy(args)
+    elif args.command == "skills":
+        _skills_cmd(args)
     elif args.command == "knowledge":
         _knowledge(args)
     elif args.command == "secrets":

@@ -1199,13 +1199,25 @@ def taskrunner_env(monkeypatch, tmp_path):
     """Replace every collaborator ``_run_task`` constructs, and expose the spies."""
     from kiro_crew.config import KiroCrewConfig
 
-    state: dict = {"vector": None, "sessions": None, "runner_kwargs": None, "observed": []}
+    state: dict = {
+        "vector": None,
+        "sessions": None,
+        "runner_kwargs": None,
+        "observed": [],
+        "events": [],
+    }
 
+    monkeypatch.setattr(
+        cli_server,
+        "initialize_gateway_auto_skill_private_authority",
+        lambda: state["events"].append("authority"),
+    )
     monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: cls()))
     monkeypatch.setattr(cli_server, "KiroCrewConfig", KiroCrewConfig)
     monkeypatch.setattr(cli_server, "build_provider_factory", lambda cfg: object())
 
     def _sessions(cfg, provider_factory=None):
+        state["events"].append("sessions")
         state["sessions"] = _FakeSessions(cfg, provider_factory)
         return state["sessions"]
 
@@ -1262,6 +1274,107 @@ class TestRunTask:
             asyncio.run(cli_server._run_task(args))
         assert exc.value.code == 1
         assert "Spec file not found" in capsys.readouterr().err
+
+    def test_authority_is_certified_before_task_state(
+        self,
+        taskrunner_env,
+        tmp_path,
+    ) -> None:
+        taskrunner_env["install_runner"](_Result("completed"))
+        args = argparse.Namespace(
+            spec=str(_spec(tmp_path)),
+            no_test=True,
+            fresh=False,
+            timeout=90,
+            name="",
+        )
+
+        asyncio.run(cli_server._run_task(args))
+
+        assert taskrunner_env["events"][:2] == ["authority", "sessions"]
+
+    def test_authority_refusal_keeps_the_task_running(
+        self,
+        taskrunner_env,
+        tmp_path,
+        monkeypatch,
+        capsys,
+    ) -> None:
+        """A closed auto-skill gate never stops ``kirocrew run``, as on the gateway.
+
+        The task runs to completion and the operator who enabled auto-skill
+        creation sees exactly one notice saying it is off for this run. An early
+        exit here made ``kirocrew run`` unusable on every delegated host.
+        """
+        from kiro_crew.config import KiroCrewConfig
+
+        cfg = KiroCrewConfig()
+        cfg.skills.auto_create_from_sessions = True
+        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+
+        def refuse():
+            taskrunner_env["events"].append("authority")
+            raise OSError("sandbox_off")
+
+        monkeypatch.setattr(
+            cli_server,
+            "initialize_gateway_auto_skill_private_authority",
+            refuse,
+        )
+        taskrunner_env["install_runner"](_Result("completed"))
+        spec = _spec(tmp_path)
+
+        asyncio.run(
+            cli_server._run_task(
+                argparse.Namespace(
+                    spec=str(spec),
+                    no_test=True,
+                    fresh=False,
+                    timeout=90,
+                    name="",
+                )
+            )
+        )
+
+        assert taskrunner_env["events"][:2] == ["authority", "sessions"]
+        assert taskrunner_env["ran"] == (spec.resolve(), "")
+        notices = [
+            line
+            for line in capsys.readouterr().err.splitlines()
+            if "Auto-skill creation is off for this run" in line
+        ]
+        assert notices == ["Auto-skill creation is off for this run: sandbox_off"]
+
+    def test_authority_refusal_is_silent_when_auto_skills_are_off(
+        self,
+        taskrunner_env,
+        tmp_path,
+        monkeypatch,
+        capsys,
+    ) -> None:
+        def refuse():
+            raise OSError("sandbox_off")
+
+        monkeypatch.setattr(
+            cli_server,
+            "initialize_gateway_auto_skill_private_authority",
+            refuse,
+        )
+        taskrunner_env["install_runner"](_Result("completed"))
+
+        asyncio.run(
+            cli_server._run_task(
+                argparse.Namespace(
+                    spec=str(_spec(tmp_path)),
+                    no_test=True,
+                    fresh=False,
+                    timeout=90,
+                    name="",
+                )
+            )
+        )
+
+        assert "Auto-skill" not in capsys.readouterr().err
 
     def test_completed_task_wires_runner_and_closes_sessions(
         self, taskrunner_env, tmp_path, capsys

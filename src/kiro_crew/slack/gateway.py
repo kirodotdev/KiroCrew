@@ -380,7 +380,7 @@ from kiro_crew.session import (
     SessionManager,
 )
 from kiro_crew.session_start_sizing import resolve_session_start_sizing
-from kiro_crew.skills import SkillsLoader
+from kiro_crew.skills import SkillsLoader, initialize_gateway_auto_skill_private_authority
 from kiro_crew.slack import gateway_runtime as _runtime
 from kiro_crew.slack.client import RealSlackClient
 from kiro_crew.slack.format import (
@@ -2634,6 +2634,7 @@ class GatewayOrchestrator:
             auto_min_tool_calls=self._cfg.skills.auto_min_tool_calls,
             auto_similarity_threshold=self._cfg.skills.auto_similarity_threshold,
             approval_required=self._cfg.skills.approval_required,
+            auto_apply_updates=self._cfg.skills.auto_apply_updates,
             max_auto_skills=self._cfg.skills.max_auto_skills,
             stale_after_days=self._cfg.skills.stale_after_days,
             archive_after_days=self._cfg.skills.archive_after_days,
@@ -14767,6 +14768,23 @@ async def run_gateway(
     # Standalone composes the all-defaults context (identical to today); a
     # non-standalone profile that cannot compose its companion fails closed.
     boot_platform(cfg)
+
+    # ── Auto-skill private authority startup certificate ──
+    # The sole production provisioning boundary. It runs on every host before
+    # GatewayOrchestrator can construct a loader or session; every ordinary
+    # skill path is verify-only. It stays on the readiness path on purpose, so
+    # no agent this gateway spawns can run before its obsolete-spelling and
+    # stale-state checks, and its cost is bounded whatever state was planted
+    # (``skills._STALE_CLAIM_SCAN_LIMIT`` lists the work). It never stops the
+    # gateway: where authority cannot be provisioned or certified (an obsolete
+    # authority root awaiting stopped-installation recovery, or a platform
+    # whose agents run in a delegated sandbox Kiro Crew cannot fence) the
+    # gateway keeps serving with auto-skill staging and promotion disabled,
+    # which the warning names.
+    try:
+        await asyncio.to_thread(initialize_gateway_auto_skill_private_authority)
+    except Exception as exc:  # noqa: BLE001 -- fail closed for auto-skills, not for the gateway
+        logger.warning("Auto-skill staging and promotion are disabled: %s", exc)
 
     # ── Aggregate cgroup ceiling for all agent scopes ──
     # The per-spawn scope wrapper (sandbox.cgroup_scope_argv) bounds ONE spawn

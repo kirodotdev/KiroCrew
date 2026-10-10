@@ -136,7 +136,9 @@ _LOADER_MEMBERS = {
         approve_pending_skill approve_pending_skill_checked approve_pending_update
         approve_pending_update_checked archive_auto_skill catalog_project_skills
         catalog_status close confined_triggered create_auto_skill create_skill credit_skill_reads
-        delete_skill dismiss_all_pending dismiss_pending_skill dismiss_pending_slugs
+        delete_skill delete_skill_checked dismiss_all_pending dismiss_pending_skill
+        dismiss_pending_skill_checked
+        dismiss_pending_slugs
         find_similar get_always_skills get_auto_skill_version get_context
         get_pending_skill get_triggered_skills is_auto_generated
         list_archived_auto_skills list_auto_skills list_pending_skills list_skills
@@ -145,8 +147,46 @@ _LOADER_MEMBERS = {
         resolve_dollar_skills
         resolve_ledger_aliases resolve_tool_read_keys restore_auto_skill
         run_skill_lifecycle scoped_skills search_skills search_skills_report
-        set_inject_on_trigger set_pinned split_triggered stage_skill_candidate sync_builtins trigger_hint
+        set_inject_on_trigger set_pinned set_pinned_checked split_triggered stage_skill_candidate
+        sync_builtins
+        trigger_hint
         update_auto_skill update_skill
+        _approve_claimed_skill_locked _approve_claimed_update_locked
+        _archive_auto_skill_lifecycle_locked
+        _authenticated_claim_evidence_state _authenticated_claim_publication
+        _authenticated_claim_restore_state _authenticated_claim_snapshot_state
+        _authenticated_completion_marker _authority_provenance_path _authority_record_valid
+        _candidate_metadata_from_bytes _capture_claim_snapshot _claim_lock_path
+        _claim_materialization_path _claim_pending_update _claims_root _cleanup_claim_lock
+        _cleanup_completed_claim _cleanup_publication_artifacts _clear_claim_restore_state
+        _commit_claim_consumption _commit_claim_evidence_state _commit_claim_lock_state
+        _completion_marker_present _create_pinned_child_exclusive _discard_trusted_claim
+        _ensure_private_authority _evidence_root _file_lock _initialize_claim_lock_state
+        _legacy_private_root _live_auto_mutation_lock _live_auto_mutation_refusal
+        _live_quarantine_root _locks_root
+        _lone_regular_file_hash_at _migrate_legacy_private_state _open_skill_lock
+        _pending_slug_claimed _pin_private_state _pin_skill_child_parent _pin_skill_parent
+        _pinned_child_exists _pinned_child_identity _preflight_private_state
+        _prepare_claim_publication _private_root _private_state_roots_safe
+        _probe_no_replace_rename _promote_pending_skill _promote_pending_update
+        _promotion_lock _public_claim_evidence_matches _publication_live_backup_identity
+        _publication_paths _publish_prepared_skill_tree _published_update_evidence_matches
+        _quarantine_is_consumed_evidence _quarantine_root _read_pinned_regular_file
+        _reconcile_prepared_claim _reconcile_prepared_claim_pinned _recover_abandoned_claims
+        _recover_recorded_claim_restore _refuse_failing_pending_scripts _remove_private_tree
+        _remove_untrusted_completion_marker _rename_skill_child_no_replace
+        _rename_untrusted_link_no_replace _restoration_path _restore_claimed_update
+        _restore_failed_promotion_claim _restrict_private_parent _retain_claim_evidence
+        _retain_published_update_evidence _skill_tree_hash_child _skill_tree_snapshot_child
+        _stage_candidate_under_pending_parent _sync_pinned_parent
+        _sync_pinned_rename_parents _unlink_skill_child _validate_and_redact_snapshot
+        _write_claim_restore_state _write_claim_snapshot_state _write_completion_marker
+        _write_pinned_new_file auto_apply_pending_update emit_pending_staged
+        _probe_rename_under_authority _set_aside_stale_authority _stale_authority_claims
+    """,
+    "class": """
+        _authenticated_claim_lock_state _read_authenticated_claim_lock_payload
+        _write_claim_lock_payload
     """,
     "static": """
         _auto_slug_from_name _candidate_has_symlink _catalog_fingerprints_for
@@ -155,11 +195,65 @@ _LOADER_MEMBERS = {
         _parse_frontmatter_text _redact_text _repo_scope_satisfied
         _rewrite_update_frontmatter _safe_name _screen_extra_paths _short_desc
         _write_skill_md has_dollar_candidate strip_frontmatter
+        _audit_reserved_auto_mutation_denial _authority_handoff _authority_record_body
+        _authority_record_mac _auto_apply_candidate_binding _candidate_has_unsafe_inode
+        _claim_lock_state_payload _claim_snapshot_fields _claim_snapshot_from_fields
+        _emit_pending_staged_metadata _identity_from_payload _identity_payload
+        _lone_regular_file_hash _materialize_candidate_snapshot
+        _materialize_skill_tree_snapshot _opened_path_matches _pinned_parent_matches
+        _skill_tree_entries_hash _skill_tree_hash _skill_tree_snapshot
+        _skill_tree_snapshot_by_name _skill_tree_snapshot_pinned _snapshot_path_matches
+        _stable_file_payload _stat_pinned_child _sync_skill_tree _tag_opened_identity
+        _live_auto_target_lock_slug
     """,
 }
 
 _LOADER_SIGNATURES = {
     "_ALLOWED_CANDIDATE_TOP": "['.meta.json', 'SKILL.md', 'scripts']",
+    "_approve_claimed_skill_locked": "(self, src: 'Path', claim_fd: 'int', slug: 'str', claim_snapshot: '_ClaimSnapshot', private_state: '_PinnedPrivateState', *, refusal: 'list[PendingApprovalRefused] | None' = None) -> 'str | None'",
+    "_approve_claimed_update_locked": "(self, src: 'Path', *, claim_fd: 'int', slug: 'str', meta: 'dict[str, object]', snapshot: '_ValidatedCandidateSnapshot', refuse_scripts: 'bool', expected_candidate_binding: 'str | None', private_state: '_PinnedPrivateState', refusal: 'list[PendingApprovalRefused] | None' = None) -> 'tuple[str, int] | None'",
+    "_archive_auto_skill_lifecycle_locked": "(self, name: 'str') -> 'bool'",
+    "_audit_reserved_auto_mutation_denial": "(name: 'str') -> 'None'",
+    "_authenticated_claim_evidence_state": "(self, fd: 'int', lock_path: 'Path', claim_name: 'str') -> 'dict[str, object] | None'",
+    "_authenticated_claim_lock_state": "(cls, fd: 'int', lock_path: 'Path', claim_name: 'str', *, completed: 'bool') -> 'bool'",
+    "_authenticated_claim_publication": "(self, fd: 'int', lock_path: 'Path', claim_name: 'str') -> 'dict[str, object] | None'",
+    "_authenticated_claim_restore_state": "(self, fd: 'int', lock_path: 'Path', claim_name: 'str') -> 'tuple[str, _TaggedFileIdentity] | None'",
+    "_authenticated_claim_snapshot_state": "(self, fd: 'int', lock_path: 'Path', claim_name: 'str') -> '_ClaimSnapshot | None'",
+    "_authenticated_completion_marker": "(self, claim: 'Path', expected_claim_identity: '_TaggedFileIdentity | None' = None) -> 'bool'",
+    "_authority_handoff": "(reason: 'str') -> 'OSError'",
+    "_authority_provenance_path": "(self) -> 'Path'",
+    "_authority_record_body": "(configured_home: 'Path', canonical_home: 'Path', home_identity: '_TaggedFileIdentity', root_identity: '_TaggedFileIdentity') -> 'dict[str, object]'",
+    "_authority_record_mac": "(body: 'dict[str, object]') -> 'str'",
+    "_authority_record_valid": "(self, provenance_parent: '_PinnedSkillParent', configured_home: 'Path', canonical_home: 'Path', home_identity: '_TaggedFileIdentity', root_identity: '_TaggedFileIdentity') -> 'bool'",
+    "_auto_apply_candidate_binding": "(skill_bytes: 'bytes', *, target: 'object', base_version: 'object', base_content_hash: 'object') -> 'str'",
+    "auto_apply_pending_update": "(self, slug: 'str', *, expected_candidate_binding: 'str', recovery_pending_out: 'list[tuple[str, int]] | None' = None) -> 'tuple[str, int] | None'",
+    "_candidate_has_unsafe_inode": "(pdir: 'Path') -> 'bool'",
+    "_candidate_metadata_from_bytes": "(self, raw: 'bytes | None', *, redact: 'bool') -> 'dict'",
+    "_capture_claim_snapshot": "(self, candidate_dir: 'Path') -> '_ClaimSnapshot'",
+    "_claim_lock_path": "(self, claim_name: 'str') -> 'Path'",
+    "_claim_lock_state_payload": "(claim_name: 'str', *, completed: 'bool') -> 'bytes'",
+    "_claim_materialization_path": "(self, claim_name: 'str') -> 'Path'",
+    "_claim_pending_update": "(self, slug: 'str') -> 'tuple[Path, int, str, _ClaimSnapshot] | None'",
+    "_claim_snapshot_fields": "(snapshot: '_ClaimSnapshot') -> 'dict[str, object]'",
+    "_claim_snapshot_from_fields": "(data: 'dict[str, object]') -> '_ClaimSnapshot | None'",
+    "_claims_root": "(self) -> 'Path'",
+    "_cleanup_claim_lock": "(self, claim_name: 'str') -> 'None'",
+    "_cleanup_completed_claim": "(self, claim: 'Path', claim_fd: 'int') -> 'bool'",
+    "_cleanup_publication_artifacts": "(self, claim_name: 'str') -> 'bool'",
+    "_clear_claim_restore_state": "(self, fd: 'int', lock_path: 'Path', claim_name: 'str') -> 'bool'",
+    "_commit_claim_consumption": "(self, claim: 'Path', claim_fd: 'int') -> 'bool'",
+    "_commit_claim_evidence_state": "(self, fd: 'int', lock_path: 'Path', claim_name: 'str') -> 'bool'",
+    "_commit_claim_lock_state": "(self, fd: 'int', lock_path: 'Path', claim_name: 'str') -> 'bool'",
+    "_completion_marker_present": "(self, claim: 'Path', expected_claim_identity: '_TaggedFileIdentity | None' = None) -> 'bool'",
+    "_create_pinned_child_exclusive": "(self, parent: '_PinnedSkillParent', name: 'str') -> 'Iterator[_PinnedSkillParent]'",
+    "_discard_trusted_claim": "(self, claim: 'Path') -> 'bool'",
+    "emit_pending_staged": "(self, slug: 'str') -> 'None'",
+    "_emit_pending_staged_metadata": "(slug: 'str', meta: 'dict') -> 'None'",
+    "_ensure_private_authority": "(self, canonical_home: 'Path', *, configured_home: 'Path | None' = None, create: 'bool') -> '_CertifiedAuthorityBinding'",
+    "_evidence_root": "(self) -> 'Path'",
+    "_file_lock": "(self, name: 'str', *, state_out: 'list[_PinnedPrivateState] | None' = None) -> 'Iterator[bool]'",
+    "_identity_from_payload": "(value: 'object') -> '_TaggedFileIdentity | None'",
+    "_identity_payload": "(identity: '_TaggedFileIdentity') -> 'dict[str, object]'",
     "__init__": "(self, skills_path: 'Path | None' = None, install_builtins: 'bool' = True, config: 'KiroCrewConfig | None' = None)",
     "_adopt_snapshot": "(self, project_key: 'str', snapshot: '_StoredCatalog', *, generation: 'int') -> 'list[tuple[str, Path, str | None]] | None'",
     "_adopt_extra_paths": "(self, resolved_paths: 'list[Path]') -> 'None'",
@@ -190,6 +284,7 @@ _LOADER_SIGNATURES = {
     "_emit_lazy_load_metric": "(t0: 'float', *, hit: 'bool') -> 'None'",
     "_exact_read_while_building": "(self, key: 'str', only: 'list[str] | None', project_dir: 'str | Path | None', max_bytes: 'int', refusal_reasons: 'list[str] | None' = None) -> 'str | None'",
     "_get_disabled_app_names": "(self) -> 'frozenset[str]'",
+    "_initialize_claim_lock_state": "(self, fd: 'int', lock_path: 'Path', claim_name: 'str') -> 'bool'",
     "_invalidate_iter_cache": "(self) -> 'None'",
     "_is_pending_slug_safe": "(slug: 'str') -> 'bool'",
     "_is_user_authored": "(self, s: 'dict') -> 'bool'",
@@ -198,9 +293,22 @@ _LOADER_SIGNATURES = {
     "_iter_visible": "(self, project_dir: 'str | Path | None' = None) -> 'list[tuple[str, Path, str | None]]'",
     "_key_denotes_path": "(key: 'str', absolute: 'str', own_roots: 'tuple[Path, ...]', provider_roots: 'tuple[str, ...]') -> 'bool'",
     "_legacy_context": "(self, all_skills: 'list[dict]', restricted: 'bool' = False, project_dir: 'str | Path | None' = None, project_body_budget: 'int | None' = None) -> 'str'",
+    "_legacy_private_root": "(self) -> 'Path'",
+    "_live_auto_mutation_lock": "(self, name: 'str') -> 'Iterator[bool]'",
+    "_live_auto_mutation_refusal": "(self, name: 'str') -> 'LiveSkillMutationRefused | None'",
+    "_live_auto_target_lock_slug": "(slug: 'str') -> 'str | None'",
+    "_live_quarantine_root": "(self) -> 'Path'",
     "_load_catalog_snapshot": "(self, project_key: 'str') -> '_StoredCatalog | None'",
+    "_locks_root": "(self) -> 'Path'",
+    "_lone_regular_file_hash": "(path: 'Path') -> 'str | None'",
+    "_lone_regular_file_hash_at": "(self, parent: '_PinnedSkillParent', name: 'str') -> 'str | None'",
+    "_materialize_candidate_snapshot": "(snapshot: '_ValidatedCandidateSnapshot', destination: 'Path') -> 'None'",
+    "_materialize_skill_tree_snapshot": "(snapshot: '_SkillTreeSnapshot', destination: 'Path') -> 'None'",
     "_max_triggered_now": "(self) -> 'int'",
+    "_migrate_legacy_private_state": "(self, canonical_skills: 'Path', canonical_home: 'Path') -> 'None'",
     "_on_config_change": "(self, change: \"'live.ConfigChange'\") -> 'None'",
+    "_open_skill_lock": "(self, parent: '_PinnedSkillParent', name: 'str', *, created_out: 'list[bool] | None' = None) -> 'int'",
+    "_opened_path_matches": "(fd: 'int', path: 'Path', expected: 'os.stat_result') -> 'bool'",
     "_owned_hint": "(self, skill_file: 'Path') -> 'bool'",
     "_owning_app": "(self, name: 'str', skill_file: 'Path') -> 'str | None'",
     "_parse_frontmatter": "(path: 'Path') -> 'dict[str, str]'",
@@ -208,39 +316,103 @@ _LOADER_SIGNATURES = {
     "_pending_root": "(self) -> 'Path'",
     "_pending_scripts_verdict": "(self, pdir: 'Path') -> 'tuple[bool, dict] | None'",
     "_pending_scripts_verdict_at": "(self, root_fd: 'int') -> 'tuple[bool, dict] | None'",
+    "_pending_slug_claimed": "(self, slug: 'str', *, private_state: '_PinnedPrivateState | None' = None) -> 'bool | None'",
+    "_pin_private_state": "(self, *, create: 'bool', require_sensitive: 'bool' = False) -> 'Iterator[_PinnedPrivateState]'",
+    "_pin_skill_child_parent": "(self, parent: '_PinnedSkillParent', name: 'str', *, create: 'bool', created_out: 'list[bool] | None' = None) -> 'Iterator[_PinnedSkillParent]'",
+    "_pin_skill_parent": "(self, path: 'Path') -> 'Iterator[_PinnedSkillParent]'",
+    "_pinned_child_exists": "(self, parent: '_PinnedSkillParent', name: 'str') -> 'bool'",
+    "_pinned_child_identity": "(self, parent: '_PinnedSkillParent', name: 'str') -> '_TaggedFileIdentity | None'",
+    "_pinned_parent_matches": "(pin: '_PinnedSkillParent') -> 'bool'",
+    "_preflight_private_state": "(self, *, require_sensitive: 'bool') -> 'tuple[Path, _CertifiedAuthorityBinding]'",
+    "_prepare_claim_publication": "(self, fd: 'int', lock_path: 'Path', claim_name: 'str', *, kind: 'str', target_slug: 'str', before_hash: 'str | None', after_hash: 'str', claim_snapshot: '_ClaimSnapshot', live_backup_identity: '_TaggedFileIdentity | None', snapshot_version: 'int | None', new_version: 'int | None') -> 'bool'",
+    "_private_root": "(self) -> 'Path'",
+    "_private_state_roots_safe": "(self, *, create: 'bool', require_sensitive: 'bool' = False) -> 'bool'",
+    "_probe_no_replace_rename": "(self) -> 'bool'",
+    "_probe_rename_under_authority": "(self, binding: '_CertifiedAuthorityBinding') -> 'None'",
+    "_promote_pending_skill": "(self, slug: 'str', *, refusal: 'list[PendingApprovalRefused] | None' = None) -> 'str | None'",
+    "_promote_pending_update": "(self, slug: 'str', *, refuse_scripts: 'bool' = False, expected_candidate_binding: 'str | None' = None, claimed_out: 'list[bool] | None' = None, committed_out: 'list[tuple[str, int]] | None' = None, refusal: 'list[PendingApprovalRefused] | None' = None) -> 'tuple[str, int] | None'",
+    "_promotion_lock": "(self, target_slug: 'str') -> 'Iterator[bool]'",
     "_prune_versions": "(self, versions_dir: 'Path') -> 'None'",
+    "_public_claim_evidence_matches": "(self, state: '_PinnedPrivateState', evidence_state: 'dict[str, object]', claim_name: 'str') -> 'bool'",
+    "_publication_live_backup_identity": "(self, publication: 'dict[str, object]') -> '_TaggedFileIdentity | None'",
+    "_publication_paths": "(self, claim_name: 'str') -> 'tuple[Path, Path]'",
+    "_publish_prepared_skill_tree": "(self, *, state: '_PinnedPrivateState', live_dir: 'Path', stage: 'Path', backup: 'Path | None', backup_identity: '_TaggedFileIdentity | None', before_hash: 'str | None', after_hash: 'str') -> 'str'",
+    "_published_update_evidence_matches": "(self, claim: 'Path', claim_fd: 'int') -> 'bool'",
+    "_quarantine_is_consumed_evidence": "(self, state: '_PinnedPrivateState', claim_name: 'str') -> 'bool'",
+    "_quarantine_root": "(self) -> 'Path'",
     "_rank_key": "(self, s: 'dict') -> 'tuple[float, float]'",
+    "_read_authenticated_claim_lock_payload": "(cls, fd: 'int', lock_path: 'Path', claim_name: 'str') -> 'bytes | None'",
     "_read_candidate_pinned": "(self, pdir: 'Path') -> 'tuple[str, dict, list[dict]] | None'",
     "_read_enumerated_skill_bytes": "(self, path: 'Path', within: 'str | None', *, max_bytes: 'int | None' = None, refusal_reasons: 'list[str] | None' = None, canonical_root: 'str | None' = None) -> 'bytes | None'",
     "_read_exact_key": "(self, key: 'str', *, only: 'list[str] | None', project_dir: 'str | Path | None', max_bytes: 'int') -> '_ExactRead'",
     "_read_global_skill_text": "(self, path: 'Path', max_bytes: 'int | None', *, canonical_root: 'str | None' = None, refusal_reasons: 'list[str] | None' = None) -> 'str | None'",
+    "_read_pinned_regular_file": "(self, parent: '_PinnedSkillParent', name: 'str', *, max_bytes: 'int') -> 'bytes | None'",
     "_readable_frontmatter": "(self, path: 'Path', *, within: 'str | None', mtime: 'float | None' = None, canonical_root: 'str | None' = None) -> 'dict[str, str] | None'",
     "_read_pending_meta": "(self, slug: 'str') -> 'dict'",
     "_recency_boost": "(self, path_str: 'str', fingerprint: 'str' = '') -> 'float'",
+    "_reconcile_prepared_claim": "(self, claim: 'Path', claim_fd: 'int', lock_path: 'Path', *, private_state: '_PinnedPrivateState | None' = None) -> 'bool | None'",
+    "_reconcile_prepared_claim_pinned": "(self, journal: 'dict[str, object]', state: '_PinnedPrivateState', claim_name: 'str') -> 'bool | None'",
     "_record_use": "(self, key: 'str') -> 'None'",
+    "_recover_abandoned_claims": "(self, *, roots_authenticated: 'bool' = False) -> 'None'",
+    "_recover_recorded_claim_restore": "(self, claim: 'Path', claim_fd: 'int', restore_state: 'tuple[str, _TaggedFileIdentity]') -> 'bool'",
     "_redact_deep": "(self, obj: 'object') -> 'object'",
     "_redact_file_in_place": "(self, fp: 'Path') -> 'bool'",
     "_redact_text": "(text: 'object') -> 'str'",
     "_redact_validation_report": "(self, report: 'dict') -> 'dict'",
+    "_refuse_failing_pending_scripts": "(self, src: 'Path', name: 'str') -> 'None'",
+    "_remove_private_tree": "(self, path: 'Path', *, what: 'str', expected_identity: '_TaggedFileIdentity | None' = None) -> 'bool'",
+    "_remove_untrusted_completion_marker": "(self, claim: 'Path', expected_claim_identity: '_TaggedFileIdentity | None' = None) -> 'bool'",
+    "_rename_skill_child_no_replace": "(self, source: '_PinnedSkillParent', source_name: 'str', destination: '_PinnedSkillParent', destination_name: 'str', *, expected_identity: '_TaggedFileIdentity | None' = None, compensate_mismatch_to_source: 'bool' = True) -> 'os.stat_result'",
+    "_rename_untrusted_link_no_replace": "(self, source: '_PinnedSkillParent', source_name: 'str', destination: '_PinnedSkillParent', destination_name: 'str', *, expected_identity: '_TaggedFileIdentity') -> 'None'",
     "_repo_scope_satisfied": "(relpath: 'str', project_dir: 'str | Path | None') -> 'bool'",
     "_request_catalog_refresh": "(self, project_key: 'str') -> 'threading.Event | None'",
     "_resolve_path": "(self, name: 'str', project_dir: 'str | Path | None' = None) -> 'Path | None'",
     "_resolve_path_and_root": "(self, name: 'str', project_dir: 'str | Path | None' = None) -> 'tuple[Path, str | None] | None'",
-    "_resolve_snapshot_version": "(self, versions_dir: 'Path', fm_version: 'int') -> 'int'",
+    "_resolve_snapshot_version": "(self, versions_dir: 'Path', fm_version: 'int', live_snapshot: '_SkillTreeSnapshot | None' = None) -> 'int'",
+    "_restoration_path": "(self, claim_name: 'str') -> 'Path'",
+    "_restore_claimed_update": "(self, claim: 'Path', claim_fd: 'int', slug: 'str', claim_snapshot: '_ClaimSnapshot | None' = None) -> 'Path | None'",
+    "_restore_failed_promotion_claim": "(self, claim: 'Path', claim_fd: 'int', slug: 'str', claim_snapshot: '_ClaimSnapshot') -> 'bool'",
+    "_restrict_private_parent": "(self, parent: '_PinnedSkillParent') -> 'None'",
+    "_retain_claim_evidence": "(self, claim: 'Path', claim_fd: 'int') -> 'bool'",
+    "_retain_published_update_evidence": "(self, claim: 'Path', claim_fd: 'int') -> 'bool'",
     "_rewrite_update_frontmatter": "(candidate_content: 'str', *, target_name: 'str', created_at: 'str', version: 'int', pinned: 'bool' = False, pointer_only: 'bool' = False) -> 'str'",
     "_run_catalog_build": "(self, project_key: 'str', generation: 'int') -> 'None'",
     "_safe_name": "(name: 'str') -> 'bool'",
     "_scoped_entries": "(self, project_dir: 'str | Path | None', only: 'list[str] | None') -> 'list[_ScopedSkillEntry]'",
     "_screen_extra_paths": "(cfg: 'KiroCrewConfig') -> 'list[Path]'",
     "_served_key_by_realpath": "(self) -> 'dict[str, str]'",
+    "_set_aside_stale_authority": "(self, provenance_parent: '_PinnedSkillParent', reason: 'str', *, root_present: 'bool', record_present: 'bool') -> 'None'",
     "_short_desc": "(desc: 'str', suffix: 'str' = '...') -> 'str'",
+    "_skill_tree_entries_hash": "(entries: 'list[tuple[str, str, int, bytes]]') -> 'str'",
+    "_skill_tree_hash": "(root: 'Path') -> 'str | None'",
+    "_skill_tree_hash_child": "(self, parent: '_PinnedSkillParent', name: 'str') -> 'str | None'",
+    "_skill_tree_snapshot": "(root: 'Path') -> '_SkillTreeSnapshot | None'",
+    "_skill_tree_snapshot_by_name": "(root: 'Path') -> '_SkillTreeSnapshot | None'",
+    "_skill_tree_snapshot_child": "(self, parent: '_PinnedSkillParent', name: 'str') -> '_SkillTreeSnapshot | None'",
+    "_skill_tree_snapshot_pinned": "(root: 'Path', *, parent: '_PinnedSkillParent | None' = None, name: 'str | None' = None) -> '_SkillTreeSnapshot | None'",
     "_snapshot_admitted_roots": "(self) -> 'tuple[str, ...]'",
+    "_snapshot_path_matches": "(fd: 'int', expected: 'str | Path') -> 'bool'",
+    "_stable_file_payload": "(fd: 'int', opened: 'os.stat_result', *, max_bytes: 'int') -> 'tuple[bytes, os.stat_result] | None'",
+    "_stale_authority_claims": "(self, provenance_parent: '_PinnedSkillParent') -> 'list[str] | None'",
+    "_stage_candidate_under_pending_parent": "(self, pending_parent: '_PinnedSkillParent', slug: 'str', *, description: 'str', triggers: 'str', procedure_md: 'str', provenance: 'AutoSkillProvenance', scripts: 'list[dict] | None', source: 'str', kind: 'str', target: 'str | None', base_version: 'int | None', notify: 'bool', base_content_hash: 'str | None') -> 'tuple[str, bytes, list[str]]'",
+    "_stat_pinned_child": "(pin: '_PinnedSkillParent', name: 'str') -> 'os.stat_result'",
+    "_sync_pinned_parent": "(self, parent: '_PinnedSkillParent') -> 'None'",
+    "_sync_pinned_rename_parents": "(self, source: '_PinnedSkillParent', destination: '_PinnedSkillParent') -> 'None'",
+    "_sync_skill_tree": "(root: 'Path') -> 'None'",
+    "_tag_opened_identity": "(fd: 'int') -> '_TaggedFileIdentity | None'",
     "_trusted_project_key": "(self, project_dir: 'str | Path | None') -> 'str'",
+    "_unlink_skill_child": "(self, parent: '_PinnedSkillParent', name: 'str', *, expected: 'os.stat_result | None' = None, expected_identity: '_TaggedFileIdentity | None' = None, directory: 'bool' = False) -> 'bool'",
     "_usage_fields": "(self, key: 'str') -> 'dict[str, int | float | None]'",
     "_user_first": "(self, ranked: 'list[dict]') -> 'list[dict]'",
-    "_validate_and_redact_candidate": "(self, src: 'Path', name: 'str') -> 'dict[Path, bytes]'",
+    "_validate_and_redact_candidate": "(self, src: 'Path', name: 'str', refusal: 'list[PendingApprovalRefused] | None' = None) -> '_ValidatedCandidateSnapshot | None'",
+    "_validate_and_redact_snapshot": "(self, tree: '_SkillTreeSnapshot', name: 'str', *, refusal: 'list[PendingApprovalRefused] | None' = None) -> '_ValidatedCandidateSnapshot | None'",
     "_vet_unconfined_path": "(self, path: 'Path') -> 'bool'",
     "_versions_root": "(self, target_slug: 'str') -> 'Path'",
+    "_write_claim_lock_payload": "(cls, fd: 'int', lock_path: 'Path', claim_name: 'str', payload: 'bytes') -> 'bool'",
+    "_write_claim_restore_state": "(self, fd: 'int', lock_path: 'Path', claim_name: 'str', *, restore_slug: 'str', restore_identity: '_TaggedFileIdentity') -> 'bool'",
+    "_write_claim_snapshot_state": "(self, fd: 'int', lock_path: 'Path', claim_name: 'str', snapshot: '_ClaimSnapshot') -> 'bool'",
+    "_write_completion_marker": "(self, claim: 'Path', expected_claim_identity: '_TaggedFileIdentity | None' = None) -> 'bool'",
+    "_write_pinned_new_file": "(self, parent: '_PinnedSkillParent', name: 'str', payload: 'bytes', *, mode: 'int' = 438) -> 'os.stat_result'",
     "_write_skill_md": "(skill_file: 'Path', content: 'str', *, dir_fd: 'int | None') -> 'bool'",
     "approve_pending_skill": "(self, slug: 'str') -> 'str | None'",
     "approve_pending_skill_checked": "(self, slug: 'str') -> 'str'",
@@ -255,8 +427,10 @@ _LOADER_SIGNATURES = {
     "create_skill": "(self, name: 'str', content: 'str') -> 'bool'",
     "credit_skill_reads": "(self, keys: 'list[str]') -> 'None'",
     "delete_skill": "(self, name: 'str') -> 'bool'",
+    "delete_skill_checked": "(self, name: 'str') -> 'bool'",
     "dismiss_all_pending": "(self) -> 'int'",
     "dismiss_pending_skill": "(self, slug: 'str') -> 'bool'",
+    "dismiss_pending_skill_checked": "(self, slug: 'str') -> 'bool'",
     "dismiss_pending_slugs": "(self, slugs: 'list[str]') -> 'int'",
     "find_similar": "(self, description: 'str', threshold: 'float' = 0.85, *, exclude: 'str' = '') -> 'str | None'",
     "get_always_skills": "(self, project_dir: 'str | Path | None' = None) -> 'list[str]'",
@@ -288,8 +462,9 @@ _LOADER_SIGNATURES = {
     "search_skills_report": "(self, query: 'str', limit: 'int' = 20, *, project_dir: 'str | Path | None' = None, only: 'list[str] | None' = None, offset: 'int' = 0, browse: 'bool' = False) -> 'SkillSearchReport'",
     "set_inject_on_trigger": "(self, name: 'str', inject: 'bool') -> 'bool'",
     "set_pinned": "(self, name: 'str', pinned: 'bool') -> 'bool'",
+    "set_pinned_checked": "(self, name: 'str', pinned: 'bool') -> 'bool'",
     "split_triggered": "(self, names: 'list[str]', project_dir: 'str | Path | None' = None) -> 'tuple[list[str], list[str]]'",
-    "stage_skill_candidate": "(self, slug: 'str', *, description: 'str', triggers: 'str', procedure_md: 'str', provenance: 'AutoSkillProvenance', scripts: 'list[dict] | None' = None, source: 'str' = 'consolidation', kind: 'str' = 'new', target: 'str | None' = None, base_version: 'int | None' = None, refusal: 'ClaimRefusal | None' = None) -> 'str | None'",
+    "stage_skill_candidate": "(self, slug: 'str', *, description: 'str', triggers: 'str', procedure_md: 'str', provenance: 'AutoSkillProvenance', scripts: 'list[dict] | None' = None, source: 'str' = 'consolidation', kind: 'str' = 'new', target: 'str | None' = None, base_version: 'int | None' = None, refusal: 'ClaimRefusal | None' = None, notify: 'bool' = True, base_content_hash: 'str | None' = None, unattended_binding_out: 'list[str] | None' = None) -> 'str | None'",
     "strip_frontmatter": "(content: 'str') -> 'str'",
     "sync_builtins": "(self) -> 'None'",
     "trigger_hint": "(self, names: 'list[str]', project_dir: 'str | Path | None' = None) -> 'str'",
@@ -304,11 +479,12 @@ AUTO_ARCHIVE_DIRNAME AUTO_PENDING_DIRNAME AUTO_SKILL_MAX_PROCEDURE_CHARS
 AUTO_SKILL_NAMESPACE AUTO_SKILL_SOURCE_VALUE AUTO_SLUG_CLAIM_LOCK_NAME
 AUTO_SLUG_CLAIM_LOCK_TIMEOUT_SECS AutoSkillProvenance CRON_SOURCE_DIVERGED
 CRON_SOURCE_IN_SYNC CRON_SOURCE_UNVERIFIABLE ClaimRefusal CronScriptSource
-InstalledSkillCurrency MAX_SKILL_VERSIONS PINNED_SKILL_BODIES_CAP PROJECT_SKILL_BODY_CAP
-PendingApprovalRefused RETIRED_CONDUCTOR_SKILL_SHA256 SKILLS_DIR_NAME
+InstalledSkillCurrency LiveSkillMutationRefused MAX_SKILL_VERSIONS PINNED_SKILL_BODIES_CAP
+PROJECT_SKILL_BODY_CAP
+PendingApprovalRefused PendingDismissalRefused RETIRED_CONDUCTOR_SKILL_SHA256 SKILLS_DIR_NAME
 SKILL_INSTALL_BEHIND SKILL_INSTALL_EDITED SKILL_INSTALL_IN_SYNC
 SKILL_INSTALL_UNVERIFIABLE SkillContextCapacityError SkillsLoader VERSIONS_DIRNAME
-_AUTO_NAME_PATTERN _BUILTIN_SKILLS_DIR _CATALOG_READ_BATCH _CATALOG_READ_WORKERS
+_AUTO_NAME_PATTERN _AUTHORITY_RETIRE_COMMAND _BUILTIN_SKILLS_DIR _CATALOG_READ_BATCH _CATALOG_READ_WORKERS
 _CATALOG_REVALIDATE_AFTER_SECS _COLD_CATALOG_WAIT_SECS _CONTENT_READ_TOOLS
 _CRON_SOURCE_MAX_BYTES _DIR_FD_SUPPORTED _DISCOVERY_IN_PROGRESS_NOTICE
 _DOLLAR_SKILL_PATTERN _FAMILY_LINE_MAX_LABELS _FINGERPRINT_MAX_BYTES
@@ -321,7 +497,9 @@ _PROVENANCE_MARKER _RELOCATED_SKILLS _RETIRED_CONDUCTOR_SKILL_MAX_BYTES
 _SHELL_READ_VERBS _SHELL_SEGMENT_RE _SHELL_SKILL_PATH_RE _SHORT_DESC_CHARS _SKILL_FILE
 _ScopedSkillEntry _TOOL_READ_PATH_KEYS _VALIDATION_REPORT_MAX_FINDINGS
 _VALIDATION_REPORT_MAX_STRING_CHARS _VALIDATION_REPORT_TRUNCATION_KEY _body_term_hits
-_build_auto_skill_content _builtin_dir_app_name _claim_dir_for_replacement
+_build_auto_skill_content _auto_skill_authority_masked_view_reason
+_auto_skill_authority_retire_hint _auto_skill_authority_root_exists
+_builtin_dir_app_name _claim_dir_for_replacement
 _decode_skill_text _dedupe_identical_skills _disabled_app_names _dispose_superseded_slot
 _emit_pending_consumed _emit_pending_staged _ensure_builtin_skills _family_line
 _finalize_user_backup _fingerprint_mtime_and_size _first_linked_skill_component
@@ -335,6 +513,7 @@ _trees_stat_equal _trusted_skill_roots _verified_unchanged_fingerprint
 _walk_confined_skill_fd _walk_confined_skill_tree _warn_html_skill _within_any
 _write_provenance_marker deployed_cron_script_sources installed_skill_currency
 is_retired_conductor_skill logger remove_retired_conductor_skill
+retire_auto_skill_private_authority
 set_pending_consumed_hook set_pending_staged_hook skills_dir
 """.split()
 
@@ -354,6 +533,8 @@ validate_file_path validate_scripts words_of
 def _member_row(raw: object) -> tuple[str, str]:
     if isinstance(raw, staticmethod):
         return "static", str(inspect.signature(raw.__func__))
+    if isinstance(raw, classmethod):
+        return "class", str(inspect.signature(raw.__func__))
     if isinstance(raw, property):
         return "property", str(inspect.signature(raw.fget))
     if callable(raw):
@@ -1353,7 +1534,7 @@ class TestOneSlugSpace:
     def test_a_lock_refusal_while_staging_leaves_no_candidate(
         self, make_loader, monkeypatch
     ) -> None:
-        """The queue root is created before the claim; the candidate directory is not."""
+        """A refused slug claim leaves no candidate directory behind."""
         loader = make_loader()
 
         def unavailable(*_a, **_kw):
@@ -1361,8 +1542,10 @@ class TestOneSlugSpace:
 
         monkeypatch.setattr(sk, "file_lock", unavailable)
         assert _stage(loader, "held") is None
-        assert loader._pending_root().is_dir()
-        assert list(loader._pending_root().iterdir()) == []
+        # The queue root is created only through the authenticated namespace
+        # pin, which a refused slug claim never reaches: never by name first.
+        root = loader._pending_root()
+        assert not root.exists() or list(root.iterdir()) == []
 
     def test_live_availability_fails_closed_on_unknown_candidate_metadata(
         self, make_loader

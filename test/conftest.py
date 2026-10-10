@@ -114,6 +114,85 @@ settings.register_profile("thorough", max_examples=100)
 settings.load_profile(os.getenv("HYPOTHESIS_PROFILE") or ("ci" if "CI" in os.environ else "default"))
 
 
+@pytest.fixture
+def no_auto_skill_authority_startup():
+    """Opt one authority-boundary test out of lazy test gateway startup.
+
+    Presence is the contract: a test/module uses this fixture when missing
+    certification, legacy migration, provenance, or retargeting is the behavior
+    under test. The autouse shim below sees the fixture name before any test
+    fixture/body runs and leaves production's fail-closed verifier untouched.
+    """
+
+
+@pytest.fixture(autouse=True)
+def _reset_auto_skill_authority_startup_binding(
+    request,
+    _floor_monkeypatch,
+    _isolate_kirocrew_home,
+):
+    """Model gateway startup lazily after this test's data-home pins exist.
+
+    Most unit tests construct a ``SkillsLoader`` or sandbox wrapper directly,
+    bypassing production's common ``run_gateway`` startup boundary. Patch only
+    the production REQUIRE seam: its first actual use provisions/certifies the
+    authority under the then-current ``KIROCREW_HOME``. This is deliberately
+    lazy, so tests may install a later per-test home override without creating
+    authority in the root fixture's fallback home, and tests that never touch
+    skills/sandbox authority create no authority filesystem at all.
+
+    ``uninitialized_loader`` is an explicit fixture contract shared by the
+    authority suites. ``no_auto_skill_authority_startup`` is the equivalent
+    module/test opt-out for cases that exercise missing certificates, legacy
+    handoff, provenance, or path retargeting without that fixture. Once a
+    binding exists, a verification failure is propagated unchanged; the shim
+    never reinitializes and therefore cannot hide a same-test path retarget.
+    """
+    from kiro_crew import skills as skills_mod
+
+    del _isolate_kirocrew_home  # dependency orders this after the root home pin
+    skills_mod._reset_auto_skill_private_authority_for_tests()
+    opted_out = any(
+        name in request.fixturenames
+        for name in ("uninitialized_loader", "no_auto_skill_authority_startup")
+    )
+    if not opted_out:
+
+        def lazy_require():
+            if skills_mod._STARTUP_AUTHORITY_BINDING is None:
+                # The low-level initializer, not the gateway wrapper: the wrapper
+                # fails closed on a delegated-sandbox host (native Windows), and
+                # the protocol's Windows branches must still run on that CI leg.
+                selected, configured = skills_mod._gateway_authority_homes()
+                skills_mod.initialize_auto_skill_private_authority(
+                    data_home=selected,
+                    configured_home=configured,
+                )
+            binding = skills_mod._STARTUP_AUTHORITY_BINDING
+            if binding is None:
+                raise OSError("test gateway did not certify auto-skill authority")
+            skills_mod.verify_auto_skill_private_authority(binding)
+            return binding
+
+        _floor_monkeypatch.setattr(
+            skills_mod,
+            "require_auto_skill_private_authority",
+            lazy_require,
+        )
+        # The shim models a gateway whose protecting mask applies. Pin the live
+        # sandbox predicate to match, so whether a by-name fallback is ruled in
+        # never depends on the test host's sandbox backend.
+        _floor_monkeypatch.setattr(
+            skills_mod,
+            "_auto_skill_authority_sandbox_refusal",
+            lambda: None,
+        )
+    try:
+        yield
+    finally:
+        skills_mod._reset_auto_skill_private_authority_for_tests()
+
+
 _HAS_GIT = shutil.which("git") is not None
 
 requires_git = pytest.mark.skipif(not _HAS_GIT, reason="git not available")

@@ -5864,6 +5864,33 @@ class TestIsSensitivePath:
         assert is_sensitive_path("~/.kiro/crew/.env") is True
         assert is_sensitive_path("~/.kirocrew/.env") is True
 
+    def test_auto_skill_authority_rides_the_tag_grants_fence(self) -> None:
+        """Auto-skill authority adds no deny leaf of its own.
+
+        It lives beneath ``tag-grants``, a single-component crew leaf that was already
+        on the floor, so nothing under ``skills/`` becomes sensitive: granting or
+        attaching the skills tree (dev-mode, md-notebook) keeps working, and a bulk
+        operation rooted there is not refused for containing a fenced location.
+        """
+        from kiro_crew.constants import (
+            AUTO_SKILL_AUTHORITY_PARENT_DIRNAME,
+            AUTO_SKILL_LEGACY_PRIVATE_STATE_LEAF,
+            AUTO_SKILL_PRIVATE_STATE_DIRNAME,
+        )
+        from kiro_crew.security import path_contains_sensitive
+
+        home = Path.home() / ".kiro" / "crew"
+        authority = home / AUTO_SKILL_AUTHORITY_PARENT_DIRNAME / AUTO_SKILL_PRIVATE_STATE_DIRNAME
+        assert AUTO_SKILL_AUTHORITY_PARENT_DIRNAME == "tag-grants"
+        assert is_sensitive_path(str(authority)) is True
+        assert is_sensitive_path(str(authority / "claims/demo--token/scripts/run.py")) is True
+        assert is_sensitive_path(str(authority / "locks/claims/demo--token.lock")) is True
+        for tree in (home / "skills", home / "skills" / "auto"):
+            assert path_contains_sensitive(str(tree)) is False, tree
+        # The obsolete spellings are refusal inputs of the skill code only.
+        assert is_sensitive_path(str(home / AUTO_SKILL_LEGACY_PRIVATE_STATE_LEAF)) is False
+        assert is_sensitive_path(str(home / "skills/auto/.pending/demo")) is False
+
     def test_browser_auth_cookie_paths(self) -> None:
         # The browser-auth cookie jar + the Playwright storage-state derived from
         # it hold reusable authenticated-session cookies. Agent file tools must

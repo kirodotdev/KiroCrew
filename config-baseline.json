@@ -2749,6 +2749,7 @@
         "auto_min_tool_calls": 5,
         "auto_similarity_threshold": 0.85,
         "approval_required": true,
+        "auto_apply_updates": false,
         "max_auto_skills": 100,
         "stale_after_days": 30,
         "archive_after_days": 90,
@@ -2856,6 +2857,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "skills.auto_apply_updates",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Auto-Apply Skill Updates",
+      "help": "When true AND approval_required is false, a prose-only update to an existing auto-generated skill is applied without review, keeping the previous version in version history for rollback. Updates that bundle scripts, or whose supplied scripts all fail validation, never auto-apply. Ignored while auto_refine_on_deviation is enabled. Disabled by default, so turning approval off does not by itself let updates go live.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "skills.max_auto_skills",

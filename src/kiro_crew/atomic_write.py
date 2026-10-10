@@ -426,6 +426,41 @@ def _close_quietly(fd: int, path: Path | str) -> None:
         logger.warning("could not close the directory descriptor for %s", path, exc_info=True)
 
 
+def fsync_dir_fd(
+    fd: int,
+    path: Path | str,
+    *,
+    best_effort: bool = False,
+) -> None:
+    """Sync an already-open directory descriptor without re-resolving its path.
+
+    The caller owns *fd* and its identity. Windows cannot express a directory
+    flush through a CRT descriptor, matching :func:`fsync_dir`'s portable
+    contract. Unsupported-filesystem errors are quiet; media and I/O failures
+    remain loud unless the operation is already committed.
+    """
+    if platform_compat.IS_WINDOWS:
+        return
+    try:
+        os.fsync(fd)
+    except OSError as exc:
+        if exc.errno in _DIR_SYNC_UNSUPPORTED:
+            logger.debug(
+                "this filesystem does not support syncing the directory %s (%s)",
+                path,
+                errno.errorcode.get(exc.errno or 0, exc.errno),
+            )
+            return
+        if best_effort:
+            logger.warning(
+                "could not sync the directory %s; its entries may not be durable",
+                path,
+                exc_info=True,
+            )
+            return
+        raise
+
+
 def fsync_dir(path: Path | str, *, best_effort: bool = False) -> None:
     """Force a directory's own entries out, so a create or rename survives a crash.
 
@@ -469,25 +504,11 @@ def fsync_dir(path: Path | str, *, best_effort: bool = False) -> None:
             return
         raise
     try:
-        os.fsync(dir_fd)
-    except OSError as exc:
-        # The fsync error is the informative one, so the close is quiet on every
-        # failing path here: raising a close error on top would mask the reason.
+        fsync_dir_fd(dir_fd, path, best_effort=best_effort)
+    except OSError:
+        # The sync error is the informative one, so a close error must not
+        # replace it while this failure unwinds.
         _close_quietly(dir_fd, path)
-        if exc.errno in _DIR_SYNC_UNSUPPORTED:
-            logger.debug(
-                "this filesystem does not support syncing the directory %s (%s)",
-                path,
-                errno.errorcode.get(exc.errno or 0, exc.errno),
-            )
-            return
-        if best_effort:
-            logger.warning(
-                "could not sync the directory %s; its entries may not be durable",
-                path,
-                exc_info=True,
-            )
-            return
         raise
     # The sync reported success — but ``close`` can report a write error the kernel
     # deferred, which for a caller whose next step is to unlink the only other copy
