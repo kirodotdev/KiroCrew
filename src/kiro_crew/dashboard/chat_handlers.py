@@ -3722,6 +3722,24 @@ async def stop_slot_turn(
         # when it was pressed, and a later send stays queued for the next turn.
         discarded = list(slot._queue)
         slot._queue.clear()
+        # A cross-session delivery among the taken entries has a sender holding a
+        # "queued, will run later" receipt; nothing else here reaches that sender.
+        # Told before the settle can suspend, so a cancellation of this stop
+        # cannot leave a discarded entry unreported.
+        # circular import: session_control imports this package's modules at module level.
+        from kiro_crew.dashboard.session_control import (
+            SEND_DISCARD_HARD_STOP,
+            notify_send_origin_discarded,
+        )
+
+        for _entry in discarded:
+            notify_send_origin_discarded(
+                state,
+                entry_meta=_entry.get("meta"),
+                target_slot=slot,
+                text=_entry.get("content") or "",
+                cause=SEND_DISCARD_HARD_STOP,
+            )
         await _settle_discarded_stage_deliveries(
             state,
             slot,
@@ -4693,14 +4711,29 @@ async def api_chat_slot_queue_cancel(request: web.Request) -> web.Response:
     # Read the entry's origin before removing it: a cancel puts the text back in
     # the composer, so a redacted copy of the user's own words would replace the
     # link they typed with a placeholder.
-    _user_origin = queue_entry_is_user_origin(
-        next((i for i in slot._queue if i["id"] == queue_id), None)
-    )
+    _entry = next((i for i in slot._queue if i["id"] == queue_id), None)
+    _user_origin = queue_entry_is_user_origin(_entry)
     content = slot.queue_remove_by_id(queue_id)
     if content is None:
         return web.json_response({"error": "queue item not found"}, status=404)
     _remove_queued_by_id(slot.messages, queue_id)
     slot.invalidate_source_links()
+    # A cross-session delivery has a sender holding a "queued, will run later"
+    # receipt, and the retracted card below is on this session, which the sender
+    # does not read. Its own transcript is told the message will never run.
+    # circular import: session_control imports this package's modules at module level.
+    from kiro_crew.dashboard.session_control import (
+        SEND_DISCARD_QUEUE_CANCEL,
+        notify_send_origin_discarded,
+    )
+
+    notify_send_origin_discarded(
+        state,
+        entry_meta=_entry.get("meta") if _entry is not None else None,
+        target_slot=slot,
+        text=content,
+        cause=SEND_DISCARD_QUEUE_CANCEL,
+    )
     _redacted = queued_text_for_display(content, user_origin=_user_origin)
     state.broadcast_ws("queue_cancel", {"slot": name, "queue_id": queue_id, "content": _redacted})
     state.push_slots_update()

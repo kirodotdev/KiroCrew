@@ -28,7 +28,10 @@ that did not hold at admission. A dropped CROSS-SESSION delivery is reported bac
 to its sender too, since the target's own notice is on a transcript the sender
 does not read: the entry also carries the sending session, as a slot key plus
 that slot's tab identity (:func:`send_origin_meta`), and the drop appends a
-notice there (:func:`notify_send_origin_dropped`). A human-typed queued message
+notice there (:func:`notify_send_origin_dropped`). The two deliberate discards
+of a queued entry, a person cancelling its queue card and a hard stop clearing
+the queue, report back the same way with their own wording
+(:func:`notify_send_origin_discarded`). A human-typed queued message
 shares the same window and the same re-check, and carries no sender to report to.
 
 Authorization is deny-by-default and checked in one place
@@ -1444,6 +1447,20 @@ CHANNEL_RECIPIENT_META_KEY = "channel_recipient"
 # a caller holding several deliveries in flight can tell which one went.
 SEND_DROP_EXCERPT_CHARS = 120
 
+# The two deliberate discards of a queued entry that are not the drain's
+# authorization re-check: a person cancelling the entry's queue card, and a hard
+# stop clearing the whole queue. Each is passed as the ``cause`` of
+# :func:`notify_send_origin_discarded`, which words the sender's notice from it.
+SEND_DISCARD_QUEUE_CANCEL = "queue_cancel"
+SEND_DISCARD_HARD_STOP = "hard_stop"
+
+# Sender-notice phrasing per discard cause. Neither discard changes a
+# constraint, so the drain's containment wording would describe nothing here.
+_SEND_DISCARD_REASONS = {
+    SEND_DISCARD_QUEUE_CANCEL: "it was cancelled from that session's queue",
+    SEND_DISCARD_HARD_STOP: "a hard stop of that session discarded its queue",
+}
+
 # Transcript-notice phrasing per snapshot field, for the drop notice a reader
 # of the session must be able to understand without knowing this module.
 _CONTAINMENT_CHANGE_LABELS = {
@@ -1873,15 +1890,9 @@ def notify_send_origin_dropped(
     drop still proceeds. Withholding the message is the authorization decision,
     and it must not depend on the report landing.
     """
-    if not origin:
-        return False
     target_key = str(getattr(target_slot, "key", ""))
-    if origin == target_key:
-        return False
-    sender = state._slots.get(origin)
+    sender = _send_origin_recipient(state, origin, origin_tab, target_key)
     if sender is None:
-        return False
-    if str(getattr(sender, "_tab_id", "") or "") != str(origin_tab or ""):
         return False
     try:
         excerpt = send_drop_excerpt(text)
@@ -1902,6 +1913,83 @@ def notify_send_origin_dropped(
         )
         return False
     return True
+
+
+def notify_send_origin_discarded(
+    state: "DashboardState",
+    *,
+    entry_meta: Any,
+    target_slot: "_ChatSlot",
+    text: Any,
+    cause: str,
+) -> bool:
+    """Tell the SENDING session that a deliberate discard removed its queued delivery.
+
+    The drain is not the only place a stamped entry leaves the queue unrun. A
+    person cancelling its queue card (``api_chat_slot_queue_cancel``) and a hard
+    stop clearing the queue (``stop_slot_turn``) discard it too, and the sender's
+    last word on the message is still the ``started: False`` receipt that said it
+    would run later. Every other sign of the discard lands on the target, which
+    the sender does not read.
+
+    *cause* is :data:`SEND_DISCARD_QUEUE_CANCEL` or :data:`SEND_DISCARD_HARD_STOP`
+    and selects the wording: a deliberate discard changes no authorization, so the
+    notice names what discarded the entry rather than a constraint.
+
+    *entry_meta* is the discarded entry's own ``meta``, read here rather than by
+    the caller so both discard sites read the stamp the way the drain does. The
+    recipient is resolved exactly as :func:`notify_send_origin_dropped` resolves
+    it, so the same four cases answer False without writing: no stamp, a
+    self-send, a closed sender, and a key now held by a different tab.
+
+    Best-effort: a failure is logged and the discard stands, because the person
+    or the stop already decided it.
+    """
+    target_key = str(getattr(target_slot, "key", ""))
+    origin = send_origin_slot(entry_meta)
+    sender = _send_origin_recipient(state, origin, send_origin_tab(entry_meta), target_key)
+    if sender is None:
+        return False
+    try:
+        reason = _SEND_DISCARD_REASONS[cause]
+        excerpt = send_drop_excerpt(text)
+        sender.append(
+            "notice",
+            f"⚠️ Message you sent to {target_key} was discarded before it ran: "
+            + reason
+            + ". It was not delivered and will not run."
+            + (f' Text: "{excerpt}"' if excerpt else ""),
+            "msg msg-info",
+        )
+    except Exception:
+        logger.exception(
+            "Failed to report a discarded delivery to its sender (origin=%s, target=%s)",
+            origin,
+            target_key,
+        )
+        return False
+    return True
+
+
+def _send_origin_recipient(
+    state: "DashboardState", origin: str, origin_tab: str, target_key: str
+) -> "_ChatSlot | None":
+    """The live sending slot a sender notice may be written to, or None.
+
+    One resolver for both sender notices, so the four non-notice cases
+    :func:`notify_send_origin_dropped` documents cannot hold on one discard path
+    and not another: no stamp, a self-send, a closed sender, and a reused key
+    whose current occupant is a different tab. An absent *origin_tab* never
+    matches a live slot, so the identity check cannot be skipped by omitting it.
+    """
+    if not origin or origin == target_key:
+        return None
+    sender = state._slots.get(origin)
+    if sender is None:
+        return None
+    if str(getattr(sender, "_tab_id", "") or "") != str(origin_tab or ""):
+        return None
+    return sender
 
 
 def notify_channel_recipient_dropped(

@@ -228,6 +228,23 @@ exempt entry is never dropped at all. The report is
 best-effort and does not gate the drop — withholding the message is the
 authorization decision, and it must not depend on the notice landing.
 
+**A deliberate discard reports to the sender too.** The drain is not the only
+place a stamped entry leaves the queue unrun: a person cancelling its queue card
+(`api_chat_slot_queue_cancel`) and a hard stop clearing the queue
+(`stop_slot_turn`'s escalated branch) discard it as well, and the sender's last
+word is still the `started: false` receipt. Both sites read the entry's stamp and
+call `notify_send_origin_discarded` with their cause (`SEND_DISCARD_QUEUE_CANCEL`,
+`SEND_DISCARD_HARD_STOP`), which appends a notice to the sender naming the target,
+what discarded the message and an excerpt, and saying it will not run. The wording
+names the discard rather than a constraint, because neither discard changes an
+authorization. The recipient is resolved by the same check as the drop notice
+(`_send_origin_recipient`), so the same four cases write nothing: no stamp, a
+self-send, a closed sender, and a reused key held by a different tab. The hard
+stop reports exactly the entries it takes off the queue, before the settle can
+suspend; a send that lands during the settle stays queued and is not reported,
+because it will still run. Best-effort here too: the discard
+was already decided by the person or the stop.
+
 **The stamp names a session, not a key, and does not survive a restart.** It
 carries the sender's `_tab_id` beside its slot key and is omitted unless both are
 present, because a slot key does not identify a session: a plain
