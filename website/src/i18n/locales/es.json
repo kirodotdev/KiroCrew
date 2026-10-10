@@ -11758,6 +11758,14 @@
       "messageContextMenu": {
         "copy_link_text": "Copiar texto del enlace",
         "copy_link_address": "Copiar dirección del enlace"
+      },
+      "dashboardPreviewPanel": {
+        "tab_title": "{{name}} (vista previa)",
+        "badge": "Vista previa, sin aplicar",
+        "hint": "Aún no está activo. Responde en el chat para conservar esta página o pedir cambios.",
+        "no_member": "No se encontró el miembro al que pertenece esta vista previa.",
+        "roster_failed": "No se pudo cargar la lista de miembros, así que no se puede mostrar la vista previa.",
+        "gone": "Esta vista previa se cerró. Se aplicó o caducó."
       }
     },
     "chatPage": {

@@ -1004,8 +1004,8 @@ export function usePanelTabs(
     })
   }, [update])
 
-  const openArtifact = useCallback((art: { slug: string; kind: Artifact['kind'] }, content: string, slot: string | null = null) => {
-    upsert({ id: `artifact:${art.slug}`, kind: 'artifact', title: art.slug, artifactSlug: art.slug, artifactKind: art.kind, content, slot })
+  const openArtifact = useCallback((art: { slug: string; kind: Artifact['kind']; title?: string }, content: string, slot: string | null = null) => {
+    upsert({ id: `artifact:${art.slug}`, kind: 'artifact', title: art.title ?? art.slug, artifactSlug: art.slug, artifactKind: art.kind, content, slot })
   }, [upsert])
 
   /** Patch fields on an existing tab WITHOUT focusing it (live content/query

@@ -272,10 +272,13 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, sessio
     // `member` is the exact crew name, as every member route takes it (slugs are lossy).
     // `locale` is the UI language the page should render its own words in; the
     // gateway checks it against the shipped catalogs and falls back to English.
-    memberDashboard: (slug: string, member: string, locale = '') =>
+    /** `preview`: the STAGED page `dashboard_preview` set aside, which no version
+     *  records; 404 `no_preview` once nothing is staged. */
+    memberDashboard: (slug: string, member: string, locale = '', preview = false) =>
       fetch(
         '/api/members/' + encodeURIComponent(slug) + '/dashboard?member=' + encodeURIComponent(member)
-          + (locale ? '&locale=' + encodeURIComponent(locale) : ''),
+          + (locale ? '&locale=' + encodeURIComponent(locale) : '')
+          + (preview ? '&preview=1' : ''),
       ).then(j) as Promise<{
         instance_version: number
         template: { id: string; version: number }

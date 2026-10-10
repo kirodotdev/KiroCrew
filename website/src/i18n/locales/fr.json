@@ -11758,6 +11758,14 @@
       "messageContextMenu": {
         "copy_link_text": "Copier le texte du lien",
         "copy_link_address": "Copier l'adresse du lien"
+      },
+      "dashboardPreviewPanel": {
+        "tab_title": "{{name}} (aperçu)",
+        "badge": "Aperçu, non appliqué",
+        "hint": "Pas encore actif. Réponds dans le chat pour garder cette page ou demander des changements.",
+        "no_member": "Le membre auquel appartient cet aperçu est introuvable.",
+        "roster_failed": "La liste des membres n’a pas pu être chargée, l’aperçu ne peut donc pas s’afficher.",
+        "gone": "Cet aperçu est fermé. Il a été appliqué ou a expiré."
       }
     },
     "chatPage": {

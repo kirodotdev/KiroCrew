@@ -11758,6 +11758,14 @@
       "messageContextMenu": {
         "copy_link_text": "Copiar texto do link",
         "copy_link_address": "Copiar endereço do link"
+      },
+      "dashboardPreviewPanel": {
+        "tab_title": "{{name}} (pré-visualização)",
+        "badge": "Pré-visualização, não aplicada",
+        "hint": "Ainda não está ativo. Responda no chat para manter esta página ou pedir mudanças.",
+        "no_member": "Não foi possível encontrar o membro a quem esta pré-visualização pertence.",
+        "roster_failed": "Não foi possível carregar a lista de membros, por isso a pré-visualização não pode ser mostrada.",
+        "gone": "Esta pré-visualização foi encerrada. Foi aplicada ou expirou."
       }
     },
     "chatPage": {

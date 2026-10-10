@@ -11593,6 +11593,14 @@
       "messageContextMenu": {
         "copy_link_text": "Linktext kopieren",
         "copy_link_address": "Linkadresse kopieren"
+      },
+      "dashboardPreviewPanel": {
+        "tab_title": "{{name}} (Vorschau)",
+        "badge": "Vorschau, nicht angewendet",
+        "hint": "Noch nicht aktiv. Antworte im Chat, um diese Seite zu behalten oder Änderungen anzufragen.",
+        "no_member": "Das Crew-Mitglied, zu dem diese Vorschau gehört, wurde nicht gefunden.",
+        "roster_failed": "Die Liste der Crew-Mitglieder konnte nicht geladen werden, daher kann die Vorschau nicht angezeigt werden.",
+        "gone": "Diese Vorschau ist geschlossen. Sie wurde angewendet oder ist abgelaufen."
       }
     },
     "chatPage": {

@@ -11758,6 +11758,14 @@
       "messageContextMenu": {
         "copy_link_text": "Copia testo del link",
         "copy_link_address": "Copia indirizzo del link"
+      },
+      "dashboardPreviewPanel": {
+        "tab_title": "{{name}} (anteprima)",
+        "badge": "Anteprima, non applicata",
+        "hint": "Non ancora attiva. Rispondi in chat per tenere questa pagina o chiedere modifiche.",
+        "no_member": "Impossibile trovare il membro a cui appartiene questa anteprima.",
+        "roster_failed": "Impossibile caricare l’elenco dei membri, quindi l’anteprima non può essere mostrata.",
+        "gone": "Questa anteprima è chiusa. È stata applicata o è scaduta."
       }
     },
     "chatPage": {

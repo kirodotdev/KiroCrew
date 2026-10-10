@@ -1,12 +1,14 @@
 import { useCallback } from 'react'
 import type { QueryClient } from '@tanstack/react-query'
 
-import { api } from '../api/client'
+import { api, type MemberRosterRow } from '../api/client'
+import { MEMBERS_ROSTER_QUERY_KEY } from '../api/membersQuery'
 import { noteStaleOwnerResponse } from '../api/staleOwnerSignal'
 import { clearInlineDraft, getInlineDraft, type usePanelTabs } from './usePanelTabs'
 import { i18nT } from '../i18n/t'
 import type { Artifact } from '../types'
 import { fetchFileRead, fileReadQueryKey, FILE_READ_STALE_MS, isPartialRead } from '../utils/fileReadQuery'
+import { dashboardPreviewSlugFromRef } from '../utils/dashboardPreview'
 import { errMessage } from '../utils/thunkError'
 import { optsForReplace } from '../pages/chat/replaceGuard'
 
@@ -105,6 +107,22 @@ export function usePanelDocumentActions({ tabsCtl, slotRef, queryClient, showAct
   const openArtifact = useCallback(async (slug: string) => {
     if (!slug) return
     const slot = slotRef.current ?? null
+    // A crewmate's STAGED dashboard (`dashboardPreviewRef`), not an artifact: no
+    // artifact read and no involvement breadcrumb, because there is no artifact.
+    // The tab body renders the staged page (SidePanel's artifact branch).
+    const previewSlug = dashboardPreviewSlugFromRef(slug)
+    if (previewSlug) {
+      // Every open re-reads the staged page. Staging sends no frame and the link
+      // never changes, so a cached read could show page A while B is what
+      // `dashboard_apply` would install.
+      void queryClient.invalidateQueries({ queryKey: ['member-dashboard', previewSlug] })
+      // The roster's own name when it is cached and unambiguous; the slug otherwise.
+      const named = (queryClient.getQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY) ?? []).filter(r => r.slug === previewSlug)
+      const name = named.length === 1 ? named[0].name : previewSlug
+      tabsCtl.openArtifact({ slug, kind: 'html', title: i18nT('pages.chat.dashboardPreviewPanel.tab_title', { name }) }, '', slot)
+      onOpened?.()
+      return
+    }
     // Opening an artifact is an act of session involvement: record the
     // `referenced` breadcrumb so a merely-read (or merely-linked) artifact
     // joins "This session" instead of sitting in the library section forever.

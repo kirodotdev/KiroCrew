@@ -11428,6 +11428,14 @@
       "messageContextMenu": {
         "copy_link_text": "复制链接文本",
         "copy_link_address": "复制链接地址"
+      },
+      "dashboardPreviewPanel": {
+        "tab_title": "{{name}}（预览）",
+        "badge": "预览，尚未应用",
+        "hint": "尚未生效。在聊天中回复以保留此页面，或提出修改。",
+        "no_member": "找不到此预览所属的队友。",
+        "roster_failed": "无法加载队友列表，因此无法显示预览。",
+        "gone": "此预览已关闭。它已被应用或已过期。"
       }
     },
     "chatPage": {

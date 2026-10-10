@@ -6654,6 +6654,14 @@
       },
       "earlierMessagesBar": {
         "load_earlier_messages": "Load earlier messages"
+      },
+      "dashboardPreviewPanel": {
+        "tab_title": "{{name}} (preview)",
+        "badge": "Preview, not applied",
+        "hint": "Not live yet. Reply in chat to keep this page or ask for changes.",
+        "no_member": "The crewmate this preview belongs to could not be found.",
+        "roster_failed": "The crewmate list could not be loaded, so the preview cannot be shown.",
+        "gone": "This preview has closed. It was applied or it expired."
       }
     },
     "chatPage": {

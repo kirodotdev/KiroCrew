@@ -84,6 +84,7 @@ import {
   type SessionActions,
 } from './markdown/contexts'
 import { artifactSlugFromHref, resolveSessionChip, soleLinkInParagraph, useUnfurlHref } from './markdown/linkTargets'
+import { dashboardPreviewRef, dashboardPreviewSlugFromHref } from '../utils/dashboardPreview'
 import { activatePath, usePathResolution } from './markdown/pathReferences'
 import { ELEMENT_OVERRIDES, sp } from './markdown/elements'
 import { InlineCode } from './markdown/InlineCode'
@@ -1020,7 +1021,8 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
   rearmConfigScanBudget()
 
   /** Chip activation lives on the chip itself (see InlineCode); this handler is
-   *  only link delegation: `#heading` jumps and `/artifacts/<slug>` links. */
+   *  only link delegation: `#heading` jumps, `/artifacts/<slug>` links and
+   *  staged-dashboard links. */
   const handleClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const el = e.target as HTMLElement
     // `#heading` links scroll within THIS message, never the whole document:
@@ -1045,6 +1047,17 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
           onArtifactOpen(slug)
           return
         }
+      }
+    }
+    // A staged dashboard's link opens beside the chat, through the same host
+    // action. Only a PLAIN click: Cmd/Ctrl/Alt/Shift-click and middle-click keep
+    // the real href, so the browser can still open the URL itself.
+    if (onArtifactOpen && e.button === 0 && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+      const anchor = el.closest('a[href]') as HTMLAnchorElement | null
+      const previewSlug = dashboardPreviewSlugFromHref(anchor?.getAttribute('href'))
+      if (previewSlug) {
+        e.preventDefault()
+        onArtifactOpen(dashboardPreviewRef(previewSlug))
       }
     }
   }, [onArtifactOpen])
