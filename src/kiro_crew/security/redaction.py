@@ -296,6 +296,28 @@ _CREDENTIAL_PATTERNS_SANS_JWT = re.compile(
     _CREDENTIAL_PATTERNS.pattern.replace(f"|{JWT_MULTI_SEGMENT}", "", 1)
 )
 
+# Telegram bot token, as `_CREDENTIAL_PATTERNS` spells it.
+_TELEGRAM_BRANCH = r"[0-9]{6,}:[A-Za-z0-9_-]{30,}"
+_TELEGRAM_AT_RE = re.compile(_TELEGRAM_BRANCH)
+
+# Leftmost start of a non-JWT branch, found in linear time. Unguarded, the Telegram
+# branch re-walks a digit run from every digit in it. A later digit has fewer digits
+# before the same ``:``, so only the run's first digit can win; `_sans_jwt_start`
+# checks the one exception, a run that begins before the scan position.
+_CREDENTIAL_STARTS_SANS_JWT = re.compile(
+    _CREDENTIAL_PATTERNS_SANS_JWT.pattern.replace(
+        f"|{_TELEGRAM_BRANCH}", f"|(?<![0-9]){_TELEGRAM_BRANCH}", 1
+    )
+)
+
+
+def _sans_jwt_start(text: str, pos: int) -> int:
+    """Leftmost index >= *pos* where a non-JWT branch matches, else ``len(text) + 1``."""
+    if "0" <= text[pos - 1 : pos] <= "9" and _TELEGRAM_AT_RE.match(text, pos):
+        return pos
+    found = _CREDENTIAL_STARTS_SANS_JWT.search(text, pos)
+    return len(text) + 1 if found is None else found.start()
+
 
 def _is_json_object_segment(segment: str) -> bool:
     """Whether *segment* base64url-decodes to a JSON object: JOSE, itsdangerous, Flask session."""
@@ -306,6 +328,69 @@ def _is_json_object_segment(segment: str) -> bool:
     return isinstance(header, dict)
 
 
+_JWT_SEGMENT_RUN_RE = re.compile(r"[A-Za-z0-9_-]*")
+
+
+def _segment_run_end(text: str, pos: int) -> int:
+    """End of the run of JWT segment characters starting at *pos*."""
+    run = _JWT_SEGMENT_RUN_RE.match(text, pos)
+    return run.end() if run is not None else pos
+
+
+def _jwt_branch_matches_at(text: str, i: int, run_end: int) -> bool:
+    """Whether ``JWT_MULTI_SEGMENT`` matches at the ``eyJ`` at *i*, its run ending at *run_end*.
+
+    The branch needs one segment character after ``eyJ``, then two ``.`` separators with
+    a possibly empty run between them. Segment characters exclude ``.``, so the first
+    separator can only sit at *run_end*.
+    """
+    return (
+        run_end > i + 3
+        and text.startswith(".", run_end)
+        and text.startswith(".", _segment_run_end(text, run_end + 1))
+    )
+
+
+def _next_jwt_branch_start(text: str, pos: int, matched_run_end: int) -> tuple[int, int]:
+    """Leftmost index >= *pos* where the JWT branch matches, and that start's run end.
+
+    Every ``eyJ`` in one segment run shares the run's end, and a later one leaves fewer
+    characters before it, so one failure settles the whole run and the scan jumps past
+    it. ``search`` instead re-walks the run from each ``eyJ``, which is quadratic on a
+    long ``eyJ`` repeat. For the same reason one success settles every later ``eyJ`` with
+    a character after it in that run, so *matched_run_end*, the end of the run the last
+    start matched in, is reused rather than walked again when an overlapping match of
+    another branch moved *pos* past that start. No start: ``(len(text) + 1, -1)``.
+    """
+    if pos < matched_run_end:
+        i = text.find("eyJ", pos, matched_run_end - 1)
+        if i != -1:
+            return i, matched_run_end
+        pos = matched_run_end
+    while (i := text.find("eyJ", pos)) != -1:
+        run_end = _segment_run_end(text, i)
+        if _jwt_branch_matches_at(text, i, run_end):
+            return i, run_end
+        pos = run_end
+    return len(text) + 1, -1
+
+
+def _credential_search(text: str, pos: int, starts: list[int]) -> re.Match[str] | None:
+    """``_CREDENTIAL_PATTERNS.search(text, pos)``, in time linear over a whole scan.
+
+    The leftmost match starts at the earlier of the leftmost JWT-branch start and the
+    leftmost start of every other branch, and ``match`` there applies the alternation's
+    own branch order. *starts* caches both starts, and the JWT start's run end, across
+    calls with a rising *pos*.
+    """
+    if starts[0] < pos:
+        starts[0] = _sans_jwt_start(text, pos)
+    if starts[1] < pos:
+        starts[1], starts[2] = _next_jwt_branch_start(text, pos, starts[2])
+    first = min(starts[0], starts[1])
+    return _CREDENTIAL_PATTERNS.match(text, first) if first <= len(text) else None
+
+
 def _credential_matches(text: str) -> Iterator[re.Match[str]]:
     """``_CREDENTIAL_PATTERNS.finditer(text)``, minus JWT-branch hits whose header is not JSON.
 
@@ -314,7 +399,8 @@ def _credential_matches(text: str) -> Iterator[re.Match[str]]:
     second ``eyJ`` stays a credential: rejecting it would rescan that header once per ``eyJ``.
     """
     pos = 0
-    while (m := _CREDENTIAL_PATTERNS.search(text, pos)) is not None:
+    starts = [-1, -1, -1]
+    while (m := _credential_search(text, pos, starts)) is not None:
         header = m.group().split(".", 1)[0]
         if (
             m.group().startswith("eyJ")
