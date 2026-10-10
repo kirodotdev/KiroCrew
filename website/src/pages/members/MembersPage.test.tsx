@@ -5000,6 +5000,15 @@ describe('resolveDefaultMember', () => {
     expect(resolveMateLanding([assistantRow({ has_dm_message: true })])).toBeUndefined()
     expect(resolveMateLanding([assistantRow({ last_message: 'Hi, I am Mate' })])).toBeUndefined()
     expect(resolveMateLanding([row({ name: 'alpha', slug: 'alpha' })])).toBeUndefined()
+    // A user who already chatted with another crewmate, or whose remembered
+    // crewmate is still listed, is not on a first visit.
+    expect(resolveMateLanding([...withMate, row({ name: 'beta', slug: 'beta', last_chat_ts: 5 })])).toBeUndefined()
+    expect(resolveMateLanding(withMate, 'alpha')).toBeUndefined()
+    // Neither a remembered `default`, a gone crewmate, nor Mate itself counts.
+    expect(resolveMateLanding(withMate, 'default')?.name).toBe('mate')
+    expect(resolveMateLanding(withMate, 'ghost')?.name).toBe('mate')
+    expect(resolveMateLanding([assistantRow({ last_chat_ts: 9 })], 'mate')?.name).toBe('mate')
+    expect(resolveMateLanding([...withMate, defaultRow({ last_chat_ts: 9 })])?.name).toBe('mate')
     // The usual rule carries no Mate special case: recency, never the key.
     expect(resolveDefaultMember(null, withMate)?.name).toBe('alpha')
     expect(resolveDefaultMember('default', [defaultRow(), assistantRow()])?.name).toBe('mate')
@@ -5197,11 +5206,30 @@ describe('MembersPage default member, memory and URL', () => {
     expect(api.memberThread).not.toHaveBeenCalledWith('alpha')
   })
 
-  it('a never-chatted Mate is opened ahead of a remembered crewmate', async () => {
-    localStorage.setItem(LAST_MEMBER_KEY, 'alpha')
+  it('a fresh user with no chatted or remembered crewmate lands on a never-chatted Mate', async () => {
     await renderPage([defaultRow(), assistantRow({ has_dm_message: false }), row({ name: 'alpha', slug: 'alpha', last_active_ts: 99 })])
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-mate')
     expect(currentUrl()).toBe('/members?member=mate')
+  })
+
+  it('a user who chatted with a crewmate before reopens it, not a never-chatted Mate', async () => {
+    await renderPage([
+      defaultRow(),
+      assistantRow({ has_dm_message: false }),
+      row({ name: 'alpha', slug: 'alpha', last_active_ts: 99 }),
+      row({ name: 'beta', slug: 'beta', last_chat_ts: 300 }),
+    ])
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-beta')
+    expect(currentUrl()).toBe('/members?member=beta')
+    expect(api.memberThread).not.toHaveBeenCalledWith('mate')
+    expect(api.memberGreet).not.toHaveBeenCalled()
+  })
+
+  it('a remembered crewmate still on the roster is reopened, not a never-chatted Mate', async () => {
+    localStorage.setItem(LAST_MEMBER_KEY, 'alpha')
+    await renderPage([defaultRow(), assistantRow({ has_dm_message: false }), row({ name: 'alpha', slug: 'alpha', last_active_ts: 99 })])
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-alpha')
+    expect(api.memberThread).not.toHaveBeenCalledWith('mate')
   })
 
   it('once Mate has a conversation, a returning user keeps the last chat', async () => {
@@ -5793,7 +5821,6 @@ describe('MembersPage default member, memory and URL', () => {
     })
 
     it('a never-chatted Mate opens below md too; its header Back returns to the bare roster and stays there', async () => {
-      localStorage.setItem(LAST_MEMBER_KEY, 'beta')
       await renderPage([...alphaBeta(), assistantRow({ has_dm_message: false })])
       expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-mate')
       expect(currentUrl()).toBe('/members?member=mate')

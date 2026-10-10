@@ -43,7 +43,8 @@
  * `default` opens nothing;
  * it shows the New crewmate hero instead. Below md nothing auto-opens (the
  * phone's two-level list rule) -- except Mate's first-visit landing (see
- * `resolveMateLanding`), which applies at every width.
+ * `resolveMateLanding`), which applies at every width, and only while the user
+ * has no other crewmate to come back to.
  *
  * Creating a crewmate happens in place of the chat: the guided flow (the
  * embedded Meet CrewMates flow) or the full form (Advanced), one at a time,
@@ -302,14 +303,26 @@ export function rememberedDefaultPick(
   return chatMarkOf(rows) > chatMark ? undefined : hit
 }
 
-/** Mate (`isAssistantMember`) while no message has been exchanged with it:
- *  the Crewmates page lands there first, ahead of a remembered or more recently
- *  used crewmate, so its welcome is the user's first look at the page. Once
- *  its thread holds anything this answers `undefined` and the page's usual
- *  landing rules apply unchanged. A separate, early rule on purpose, so the
- *  usual rules ({@link resolveDefaultMember}) carry no Mate special case. */
-export function resolveMateLanding(rows: readonly MemberRosterRow[]): MemberRosterRow | undefined {
-  return pendingMate(rows)
+/** Mate (`isAssistantMember`) while no message has been exchanged with it AND
+ *  the user has no other crewmate to come back to: the Crewmates page lands
+ *  there first, so its welcome is the user's first look at the page. A user who
+ *  already chatted with another crewmate (`last_chat_ts`, the server's
+ *  `crew_recency` record) or whose remembered crewmate (`remembered`, this
+ *  browser's last open) is still on the roster is not on a first visit: this
+ *  answers `undefined` and the usual landing reopens that conversation. Once
+ *  Mate's thread holds anything this answers `undefined` too. A separate, early
+ *  rule on purpose, so the usual rules ({@link resolveDefaultMember}) carry no
+ *  Mate special case. */
+export function resolveMateLanding(
+  rows: readonly MemberRosterRow[],
+  remembered: string | null = null,
+): MemberRosterRow | undefined {
+  const mate = pendingMate(rows)
+  if (!mate) return undefined
+  const others = rows.filter((m) => m !== mate)
+  if (lastChattedMember(others)) return undefined
+  if (remembered && remembered !== 'default' && others.some((m) => m.name === remembered)) return undefined
+  return mate
 }
 
 type MemberMemoryDisplay = 'global' | 'legacy' | 'private' | 'ownership_mismatch' | 'unavailable'
@@ -2079,7 +2092,7 @@ export default function MembersPage() {
   useEffect(() => {
     if (entryAnnouncedRef.current || !loaded) return
     entryAnnouncedRef.current = true
-    const mate = crewPreview && !loadError ? resolveMateLanding(members) : undefined
+    const mate = crewPreview && !loadError ? resolveMateLanding(members, safeGetItem(LAST_MEMBER_KEY)) : undefined
     if (mate && (!urlMember || urlMember === mate.name)) return
     window.dispatchEvent(new Event(CREWMATES_PAGE_ENTERED_EVENT))
   }, [loaded, loadError, crewPreview, members, urlMember])
@@ -3332,11 +3345,11 @@ export default function MembersPage() {
       }
       return
     }
-    // Mate's first visit wins first: never chatted with, Mate opens ahead of a
-    // remembered or more recently used crewmate. Every rule below is the
+    // Mate's first visit wins first: never chatted with, and no other crewmate
+    // the user chatted with or last opened, Mate opens. Every rule below is the
     // page's ordinary landing, untouched by Mate.
     if (!urlMember && crewPreview && !mateLandedRef.current) {
-      const mate = resolveMateLanding(members)
+      const mate = resolveMateLanding(members, safeGetItem(LAST_MEMBER_KEY))
       if (mate) {
         mateLandedRef.current = true
         setSearchParams({ [MEMBER_PARAM]: mate.name }, { replace: true })
