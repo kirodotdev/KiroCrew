@@ -69,6 +69,12 @@ Ask Kiro Crew: "Create a skill called X that does Y"
 
 Create `~/.kiro/crew/skills/my-skill/SKILL.md` with frontmatter and content.
 
+## Audit Pending and Live Skills
+
+The Skills pending-review panel compares pending candidates and live skills pairwise (at most 400 skills, pending first, and 2,000 matching pairs). A package-owned builtin is never paired with another live skill, because neither side can be merged. It labels clusters as **duplicate** at 0.85 similarity, **subsumed** when a live description covers at least 85% of a candidate's description words or contains its trigger set, and **overlapping** at 0.5 similarity when human judgment is still needed.
+
+Each pending candidate lists its related live skills, one per line. For every related auto-generated skill, **Propose update to <skill>** adds an update proposal against that live skill while leaving the original candidate pending; use the existing **Dismiss** action when the original is not needed. Asking again for the same live skill returns the proposal already pending, and the button is disabled while a request is in flight. A candidate with more than 64 helper files, a nested helper folder or an oversized helper cannot be proposed as an update. A description, trigger field, or complete merged trigger list over 4,096 characters is refused with a notice asking the reviewer to shorten the metadata; the proposal never stores a cut value. Approval compares a newline-normalized digest and serializes the validation and replacement with dashboard edits of that live skill, so an edit is either included in the stale-base decision or lands after approval rather than being overwritten. The loader-owned digest record is atomically replaced under a pinned `.versions` directory; a linked directory or record is refused, reads use `O_NOFOLLOW`, and cleanup unlinks only the record entry itself. Consolidation-generated update proposals carry the same live-body digest. **Find overlapping skills** opens the whole-library view, where pending members carry a **Pending** badge. If the modal chunk is stale after a deployment, **Try Again** performs a fresh import. The audit is deterministic and local; it caps untrusted descriptions and triggers before comparison, reports omitted skills and relationships, and uses description and trigger word overlap without an LLM call.
+
 ## Built-in Skills
 
 Kiro Crew ships with built-in skills that are synced from the packaged skills directory on startup. These cover common workflows like URL shortening, code search, and writing assistance.

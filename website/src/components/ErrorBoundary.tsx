@@ -33,6 +33,8 @@ interface Props {
    * draft, turning a contained render crash into data loss.
    */
   retryOnly?: boolean
+  /** Runs immediately before Try Again clears the caught error. */
+  onRetry?: () => void
 }
 
 export default class ErrorBoundary extends Component<Props, State> {
@@ -141,7 +143,7 @@ export default class ErrorBoundary extends Component<Props, State> {
             />
           )}
           <button className="px-4 py-1.5 rounded-lg text-[13px] font-medium cursor-pointer bg-transparent text-muted border border-border hover:text-text hover:border-text-strong transition-colors"
-            onClick={() => this.setState({ error: null })}>{i18nT('components.errorBoundary.try_again')}</button>
+            onClick={() => { this.props.onRetry?.(); this.setState({ error: null }) }}>{i18nT('components.errorBoundary.try_again')}</button>
         </div>
       </div>
     )

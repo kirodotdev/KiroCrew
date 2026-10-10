@@ -230,6 +230,14 @@ def _create_skill_pinned(
 
 
 def update_skill(loader: SkillsLoader, name: str, content: str) -> bool:
+    """Overwrite an existing skill, locking live auto-skill targets."""
+    if name.startswith("auto/"):
+        with loader._auto_skill_mutation_lock(name):
+            return _update_skill_locked(loader, name, content)
+    return _update_skill_locked(loader, name, content)
+
+
+def _update_skill_locked(loader: SkillsLoader, name: str, content: str) -> bool:
     """Overwrite an existing skill's SKILL.md.  Returns True if found."""
     from kiro_crew import skills as sk  # circular import: the facade imports this module
 
@@ -331,6 +339,12 @@ def _write_skill_md(skill_file: Path, content: str, *, dir_fd: int | None) -> bo
 
 
 def set_pinned(loader: SkillsLoader, name: str, pinned: bool) -> bool:
+    """Change one live auto-skill's pin state under its mutation lock."""
+    with loader._auto_skill_mutation_lock(name):
+        return _set_pinned_locked(loader, name, pinned)
+
+
+def _set_pinned_locked(loader: SkillsLoader, name: str, pinned: bool) -> bool:
     """Pin/unpin an auto-skill (exempt from lifecycle eviction).
 
     Edits the ``pinned:`` frontmatter line in place. Returns True on
@@ -395,6 +409,12 @@ def rewrite_inject_on_trigger(content: str, inject: bool) -> str | None:
 
 
 def set_inject_on_trigger(loader: SkillsLoader, name: str, inject: bool) -> bool:
+    """Change one live auto-skill's injection state under its mutation lock."""
+    with loader._auto_skill_mutation_lock(name):
+        return _set_inject_on_trigger_locked(loader, name, inject)
+
+
+def _set_inject_on_trigger_locked(loader: SkillsLoader, name: str, inject: bool) -> bool:
     """Opt a skill in or out of full-body injection on a trigger match.
 
     Edits the ``inject_on_trigger:`` frontmatter line in place, mirroring

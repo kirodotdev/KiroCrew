@@ -12,6 +12,7 @@ const mockApi = vi.hoisted(() => ({
   createSkill: vi.fn(),
   updateSkill: vi.fn(),
   deleteSkill: vi.fn(),
+  skillsAudit: vi.fn(),
 }))
 // A stub ApiError declared inside vi.hoisted so the mock factory (hoisted above
 // the imports) can close over it: createSkill.onError branches on
@@ -59,6 +60,12 @@ vi.mock('../components/SkillDirectoryBrowser', () => ({
 import SkillsTab from '../pages/overview/SkillsTab'
 import { ERROR_HANDOFF_KEY, recordError, __resetErrorJournalForTests } from '../utils/errorReport'
 
+// The audit modal sits behind SkillsTab's retryableLazy boundary
+// (pages/overview/SkillsAuditModal.tsx). A cold chunk import on a loaded CI
+// shard can outlast findBy*/waitFor's 1 s default, so every wait for the
+// modal, its query or its contents names this timeout.
+const LAZY_AUDIT_MOUNT = { timeout: 5000 }
+
 function renderWithQuery() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
   // MemoryRouter: the pending-review panel reads (and clears) the `?review=<slug>`
@@ -92,6 +99,137 @@ describe('SkillsTab', () => {
     await waitFor(() => expect(screen.getByText('Foo')).toBeInTheDocument())
     expect(screen.getByText('foo')).toBeInTheDocument()
     expect(screen.getByText(/Loaded by 2 agents/)).toBeInTheDocument()
+  })
+
+  it('lists queue-wide audit clusters and links each member to its skill row', async () => {
+    mockApi.skills.mockResolvedValue([
+      { key: 'deploy-one', name: 'deploy-one', description: 'first', source: 'kirocrew', loaded_by_agents: [] },
+      { key: 'deploy-two', name: 'deploy-two', description: 'second', source: 'kirocrew', loaded_by_agents: [] },
+    ])
+    mockApi.skillsAudit.mockResolvedValue({
+      clusters: [{
+        classification: 'overlapping',
+        score: 0.5,
+        members: [
+          { id: 'live:deploy-one', kind: 'live', name: 'deploy-one' },
+          { id: 'live:deploy-two', kind: 'live', name: 'deploy-two' },
+        ],
+        relations: [],
+        update_targets: [],
+      }],
+    })
+    renderWithQuery()
+    await screen.findByText('Deploy One')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Find overlapping skills' }))
+
+    await waitFor(() => expect(mockApi.skillsAudit).toHaveBeenCalledTimes(1), LAZY_AUDIT_MOUNT)
+    // Await an element that only exists once audit results render. /Overlapping/
+    // also matches the modal title, which renders before the results arrive.
+    expect(await screen.findByTestId('skills-audit-similarity', undefined, LAZY_AUDIT_MOUNT)).toHaveTextContent('50% similar')
+    expect(screen.getByRole('button', { name: 'deploy-one' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'deploy-two' }))
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Select Deploy Two' }))
+        .toHaveAttribute('aria-current', 'true'),
+    )
+  })
+
+  it('keeps an open draft when a live audit member is clicked', async () => {
+    mockApi.skills.mockResolvedValue([
+      { key: 'deploy-one', name: 'deploy-one', description: 'first', source: 'kirocrew', loaded_by_agents: [] },
+      { key: 'deploy-two', name: 'deploy-two', description: 'second', source: 'kirocrew', loaded_by_agents: [] },
+    ])
+    mockApi.skill.mockResolvedValue({
+      name: 'deploy-one',
+      content: '---\nname: deploy-one\ndescription: first\n---\nbody text',
+    })
+    mockApi.skillsAudit.mockResolvedValue({
+      clusters: [{
+        classification: 'overlapping',
+        score: 0.5,
+        members: [
+          { id: 'live:deploy-one', kind: 'live', name: 'deploy-one' },
+          { id: 'live:deploy-two', kind: 'live', name: 'deploy-two' },
+        ],
+        relations: [],
+        update_targets: [],
+      }],
+    })
+    renderWithQuery()
+    const editBtn = await screen.findByText('Edit')
+    await waitFor(() => expect(editBtn).not.toBeDisabled())
+    fireEvent.click(editBtn)
+    await waitFor(() => expect(screen.getByText('Save')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Find overlapping skills' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'deploy-two' }, LAZY_AUDIT_MOUNT))
+
+    expect(await screen.findByTestId('skills-audit-selection-failure', undefined, LAZY_AUDIT_MOUNT)).toHaveTextContent(
+      'Save or cancel your open skill draft first, then pick another skill.',
+    )
+    const draftNotice = screen.getByTestId('skills-audit-selection-failure')
+    expect(within(draftNotice).queryByRole('button', { name: /agent/i })).toBeNull()
+    expect(within(draftNotice).queryByRole('link', { name: /agent/i })).toBeNull()
+    expect(screen.getByTestId('skills-audit-modal')).toBeInTheDocument()
+    expect(screen.getByText('Save')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Select Deploy One' }))
+      .toHaveAttribute('aria-current', 'true')
+  })
+
+  it('offers no Ask-agent hand-off for an audit failure while a draft is open', async () => {
+    mockApi.skills.mockResolvedValue([
+      { key: 'deploy-one', name: 'deploy-one', description: 'first', source: 'kirocrew', loaded_by_agents: [] },
+    ])
+    mockApi.skill.mockResolvedValue({
+      name: 'deploy-one',
+      content: '---\nname: deploy-one\ndescription: first\n---\nbody text',
+    })
+    mockApi.skillsAudit.mockRejectedValue(new Error('audit exploded'))
+    renderWithQuery()
+    const editBtn = await screen.findByText('Edit')
+    await waitFor(() => expect(editBtn).not.toBeDisabled())
+    fireEvent.click(editBtn)
+    await waitFor(() => expect(screen.getByText('Save')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Find overlapping skills' }))
+
+    const failures = await screen.findAllByTestId(/audit.*failure/, undefined, LAZY_AUDIT_MOUNT)
+    for (const failure of failures) {
+      expect(within(failure).queryByRole('button', { name: /agent/i })).toBeNull()
+      expect(within(failure).queryByRole('link', { name: /agent/i })).toBeNull()
+    }
+  })
+
+  it('announces relationships the server trimmed inside a cluster', async () => {
+    mockApi.skills.mockResolvedValue([
+      { key: 'deploy-one', name: 'deploy-one', description: 'first', source: 'kirocrew', loaded_by_agents: [] },
+      { key: 'deploy-two', name: 'deploy-two', description: 'second', source: 'kirocrew', loaded_by_agents: [] },
+    ])
+    mockApi.skillsAudit.mockResolvedValue({
+      omitted_relations: 1,
+      clusters: [{
+        classification: 'overlapping',
+        score: 0.5,
+        members: [
+          { id: 'live:deploy-one', kind: 'live', name: 'deploy-one' },
+          { id: 'live:deploy-two', kind: 'live', name: 'deploy-two' },
+        ],
+        relations: [],
+        update_targets: [],
+        omitted_relations: 3,
+        omitted_update_targets: 2,
+      }],
+    })
+    renderWithQuery()
+    await screen.findByText('Deploy One')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Find overlapping skills' }))
+
+    expect(await screen.findByTestId('skills-audit-omitted-relations', undefined, LAZY_AUDIT_MOUNT)).toHaveTextContent('+4')
+    expect(screen.getByTestId('skills-audit-omitted-update-targets')).toHaveTextContent(
+      '+2 update suggestions not shown',
+    )
   })
 
   it('shows singular form when exactly one agent loads the skill', async () => {
@@ -1322,5 +1460,122 @@ describe('SkillsTab update/delete failure surfacing', () => {
     // save's outcome along with the draft. (Pending label while in flight.)
     expect(screen.getByText('Saving…')).toBeInTheDocument()
     expect(screen.getByText('Cancel')).toBeInTheDocument()
+  })
+})
+
+
+describe('SkillsTab audit result bounds', () => {
+  it('caps member rows and reports omitted members and clusters', async () => {
+    mockApi.skills.mockResolvedValue([
+      { key: 'known', name: 'known', description: 'known', source: 'kirocrew', loaded_by_agents: [] },
+    ])
+    mockApi.skillsAudit.mockResolvedValue({
+      total_clusters: 20,
+      omitted_entries: 4,
+      omitted_relations: 7,
+      clusters: [{
+        classification: 'duplicate',
+        score: 0.91,
+        members: Array.from({ length: 10 }, (_, index) => ({
+          id: `live:member-${index}`,
+          kind: 'live',
+          name: `member-${index}`,
+        })),
+        relations: [],
+        update_targets: [],
+      }],
+    })
+
+    renderWithQuery()
+    fireEvent.click(await screen.findByRole('button', { name: 'Find overlapping skills' }))
+
+    expect(await screen.findByTestId('skills-audit-similarity', undefined, LAZY_AUDIT_MOUNT)).toHaveTextContent('91% similar')
+    expect(screen.getByRole('button', { name: 'member-7' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'member-8' })).not.toBeInTheDocument()
+    expect(screen.getByText('+2 more')).toBeInTheDocument()
+    expect(screen.getByTestId('skills-audit-omitted-clusters')).toHaveTextContent('+19 more')
+    expect(screen.getByTestId('skills-audit-omitted-entries')).toHaveTextContent('+4 skills not compared')
+    expect(screen.getByTestId('skills-audit-omitted-relations')).toHaveTextContent('+7 relationships not shown')
+  })
+
+  it('keeps the modal open and explains when a live member vanished', async () => {
+    mockApi.skills.mockResolvedValue([
+      { key: 'known', name: 'known', description: 'known', source: 'kirocrew', loaded_by_agents: [] },
+    ])
+    mockApi.skillsAudit.mockResolvedValue({
+      clusters: [{
+        classification: 'overlapping',
+        score: 0.5,
+        members: [{ id: 'live:missing', kind: 'live', name: 'missing' }],
+        relations: [],
+        update_targets: [],
+      }],
+    })
+
+    renderWithQuery()
+    fireEvent.click(await screen.findByRole('button', { name: 'Find overlapping skills' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'missing' }))
+
+    expect(screen.getByTestId('skills-audit-modal')).toBeInTheDocument()
+    expect(screen.getByTestId('skills-audit-selection-failure')).toHaveTextContent(
+      'That skill is no longer in this list. Refresh and try again.',
+    )
+  })
+
+  it('keeps the modal open when the list filter hides a live member', async () => {
+    mockApi.skills.mockResolvedValue([
+      { key: 'known', name: 'known', description: 'known', source: 'kirocrew', loaded_by_agents: [] },
+      { key: 'other', name: 'other', description: 'other', source: 'kirocrew', loaded_by_agents: [] },
+    ])
+    mockApi.skillsAudit.mockResolvedValue({
+      clusters: [{
+        classification: 'overlapping',
+        score: 0.5,
+        members: [{ id: 'live:known', kind: 'live', name: 'known' }],
+        relations: [],
+        update_targets: [],
+      }],
+    })
+
+    renderWithQuery()
+    const filter = await screen.findByPlaceholderText(/filter/i)
+    fireEvent.change(filter, { target: { value: 'other' } })
+    fireEvent.click(await screen.findByRole('button', { name: 'Find overlapping skills' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'known' }))
+
+    expect(screen.getByTestId('skills-audit-modal')).toBeInTheDocument()
+    expect(screen.getByTestId('skills-audit-selection-failure')).toHaveTextContent(
+      'That skill is no longer in this list. Refresh and try again.',
+    )
+  })
+
+  it('badges pending members and keeps the modal open when one vanished', async () => {
+    mockApi.skills.mockResolvedValue([
+      { key: 'known', name: 'known', description: 'known', source: 'kirocrew', loaded_by_agents: [] },
+    ])
+    mockApi.skillsAudit.mockResolvedValue({
+      clusters: [{
+        classification: 'subsumed',
+        score: 0.9,
+        members: [
+          { id: 'pending:gone', kind: 'pending', name: 'auto/gone', slug: 'gone' },
+          { id: 'live:known', kind: 'live', name: 'known' },
+        ],
+        relations: [],
+        update_targets: [],
+      }],
+    })
+
+    renderWithQuery()
+    fireEvent.click(await screen.findByRole('button', { name: 'Find overlapping skills' }))
+
+    expect(await screen.findByText('Overlapping skills', undefined, LAZY_AUDIT_MOUNT)).toBeInTheDocument()
+    expect(await screen.findAllByTestId('skills-audit-pending-badge', undefined, LAZY_AUDIT_MOUNT)).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: 'auto/gone' }))
+
+    expect(screen.getByTestId('skills-audit-modal')).toBeInTheDocument()
+    expect(screen.getByTestId('skills-audit-selection-failure')).toHaveTextContent(
+      'That skill is no longer in this list. Refresh and try again.',
+    )
   })
 })

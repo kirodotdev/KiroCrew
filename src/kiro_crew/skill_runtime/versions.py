@@ -57,13 +57,15 @@ def get_auto_skill_version(loader: SkillsLoader, name: str) -> int:
     return v if v >= 1 else 1
 
 
-def read_auto_skill_body(loader: SkillsLoader, name: str) -> str | None:
+def read_auto_skill_body(
+    loader: SkillsLoader, name: str, *, max_bytes: int | None = None
+) -> str | None:
     """Return the full live ``SKILL.md`` text for an auto-skill, or ``None``.
 
     Accepts ``auto/<slug>`` or a bare ``<slug>``; refuses any non-auto
     namespace (a multi-segment name). Returns ``None`` when the skill is
-    missing or unreadable. Used by the API to render an old-vs-new diff for
-    update candidates.
+    missing or unreadable, or larger than ``max_bytes`` when one is given.
+    Used by the API to render an old-vs-new diff for update candidates.
 
     Refuses to follow a symlink anywhere on the path. This body is fed to the
     update-merge turn UNREDACTED (redaction runs on the merge OUTPUT), so a
@@ -96,13 +98,23 @@ def read_auto_skill_body(loader: SkillsLoader, name: str) -> str | None:
         logger.warning("Refusing to read %s: resolves to a sensitive path", name)
         return None
     try:
+        if max_bytes is not None:
+            # A bounded caller reads through the pinned, no-link reader,
+            # which refuses a hard link, a non-regular file or a file over
+            # ``max_bytes`` instead of loading it.
+            raw = sk.safe_read_file_bytes_nolink(
+                real,
+                within_root=os.path.realpath(str(loader._dir)),
+                max_bytes=max_bytes,
+            )
+            return None if raw is None else raw.decode("utf-8")
         # Read the RESOLVED path through the hardened primitive, not the
         # original one: the checks above vet ``real``, so reading
         # ``skill_file`` again would validate one path and read another.
         # safe_read_file re-checks is_sensitive_path and opens with
         # O_NOFOLLOW, closing a swap of the final component after our check.
         return sk.safe_read_file(real)
-    except (OSError, PermissionError):
+    except (OSError, PermissionError, sk.FileTooLargeError, UnicodeDecodeError):
         return None
 
 
