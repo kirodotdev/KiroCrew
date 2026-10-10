@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { renderWithProviders } from './helpers'
 import { FOCUS_INSET, focusModeEnabled, setFocusModeEnabled, __resetFocusMode } from '../hooks/useFocusMode'
-import { OVERLAY_Z_MAX, THEME_DECOR_SLOT_ID, TOPBAR_FOCUS_Z, TOPBAR_Z, useThemeDecorSlot } from '../lib/themeDecorLayer'
+import { OVERLAY_Z_MAX, THEME_DECOR_BEHIND_SLOT_ID, THEME_DECOR_SLOT_ID, TOPBAR_FOCUS_Z, TOPBAR_Z, useThemeDecorBehindSlot, useThemeDecorSlot } from '../lib/themeDecorLayer'
 
 vi.mock('../lib/embedded', () => ({ isEmbeddedPane: vi.fn(() => false) }))
 import { isEmbeddedPane } from '../lib/embedded'
@@ -175,6 +175,23 @@ describe('focus mode — shell layout', () => {
     await act(async () => { fireEvent.click(toggle) })
     expect(header.style.zIndex).toBe(String(TOPBAR_FOCUS_Z))
     expect(Number(header.style.zIndex)).toBeGreaterThan(Number(slot.style.zIndex))
+  })
+
+  it('mounts the behind-content slot inside the shell, under the content and click-through', async () => {
+    let seen: HTMLElement | null = null
+    function SlotProbe() { seen = useThemeDecorBehindSlot(); return null }
+    renderWithProviders(<><SlotProbe /><App /></>, { route: '/chat' })
+    await screen.findByTestId('focus-mode-toggle')
+
+    const shell = screen.getByTestId('dashboard-shell')
+    const behind = screen.getByTestId('theme-decor-slot-behind')
+    expect(behind.id).toBe(THEME_DECOR_BEHIND_SLOT_ID)
+    expect(shell.contains(behind)).toBe(true)
+    expect(seen).toBe(behind)
+    // -1 inside the shell's own stacking context: over the shell background, under the content.
+    expect(behind.style.zIndex).toBe('-1')
+    expect(behind.className).toContain('pointer-events-none')
+    expect(behind.className).toContain('fixed')
   })
 
   it('collapses both chrome tracks and mounts the peek strips when on', async () => {

@@ -175,6 +175,13 @@ dashboard load into header-only round trips.
   `sandbox="allow-scripts"` iframes **without** `allow-same-origin`, so they get
   no cookies, storage, or same-origin fetch. This is the real runtime boundary;
   install-time denylists are defense-in-depth.
+- **Overlay layers** — each overlay declaration may set `layer`. `above`
+  (default) paints in the shell's decor slot, over the chat but under the top
+  bar. `behind` paints in a second slot at z-index -1 inside the shell, over the
+  shell background but under the nav, content and panels, so message bubbles
+  and cards cover it. A `behind` overlay must be click-through: install rejects
+  `layer: "behind"` with `pointerEvents: true`, and the client forces
+  `pointer-events: none` on it.
 - **Locked CSP** — overlay/topbar responses carry a fixed
   `Content-Security-Policy` including a `sandbox` directive; asset responses
   carry `X-Content-Type-Options: nosniff` and a content-type allowlist.
