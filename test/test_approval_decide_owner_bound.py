@@ -6,7 +6,9 @@ the exact request a card showed (``origin=coordinator`` + slot + instance, or
 ``origin: "native"`` + ``request_mid``). A decide that names only the request id
 resolves whichever request holds that id at that moment, so it is accepted only
 from the dashboard user's own browser session. A loopback ``X-Internal-Secret``
-caller (an agent, MCP tool or cron) must send the owner-bound target.
+caller (an agent, MCP tool or cron) must send the owner-bound target on the
+approvals route, and is refused outright with 403 on the slot route, whose
+``deny_session_approval_caller`` gate admits no internal caller there.
 
 Every test drives the real handler through an aiohttp ``TestClient``; the auth
 middleware is stood in by one of the two middlewares below.
@@ -167,8 +169,8 @@ async def test_internal_caller_bare_id_slot_approve_is_refused(state):
             json={"action": "approved", "request_id": "rid-7"},
         )
         body = await resp.json()
-    assert resp.status == 404
-    assert body["code"] == "approval_target_required"
+    assert resp.status == 403
+    assert body["code"] == "owner_only"
     assert not fut.done()
 
 
@@ -179,12 +181,14 @@ async def test_internal_caller_slot_approve_with_no_request_id_is_refused(state)
     _slot, fut = _slot_with_pending(state, "rid-8")
     async with TestClient(TestServer(_app(state, _internal_caller))) as client:
         resp = await client.post("/api/chat/slots/selected/approve", json={"action": "approved"})
-    assert resp.status == 404
+    assert resp.status == 403
     assert not fut.done()
 
 
 @pytest.mark.asyncio
-async def test_internal_caller_owner_bound_slot_approve_resolves(state):
+async def test_internal_caller_owner_bound_slot_approve_is_refused(state):
+    # An owner-bound target does not admit an internal caller on the slot
+    # route: the session-approval gate refuses it before the target is read.
     slot, fut = _slot_with_pending(state, "rid-9")
     mid = slot.approval_instance("rid-9")
     assert mid
@@ -198,8 +202,10 @@ async def test_internal_caller_owner_bound_slot_approve_resolves(state):
                 "request_mid": mid,
             },
         )
-    assert resp.status == 200
-    assert fut.done()
+        body = await resp.json()
+    assert resp.status == 403
+    assert body["code"] == "owner_only"
+    assert not fut.done()
 
 
 @pytest.mark.asyncio
