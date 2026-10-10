@@ -2636,6 +2636,8 @@ class SessionManager:
         refuse_only_on_active_turn: bool = False,
         clear_conversation: bool = False,
         ends_conversation: bool = False,
+        refuse_if_active_since: float | None = None,
+        refuse_if_active_until: float | None = None,
         scope: Any | None = None,
     ) -> bool:
         """Reset a live session while preserving its persistence entry.
@@ -2659,6 +2661,8 @@ class SessionManager:
                 refuse_only_on_active_turn=refuse_only_on_active_turn,
                 clear_conversation=clear_conversation,
                 ends_conversation=ends_conversation,
+                refuse_if_active_since=refuse_if_active_since,
+                refuse_if_active_until=refuse_if_active_until,
                 scope=opened,
             )
 

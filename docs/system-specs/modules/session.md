@@ -1118,9 +1118,18 @@ against sweep completeness, and are torn down at `close_all`.
   whatever the link names. A refused spec is skipped like a malformed one, so
   the resolution falls through to `"auto"` exactly as an absent spec does.
 - **Idle cleanup**: expires sessions after `session.timeout_secs` (default
-  60min) of idleness, measured on `session.last_used`, which is refreshed on
-  every acquire and on a successful `release(key)`. Never expires the persistent
-  keys (`_bg`, `_hb`). Dashboard per-tab sessions
+
+  60min) since the later of `last_used` and the provider's per-session
+  `session_activity_at` monotonic stamp. Backend activity contributes at most
+  one additional timeout window after `last_used`: even continuous passive
+  frames cannot keep an unlocked session alive beyond twice the timeout since
+  its last dispatched turn. Runtime stamps and sweep reads use injectable
+  `time.monotonic` clocks. The reset re-check enforces the same hard deadline
+  under the registry lock, so frames arriving while reset waits cannot extend
+  retention past the ceiling. Providers without a numeric stamp use `last_used`
+  alone. Busy-turn, attached-subagent and injection guards still apply on both
+  axes. Never expires `BACKGROUND_KEY`. Dashboard per-tab sessions
+
   (`dashboard:{slot_key}`) idle-expire like any other session.
   A key listed in `session.idle_exempt_keys` never expires on the idle clock,
   for a chat that automation wakes hours apart and that would otherwise pay a
@@ -1235,7 +1244,8 @@ against sweep completeness, and are torn down at `close_all`.
   then the semaphore (a turn that took it during the await is exactly as live
   as one the scan skipped); then, on the idle axis only, the clock (a turn that
   began AND finished inside the await released the semaphore again but bumped
-  `last_used` on its way in, so the session is not idle now -- the orphan axis
+  `last_used` on its way in, or backend activity within the bounded grace
+  window advanced the effective clock, so the session is not idle now -- the orphan axis
   ignores the clock and re-asserts against the live set instead, below).
   Nothing between the probe's return and `reset` suspends. Neither read is the atomic
   one, though: `reset` itself suspends on the registry lock before it validates

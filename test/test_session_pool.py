@@ -240,13 +240,18 @@ class TestLivenessDrainLoop:
         ``is_alive``), so the only remaining unanswerable case is a probe
         that raises — which this models.
         """
-        mgr, _ = _make_manager(pool_agent="kirocrew", pool_ttl_secs=1)
+        # The TTL is an hour with the broken entry two hours old, rather than a
+        # one-second TTL with a ten-second entry: the healthy provider's age is
+        # measured against the SAME TTL when the drain reaches it, and a loaded
+        # runner can spend a second between the put and the claim, which aged
+        # the healthy entry out too and failed this test on macOS and Windows.
+        mgr, _ = _make_manager(pool_agent="kirocrew", pool_ttl_secs=3600)
 
         broken = _make_provider()
         broken.is_process_alive = MagicMock(side_effect=RuntimeError("probe failed"))
         healthy = _make_provider()
 
-        mgr._warm_pool.put_nowait((broken, time.monotonic() - 10))
+        mgr._warm_pool.put_nowait((broken, time.monotonic() - 7200))
         mgr._warm_pool.put_nowait((healthy, time.monotonic()))
 
         pooled = await mgr._drain_and_claim("kirocrew")

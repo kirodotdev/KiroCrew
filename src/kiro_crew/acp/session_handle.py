@@ -977,6 +977,8 @@ class AcpRuntimeProtocol(Protocol):
 
     def mcp_sign_in_holds(self, session_id: str, server_name: str) -> bool: ...
 
+    def session_activity_at(self, session_id: str) -> float | None: ...
+
     def unregister_session(self, session_id: str) -> None: ...
 
     async def terminate_session(self, session_id: str) -> None: ...
@@ -1415,6 +1417,11 @@ class AcpSessionHandle:
     @property
     def session_id(self) -> str:
         return self._session_id
+
+    @property
+    def session_activity_at(self) -> float | None:
+        """Monotonic time the runtime last routed a frame for this session."""
+        return self._runtime.session_activity_at(self._session_id)
 
     @property
     def prompt_or_tool_seen(self) -> bool:

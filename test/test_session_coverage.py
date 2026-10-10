@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import logging
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -685,13 +685,20 @@ class TestExpireIdle:
         ending verb, which would take the session's in-flight sub-agent runs with it.
         The call is pinned to the entry the sweep scanned: the sub-agent probe
         suspends before the reset, so a replacement under the same key must not be
-        reset on its verdict.
+        reset on its verdict. The idle axis also hands the reset the instant of
+        its last activity read, so the reset re-asks the backend stamp under its
+        own lock before popping.
         """
         sess = _register(mgr, "dashboard:1", last_used=0.0)
         with patch.object(mgr, "reset", AsyncMock(return_value=True)) as reset:
             await mgr._expire_idle(1)
         reset.assert_awaited_once_with(
-            "dashboard:1", expect_session=sess, skip_if_busy=True, skip_if_injecting=True
+            "dashboard:1",
+            expect_session=sess,
+            skip_if_busy=True,
+            skip_if_injecting=True,
+            refuse_if_active_since=ANY,
+            refuse_if_active_until=2.0,
         )
 
     @pytest.mark.asyncio

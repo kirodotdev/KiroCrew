@@ -311,9 +311,12 @@ class TestOnSessionExpire:
         asyncio.run(sm._expire_idle(60))
 
         # reset still called despite callback failure
-        mock_reset.assert_called_once_with(
-            "expired-key", expect_session=sess, skip_if_busy=True, skip_if_injecting=True
-        )
+        assert mock_reset.call_count == 1
+        kwargs = mock_reset.call_args.kwargs
+        assert kwargs["expect_session"] is sess
+        assert kwargs["skip_if_busy"] is True
+        assert kwargs["skip_if_injecting"] is True
+        assert kwargs["refuse_if_active_since"] is None
 
 
 class TestGatewayExpireWiring:
@@ -412,9 +415,12 @@ class TestExpireIdleSelFailure:
         asyncio.run(sm._expire_idle(60))
 
         callback.assert_not_called()
-        mock_reset.assert_called_once_with(
-            "expired-sel", expect_session=sess, skip_if_busy=True, skip_if_injecting=True
-        )
+        assert mock_reset.call_count == 1
+        kwargs = mock_reset.call_args.kwargs
+        assert kwargs["expect_session"] is sess
+        assert kwargs["skip_if_busy"] is True
+        assert kwargs["skip_if_injecting"] is True
+        assert kwargs["refuse_if_active_since"] is None
 
     @patch("kiro_crew.session.sel")
     @patch("kiro_crew.session.SessionManager.reset", new_callable=AsyncMock)
@@ -448,6 +454,9 @@ class TestExpireIdleSelFailure:
         asyncio.run(sm._expire_idle(60))
 
         callback.assert_called_once_with("expired-cb")
-        mock_reset.assert_called_once_with(
-            "expired-cb", expect_session=sess, skip_if_busy=True, skip_if_injecting=True
-        )
+        assert mock_reset.call_count == 1
+        kwargs = mock_reset.call_args.kwargs
+        assert kwargs["expect_session"] is sess
+        assert kwargs["skip_if_busy"] is True
+        assert kwargs["skip_if_injecting"] is True
+        assert kwargs["refuse_if_active_since"] is None

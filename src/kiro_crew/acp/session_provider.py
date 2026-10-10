@@ -811,6 +811,11 @@ class AcpSessionProvider(LLMProvider):
         """The ACP session ID."""
         return self._handle.session_id
 
+    @property
+    def session_activity_at(self) -> float | None:
+        """See AcpSessionHandle.session_activity_at."""
+        return self._handle.session_activity_at
+
     def is_alive(self) -> bool:
         """True if the underlying runtime is still alive.
 

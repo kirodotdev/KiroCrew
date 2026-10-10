@@ -649,6 +649,8 @@ class SessionLifecycleOwner(Protocol):
         refuse_only_on_active_turn: bool = False,
         clear_conversation: bool = False,
         ends_conversation: bool = False,
+        refuse_if_active_since: float | None = None,
+        refuse_if_active_until: float | None = None,
     ) -> bool: ...
 
     async def _send_abort_for_session(self, key: str, session: Any) -> None: ...
@@ -1327,6 +1329,8 @@ class SessionLifecycleService:
         refuse_only_on_active_turn: bool = False,
         clear_conversation: bool = False,
         ends_conversation: bool = False,
+        refuse_if_active_since: float | None = None,
+        refuse_if_active_until: float | None = None,
         scope: _TeardownScope | None = None,
     ) -> bool:
         """Kill a live session while preserving the exact reset semantics.
@@ -1405,6 +1409,26 @@ class SessionLifecycleService:
                     )
                     injecting = True
                 if injecting:
+                    return False
+            # The idle sweep's last activity read and this pop are separated by
+            # this lock's queue: a teardown ahead of us can hold it while a frame
+            # arrives, and a read taken before the queue is invisible here. Re-ask
+            # the backend's own stamp under the lock, so a session whose backend
+            # woke in the gap keeps its runtime instead of being popped mid-work.
+            # The caller passes the instant of ITS last read; a raw stamp newer
+            # than that refuses only before the sweep's hard deadline. The
+            # registry lock may have delayed reset until after that deadline.
+            if refuse_if_active_since is not None and current is not None:
+                stamp = getattr(getattr(current, "provider", None), "session_activity_at", None)
+                if (
+                    isinstance(stamp, (int, float))
+                    and not isinstance(stamp, bool)
+                    and stamp >= refuse_if_active_since
+                    and (
+                        refuse_if_active_until is None
+                        or self._deps.monotonic() <= refuse_if_active_until
+                    )
+                ):
                     return False
             # Recorded in the same lock hold as the pop and before it (``current`` is
             # what the pop removes: no await separates the two reads): from the pop

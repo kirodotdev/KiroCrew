@@ -134,6 +134,8 @@ class CleanupOwner(Protocol):
         skip_if_injecting: bool = False,
         clear_conversation: bool = False,
         ends_conversation: bool = False,
+        refuse_if_active_since: float | None = None,
+        refuse_if_active_until: float | None = None,
     ) -> bool: ...
 
     async def _fire_recycle_callback(self, key: str, *, reason: str) -> None: ...
@@ -166,6 +168,42 @@ def _no_pending_injection(key: str) -> bool:
 def _no_background_launch(provider: LLMProvider) -> tuple[float, str] | None:
     """Default background-launch probe: no provider reports a launch."""
     return None
+
+
+#: Passive backend activity may defer the sweep for at most this many idle
+#: windows past a session's last dispatched turn. A backend that never stops
+#: emitting therefore retains its session for a bounded time -- with the usual
+#: ``timeout_secs`` window, expiry lands two windows after the last turn --
+#: rather than for as long as it keeps talking. Every path that honours the
+#: stamp goes through :func:`_activity_ceiling`, the reset rescue included.
+ACTIVITY_GRACE_WINDOWS = 1
+
+
+def _activity_ceiling(session: SessionEntry, timeout_secs: int) -> float:
+    """The last instant at which backend activity still counts for a session."""
+    return session.last_used + ACTIVITY_GRACE_WINDOWS * timeout_secs
+
+
+def _activity_rescue_deadline(session: SessionEntry, timeout_secs: int) -> float:
+    """The last instant a frame landing in the sweep's gap may defer the pop.
+
+    One further window past :func:`_activity_ceiling`: enough for a backend
+    that woke after the sweep's read to keep its session, but not enough for a
+    backend that never goes quiet to decline every sweep from here on.
+    """
+    return _activity_ceiling(session, timeout_secs) + timeout_secs
+
+
+def _last_activity(session: SessionEntry, timeout_secs: int) -> float:
+    """Backend frames grant at most ``ACTIVITY_GRACE_WINDOWS`` extra windows.
+
+    Passive traffic is not proof of finite work. Capping its contribution keeps
+    a looping backend from retaining an unlocked session indefinitely.
+    """
+    at = getattr(getattr(session, "provider", None), "session_activity_at", None)
+    if isinstance(at, (int, float)) and not isinstance(at, bool):
+        return max(session.last_used, min(at, _activity_ceiling(session, timeout_secs)))
+    return session.last_used
 
 
 @dataclass(slots=True)
@@ -1629,7 +1667,7 @@ class SessionCleanup:
                 total_checked += 1
                 if session.semaphore.locked():
                     continue
-                idle = key not in idle_exempt_keys and now - session.last_used > timeout_secs
+                idle = key not in idle_exempt_keys and now - _last_activity(session, timeout_secs) > timeout_secs
                 orphaned = self._owner_is_gone(key)
                 if idle or orphaned:
                     expired.append((key, orphaned, session))
@@ -1753,9 +1791,12 @@ class SessionCleanup:
             # finished inside the await released the semaphore again but bumped
             # ``last_used`` on its way in, so the session is not idle now.
             # The orphan axis ignores the clock and re-asks the live set below.
-            if not is_orphan and self._deps.monotonic() - scanned.last_used <= timeout_secs:
+            if (
+                not is_orphan
+                and self._deps.monotonic() - _last_activity(scanned, timeout_secs) <= timeout_secs
+            ):
                 self._deps.logger.info(
-                    "Idle sweep: %s took a turn mid-sweep - left running",
+                    "Idle sweep: %s became active mid-sweep - left running",
                     key,
                 )
                 continue
@@ -1856,11 +1897,33 @@ class SessionCleanup:
             # the session's in-flight sub-agent runs are left alone -- they have
             # a conversation to deliver into, and their own run timeout bounds
             # them. That is why the call does not pass ``ends_conversation``.
+            #
+            # The re-check above and the pop below are separated by the reset's
+            # queue for the registry lock: a teardown holding it while a frame
+            # arrives makes the re-check's answer stale. Hand the reset the
+            # instant of that read; it re-asks the backend stamp under its own
+            # lock and declines the pop when the session became active in the
+            # gap. Orphan expiry keeps ``None``: backend frames do not change
+            # the owner-absent verdict the orphan axis acts on.
+            #
+            # The rescue is armed only while the cap still honours the stamp.
+            # Past ``_activity_rescue_deadline`` a frame in the gap stops
+            # counting -- otherwise a backend that never goes quiet would decline
+            # every sweep from here on, and the cap would bound the idle
+            # arithmetic without bounding the retention it exists to bound.
+            recheck_now = self._deps.monotonic()
+            activity_recheck_at = (
+                None
+                if is_orphan or recheck_now > _activity_rescue_deadline(scanned, timeout_secs)
+                else recheck_now
+            )
             reset_done = await self._owner.reset(
                 key,
                 expect_session=scanned,
                 skip_if_busy=True,
                 skip_if_injecting=True,
+                refuse_if_active_since=activity_recheck_at,
+                refuse_if_active_until=_activity_rescue_deadline(scanned, timeout_secs),
             )
             if not reset_done:
                 # The release above ran BEFORE the reset, so a reset that

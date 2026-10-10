@@ -34,6 +34,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import pytest_asyncio
 from spawn_test_helpers import strip_spawn_shim
 
 from kiro_crew.acp import runtime as runtime_mod
@@ -101,8 +102,8 @@ def _pinned_kiro_cli_version(monkeypatch):
     )
 
 
-@pytest.fixture
-def kas_readiness_wire(monkeypatch, tmp_path):
+@pytest_asyncio.fixture
+async def kas_readiness_wire(monkeypatch, tmp_path):
     """Real demux and session startup; only the subprocess and clock are fake."""
     from types import SimpleNamespace
 

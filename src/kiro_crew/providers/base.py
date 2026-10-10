@@ -218,6 +218,17 @@ class LLMProvider(ABC):
         return False
 
     @property
+    def session_activity_at(self) -> float | None:
+        """Monotonic time the backend last sent anything for this session.
+
+        The session's own clock moves only when a turn is dispatched, but a
+        backend and the children it spawned keep working between turns. The
+        idle sweep reads the later of the two. None when the transport does
+        not observe frames between turns.
+        """
+        return None
+
+    @property
     def child_fidelity_aware(self) -> bool:
         """Consumer opt-in for the low-fidelity CHILD permission downgrade.
 
