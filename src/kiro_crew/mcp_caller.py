@@ -791,20 +791,25 @@ def tenant_nonce_from_meta(meta: Any) -> str:
 
 # --- Per-call current caller (stdio-loop dispatch state) --------------------
 #
-# ``run_mcp_stdio_loop`` dispatches at most ONE tool call at a time (a single
-# worker thread, joined before the next dispatch). The loop sets this from
-# the request's verified ``params._meta`` block immediately before invoking
-# the tool and clears it in the dispatch ``finally`` — tool handlers (and the
-# identity resolvers in ``mcp_core``) read it via :func:`current_caller` as
-# the AUTHENTICATED per-call identity in the pooled topology, where env-var
-# identity is wrong-by-construction (one shared backend, many sessions).
+# ``run_mcp_stdio_loop`` dispatches tool calls CONCURRENTLY on the POSIX path
+# (up to ``mcp_shared.MCP_MAX_CONCURRENT_WORKERS`` worker threads at once), so
+# one caller's long cooperative tool cannot convoy another caller's short call.
+# Each worker sets this from its request's verified ``params._meta`` block at
+# the start of its OWN thread and clears it when the tool returns — tool
+# handlers (and the identity resolvers in ``mcp_core``) read it via
+# :func:`current_caller` as the AUTHENTICATED per-call identity in the pooled
+# topology, where env-var identity is wrong-by-construction (one shared
+# backend, many sessions).
 #
-# Held in a ``contextvars.ContextVar`` rather than a bare module global: a
-# security identity must not depend on the "dispatch is sequential" invariant
-# alone — if dispatch ever becomes concurrent, each thread/task context reads
-# its own value instead of bleeding another session's identity. Set and read
-# happen in the same thread today (the worker
-# sets it at its own start), so behavior is unchanged.
+# Held in a ``contextvars.ContextVar`` rather than a bare module global because
+# that concurrency is now live: a module slot would let one worker's
+# ``set_current_caller`` be read by another worker's tool, bleeding one
+# session's identity into another's call. A ``threading.Thread`` starts each
+# ContextVar at its default rather than inheriting the dispatch thread's
+# context, so each worker's set is private to its own thread and
+# :func:`current_caller` reads the caller for the call that thread is running
+# and no other. (The Windows path still dispatches synchronously, where the set
+# and read are trivially on one thread.)
 #
 # Trust: in the pooled topology gatewayd strips any stub-supplied
 # ``kirocrew.caller`` block from every inbound frame (``backend.py``

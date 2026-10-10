@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 import urllib.request
+from contextvars import ContextVar
 from typing import Any, Callable, Literal, NamedTuple, Optional
 
 from kiro_crew import platform_compat
@@ -92,11 +93,38 @@ def internal_caller() -> str | None:
 # Overflow gets an immediate JSON-RPC busy error instead of silence.
 PENDING_CALLS_MAX = 32
 
+# Max tool workers running CONCURRENTLY on the POSIX dispatch path. The
+# ``kirocrew-core`` backend is POOLED -- one process serves every dashboard
+# session -- so a single long cooperative tool (``wait``, up to 1800s;
+# ``spawn_sub_agents``) from one session must not convoy every other session's
+# short call (``memory_recall``, ``resource_status``, ...). Independent callers
+# therefore run off the critical read loop in their own worker threads. The
+# cap is a backstop against unbounded thread growth, not a throughput target:
+# the point is that a long call cannot block a DIFFERENT caller's short one,
+# which a handful of slots already guarantees for the control-plane tool mix,
+# while the arithmetic stays bounded (worst case ~cap cooperative tools, each a
+# sleeping thread). Calls past the cap fall back to the existing FIFO
+# ``_pending_calls`` queue and are dispatched as slots free, so nothing is
+# dropped. Windows stays synchronous (``select`` cannot poll stdin there), so
+# this applies to the POSIX worker path only.
+MCP_MAX_CONCURRENT_WORKERS = 8
+
 # Max cancelled-request ids retained. ``notifications/cancelled`` can arrive
 # for any request id over the life of the (long-lived, per-session) MCP server
 # process; retaining them in an unbounded set leaks one entry per cancel. Once
 # this cap is reached the oldest ids are evicted FIFO.
 CANCELLED_IDS_MAX = 1024
+
+#: Largest ``id`` a ``tools/call`` request may carry. A JSON-RPC id is
+#: externally controlled and, once a worker starts, is retained as a dict key
+#: in ``_workers`` for the tool's whole run (seconds for a short call, up to
+#: 1800s for ``wait``) and copied into ``_pending_calls``/``_cancelled_ids``
+#: besides -- a legitimate id is a small int or short string, so an
+#: arbitrarily long string id would let one caller retain unbounded memory per
+#: in-flight request rather than the fixed worker-count cap bounding it. A
+#: real client never sends an id anywhere near this; it exists only to refuse
+#: an adversarial one before anything retains it.
+MAX_REQUEST_ID_BYTES = 256
 
 #: Largest Content-Length body :func:`_read_message` reads whole: the gateway's
 #: default per-line read limit (``mcp_gateway.pool._DEFAULT_READ_BUFFER_LIMIT``,
@@ -179,26 +207,132 @@ def _remember_cancelled_id(
             break
 
 
-# Thread-local cancel event set by run_mcp_stdio_loop worker threads.
+# Per-worker cancel event set by run_mcp_stdio_loop worker threads.
 # Cooperative tools (wait, spawn_sub_agents) should call is_tool_cancelled()
 # in their polling loops.
-_thread_cancel_event: Optional[threading.Event] = None
+#
+# Held in a ``ContextVar`` rather than a bare module global because the POSIX
+# dispatch loop now runs several callers' tool workers CONCURRENTLY (one long
+# cooperative tool from one session must not convoy another session's short
+# call -- see ``_run_stdio_dispatch_loop``). A plain module slot would be
+# clobbered: session A's cancel would set or clear session B's cooperative-cancel
+# flag. A thread that does not inherit a parent context starts each ContextVar at
+# its default, and ``threading.Thread`` creates such a thread, so each worker's
+# ``_run_tool`` sets its OWN event and ``is_tool_cancelled()`` -- called from
+# inside that same worker thread by the cooperative tool it is running -- reads
+# that worker's event and no other's.
+_thread_cancel_event: ContextVar[Optional[threading.Event]] = ContextVar(
+    "kirocrew_tool_cancel_event", default=None
+)
+# A SECOND per-worker signal, read by :func:`is_tool_cancelled` alongside the
+# cancel event but NEVER by the result-delivery guard. Set when the loop drains
+# in-flight workers on a pruned exit: a cooperative tool polling
+# ``is_tool_cancelled()`` observes it and exits promptly (so the drain does not
+# freeze on a long ``wait``), while a NON-cooperative worker that runs to
+# completion still delivers its real result -- the bounded join is its backstop.
+# Keeping it separate from ``_thread_cancel_event`` is what makes "deliver a
+# completed non-cooperative result" and "suppress a late-cancelled one" stay
+# distinct outcomes. Per-worker ``ContextVar`` for the same reason the cancel
+# event is.
+_thread_drain_event: ContextVar[Optional[threading.Event]] = ContextVar(
+    "kirocrew_tool_drain_event", default=None
+)
 
 
 def is_tool_cancelled() -> bool:
     """Return True if the current in-flight tool call has been cancelled.
 
     Cooperative tools like ``wait`` should check this in their sleep loop
-    and exit early (raising ``ToolCancelled``) when True.
+    and exit early (raising ``ToolCancelled``) when True. Reads the current
+    worker thread's own cancel event (a ``ContextVar``), so a cancel delivered
+    for one concurrent caller's call never trips another's. Also True when the
+    loop is draining this worker on a pruned exit, so a cooperative tool exits
+    promptly rather than holding the drain open for its full duration.
     """
-    evt = _thread_cancel_event
-    return evt is not None and evt.is_set()
+    evt = _thread_cancel_event.get()
+    if evt is not None and evt.is_set():
+        return True
+    drain = _thread_drain_event.get()
+    return drain is not None and drain.is_set()
 
 
 class ToolCancelled(Exception):
     """Raised by cooperative tools when ``is_tool_cancelled()`` returns True."""
 
     pass
+
+
+class _DrainedError:
+    """``result_box`` marker for a drain-only (not really cancelled) exit.
+
+    A worker caught ``ToolCancelled`` with its own ``cancel_event`` unset --
+    nobody asked to cancel this call, it just exited early because a pruned
+    install is shutting down (see ``_drain_remaining_on_pruned_exit``). It has
+    no real tool result to hand back, so it boxes this marker instead of the
+    normal success response text; :func:`_reap_finished_workers` delivers its
+    ``error`` payload as a JSON-RPC error rather than a ``result``, so the
+    caller hears "retry" instead of getting no response at all.
+    """
+
+    __slots__ = ("error",)
+
+    def __init__(self, error: dict[str, Any]) -> None:
+        self.error = error
+
+
+class _StdioWorker:
+    """One in-flight ``tools/call`` on the concurrent POSIX dispatch path.
+
+    The loop runs several of these at once (bounded by
+    :data:`MCP_MAX_CONCURRENT_WORKERS`), so every piece of a request's in-flight
+    state is held per request on its own record rather than on a shared slot.
+    Collapsing it onto shared slots is what would let one caller's cancel,
+    result, or audit land against another caller's call.
+
+    Keyed in the loop's ``_workers`` dict by ``_worker_key(req_id)`` (type +
+    value, so ``1`` and ``"1"`` do not collide). ``result_box`` and
+    ``audited`` are read and written under the loop's single ``_result_lock``:
+    the worker thread fills them and the read loop drains them, one box per
+    request.
+    """
+
+    __slots__ = (
+        "req_id",
+        "tool_name",
+        "caller_ctx",
+        "caller_key",
+        "cancel_event",
+        "drain_event",
+        "thread",
+        "result_box",
+        "result_ready",
+        "audited",
+    )
+
+    def __init__(
+        self,
+        req_id: Any,
+        tool_name: str,
+        caller_ctx: "CallerContext | None",
+    ) -> None:
+        self.req_id = req_id
+        self.tool_name = tool_name
+        self.caller_ctx = caller_ctx
+        self.caller_key = caller_ctx.session_key if caller_ctx else ""
+        self.cancel_event = threading.Event()
+        # Set when the loop drains this worker on a pruned exit. Read by
+        # ``is_tool_cancelled`` (so a cooperative tool exits promptly) but NOT
+        # by the result-delivery guard, so a non-cooperative worker that runs to
+        # completion still delivers its real result.
+        self.drain_event = threading.Event()
+        self.thread: Optional[threading.Thread] = None
+        # [response_payload] once delivered, else [] (cancelled before delivery).
+        self.result_box: list = []
+        self.result_ready = threading.Event()
+        # True once this request's outcome has been SEL-audited, so the read
+        # loop does not emit a second record for a late-cancel it already
+        # audited. Guarded by the loop's ``_result_lock``.
+        self.audited = False
 
 
 # The framing the client's first accepted message used, and so the framing of
@@ -1465,20 +1599,27 @@ def run_mcp_stdio_loop(
 ) -> None:
     """Generic MCP stdio server loop — reads JSON-RPC from stdin, writes to stdout.
 
-    Tool calls run in a worker thread so the main read loop stays responsive to
-    ``notifications/cancelled`` messages from the gateway. When a cancel is
-    received for an in-flight request, the worker thread is interrupted via
-    a threading.Event that cooperative tools (``wait``, ``spawn_sub_agents``)
-    check periodically. The cancelled request emits no response (per MCP spec).
+    On POSIX, tool calls run in worker threads so the main read loop stays
+    responsive to ``notifications/cancelled`` messages, pings, and — crucially
+    for the POOLED ``kirocrew-core`` backend, where one process serves every
+    session — OTHER callers' calls. Up to
+    :data:`MCP_MAX_CONCURRENT_WORKERS` run at once, so one session's long
+    cooperative tool (``wait``, ``spawn_sub_agents``) cannot convoy another
+    session's short call. When a cancel is received for an in-flight request,
+    that request's own worker is interrupted via a per-request
+    ``threading.Event`` the cooperative tool checks through
+    :func:`is_tool_cancelled` (a ``ContextVar``, so one caller's cancel never
+    trips another's). The cancelled request emits no response (per MCP spec).
 
-    ``tools/call`` requests that arrive while a worker is busy are buffered in
-    a bounded FIFO queue and dispatched in order as the worker frees
+    ``tools/call`` requests that arrive while all worker slots are busy are
+    buffered in a bounded FIFO queue and dispatched in order as slots free
     (silently dropping them left the client waiting forever on a response
     that never came). Queue overflow gets an immediate busy error response.
 
     On Windows ``select.select`` cannot poll ``sys.stdin`` (it only accepts
-    sockets), so tool calls dispatch synchronously exactly as the pre-worker
-    loop did — no in-flight cancel/ping interleave there (POSIX-only feature).
+    sockets), so tool calls dispatch synchronously, one at a time — no
+    worker-thread interleave and no concurrency there (a POSIX-only feature;
+    Windows concurrency is a separate, tracked problem).
 
     Before serving anything, a private dup of stdout is captured
     (:func:`snapshot_stdout_fd`) so responses survive a library's process-wide
@@ -1536,14 +1677,28 @@ def _run_stdio_dispatch_loop(
     Returns True when it stopped because this process's install was pruned
     (see :func:`_refuse_from_pruned_install`), False on an ordinary EOF.
     """
-    # In-flight tool execution state: at most one at a time (sequential dispatch).
-    _current_req_id: Any = None
-    _current_caller_key: str = ""
-    _cancel_event: Optional[threading.Event] = None
-    _worker_thread: Optional[threading.Thread] = None
+    # In-flight tool execution state. The POSIX path runs up to
+    # MCP_MAX_CONCURRENT_WORKERS tool workers at once, one _StdioWorker record
+    # per request keyed by _worker_key(req_id), so one caller's long cooperative
+    # tool cannot convoy another caller's short call. _result_lock guards each
+    # worker's result_box/audited (the worker thread writes them, the read loop
+    # drains them) and _workers membership itself.
+    _workers: dict[str, _StdioWorker] = {}
+
+    def _worker_key(req_id: Any) -> str:
+        """Dict key for the ``_workers`` map, injective on req_id's TYPE+value.
+
+        A plain ``str(req_id)`` collides the JSON-RPC ids ``1`` and ``"1"`` onto
+        one key, so a second call bearing the string form would overwrite the
+        first's record -- untracking it for cancellation and the worker cap.
+        Qualifying with the type name keeps them distinct. This is separate from
+        the ``_cancelled_ids`` namespace, which stays ``str``-keyed on purpose:
+        it mirrors the cancel protocol, whose ``requestId`` is matched as a
+        string.
+        """
+        return f"{type(req_id).__name__}:{req_id!r}"
+
     _result_lock = threading.Lock()
-    _result_ready = threading.Event()
-    _result_box: list = []  # [response_payload] or [] if cancelled
     _cancelled_ids: set = set()
     # Insertion-order tracker for _cancelled_ids so it can be pruned FIFO once
     # it reaches CANCELLED_IDS_MAX (prevents unbounded growth on long-lived
@@ -1551,12 +1706,13 @@ def _run_stdio_dispatch_loop(
     # the module-level _remember_cancelled_id() so it is unit-testable.
     _cancelled_order: collections.deque[str] = collections.deque()
 
-    _current_tool_name: str = ""
-    _worker_audited: list = [False]  # [bool], guarded by _result_lock
-    # tools/call requests received while a worker was busy, dispatched FIFO.
+    # tools/call requests received while the worker pool is full, dispatched FIFO.
     _pending_calls: collections.deque[dict[str, Any]] = collections.deque()
-    # Set by ``_dispatch`` when a pruned install answered every call and the
-    # loop must stop so the pool respawns this server.
+    # Set by ``_dispatch`` when a pruned install answered every new/queued call
+    # and the loop must stop so the pool respawns this server. The loop stops
+    # starting new calls but drains any worker still in flight (see
+    # ``_drain_remaining_on_pruned_exit``) before returning, so a long-running
+    # caller gets its real result rather than "backend gone".
     _pruned_exit = False
 
     def _live_request_ids() -> set[str]:
@@ -1569,8 +1725,8 @@ def _run_stdio_dispatch_loop(
         data-mutation path. Passed to ``_remember_cancelled_id`` as protected.
         """
         ids: set[str] = set()
-        if _current_req_id is not None:
-            ids.add(str(_current_req_id))
+        for _w in _workers.values():
+            ids.add(str(_w.req_id))
         for _pc in _pending_calls:
             _pcid = _pc.get("id")
             if _pcid is not None:
@@ -1678,20 +1834,28 @@ def _run_stdio_dispatch_loop(
         return build_tool_response(text, is_error=flagged)
 
     def _run_tool(
-        req_id: Any,
-        tool_name: str,
+        worker: _StdioWorker,
         tool_args: dict,
-        cancel_evt: threading.Event,
         caller_ctx: "CallerContext | None" = None,
         tenant_nonce: str = "",
     ) -> None:
-        """Worker thread: run tool, store result unless cancelled."""
-        global _thread_cancel_event
-        # Inject cancel event into thread-local so cooperative tools can check it
-        _thread_cancel_event = cancel_evt
-        # Install the verified per-call caller for identity resolvers. Safe as
-        # a module slot: dispatch is strictly sequential (one worker at a
-        # time, joined before the next dispatch).
+        """Worker thread: run tool, store result on ``worker`` unless cancelled."""
+        req_id = worker.req_id
+        tool_name = worker.tool_name
+        cancel_evt = worker.cancel_event
+        # Inject this worker's cancel event into the ContextVar so the
+        # cooperative tool running in THIS thread reads its own event. The
+        # ContextVar (not a module global) is what keeps concurrent workers
+        # from clobbering each other's cancel flag -- a thread starts each
+        # ContextVar at its default, so this set is private to this worker.
+        _thread_cancel_event.set(cancel_evt)
+        # The pruned-exit drain signal, read by the same ``is_tool_cancelled``
+        # poll. Per-worker like the cancel event, and private to this thread.
+        _thread_drain_event.set(worker.drain_event)
+        # Install the verified per-call caller for identity resolvers. Caller
+        # identity is a ContextVar too (mcp_caller._CURRENT_CALLER), so this is
+        # per-worker and safe now that dispatch is concurrent -- each worker
+        # thread sees only the caller it set.
         set_current_caller(caller_ctx)
         # And the connection's namespace separator, which is present even when
         # the caller is not: a tool that keys per-tenant state for a caller the
@@ -1701,19 +1865,51 @@ def _run_stdio_dispatch_loop(
         try:
             result_text = call_tool_fn(tool_name, tool_args)
         except ToolCancelled:
-            # Tool cooperatively exited on cancel -- suppress response
-            logger.info("tool cancelled for request %s", req_id)
-            # SEL audit: cancelled tool invocations must emit audit events
+            # A REAL cancel (cancel_evt set) has no result to deliver -- the
+            # caller already asked to stop hearing about this call, so
+            # suppress the response as before. A DRAIN-only exit (cancel_evt
+            # NOT set: is_tool_cancelled() tripped on drain_event alone, from
+            # a pruned install's _drain_remaining_on_pruned_exit) is different:
+            # nobody asked to cancel this call, the tool just exited early so
+            # the process can shut down, and it has no real result to hand
+            # back. Silence there would hand the caller "backend gone" with no
+            # response at all -- the exact regression the drain path exists to
+            # avoid. Answer it instead with the same retryable -32000 the
+            # not-yet-started pruned-install path already uses, so the caller
+            # retries rather than hanging.
+            drained_only = not cancel_evt.is_set()
+            logger.info(
+                "tool %s for request %s",
+                "drained (pruned exit)" if drained_only else "cancelled",
+                req_id,
+            )
+            # SEL audit: cancelled/drained tool invocations must emit audit events
             _sel_audit(
                 "cancelled",
                 tool_name,
                 req_id,
                 caller_ctx.session_key if caller_ctx else "",
             )
-            _thread_cancel_event = None
+            _thread_cancel_event.set(None)
+            _thread_drain_event.set(None)
             set_current_caller(None)
             set_current_tenant_nonce("")
-            _result_ready.set()
+            with _result_lock:
+                if drained_only:
+                    worker.result_box.append(
+                        _DrainedError(
+                            {
+                                "code": -32000,
+                                "message": (
+                                    f"{server_name} is restarting from an "
+                                    "updated install and stopped this call "
+                                    "early; retry it"
+                                ),
+                            }
+                        )
+                    )
+                worker.audited = True
+            worker.result_ready.set()
             return
         except Exception as exc:
             result_text = f"Error: {neutralize_markers(str(exc))}"  # not a directive: see call_tool_with_logging
@@ -1721,7 +1917,8 @@ def _run_stdio_dispatch_loop(
         else:
             _tool_errored = False
         finally:
-            _thread_cancel_event = None
+            _thread_cancel_event.set(None)
+            _thread_drain_event.set(None)
             set_current_caller(None)
             set_current_tenant_nonce("")
         # Audit decision is made atomically with the cancellation check, under
@@ -1729,7 +1926,7 @@ def _run_stdio_dispatch_loop(
         # per request (a failed+late-cancel race must not emit two).
         with _result_lock:
             if not cancel_evt.is_set():
-                _result_box.append(_tool_response(result_text))
+                worker.result_box.append(_tool_response(result_text))
                 if _tool_errored:
                     # Exception escaped call_tool_fn (may bypass its internal
                     # logging) -- audit the failure.
@@ -1739,7 +1936,7 @@ def _run_stdio_dispatch_loop(
                         req_id,
                         caller_ctx.session_key if caller_ctx else "",
                     )
-                    _worker_audited[0] = True
+                    worker.audited = True
             else:
                 # Late-cancel race: tool finished (or errored) but cancel
                 # arrived before delivery. From the client's perspective this
@@ -1750,8 +1947,8 @@ def _run_stdio_dispatch_loop(
                     req_id,
                     caller_ctx.session_key if caller_ctx else "",
                 )
-                _worker_audited[0] = True
-        _result_ready.set()
+                worker.audited = True
+        worker.result_ready.set()
 
     def _refuse_from_pruned_install(first_req_id: Any, tool_name: str) -> None:
         """Answer this call and every queued one, so none is left waiting.
@@ -1853,9 +2050,9 @@ def _run_stdio_dispatch_loop(
         return method, req_id, params
 
     def _dispatch(method: str, req_id: Any, params: dict[str, Any]) -> None:
-        """Serve one request while no tool is running (the idle path)."""
-        nonlocal _worker_thread, _current_req_id, _current_tool_name
-        nonlocal _current_caller_key, _cancel_event, _pruned_exit
+        """Serve one request. Tool calls start a worker thread (POSIX) or run
+        synchronously (Windows); other methods answer inline."""
+        nonlocal _pruned_exit
         if method == "initialize":
             _caps: dict[str, Any] = {"tools": {"listChanged": False}}
             if advertise_caller_identity:
@@ -2178,37 +2375,28 @@ def _run_stdio_dispatch_loop(
                     set_current_tenant_nonce("")
                 respond(req_id, _tool_response(result_text))
             else:
-                # Dispatch tool in worker thread so we can receive cancel notifications
-                _cancel_event = threading.Event()
-                _current_req_id = req_id
-                _current_tool_name = tool_name
-                _current_caller_key = _caller_ctx.session_key if _caller_ctx else ""
-                _worker_audited[0] = False
-                _result_ready.clear()
-                _result_box.clear()
-                _worker_thread = threading.Thread(
+                # Dispatch tool in its own worker thread so the read loop stays
+                # free for cancels, pings, and OTHER callers' calls. Up to
+                # MCP_MAX_CONCURRENT_WORKERS run at once; the caller only reaches
+                # this branch with a free slot (the busy/queue split upstream
+                # routes a call past the cap into _pending_calls).
+                worker = _StdioWorker(req_id, tool_name, _caller_ctx)
+                _workers[_worker_key(req_id)] = worker
+                worker.thread = threading.Thread(
                     target=_run_tool,
-                    args=(
-                        req_id,
-                        tool_name,
-                        tool_args,
-                        _cancel_event,
-                        _caller_ctx,
-                        _tenant_nonce,
-                    ),
+                    args=(worker, tool_args, _caller_ctx, _tenant_nonce),
                     daemon=True,
                 )
                 try:
-                    _worker_thread.start()
+                    worker.thread.start()
                 except Exception:
                     # Nothing runs (out of threads under the scope's task
-                    # ceiling): the next pass must not take an unstarted
-                    # thread for a running or a finished one. The call is
-                    # still an invocation decision, so it is audited as failed.
-                    _sel_audit("failed", tool_name, req_id, _current_caller_key)
-                    _worker_thread = None
-                    _current_req_id = None
-                    _cancel_event = None
+                    # ceiling): drop the half-registered worker so the next
+                    # pass does not take an unstarted thread for a running or
+                    # finished one. The call is still an invocation decision,
+                    # so it is audited as failed.
+                    _sel_audit("failed", tool_name, req_id, worker.caller_key)
+                    _workers.pop(_worker_key(req_id), None)
                     raise
         elif req_id is not None:
             respond(
@@ -2220,47 +2408,239 @@ def _run_stdio_dispatch_loop(
                 },
             )
 
-    def _deliver_finished_worker(join_timeout: float) -> None:
-        """Join the finished worker and deliver its result, or audit its cancel."""
-        nonlocal _worker_thread, _current_req_id, _cancel_event
-        if _worker_thread is not None:
-            _worker_thread.join(timeout=join_timeout)
-        _worker_thread = None
-        with _result_lock:
-            if _result_box and str(_current_req_id) not in _cancelled_ids:
-                respond(_current_req_id, _result_box[0])
-            elif _result_box and not _worker_audited[0]:
-                # Boxed result dropped due to cancellation (cancel arrived
-                # after the worker delivered) -- audit it.
-                _sel_audit(
-                    "cancelled",
-                    _current_tool_name,
-                    _current_req_id,
-                    _current_caller_key,
-                )
-            _result_box.clear()
-            # Consumed: drop the id so a completed request never lingers
-            # in the cancelled set.
-            _cancelled_ids.discard(str(_current_req_id))
-        _current_req_id = None
-        _cancel_event = None
-        _result_ready.clear()
+    def _reap_finished_workers() -> None:
+        """Deliver results for every worker that has finished, and drop it.
+
+        A worker is finished once it set ``result_ready``. Join is bounded and
+        best-effort: the thread has already run its body by the time the event
+        is set, so the join only reclaims the thread object. Each worker's
+        result/cancel/audit is handled from its OWN record, so concurrent
+        workers finishing in any order never cross-deliver.
+
+        Cancellation is read from the worker's OWN ``cancel_event``, not the
+        shared ``_cancelled_ids`` set: that set is ``str``-keyed to mirror the
+        wire's ``requestId``, so JSON-RPC ids ``1`` and ``"1"`` collapse onto
+        the same entry there, and checking membership by that collapsed key
+        would make one id's cancel wrongly discard the other's distinct,
+        uncancelled result. ``cancel_event`` is set only via
+        ``_workers.get(_worker_key(cancelled_rid))``, which is injective on
+        type + value, so it never cross-attributes a cancel between them.
+        """
+        done = [w for w in _workers.values() if w.result_ready.is_set()]
+        for worker in done:
+            if worker.thread is not None:
+                worker.thread.join(timeout=1.0)
+            wid = str(worker.req_id)
+            with _result_lock:
+                if worker.result_box and not worker.cancel_event.is_set():
+                    boxed = worker.result_box[0]
+                    if isinstance(boxed, _DrainedError):
+                        respond(worker.req_id, None, error=boxed.error)
+                    else:
+                        respond(worker.req_id, boxed)
+                elif worker.result_box and not worker.audited:
+                    # Boxed result dropped due to cancellation (cancel arrived
+                    # after the worker delivered) -- audit it.
+                    _sel_audit(
+                        "cancelled",
+                        worker.tool_name,
+                        worker.req_id,
+                        worker.caller_key,
+                    )
+                # Consumed: drop the id so a completed request never lingers
+                # in the cancelled set.
+                _cancelled_ids.discard(wid)
+                _workers.pop(_worker_key(worker.req_id), None)
+
+    def _slot_free() -> bool:
+        """True when another worker may start under the concurrency cap.
+
+        The multi-worker cap is scoped to ``kirocrew-core`` -- the POOLED
+        backend this per-caller concurrency was built for (see the module
+        docstring). Every other server sharing this dispatch loop
+        (``kirocrew-computer``, ``kirocrew-cron``, ...) keeps the original
+        one-worker-at-a-time behavior: those servers were never pooled across
+        sessions, so nothing in them was written expecting a SECOND tool call
+        to start before the first finishes, and for ``kirocrew-computer``
+        specifically concurrent calls would mean two tool invocations driving
+        the same real mouse/keyboard at once.
+        """
+        cap = MCP_MAX_CONCURRENT_WORKERS if server_name == "kirocrew-core" else 1
+        return len(_workers) < cap
+
+    def _route_tool_call(
+        req: dict[str, Any], method: str, req_id: Any, params: dict[str, Any]
+    ) -> None:
+        """Dispatch a tools/call now if a slot is free, else queue it FIFO.
+
+        A free worker slot AND an empty backlog means dispatch immediately, so
+        an independent caller's call runs concurrently rather than waiting
+        behind a long one. Otherwise it joins _pending_calls, which drains in
+        order as slots free. Overflow past PENDING_CALLS_MAX gets an immediate
+        busy error rather than silence.
+
+        An oversized ``req_id`` (over :data:`MAX_REQUEST_ID_BYTES`) is refused
+        here, before dispatch OR queueing: either path would retain the id
+        (as a ``_workers``/``_pending_calls`` entry) for as long as the tool
+        runs, up to 1800s for ``wait``, so refusing late would still have let
+        it be retained. Measured on ``repr(req_id)`` -- the same text
+        ``_worker_key`` embeds in its own key -- rather than only on a
+        ``str`` id, so a JSON-decoded container id (a dict or list; the
+        envelope validator does not restrict ``id`` to the spec's
+        string/number/null) carrying an oversized nested value is bounded the
+        same way a plain string id is, instead of silently bypassing the
+        limit it was meant to retain through. Rejecting rather than
+        truncating keeps the id the caller gets back in sync with the one it
+        sent.
+
+        A ``req_id`` already live (an existing ``_workers`` entry OR a still-
+        queued ``_pending_calls`` entry) is refused the same way: dispatching
+        it anyway would have ``_workers[_worker_key(req_id)] = worker``
+        overwrite the live record, so the earlier worker keeps running
+        uncounted against :data:`MCP_MAX_CONCURRENT_WORKERS` (its dict entry
+        is gone) and its eventual result is orphaned -- never reaped, never
+        delivered.
+        """
+        if len(repr(req_id).encode("utf-8", "surrogatepass")) > MAX_REQUEST_ID_BYTES:
+            _sel_audit(
+                "rejected_oversized_id",
+                _tool_call_name(params) or "",
+                req_id,
+                _req_caller_key(params),
+            )
+            respond(
+                req_id,
+                None,
+                error={
+                    "code": JSONRPC_INVALID_REQUEST,
+                    "message": f"Request id exceeds {MAX_REQUEST_ID_BYTES} bytes",
+                },
+            )
+            return
+        if _worker_key(req_id) in _workers or any(
+            _worker_key(_pc.get("id")) == _worker_key(req_id) for _pc in _pending_calls
+        ):
+            # A req_id already live (dispatched or queued) must be refused,
+            # not re-dispatched: ``_workers[_worker_key(req_id)] = worker``
+            # below would silently OVERWRITE the live record, so the earlier
+            # worker's thread keeps running uncounted against the cap (its
+            # dict entry is gone) and its result is orphaned -- never reaped,
+            # never delivered. Refusing the duplicate up front preserves the
+            # existing record intact.
+            _sel_audit(
+                "rejected_duplicate_id",
+                _tool_call_name(params) or "",
+                req_id,
+                _req_caller_key(params),
+            )
+            respond(
+                req_id,
+                None,
+                error={
+                    "code": JSONRPC_INVALID_REQUEST,
+                    "message": "Request id is already in flight",
+                },
+            )
+            return
+        if _slot_free() and not _pending_calls:
+            _dispatch(method, req_id, params)
+            return
+        if len(_pending_calls) >= PENDING_CALLS_MAX:
+            # Rejection is a tool-invocation decision -- audit it
+            # (security-controls: all invocation decisions emit SEL).
+            _sel_audit(
+                "rejected_busy",
+                params.get("name", ""),
+                req_id,
+                _req_caller_key(params),
+            )
+            respond(
+                req_id,
+                None,
+                error={
+                    "code": -32000,
+                    "message": "Server busy: pending tool-call queue is full; retry",
+                },
+            )
+        else:
+            _pending_calls.append(req)
+
+    def _drain_pending() -> None:
+        """Start queued tools/call requests FIFO while worker slots are free."""
+        nonlocal _pruned_exit
+        while _pending_calls and _slot_free():
+            req = _pending_calls.popleft()
+            if isinstance(req, _Skipped):
+                continue
+            envelope = _servable(req)
+            if envelope is None:
+                continue
+            method, req_id, params = envelope
+            try:
+                _dispatch(method, req_id, params)
+            except Exception:  # noqa: BLE001 - one message must not end the server
+                _answer_internal_error(method, req_id)
+            if _pruned_exit:
+                return
+
+    def _drain_remaining_on_pruned_exit() -> None:
+        """Deliver every still-running worker's result before a pruned exit.
+
+        A pruned install stops accepting NEW calls, but a worker already in
+        flight (a long ``wait``/``spawn_sub_agents``) must still get its real
+        result -- exiting the process out from under it would hand that caller
+        "backend gone" instead.
+
+        Signal each worker's drain event FIRST, then join-reap: these tools are
+        cooperative (``wait``/``spawn_sub_agents`` poll ``is_tool_cancelled()``),
+        so a drain that waited out a long ``wait``'s full sleep would freeze the
+        read loop -- no pings, cancels or new calls answered -- for up to the
+        tool's whole duration, which the ping-gated wedge detector could read as
+        a hang and kill, losing the result. Signalling turns that into a prompt
+        cooperative exit. The drain event (not the cancel event) is used so a
+        NON-cooperative worker that runs to completion before the bounded
+        ``join`` still DELIVERS its real result rather than having it suppressed
+        as a late cancel -- the bounded ``join`` keeps each wait attempt from
+        blocking unboundedly, and the ``while _workers`` loop reaps and retries
+        until every worker has finished and been delivered. Reap each pass to
+        deliver whatever finished.
+        """
+        for _w in list(_workers.values()):
+            _w.drain_event.set()
+        while _workers:
+            for _w in list(_workers.values()):
+                if _w.thread is not None:
+                    _w.thread.join(timeout=5.0)
+            _reap_finished_workers()
 
     while True:
-        # If a worker is running, poll for completion while also reading stdin
-        if _worker_thread is not None and _worker_thread.is_alive():
-            # Non-blocking stdin read with short timeout to interleave. A line
-            # already buffered is read first: select cannot see it.
+        # Reap any worker that finished, freeing its slot and delivering its
+        # result. Done every pass so a short call's response goes out promptly
+        # even while a long call still holds another slot.
+        _reap_finished_workers()
+        # Start queued calls into any slots the reap (or a prior dispatch) freed.
+        _drain_pending()
+        if _pruned_exit:
+            _drain_remaining_on_pruned_exit()
+            return True
+
+        # Busy: at least one worker is still running. Poll stdin so the read
+        # loop stays responsive to cancels, pings, OTHER callers' calls and
+        # tools/list while those workers run.
+        if _workers:
+            # A line already buffered is read first: select cannot see it.
             readable = _stdin_holds_a_line(sys.stdin) or select.select([sys.stdin], [], [], 0.1)[0]
             if not readable:
-                if _result_ready.is_set():
-                    _deliver_finished_worker(1.0)
                 continue
             req = _read_message(sys.stdin)
             if req is None:
-                # EOF: wait for worker then exit
-                if _worker_thread:
-                    _worker_thread.join(timeout=5.0)
+                # EOF: wait for every worker, then deliver whatever they
+                # produced before exiting -- a tool that finished just before
+                # EOF must still be answered, not dropped on the way out.
+                for _w in list(_workers.values()):
+                    if _w.thread is not None:
+                        _w.thread.join(timeout=5.0)
+                _reap_finished_workers()
                 break
             if isinstance(req, _Skipped):
                 # One iteration per dropped frame, so a finished worker's
@@ -2270,7 +2650,6 @@ def _run_stdio_dispatch_loop(
             if envelope is None:
                 continue
             method, req_id, params = envelope
-            # Process only cancel notifications while tool is running
             try:
                 if method == "notifications/cancelled":
                     cancelled_rid = params.get("requestId")
@@ -2281,67 +2660,52 @@ def _run_stdio_dispatch_loop(
                             str(cancelled_rid),
                             protected=_live_request_ids(),
                         )
-                        if str(cancelled_rid) == str(_current_req_id) and _cancel_event:
-                            _cancel_event.set()
+                        _target = _workers.get(_worker_key(cancelled_rid))
+                        if _target is not None:
+                            _target.cancel_event.set()
                             logger.info("cancel received for in-flight request %s", cancelled_rid)
                 # Answer gateway pings even while a tool is in-flight so the
                 # ping-gated wedge detector sees the backend as responsive.
                 elif method == "ping" and req_id is not None:
                     respond(req_id, {})
-                # Buffer tools/call requests that arrive while busy so they get a
-                # response when the worker frees (dropping them left the
-                # client waiting forever). Cancels against queued ids are honored
-                # at dispatch time via _cancelled_ids.
+                # tools/call while workers are running: dispatch concurrently if
+                # a slot is free, else queue (dropping it left the client waiting
+                # forever). Cancels against queued ids are honored at dispatch
+                # time via _cancelled_ids.
                 elif method == "tools/call" and req_id is not None:
-                    if len(_pending_calls) >= PENDING_CALLS_MAX:
-                        # Rejection is a tool-invocation decision -- audit it
-                        # (security-controls: all invocation decisions emit SEL).
-                        _sel_audit(
-                            "rejected_busy",
-                            params.get("name", ""),
-                            req_id,
-                            _req_caller_key(params),
-                        )
-                        respond(
-                            req_id,
-                            None,
-                            error={
-                                "code": -32000,
-                                "message": "Server busy: pending tool-call queue is full; retry",
-                            },
-                        )
-                    else:
-                        _pending_calls.append(req)
-                # Other messages while busy: drop gracefully. Notifications are
-                # fine to drop; initialize/initialized never arrive mid-tool.
+                    _route_tool_call(req, method, req_id, params)
+                # Other messages while busy are served inline. tools/list must be
+                # answered promptly (kiro-cli blocks its session on it); it reads
+                # only this request's own identity, never a running worker's.
                 elif method == "tools/list" and req_id is not None:
                     respond(req_id, {"tools": _listable_tools(_req_caller(params))})
             except Exception:  # noqa: BLE001 - one message must not end the server
                 _answer_internal_error(method, req_id)
+            if _pruned_exit:
+                _drain_remaining_on_pruned_exit()
+                return True
             continue
 
-        # Check if worker just finished
-        if _worker_thread is not None:
-            _deliver_finished_worker(0.1)
-
-        # Dispatch a queued tools/call (FIFO) before reading new input.
-        if _pending_calls:
-            req = _pending_calls.popleft()
-        else:
-            req = _read_message(sys.stdin)
-            if req is None:
-                break
-            if isinstance(req, _Skipped):
-                continue
-
+        # Idle: no workers running. Read the next message and serve it. A
+        # leftover queued call is started by _drain_pending() at the top of the
+        # loop, so here we only block for new input.
+        req = _read_message(sys.stdin)
+        if req is None:
+            break
+        if isinstance(req, _Skipped):
+            continue
         envelope = _servable(req)
         if envelope is None:
             continue
         method, req_id, params = envelope
         try:
-            _dispatch(method, req_id, params)
+            if method == "tools/call" and req_id is not None:
+                _route_tool_call(req, method, req_id, params)
+            else:
+                _dispatch(method, req_id, params)
         except Exception:  # noqa: BLE001 - one message must not end the server
             _answer_internal_error(method, req_id)
         if _pruned_exit:
+            _drain_remaining_on_pruned_exit()
             return True
     return False

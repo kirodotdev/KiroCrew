@@ -858,7 +858,12 @@ class _LoopHarness:
     """
 
     def __init__(
-        self, monkeypatch, call_tool_fn, loop_kwargs: dict | None = None, list_tools_fn=None
+        self,
+        monkeypatch,
+        call_tool_fn,
+        loop_kwargs: dict | None = None,
+        list_tools_fn=None,
+        server_name: str = "kirocrew-core",
     ):
         import os
         import sys
@@ -880,7 +885,14 @@ class _LoopHarness:
         self._os = os
         self._thread = threading.Thread(
             target=mcp_shared.run_mcp_stdio_loop,
-            args=("test-server", "0.0.0", list_tools_fn or (lambda: []), call_tool_fn),
+            # "kirocrew-core" by default (not "test-server"): the
+            # multi-worker concurrency cap is scoped to that server name
+            # (see _slot_free's docstring) -- every other server runs one
+            # worker at a time, which these busy-queue/concurrency tests
+            # rely on NOT being the case. Pass server_name="test-server"
+            # (or any non-"kirocrew-core" name) to test the single-worker,
+            # externally-spawned-identity path instead.
+            args=(server_name, "0.0.0", list_tools_fn or (lambda: []), call_tool_fn),
             kwargs=loop_kwargs or {},
             daemon=True,
         )
@@ -921,6 +933,21 @@ class _LoopHarness:
             time.sleep(0.05)
         return predicate()
 
+    def drain_barrier(self, ping_id: int, timeout: float = 5.0) -> None:
+        """Send a ``ping`` and block until the loop answers it.
+
+        A deterministic ordering barrier that replaces a fixed sleep between
+        two ``send()`` calls: the loop reads one frame per iteration and
+        answers ``ping`` inline (even while a worker is busy), so once this
+        ping's response is recorded the loop has provably read past every frame
+        sent before it -- the preceding ``tools/call`` is already dispatched or
+        parked in the pending queue. ``ping_id`` must be unique per barrier.
+        """
+        self.send({"jsonrpc": "2.0", "id": ping_id, "method": "ping"})
+        assert self.wait_for(
+            lambda: any(r[0] == ping_id for r in self.responses), timeout=timeout
+        ), f"the loop never answered ping {ping_id}"
+
     def close(self) -> None:
         self._os.close(self._wfd)
         self._thread.join(timeout=5.0)
@@ -932,6 +959,16 @@ def _tools_call(req_id, tool_name: str) -> dict:
         "id": req_id,
         "method": "tools/call",
         "params": {"name": tool_name, "arguments": {}},
+    }
+
+
+def _tools_call_with_arg(req_id, tool_name: str, arguments: dict) -> dict:
+    """A ``tools/call`` carrying arguments, so the tool can tell calls apart."""
+    return {
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "method": "tools/call",
+        "params": {"name": tool_name, "arguments": arguments},
     }
 
 
@@ -951,27 +988,113 @@ def _slow_then_echo():
     return call_tool, started, release
 
 
+def _saturating_tool():
+    """A blockable tool plus a counter of how many ``slow`` calls have started.
+
+    The concurrency cap means a short call runs CONCURRENTLY beside a long one
+    rather than queueing behind it, so a test that needs the FIFO queue (or its
+    overflow) must first fill every worker slot. ``start_count()`` reports how
+    many ``slow`` workers are blocked, so the test can wait until the pool is
+    saturated before sending the call it expects to queue. ``fast`` returns
+    immediately.
+    """
+    import threading
+
+    release = threading.Event()
+    lock = threading.Lock()
+    started = [0]
+
+    def call_tool(name, args):
+        if name == "slow":
+            with lock:
+                started[0] += 1
+            release.wait(timeout=10.0)
+        return f"done:{name}"
+
+    def start_count() -> int:
+        with lock:
+            return started[0]
+
+    return call_tool, start_count, release
+
+
+def _fill_worker_slots(harness, start_count, first_id: int = 1000) -> int:
+    """Send one ``slow`` call per worker slot and wait until all have started.
+
+    Returns the next unused request id. After this the worker pool is full, so
+    the next ``tools/call`` the test sends lands in the FIFO queue.
+    """
+    cap = mcp_shared.MCP_MAX_CONCURRENT_WORKERS
+    for i in range(cap):
+        harness.send(_tools_call(first_id + i, "slow"))
+    assert harness.wait_for(lambda: start_count() >= cap, timeout=5.0)
+    return first_id + cap
+
+
 @pytest.mark.skipif(
     not platform_compat.IS_POSIX,
     reason="worker-thread + select() interleave is POSIX-only",
 )
 class TestStdioLoopBusyQueue:
-    def test_tools_call_while_busy_is_queued_and_answered_fifo(self, monkeypatch):
-        import time
+    def test_tools_call_past_the_cap_is_queued_and_answered_fifo(self, monkeypatch):
+        import threading
 
-        call_tool, started, release = _slow_then_echo()
+        # Cap at one slot: a single slow call saturates the pool, so the two
+        # fast calls queue, and the queue drains them ONE AT A TIME as the slot
+        # frees. That serialization is what makes dispatch order observable --
+        # with a wider pool the two fast workers would start concurrently and
+        # their start order would be a thread-scheduling race, not the FIFO
+        # guarantee under test.
+        monkeypatch.setattr(mcp_shared, "MCP_MAX_CONCURRENT_WORKERS", 1)
+
+        # Record the id of each ``fast`` call in the order the loop STARTS it.
+        release = threading.Event()
+        lock = threading.Lock()
+        slow_started = [0]
+        fast_start_order: list = []
+
+        def call_tool(name, args):
+            if name == "slow":
+                with lock:
+                    slow_started[0] += 1
+                release.wait(timeout=10.0)
+            else:
+                with lock:
+                    fast_start_order.append(args.get("id"))
+            return f"done:{name}"
+
+        def start_count() -> int:
+            with lock:
+                return slow_started[0]
+
         harness = _LoopHarness(monkeypatch, call_tool)
         try:
-            harness.send(_tools_call(201, "slow"))
-            assert started.wait(timeout=5.0)
-            harness.send(_tools_call(202, "fast"))
-            harness.send(_tools_call(203, "fast"))
-            # Give the busy read loop a beat to buffer both calls
-            time.sleep(0.3)
-            assert harness.responses == []  # nothing answered while busy
+            _fill_worker_slots(harness, start_count, first_id=1000)
+            # Pool is full now, so these two land in the FIFO queue. drain_barrier
+            # (a ping answered inline) proves the loop read past each send without
+            # a fixed sleep.
+            harness.send(_tools_call_with_arg(202, "fast", {"id": 202}))
+            harness.drain_barrier(9202)
+            harness.send(_tools_call_with_arg(203, "fast", {"id": 203}))
+            harness.drain_barrier(9203)
+            # Both fast calls are parked in the queue: the slow call still holds
+            # the only slot, so neither fast call has started.
+            assert not any(r[0] in (1000, 202, 203) for r in harness.responses)
+            assert fast_start_order == []
             release.set()
-            assert harness.wait_for(lambda: len(harness.responses) >= 3)
-            assert [r[0] for r in harness.responses] == [201, 202, 203]
+            # Wait until EVERY expected response has arrived, then assert the
+            # full response-id set EXACTLY (not a subset): the slow call (1000),
+            # both barrier pings (9202, 9203) and both queued fast calls
+            # (202, 203). An exact set is the ratchet the base test holds -- a
+            # subset check would pass without the slow call ever answering.
+            expected_ids = {1000, 9202, 9203, 202, 203}
+            assert harness.wait_for(
+                lambda: {r[0] for r in harness.responses} == expected_ids
+                and len(harness.responses) == len(expected_ids)
+            ), harness.responses
+            # The queue drained the two fast calls in FIFO dispatch order.
+            assert fast_start_order == [202, 203]
+            # Every call (slow + fast + the two pings) got a non-error response.
             assert all(r[2] is None for r in harness.responses)
         finally:
             release.set()
@@ -980,11 +1103,12 @@ class TestStdioLoopBusyQueue:
     def test_cancelled_queued_call_gets_no_response_and_loop_continues(self, monkeypatch):
         import time
 
-        call_tool, started, release = _slow_then_echo()
+        monkeypatch.setattr(mcp_shared, "MCP_MAX_CONCURRENT_WORKERS", 3)
+        call_tool, start_count, release = _saturating_tool()
         harness = _LoopHarness(monkeypatch, call_tool)
         try:
-            harness.send(_tools_call(301, "slow"))
-            assert started.wait(timeout=5.0)
+            _fill_worker_slots(harness, start_count, first_id=1000)
+            # Pool full: 302 lands in the queue, where a cancel can reach it.
             harness.send(_tools_call(302, "fast"))
             # Let the read loop consume 302 before the cancel arrives: two
             # back-to-back pipe writes can coalesce into one buffered read,
@@ -1000,7 +1124,8 @@ class TestStdioLoopBusyQueue:
             )
             time.sleep(0.3)
             release.set()
-            assert harness.wait_for(lambda: any(r[0] == 301 for r in harness.responses))
+            # The slow calls that filled the pool all return once released.
+            assert harness.wait_for(lambda: any(r[0] == 1000 for r in harness.responses))
             # Loop must still serve new calls after skipping the cancelled one
             harness.send(_tools_call(303, "fast"))
             assert harness.wait_for(lambda: any(r[0] == 303 for r in harness.responses))
@@ -1012,12 +1137,13 @@ class TestStdioLoopBusyQueue:
     def test_queue_overflow_returns_busy_error(self, monkeypatch):
         import time
 
+        monkeypatch.setattr(mcp_shared, "MCP_MAX_CONCURRENT_WORKERS", 2)
         monkeypatch.setattr(mcp_shared, "PENDING_CALLS_MAX", 1)
-        call_tool, started, release = _slow_then_echo()
+        call_tool, start_count, release = _saturating_tool()
         harness = _LoopHarness(monkeypatch, call_tool)
         try:
-            harness.send(_tools_call(401, "slow"))
-            assert started.wait(timeout=5.0)
+            _fill_worker_slots(harness, start_count, first_id=1000)
+            # Pool full (2 slow workers). The queue cap is 1:
             harness.send(_tools_call(402, "fast"))  # fills the queue
             time.sleep(0.2)
             harness.send(_tools_call(403, "fast"))  # overflow
@@ -1030,7 +1156,8 @@ class TestStdioLoopBusyQueue:
                 for call in harness.sel_mock.log_tool_invocation.call_args_list
             )
             release.set()
-            assert harness.wait_for(lambda: {401, 402} <= {r[0] for r in harness.responses})
+            # The queued-but-not-overflowed call still runs once a slot frees.
+            assert harness.wait_for(lambda: 402 in {r[0] for r in harness.responses})
         finally:
             release.set()
             harness.close()
@@ -1045,6 +1172,357 @@ class TestStdioLoopBusyQueue:
             assert harness.wait_for(lambda: any(r[0] == 599 for r in harness.responses))
             release.set()
             assert harness.wait_for(lambda: any(r[0] == 501 for r in harness.responses))
+        finally:
+            release.set()
+            harness.close()
+
+    def test_a_slow_caller_does_not_convoy_a_different_callers_fast_call(self, monkeypatch):
+        """Independent callers run concurrently off the critical read loop.
+
+        The ``kirocrew-core`` backend is pooled: one process serves every
+        session. A session's long cooperative tool (``wait``, up to 1800s) must
+        not stall a different session's short call. Here caller A holds a slow
+        tool open while caller B sends a fast call; the fast call must return
+        BEFORE the slow one is released, which is only possible when the two run
+        in separate worker threads rather than one behind the other in the FIFO
+        queue.
+        """
+        import threading
+
+        slow_started = threading.Event()
+        release = threading.Event()
+
+        def call_tool(name, args):
+            if name == "slow":
+                slow_started.set()
+                # Blocks like a cooperative tool mid-``wait`` would.
+                assert release.wait(timeout=10.0)
+                return "done:slow"
+            return "done:fast"
+
+        harness = _LoopHarness(monkeypatch, call_tool)
+        try:
+            # Caller A: a long cooperative tool that blocks until released.
+            harness.send(_tools_call_with_caller(701, "slow", "dashboard:alice"))
+            assert slow_started.wait(timeout=5.0)
+            # Caller B: a short call, sent while A's tool is still running.
+            harness.send(_tools_call_with_caller(702, "fast", "dashboard:bob"))
+            # The fast call returns while the slow one is STILL blocked -- the
+            # proof the slow caller did not convoy the fast one.
+            assert harness.wait_for(lambda: any(r[0] == 702 for r in harness.responses))
+            assert not any(r[0] == 701 for r in harness.responses), (
+                "the slow call answered before it was released -- the pool is not "
+                "actually running them concurrently"
+            )
+            # Now release the slow one; it answers too, so nothing is lost.
+            release.set()
+            assert harness.wait_for(lambda: any(r[0] == 701 for r in harness.responses))
+        finally:
+            release.set()
+            harness.close()
+
+    def test_a_cancel_for_one_concurrent_worker_does_not_trip_another(self, monkeypatch):
+        """``is_tool_cancelled()`` is per-worker, not a shared module flag.
+
+        Two tools run concurrently, each polling ``is_tool_cancelled()``. A
+        cancel is delivered for ONE of them; that worker's poll must see True
+        and the OTHER worker's poll must stay False. With the pre-fix module
+        global, one caller's cancel set every worker's flag -- so this is the
+        regression pin for the ContextVar conversion.
+        """
+        import threading
+
+        both_started = threading.Barrier(3, timeout=5.0)
+        proceed = threading.Event()
+        observed: dict[str, bool] = {}
+        lock = threading.Lock()
+
+        def call_tool(name, args):
+            # name encodes which worker this is: "poll:<label>".
+            label = name.split(":", 1)[1]
+            both_started.wait()  # don't read the flag until both are running
+            # The test releases ``proceed`` only after it has observed the
+            # cancel applied to exactly one worker (via the drain barrier).
+            assert proceed.wait(timeout=10.0)
+            with lock:
+                observed[label] = mcp_shared.is_tool_cancelled()
+            return f"done:{label}"
+
+        harness = _LoopHarness(monkeypatch, call_tool)
+        try:
+            harness.send(_tools_call_with_caller(801, "poll:cancelled", "dashboard:alice"))
+            harness.send(_tools_call_with_caller(802, "poll:survivor", "dashboard:bob"))
+            # Both workers have entered call_tool and are at the barrier.
+            both_started.wait()
+            # Cancel ONLY the first worker.
+            harness.send(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "notifications/cancelled",
+                    "params": {"requestId": 801},
+                }
+            )
+            # Barrier, not a sleep: the loop reads one frame per iteration and
+            # answers ping inline, so this ping reply proves the cancel frame
+            # before it was already read and applied to worker 801's event.
+            harness.drain_barrier(9801)
+            proceed.set()
+            assert harness.wait_for(lambda: len(observed) == 2, timeout=5.0)
+            assert observed["cancelled"] is True, "the cancelled worker did not see its own cancel"
+            assert observed["survivor"] is False, (
+                "a cancel for one worker tripped another's is_tool_cancelled() -- "
+                "the cancel event is not per-worker"
+            )
+        finally:
+            proceed.set()
+            harness.close()
+
+    def test_numeric_and_string_ids_do_not_collide_in_the_worker_map(self, monkeypatch):
+        """A request id ``1`` and ``"1"`` are tracked as DISTINCT workers.
+
+        The ``_workers`` map keys on ``_worker_key(req_id)`` (type + value). A
+        plain ``str(req_id)`` would map both onto ``"1"``, so the second call
+        would overwrite the first's record -- untracking it for cancellation
+        and the worker cap. Here two slow calls, one with int ``1`` and one
+        with str ``"1"``, run concurrently; both must start and both must be
+        answered.
+        """
+        import threading
+
+        both_started = threading.Barrier(3, timeout=5.0)
+        release = threading.Event()
+
+        def call_tool(name, args):
+            both_started.wait()
+            assert release.wait(timeout=10.0)
+            return f"done:{name}"
+
+        harness = _LoopHarness(monkeypatch, call_tool)
+        try:
+            harness.send(_tools_call(1, "int-one"))
+            harness.send(_tools_call("1", "str-one"))
+            # Both reach the barrier only if BOTH were dispatched as live
+            # workers -- a collision would have overwritten the first, so its
+            # thread would never have been tracked and the cap check could even
+            # have refused the second.
+            both_started.wait()
+            release.set()
+            assert harness.wait_for(
+                lambda: {r[0] for r in harness.responses} == {1, "1"}
+            ), harness.responses
+            # Each got its own result, not one answered twice.
+            by_id = {r[0]: r for r in harness.responses}
+            assert by_id[1][1]["content"][0]["text"] == "done:int-one"
+            assert by_id["1"][1]["content"][0]["text"] == "done:str-one"
+        finally:
+            release.set()
+            harness.close()
+
+    def test_cancelling_the_numeric_id_does_not_drop_the_string_ids_result(self, monkeypatch):
+        """A cancel for request id ``1`` must not discard a concurrent ``"1"``'s result.
+
+        ``_cancelled_ids`` is deliberately ``str``-keyed to mirror the wire's
+        ``requestId``, so cancelling int ``1`` and a concurrent str ``"1"``
+        both resolve to the same ``"1"`` entry there. Before the fix,
+        ``_reap_finished_workers`` read cancellation from that shared,
+        collapsed set, so when the uncancelled ``"1"`` worker finished FIRST
+        (while the cancelled int ``1`` worker was still running), its real
+        result was wrongly treated as cancelled and dropped -- its caller got
+        no response at all. The reaper must instead read each worker's OWN
+        ``cancel_event`` (set only via the type-qualified ``_worker_key``),
+        which stays distinct per id regardless of reap order.
+        """
+        import threading
+
+        both_started = threading.Barrier(3, timeout=5.0)
+        release_str = threading.Event()
+        release_int = threading.Event()
+
+        def call_tool(name, args):
+            both_started.wait()
+            if name == "str-one":
+                assert release_str.wait(timeout=10.0)
+            else:
+                assert release_int.wait(timeout=10.0)
+            return f"done:{name}"
+
+        harness = _LoopHarness(monkeypatch, call_tool)
+        try:
+            harness.send(_tools_call(1, "int-one"))
+            harness.send(_tools_call("1", "str-one"))
+            both_started.wait()
+            # Cancel the NUMERIC id while BOTH workers are still running.
+            harness.send(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "notifications/cancelled",
+                    "params": {"requestId": 1},
+                }
+            )
+            harness.drain_barrier(9001)
+            # Let the STRING id's (uncancelled) worker finish and get reaped
+            # FIRST, while the cancelled int worker is still blocked -- this is
+            # the ordering GPT's finding described: "1" finishes before 1.
+            release_str.set()
+            assert harness.wait_for(
+                lambda: "1" in {r[0] for r in harness.responses}
+            ), harness.responses
+            by_id = {r[0]: r for r in harness.responses}
+            assert by_id["1"][1]["content"][0]["text"] == "done:str-one"
+            # Now release the cancelled numeric worker too; it gets no response.
+            release_int.set()
+            harness.drain_barrier(9002)
+            assert not any(r[0] == 1 for r in harness.responses)
+        finally:
+            release_str.set()
+            release_int.set()
+            harness.close()
+
+    def test_an_oversized_request_id_is_refused_before_it_is_retained(self, monkeypatch):
+        """A ``tools/call`` id over ``MAX_REQUEST_ID_BYTES`` is refused, not kept.
+
+        A worker (or a queued call) retains its ``req_id`` as a dict key for
+        as long as the tool runs -- up to 1800s for ``wait`` -- so an
+        externally controlled id with no size bound would let one caller hold
+        unbounded memory per in-flight request regardless of the
+        ``MCP_MAX_CONCURRENT_WORKERS`` cap. The bound is measured on
+        ``repr(req_id)`` (what ``_worker_key`` itself embeds), not only on a
+        ``str`` id: a JSON-decoded container id (a dict/list; the envelope
+        validator does not restrict ``id`` to the spec's string/number/null)
+        carrying an oversized nested value must be refused the same way a
+        plain oversized string id is. The oversized id must be refused at
+        the route-in point, before ``_dispatch`` or ``_pending_calls`` ever
+        sees it, and the tool itself must never run.
+        """
+        monkeypatch.setattr(mcp_shared, "MAX_REQUEST_ID_BYTES", 16)
+        ran: list = []
+        harness = _LoopHarness(monkeypatch, lambda n, a: ran.append(n) or "ok")
+        try:
+            # repr() adds the quoting the str itself lacks, so size the
+            # strings relative to repr()'s own byte count, not len(s).
+            oversized_id = "x" * 17
+            harness.send(_tools_call(oversized_id, "should-not-run"))
+            assert harness.wait_for(
+                lambda: any(r[0] == oversized_id for r in harness.responses)
+            ), harness.responses
+            resp = next(r for r in harness.responses if r[0] == oversized_id)
+            assert resp[2] is not None and resp[2]["code"] == mcp_shared.JSONRPC_INVALID_REQUEST
+            assert ran == [], "the oversized-id call must never reach the tool"
+            # A container id (dict) whose repr() is oversized is refused the
+            # same way -- the finding this test was extended to pin: a
+            # str-only check lets a dict/list id with a huge nested value
+            # through, where _worker_key would retain it unbounded anyway.
+            container_id = {"x": "A" * 50}
+            harness.send(_tools_call(container_id, "should-not-run-either"))
+            assert harness.wait_for(
+                lambda: any(r[0] == container_id for r in harness.responses)
+            ), harness.responses
+            container_resp = next(r for r in harness.responses if r[0] == container_id)
+            assert (
+                container_resp[2] is not None
+                and container_resp[2]["code"] == mcp_shared.JSONRPC_INVALID_REQUEST
+            )
+            assert ran == [], "the oversized container-id call must never reach the tool"
+            # A same-sized-but-under-the-limit id is served normally.
+            fits_id = "y" * 12
+            assert len(repr(fits_id).encode("utf-8")) <= 16
+            harness.send(_tools_call(fits_id, "fits"))
+            assert harness.wait_for(lambda: any(r[0] == fits_id for r in harness.responses))
+            assert ran == ["fits"]
+        finally:
+            harness.close()
+
+    def test_a_duplicate_outstanding_id_is_refused_not_overwritten(self, monkeypatch):
+        """A ``req_id`` already live (dispatched or queued) is refused, not
+        re-dispatched.
+
+        ``_workers[_worker_key(req_id)] = worker`` would otherwise silently
+        OVERWRITE the live record for a repeated id: the first worker's
+        thread keeps running, uncounted against ``MCP_MAX_CONCURRENT_WORKERS``
+        (its dict entry is gone), and its eventual result is orphaned --
+        never reaped, never delivered. Two concurrent calls sharing id ``1``
+        must leave the first one's slow tool still running (observable via
+        the started-count) while the duplicate gets an immediate refusal, and
+        releasing the first must still deliver ITS result.
+        """
+        import threading
+
+        started = threading.Event()
+        release = threading.Event()
+
+        def call_tool(name, args):
+            started.set()
+            assert release.wait(timeout=10.0)
+            return "done:first"
+
+        harness = _LoopHarness(monkeypatch, call_tool)
+        try:
+            harness.send(_tools_call(1, "slow"))
+            assert started.wait(timeout=5.0)
+            # Same id while the first is still running.
+            harness.send(_tools_call(1, "duplicate"))
+            assert harness.wait_for(
+                lambda: any(r[0] == 1 and r[2] is not None for r in harness.responses)
+            ), harness.responses
+            dup_resp = next(r for r in harness.responses if r[0] == 1 and r[2] is not None)
+            assert dup_resp[2]["code"] == mcp_shared.JSONRPC_INVALID_REQUEST
+            # The first worker's record must still be intact: releasing it
+            # delivers its real result rather than having been overwritten
+            # and orphaned.
+            release.set()
+            assert harness.wait_for(
+                lambda: any(
+                    r[0] == 1 and r[1] is not None and r[1]["content"][0]["text"] == "done:first"
+                    for r in harness.responses
+                )
+            ), harness.responses
+        finally:
+            release.set()
+            harness.close()
+
+    def test_non_core_servers_keep_the_original_one_worker_at_a_time_behavior(self, monkeypatch):
+        """The multi-worker concurrency cap is scoped to ``kirocrew-core``.
+
+        Every other server sharing this dispatch loop (``kirocrew-computer``,
+        ``kirocrew-cron``, ...) was never pooled across sessions and keeps
+        running one tool call at a time: two concurrent calls on a
+        non-``kirocrew-core`` server name must NOT both start -- the second
+        waits in the FIFO queue behind the first, exactly like the pre-fix
+        behavior for every server. For ``kirocrew-computer`` specifically,
+        concurrent calls would mean two tool invocations driving the same
+        real mouse/keyboard at once.
+        """
+        import threading
+
+        started = threading.Event()
+        release = threading.Event()
+        second_started = threading.Event()
+
+        def call_tool(name, args):
+            if name == "first":
+                started.set()
+                assert release.wait(timeout=10.0)
+                return "done:first"
+            second_started.set()
+            return "done:second"
+
+        harness = _LoopHarness(monkeypatch, call_tool, server_name="kirocrew-computer")
+        try:
+            harness.send(_tools_call(1, "first"))
+            assert started.wait(timeout=5.0)
+            harness.send(_tools_call(2, "second"))
+            harness.drain_barrier(9100)
+            # The second call must NOT have started while the first still
+            # holds the only slot -- a non-core server gets no concurrency.
+            assert not second_started.is_set(), (
+                "a non-kirocrew-core server started a second worker "
+                "while the first was still running"
+            )
+            release.set()
+            # Once the first finishes, the queued second call runs and
+            # answers too -- nothing is lost, just serialized.
+            assert harness.wait_for(lambda: any(r[0] == 2 for r in harness.responses))
+            assert second_started.is_set()
         finally:
             release.set()
             harness.close()
@@ -1502,7 +1980,9 @@ class TestStdioLoopCallerIdentity:
         decision is the same refusal; the text gains the one explanation the
         reader can act on, shared verbatim with the strict-identity refusals."""
         ran = []
-        harness = _LoopHarness(monkeypatch, lambda n, a: ran.append(n) or "ok")
+        harness = _LoopHarness(
+            monkeypatch, lambda n, a: ran.append(n) or "ok", server_name="test-server"
+        )
         monkeypatch.setattr(
             mcp_shared,
             "_resolve_tool_policy",
@@ -2310,7 +2790,6 @@ class TestStdioLoopExitsWhenItsInstallIsPruned:
         """The loop exits on the first refused call; anything already queued
         behind it must get the same retryable answer, not silence."""
         import shutil as _shutil
-        import time
 
         from kiro_crew import install_liveness
 
@@ -2323,33 +2802,50 @@ class TestStdioLoopExitsWhenItsInstallIsPruned:
         )
         monkeypatch.setenv(install_liveness.POOLED_RESPAWN_COMMAND_ENV, sys.executable)
         monkeypatch.setattr(mcp_shared.sys, "exit", lambda _code: None)
+        # Cap concurrency at one slot so the single in-flight ``slow`` saturates
+        # the pool and queued-a/b/c land in the FIFO queue (rather than running
+        # concurrently), which is what makes them "queued behind the prune".
+        monkeypatch.setattr(mcp_shared, "MCP_MAX_CONCURRENT_WORKERS", 1)
         call_tool, started, release = _slow_then_echo()
         harness = _LoopHarness(monkeypatch, call_tool)
         try:
             harness.send(_tools_call(1, "slow"))
             assert started.wait(timeout=5.0)
             # One frame per read so the busy loop's select() sees each and
-            # moves it into the pending queue (two frames in one write land in
-            # the text buffer together, where select() cannot see the second).
+            # moves it into the pending queue. A ping round-trip after each
+            # send is a deterministic barrier: the loop answers ping inline and
+            # reads one frame per iteration, so a ping reply proves the
+            # preceding tools/call was already read and parked.
             harness.send(_tools_call(2, "queued-a"))
-            time.sleep(0.3)
+            harness.drain_barrier(9002)
             harness.send(_tools_call(3, "queued-b"))
-            time.sleep(0.3)
+            harness.drain_barrier(9003)
             harness.send(_tools_call(4, "queued-c"))
-            time.sleep(0.3)
+            harness.drain_barrier(9004)
             # Cancelled while it waited: must get no response, as on the
             # ordinary dispatch path.
             harness.send(
                 {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 4}}
             )
-            time.sleep(0.3)
+            harness.drain_barrier(9005)
             _shutil.rmtree(package.parent)
             release.set()
-            assert harness.wait_for(lambda: len(harness.responses) == 3), harness.responses
+            # Exact response-id set, not a subset: a duplicate reply for any
+            # id must fail this the same way it would fail a bare count, since
+            # a ratchet may only tighten (an issubset/any() check would let a
+            # duplicate for 1 slip through, the ``by_id`` dict construction
+            # below silently collapsing it rather than this assertion catching
+            # it). 1, 2, 3 are the real tool responses; 9002-9005 are this
+            # test's own ping barriers; 4 is cancelled and gets none.
+            expected_ids = {1, 2, 3, 9002, 9003, 9004, 9005}
+            assert harness.wait_for(
+                lambda: {r[0] for r in harness.responses} == expected_ids
+                and len(harness.responses) == len(expected_ids)
+            ), harness.responses
             harness._thread.join(timeout=5.0)
         finally:
             harness.close()
-        by_id = {r[0]: r for r in harness.responses}
+        by_id = {r[0]: r for r in harness.responses if isinstance(r[0], int) and r[0] < 1000}
         assert sorted(by_id) == [1, 2, 3], "a cancelled queued call was answered"
         assert by_id[1][2] is None  # in flight before the prune: delivered
         assert by_id[2][2]["code"] == -32000
@@ -2366,7 +2862,236 @@ class TestStdioLoopExitsWhenItsInstallIsPruned:
         assert _audited("rejected_install_pruned") == [("2", "queued-a"), ("3", "queued-b")]
         assert _audited("cancelled") == [("4", "queued-c")]
 
+    def test_a_worker_in_flight_when_the_prune_hits_still_gets_its_result(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """A prune triggered WHILE another worker runs must not drop that worker.
+
+        The pruning ``tools/call`` arrives while a long ``slow`` call is still
+        in flight in a separate slot: it dispatches, detects the pruned install,
+        is refused, and sets the exit flag. The loop must stop starting new
+        calls but DRAIN the still-running ``slow`` worker and deliver its real
+        result before exiting -- otherwise that caller gets "backend gone"
+        instead of its answer.
+        """
+        import shutil as _shutil
+
+        from kiro_crew import install_liveness
+
+        package = tmp_path / "0.8.0.4" / "kiro_crew"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("")
+        monkeypatch.setattr(install_liveness, "_PACKAGE_ROOT", package)
+        monkeypatch.setenv(
+            install_liveness.POOLED_BACKEND_ENV, install_liveness.POOLED_BACKEND_VALUE
+        )
+        monkeypatch.setenv(install_liveness.POOLED_RESPAWN_COMMAND_ENV, sys.executable)
+        exits: list = []
+        monkeypatch.setattr(mcp_shared.sys, "exit", exits.append)
+        # Two slots: the long ``slow`` holds one while the pruning call takes
+        # the other, so the prune is detected with a worker still running.
+        monkeypatch.setattr(mcp_shared, "MCP_MAX_CONCURRENT_WORKERS", 2)
+        call_tool, started, release = _slow_then_echo()
+        harness = _LoopHarness(monkeypatch, call_tool)
+        try:
+            harness.send(_tools_call(1, "slow"))
+            assert started.wait(timeout=5.0), "the long worker never started"
+            _shutil.rmtree(package.parent)  # the update's prune, mid-flight
+            # The pruning call dispatches into the free slot, detects the pruned
+            # install, is refused, and sets the exit flag -- all while ``slow``
+            # is STILL BLOCKED. Wait for that refusal so the loop has provably
+            # reached its exit path with a worker still in flight.
+            harness.send(_tools_call(2, "monitor_start"))
+            assert harness.wait_for(
+                lambda: any(r[0] == 2 for r in harness.responses)
+            ), harness.responses
+            # Only now release the in-flight worker. A loop that exits straight
+            # away drops it; the fix drains+reaps it first, so its real result
+            # must still arrive.
+            release.set()
+            assert harness.wait_for(
+                lambda: any(r[0] == 1 for r in harness.responses)
+            ), "the in-flight worker's result was dropped on the pruned exit"
+            harness._thread.join(timeout=5.0)
+            assert not harness._thread.is_alive(), "the loop kept serving a pruned install"
+        finally:
+            release.set()
+            harness.close()
+
+        by_id = {r[0]: r for r in harness.responses}
+        assert by_id[1][2] is None, "in-flight result dropped"
+        assert by_id[1][1]["content"][0]["text"] == "done:slow"
+        assert by_id[2][1] is None and by_id[2][2]["code"] == -32000
+        assert exits == [install_liveness.INSTALL_PRUNED_EXIT_CODE]
+
+    def test_a_cooperative_worker_is_drained_promptly_on_the_pruned_exit(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """The pruned-exit drain must not freeze on a long cooperative tool.
+
+        A cooperative tool (``wait``/``spawn_sub_agents``) polls
+        ``is_tool_cancelled()``. The drain signals every in-flight worker's
+        cancel event, so such a tool observes the cancel and exits PROMPTLY --
+        rather than the loop blocking for the tool's whole duration (an 1800s
+        ``wait`` would otherwise freeze pings/cancels/new calls, and the
+        ping-gated wedge detector could kill the process and lose the result).
+
+        No ``time.sleep`` barrier: the tool parks on ``cancel_seen`` (an Event
+        the loop's signal trips via ``is_tool_cancelled()``), the prune is
+        ordered by waiting for the pruning call's refusal, and a loop that did
+        NOT signal the worker would hang here until the join backstop timed out
+        rather than cancel it cooperatively.
+
+        Request 1 (the drained worker) must still get a response -- a
+        RETRYABLE error, not silence: nobody cancelled this call, the tool
+        just exited early so the process could shut down, and leaving the
+        caller with nothing would be indistinguishable from "backend gone".
+        """
+        import shutil as _shutil
+        import threading
+
+        from kiro_crew import install_liveness
+
+        package = tmp_path / "0.8.0.4" / "kiro_crew"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("")
+        monkeypatch.setattr(install_liveness, "_PACKAGE_ROOT", package)
+        monkeypatch.setenv(
+            install_liveness.POOLED_BACKEND_ENV, install_liveness.POOLED_BACKEND_VALUE
+        )
+        monkeypatch.setenv(install_liveness.POOLED_RESPAWN_COMMAND_ENV, sys.executable)
+        exits: list = []
+        monkeypatch.setattr(mcp_shared.sys, "exit", exits.append)
+        monkeypatch.setattr(mcp_shared, "MCP_MAX_CONCURRENT_WORKERS", 2)
+
+        started = threading.Event()
+        observed_cancel = threading.Event()
+
+        def call_tool(name, args):
+            if name == "coop":
+                started.set()
+                # Poll the per-worker cancel flag, like a cooperative tool's
+                # sleep loop. Bounded so a buggy loop fails the test rather than
+                # hanging it forever; a correct loop trips this far sooner.
+                for _ in range(400):
+                    if mcp_shared.is_tool_cancelled():
+                        observed_cancel.set()
+                        raise mcp_shared.ToolCancelled()
+                    if observed_cancel.wait(timeout=0.05):
+                        break
+                return "done:coop"
+            return f"done:{name}"
+
+        harness = _LoopHarness(monkeypatch, call_tool)
+        try:
+            harness.send(_tools_call(1, "coop"))
+            assert started.wait(timeout=5.0), "the cooperative worker never started"
+            _shutil.rmtree(package.parent)  # the update's prune, mid-flight
+            harness.send(_tools_call(2, "monitor_start"))
+            assert harness.wait_for(
+                lambda: any(r[0] == 2 for r in harness.responses)
+            ), harness.responses
+            # The drain signals the worker's cancel event; the cooperative tool
+            # must observe it and exit WITHOUT the test releasing it.
+            assert observed_cancel.wait(timeout=5.0), (
+                "the cooperative worker was not signalled on the pruned exit -- "
+                "the drain blocked on the tool's full duration"
+            )
+            harness._thread.join(timeout=5.0)
+            assert not harness._thread.is_alive(), "the loop kept serving a pruned install"
+        finally:
+            observed_cancel.set()
+            harness.close()
+
+        by_id = {r[0]: r for r in harness.responses}
+        # Drained (not really cancelled): request 1 still gets a response --
+        # a retryable error, since the tool exited early with no real result
+        # -- and the pruning call 2 is refused the same way.
+        assert by_id[1][1] is None and by_id[1][2]["code"] == -32000, (
+            "a drained (uncancelled) worker got no response instead of a " "retryable error"
+        )
+        assert by_id[2][1] is None and by_id[2][2]["code"] == -32000
+        assert exits == [install_liveness.INSTALL_PRUNED_EXIT_CODE]
+
+    def test_a_genuinely_cancelled_worker_still_gets_no_response_on_pruned_exit(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """A REAL cancel takes priority over the drain-only retryable error.
+
+        If a worker was cancelled via ``notifications/cancelled`` BEFORE the
+        pruned exit's drain reaches it, the caller already asked to stop
+        hearing about this call -- it must still get no response at all, not
+        the drain-only retryable error that an UNCANCELLED drained worker
+        gets (see the sibling drain test above). ``cancel_event`` being set
+        is what tells ``_run_tool`` which of the two outcomes applies.
+        """
+        import shutil as _shutil
+        import threading
+
+        from kiro_crew import install_liveness
+
+        package = tmp_path / "0.8.0.4" / "kiro_crew"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("")
+        monkeypatch.setattr(install_liveness, "_PACKAGE_ROOT", package)
+        monkeypatch.setenv(
+            install_liveness.POOLED_BACKEND_ENV, install_liveness.POOLED_BACKEND_VALUE
+        )
+        monkeypatch.setenv(install_liveness.POOLED_RESPAWN_COMMAND_ENV, sys.executable)
+        exits: list = []
+        monkeypatch.setattr(mcp_shared.sys, "exit", exits.append)
+        monkeypatch.setattr(mcp_shared, "MCP_MAX_CONCURRENT_WORKERS", 2)
+
+        started = threading.Event()
+        observed_cancel = threading.Event()
+
+        def call_tool(name, args):
+            if name == "coop":
+                started.set()
+                for _ in range(400):
+                    if mcp_shared.is_tool_cancelled():
+                        observed_cancel.set()
+                        raise mcp_shared.ToolCancelled()
+                    if observed_cancel.wait(timeout=0.05):
+                        break
+                return "done:coop"
+            return f"done:{name}"
+
+        harness = _LoopHarness(monkeypatch, call_tool)
+        try:
+            harness.send(_tools_call(1, "coop"))
+            assert started.wait(timeout=5.0), "the cooperative worker never started"
+            # Cancel it for real, BEFORE the prune's drain ever reaches it.
+            harness.send(
+                {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 1}}
+            )
+            harness.drain_barrier(9001)
+            _shutil.rmtree(package.parent)  # the update's prune, mid-flight
+            harness.send(_tools_call(2, "monitor_start"))
+            assert harness.wait_for(
+                lambda: any(r[0] == 2 for r in harness.responses)
+            ), harness.responses
+            assert observed_cancel.wait(
+                timeout=5.0
+            ), "the cooperative worker was not signalled on the pruned exit"
+            harness._thread.join(timeout=5.0)
+            assert not harness._thread.is_alive(), "the loop kept serving a pruned install"
+        finally:
+            observed_cancel.set()
+            harness.close()
+
+        by_id = {r[0]: r for r in harness.responses if r[0] != 9001}
+        # Genuinely cancelled: still no response at all for request 1, unlike
+        # the drain-only (uncancelled) case which gets a retryable error.
+        assert 1 not in by_id, (
+            "a genuinely cancelled worker got a response -- the drain-only "
+            "retryable-error fix must not apply to a REAL cancel"
+        )
+        assert by_id[2][1] is None and by_id[2][2]["code"] == -32000
+        assert exits == [install_liveness.INSTALL_PRUNED_EXIT_CODE]
+
     def test_an_intact_install_keeps_serving(self, monkeypatch, tmp_path) -> None:
+        """An un-pruned pooled install serves calls normally and never exits."""
         from kiro_crew import install_liveness
 
         package = tmp_path / "kiro_crew"

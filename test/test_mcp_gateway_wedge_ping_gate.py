@@ -254,17 +254,17 @@ async def test_warned_ids_pruned_on_completion() -> None:
 
 
 def test_cancel_event_check() -> None:
-    """is_tool_cancelled() reads the module-level _thread_cancel_event."""
+    """is_tool_cancelled() reads the current worker's cancel event ContextVar."""
     import kiro_crew.mcp_shared as mod
     from kiro_crew.mcp_shared import is_tool_cancelled
 
     # No event set
-    mod._thread_cancel_event = None
+    mod._thread_cancel_event.set(None)
     assert not is_tool_cancelled()
 
     # Event not set
     evt = threading.Event()
-    mod._thread_cancel_event = evt
+    mod._thread_cancel_event.set(evt)
     assert not is_tool_cancelled()
 
     # Event set
@@ -272,7 +272,7 @@ def test_cancel_event_check() -> None:
     assert is_tool_cancelled()
 
     # Cleanup
-    mod._thread_cancel_event = None
+    mod._thread_cancel_event.set(None)
 
 
 def test_tool_cancelled_exception_suppresses_response() -> None:

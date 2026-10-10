@@ -46,6 +46,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from contextvars import ContextVar
 from typing import Any
 
 # The stateless, session-bound tools. ``ask_question`` is NOT one of them: it
@@ -139,9 +140,18 @@ _REFUSAL_SENTINEL = "[[KIROCREW_SESSION_DIRECTIVE_REFUSED]]"
 # end of the text without truncating an envelope around it.
 _DEFANGED = "[[kirocrew-marker-removed]]"
 # Digest of the directive THIS process emitted on the current dispatch, written by
-# :func:`vouch` and cleared by :func:`clear_vouch`. A one-slot list rather than a
-# module global so the writers are named functions with a docstring apiece.
-_VOUCHED: list[str] = []
+# :func:`vouch` and cleared by :func:`clear_vouch`. Held in a ``ContextVar`` rather
+# than a bare module slot because the pooled dispatch loop runs several callers'
+# tool workers CONCURRENTLY (see ``_thread_cancel_event`` in ``mcp_shared`` and
+# ``_CURRENT_CALLER`` in ``mcp_caller``, which carry per-worker state the same way).
+# A plain module list would be clobbered: worker B's ``vouch``/``clear_vouch`` would
+# write worker A's provenance, so A's genuine directive could be defanged as a
+# refusal or B's gate could accept a marker A vouched for across sessions. A
+# ``threading.Thread`` starts each ContextVar at its default rather than inheriting
+# the dispatch thread's context, so each worker's :func:`vouch` sets its OWN digest
+# and :func:`is_vouched` reads that worker's digest and no other's. Empty string is
+# the default and the "nothing vouched" sentinel.
+_VOUCHED: ContextVar[str] = ContextVar("kirocrew_session_directive_vouched", default="")
 # Substituted for the middle of an over-long refusal by :func:`tag_refusal`, so
 # the elision is visible rather than a silent cut.
 _ELIDED_NOTE = " [... {n} chars elided so the refusal tag survives delivery ...] "
@@ -262,25 +272,27 @@ def vouch(text: str) -> str:
     says so, and :func:`refuse_if_markerless` defangs every marker nobody vouched
     for.
 
-    A single module slot is safe because MCP dispatch is strictly sequential --
-    one worker at a time, joined before the next dispatch, the same property
-    ``mcp_caller.set_current_caller`` relies on -- and :func:`clear_vouch` runs
+    A per-worker ``ContextVar`` slot keeps the provenance call-scoped: each
+    concurrent worker vouches into its OWN context, and :func:`clear_vouch` runs
     before each dispatch so a previous call's directive can never authorize this
-    one's. A DIGEST, not the text: the record is a correlation handle, and
-    keeping the bytes would retain a payload past the call that made it.
+    one's. The same per-worker isolation ``mcp_caller.set_current_caller`` and
+    ``mcp_shared._thread_cancel_event`` rely on. A DIGEST, not the text: the record
+    is a correlation handle, and keeping the bytes would retain a payload past the
+    call that made it.
     """
-    _VOUCHED[:] = [content_free_digest(text)]
+    _VOUCHED.set(content_free_digest(text))
     return text
 
 
 def clear_vouch() -> None:
     """Forget any vouched directive. Called before each tool dispatch."""
-    _VOUCHED.clear()
+    _VOUCHED.set("")
 
 
 def is_vouched(text: str) -> bool:
     """True iff *text* is the directive this process vouched for on THIS call."""
-    return bool(_VOUCHED) and _VOUCHED[0] == content_free_digest(text)
+    digest = _VOUCHED.get()
+    return bool(digest) and digest == content_free_digest(text)
 
 
 def _bounded_marker_payload(full: str, probe: int) -> str | None:

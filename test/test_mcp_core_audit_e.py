@@ -32,7 +32,7 @@ class TestSpawnSubAgentsCancellation:
         the loop must raise ToolCancelled instead of blocking until max_wait."""
         evt = threading.Event()
         evt.set()  # cancel already signalled before the first poll iteration
-        mcp_shared._thread_cancel_event = evt
+        mcp_shared._thread_cancel_event.set(evt)
         try:
             with patch("kiro_crew.mcp_core._post") as mock_post, \
                  patch("kiro_crew.mcp_core._get") as mock_get, \
@@ -47,11 +47,11 @@ class TestSpawnSubAgentsCancellation:
                         {"agents": [{"prompt": "never finishes"}], "solo_reason": "bulk_data"},
                     )
         finally:
-            mcp_shared._thread_cancel_event = None
+            mcp_shared._thread_cancel_event.set(None)
 
     def test_not_cancelled_completes_normally(self):
         """Control: with no cancel set, a done agent still collects results."""
-        mcp_shared._thread_cancel_event = None
+        mcp_shared._thread_cancel_event.set(None)
         with patch("kiro_crew.mcp_core._post") as mock_post, \
              patch("kiro_crew.mcp_core._get") as mock_get, \
              patch("kiro_crew.mcp_core.sel"), \

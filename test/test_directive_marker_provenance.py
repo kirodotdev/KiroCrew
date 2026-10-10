@@ -34,6 +34,7 @@ presence instead keys on the structural fact and keeps such a stop alive.
 from __future__ import annotations
 
 import json
+import threading
 
 import pytest
 
@@ -128,3 +129,68 @@ class TestTheEmitterClassifiesItsOwnOutputStructurally:
         assert session_directive.is_refusal(out)
         assert not session_directive.has_marker(out)
         assert dashboard_session == [], "a refused directive must never be published"
+
+
+class TestTheVouchRecordIsPerWorkerNotShared:
+    """The pooled dispatch loop runs several callers' tool workers at once, so the
+    vouch record MUST be per-worker. A bare module slot would let one worker's
+    ``vouch``/``clear_vouch`` write another's provenance: worker A's genuine
+    directive defanged as a refusal, or worker B's gate accepting a marker A
+    vouched for across sessions. The ContextVar gives each worker thread its own
+    slot, so one thread's writes are invisible to the other's reads.
+    """
+
+    def test_two_concurrent_workers_do_not_clobber_each_others_vouch(self):
+        """Thread A vouches, then B clears and vouches its OWN directive while A
+        is parked at the barrier; A's ``is_vouched`` must still see A's directive.
+
+        Ordered with a Barrier (no ``time.sleep``): both threads vouch, meet at
+        the barrier, B then clears + re-vouches, both check. With a shared module
+        slot B's clear/re-vouch wins and A reports NOT vouched -- the race the
+        reviewer flagged; with a per-worker ContextVar each reads its own.
+        """
+        a_dir = f"human A\n{session_directive.SENTINEL}{json.dumps({'kind': 'x', 'args': {}})}"
+        b_dir = f"human B\n{session_directive.SENTINEL}{json.dumps({'kind': 'y', 'args': {}})}"
+
+        both_vouched = threading.Barrier(2)
+        b_done = threading.Event()
+        results: dict[str, bool] = {}
+        errors: list[BaseException] = []
+
+        def worker_a() -> None:
+            try:
+                session_directive.vouch(a_dir)
+                both_vouched.wait(timeout=5)
+                # B now clears + re-vouches its own; wait for that to finish.
+                assert b_done.wait(timeout=5)
+                # A's own slot must be untouched by B's clear/re-vouch.
+                results["a"] = session_directive.is_vouched(a_dir)
+            except BaseException as exc:  # noqa: BLE001 - surfaced via `errors`
+                errors.append(exc)
+
+        def worker_b() -> None:
+            try:
+                session_directive.vouch(b_dir)
+                both_vouched.wait(timeout=5)
+                # Clobber attempt: clear, then vouch a DIFFERENT directive.
+                session_directive.clear_vouch()
+                session_directive.vouch(b_dir)
+                results["b"] = session_directive.is_vouched(b_dir)
+                b_done.set()
+            except BaseException as exc:  # noqa: BLE001 - surfaced via `errors`
+                errors.append(exc)
+                b_done.set()
+
+        ta = threading.Thread(target=worker_a)
+        tb = threading.Thread(target=worker_b)
+        ta.start()
+        tb.start()
+        ta.join(timeout=10)
+        tb.join(timeout=10)
+
+        assert not errors, errors
+        assert results.get("b") is True, "B must vouch for its own directive"
+        assert results.get("a") is True, (
+            "A's vouch was clobbered by B -- the vouch record is a shared module "
+            "slot, not per-worker"
+        )

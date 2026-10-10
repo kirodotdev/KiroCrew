@@ -4330,10 +4330,16 @@ class Backend:
             if oldest_fid and oldest_fid not in self._warned_slow_ids:
                 self._warned_slow_ids.add(oldest_fid)
                 logger.warning(
-                    "slow in-flight request %.1fs (method=%s, stub=%s, fid=%s) "
+                    "slow in-flight request %.1fs (method=%s, tool=%s, stub=%s, fid=%s) "
                     "but backend pid=%s responsive (ping_age=%.1fs); not recycling",
                     oldest_age,
                     oldest_pending.method if oldest_pending else "?",
+                    # The tool holding the worker is the one piece of context an
+                    # operator needs to tell a legitimately long cooperative tool
+                    # (wait, spawn_sub_agents) from a genuinely stuck one. Already
+                    # captured on the pending record at forward time; empty for a
+                    # non-tools/call request, shown as "-" then.
+                    (oldest_pending.tool_name or "-") if oldest_pending else "?",
                     oldest_pending.stub_uuid if oldest_pending else "?",
                     oldest_fid,
                     self.pid,
