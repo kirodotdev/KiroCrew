@@ -11573,8 +11573,6 @@
         "close": "Crew-Chat schließen",
         "load_failed": "Diese Sitzung konnte nicht von {{name}} geladen werden.",
         "empty": "Noch keine Nachrichten.",
-        "interrupted": "Runde unterbrochen",
-        "continue": "Fortsetzen",
         "action_failed": "{{name}} hat diese Aktion abgelehnt. Versuche es erneut oder öffne das Dashboard der Crew.",
         "offline": "{{name}} ist nicht verbunden. Verbinde es erneut, um zu senden.",
         "rewinding": "Zurückspulen: Beim Senden wird die Unterhaltung ab dieser Nachricht ersetzt.",

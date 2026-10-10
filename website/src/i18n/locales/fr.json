@@ -11738,8 +11738,6 @@
         "close": "Fermer le chat de l’équipage",
         "load_failed": "Impossible de charger cette session depuis {{name}}.",
         "empty": "Aucun message pour l’instant.",
-        "interrupted": "Tour interrompu",
-        "continue": "Continuer",
         "action_failed": "{{name}} a refusé cette action. Réessaie, ou ouvre le tableau de bord de l’équipage.",
         "offline": "{{name}} n’est pas connecté. Reconnecte-le pour envoyer.",
         "rewinding": "Retour en arrière : l’envoi remplace la conversation à partir de ce message.",

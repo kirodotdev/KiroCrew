@@ -11738,8 +11738,6 @@
         "close": "Fechar chat da equipe",
         "load_failed": "Não foi possível carregar esta sessão de {{name}}.",
         "empty": "Ainda não há mensagens.",
-        "interrupted": "Turno interrompido",
-        "continue": "Continuar",
         "action_failed": "{{name}} recusou essa ação. Tente novamente ou abra o painel da própria equipe.",
         "offline": "{{name}} não está conectado. Reconecte-o para enviar.",
         "rewinding": "Voltando: o envio substitui a conversa a partir desta mensagem.",

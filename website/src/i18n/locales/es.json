@@ -11738,8 +11738,6 @@
         "close": "Cerrar chat de la tripulación",
         "load_failed": "No se pudo cargar esta sesión desde {{name}}.",
         "empty": "Aún no hay mensajes.",
-        "interrupted": "Turno interrumpido",
-        "continue": "Continuar",
         "action_failed": "{{name}} rechazó esa acción. Inténtalo de nuevo o abre el panel propio de la tripulación.",
         "offline": "{{name}} no está conectado. Vuelve a conectarlo para enviar.",
         "rewinding": "Retrocediendo: al enviar se reemplaza la conversación a partir de este mensaje.",

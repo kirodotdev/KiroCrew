@@ -11738,8 +11738,6 @@
         "close": "Chiudi la chat dell’equipaggio",
         "load_failed": "Impossibile caricare questa sessione da {{name}}.",
         "empty": "Ancora nessun messaggio.",
-        "interrupted": "Turno interrotto",
-        "continue": "Continua",
         "action_failed": "{{name}} ha rifiutato questa azione. Riprova, oppure apri la dashboard dell’equipaggio.",
         "offline": "{{name}} non è connesso. Riconnettilo per inviare.",
         "rewinding": "Ritorno indietro: l’invio sostituisce la conversazione da questo messaggio in poi.",

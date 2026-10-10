@@ -11408,8 +11408,6 @@
         "close": "关闭团队聊天",
         "load_failed": "无法从 {{name}} 加载此会话。",
         "empty": "还没有消息。",
-        "interrupted": "轮次已中断",
-        "continue": "继续",
         "action_failed": "{{name}} 拒绝了该操作。请重试，或打开该团队自己的控制台。",
         "offline": "{{name}} 未连接。重新连接后才能发送。",
         "rewinding": "正在回退：发送后将替换从这条消息开始的对话。",

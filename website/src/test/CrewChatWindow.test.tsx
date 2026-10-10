@@ -224,16 +224,114 @@ describe('CrewChatWindow', () => {
     expect(screen.queryByText('Turn interrupted')).toBeNull()
   })
 
-  it('continues an interrupted turn on the PEER and shows the peer\'s answer', async () => {
+  it('continues an interrupted turn on the PEER from the composer\'s Resume, and shows the peer\'s answer', async () => {
     slotRow = { ...slotRow, interrupted: true }
     detail = { running: false, messages: [{ role: 'user', content: 'go', ts: 't1' }] }
     renderWindow()
-    fireEvent.click(await screen.findByRole('button', { name: 'Continue' }))
+    fireEvent.click(await screen.findByTestId('composer-continue', {}, PEER_ROW_WAIT))
     detail = { running: false, messages: [{ role: 'user', content: 'go', ts: 't1' }, { role: 'assistant', content: 'peer answer', ts: 't2' }] }
     slotRow = { ...slotRow, interrupted: false }
     await waitFor(() => expect(posted()).toContainEqual(['api/chat/slots/k1/continue', undefined]))
     expect(await screen.findByText('peer answer')).toBeTruthy()
     expect(mocks.continueSlot).not.toHaveBeenCalled()
+  })
+
+  it('offers no Resume on a turn the peer does not call interrupted', async () => {
+    renderWindow()
+    await screen.findByText('hello', {}, PEER_ROW_WAIT)
+    expect(screen.queryByTestId('composer-continue')).toBeNull()
+  })
+
+  it('shows a refused Resume on the window and offers it again', async () => {
+    slotRow = { ...slotRow, interrupted: true }
+    mocks.crewPeerPost.mockRejectedValue(new Error('peer refused'))
+    renderWindow()
+    fireEvent.click(await screen.findByTestId('composer-continue', {}, PEER_ROW_WAIT))
+    expect(await screen.findByText('devbox refused that action. Try again, or open the crew\'s own dashboard.')).toBeTruthy()
+    expect(screen.getByTestId('composer-continue')).not.toBeDisabled()
+    expect(mocks.continueSlot).not.toHaveBeenCalled()
+  })
+
+  it('offers no Resume while a refused rewind is held, so Send retries the rewind first', async () => {
+    slotRow = { ...slotRow, interrupted: true }
+    mocks.crewPeerPost.mockRejectedValue(new Error('peer refused'))
+    renderWindow()
+    await screen.findByTestId('composer-continue', {}, PEER_ROW_WAIT)
+    await editAndResend('hi again')
+    expect(await screen.findByText('Rewinding: sending replaces the conversation from this message on.')).toBeTruthy()
+    // An emptied edit is still a held rewind: Resume would continue past it.
+    fireEvent.change(screen.getByRole('textbox', { name: 'Message the agent on devbox…' }), { target: { value: '' } })
+    expect(screen.queryByTestId('composer-continue')).toBeNull()
+  })
+
+  it('steers the PEER\'s running turn with text typed mid-turn', async () => {
+    slotRow = { ...slotRow, running: true }
+    renderWindow()
+    const box = await screen.findByRole('textbox', { name: 'Message the agent on devbox…' })
+    await screen.findByRole('button', { name: 'Stop generation' }, PEER_ROW_WAIT)
+    fireEvent.change(box, { target: { value: 'use the other file' } })
+    fireEvent.keyDown(box, { key: 'Enter' })
+    await waitFor(() => expect(posted()).toContainEqual(['api/chat?ws=1', { message: 'use the other file', slot: 'k1', steer: true }]))
+    expect(box).toHaveValue('')
+  })
+
+  it('queues a mid-turn message on the PEER with the other-action chord', async () => {
+    slotRow = { ...slotRow, running: true }
+    renderWindow()
+    const box = await screen.findByRole('textbox', { name: 'Message the agent on devbox…' })
+    await screen.findByRole('button', { name: 'Stop generation' }, PEER_ROW_WAIT)
+    fireEvent.change(box, { target: { value: 'after this' } })
+    fireEvent.keyDown(box, { key: 'Enter', ctrlKey: true })
+    // No steer flag: the peer queues a send that lands mid-turn.
+    await waitFor(() => expect(posted()).toContainEqual(['api/chat?ws=1', { message: 'after this', slot: 'k1' }]))
+  })
+
+  it('puts a refused steer back into the composer', async () => {
+    slotRow = { ...slotRow, running: true }
+    mocks.crewPeerPost.mockRejectedValue(new Error('peer refused'))
+    renderWindow()
+    const box = await screen.findByRole('textbox', { name: 'Message the agent on devbox…' })
+    await screen.findByRole('button', { name: 'Stop generation' }, PEER_ROW_WAIT)
+    fireEvent.change(box, { target: { value: 'steer me' } })
+    fireEvent.keyDown(box, { key: 'Enter' })
+    await waitFor(() => expect(box).toHaveValue('steer me'))
+  })
+
+  it('shows the peer\'s stop in flight and its compaction, not a live Stop', async () => {
+    slotRow = { ...slotRow, running: true, stopping: true }
+    renderWindow()
+    expect(await screen.findByRole('button', { name: 'Stopping' }, PEER_ROW_WAIT)).toBeTruthy()
+    const es = FakeEventSource.all[0]
+    act(() => es.emit('slots', [{ ...slotRow, running: false, stopping: false, compacting: true }]))
+    expect(await screen.findByTestId('compacting-indicator')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Stop generation' })).toBeNull()
+  })
+
+  it('shows the peer\'s context reading, with no auto-compact control of this machine', async () => {
+    slotRow = { ...slotRow, project: '/srv/peer/work/api' }
+    detail = { ...detail, context_pct: 42, context_used_tokens: 84000, context_window_tokens: 200000 }
+    renderWindow()
+    const meter = await screen.findByRole('button', { name: 'Context usage' }, PEER_ROW_WAIT)
+    fireEvent.click(meter)
+    expect(await screen.findByText('84K')).toBeTruthy()
+    expect(screen.queryByRole('slider')).toBeNull()
+    // The threshold read would ask THIS machine about a session it does not have.
+    expect((mocks as Record<string, { mock?: { calls: unknown[] } }>).chatSlotAutocompact?.mock?.calls ?? []).toHaveLength(0)
+  })
+
+  it('names the PEER\'s folder as a label, with no picker and nothing rooted here', async () => {
+    slotRow = { ...slotRow, project: '/srv/peer/work/api' }
+    renderWindow()
+    const chip = await screen.findByTestId('composer-project-readonly', {}, PEER_ROW_WAIT)
+    expect(chip).toHaveTextContent('api')
+    expect(chip.closest('button')).toBeNull()
+    expect(chip.getAttribute('title')).toContain('/srv/peer/work/api')
+    // `./` completion would list THIS machine's files under the peer's path:
+    // its menu opens on the keystroke itself, so none may open here.
+    const box = screen.getByRole('textbox', { name: 'Message the agent on devbox…' })
+    fireEvent.change(box, { target: { value: './' } })
+    expect(box).toHaveValue('./')
+    expect(screen.queryByRole('listbox')).toBeNull()
   })
 
   it('regenerates on the PEER', async () => {

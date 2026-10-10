@@ -318,6 +318,12 @@ export interface ChatInputProps {
   onMentionKey?: (text: string, selStart: number, selEnd: number, key: string, mods: MentionKeyMods) => { value: string; caret: number } | null
   onFileOpen?: (path: string) => void
   project?: string
+  /** The session runs on another machine (the crew window). `project` is
+   *  then that machine's folder: drawn as a plain label, never a picker, and
+   *  nothing on this machine is rooted at it (no `./path` completion, no file
+   *  drop, no `!` shell). The context popover shows the reading only, without
+   *  this machine's auto-compact slider. */
+  sessionOnPeer?: boolean
   /** Checked-out branch of the active project (or short SHA when detached). */
   projectBranch?: string
   /** True when the project's HEAD is detached, so the label is a commit. */
