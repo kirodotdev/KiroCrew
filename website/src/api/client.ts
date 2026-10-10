@@ -76,6 +76,11 @@ import type { DecisionsConsentData } from './client/decisions'
 export type { TunnelStatus } from './client/system'
 export type { WakaTimeStatsEntry, WakaTimeStats } from './client/telemetry'
 export type {
+  UsageSeriesDimension,
+  UsageSeriesLayer,
+  UsageSeriesPayload,
+} from './client/telemetry'
+export type {
   KiroPrerequisiteStatus,
   KasLoginStatus,
   KasLoginDeviceSession,

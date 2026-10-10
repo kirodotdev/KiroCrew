@@ -14178,7 +14178,9 @@
         "total_sessions_30d": "Sesiones totales (30d)",
         "total_tokens": "Tokens totales",
         "total_turns": "Turnos totales",
-        "usage_tracking_is_not_available_for": "El seguimiento de uso no está disponible para {{provider}}."
+        "usage_tracking_is_not_available_for": "El seguimiento de uso no está disponible para {{provider}}.",
+        "spend_over_time": "Gasto a lo largo del tiempo (créditos)",
+        "harness_unread": "No se pudo leer el ajuste del backend del agente, así que el gráfico de gasto no puede saber si esta instalación factura en créditos."
       },
       "vectorMemoryCard": {
         "legacy_vectors_warning": "Estos vectores son anteriores al registro de su archivo de modelo. Si cambió ese archivo, vuelva a aplicarlo en los ajustes del modelo de embeddings para reconstruirlos.",
@@ -14454,6 +14456,31 @@
         "err_name_reserved": "“{{name}}” está reservado para un agente integrado. Elige otro nombre.",
         "err_generic": "La solicitud falló. Inténtalo de nuevo.",
         "chat_with_caption": "El chat usa la memoria predeterminada compartida, no la propia de un compañero."
+      },
+      "usageSeriesChart": {
+        "layer_by": "Dividir por",
+        "by_channel": "Canal",
+        "by_agent": "Agente",
+        "by_model": "Modelo",
+        "by_cohort": "Semana de inicio de sesión",
+        "cumulative": "Acumulado",
+        "other": "Otros ({{n}} más)",
+        "unattributed": "Sin atribuir",
+        "unattributed_hint": "Sin atribuir: turnos que no registraron este dato.",
+        "channel_unrecognized": "Sesiones no reconocidas",
+        "cohort_week": "Semana del {{date}}",
+        "cohort_started_by": "Iniciadas hasta el {{date}}",
+        "cohort_caption": "Las capas agrupan el gasto por la semana en que cada sesión se vio por primera vez en esta ventana; una sesión que empezó antes cuenta desde su primer turno aquí, así que la capa más antigua, “Iniciadas hasta el” una fecha, también contiene sesiones más antiguas.",
+        "total_to_date": "Total hasta la fecha: {{value}}",
+        "total_that_day": "Ese día: {{value}}",
+        "empty": "Todavía no hay gasto registrado.",
+        "truncated_notice": "Los totales están incompletos: los {{n}} turnos más antiguos no se contaron.",
+        "truncated_from": "Los totales están incompletos: los {{n}} turnos más antiguos no se contaron; desde {{date}}, cada día cuenta todos sus turnos.",
+        "load_failed": "No se pudo cargar el gasto a lo largo del tiempo",
+        "retry": "Reintentar",
+        "loading": "Cargando…",
+        "aria_label": "Gráfico de áreas apiladas del gasto a lo largo del tiempo",
+        "keyboard_hint": "Usa las flechas izquierda y derecha para recorrer los días."
       }
     },
     "overviewPage": {

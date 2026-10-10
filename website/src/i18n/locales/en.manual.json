@@ -6361,7 +6361,9 @@
         "credits": "Credits",
         "spend": "Spend",
         "tokens": "Tokens",
-        "usage_tracking_is_not_available_for": "Usage tracking is not available for {{provider}}."
+        "usage_tracking_is_not_available_for": "Usage tracking is not available for {{provider}}.",
+        "spend_over_time": "Spend over time (credits)",
+        "harness_unread": "Couldn’t read the agent backend setting, so the spend chart can’t tell whether this install bills in credits."
       },
       "vectorMemoryCard": {
         "embedding_status": "Embedding status",
@@ -6531,6 +6533,31 @@
         "err_name_reserved": "“{{name}}” is reserved for a built-in agent. Pick another name.",
         "err_generic": "The request failed. Try again.",
         "chat_with_caption": "Chat runs on the shared default memory — not a crewmate's own."
+      },
+      "usageSeriesChart": {
+        "layer_by": "Layer by",
+        "by_channel": "Channel",
+        "by_agent": "Agent",
+        "by_model": "Model",
+        "by_cohort": "Session start week",
+        "cumulative": "Cumulative",
+        "other": "Other ({{n}} more)",
+        "unattributed": "Unattributed",
+        "unattributed_hint": "Unattributed: turns that didn't record this detail.",
+        "channel_unrecognized": "Unrecognized sessions",
+        "cohort_week": "Week of {{date}}",
+        "cohort_started_by": "Started by {{date}}",
+        "cohort_caption": "Layers group spend by the week each session was first seen in this window; a session that began earlier counts from its first turn here, so the oldest layer, “Started by” a date, also holds older sessions.",
+        "total_to_date": "Total to date: {{value}}",
+        "total_that_day": "That day: {{value}}",
+        "empty": "No spend recorded yet.",
+        "truncated_notice": "Totals undercount: the oldest {{n}} turns weren't counted.",
+        "truncated_from": "Totals undercount: the oldest {{n}} turns weren't counted; each day from {{date}} counts all of its turns.",
+        "load_failed": "Couldn't load spend over time",
+        "retry": "Try again",
+        "loading": "Loading…",
+        "aria_label": "Stacked area chart of spend over time",
+        "keyboard_hint": "Use the left and right arrow keys to step through days."
       }
     },
     "overviewPage": {

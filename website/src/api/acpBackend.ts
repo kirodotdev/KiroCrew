@@ -35,6 +35,21 @@ export function isKiroBackend(cfg: AcpBackendConfig | undefined): boolean {
   return (cfg.agent?.acp_backend ?? ACP_BACKEND_KIRO) === ACP_BACKEND_KIRO
 }
 
+/**
+ * True only when a LOADED config names a harness that bills in credits — the
+ * unit the Usage tab's spend chart stacks. kiro-cli and its KAS relay both
+ * report a turn's credits (`TurnUsage.credits` on the gateway); every other
+ * harness fills token counts and a dollar cost and leaves credits at zero, so a
+ * credits chart over its rows would show "no spend" for turns that did run.
+ * Named positively, like `isKiroBackend`, so a harness added later is not
+ * assumed to bill in credits.
+ */
+export function reportsCredits(cfg: AcpBackendConfig | undefined): boolean {
+  if (cfg === undefined) return false
+  const backend = cfg.agent?.acp_backend ?? ACP_BACKEND_KIRO
+  return backend === ACP_BACKEND_KIRO || backend === ACP_BACKEND_KAS
+}
+
 /** Shared translated harness labels; unknown harnesses keep the server's policy name. */
 export function acpBackendName(backend: { id: string; policy_id?: string }): string {
   switch (backend.id) {

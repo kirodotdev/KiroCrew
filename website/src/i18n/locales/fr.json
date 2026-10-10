@@ -14178,7 +14178,9 @@
         "total_sessions_30d": "Sessions totales (30 j)",
         "total_tokens": "Total des tokens",
         "total_turns": "Total des tours",
-        "usage_tracking_is_not_available_for": "Le suivi de l’utilisation n’est pas disponible pour {{provider}}."
+        "usage_tracking_is_not_available_for": "Le suivi de l’utilisation n’est pas disponible pour {{provider}}.",
+        "spend_over_time": "Dépenses dans le temps (crédits)",
+        "harness_unread": "Impossible de lire le réglage du backend de l’agent, donc le graphique des dépenses ne peut pas savoir si cette installation facture en crédits."
       },
       "vectorMemoryCard": {
         "legacy_vectors_warning": "Ces vecteurs datent d’avant l’enregistrement de leur fichier de modèle. Si vous avez changé ce fichier, réappliquez-le dans les paramètres du modèle de plongement pour les reconstruire.",
@@ -14454,6 +14456,31 @@
         "err_name_reserved": "« {{name}} » est réservé à un agent intégré. Choisis un autre nom.",
         "err_generic": "La requête a échoué. Réessaie.",
         "chat_with_caption": "La discussion utilise la mémoire partagée par défaut, pas celle d’un coéquipier."
+      },
+      "usageSeriesChart": {
+        "layer_by": "Répartir par",
+        "by_channel": "Canal",
+        "by_agent": "Agent",
+        "by_model": "Modèle",
+        "by_cohort": "Semaine de début de session",
+        "cumulative": "Cumulé",
+        "other": "Autres ({{n}} de plus)",
+        "unattributed": "Non attribué",
+        "unattributed_hint": "Non attribué : tours qui n'ont pas enregistré cette information.",
+        "channel_unrecognized": "Sessions non reconnues",
+        "cohort_week": "Semaine du {{date}}",
+        "cohort_started_by": "Commencées au plus tard le {{date}}",
+        "cohort_caption": "Les couches regroupent les dépenses par semaine de première apparition de chaque session dans cette fenêtre ; une session commencée plus tôt compte à partir de son premier tour ici, donc la couche la plus ancienne, « Commencées au plus tard le » une date, contient aussi des sessions plus anciennes.",
+        "total_to_date": "Total à date : {{value}}",
+        "total_that_day": "Ce jour-là : {{value}}",
+        "empty": "Aucune dépense enregistrée pour l'instant.",
+        "truncated_notice": "Les totaux sont sous-estimés : les {{n}} tours les plus anciens n’ont pas été comptés.",
+        "truncated_from": "Les totaux sont sous-estimés : les {{n}} tours les plus anciens n’ont pas été comptés ; à partir du {{date}}, chaque jour compte tous ses tours.",
+        "load_failed": "Impossible de charger les dépenses dans le temps",
+        "retry": "Réessayer",
+        "loading": "Chargement…",
+        "aria_label": "Graphique en aires empilées des dépenses dans le temps",
+        "keyboard_hint": "Utilise les flèches gauche et droite pour parcourir les jours."
       }
     },
     "overviewPage": {

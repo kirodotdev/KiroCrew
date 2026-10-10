@@ -14178,7 +14178,9 @@
         "total_sessions_30d": "Totale sessioni (30 gg)",
         "total_tokens": "Totale token",
         "total_turns": "Totale turni",
-        "usage_tracking_is_not_available_for": "Il monitoraggio dell’utilizzo non è disponibile per {{provider}}."
+        "usage_tracking_is_not_available_for": "Il monitoraggio dell’utilizzo non è disponibile per {{provider}}.",
+        "spend_over_time": "Spesa nel tempo (crediti)",
+        "harness_unread": "Impossibile leggere l’impostazione del backend dell’agente, quindi il grafico della spesa non può sapere se questa installazione addebita in crediti."
       },
       "vectorMemoryCard": {
         "legacy_vectors_warning": "Questi vettori precedono la registrazione del file del modello. Se hai modificato il file, riapplicalo nelle impostazioni del modello di embedding per ricostruirli.",
@@ -14454,6 +14456,31 @@
         "err_name_reserved": "“{{name}}” è riservato a un agente integrato. Scegli un altro nome.",
         "err_generic": "La richiesta non è riuscita. Riprova.",
         "chat_with_caption": "La chat usa la memoria predefinita condivisa, non quella di un compagno."
+      },
+      "usageSeriesChart": {
+        "layer_by": "Suddividi per",
+        "by_channel": "Canale",
+        "by_agent": "Agente",
+        "by_model": "Modello",
+        "by_cohort": "Settimana di inizio sessione",
+        "cumulative": "Cumulativo",
+        "other": "Altro ({{n}} in più)",
+        "unattributed": "Non attribuito",
+        "unattributed_hint": "Non attribuito: turni che non hanno registrato questo dettaglio.",
+        "channel_unrecognized": "Sessioni non riconosciute",
+        "cohort_week": "Settimana del {{date}}",
+        "cohort_started_by": "Iniziate entro il {{date}}",
+        "cohort_caption": "Gli strati raggruppano la spesa per la settimana in cui ogni sessione è stata vista per la prima volta in questa finestra; una sessione iniziata prima conta dal suo primo turno qui, quindi lo strato più vecchio, “Iniziate entro il” una data, contiene anche sessioni più vecchie.",
+        "total_to_date": "Totale a oggi: {{value}}",
+        "total_that_day": "Quel giorno: {{value}}",
+        "empty": "Nessuna spesa registrata finora.",
+        "truncated_notice": "I totali sono sottostimati: i {{n}} turni più vecchi non sono stati contati.",
+        "truncated_from": "I totali sono sottostimati: i {{n}} turni più vecchi non sono stati contati; dal {{date}} ogni giorno conta tutti i suoi turni.",
+        "load_failed": "Impossibile caricare la spesa nel tempo",
+        "retry": "Riprova",
+        "loading": "Caricamento…",
+        "aria_label": "Grafico ad aree impilate della spesa nel tempo",
+        "keyboard_hint": "Usa le frecce sinistra e destra per scorrere i giorni."
       }
     },
     "overviewPage": {

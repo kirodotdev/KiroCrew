@@ -13750,7 +13750,9 @@
         "total_sessions_30d": "会话总数（30 天）",
         "total_tokens": "令牌总数",
         "total_turns": "总轮次",
-        "usage_tracking_is_not_available_for": "{{provider}} 不支持用量跟踪。"
+        "usage_tracking_is_not_available_for": "{{provider}} 不支持用量跟踪。",
+        "spend_over_time": "支出走势（额度）",
+        "harness_unread": "无法读取代理后端设置，因此支出图表无法判断此安装是否按额度计费。"
       },
       "vectorMemoryCard": {
         "legacy_vectors_warning": "这些向量生成时尚未记录模型文件。如果你更换过该文件，请在嵌入模型设置中重新应用，以重建向量。",
@@ -14004,6 +14006,31 @@
         "err_name_reserved": "“{{name}}”是内置智能体的保留名称。请换一个名字。",
         "err_generic": "请求失败，请重试。",
         "chat_with_caption": "聊天使用共享的默认记忆，而不是某个队友自己的记忆。"
+      },
+      "usageSeriesChart": {
+        "layer_by": "分层依据",
+        "by_channel": "渠道",
+        "by_agent": "代理",
+        "by_model": "模型",
+        "by_cohort": "会话开始周",
+        "cumulative": "累计",
+        "other": "其他（另 {{n}} 项）",
+        "unattributed": "未归类",
+        "unattributed_hint": "未归类：未记录此信息的轮次。",
+        "channel_unrecognized": "无法识别的会话",
+        "cohort_week": "{{date}}当周",
+        "cohort_started_by": "{{date}}或之前开始",
+        "cohort_caption": "各层按每个会话在此时间窗内首次出现的那一周归类支出；更早开始的会话从它在此处首轮算起，因此“…或之前开始”这一最早层也包含更早会话。",
+        "total_to_date": "截至当日合计：{{value}}",
+        "total_that_day": "当日：{{value}}",
+        "empty": "尚未记录任何支出。",
+        "truncated_notice": "总计偏低：最早的 {{n}} 条轮次未计入。",
+        "truncated_from": "总计偏低：最早的 {{n}} 条轮次未计入；自 {{date}} 起，每一天都计入了全部轮次。",
+        "load_failed": "无法加载支出趋势",
+        "retry": "重试",
+        "loading": "加载中…",
+        "aria_label": "支出走势堆叠面积图",
+        "keyboard_hint": "使用左右方向键在日期间切换。"
       }
     },
     "overviewPage": {

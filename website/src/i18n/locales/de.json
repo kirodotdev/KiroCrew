@@ -13964,7 +13964,9 @@
         "total_sessions_30d": "Sitzungen insgesamt (30 T)",
         "total_tokens": "Tokens insgesamt",
         "total_turns": "Züge insgesamt",
-        "usage_tracking_is_not_available_for": "Nutzungserfassung ist für {{provider}} nicht verfügbar."
+        "usage_tracking_is_not_available_for": "Nutzungserfassung ist für {{provider}} nicht verfügbar.",
+        "spend_over_time": "Ausgaben im Zeitverlauf (Credits)",
+        "harness_unread": "Die Einstellung des Agent-Backends konnte nicht gelesen werden, daher kann das Ausgabendiagramm nicht erkennen, ob diese Installation in Credits abrechnet."
       },
       "vectorMemoryCard": {
         "legacy_vectors_warning": "Diese Vektoren entstanden vor der Erfassung ihrer Modelldatei. Wenn Sie diese Datei geändert haben, wenden Sie sie in den Einstellungen des Einbettungsmodells erneut an, um die Vektoren neu zu erstellen.",
@@ -14229,6 +14231,31 @@
         "err_name_reserved": "„{{name}}“ ist für einen integrierten Agenten reserviert. Wähle einen anderen Namen.",
         "err_generic": "Die Anfrage ist fehlgeschlagen. Bitte erneut versuchen.",
         "chat_with_caption": "Der Chat läuft mit dem geteilten Standard-Gedächtnis – nicht mit dem eines Crew-Kameraden."
+      },
+      "usageSeriesChart": {
+        "layer_by": "Aufteilen nach",
+        "by_channel": "Kanal",
+        "by_agent": "Agent",
+        "by_model": "Modell",
+        "by_cohort": "Startwoche der Sitzung",
+        "cumulative": "Kumuliert",
+        "other": "Sonstige ({{n}} weitere)",
+        "unattributed": "Nicht zugeordnet",
+        "unattributed_hint": "Nicht zugeordnet: Turns, die dieses Detail nicht aufgezeichnet haben.",
+        "channel_unrecognized": "Nicht erkannte Sitzungen",
+        "cohort_week": "Woche vom {{date}}",
+        "cohort_started_by": "Begonnen bis {{date}}",
+        "cohort_caption": "Die Schichten gruppieren die Ausgaben nach der Woche, in der jede Sitzung in diesem Zeitfenster zuerst gesehen wurde; eine früher begonnene Sitzung zählt ab ihrem ersten Turn hier, daher enthält die älteste Schicht, „Begonnen bis“ ein Datum, auch ältere Sitzungen.",
+        "total_to_date": "Summe bis dahin: {{value}}",
+        "total_that_day": "An diesem Tag: {{value}}",
+        "empty": "Noch keine Ausgaben erfasst.",
+        "truncated_notice": "Die Summen fallen zu niedrig aus: Die ältesten {{n}} Turns wurden nicht gezählt.",
+        "truncated_from": "Die Summen fallen zu niedrig aus: Die ältesten {{n}} Turns wurden nicht gezählt; ab {{date}} zählt jeder Tag alle seine Turns.",
+        "load_failed": "Ausgaben im Zeitverlauf konnten nicht geladen werden",
+        "retry": "Erneut versuchen",
+        "loading": "Wird geladen…",
+        "aria_label": "Gestapeltes Flächendiagramm der Ausgaben im Zeitverlauf",
+        "keyboard_hint": "Mit den Pfeiltasten links und rechts durch die Tage blättern."
       }
     },
     "overviewPage": {

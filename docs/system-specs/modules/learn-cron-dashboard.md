@@ -137,6 +137,74 @@ refresh can recover without clearing the report. A provider without usage
 support shows neutral status text, not an error. No report is persisted to disk,
 and the top-bar credit readout keeps its separate billing refresh policy.
 
+The Usage tab's "Spend over time (credits)" card is a stacked area chart with one layer
+per bucket of the chosen dimension, backed by `GET /api/usage/series`
+(`dashboard/handlers/usage_series.py`). The route reads the same per-turn
+shards as the Daily History credits, admits rows by the same guard (a `tokens`
+row with a parseable local day), and answers a dense local-day axis -- every
+day of the shard retention window, zero-filled -- plus one series per bucket
+of the requested dimension: `by=channel` (the default), `agent`, `model`, or
+`cohort`, the ISO week in which the row's session was first seen inside the
+window, keyed by its Monday and assigned in a second pass once every session is
+known. The channel is derived from the row's session key with
+`telemetry_channel_of`, never read from the row's own `surface` field, for the
+reason `cost_breakdown` documents: historical rows can carry a wrong but
+non-empty surface and the row schema has no writer marker, so the key is the
+authority and this chart buckets spend by the same closed channel vocabulary as
+the Spend panel. The model is canonicalised across provider id migrations like
+the daily chart does. The value stacked is the row's `credits`, the unit the
+kiro-cli backend and its KAS relay bill in; a harness that bills in tokens or
+dollars writes rows with no credits, so the Usage tab mounts the card only once
+a loaded config names a credits-billing default harness (`agent.acp_backend`
+via `reportsCredits` in `api/acpBackend.ts`, stated positively like
+`isKiroBackend`), never on a guess and never as "not claude"; a config read
+that failed with nothing cached (`failedWithNoData`) is said in an
+`ErrorNotice` where the card would stand, carrying the failed request's report
+for the agent hand-off and a Try again button that re-reads, since on a
+kiro-cli install a silent absence would read as "this harness has no credits"; turns a crew
+member ran on another harness (`agent.member_acp_backend`) land in the same
+store and count whatever credits they recorded. The top seven buckets by
+window total (the session palette's hue count) are kept and the rest fold into
+one `other` series carrying its member count; a row whose dimension value is
+empty or absent lands in an explicit `unattributed` series rather than being
+guessed at or dropped, so the stack's top edge always equals the day's total
+spend. Series arrive in stack order, bottom first: value dimensions
+largest-first, cohorts oldest-first, then `other`, then `unattributed`. An
+unknown `by` is a 400 (`invalid_dimension`) rather than a silent substitution,
+and an app token is answered 404 with a
+SEL `app_isolation` audit record -- the payload is the whole install's spend
+with no slot filter, unlike the row-isolated `/api/usage/turns`. The parsed rows
+are cached on the shard fingerprint the other readers use, so switching
+dimension re-aggregates in memory; the cache is bounded on both axes
+(`MAX_ROWS` rows, `MAX_FIELD_CHARS` per retained string), newest shards are read
+first so a window past the cap keeps its newest rows, and the payload discloses
+the shortening (`truncated`, `dropped_rows`, and `complete_from`, the oldest
+day every row of which was kept, never reaching past an unreadable shard --
+`null` when the cap tripped inside the newest shard) instead of serving a
+partial window as the whole one. The chart stacks
+and, in its default cumulative view,
+prefix-sums the series client-side (`pages/overview/TokenStackedAreaChart.tsx`,
+`d3`'s `stack`/`area`, axis top rounded to a nice number); its view choices
+persist in browser storage; the top-N buckets take the session palette's hues
+and `other` / `unattributed` the muted tokens; channel ids are shown capitalised
+with the unrecognised-key channel labelled apart from the `other` fold; the plot
+is a keyboard-operable slider over the day axis whose value text reads the
+focused day out; an `unattributed` layer earns a one-line caption under the
+controls and a truncated window a warning-toned one that leads with the
+consequence (the totals undercount) and, when the server could name it, from
+which day every turn is counted. Cohort layers are labelled "Week of" their
+Monday except the oldest one drawn, labelled "Started by" its Sunday (or the
+axis's last day while that week is still running): a cohort is the week a
+session was first seen inside the window, so the oldest layer also holds
+sessions that began before the window, and the cohort caption says so. A failed first load shows a titled `ErrorNotice`, the
+server's text on its own line under the title, with a Try again button that
+refetches; a failed refresh over a drawn chart shows the same shape above the
+stack it keeps showing. Changing the dimension
+keeps the previous stack on screen, dimmed and `aria-busy` with a "Loading…"
+cue beside the select, until the new answer arrives (`keepPreviousData`); each
+answer carries the dimension it was split by, so the stand-in keeps its own
+labels and caption rather than the new selection's.
+
 ## Gateway restart
 
 The dashboard restart endpoint and successful update applies share

@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest'
 
-import { ACP_BACKEND_KIRO, isKiroBackend } from './acpBackend'
+import { ACP_BACKEND_KAS, ACP_BACKEND_KIRO, isKiroBackend, reportsCredits } from './acpBackend'
 
 describe('isKiroBackend', () => {
   it('is false while the config has not loaded: nothing Kiro-only renders on a guess', () => {
@@ -24,6 +24,24 @@ describe('isKiroBackend', () => {
   it('is false for every other harness, not just claude', () => {
     for (const backend of ['claude', 'kas', 'codex', 'opencode', 'pi', 'goose', 'deepseek', 'some-future-harness']) {
       expect(isKiroBackend({ agent: { acp_backend: backend } }), backend).toBe(false)
+    }
+  })
+})
+
+describe('reportsCredits', () => {
+  it('is false while the config has not loaded: a credits chart does not render on a guess', () => {
+    expect(reportsCredits(undefined)).toBe(false)
+  })
+
+  it('is true for kiro-cli (also what an unset key means) and for its KAS relay', () => {
+    expect(reportsCredits({ agent: { acp_backend: ACP_BACKEND_KIRO } })).toBe(true)
+    expect(reportsCredits({})).toBe(true)
+    expect(reportsCredits({ agent: { acp_backend: ACP_BACKEND_KAS } })).toBe(true)
+  })
+
+  it('is false for a harness that bills in tokens or dollars', () => {
+    for (const backend of ['claude', 'codex', 'opencode', 'pi', 'goose', 'deepseek', 'some-future-harness']) {
+      expect(reportsCredits({ agent: { acp_backend: backend } }), backend).toBe(false)
     }
   })
 })

@@ -29,6 +29,35 @@ export type WakaTimeStats = {
   }
 }
 
+/** Stacking dimensions `GET /api/usage/series` accepts. */
+export type UsageSeriesDimension = 'channel' | 'agent' | 'model' | 'cohort'
+
+/** One stack layer: a per-day value for every entry of the payload's `dates`.
+ *  `kind` separates a real bucket from the two reserved layers (`other`, the
+ *  fold of everything past the top-N, which carries how many buckets it holds;
+ *  `unattributed`, rows whose dimension value was never recorded). */
+export type UsageSeriesLayer = {
+  key: string
+  kind: 'bucket' | 'other' | 'unattributed'
+  values: number[]
+  total: number
+  members?: number
+}
+
+/** Dense local-day axis plus layers in stack order, bottom first. `truncated`
+ *  says the window held more turns than the server retains; `dropped_rows` is
+ *  how many of the oldest it left out and `complete_from` the first day it kept
+ *  whole (null when none is), so the chart can say so rather than present a
+ *  shortened window as the whole one. */
+export type UsageSeriesPayload = {
+  dates: string[]
+  series: UsageSeriesLayer[]
+  total: number
+  truncated: boolean
+  dropped_rows: number
+  complete_from: string | null
+}
+
 export function createTelemetryEndpoints({ get, post, j, jfetch: fetch }: ClientTransport) {
   const usageReadouts = {
     /** The five session folds of a crew log, keyed by name, in ONE request.
@@ -93,6 +122,11 @@ export function createTelemetryEndpoints({ get, post, j, jfetch: fetch }: Client
      *  every row (the endpoint's app-ownership filter applies to app callers). */
     usageTurns: (slot: string) =>
       fetch('/api/usage/turns?slot=' + encodeURIComponent(slot)).then(j),
+    /** The Usage tab's stacked spend-over-time series: whole-install credits by
+     *  one dimension; the same always-written row store as `usageTurns`, with no
+     *  slot filter, which is why the route refuses app tokens. */
+    usageSeries: (by: UsageSeriesDimension) =>
+      get(`/api/usage/series?by=${encodeURIComponent(by)}`).then(j) as Promise<UsageSeriesPayload>,
     /** WakaTime coding stats for a named range. Returns { configured: false }
      *  when the integration is off; a 502 body carries { code: 'upstream_unavailable' }. */
     wakatimeStats: (range: string) =>
