@@ -540,11 +540,9 @@ class McpSessionReport:
         self._failures.clear()
         self._reattempting = frozenset()
 
-    def set_reattempting(self, names: set[str] | frozenset[str]) -> bool:
+    def set_reattempting(self, names: set[str] | frozenset[str]) -> None:
         """Record which failed servers the session still re-attempts itself."""
-        before = self._reattempting
         self._reattempting = frozenset(names)
-        return self._reattempting != before
 
     def include_configured(self, names: tuple[str, ...]) -> None:
         """Add active-agent declarations without restarting this session's report."""
@@ -812,8 +810,8 @@ class McpSessionReport:
         restart = self.restart_to_load()
         if restart:
             parts.append(
-                "failed with what looks like a missing or rejected credential (start a new "
-                "session to load it once the credential works): " + _joined(restart)
+                "missing a credential, or its credential was rejected (once the credential "
+                "works, start a new session to load it): " + _joined(restart)
             )
         if self._awaiting_auth:
             parts.append("awaiting authorization: " + _joined(list(self._awaiting_auth)))

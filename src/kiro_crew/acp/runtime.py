@@ -4359,6 +4359,16 @@ class AcpRuntime:
             if self._mcp_sign_in == entry:
                 self._mcp_sign_in = None
 
+    @property
+    def reattempts_mcp_servers(self) -> bool:
+        """Whether this host can connect one failed MCP server of a session again.
+
+        The capability :meth:`begin_mcp_reattempt` checks first; a session asks
+        it to decide whether a credential failure is still being re-attempted
+        or should be named for a new session.
+        """
+        return bool(self._harness.opens_external_urls) and not self._dead
+
     def begin_mcp_reattempt(self, session_id: str, server_name: str) -> bool:
         """Ask the engine to connect a failed MCP server of one session again.
 
@@ -4376,7 +4386,7 @@ class AcpRuntime:
         a consent URL, and one that arrives with no sign-in in flight is
         refused.
         """
-        if not self._harness.opens_external_urls or self._dead:
+        if not self.reattempts_mcp_servers:
             return False
         entry = (session_id, server_name)
         if self._mcp_sign_in is not None or session_id not in self._session_queues:

@@ -77,7 +77,7 @@ describe('McpToolsPanel', () => {
         sessionReport={report}
       />,
     )
-    const hints = screen.getAllByText(/Start a new session to load/)
+    const hints = screen.getAllByText(/start a new session to load/)
     expect(hints).toHaveLength(1)
     expect(hints[0].textContent).toContain('aws-mcp')
   })
@@ -100,6 +100,6 @@ describe('McpToolsPanel', () => {
         sessionReport={report}
       />,
     )
-    expect(screen.queryByText(/Start a new session to load/)).toBeNull()
+    expect(screen.queryByText(/start a new session to load/)).toBeNull()
   })
 })

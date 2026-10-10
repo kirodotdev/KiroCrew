@@ -746,7 +746,7 @@ class TestRestartToLoad:
         assert payload is not None
         assert payload["restart_to_load"] == ["aws-mcp"]
         summary = r.problem_summary(include_reasons=False)
-        assert "start a new session to load it once the credential works): aws-mcp" in summary
+        assert "once the credential works, start a new session to load it): aws-mcp" in summary
         assert "No AWS credentials" not in summary
 
     def test_the_hint_clears_once_the_server_connects(self):
@@ -761,7 +761,7 @@ class TestRestartToLoad:
     def test_a_server_still_re_attempted_is_not_named_until_its_budget_is_spent(self):
         r = McpSessionReport()
         r.record_frame(_failed("aws-mcp", "No AWS credentials available"), owned=True)
-        assert r.set_reattempting({"aws-mcp"}) is True
+        r.set_reattempting({"aws-mcp"})
         assert r.restart_to_load() == []
         r.set_reattempting(set())
         assert r.restart_to_load() == ["aws-mcp"]

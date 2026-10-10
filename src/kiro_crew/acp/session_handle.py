@@ -6108,13 +6108,25 @@ class AcpSessionHandle:
         if report is None:
             return
         pending: set[str] = set()
-        if getattr(self._runtime, "begin_mcp_reattempt", None) is not None:
+        if self._runtime_reattempts_mcp():
             pending = {
                 name
                 for name in self._mcp_reattempt_waiting
                 if self._mcp_reattempt_counts.get(name, 0) < REATTEMPT_MAX
             }
         report.set_reattempting(pending)
+
+    def _runtime_reattempts_mcp(self) -> bool:
+        """Whether this session's host re-attempts a credential-failed server.
+
+        Asks the runtime's capability rather than whether the method exists:
+        every runtime has ``begin_mcp_reattempt``, and on a host without the
+        reset request it refuses every call, so a server counted as pending
+        there would never be named for a new session.
+        """
+        if getattr(self._runtime, "begin_mcp_reattempt", None) is None:
+            return False
+        return getattr(self._runtime, "reattempts_mcp_servers", False) is True
 
     def _reattempt_failed_mcp_servers(self) -> None:
         """Re-attempt servers that failed for want of a credential.
@@ -6132,7 +6144,7 @@ class AcpSessionHandle:
         if not self._mcp_reattempt_waiting or not self._session_id:
             return
         begin = getattr(self._runtime, "begin_mcp_reattempt", None)
-        if begin is None:
+        if begin is None or not self._runtime_reattempts_mcp():
             return
         for name in sorted(self._mcp_reattempt_waiting):
             attempts = self._mcp_reattempt_counts.get(name, 0)
