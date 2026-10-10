@@ -38,7 +38,8 @@ import { pinCandidateKey, usePinnedPrompt } from '../pages/chat/usePinnedPrompt'
 import { useJevAutoSend } from '../pages/chat/useJevAutoSend'
 import type { DisplayItem } from '../pages/chat/types'
 import { useSlotActivity } from '../pages/members/useSlotActivity'
-import AgentDropdownList, { DefaultAgentRow, ManageAgentsFooter } from './AgentDropdownList'
+import AgentDropdownList, { DefaultAgentRow, ManageAgentsFooter, defaultWriteFailureOf, defaultWriteKind, isCrewmateChat } from './AgentDropdownList'
+import type { DefaultWriteFailure } from './AgentDropdownList'
 import { agentSwitchFailureMessage } from '../utils/agentSwitchFeedback'
 import { agentOrDefaultLabel } from '../utils/agentLabel'
 import ModelDropdownList from './ModelDropdownList'
@@ -673,13 +674,13 @@ export default function ChatPane({
   const paneAgentName = paneSlot?.agent || defaultAgent || 'default'
   const queryClient = useQueryClient()
   const navigate = useNavigate()
-  const [defaultAgentFailed, setDefaultAgentFailed] = useState(false)
+  const [defaultAgentFailed, setDefaultAgentFailed] = useState<DefaultWriteFailure | false>(false)
   // Same contract as ChatPage: set-only, clearing lives on the Templates page.
-  const toggleDefaultAgent = useCallback((name: string) => {
+  const toggleDefaultAgent = useCallback((name: string, kind?: 'member' | 'template') => {
     setDefaultAgentFailed(false)
-    Promise.resolve(api.setDefaultAgent?.(name))
+    Promise.resolve(api.setDefaultAgent?.(name, kind))
       .then(() => dispatch(triggerRefresh()))
-      .catch(() => setDefaultAgentFailed(true))
+      .catch((err: unknown) => setDefaultAgentFailed(defaultWriteFailureOf(err, name)))
   }, [dispatch])
   // The pop-up lists the full catalog (a same-name member and template are
   // two rows); every other reader of the roster keeps the name-folded list.
@@ -2263,7 +2264,8 @@ export default function ChatPane({
             <div role="listbox" aria-label={i18nT('components.chatPane.agent_list')} className="overflow-y-auto max-h-[280px]">
               <AgentDropdownList agents={agentDD.filtered} activeAgent={paneAgentName} activeKind={paneSlot?.agent_kind} defaultAgent={defaultAgent} onSelect={(name, kind) => { switchAgent(name, kind); agentDD.setOpen(false) }} />
             </div>
-            <DefaultAgentRow agentName={paneAgentName} isDefault={paneAgentName === defaultAgent} onSetDefault={() => toggleDefaultAgent(paneAgentName)} />
+            {/* The default for new sessions is a template; a crewmate's chat offers no such write. */}
+            {!isCrewmateChat(paneSlot?.agent_kind, paneAgentName, installedAgents) && <DefaultAgentRow agentName={paneAgentName} isDefault={paneAgentName === defaultAgent} onSetDefault={() => toggleDefaultAgent(paneAgentName, defaultWriteKind(paneSlot?.agent_kind))} />}
             <ManageAgentsFooter error={defaultAgentFailed} onManage={() => { agentDD.setOpen(false); navigate('/capabilities?tab=crews') }} />
           </div>,
           document.body,

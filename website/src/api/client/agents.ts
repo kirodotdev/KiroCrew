@@ -57,11 +57,6 @@ export interface MemberRosterRow {
    *  unflushed rows included). Listed on the roster unasked. Absent on an
    *  older gateway. */
   has_dm_message?: boolean
-  /** Epoch seconds the USER last sent this crew a message, in its DM or in a
-   *  normal chat; 0 = never. Background work (crons, wakes, sub-agents,
-   *  dispatched workers, apps) never moves it. The Crewmates list shows and
-   *  orders by it. Absent on an older gateway. */
-  last_chat_ts?: number
   /** Baseline projections (roster/activity/wake/driving) at a known seq, fed
    *  to the per-member projection store so the page renders from pushed
    *  frames. Absent on an older gateway that predates the event log. */

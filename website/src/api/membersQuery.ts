@@ -49,15 +49,19 @@ export const membersRosterQuery = {
   },
 }
 
-/** The user just sent `slot` a message: stamp `last_chat_ts` on the roster row
- *  bound to that slot, so the Crewmates list and its reopen pick read the send
- *  without waiting for a refetch, and mark the roster stale so the next read
- *  picks up a send to a crew in a normal chat (whose row has no slot). The
- *  server records the same send (`crew_recency`); this is its local echo. */
+/** The user just sent `slot` a message: it is the newest message in that DM,
+ *  so stamp `last_active_ts` (and `has_dm_message`) on the roster row bound to
+ *  the slot. The Crewmates list orders by the last message in each thread like
+ *  a messages app, and this lets it move without waiting for the crew log's
+ *  push or a refetch; the roster is marked stale so the next read confirms. */
 export function noteUserChat(queryClient: QueryClient, slot: string | undefined, nowTs = Date.now() / 1000): void {
   if (slot) {
     queryClient.setQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY, (rows) =>
-      rows?.map((r) => (r.slot_key === slot ? { ...r, last_chat_ts: Math.max(nowTs, r.last_chat_ts ?? 0) } : r)),
+      rows?.map((r) =>
+        r.slot_key === slot
+          ? { ...r, has_dm_message: true, last_active_ts: Math.max(nowTs, r.last_active_ts ?? 0) }
+          : r,
+      ),
     )
   }
   void queryClient.invalidateQueries({ queryKey: MEMBERS_ROSTER_QUERY_KEY, refetchType: 'none' })

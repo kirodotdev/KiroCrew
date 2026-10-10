@@ -423,9 +423,15 @@ test('a legacy configured default member keeps V1 while new members receive inde
     const promoted = await request.put('/api/config/default-agent', { data: { agent: name } })
     expect(promoted.ok(), await promoted.text()).toBeTruthy()
     expect(await promoted.json()).toMatchObject({ default_agent: name })
-    // No agent in this request: exercise the configured default selection,
-    // rather than pinning a member and accidentally bypassing that resolver.
-    const created = await request.post('/api/chat/slots', { data: { title: `Legacy memory setup ${name}` } })
+    // The roster's default crewmate is not what a plain session runs: a create
+    // with no agent is a template session on the default custom agent, not
+    // this member. Pin that, then open the legacy member by name.
+    const plain = await request.post('/api/chat/slots', { data: { title: `Plain session beside ${name}` } })
+    expect(plain.ok(), await plain.text()).toBeTruthy()
+    const plainSlot = await plain.json() as { key: string; agent: string; agent_kind?: string }
+    expect(plainSlot.agent).not.toBe(name)
+    expect(plainSlot.agent_kind).toBe('template')
+    const created = await request.post('/api/chat/slots', { data: { title: `Legacy memory setup ${name}`, agent: name } })
     expect(created.ok(), await created.text()).toBeTruthy()
     const slot = await created.json() as { key: string; agent: string }
     expect(slot.agent).toBe(name)

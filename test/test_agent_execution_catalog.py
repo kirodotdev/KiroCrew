@@ -98,7 +98,9 @@ async def test_catalog_keeps_namespaces_and_never_changes_registry(catalog):
         ("template", "reviewer"),
         ("template", "test-writer"),
     ]
-    assert result["default_agent"] == "reviewer"
+    # The picker's default is the one for NEW SESSIONS: the default template, not
+    # the roster's default crewmate alias (`config.default_agent == "reviewer"`).
+    assert result["default_agent"] == "kirocrew"
     assert result["agents"][0]["memory_store"] == "retained-store"
     assert "memory_store" not in result["agents"][-1]
     assert dataclasses.asdict(catalog.config) == before

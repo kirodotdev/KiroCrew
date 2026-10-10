@@ -5668,16 +5668,19 @@
     },
     "agentDropdownList": {
       "active_in_this_session": "在此会话中使用",
-      "could_not_change_the_default_agent": "无法更改默认队友",
+      "default_write_failed_not_installed": "无法更改默认自定义代理：{{name}} 不是已安装的自定义代理。安装后再试。",
+      "default_write_failed_overlaid": "无法更改默认自定义代理：本地设置文件（config.local.json）已指定它。请在那里修改。",
+      "default_write_failed_stale": "无法更改默认自定义代理：{{name}} 刚刚发生了变化。刷新后再试。",
+      "could_not_change_the_default_custom_agent": "无法更改默认自定义代理",
       "default": "默认",
-      "default_agent_for_new_sessions": "新会话的默认选择",
+      "agent_is_the_default_for_new_sessions": "<agent/> 是新会话的默认选择",
       "group_members": "队友（Crewmates）",
       "group_templates": "自定义代理",
       "manage_agents": "管理队友…",
       "new_sessions_start_with_this_agent": "新会话将使用该队友",
       "no_matches": "无匹配项",
       "set_default_agent": "将 <agent/> 设为新会话的默认选择",
-      "group_templates_hint": "在默认队友的工作区和记忆上运行，不会新建任何内容。"
+      "group_templates_hint_default_workspace": "自定义代理是可复用的代理配置。选择它会使用默认工作区和共享记忆；不会新建队友。"
     },
     "agentImportFlow": {
       "back": "上一步",
@@ -13402,7 +13405,7 @@
         "change_directory_hint": "工作区将从新文件夹读取其记忆、经验、历史记录和知识库。不会移动任何内容。",
         "default_crewmate": "默认队友",
         "default_crewmate_failed": "无法更改默认队友",
-        "default_crewmate_hint": "新会话以哪位队友开始 —— 聊天输入框里的 ★（新会话默认代理）写入同一项设置。已打开的对话继续使用开始时那位。",
+        "default_crewmate_hint_badge": "哪位队友在队友页面获得“默认”徽章且不可删除。它不决定新对话运行什么；那由代理选择器里的“将 … 设为新会话的默认选择”决定。",
         "default_crewmate_refused_because": "无法将 {{name}} 设为默认队友 —— {{reason}}。请刷新页面后重新选择。",
         "default_crewmate_unknown_reason": "队友列表中已没有 {{name}}"
       },
@@ -17260,7 +17263,6 @@
       "filters_clear": "清除筛选",
       "star": "收藏 {{name}}",
       "unstar": "取消收藏 {{name}}",
-      "default_agent_failed_title": "无法读取默认 crewmate，因此显示全部 crewmate",
       "all_hidden_hint": "尚未使用的 crewmate 已隐藏，搜索即可找到。",
       "star_failed_title": "收藏未保存",
       "star_failed": "无法更新此队友的收藏状态。",

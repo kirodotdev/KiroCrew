@@ -35,7 +35,6 @@ interface UseChatPageSessionControllerArgs {
   activeSlot: string | null
   activeSlotRef: MutableRefObject<string | null>
   connected: boolean
-  defaultAgent?: string
   dispatch: AppDispatch
   drafts: MutableRefObject<Record<string, string>>
   embedMode?: 'chat' | 'sessions'
@@ -77,7 +76,6 @@ export function useChatPageSessionController({
   activeSlot,
   activeSlotRef,
   connected,
-  defaultAgent,
   dispatch,
   drafts,
   embedMode,
@@ -926,9 +924,11 @@ export function useChatPageSessionController({
     } else if (connected && slotsLoaded && !autoCreatedRef.current) {
       // Connected, slots fetched, and truly empty — auto-create one
       autoCreatedRef.current = true
-      dispatch(createSlot({ agent: defaultAgent || undefined, mode }))
+      // Agent-less: the server stamps the default custom agent (a template),
+      // never the default crewmate alias.
+      dispatch(createSlot({ mode }))
     }
-  }, [activeSlot, filteredSlots, searchParams, dispatch, slotStorageKey, connected, slotsLoaded, defaultAgent, mode, newSlotFailed, newSessionRef, tokenConsumingRef])
+  }, [activeSlot, filteredSlots, searchParams, dispatch, slotStorageKey, connected, slotsLoaded, mode, newSlotFailed, newSessionRef, tokenConsumingRef])
 
   // Slot switch: the virtualizer (keyed on sessionId = activeSlot) owns entry
   // placement — it force-pins to the bottom (arming follow) or restores a

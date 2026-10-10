@@ -172,6 +172,18 @@ async def _default_session(gw) -> str:
     return f"dashboard:{slot}"
 
 
+async def _specless_session(gw) -> str:
+    """A session on an agent that has no spec in the agents directory.
+
+    An agent-less create is the default custom agent, whose managed spec
+    exists, so the tool-policy read resolves it and an unreadable neighbour is
+    provably not its spec. The refusal under test needs an agent the read
+    cannot resolve, so one is named that no spec declares and no file carries.
+    """
+    slot = (await gw.post_json("/api/chat/slots", {"agent": "specless-agent"}))["key"]
+    return f"dashboard:{slot}"
+
+
 @pytest.mark.asyncio
 async def test_tool_policy_is_guarded(gateway_boot) -> None:
     """The route is for managed MCP servers: the loopback secret alone is not
@@ -203,14 +215,14 @@ async def test_a_default_session_reads_an_empty_policy(gateway_boot) -> None:
 
 @pytest.mark.asyncio
 async def test_an_unreadable_neighbour_spec_is_named_in_the_refusal(gateway_boot) -> None:
-    """One malformed spec beside the managed ones. A default session's agent
-    has no spec of its own, so the tool-policy read cannot tell whether the
+    """One malformed spec beside the managed ones. The session's agent has no
+    spec of its own, so the tool-policy read cannot tell whether the
     unreadable file is that agent's: it refuses. The refusal must name the
     file, or the operator has nothing to act on (bug 13: the report said a
     restart did not help, and the error named no path).
     """
     async with gateway_boot() as gw:
-        session = await _default_session(gw)
+        session = await _specless_session(gw)
         bad = (await _agents_dir()) / "bad-agent.json"
         bad.write_text('{"name": "bad-agent", "managedToolPolicy": 42', encoding="utf-8")
 
@@ -227,7 +239,7 @@ async def test_removing_the_unreadable_spec_clears_the_refusal(gateway_boot) -> 
     directory is enough, no restart needed (the report said restart did not
     help, which is true only because the file was still there)."""
     async with gateway_boot() as gw:
-        session = await _default_session(gw)
+        session = await _specless_session(gw)
         bad = (await _agents_dir()) / "bad-agent.json"
         bad.write_text("{not json", encoding="utf-8")
         headers = gw.mcp_headers(session)

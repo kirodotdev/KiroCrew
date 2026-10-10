@@ -1387,6 +1387,9 @@ class TestPinEnforcement:
             side_effect=AssertionError("context construction must not run")
         )
         slot = state.get_or_create_slot(slot_key)
+        # PICKED on an ordinary slot: an agent-less slot is the default template
+        # and inherits no member, dispatchable or not.
+        slot.agent = name
         slot.append("user", "hello", "msg msg-u")
         cfg = KiroCrewConfig()
         cfg.agents = {name: KiroCrewAgentConfig(kiro_agent="kirocrew")}

@@ -1,9 +1,11 @@
-"""``GET/PUT /api/config/default-agent``: the alias a template choice resolves to, the enrollment of a user-level installed template, and the locked default write."""
+"""``GET/PUT /api/config/default-agent``: the default template for new sessions (``agent.default_agent``) and the roster's default crewmate alias, each a locked config write."""
 
 from __future__ import annotations
 
 import asyncio
-import dataclasses
+import contextlib
+import os
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from aiohttp import web
@@ -18,67 +20,30 @@ if TYPE_CHECKING:
         _foreign_private_copy_owner,
         _ForeignPrivateCopy,
         _name_would_be_masked,
-        _refresh_session_defaults,
+        _overlay_kiro_agent,
         _require_owner,
         _sel,
         _StaleBinding,
         _UnverifiableLineage,
         agents_spec_lock,
         coerce_dict_section,
+        default_template,
         discovery_executor,
-        dispatch_kiro_agent,
         kiro_agents_dir_path,
         list_agents,
         logger,
         read_bounded_json,
         run_config_write,
-        teams_mod,
         update_config_locked,
     )
 
 
-class _AmbiguousDefaultTarget(Exception):
-    """Several aliases bind the chosen template and none is the current default."""
-
-    def __init__(self, aliases: list[str]):
-        super().__init__(aliases)
-        self.aliases = aliases
-
-
-def _binds_template(bound: object, template: str) -> bool:
-    """Whether a crewmate row's ``kiro_agent`` runs *template*.
-
-    A binding that recorded the FILE name resolves the same template, so it is
-    matched through :func:`dispatch_kiro_agent` too. One predicate for the
-    pre-lock choice (:func:`_alias_binding_template`) and the locked re-check in
-    :func:`api_default_agent`, so a binder the first sees is one the second
-    sees.
-    """
-    return isinstance(bound, str) and (bound == template or dispatch_kiro_agent(bound) == template)
-
-
-def _alias_binding_template(bindings: dict[str, str], default: str, template: str) -> str | None:
-    """The alias to make the default when *template* is one some alias already runs.
-
-    ``bindings`` maps each alias to its ``kiro_agent``, matched by
-    :func:`_binds_template`. The current default wins when it is one of the
-    binders (the picker then asked for what already holds); a single other
-    binder is chosen; more than one raises ``_AmbiguousDefaultTarget``, because
-    each alias carries its own memory store and workspace and nothing in the
-    request names which of them the owner meant. ``None`` when no alias binds it.
-    """
-    binders = [alias for alias, bound in bindings.items() if _binds_template(bound, template)]
-    if not binders:
-        return None
-    if default in binders:
-        return default
-    if len(binders) == 1:
-        return binders[0]
-    raise _AmbiguousDefaultTarget(binders)
-
-
 class _AppRegisteredTemplate(Exception):
     """The template is an app's materialized agent, which the app's lifecycle owns."""
+
+
+class _BackgroundOnlyTemplate(Exception):
+    """The template is a managed background-only spec, which no chat runs."""
 
 
 def _is_app_registered(info: AgentInfo) -> bool:
@@ -104,6 +69,10 @@ async def _installed_template_alias(
     loop refuses it. The scan runs off the loop, like every other list_agents
     call.
 
+    A background-only managed spec raises :class:`_BackgroundOnlyTemplate`: it
+    IS installed, so "not installed" would send the user looking for a file that
+    is there; the refusal names the real reason.
+
     An APP's agent raises :class:`_AppRegisteredTemplate` instead: the owner's
     enrolled row is exempt from every prune, so it would outlive the spec the
     app removes on disable, and the default would then open no chat. Package
@@ -127,7 +96,9 @@ async def _installed_template_alias(
         logger.warning("default agent: installed-agent scan failed", exc_info=True)
         return None
     for info in found:
-        if info.name == name and info.scope == SCOPE_GLOBAL and not _is_background_only(info):
+        if info.name == name and info.scope == SCOPE_GLOBAL:
+            if _is_background_only(info):
+                raise _BackgroundOnlyTemplate(name)
             if _is_app_registered(info):
                 raise _AppRegisteredTemplate(name)
             # Stamped ``kirocrew`` (the mark every non-sync writer leaves), not the
@@ -163,14 +134,14 @@ async def api_default_agent(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "agent must be a string", "code": "invalid_agent_type"}, status=400
             )
-        # Only a config alias may become the default: the default is resolved
-        # from cfg.agents on every dispatch, so persisting any other name (a
-        # project-scope discovery, an app agent, a typo) writes a default that
-        # silently resolves to something else. Guarded server-side so EVERY
-        # caller is covered, not just whichever picker currently hides the
-        # action — project-scope rows carry scope="project" in /api/agents
-        # precisely so UIs can disable this, but the config file is the last
-        # line of defense.
+        # The namespace the picker chose the name in, as the create and switch
+        # routes take it. A crewmate and a template may share a name, and the two
+        # are different defaults (see the template branch below).
+        agent_kind = body.get("agent_kind", "")
+        if agent_kind not in ("", "member", "template"):
+            return web.json_response(
+                {"error": "invalid agent kind", "code": "invalid_agent_kind"}, status=400
+            )
         try:
             # Config load is stat/read/validation filesystem work; off-loop so
             # slow storage cannot freeze chat and the liveness heartbeat.
@@ -178,59 +149,34 @@ async def api_default_agent(request: web.Request) -> web.Response:
         except Exception:
             cfg = None
         known = set(cfg.agents.keys()) if cfg is not None else set()
-        # Fail CLOSED: an unreadable config yields an empty `known`, and that is
-        # precisely when validation is impossible — a non-empty name must be
-        # rejected, not waved through. A valid config always has at least one
-        # agent (load() guarantees default_agent exists in agents), so an empty
-        # set never rejects a legitimate alias.
-        # An installed template (one the user made, or one AIM / an app put in
-        # ~/.kiro/agents) is offered by the chat picker's "Set as default" row
-        # but is not an alias. When an alias already runs that template, THAT
-        # alias becomes the default: a second row for the same template would
-        # split one agent across two memory stores (the ``kirocrew`` template is
-        # bound by ``default`` on every install). Otherwise choosing it IS the
-        # request to enroll it: the alias is added with default bindings -- the
-        # record the sync route writes, so the default runs exactly what picking
-        # the template runs -- in the SAME locked write that sets the default.
-        # An app's agent is refused instead (see _installed_template_alias).
-        # Only when the config is readable (`cfg` loaded): fail-closed stays.
-        enroll: KiroCrewAgentConfig | None = None
-        enroll_filename: str | None = None
-        target = name
-        if name and name not in known and cfg is not None:
-            try:
-                bound = _alias_binding_template(
-                    {alias: a.kiro_agent for alias, a in cfg.agents.items()},
-                    cfg.default_agent,
-                    name,
-                )
-            except _AmbiguousDefaultTarget as exc:
-                return web.json_response(
-                    {
-                        "error": f"agents {sorted(exc.aliases)} all run {name!r}; "
-                        "choose one of them",
-                        "code": "default_agent_ambiguous",
-                        "agents": sorted(exc.aliases),
-                    },
-                    status=409,
-                )
-            if bound is not None:
-                target = bound
-            else:
-                try:
-                    enrolled_template = await _installed_template_alias(name)
-                    if enrolled_template is not None:
-                        enroll, enroll_filename = enrolled_template
-                except _AppRegisteredTemplate:
-                    return web.json_response(
-                        {
-                            "error": f"agent {name!r} is installed by an app, which removes it "
-                            "when the app is disabled; it cannot be the default agent",
-                            "code": "app_registered_template",
-                        },
-                        status=409,
-                    )
-        if name and target not in known and enroll is None:
+        # Two defaults live behind this route, told apart by the namespace the
+        # picker chose the name in (`agent_kind`, as the create and switch routes
+        # take it):
+        #
+        # * The default for NEW SESSIONS is a template. A session created without
+        #   a crewmate runs `agent.default_agent` (`default_template`), never a
+        #   crewmate record, so a template pick -- or any name that is no crewmate
+        #   alias -- is written THERE and enrolls nothing.
+        # * The roster's default crewmate (`default_agent`: the badge, the
+        #   undeletable row) is a crewmate alias. Fail CLOSED on an unreadable
+        #   config: `known` is empty exactly when the alias cannot be verified,
+        #   and a non-string or unknown name must never reach the write.
+        if (
+            name
+            and cfg is not None
+            and (agent_kind == "template" or (not agent_kind and name not in known))
+        ):
+            return await _set_default_template(request, cfg, name)
+        if name and cfg is None:
+            # Both defaults need the config: the alias check reads the roster and
+            # the template write is a locked read-modify-write of the same file.
+            # Refused as what it is, so the picker does not tell the user the
+            # template "is not a crewmate alias" when the file could not be read.
+            return web.json_response(
+                {"error": "config could not be read", "code": "config_unreadable"},
+                status=503,
+            )
+        if name and name not in known:
             return web.json_response(
                 {
                     "error": f"agent {name!r} is not a configured agent alias",
@@ -240,149 +186,191 @@ async def api_default_agent(request: web.Request) -> web.Response:
             )
         path = _h.config_path()
 
-        # This read-modify-write must hold the SAME in-process lock every other
-        # ``config.json`` RMW in the dashboard takes (agent create/update/delete,
-        # capability install/uninstall, the agent-config PUT). The event loop does
-        # not serialize it for free: the PUT's own RMW runs in a WORKER
-        # THREAD, holding this lock across the offload, so an unlocked read here
-        # can capture a baseline the worker is about to republish — and the last
-        # atomic rename silently reverts the other side's unrelated settings.
-        #
-        # That lock is not sufficient on its own, though: it is an asyncio lock,
-        # so it serializes only same-loop callers. The read-modify-write itself
-        # goes through ``update_config_locked``, which holds the
-        # ``<config>.json.lock`` sidecar across its own read and write and so
-        # also serializes against the CLI, worker threads and other processes.
-        #
-        # ``run_config_write`` is the one async entry point that holds BOTH --
-        # its own docstring says so -- and it is what every other converted
-        # dashboard writer uses. It takes the loop-side lock, dispatches the
-        # synchronous read-modify-write to a worker thread so an unbounded
-        # advisory-flock wait never stalls the gateway, and SHIELDS that worker
-        # in a drain loop so the lock cannot be released with a write still in
-        # flight. Composing those three by hand here would be a third copy of a
-        # helper that already exists, free to drift from it.
-        enrolled = False
-
         def _set_default(data: dict) -> dict:
-            nonlocal enrolled
-            if enroll is not None or target != name:
-                # The request named a TEMPLATE, and `target` is the alias that
-                # runs it: one chosen from the pre-lock read, or one enrolled
-                # here under the template's own name. Both decisions are
-                # re-derived INSIDE the critical section, like the locked
-                # rebind's checks, because the rows can change in the window:
-                # the chosen alias rebound or deleted, or an alias created under
-                # the very name being enrolled -- which `POST /api/agents`
-                # permits bound to ANY template. Setting the default to such a
-                # row would silently run that other template, and a repeat of
-                # the request would not notice (the name is then an alias).
-                agents = coerce_dict_section(data, "agents")
-                row = agents.get(target)
-                if row is not None or enroll is None:
-                    if not (isinstance(row, dict) and _binds_template(row.get("kiro_agent"), name)):
-                        raise _StaleBinding()
-                else:
-                    # A crew bound to this template since the pre-lock read
-                    # makes the enrollment a second row for it. Matched as the
-                    # pre-lock read matched, so a file-name binding made in the
-                    # window counts too.
-                    if any(
-                        isinstance(other, dict) and _binds_template(other.get("kiro_agent"), target)
-                        for other in agents.values()
-                    ):
-                        raise _StaleBinding()
-                    assert enroll_filename is not None
-                    agents_dir = kiro_agents_dir_path()
-                    with agents_spec_lock(agents_dir):
-                        # Template deletion and spec writers serialize through
-                        # this lock. Re-scan the exact discovery row here, after
-                        # the config re-check and immediately before enrollment,
-                        # so a removed or renamed spec cannot become durable.
-                        try:
-                            current = list_agents(agents_dir=agents_dir)
-                        except Exception as exc:
-                            raise _StaleBinding() from exc
-                        if not any(
-                            info.scope == SCOPE_GLOBAL
-                            and info.name == name
-                            and info.filename == enroll_filename
-                            for info in current
-                        ):
-                            raise _StaleBinding()
-                        # STRICT lineage read, as every binding writer does it:
-                        # the scan's ``private_to`` is display data an unreadable
-                        # sidecar degrades to "", and the spawn gate validates
-                        # governance, not ownership. No crew holds this name, so
-                        # every owner is foreign -- including the deleted owner
-                        # of an orphaned copy, which the sync loop likewise
-                        # refuses to resurrect.
-                        if owner := _foreign_private_copy_owner("", target):
-                            raise _ForeignPrivateCopy(owner)
-                        # Every path that registers a name purges a stale team
-                        # membership first, inside the lock (see the sync loop).
-                        teams_mod.release_for_create(target)
-                        agents[target] = dataclasses.asdict(enroll)
-                        enrolled = True
-            data["default_agent"] = target
+            data["default_agent"] = name
             return data
 
         try:
             await run_config_write(
                 update_config_locked, path, mutate=_set_default, stamp_meta=False
             )
-        except teams_mod.TeamsUnavailable:
-            logger.warning("Refusing to set default agent: team state unavailable", exc_info=True)
-            return web.json_response(
-                {"error": "team state unavailable; try again", "code": "teams_unavailable"},
-                status=409,
-            )
-        except _StaleBinding:
-            return web.json_response(
-                {
-                    "error": f"the crews running {name!r} changed underneath this request; "
-                    "reload and retry.",
-                    "code": "stale_binding",
-                },
-                status=409,
-            )
-        except _ForeignPrivateCopy as exc:
-            return web.json_response(
-                {
-                    "error": f"Template {name!r} is crew '{exc.owner}'s private copy; "
-                    "it cannot be the default.",
-                    "code": "foreign_private_copy",
-                },
-                status=409,
-            )
-        except _UnverifiableLineage:
-            return web.json_response(
-                {
-                    "error": f"Cannot verify whether {name!r} is a private copy; retry.",
-                    "code": "lineage_unverifiable",
-                },
-                status=409,
-            )
         except ConfigReadError:
-            # Fail closed: writing back a {} baseline would drop every other
-            # setting. Nothing durable ran, so this 500 is exact.
             logger.exception("Refusing to set default agent: config unreadable")
             return web.json_response(
                 {"error": "failed to read config file", "code": "config_unreadable"},
                 status=500,
             )
-        if enrolled:
-            # A crew registration, so the same two follow-ups as the create
-            # route: the factory's captured config does not know the crew, and
-            # the write installs the tool grants ``_require_owner`` names.
-            await _refresh_session_defaults(request, target)
-            _sel().log_api_access(
-                caller=request.get("user", "dashboard"),
-                operation="agent.create",
-                outcome="success",
-                source="dashboard",
-                resources=target,
-            )
-        return web.json_response({"ok": True, "default_agent": target})
+        return web.json_response({"ok": True, "default_agent": name})
     cfg = KiroCrewConfig.load()
-    return web.json_response({"default_agent": cfg.default_agent})
+    # Two defaults, two fields. `default_template` is what an agent-less session,
+    # cron or slot RUNS, so the surfaces that label one (the Schedule page's
+    # agent column, the Worlds agent rail) read it here rather than the alias.
+    return web.json_response(
+        {"default_agent": cfg.default_agent, "default_template": default_template(cfg)}
+    )
+
+
+def _spec_lock_or_unlocked_read(agents_dir: Path) -> contextlib.ExitStack:
+    """:func:`agents_spec_lock` held in an exit stack, or an empty stack when the
+    lock FILE cannot be opened.
+
+    The spec lock serializes the recheck with the spec WRITERS. A lock file that
+    cannot be opened (a read-only ``~/.kiro/agents``, a sandboxed mount) is the
+    refusal every writer meets at the same ``os.open``, so nothing can change the
+    directory under a read; the open is probed HERE, before the lock, so that is
+    the only case that degrades. A lock that opens but cannot be ACQUIRED (a
+    holder past the bounded-wait ceiling) propagates: a stuck holder is a writer
+    that may still change the directory, and the caller must refuse rather than
+    read beside it. A plain function (not a generator-based context manager) so
+    :func:`agent_admin.compose` rebinds it onto the handlers' globals.
+    """
+    held = contextlib.ExitStack()
+    try:
+        probe = os.open(agents_dir / ".kirocrew-agents.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    except OSError:
+        return held
+    os.close(probe)
+    held.enter_context(agents_spec_lock(agents_dir))
+    return held
+
+
+async def _set_default_template(
+    request: web.Request, cfg: KiroCrewConfig, name: str
+) -> web.Response:
+    """Make installed template *name* what a session created without a crewmate runs.
+
+    Writes ``agent.default_agent`` (read back through :func:`default_template`)
+    and touches no crewmate record. Refused for a name no user-level template
+    declares, for an app's agent (its install lifecycle removes the file), for
+    another crew's private copy, when the template vanished between the probe
+    and the locked write, and when ``config.local.json`` pins the field, since
+    the base write would then change nothing a new session reads.
+    """
+    import kiro_crew.dashboard.handlers as _h  # noqa: F811
+
+    # `config.local.json` is merged OVER the base at load, so while it pins this
+    # field a base write changes nothing a new session reads. Refused BEFORE
+    # the write: a write followed by a 409 would land a default that takes
+    # effect the day the pin is removed, with no record of it.
+    overlaid = await asyncio.to_thread(_overlay_kiro_agent)
+    if overlaid and overlaid != name:
+        return web.json_response(
+            {
+                "error": "config.local.json pins agent.default_agent; edit it there",
+                "code": "default_template_overlaid",
+            },
+            status=409,
+        )
+    try:
+        installed = await _installed_template_alias(name)
+    except _AppRegisteredTemplate:
+        return web.json_response(
+            {
+                "error": f"agent {name!r} is installed by an app, which removes it "
+                "when the app is disabled; it cannot be the default for new sessions",
+                "code": "app_registered_template",
+            },
+            status=409,
+        )
+    except _BackgroundOnlyTemplate:
+        return web.json_response(
+            {
+                "error": f"agent {name!r} is a background-only agent that no chat "
+                "runs; it cannot be the default for new sessions",
+                "code": "default_template_background_only",
+            },
+            status=409,
+        )
+    if installed is None:
+        return web.json_response(
+            {
+                "error": f"{name!r} is not an installed custom agent, so new sessions "
+                "cannot start from it",
+                "code": "default_template_not_installed",
+            },
+            status=400,
+        )
+
+    _installed_config, installed_filename = installed
+
+    def _set_template(data: dict) -> dict:
+        # Re-checked INSIDE the config lock, under the agents-spec lock: the
+        # template probed above can be deleted or renamed in the window, and a
+        # default naming a file that is gone refuses every new session. The same
+        # owned file must still declare the name (a different file declaring it
+        # is a different template).
+        agents_dir = kiro_agents_dir_path()
+
+        def _recheck() -> None:
+            try:
+                current = list_agents(agents_dir=agents_dir)
+            except Exception as exc:
+                raise _StaleBinding() from exc
+            if not any(
+                info.scope == SCOPE_GLOBAL
+                and info.name == name
+                and info.filename == installed_filename
+                for info in current
+            ):
+                raise _StaleBinding()
+            # A crew's private copy is that crew's definition: its publish/reset
+            # cleanup deletes the file, which must never be what every new
+            # session runs. Strict, as every binding writer reads it.
+            if owner := _foreign_private_copy_owner("", name):
+                raise _ForeignPrivateCopy(owner)
+
+        # This write only READS the directory; the lock serializes it with the
+        # spec writers. A lock file that cannot be opened (a read-only
+        # ``~/.kiro/agents``, a sandboxed mount) is the same refusal every
+        # writer meets at the same ``os.open``, so nothing can change the
+        # directory under this read: re-check without the lock rather than
+        # refuse a config write the directory's state does not forbid.
+        with _spec_lock_or_unlocked_read(agents_dir):
+            _recheck()
+        section = coerce_dict_section(data, "agent")
+        section["default_agent"] = name
+        return data
+
+    try:
+        await run_config_write(
+            update_config_locked, _h.config_path(), mutate=_set_template, stamp_meta=False
+        )
+    except _StaleBinding:
+        return web.json_response(
+            {
+                "error": f"the template {name!r} changed underneath this request; "
+                "reload and retry.",
+                "code": "stale_binding",
+            },
+            status=409,
+        )
+    except _ForeignPrivateCopy as exc:
+        return web.json_response(
+            {
+                "error": f"Template {name!r} is crew '{exc.owner}'s private copy; "
+                "it cannot be the default.",
+                "code": "foreign_private_copy",
+            },
+            status=409,
+        )
+    except _UnverifiableLineage:
+        return web.json_response(
+            {
+                "error": f"Cannot verify whether {name!r} is a private copy; retry.",
+                "code": "lineage_unverifiable",
+            },
+            status=409,
+        )
+    except ConfigReadError:
+        logger.exception("Refusing to set the default template: config unreadable")
+        return web.json_response(
+            {"error": "failed to read config file", "code": "config_unreadable"}, status=500
+        )
+    _sel().log_api_access(
+        caller=request.get("user", "dashboard"),
+        operation="default_template.write",
+        outcome="success",
+        source="dashboard",
+        resources=name,
+    )
+    return web.json_response({"ok": True, "default_agent": cfg.default_agent})

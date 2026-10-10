@@ -424,14 +424,15 @@ describe('create-button caret menu', () => {
     expect(JSON.stringify(mocks.crewPeerPost.mock.calls.at(-1))).not.toContain('planner')
   })
 
-  it('still stamps the default agent on an ordinary local create', async () => {
-    // The contrast that makes the subtraction above a deliberate one rather than
-    // a dropped argument: the local entry DOES carry this machine's default.
+  it('sends no agent on an ordinary local create either', async () => {
+    // `defaultAgent` is the roster's default CREWMATE alias. A session created
+    // without picking a crewmate runs the default custom agent (a template),
+    // which the server stamps, so the local entry carries no agent at all.
     renderSidebar({ defaultAgent: 'planner' })
     openCreateMenu()
     fireEvent.click(await findCreateMenuItem('New chat'))
     await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalled())
-    expect(mocks.createChatSlot.mock.calls.at(-1)?.[1]).toBe('planner')
+    expect(mocks.createChatSlot.mock.calls.at(-1)?.[1]).toBeUndefined()
   })
 
   // A crew create takes seconds (a version read, then the peer's own create),

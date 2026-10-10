@@ -271,9 +271,10 @@ export default function SchedulePage() {
   // Paired at the boundary: the picker is handed a failure it can act on, or
   // nothing at all — never an error with no way out of it.
   const rosterFailure = rosterError ? { reloading: rosterReloading, onReload: recoverRoster } : undefined
-  // The default agent comes from the shared, WS-invalidated + focus-refetched
-  // query rather than useAgents' one-shot value, so the agent-column label's
-  // freshness matches the agents rail's — one source of truth (issue #6495).
+  // The default custom agent (a template) -- what an agent-less job runs --
+  // comes from the shared, WS-invalidated + focus-refetched query rather than
+  // useAgents' one-shot value, so the agent-column label's freshness matches
+  // the agents rail's — one source of truth (issue #6495).
   const { data: defaultAgentData, isError: defaultAgentFailed, error: defaultAgentError } = useQuery(defaultAgentQuery)
   const defaultAgent = defaultAgentData ?? ''
   const [cronFilter, setCronFilter] = useState('')

@@ -2692,15 +2692,21 @@ class TestEffectiveModelSection:
         assert issues == []
 
     def _bind_custom_agent(self, cfg, name: str):
-        """Point the default alias at a non-built-in kiro agent."""
+        """Make a non-built-in kiro agent the default TEMPLATE.
+
+        A plain session runs `agent.default_agent`; the `default` crewmate's
+        own `kiro_agent` is that crewmate's, not the session's, so it is left
+        pointing elsewhere to prove the report reads the right knob.
+        """
         from kiro_crew.config.loader import KiroCrewAgentConfig
 
+        cfg.agent.default_agent = name
         cfg.default_agent = "default"
-        cfg.agents["default"] = KiroCrewAgentConfig(kiro_agent=name)
+        cfg.agents["default"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
         return cfg
 
     def test_a_bound_custom_agent_is_attributed_to_its_own_spec(self, capsys) -> None:
-        """The default alias may bind a kiro agent other than the built-in one,
+        """The default template may be a kiro agent other than the built-in one,
         and the resolver consults THAT spec's pin above the global (tier 2).
         Reading kirocrew.json in both cases attributed the pin to the wrong file
         and printed a reset command for the wrong agent."""
@@ -2968,7 +2974,7 @@ class TestEffectiveModelSection:
         user runs BECAUSE their config is broken."""
         self._install_spec("claude-opus-4.8")
         cfg = self._bind_custom_agent(self._cfg("auto"), "placeholder")
-        cfg.agents["default"].kiro_agent = 12345  # type: ignore[assignment]
+        cfg.agent.default_agent = 12345  # type: ignore[assignment]
         issues: list[str] = []
 
         cli_doctor._doctor_effective_model(cfg, "", issues)
@@ -2980,7 +2986,10 @@ class TestEffectiveModelSection:
         assert "effective:" in out
         assert "tracking:" in out
 
-    def test_broken_default_member_is_reported_without_hiding_the_binding(self, capsys):
+    def test_broken_default_member_does_not_break_the_plain_session_report(self, capsys):
+        # A plain session is the default TEMPLATE on Global: the
+        # `default` crewmate's broken store is that crewmate's problem, reported
+        # by the bindings section, and never makes the model section fail.
         from kiro_crew.config.loader import KiroCrewAgentConfig
 
         cfg = self._cfg("auto")
@@ -2991,15 +3000,29 @@ class TestEffectiveModelSection:
         issues: list[str] = []
         cli_doctor._doctor_effective_model(cfg, "", issues)
         out = capsys.readouterr().out
-        assert "default agent binding unavailable" in issues
-        assert "See the member memory binding diagnostics below." in out
-        assert "Memory store 'missing-store' is unavailable; Global was not used" in out
-        # The model section points to the subsequent binding section, which
-        # retains the member name as well as its unavailable store.
+        assert "default agent binding unavailable" not in issues
+        assert "binding:     unavailable" not in out
+        assert issues == []
+        # The binding section still names the member and its unavailable store.
         cli_doctor._doctor_member_memory_bindings(cfg, issues)
         bindings_out = capsys.readouterr().out
         assert "'writer' -> 'missing-store': unavailable" in bindings_out
         assert "member memory binding unavailable: 'writer' -> 'missing-store'" in issues
+
+    def test_default_crewmate_with_its_own_store_is_told_where_it_applies(self, capsys):
+        from kiro_crew.config.loader import KiroCrewAgentConfig
+        from kiro_crew.memory_stores import provision_member_memory
+
+        cfg = self._cfg("auto")
+        cfg.agents["writer"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
+        provision_member_memory(cfg, "writer")
+        cfg.default_agent = "writer"
+        issues: list[str] = []
+        cli_doctor._doctor_member_memory_bindings(cfg, issues)
+        out = capsys.readouterr().out
+        assert "valid binding" in out
+        assert "plain sessions use the default template on Global memory" in out
+        assert issues == []
 
 
 class TestWhatsAppSection:

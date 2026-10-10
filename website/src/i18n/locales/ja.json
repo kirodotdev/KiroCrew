@@ -5638,16 +5638,19 @@
     },
     "agentDropdownList": {
       "active_in_this_session": "このセッションでアクティブ",
-      "could_not_change_the_default_agent": "デフォルトのクルーメイトを変更できませんでした",
+      "default_write_failed_not_installed": "デフォルトのカスタムエージェントを変更できませんでした。{{name}} はインストール済みのカスタムエージェントではありません。インストールしてからもう一度お試しください。",
+      "default_write_failed_overlaid": "デフォルトのカスタムエージェントを変更できませんでした。ローカル設定ファイル（config.local.json）で指定されています。そちらで変更してください。",
+      "default_write_failed_stale": "デフォルトのカスタムエージェントを変更できませんでした。{{name}} が直前に変更されました。再読み込みしてからもう一度お試しください。",
+      "could_not_change_the_default_custom_agent": "デフォルトのカスタムエージェントを変更できませんでした",
       "default": "デフォルト",
-      "default_agent_for_new_sessions": "新しいセッションのデフォルト",
+      "agent_is_the_default_for_new_sessions": "<agent/> が新しいセッションのデフォルトです",
       "group_members": "クルーメイト",
       "group_templates": "カスタムエージェント",
       "manage_agents": "クルーメイトを管理…",
       "new_sessions_start_with_this_agent": "新しいセッションはこのクルーメイトで始まります",
       "no_matches": "マッチするものがありません",
       "set_default_agent": "<agent/> を新しいセッションのデフォルトに設定",
-      "group_templates_hint": "デフォルトのクルーメイトのワークスペースとメモリで実行します。新しいものは作成されません。"
+      "group_templates_hint_default_workspace": "カスタムエージェントは再利用できるエージェント設定です。選ぶと既定のワークスペースと共有メモリを使います。新しいクルーメイトは作成されません。"
     },
     "agentImportFlow": {
       "back": "戻る",
@@ -13402,7 +13405,7 @@
         "change_directory_hint": "ワークスペースは新しいフォルダーからメモリ、レッスン、履歴、ナレッジベースを読み込みます。何も移動されません。",
         "default_crewmate": "デフォルトのクルーメイト",
         "default_crewmate_failed": "デフォルトのクルーメイトを変更できませんでした",
-        "default_crewmate_hint": "新しいセッションがどのクルーメイトとして始まるか — チャット入力欄の ★（新しいセッションの既定エージェント）が書き込むのと同じ設定です。すでに開いているチャットは開始時のクルーメイトのままです。",
+        "default_crewmate_hint_badge": "クルーメイト一覧で「既定」バッジを付け、削除できないクルーメイトです。新しいチャットで何を実行するかは決めません。それはエージェント選択の「… を新しいセッションのデフォルトに設定」で決まります。",
         "default_crewmate_refused_because": "{{name}} を既定のクルーメイトにできませんでした — {{reason}}。ページを再読み込みして、もう一度選んでください。",
         "default_crewmate_unknown_reason": "{{name}} はクルーメイト一覧にありません"
       },
@@ -17260,7 +17263,6 @@
       "filters_clear": "フィルターをクリア",
       "star": "{{name}} にスターを付ける",
       "unstar": "{{name}} のスターを外す",
-      "default_agent_failed_title": "既定のクルーメイトを読み込めなかったため、すべてのクルーメイトを表示しています",
       "all_hidden_hint": "まだ使っていないクルーメイトは非表示です。検索すると見つかります。",
       "star_failed_title": "スターを保存できませんでした",
       "star_failed": "このクルーメイトのスターを更新できませんでした。",

@@ -278,10 +278,11 @@ class TestEagerSpawn:
     ):
         """Neither a fresh nor a resume prefetch may pre-register an ordinary
         provider when the real turn pins a protected V2 store (fresh, restored,
-        or inherited through an empty slot), when a restored store disagrees
-        with today's resolver, or when an explicit member is unavailable.
-        Classification follows resolved bindings, never the resolver's Global
-        fallback, and an empty slot resolves as the default member."""
+        or whatever the resolver answers for an empty slot), when a restored
+        store disagrees with today's resolver, or when an explicit member is
+        unavailable. Classification follows resolved bindings, never the
+        resolver's Global fallback. An empty slot is resolved as itself -- the
+        default TEMPLATE, never the default crewmate alias."""
         slot = _ChatSlot("t1")
         slot.agent = agent
         slot.memory_store = restored_store
@@ -294,9 +295,7 @@ class TestEagerSpawn:
             ) as resolve,
         ):
             await _eager_spawn(state, slot, allow_resume=allow_resume)
-        resolve.assert_called_once_with(
-            cfg, agent or cfg.default_agent, validate_memory_files=False
-        )
+        resolve.assert_called_once_with(cfg, agent, validate_memory_files=False)
         state.sessions.get_or_create.assert_not_awaited()
         state.sessions.release.assert_not_called()
         state.sessions.remove.assert_not_awaited()

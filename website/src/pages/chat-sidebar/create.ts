@@ -26,9 +26,8 @@ import { useStore } from 'react-redux'
 import type { RootState } from '../../store'
 
 /** New chat inside a folder, with its inline failure line. */
-export function useFolderChatCreate({ folders, defaultAgent, mode, dispatch, dropSlotMutation, onOpenSlotInNewTab, updateFolderMutation, clearBoardCollapse }: {
+export function useFolderChatCreate({ folders, mode, dispatch, dropSlotMutation, onOpenSlotInNewTab, updateFolderMutation, clearBoardCollapse }: {
   folders: ChatFolder[]
-  defaultAgent: string
   mode: string | undefined
   dispatch: AppDispatch
   dropSlotMutation: BoardColumnMutations['dropSlotMutation']
@@ -60,7 +59,10 @@ export function useFolderChatCreate({ folders, defaultAgent, mode, dispatch, dro
   type CreateChatInFolderVars = { folderId: string; columnId?: string; focus?: boolean; attempt: number; memoryMode?: 'incognito' | 'temporary'; inNewTab?: boolean }
   const createChatInFolderMutation = useMutation({
     mutationFn: ({ folderId, memoryMode, inNewTab }: CreateChatInFolderVars) => {
-      const agent = resolveFolderAgent(folders, folderId, defaultAgent)
+      // Only a folder's own pin names an agent. Agent-less otherwise: the
+      // server stamps the default custom agent (a template), never the
+      // default crewmate alias.
+      const agent = resolveFolderAgent(folders, folderId, '')
       // Carry folder membership in the create payload so createSlot publishes
       // the new slot to Redux in its final location. Assigning it after create
       // lets the sidebar render one frame at root before moving it.
@@ -153,12 +155,11 @@ export function useFolderChatCreate({ folders, defaultAgent, mode, dispatch, dro
 }
 
 /** The New chat variants and the Crew Members door. */
-export function useSessionCreate({ setNewChatError, dispatch, defaultAgent, mode, onOpenSlotInNewTab, setRemoteCrewError, setNewChatMenuOpen, onOpenPeerSession }: {
+export function useSessionCreate({ setNewChatError, dispatch, mode, onOpenSlotInNewTab, setRemoteCrewError, setNewChatMenuOpen, onOpenPeerSession }: {
   /** Where a crew window opens on a host with no chat pane (see ChatSidebar). */
   onOpenPeerSession?: (instanceId: string, key: string) => void
   setNewChatError: Dispatch<SetStateAction<string>>
   dispatch: AppDispatch
-  defaultAgent: string
   mode: string | undefined
   onOpenSlotInNewTab: ((key: string, opts?: { background?: boolean | undefined; } | undefined) => void) | undefined
   setRemoteCrewError: Dispatch<SetStateAction<string>>
@@ -214,7 +215,7 @@ export function useSessionCreate({ setNewChatError, dispatch, defaultAgent, mode
   const createChatMutation = useMutation({
     mutationFn: ({ inNewTab }: { inNewTab: boolean }) => {
       setNewChatError('')
-      return dispatch(createSlot({ agent: defaultAgent || undefined, mode: mode || '', activate: !inNewTab })).unwrap()
+      return dispatch(createSlot({ mode: mode || '', activate: !inNewTab })).unwrap()
     },
     onSuccess: (slot, { inNewTab }) => {
       if (inNewTab && onOpenSlotInNewTab) {
@@ -277,7 +278,7 @@ export function useSessionCreate({ setNewChatError, dispatch, defaultAgent, mode
   const createEphemeralChatMutation = useMutation({
     mutationFn: (memoryMode: 'incognito' | 'temporary') => {
       setNewChatError('')
-      return dispatch(createSlot({ agent: defaultAgent || undefined, mode: mode || '', memory_mode: memoryMode })).unwrap()
+      return dispatch(createSlot({ mode: mode || '', memory_mode: memoryMode })).unwrap()
     },
     onSuccess: focusComposer,
     onError: onNewChatError,

@@ -19,6 +19,7 @@ from kiro_crew.agent_files import (
 )
 from kiro_crew.config.loader import (
     KiroCrewConfig,
+    default_template,
     dispatch_kiro_agent,
     refresh_materialized_agents,
 )
@@ -181,9 +182,14 @@ async def api_agent_catalog(request: web.Request) -> web.Response:
                 row["runtime_policy"] = policy
         rows.append(row)
     rows.extend(_template_row(agent) for agent in templates)
+    # The default the picker marks is the default for NEW SESSIONS: the template
+    # a session created without a crewmate runs (`default_template`), not the
+    # roster's default crewmate alias. The picker's "default for new sessions"
+    # row reads and writes this one.
+    template = default_template(config)
     return web.json_response(
         {
             "agents": rows,
-            "default_agent": _roster_mask(config.default_agent) if redact else config.default_agent,
+            "default_agent": _roster_mask(template) if redact else template,
         }
     )

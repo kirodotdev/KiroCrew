@@ -1281,7 +1281,9 @@ async def test_non_owner_switch_keeps_durable_selection(tmp_path, monkeypatch, s
     state.sessions.get_or_create.assert_awaited_once()
     restored = _turn_state(tmp_path, monkeypatch)
     restored_slot = _rehydrate_slot_from_history(restored, slot.key)
-    assert restored_slot is not None and restored_slot.agent == (later_agent or default_agent)
+    # An empty switch is the default TEMPLATE, stamped like an agent-less
+    # create -- never the default crewmate alias.
+    assert restored_slot is not None and restored_slot.agent == (later_agent or "kirocrew")
     await asyncio.wait_for(chat_runner._run_chat(restored, restored_slot, "Continue."), 10)
     await asyncio.wait_for(drain_background_tasks(restored), 10)
     restored.sessions.record_failure.assert_not_awaited()
@@ -2181,3 +2183,49 @@ async def test_restricted_member_session_persists_transcript_but_no_owner_record
     assert rebound.memory_mode == mode
     assert rebound.store.store_id == member_store
     assert "memory_store" not in restarted.conversation_log.get_metadata(key)
+
+
+def test_a_record_less_template_stamp_never_resolves_a_same_named_crewmate(monkeypatch):
+    """A slot stamped ``template`` whose name a crewmate also uses, read before
+    any execution record exists (a non-owner create leaves the first send to
+    resolve from the stamp alone): the stamp decides the namespace, so the
+    crewmate's private store and pin are never bound to a chat that did not
+    pick it. A ``member`` stamp picks the crewmate; no stamp keeps the
+    name-first order the record-less read always had."""
+    from kiro_crew import session_agent_selection
+    from kiro_crew.config.loader import resolve_agent_bindings
+    from kiro_crew.memory_stores import provision_member_memory
+
+    cfg = KiroCrewConfig()
+    cfg.agents = {
+        "default": KiroCrewAgentConfig(kiro_agent="kirocrew"),
+        "atlas": KiroCrewAgentConfig(kiro_agent="kirocrew", model="pinned"),
+    }
+    cfg.default_agent = "default"
+    private = provision_member_memory(cfg, "atlas")
+    monkeypatch.setattr(session_agent_selection, "read_session_execution", lambda _: None)
+    monkeypatch.setattr(
+        "kiro_crew.config.loader._materialized_kiro_agent",
+        lambda name, project_dir=None: name if name == "atlas" else "",
+    )
+
+    stamped = resolve_session_agent_bindings(
+        resolve_agent_bindings, cfg, "dashboard:app-chat", "atlas", agent_kind="template"
+    )
+    assert stamped.selection_kind == "template"
+    assert stamped.resolved_alias == ""
+    assert stamped.memory_store_name == "default"
+    assert stamped.model == ""
+    assert stamped.kiro_agent == "atlas"
+
+    member = resolve_session_agent_bindings(
+        resolve_agent_bindings, cfg, "dashboard:app-chat", "atlas", agent_kind="member"
+    )
+    assert member.resolved_alias == "atlas"
+    assert member.memory_store_name == private
+    assert member.model == "pinned"
+
+    bare = resolve_session_agent_bindings(
+        resolve_agent_bindings, cfg, "dashboard:app-chat", "atlas"
+    )
+    assert bare.resolved_alias == "atlas"

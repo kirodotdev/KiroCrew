@@ -65,7 +65,6 @@ const rowOnlySignals = (m: MemberRosterRow): MemberSignals => ({
  */
 export default function CrewmateSwitcher({
   members,
-  defaultAgent,
   activeName,
   onPick,
   onCreate,
@@ -78,10 +77,6 @@ export default function CrewmateSwitcher({
    *  which of these rows the chip lists, so hidden rows must be passed: they are
    *  what the search reaches. */
   members: MemberRosterRow[]
-  /** The default crew's name, for the hide rule -- the page's `['default-agent']`
-   *  read. `''` while unknown, `null` when that read FAILED, which lists every
-   *  row rather than risk hiding the default crew (see `listedByDefault`). */
-  defaultAgent: string | null
   /** The crewmate whose thread is open, by exact name. */
   activeName: string
   onPick: (name: string) => void
@@ -108,8 +103,8 @@ export default function CrewmateSwitcher({
   // open. Searched over below, but the chip's count and faces read THIS -- a
   // tally over `members` counted rows the user cannot see in the column.
   const population = useMemo(
-    () => rosterPopulation(members, { search: '', defaultAgent, chosen: activeName }),
-    [members, defaultAgent, activeName],
+    () => rosterPopulation(members, { search: '', chosen: activeName }),
+    [members, activeName],
   )
   // Somebody you are NOT talking to is waiting on you.
   const othersNeedYou = useMemo(
@@ -128,8 +123,8 @@ export default function CrewmateSwitcher({
   // With a search typed the search decides alone, over the FULL roster, so a
   // hidden row is reachable here the same way it is from the column's search.
   const shown = useMemo(
-    () => members.filter((m) => rosterShows(m, { search: q, defaultAgent, chosen: activeName })),
-    [members, q, defaultAgent, activeName],
+    () => members.filter((m) => rosterShows(m, { search: q, chosen: activeName })),
+    [members, q, activeName],
   )
   // The OTHER crewmates lead the stack, in roster order: the open one is already
   // named by the identity pill beside this chip, and a second copy of its face

@@ -3056,12 +3056,12 @@ function ChatSidebar({
   } = useSidebarDragHandlers({ releaseHoverPin, setDragFrozen, hideFolderReorderHint, setActiveDrag, activeDrag, dragFrozen, folderReorderable, folderSortRead, showFolderReorderHint, moveFolderByDrag, reorderFolders, searchRanked, pinned, reorderPinned, localSlots, activeSlot, onDropSessionRef, moveByDrag, folders, boardFolderCollapsed, updateFolderMutation, clearBoardCollapse })
   const {
     folderCreateError, setFolderCreateError, createChatInFolder,
-  } = useFolderChatCreate({ folders, defaultAgent, mode, dispatch, dropSlotMutation, onOpenSlotInNewTab, updateFolderMutation, clearBoardCollapse })
+  } = useFolderChatCreate({ folders, mode, dispatch, dropSlotMutation, onOpenSlotInNewTab, updateFolderMutation, clearBoardCollapse })
 
   const {
     crewPreview, openCrewMembers, remoteCrewChatPreview,
     createChatMutation, createRemoteChatMutation, createEphemeralChatMutation,
-  } = useSessionCreate({ setNewChatError, dispatch, defaultAgent, mode, onOpenSlotInNewTab, setRemoteCrewError, setNewChatMenuOpen, onOpenPeerSession })
+  } = useSessionCreate({ setNewChatError, dispatch, mode, onOpenSlotInNewTab, setRemoteCrewError, setNewChatMenuOpen, onOpenPeerSession })
   // A conductor-lane member anchor opens on the Members page (see renderSessionRow).
   const navigate = useNavigate()
   // The Dynamic Dashboard is a Feature Preview (Settings > Developer): the

@@ -30,7 +30,7 @@ vi.mock('../api/client', () => ({
     models: vi.fn().mockResolvedValue([]),
     updateCron: vi.fn().mockResolvedValue({}),
     createCron: vi.fn().mockResolvedValue({}),
-    defaultAgent: vi.fn().mockResolvedValue({ default_agent: 'kirocrew' }),
+    defaultAgent: vi.fn().mockResolvedValue({ default_agent: 'default', default_template: 'kirocrew' }),
     kirocrewAgents: vi.fn(),
     agentCatalog: vi.fn(),
   },
@@ -58,7 +58,7 @@ describe('SchedulePage roster failure wiring (#5990)', () => {
     vi.mocked(api).chatFolders.mockResolvedValue([])
     vi.mocked(api).cronHistoryAll.mockResolvedValue({ runs: [] })
     vi.mocked(api).models.mockResolvedValue([])
-    vi.mocked(api).defaultAgent.mockResolvedValue({ default_agent: 'kirocrew' })
+    vi.mocked(api).defaultAgent.mockResolvedValue({ default_agent: 'default', default_template: 'kirocrew' })
     vi.mocked(api).kirocrewAgents.mockRejectedValue(new Error('gateway restarting'))
     vi.mocked(api).agentCatalog.mockRejectedValue(new Error('gateway restarting'))
   })

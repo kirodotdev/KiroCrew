@@ -3357,15 +3357,18 @@
     },
     "agentDropdownList": {
       "active_in_this_session": "Active in this session",
-      "could_not_change_the_default_agent": "Could not change the default crewmate",
+      "default_write_failed_not_installed": "Could not change the default custom agent: {{name}} is not an installed custom agent. Install it, then try again.",
+      "default_write_failed_overlaid": "Could not change the default custom agent: your local settings file (config.local.json) sets it. Change it there.",
+      "default_write_failed_stale": "Could not change the default custom agent: {{name}} changed just now. Reload, then try again.",
+      "could_not_change_the_default_custom_agent": "Could not change the default custom agent",
       "default": "Default",
-      "default_agent_for_new_sessions": "Default for new sessions",
+      "agent_is_the_default_for_new_sessions": "<agent/> is the default for new sessions",
       "group_members": "Crewmates",
       "group_templates": "Custom agents",
       "manage_agents": "Manage crewmates…",
-      "new_sessions_start_with_this_agent": "New sessions start with this crewmate",
+      "new_sessions_start_with_this_agent": "New sessions start with this custom agent",
       "set_default_agent": "Set <agent/> as the default for new sessions",
-      "group_templates_hint": "Runs on your default crewmate's workspace and memory — nothing new is created."
+      "group_templates_hint_default_workspace": "A custom agent is a reusable agent setup. Picking one uses your default workspace and shared memory; no new crewmate is created."
     },
     "agentSkillsEditor": {
       "edit_agent_config_to_change_mapping": "{{path}} — edit the agent config file to change this mapping",
@@ -6235,7 +6238,7 @@
         "warm_pool_save_note": "Keeps agents started so new chats open at once. Changes save right away, and you can change them back.",
         "default_crewmate": "Default crewmate",
         "default_crewmate_failed": "Could not change the default crewmate",
-        "default_crewmate_hint": "Which crewmate a new session starts as — the same setting the chat composer’s ★ (Default agent for new sessions) writes. Chats already open keep the one they started with.",
+        "default_crewmate_hint_badge": "Which crewmate gets the Default badge on the Crewmates page and can't be deleted. It does not pick what a new chat runs; the agent picker's “Set … as the default for new sessions” does that.",
         "default_crewmate_refused_because": "Could not set {{name}} as the default crewmate — {{reason}}. Reload the page and pick again.",
         "default_crewmate_unknown_reason": "{{name}} is no longer in the crewmate list"
       },

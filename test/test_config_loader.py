@@ -1549,11 +1549,15 @@ class TestAgentWorkspaceBindingsProperties:
         assert result.memory_store_name == expected_store
         assert result.kiro_agent == kiro_agent_name
 
-        # Resolve via default_agent (no explicit agent_name)
+        # No agent_name: a TEMPLATE session on the default workspace and the
+        # default memory store, never the default crewmate's bindings.
         result2 = resolve_agent_bindings(config)
         assert result2.workspace_dir == Path(ws_dir)
-        assert result2.memory_store_name == expected_store
-        assert result2.kiro_agent == kiro_agent_name
+        assert result2.memory_store_name == "default"
+        assert result2.kiro_agent == "kirocrew"
+        assert result2.selection_kind == "template"
+        assert result2.resolved_alias == ""
+        assert result2.model == ""
 
     # Feature: agent-workspace-bindings, Property 4: Resolver fallback on missing references
     @given(
@@ -1885,6 +1889,137 @@ class TestAgentWorkspaceBindingsProperties:
         assert on_disk["workspaces"] == {"default": {"dir": "~/ws"}, "other": {"dir": "/abs"}}
 
 
+class TestStarDefaultTemplateCarry:
+    """A "Default for new sessions" pick from before plain sessions were template
+    sessions -- an enrolled alias plus the roster's ``default_agent`` -- is carried
+    into ``agent.default_agent`` once, so an upgrade keeps running what the user chose."""
+
+    @staticmethod
+    def _star_config(**agent_section: str) -> dict:
+        return {
+            "agent": dict(agent_section),
+            "default_agent": "atlas",
+            "agents": {
+                "default": {
+                    "kiro_agent": "kirocrew",
+                    "workspace": "default",
+                    "memory_store": "default",
+                },
+                "atlas": {"kiro_agent": "atlas", "workspace": "default", "memory_store": "default"},
+            },
+        }
+
+    def _load(self, tmp_path: Path, data: dict) -> tuple[KiroCrewConfig, dict]:
+        home = tmp_path / "home"
+        home.mkdir(exist_ok=True)
+        cfg_file = home / "config.json"
+        cfg_file.write_text(json.dumps(data), encoding="utf-8")
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_dir", return_value=home),
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_file),
+            unittest.mock.patch(
+                "kiro_crew.config.loader.config_local_path", return_value=home / "config.local.json"
+            ),
+        ):
+            cfg = KiroCrewConfig.load()
+        return cfg, json.loads(cfg_file.read_text(encoding="utf-8"))
+
+    def test_a_filename_stem_default_template_dispatches_the_declared_name(self) -> None:
+        """``agent.default_agent`` may spell a spec's file stem; a plain session
+        must start the name the file declares, as a crewmate's row does."""
+        from kiro_crew.config import loader
+
+        cfg = KiroCrewConfig()
+        cfg.agent.default_agent = "KiroPkg-captain"
+        with (
+            unittest.mock.patch.object(loader, "_MATERIALIZED_AGENTS_READY", True),
+            unittest.mock.patch.object(loader, "_MATERIALIZED_AGENTS", {"captain", "kirocrew"}),
+            unittest.mock.patch.object(
+                loader, "_MATERIALIZED_STEMS", {"KiroPkg-captain": "captain"}
+            ),
+            unittest.mock.patch.object(loader, "_edition_agent_names", return_value=frozenset()),
+        ):
+            assert loader.resolve_agent_bindings(cfg, None).kiro_agent == "captain"
+            assert loader.resolve_agent_identity(cfg, None)[1] == "captain"
+
+    def test_a_pre_rule_star_pick_still_drives_a_plain_session(self, tmp_path: Path) -> None:
+        from kiro_crew.config import loader
+
+        cfg, on_disk = self._load(tmp_path, self._star_config(default_agent=""))
+        # In memory on this very load, and on disk for the next one.
+        assert cfg.agent.default_agent == "atlas"
+        assert loader.default_template(cfg) == "atlas"
+        assert loader.resolve_agent_bindings(cfg, None).kiro_agent == "atlas"
+        assert on_disk["agent"]["default_agent"] == "atlas"
+        # The roster is untouched: the alias row and the default crewmate stay.
+        assert on_disk["default_agent"] == "atlas"
+        assert set(on_disk["agents"]) == {"default", "atlas"}
+
+    @pytest.mark.parametrize("chosen", ["nova", "kirocrew"])
+    def test_an_explicit_template_default_is_not_overwritten(self, tmp_path: Path, chosen) -> None:
+        """A stored value is a choice, the stock template included: resetting the
+        star to ``kirocrew`` leaves the alias row and the roster default in place,
+        and the next load must not carry the alias's template back over it."""
+        cfg, on_disk = self._load(tmp_path, self._star_config(default_agent=chosen))
+        assert cfg.agent.default_agent == chosen
+        assert on_disk["agent"]["default_agent"] == chosen
+
+    def test_a_stock_roster_is_a_no_op(self, tmp_path: Path) -> None:
+        data = self._star_config(default_agent="")
+        data["default_agent"] = "default"
+        cfg, on_disk = self._load(tmp_path, data)
+        assert cfg.agent.default_agent == ""
+        assert on_disk["agent"]["default_agent"] == ""
+
+    @pytest.mark.parametrize(
+        "row",
+        [
+            {"kiro_agent": "atlas", "workspace": "work", "memory_store": "default"},
+            {"kiro_agent": "atlas", "workspace": "default", "memory_store": "atlas-mem"},
+            {
+                "kiro_agent": "atlas",
+                "workspace": "default",
+                "memory_store": "default",
+                "model": "m",
+            },
+            {"kiro_agent": "kirocrew", "workspace": "default", "memory_store": "default"},
+            {"kiro_agent": "reviewer", "workspace": "default", "memory_store": "default"},
+        ],
+        ids=["own-folder", "own-store", "model-pin", "stock-template", "named-unlike-its-template"],
+    )
+    def test_a_real_crewmate_promoted_to_default_is_left_alone(self, tmp_path: Path, row) -> None:
+        data = self._star_config(default_agent="")
+        data["agents"]["atlas"] = row
+        cfg, on_disk = self._load(tmp_path, data)
+        assert cfg.agent.default_agent == ""
+        assert on_disk["agent"]["default_agent"] == ""
+
+    def test_the_carry_runs_once(self, tmp_path: Path) -> None:
+        cfg, on_disk = self._load(tmp_path, self._star_config(default_agent=""))
+        assert on_disk["agent"]["default_agent"] == "atlas"
+        # The user then stars another template through the new write; a later
+        # load must not put the alias back.
+        on_disk["agent"]["default_agent"] = "nova"
+        cfg2, on_disk2 = self._load(tmp_path, on_disk)
+        assert cfg2.agent.default_agent == "nova"
+        assert on_disk2["agent"]["default_agent"] == "nova"
+
+    def test_the_predicate_is_pure(self) -> None:
+        from kiro_crew.config.migration import star_default_template_due as due
+
+        rows = {"atlas": {"kiro_agent": "atlas"}, "default": {"kiro_agent": "kirocrew"}}
+        assert due("", "atlas", rows) == "atlas"
+        assert due("", "atlas", {"atlas": {"kiro_agent": "nova"}}) is None
+        assert due("kirocrew", "atlas", rows) is None
+        assert due(None, "atlas", rows) == "atlas"
+        assert due("nova", "atlas", rows) is None
+        assert due("", "default", rows) is None
+        assert due("", "", rows) is None
+        assert due("", "ghost", rows) is None
+        assert due("", "atlas", None) is None
+        assert due("", "atlas", {"atlas": "not a row"}) is None
+
+
 class TestMemoryStoreBindingFloor:
     """Legacy bindings stay exact, and explicit V2 selection creates a new store."""
 
@@ -1923,10 +2058,12 @@ class TestMemoryStoreBindingFloor:
             resolve_agent_bindings(config, agent_name="broken")
         if bound == "":
             with pytest.raises(UnknownMemoryStore, match="invalid memory store name"):
-                resolve_agent_bindings(config)
+                resolve_agent_bindings(config, agent_name="floor")
         else:
             assert resolve_agent_bindings(config, agent_name="floor").memory_store_name == "default"
-            assert resolve_agent_bindings(config).memory_store_name == "default"
+        # No name is a template session on Global, whatever the default crewmate
+        # alias binds -- the alias is never consulted.
+        assert resolve_agent_bindings(config).memory_store_name == "default"
         assert (
             resolve_agent_bindings(
                 config, agent_name="chose", validate_memory_files=False
@@ -2462,7 +2599,8 @@ class TestMultiAgentOrchestrationProperties:
         assert result.memory_store_name == expected_store
         assert result.kiro_agent == kiro_agent_name
 
-    # Feature: multi-agent-orchestration, Property 6: Non-KiroCrew agent names resolve via default agent
+    # Feature: multi-agent-orchestration, Property 6: Non-KiroCrew agent names
+    # resolve as the default TEMPLATE session, never as the default crewmate
     @given(
         default_name=_safe_name_st,
         unknown_name=_safe_name_st,
@@ -2471,7 +2609,7 @@ class TestMultiAgentOrchestrationProperties:
         store_name=_safe_name_st,
     )
     @settings(deadline=None)
-    def test_non_kirocrew_agent_names_resolve_via_default(
+    def test_non_kirocrew_agent_names_resolve_as_the_default_template(
         self,
         default_name: str,
         unknown_name: str,
@@ -2479,13 +2617,16 @@ class TestMultiAgentOrchestrationProperties:
         ws_dir: str,
         store_name: str,
     ) -> None:
-        """For any agent name NOT in config.agents, calling
-        resolve_agent_bindings(config, agent_name) shall return the same
-        ResolvedBindings as calling with config.default_agent.
+        """For any agent name NOT in config.agents, resolve_agent_bindings
+        returns the same bindings as no name at all: the default template on
+        the default workspace and the default memory store, with
+        ``requested_resolved`` False -- and NOT the default crewmate's
+        bindings, whose template, store and model pin stay its own.
 
         **Validates: Requirements 1.2, 2.2, 7.2**
         """
         assume(unknown_name != default_name)
+        assume(unknown_name != "kirocrew")
 
         config = KiroCrewConfig(
             agents={
@@ -2493,6 +2634,7 @@ class TestMultiAgentOrchestrationProperties:
                     kiro_agent=kiro_agent_name,
                     workspace="default",
                     memory_store=store_name,
+                    model="claude-opus-5",
                 ),
             },
             default_agent=default_name,
@@ -2502,9 +2644,6 @@ class TestMultiAgentOrchestrationProperties:
             default_memory_store=store_name,
         )
 
-        if default_name != "default":
-            provision_member_memory(config, default_name)
-
         # Isolate from host ~/.kiro/agents/: pin the materialized-agent snapshot
         # as empty and ready so _materialized_kiro_agent never scans the host
         # filesystem. Without this, Hypothesis-generated names like "do" or
@@ -2512,21 +2651,18 @@ class TestMultiAgentOrchestrationProperties:
         with unittest.mock.patch.object(loader_module, "_MATERIALIZED_AGENTS", frozenset()):
             with unittest.mock.patch.object(loader_module, "_MATERIALIZED_AGENTS_READY", True):
                 result_unknown = resolve_agent_bindings(config, agent_name=unknown_name)
-                result_default = resolve_agent_bindings(config, agent_name=default_name)
+                result_plain = resolve_agent_bindings(config)
 
-        assert result_unknown.workspace_dir == result_default.workspace_dir, (
-            f"Unknown agent workspace_dir={result_unknown.workspace_dir} "
-            f"!= default={result_default.workspace_dir}"
-        )
-        assert result_unknown.memory_store_name == result_default.memory_store_name, (
-            f"Unknown agent memory_store_name={result_unknown.memory_store_name} "
-            f"!= default={result_default.memory_store_name}"
-        )
-        assert result_unknown.kiro_agent == result_default.kiro_agent, (
-            f"Unknown agent kiro_agent={result_unknown.kiro_agent} "
-            f"!= default={result_default.kiro_agent}"
-        )
-        assert result_unknown.effective_memory_config == result_default.effective_memory_config
+        assert result_unknown.requested_resolved is False
+        assert result_plain.requested_resolved is True
+        for result in (result_unknown, result_plain):
+            assert result.workspace_dir == Path(ws_dir)
+            assert result.memory_store_name == "default"
+            assert result.kiro_agent == "kirocrew"
+            assert result.selection_kind == "template"
+            assert result.resolved_alias == ""
+            assert result.model == ""
+        assert result_unknown.effective_memory_config == result_plain.effective_memory_config
 
 
 # ---------------------------------------------------------------------------
@@ -2669,8 +2805,10 @@ class TestMultiAgentMigrationEdgeCases:
         assert result.workspace_dir == Path("my-fallback-dir")
         assert result.memory_store_name == private_store
 
-    def test_resolver_with_empty_agent_name_uses_default(self) -> None:
-        """Resolver with empty agent name uses default_agent.
+    def test_resolver_with_empty_agent_name_is_the_default_template(self) -> None:
+        """Resolver with an empty agent name is the default TEMPLATE session.
+
+        Never the default crewmate: its private store stays its own.
 
         **Validates: Requirement 3.4**
         """
@@ -2691,17 +2829,15 @@ class TestMultiAgentMigrationEdgeCases:
 
         private_store = provision_member_memory(config, "mydefault")
 
-        # Empty string agent_name → uses default_agent
-        result = resolve_agent_bindings(config, agent_name="")
-        assert result.kiro_agent == "kirocrew"
-        assert result.workspace_dir == Path("ws-dir")
-        assert result.memory_store_name == private_store
-
-        # None agent_name → uses default_agent
-        result2 = resolve_agent_bindings(config, agent_name=None)
-        assert result2.kiro_agent == "kirocrew"
-        assert result2.workspace_dir == Path("ws-dir")
-        assert result2.memory_store_name == private_store
+        for empty in ("", None):
+            result = resolve_agent_bindings(config, agent_name=empty)
+            assert result.kiro_agent == "kirocrew"
+            assert result.workspace_dir == Path("ws-dir")
+            assert result.memory_store_name == "default"
+            assert result.selection_kind == "template"
+            assert result.resolved_alias == ""
+        # The crewmate itself still binds its private store.
+        assert resolve_agent_bindings(config, "mydefault").memory_store_name == private_store
 
 
 class TestReactionsEmptyStringFiltering:
@@ -5401,8 +5537,8 @@ class TestAppAgentDispatch(unittest.TestCase):
             cfg.default_agent = "KiroPkg-captain"
             with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: d):
                 assert loader.resolve_agent_bindings(cfg, "KiroPkg-captain").kiro_agent == "captain"
-                # The default path (no name) resolves the same crewmate the same way.
-                assert loader.resolve_agent_bindings(cfg).kiro_agent == "captain"
+                # No name is the default TEMPLATE, not this default crewmate.
+                assert loader.resolve_agent_bindings(cfg).kiro_agent == "kirocrew"
                 assert loader.resolve_agent_identity(cfg, "KiroPkg-captain")[1] == "captain"
         assert cfg.agents["KiroPkg-captain"].kiro_agent == "KiroPkg-captain"
 
@@ -5771,18 +5907,19 @@ class TestAppAgentDispatch(unittest.TestCase):
         assert loader.resolve_agent_bindings(cfg, "kept").kiro_agent == "kept"
         assert loader.resolve_agent_bindings(cfg, "deleted").kiro_agent == "kirocrew"
 
-    def test_substituting_an_alias_name_round_trips_to_the_same_agent(self):
-        # The trap: storing the DEFAULT's physical `kiro_agent` when a request is
-        # unhonored. If some alias is itself NAMED that physical agent, the stored
-        # value re-resolves as that alias and dispatches its target instead — the
-        # advertised-vs-answering mismatch, reintroduced by the substitution meant
-        # to prevent it. `resolved_alias` round-trips to the same bindings.
+    def test_an_unhonored_name_is_the_default_template_not_the_default_crewmate(self):
+        # The old trap: storing the DEFAULT crewmate's physical `kiro_agent` when
+        # a request is unhonored, which re-resolved as whatever alias carried
+        # that name. An unhonored request is now the default TEMPLATE session
+        #: no alias is reported, no crewmate's store or pin is taken,
+        # and a same-named alias still resolves to its own target.
         import kiro_crew.config.loader as loader
         from kiro_crew.config.loader import KiroCrewAgentConfig
 
         cfg = self._config()
         cfg.agents["default"] = KiroCrewAgentConfig(kiro_agent="worker")
         cfg.agents["worker"] = KiroCrewAgentConfig(kiro_agent="other")
+        cfg.agents["kirocrew"] = KiroCrewAgentConfig(kiro_agent="elsewhere")
         private_store = provision_member_memory(cfg, "worker")
 
         with tempfile.TemporaryDirectory() as td:
@@ -5790,16 +5927,52 @@ class TestAppAgentDispatch(unittest.TestCase):
             with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: d):
                 first = loader.resolve_agent_bindings(cfg, agent_name="does-not-exist")
                 assert first.requested_resolved is False
-                # The physical name would be the trap.
-                assert first.kiro_agent == "worker"
-                assert first.resolved_alias == "default"
-                # Re-resolving what a handler stores must land on the SAME agent.
-                again = loader.resolve_agent_bindings(cfg, agent_name=first.resolved_alias)
-                assert again.kiro_agent == first.kiro_agent
-                # Whereas the physical name resolves elsewhere — the bug avoided.
-                trap = loader.resolve_agent_bindings(cfg, agent_name=first.kiro_agent)
+                assert first.kiro_agent == "kirocrew"
+                assert first.resolved_alias == ""
+                assert first.selection_kind == "template"
+                assert first.memory_store_name == "default"
+                # A crewmate that happens to be NAMED like the default template is
+                # still its own binding when picked -- the namespaces never cross.
+                alias = loader.resolve_agent_bindings(cfg, agent_name="kirocrew")
+                assert alias.kiro_agent == "elsewhere"
+                assert alias.resolved_alias == "kirocrew"
+                trap = loader.resolve_agent_bindings(cfg, agent_name="worker")
                 assert trap.kiro_agent == "other"
                 assert trap.memory_store_name == private_store
+
+    def test_an_unattended_session_naming_no_agent_binds_global_not_the_default_crewmate_store(
+        self,
+    ):
+        # A cron, channel or subagent session that names no agent is a plain
+        # session: the default TEMPLATE on the default workspace and Global
+        # memory. The roster's default crewmate may carry a private store of its own;
+        # that store is reached only by the crewmate (its DM thread, or an
+        # explicit pick), never inherited by a session that picked nobody. The
+        # doctor line beside the binding (test_cli_doctor) says so.
+        import kiro_crew.config.loader as loader
+        from kiro_crew.config.loader import KiroCrewAgentConfig
+
+        cfg = self._config()
+        cfg.agents["scout"] = KiroCrewAgentConfig(kiro_agent="kirocrew", model="pinned-model")
+        cfg.default_agent = "scout"
+        private_store = provision_member_memory(cfg, "scout")
+        assert cfg.agents["scout"].memory_store == private_store
+
+        with tempfile.TemporaryDirectory() as td:
+            d = self._agents_dir(Path(td), {"kirocrew.json": {"name": "kirocrew"}})
+            with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: d):
+                for empty in ("", None):
+                    plain = loader.resolve_agent_bindings(cfg, agent_name=empty)
+                    assert plain.selection_kind == "template"
+                    assert plain.resolved_alias == ""
+                    assert plain.memory_store_name == "default"
+                    assert plain.workspace_dir == Path("/tmp/ws")
+                    assert plain.model == ""
+                # Picking the crewmate by name is the one way to its store and pin.
+                picked = loader.resolve_agent_bindings(cfg, agent_name="scout")
+                assert picked.resolved_alias == "scout"
+                assert picked.memory_store_name == private_store
+                assert picked.model == "pinned-model"
 
     def test_stale_refresh_cannot_erase_a_published_agent(self):
         # The race: a refresh globs the directory BEFORE a registration writes into
@@ -6073,21 +6246,22 @@ class TestAppAgentDispatch(unittest.TestCase):
                 with unittest.mock.patch.object(loader, "_MATERIALIZED_AGENTS_READY", True):
                     assert asyncio.run(_warm_then_resolve()).kiro_agent == "repobot"
 
-    def test_resolution_raises_stopiteration_synchronously(self):
-        # resolve_agent_bindings raises StopIteration on a malformed config (the
-        # defensive `next(iter(config.agents))` branch), and callers rely on catching
-        # it: _run_chat's `except Exception` logs and continues.
+    def test_resolution_raises_synchronously_and_never_stopiteration(self):
+        # resolve_agent_bindings raises on a malformed config, and callers rely
+        # on catching it: _run_chat's `except Exception` logs and continues.
         #
-        # This is why the resolver MUST stay inline and only the cache warm is
-        # offloaded. StopIteration cannot be delivered through a Future, so running
-        # this in an executor makes the awaiting caller hang on 3.10 (and raise an
-        # unrelated RuntimeError on newer runtimes) instead of seeing the error.
-        # The offloaded half is deliberately NOT exercised here -- reproducing it
-        # would hang the suite on the very runtime the bug affects.
+        # The resolver MUST stay inline and only the cache warm is offloaded, and
+        # what it raises must be deliverable through a Future: StopIteration is
+        # not (an awaiting caller hangs on 3.10, or sees an unrelated RuntimeError
+        # on newer runtimes). The defensive `next(iter(config.agents))` branch
+        # that once raised it is gone -- an unresolvable name is the
+        # default template, not "the first crewmate" -- and this pins that no
+        # `next()` comes back.
         import kiro_crew.config.loader as loader
 
-        with self.assertRaises(StopIteration):
+        with self.assertRaises(Exception) as caught:
             loader.resolve_agent_bindings(unittest.mock.MagicMock(), "anything", None)
+        self.assertNotIsInstance(caught.exception, StopIteration)
 
     def test_legacy_spec_is_not_dispatchable(self):
         # kiro-cli cannot activate a name declared only in
@@ -6808,6 +6982,67 @@ class TestDanglingDefaultAgentReset(unittest.TestCase):
                 ):
                     loader.refresh_materialized_agents(heal_default=True)
             assert self._on_disk(config)["default_agent"] == "pkg"
+
+    def test_default_template_falls_back_when_the_configured_template_is_gone(self):
+        # The owner made ``atlas`` the default for new sessions, then its file
+        # went. A plain session must not be refused with an unavailable agent
+        # mode: the read falls back to the managed template once the landed
+        # snapshot shows the removal, and returns to ``atlas`` if it comes back.
+        import kiro_crew.config.loader as loader
+
+        cfg = types.SimpleNamespace(agent=types.SimpleNamespace(default_agent="atlas"))
+        with tempfile.TemporaryDirectory() as td:
+            _config, d = self._home(
+                Path(td),
+                {"default": {"kiro_agent": "kirocrew"}},
+                "default",
+                {"kirocrew.json": {"name": "kirocrew"}, "atlas.json": {"name": "atlas"}},
+            )
+            p1, p2 = self._patched(_config, d)
+            with p1, p2:
+                # Cold snapshot: absence alone is not evidence, the name stands.
+                assert loader.default_template(cfg) == "atlas"
+                loader.refresh_materialized_agents()
+                assert loader.default_template(cfg) == "atlas"
+                (d / "atlas.json").unlink()
+                loader.refresh_materialized_agents()
+                assert loader.default_template(cfg) == loader.DEFAULT_KIRO_TEMPLATE
+                (d / "atlas.json").write_text(json.dumps({"name": "atlas"}), encoding="utf-8")
+                loader.refresh_materialized_agents()
+                assert loader.default_template(cfg) == "atlas"
+
+    def test_default_template_keeps_a_removed_file_the_edition_supplies(self):
+        # The file went, but the edition contributes an agent of the same name:
+        # a new session still dispatches it, so the configured name is kept. A
+        # name the directory never declared is likewise not evidence.
+        import kiro_crew.config.loader as loader
+
+        cfg = types.SimpleNamespace(agent=types.SimpleNamespace(default_agent="atlas"))
+        with tempfile.TemporaryDirectory() as td:
+            _config, d = self._home(
+                Path(td),
+                {"default": {"kiro_agent": "kirocrew"}},
+                "default",
+                {"kirocrew.json": {"name": "kirocrew"}, "atlas.json": {"name": "atlas"}},
+            )
+            p1, p2 = self._patched(_config, d)
+            with p1, p2:
+                loader.refresh_materialized_agents()
+                (d / "atlas.json").unlink()
+                loader.refresh_materialized_agents()
+                with unittest.mock.patch(
+                    "kiro_crew.platform.context.current_context",
+                    lambda: types.SimpleNamespace(
+                        agent_catalog=types.SimpleNamespace(
+                            builtin_agents=lambda: [{"name": "atlas"}]
+                        )
+                    ),
+                ):
+                    assert loader.default_template(cfg) == "atlas"
+                never = types.SimpleNamespace(
+                    agent=types.SimpleNamespace(default_agent="from-a-checkout")
+                )
+                assert loader.default_template(never) == "from-a-checkout"
 
 
 class TestWeixinConfig(unittest.TestCase):

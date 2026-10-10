@@ -4,9 +4,9 @@ import { renderWithProviders } from './helpers'
 import SchedulePage from '../pages/SchedulePage'
 import type { CronJob } from '../types'
 
-// Issue #6495: an agent-less cron job resolves the CURRENT default agent at run
-// time, so the accurate row label is the resolved alias, not the literal
-// 'default'. Both the visible cell and the column tooltip must agree, and the
+// Issue #6495: an agent-less cron job resolves the CURRENT default custom agent
+// (a template) at run time, so the accurate row label is that template, not the
+// literal 'default' and not the roster's default crewmate alias. Both the visible cell and the column tooltip must agree, and the
 // literal 'default' must still render while the roster has not loaded.
 
 const mkJob = (overrides: Partial<CronJob> = {}): CronJob => ({
@@ -45,7 +45,7 @@ describe('SchedulePage agent-less cron row label (#6495)', () => {
   it('renders the resolved default alias in the cell and its tooltip', async () => {
     const { api } = await import('../api/client')
     vi.mocked(api).crons.mockResolvedValue({ jobs: [mkJob()] })
-    vi.mocked(api).defaultAgent.mockResolvedValue({ default_agent: 'atlas' })
+    vi.mocked(api).defaultAgent.mockResolvedValue({ default_agent: 'radar', default_template: 'atlas' })
 
     renderWithProviders(<SchedulePage />)
 
@@ -65,7 +65,7 @@ describe('SchedulePage agent-less cron row label (#6495)', () => {
     vi.mocked(api).crons.mockResolvedValue({
       jobs: [mkJob({ agent: 'coder' }), mkJob({ id: 'job-2', name: 'Legacy job' })],
     })
-    vi.mocked(api).defaultAgent.mockResolvedValue({ default_agent: 'atlas' })
+    vi.mocked(api).defaultAgent.mockResolvedValue({ default_agent: 'radar', default_template: 'atlas' })
 
     renderWithProviders(<SchedulePage />)
 

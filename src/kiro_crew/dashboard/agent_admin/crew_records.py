@@ -468,14 +468,6 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
         source="dashboard",
         resources=name,
     )
-    # Creating a crewmate is the user's own act (the owner gate above refuses an
-    # app token), so it counts as chatting with it: the Crewmates list shows the
-    # new crewmate at once, first. An attested cron caller is not the user.
-    from kiro_crew import crew_recency
-    from kiro_crew.dashboard.handlers._shared import cron_slot_creator
-
-    if not await cron_slot_creator(request):
-        await asyncio.to_thread(crew_recency.record_user_chat, name)
     # `member_id` is the crew's IMMUTABLE identity (allocated with its member
     # memory; `member_config_for_id` resolves it and never a name or slug), so a
     # client that must bind something to the crew it just made -- the Meet

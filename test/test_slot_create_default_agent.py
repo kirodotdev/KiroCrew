@@ -1,11 +1,15 @@
-"""POST /api/chat/slots must stamp the resolved default agent on agent-less creates.
+"""POST /api/chat/slots must stamp the default TEMPLATE on agent-less creates.
 
 ``api_chat_slot_create`` stores ``body["agent"]`` verbatim, so a create that
-names no agent persisted ``""`` — dispatch still resolves the config default,
-but the slot's metadata disagrees with what actually answers, and the
-dashboard footer chip renders its literal ``'default'`` fallback. The
-dashboard's auto-create races the agents fetch, so agent-less creates are a
-common path, not an edge.
+names no agent persisted ``""`` — dispatch still resolves the default, but the
+slot's metadata disagrees with what actually answers, and the dashboard footer
+chip renders its literal ``'default'`` fallback. The dashboard's auto-create
+races the agents fetch, so agent-less creates are a common path, not an edge.
+
+What is stamped is the default template (``agent.default_agent``, ``kirocrew``
+when unset) in the ``template`` namespace -- never the ``default`` crewmate
+alias: a plain session is a template on the default folder and
+memory store, and the alias stamp made every plain chat that crewmate's.
 """
 
 from __future__ import annotations
@@ -25,10 +29,12 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard import chat_handlers
 
 
-def _stub_config(default_agent: str) -> KiroCrewConfig:
-    """A real config object (all sections present) with the default pinned."""
+def _stub_config(default_agent: str, default_template: str = "") -> KiroCrewConfig:
+    """A real config object (all sections present) with the default crewmate
+    alias pinned and, optionally, a default template other than ``kirocrew``."""
     cfg = KiroCrewConfig()
     cfg.default_agent = default_agent
+    cfg.agent.default_agent = default_template
     return cfg
 
 
@@ -120,18 +126,22 @@ async def test_owner_create_waits_for_memory_recovery_before_allocating(
 
 
 @pytest.mark.asyncio
-async def test_agentless_create_stamps_the_resolved_default(
-    dashboard_state: Any, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("default_template", "stamped"), [("", "kirocrew"), ("sales-template", "sales-template")]
+)
+async def test_agentless_create_stamps_the_default_template(
+    dashboard_state: Any, monkeypatch: pytest.MonkeyPatch, default_template: str, stamped: str
 ) -> None:
     monkeypatch.setattr(
         chat_handlers,
         "KiroCrewConfig",
-        SimpleNamespace(load=lambda: _stub_config("sales-agent")),
+        SimpleNamespace(load=lambda: _stub_config("sales-agent", default_template)),
     )
     await _create_slot(dashboard_state, {"name": "agentless"})
-    assert (
-        dashboard_state._slots["agentless"].agent == "sales-agent"
-    ), "an agent-less create must record the resolved default, not ''"
+    slot = dashboard_state._slots["agentless"]
+    assert slot.agent == stamped, "an agent-less create must record the default template, not ''"
+    assert slot.agent != "sales-agent", "never the default crewmate alias"
+    assert slot.agent_kind == "template"
 
 
 @pytest.mark.asyncio

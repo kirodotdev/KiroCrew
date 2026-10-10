@@ -412,9 +412,12 @@ none" is the single on-disk representation and a PATCH with `[]` clears it.
 The reserved `agents.default` assistant uses the existing Global Memory **V1**.
 Explicit creation of a new Crew Member allocates one **V2** memory store.
 Automatic discovery and existing V1 members retain their V1 bindings. Changing
-`default_agent` selects the member with its existing memory version and binding;
-it never converts member memory to Global. A materialized provider template which
-is not a Crew Member continues to use V1.
+`default_agent` picks the roster's default crewmate (the badge, the undeletable
+row) with its existing memory version and binding; it never converts member
+memory to Global, and it does not change what a session that picked no crewmate
+reads: that session is a template session on Global Memory V1 (see
+`resolve_agent_bindings` below). A materialized provider template which is not a Crew Member
+continues to use V1.
 
 ### Separate files preserve V1
 
@@ -1696,17 +1699,51 @@ surface would have it accepted by the picker and by `spawn_run`, then fail at
 Resolves the workspace, memory store and **kiro agent** a session runs under.
 Resolution order:
 
-1. `agent_name` is a key in `config.agents` — use that alias's bindings.
-2. `agent_name` is a **materialized kiro agent config** — a `*.json` under
-   `~/.kiro/agents/` or, when `project_dir` is given, under
-   `<project>/.kiro/agents/` — whose **declared `name`** matches (the filename stem
-   only when the config declares no name) — take the *default* alias's
-   workspace/memory bindings but dispatch **that agent itself**. `kiro-cli agent
-   list` enumerates agents by declared name, so a namespaced filename stem such as
-   `mochi--mochi` is NOT a name kiro-cli can resolve and must not be treated as
-   dispatchable.
-3. otherwise `config.default_agent`, then the first available alias, then bare
-   defaults.
+1. `agent_name` is a key in `config.agents` (and the stated namespace is not
+   `template`) — use that alias's bindings: template, workspace, memory store
+   and model pin.
+2. otherwise a **template session** (#18328): `default_workspace`, Global Memory
+   V1 (`DEFAULT_MEMORY_STORE`), no crewmate model pin, `resolved_alias` empty,
+   `selection_kind="template"`. The template dispatched is `agent_name` when it
+   is a **materialized kiro agent config** — a `*.json` under `~/.kiro/agents/`
+   or, when `project_dir` is given, under `<project>/.kiro/agents/` — whose
+   **declared `name`** matches (the filename stem only when the config declares
+   no name); `kiro-cli agent list` enumerates agents by declared name, so a
+   namespaced filename stem such as `mochi--mochi` is NOT a name kiro-cli can
+   resolve and must not be treated as dispatchable. Otherwise it is the
+   **default template**, `default_template(config)` = `agent.default_agent` or
+   `kirocrew`, which always counts as resolved. A non-empty name that matched
+   neither reports `requested_resolved=False`.
+
+A plain session — no `agent_name` — is rung 2 with the default template. It is
+never the `default` crewmate: `config.default_agent` names the roster's default
+crewmate and is not read here, so that row's workspace, store and model pin stay
+its own. There is no "first available alias" fallback any more.
+
+A document written by a build whose picker ★ enrolled the chosen template as a
+crewmate alias (shared folder and store, no model) and pointed the top-level
+`default_agent` at it holds the user's "default for new sessions" there and
+nowhere else. The write-back carries it into `agent.default_agent` once
+(`MIGRATE_STAR_DEFAULT_TEMPLATE`, predicate `migration.star_default_template_due`):
+when `agent.default_agent` is unset (any stored value, `kirocrew` included, is a choice the ★ or `config set` already made), the top-level `default_agent`
+names an alias other than `default`, that row is a template-only binding (the
+`default` workspace and store, no model) spelled as the template it binds (the ★
+enrolled the template under its own name), and that template is not `kirocrew`,
+the load sets `agent.default_agent` to that `kiro_agent` (through
+`dispatch_kiro_agent`) in memory at once and in `config.json` under the write
+lock, re-detected there like every other delta. The alias row and the roster
+default are left alone. One-shot by state: once the field holds any value the
+predicate is false, and the ★ writes the field directly, so resetting it to
+`kirocrew` is never undone by a later load. A
+crewmate the user built and then promoted -- named unlike its template, or with
+its own folder, store or model -- is not carried: its three are its own, and a
+plain session never borrows them. A roster default this same load seeded (the
+first-alias fallback) is nobody's pick and is not carried either. The
+overlay wins where it supplies the field, so the seed is skipped there. The warm
+pool resolves a blank `session.pool_agent` through the same path as a plain
+session (`pool_kiro_agent`), never through the alias table, so an
+`agent.default_agent` that spells a crewmate alias binding another template
+prewarms what the session runs.
 
 `selection_kind="template"` restricts an existing conversation to the materialized
 template namespace even if discovery has imported a same-named member.
@@ -1719,16 +1756,16 @@ The session resolver rejects a different agent name when a execution record
 exists. Live provider switches publish their validated template choice before
 history changes; ordinary resolution cannot replace provenance from metadata.
 
-Rung 2 exists because an app's agents are materialized into `~/.kiro/agents/` by
-`bridges._register_agents` under a namespaced FILENAME (`<app>--<agent>.json`)
-while the config inside keeps the app's own bare `name`, and **nothing adds them
-to `config.agents`** — that mapping is authored by setup / the user. Without it an
-app-bound session fell through to `default_agent` and the DEFAULT agent answered
+The materialized half of rung 2 exists because an app's agents are materialized
+into `~/.kiro/agents/` by `bridges._register_agents` under a namespaced FILENAME
+(`<app>--<agent>.json`) while the config inside keeps the app's own bare `name`,
+and **nothing adds them to `config.agents`** — that mapping is authored by setup /
+the user. Without it an app-bound session fell through to the default template
 while the slot still advertised the requested name, with none of the app's MCP
-tools. The rung is deliberately wider than app agents: **any** parseable config in
-those directories dispatches with default bindings, because they *are* the
-kiro-cli agent registry and narrowing to app-registered names would require
-provenance they do not record.
+tools. It is deliberately wider than app agents: **any** parseable config in those
+directories dispatches with default bindings, because they *are* the kiro-cli
+agent registry and narrowing to app-registered names would require provenance
+they do not record.
 
 `project_dir` must be the directory the session actually runs in (the same value
 passed as the kiro-cli cwd).
@@ -1922,9 +1959,14 @@ nothing dispatches it, because rewriting the stored name was destructive: the
 resolution behind the rewrite can be momentarily stale while the overwrite is
 permanent. `resolve_effective_agent(agent_name, project_dir)` is the
 non-destructive other half — it names the agent that will actually answer, and
-`""` for "nothing to report".
+`""` for "nothing to report". The name it reports is the one the runtime
+resolver binds an unhonored request to: the **default template**
+(`default_template(config)`, published in the alias snapshot at load), never a
+crewmate alias — a plain or unhonored session is a template session on the
+default workspace and Global memory, so a marker naming the `default` crewmate
+would advertise a store and a model pin the session does not use.
 
-Two properties, both pinned by tests:
+Three properties, all pinned by tests:
 
 - **No filesystem I/O**, for the same reason rung 2 has none: it is called from
   `_ChatSlot.to_dict()` for every slots frame on the event loop. It reads only the
@@ -1935,6 +1977,9 @@ Two properties, both pinned by tests:
   and a cold project cache all report no divergence. A false "your agent was
   substituted" marker sends the user chasing a substitution that never happened,
   so silence during a boot window is the correct answer, not a guess.
+- **Agrees with `resolve_agent_bindings`.** The alias snapshot's fallback slot is
+  `default_template(config)`, so the marker and the runtime name the same
+  template; the template's own name and every crewmate alias report `""`.
 
 Consumers: the sidebar's session-row marker, and `mochi`'s `ensureSlot`, which
 refuses to send into a slot whose effective agent is someone else.

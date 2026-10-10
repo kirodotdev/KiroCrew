@@ -262,13 +262,12 @@ vi.mock('react-router-dom', async (importOriginal) => {
 
 import { api } from '../../api/client'
 import NewCrewmateDialog, { CACHE_WARM_BOUND_MS, RECONCILE_BOUND_MS } from './NewCrewmateDialog'
-import MembersPage, { CREW_DASHBOARD_TAB_ID, CREW_PANEL_TAB_IDS, MEMBERS_UNCONFIRMED_WITHHELD_VIEWS, MEMBERS_UNFED_VIEWS, MEMBERS_WITHHELD_VIEWS, chatMarkOf, lastChattedMember, rememberedDefaultPick, resolveDefaultMember, resolveMateLanding } from './MembersPage'
+import MembersPage, { CREW_DASHBOARD_TAB_ID, CREW_PANEL_TAB_IDS, MEMBERS_UNCONFIRMED_WITHHELD_VIEWS, MEMBERS_UNFED_VIEWS, MEMBERS_WITHHELD_VIEWS, newestConversation, resolveDefaultMember, resolveMateLanding } from './MembersPage'
 import { resetFirstGreetingRequests } from './useFirstGreeting'
 import { __resetPanelTabs, VIEW_DATA_SOURCE } from '../../hooks/usePanelTabs'
 
 /** The page's own memory key (mirrors the constant in MembersPage.tsx). */
 const LAST_MEMBER_KEY = 'mc-members-last-member'
-const LAST_MEMBER_CHAT_MARK_KEY = 'mc-members-last-member-chat-mark'
 // Spelled out rather than imported: the value IS the contract with a returning
 // browser, so a rename of the page's constant must fail here.
 const PANEL_OPEN_KEY = 'mc-members-panel-open'
@@ -601,7 +600,6 @@ describe('MembersPage roster', () => {
 
   it('repeats roster-only read failures above a DM while the desktop roster is folded', async () => {
     vi.mocked(api.autonudgeList).mockRejectedValue(new Error('patrol unavailable'))
-    vi.mocked(api.defaultAgent).mockRejectedValue(new Error('default unavailable'))
     vi.mocked(api.teams.list).mockRejectedValue(new Error('teams unavailable'))
 
     await renderPage([row()], 'kirocrew', { route: '/members?member=oncall' })
@@ -612,29 +610,23 @@ describe('MembersPage roster', () => {
     expect(aside.className).not.toMatch(/\bmd:flex\b/)
     const notices = within(await screen.findByTestId('member-main-roster-errors', undefined, PANE_READY))
     expect(notices.getByTestId('member-main-patrol-error')).toBeInTheDocument()
-    // These two retry once before they say so (`retryThroughRestart`).
-    expect(await notices.findByTestId('member-main-default-agent-error', undefined, PANE_READY)).toBeInTheDocument()
+    // This one retries once before it says so (`retryThroughRestart`).
     expect(await notices.findByTestId('member-main-teams-error', undefined, PANE_READY)).toBeInTheDocument()
     // No hand-off from above the thread: Profile may hold an unsaved schedule draft.
     expect(notices.queryByRole('button', { name: /ask the agent/i })).toBeNull()
   })
 
-  it('each roster read notice dismisses for the outage, returns on a failure after a good read, and clears on a good read', async () => {
-    vi.mocked(api.defaultAgent).mockRejectedValue(new Error('default unavailable'))
+  it('the teams read notice dismisses for the outage, returns on a failure after a good read, and clears on a good read', async () => {
+    // The roster reads no default crewmate: a plain session is the default
+    // custom agent (a template), so the teams read is the one notice here.
     vi.mocked(api.teams.list).mockRejectedValue(new Error('teams unavailable'))
     const { queryClient } = await renderPage([row()], 'kirocrew', { route: '/members?member=oncall' })
-    const notices = () => within(screen.getByTestId('member-main-roster-errors'))
     await screen.findByTestId('member-main-teams-error', undefined, PANE_READY)
-    await screen.findByTestId('member-main-default-agent-error', undefined, PANE_READY)
 
-    // A real, named button on each; pressing it removes that notice everywhere.
+    // A real, named button; pressing it removes the notice everywhere.
     fireEvent.click(within(screen.getByTestId('member-main-teams-error')).getByRole('button', { name: 'Dismiss' }))
-    await waitFor(() => expect(screen.queryByTestId('member-main-teams-error')).toBeNull())
-    expect(screen.queryByTestId('member-roster-teams-error')).toBeNull()
-    expect(notices().getByTestId('member-main-default-agent-error')).toBeInTheDocument()
-    fireEvent.click(within(screen.getByTestId('member-main-default-agent-error')).getByRole('button', { name: 'Dismiss' }))
     await waitFor(() => expect(screen.queryByTestId('member-main-roster-errors')).toBeNull())
-    expect(screen.queryByTestId('member-default-agent-error')).toBeNull()
+    expect(screen.queryByTestId('member-roster-teams-error')).toBeNull()
 
     // The same outage re-read (the 30s poll) fails again: the dismiss holds.
     await act(async () => { await queryClient.refetchQueries({ queryKey: ['crew-teams'] }) })
@@ -645,7 +637,6 @@ describe('MembersPage roster', () => {
     await act(async () => { await queryClient.refetchQueries({ queryKey: ['crew-teams'] }) })
     await act(async () => { await queryClient.refetchQueries({ queryKey: ['crew-teams'] }) })
     await screen.findByTestId('member-main-teams-error', undefined, PANE_READY)
-    expect(screen.queryByTestId('member-main-default-agent-error')).toBeNull()
 
     // A good read clears it with no press.
     vi.mocked(api.teams.list).mockResolvedValue({ teams: [] })
@@ -4946,47 +4937,14 @@ describe('resolveDefaultMember', () => {
   it('stale: a remembered crewmate that is gone falls back to the most-recently-used one', () => {
     expect(resolveDefaultMember('ghost', ordered)?.name).toBe('beta')
   })
-  it('does not auto-open the built-in default member as a crewmate', () => {
-    const defaultOnly = [row({ name: 'default', slug: 'default', last_active_ts: 999 })]
-    expect(resolveDefaultMember(null, defaultOnly)).toBeUndefined()
-    expect(resolveDefaultMember('default', defaultOnly)).toBeUndefined()
-  })
-
-  it('a remembered default is not this resolver\'s business: it falls through to the most-recently-used crewmate', () => {
-    // The restore effect ranks a remembered default itself (`rememberedDefaultPick`).
-    const withDefault = [row({ name: 'default', slug: 'default' }), ...ordered]
-    expect(resolveDefaultMember('default', withDefault)?.name).toBe('beta')
-  })
-
-  it('a remembered default beats the last-chatted crewmate only while nobody was chatted with since', () => {
-    // default's own last_chat_ts is noise (every plain chat moves it): the
-    // chat mark taken at the open is the signal. 999 must not make it win.
-    const rows = [
-      row({ name: 'default', slug: 'default', last_chat_ts: 999 }),
-      row({ name: 'alpha', slug: 'alpha', last_chat_ts: 100 }),
-      row({ name: 'beta', slug: 'beta', last_chat_ts: 300 }),
-    ]
-    expect(chatMarkOf(rows)).toBe(300)
-    // Opened when beta's chat (300) was already the newest: nothing moved past it.
-    expect(rememberedDefaultPick('default', 300, rows)?.name).toBe('default')
-    // Opened before beta's chat: beta has been chatted with since.
-    expect(rememberedDefaultPick('default', 299, rows)).toBeUndefined()
-    // No mark recorded (a memory written before the key existed) and nobody
-    // chatted: the memory stands. Anyone chatted: the chat wins.
-    expect(rememberedDefaultPick('default', 0, rows)).toBeUndefined()
-    expect(rememberedDefaultPick('default', 0, [row({ name: 'default', slug: 'default' }), ...ordered])?.name).toBe('default')
-    // Only a remembered default is its business.
-    expect(rememberedDefaultPick('alpha', 999, rows)).toBeUndefined()
-    expect(rememberedDefaultPick(null, 999, rows)).toBeUndefined()
-    // Never on a default-only roster, and never a default that is not listed.
-    expect(rememberedDefaultPick('default', 999, [rows[0]])).toBeUndefined()
-    expect(rememberedDefaultPick('default', 999, rows.slice(1))).toBeUndefined()
-  })
-
-  it('the most-recently-used fallback never picks the built-in default', () => {
+  it('the built-in default crewmate is a row like any other: remembered, or newest', () => {
     const withDefault = [row({ name: 'default', slug: 'default', last_active_ts: 999 }), ...ordered]
-    expect(resolveDefaultMember(null, withDefault)?.name).toBe('beta')
-    expect(resolveDefaultMember('ghost', withDefault)?.name).toBe('beta')
+    expect(resolveDefaultMember('default', withDefault)?.name).toBe('default')
+    expect(resolveDefaultMember(null, withDefault)?.name).toBe('default')
+    expect(resolveDefaultMember('ghost', withDefault)?.name).toBe('default')
+    // A default-only roster is the restore effect's hero case (`hasNoCrewmates`),
+    // decided before this is asked; here it is just a one-row roster.
+    expect(resolveDefaultMember(null, [row({ name: 'default', slug: 'default' })])?.name).toBe('default')
   })
 
   it('Mate is the landing while no message was exchanged with it; then it is a crewmate like any other', () => {
@@ -5000,9 +4958,10 @@ describe('resolveDefaultMember', () => {
     expect(resolveMateLanding([assistantRow({ has_dm_message: true })])).toBeUndefined()
     expect(resolveMateLanding([assistantRow({ last_message: 'Hi, I am Mate' })])).toBeUndefined()
     expect(resolveMateLanding([row({ name: 'alpha', slug: 'alpha' })])).toBeUndefined()
-    // The usual rule carries no Mate special case: recency, never the key.
-    expect(resolveDefaultMember(null, withMate)?.name).toBe('alpha')
-    expect(resolveDefaultMember('default', [defaultRow(), assistantRow()])?.name).toBe('mate')
+    // The usual rule carries no Mate special case: the newest conversation,
+    // whoever it is, the built-in default included.
+    expect(resolveDefaultMember(null, withMate)?.name).toBe('default')
+    expect(resolveDefaultMember('default', [defaultRow(), assistantRow()])?.name).toBe('default')
   })
 
   it('an empty roster resolves to undefined, never throws', () => {
@@ -5010,41 +4969,49 @@ describe('resolveDefaultMember', () => {
     expect(resolveDefaultMember(null, [])).toBeUndefined()
   })
 
-  it('the crewmate the user last CHATTED with outranks the memory and background activity', () => {
-    // The server's record survives a gateway restart; the browser memory and a
-    // patrol's last_active_ts do not say who the user last talked to.
-    const chatted = [
-      row({ name: 'alpha', slug: 'alpha', last_active_ts: 900, last_chat_ts: 100 }),
-      row({ name: 'beta', slug: 'beta', last_active_ts: 10, last_chat_ts: 300 }),
-      row({ name: 'default', slug: 'default', last_chat_ts: 999 }),
+  it('newestConversation: the thread with the newest message, whoever sent it; a stampless roster keeps the first', () => {
+    const rows = [
+      row({ name: 'alpha', slug: 'alpha', last_active_ts: 900 }),
+      row({ name: 'beta', slug: 'beta', last_active_ts: 10 }),
+      row({ name: 'default', slug: 'default', last_active_ts: 200 }),
     ]
-    expect(lastChattedMember(chatted)?.name).toBe('beta')
-    expect(resolveDefaultMember('alpha', chatted)?.name).toBe('beta')
-    expect(lastChattedMember([row({ name: 'alpha', slug: 'alpha', last_chat_ts: 0 })])).toBeUndefined()
+    expect(newestConversation(rows)?.name).toBe('alpha')
+    expect(newestConversation([row({ name: 'a', slug: 'a' }), row({ name: 'b', slug: 'b' })])?.name).toBe('a')
+    expect(newestConversation([])).toBeUndefined()
   })
 })
 
-describe('MembersPage lists only crewmates the user chatted with', () => {
-  it('opens the last-chatted crewmate and the roster lists only chatted ones, newest first', async () => {
-    localStorage.setItem(LAST_MEMBER_KEY, 'bg-only')
+describe('MembersPage lists conversations like a messages app', () => {
+  it('opens the remembered thread, lists every thread that holds a message, newest first, hides empty ones', async () => {
+    localStorage.setItem(LAST_MEMBER_KEY, 'older')
     await renderPage([
-      // Background work wrote into its thread; the user never sent it anything.
-      row({ name: 'bg-only', slug: 'bg-only', last_active_ts: 900, has_dm_message: true, dashboard_created: true, last_chat_ts: 0 }),
-      row({ name: 'app-bot', slug: 'app-bot', last_active_ts: 800, last_chat_ts: 0 }),
-      row({ name: 'older', slug: 'older', last_active_ts: 1, last_chat_ts: 100 }),
-      row({ name: 'newest', slug: 'newest', last_active_ts: 2, last_chat_ts: 300 }),
+      // A scheduled run wrote the newest message: listed, and first.
+      row({ name: 'bg-only', slug: 'bg-only', last_active_ts: 900, has_dm_message: true, dashboard_created: true }),
+      // An empty thread: not listed until the search reaches it.
+      row({ name: 'app-bot', slug: 'app-bot', last_active_ts: 800, has_dm_message: false }),
+      row({ name: 'older', slug: 'older', last_active_ts: 1, has_dm_message: true }),
+      row({ name: 'newest', slug: 'newest', last_active_ts: 2, has_dm_message: true }),
     ])
-    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-newest')
-    expect(currentUrl()).toBe('/members?member=newest')
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-older')
+    expect(currentUrl()).toBe('/members?member=older')
     const names = () =>
       roster()
         .getAllByRole('listitem')
         .map((li) => within(li).queryByText(/^(bg-only|app-bot|older|newest)$/)?.textContent)
         .filter(Boolean)
-    await waitFor(() => expect(names()).toEqual(['newest', 'older']))
-    // The search still reaches a hidden crewmate.
-    fireEvent.change(screen.getByTestId('member-search'), { target: { value: 'bg' } })
-    await waitFor(() => expect(names()).toEqual(['bg-only']))
+    await waitFor(() => expect(names()).toEqual(['bg-only', 'newest', 'older']))
+    // The search still reaches an empty thread.
+    fireEvent.change(screen.getByTestId('member-search'), { target: { value: 'app' } })
+    await waitFor(() => expect(names()).toEqual(['app-bot']))
+  })
+
+  it('nothing remembered: the newest conversation opens, whoever wrote its last message', async () => {
+    await renderPage([
+      row({ name: 'quiet', slug: 'quiet', last_active_ts: 1, has_dm_message: true }),
+      row({ name: 'loud', slug: 'loud', last_active_ts: 500, has_dm_message: true }),
+    ])
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-loud')
+    expect(currentUrl()).toBe('/members?member=loud')
   })
 })
 
@@ -5079,18 +5046,16 @@ describe('MembersPage default member, memory and URL', () => {
     expect(currentUrl()).toBe('/members?member=beta')
   })
 
-  it('opening the built-in default by link remembers it like any crewmate, with the chat mark', async () => {
+  it('opening the built-in default by link remembers it like any crewmate', async () => {
     localStorage.setItem(LAST_MEMBER_KEY, 'alpha')
     await renderPage([
-      row({ name: 'default', slug: 'default', last_chat_ts: 900 }),
-      row({ name: 'alpha', slug: 'alpha', last_chat_ts: 500 }),
-      row({ name: 'beta', slug: 'beta', last_chat_ts: 700 }),
+      row({ name: 'default', slug: 'default', last_active_ts: 900 }),
+      row({ name: 'alpha', slug: 'alpha', last_active_ts: 500 }),
+      row({ name: 'beta', slug: 'beta', last_active_ts: 700 }),
     ], 'kirocrew', { route: '/members?member=default' })
 
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-default')
     expect(localStorage.getItem(LAST_MEMBER_KEY)).toBe('default')
-    // The greatest CREWMATE last_chat_ts, from the server's clock; default's own 900 is not it.
-    expect(localStorage.getItem(LAST_MEMBER_CHAT_MARK_KEY)).toBe('700')
   })
 
   it('re-clicking the open default row remembers it', async () => {
@@ -5106,7 +5071,7 @@ describe('MembersPage default member, memory and URL', () => {
 
   it('clicking the built-in default, leaving, and returning restores default', async () => {
     const rows = [
-      row({ name: 'default', slug: 'default', last_active_ts: 300 }),
+      row({ name: 'default', slug: 'default', last_active_ts: 100 }),
       row({ name: 'alpha', slug: 'alpha', last_active_ts: 200 }),
     ]
     const first = await renderPage(rows)
@@ -5122,47 +5087,23 @@ describe('MembersPage default member, memory and URL', () => {
     expect(currentUrl()).toBe('/members?member=default')
   })
 
-  it('a default opened after the last chat with a crewmate is restored over that crewmate', async () => {
-    // alpha is the server's last-chatted crewmate (#17808); the user then
-    // opened default (mark = alpha's 500). Returning lands on default, not alpha.
-    localStorage.setItem(LAST_MEMBER_KEY, 'default')
-    localStorage.setItem(LAST_MEMBER_CHAT_MARK_KEY, '500')
+  it('the remembered thread wins over a newer message elsewhere, like a messages app', async () => {
+    localStorage.setItem(LAST_MEMBER_KEY, 'alpha')
     await renderPage([
-      row({ name: 'default', slug: 'default', last_chat_ts: 900 }),
-      row({ name: 'alpha', slug: 'alpha', last_chat_ts: 500 }),
-    ])
-    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-default')
-    expect(currentUrl()).toBe('/members?member=default')
-  })
-
-  it('restoring default keeps the chat mark: a restore is not a new open', async () => {
-    // Opus review on #17972: the mark is the USER's open only; a restore
-    // re-reads it and leaves it alone.
-    localStorage.setItem(LAST_MEMBER_KEY, 'default')
-    localStorage.setItem(LAST_MEMBER_CHAT_MARK_KEY, '450')
-    await renderPage([
-      row({ name: 'default', slug: 'default', last_chat_ts: 900 }),
-      row({ name: 'alpha', slug: 'alpha', last_chat_ts: 450 }),
-    ])
-    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-default')
-    expect(localStorage.getItem(LAST_MEMBER_KEY)).toBe('default')
-    expect(localStorage.getItem(LAST_MEMBER_CHAT_MARK_KEY)).toBe('450')
-    // A click IS a new open: the mark is taken again from the roster.
-    fireEvent.click(await rosterRow('alpha'))
-    await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-alpha'))
-    expect(localStorage.getItem(LAST_MEMBER_CHAT_MARK_KEY)).toBe('450')
-  })
-
-  it('a default opened before the last chat with a crewmate yields to that crewmate', async () => {
-    localStorage.setItem(LAST_MEMBER_KEY, 'default')
-    // Opened when alpha's chat was at 400; alpha has been chatted with since (500).
-    localStorage.setItem(LAST_MEMBER_CHAT_MARK_KEY, '400')
-    await renderPage([
-      row({ name: 'default', slug: 'default', last_chat_ts: 900 }),
-      row({ name: 'alpha', slug: 'alpha', last_chat_ts: 500 }),
+      row({ name: 'default', slug: 'default', last_active_ts: 900 }),
+      row({ name: 'alpha', slug: 'alpha', last_active_ts: 500 }),
     ])
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-alpha')
     expect(currentUrl()).toBe('/members?member=alpha')
+  })
+
+  it('with nothing remembered, the default DM opens when it holds the newest message', async () => {
+    await renderPage([
+      row({ name: 'default', slug: 'default', last_active_ts: 900 }),
+      row({ name: 'alpha', slug: 'alpha', last_active_ts: 500 }),
+    ])
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-default')
+    expect(currentUrl()).toBe('/members?member=default')
   })
 
   it('a remembered default on a default-only roster still shows the hero', async () => {

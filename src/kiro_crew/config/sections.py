@@ -3633,6 +3633,10 @@ class DashboardConfig:
     )
 
 
+#: The template kiro-cli runs when ``agent.default_agent`` names none.
+DEFAULT_KIRO_TEMPLATE = "kirocrew"
+
+
 @dataclass
 class KiroCrewAgentConfig:
     member_id: str = field(

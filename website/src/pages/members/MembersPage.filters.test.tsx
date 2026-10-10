@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { act, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
 
 /* Same api mock shape as MembersPage.test.tsx, plus the crew update endpoint
@@ -400,25 +400,22 @@ describe('MembersPage star', () => {
   })
 })
 
-/* The default roster lists a row when its DM thread holds a message, or when
- * it was created on the dashboard (`dashboard_created`: source kirocrew AND a
- * member id). Everything else is hidden until the search reaches it; the
- * default crew is listed whatever its record says. Every fixture above omits
- * both fields, as an older gateway does, and those rows stay listed. */
+/* The default roster lists a row when its DM thread holds a message, whoever
+ * sent it, or when it is starred -- like a messages app, which lists no empty
+ * thread. Everything else is hidden until the search reaches it; the built-in
+ * default crewmate follows the same rule. Every fixture above omits the field,
+ * as an older gateway does, and those rows stay listed. */
 describe('MembersPage hides unlisted crewmates', () => {
   const NO = { dashboard_created: false, has_dm_message: false }
   const MIXED = [
-    row('kirocrew', { source: 'builtin', ...NO }),
-    row('radar', { source: 'kirocrew', ...NO, dashboard_created: true, display_name: 'Issue Radar' }),
-    row('oncall', { source: 'radar-app', ...NO, has_dm_message: true, starred: true }),
+    row('kirocrew', { source: 'builtin', ...NO, has_dm_message: true, last_active_ts: 20 }),
+    row('radar', { source: 'kirocrew', ...NO, dashboard_created: true, display_name: 'Issue Radar', has_dm_message: true, last_active_ts: 30 }),
+    row('oncall', { source: 'radar-app', ...NO, starred: true, last_active_ts: 10 }),
     row('legacy-aim', { source: 'aim', ...NO }),
     row('pkg-tool', { ...NO }),
   ]
-  beforeEach(() => {
-    ;(api.defaultAgent as ReturnType<typeof vi.fn>).mockResolvedValue({ default_agent: 'kirocrew' })
-  })
 
-  it('lists dashboard-created and chatted rows and the default crew; the count says how many are listed', async () => {
+  it('lists rows whose thread holds a message and starred rows; the count says how many are listed', async () => {
     await renderPage(MIXED)
     await waitFor(() => expect(names()).toEqual(['radar', 'kirocrew', 'oncall']))
     expect(screen.getByTestId('member-count')).toHaveTextContent('3 crewmates')
@@ -441,44 +438,13 @@ describe('MembersPage hides unlisted crewmates', () => {
     await renderPage(MIXED)
     await waitFor(() => expect(names()).toEqual(['radar', 'kirocrew', 'oncall']))
     await openFilters()
-    // Three package-bucket rows exist; only the chatted app row is listed, so
-    // the tally says 1, and the built-in default crew is the one built-in row.
+    // Three package-bucket rows exist; only the starred app row is listed, so
+    // the tally says 1, and the built-in row with a message is the one builtin.
     expect(within(screen.getByTestId('member-filter-source-package')).getByText('1')).toBeInTheDocument()
     expect(within(screen.getByTestId('member-filter-source-builtin')).getByText('1')).toBeInTheDocument()
     fireEvent.click(screen.getByTestId('member-filter-starred'))
     expect(names()).toEqual(['oncall'])
     expect(screen.getByTestId('member-count')).toHaveTextContent('1 of 3 crewmates')
-  })
-
-  it('a failed default-crew read lists every row and says why through ErrorNotice', async () => {
-    ;(api.defaultAgent as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('default lookup down'))
-    await renderPage(MIXED)
-    // The default-crew read retries once before it says so (`retryThroughRestart`).
-    await waitFor(() => expect(screen.getByTestId('member-default-agent-error')).toHaveTextContent("Couldn't read the default crewmate, so every crewmate is shown"), { timeout: 5000 })
-    expect([...names()].sort()).toEqual(['kirocrew', 'legacy-aim', 'oncall', 'pkg-tool', 'radar'])
-  })
-
-  it('while the default-crew read is pending, the landing fallback waits instead of overwriting a remembered default', async () => {
-    // The remembered crewmate is the default crew, which is listed only by
-    // name: before the read answers it reads as unlisted, and resolving the
-    // fallback then would open a substitute and overwrite the memory.
-    localStorage.setItem('mc-members-last-member', 'kirocrew')
-    let answer: (v: { default_agent: string }) => void = () => {}
-    ;(api.defaultAgent as ReturnType<typeof vi.fn>).mockReturnValue(
-      new Promise((resolve) => {
-        answer = resolve
-      }),
-    )
-    ;(api.members as ReturnType<typeof vi.fn>).mockResolvedValue({ members: MIXED })
-    renderWithProviders(<MembersPage />)
-    await waitFor(() => expect(names()).toEqual(['radar', 'oncall']))
-    expect(api.memberThread).not.toHaveBeenCalled()
-    expect(localStorage.getItem('mc-members-last-member')).toBe('kirocrew')
-    await act(async () => {
-      answer({ default_agent: 'kirocrew' })
-    })
-    expect(await screen.findByTestId('chat-pane-stub')).toHaveTextContent('member-kirocrew')
-    expect(localStorage.getItem('mc-members-last-member')).toBe('kirocrew')
   })
 
   it('a team whose every crewmate is hidden keeps its header, so the team stays reachable', async () => {
@@ -505,7 +471,7 @@ describe('MembersPage hides unlisted crewmates', () => {
     expect(localStorage.getItem('mc-members-last-member')).toBe('pkg-tool')
   })
 
-  it('with only the default crew listed and every other row hidden, the most recent hidden crewmate opens and is listed', async () => {
+  it('with every thread empty, the newest hidden crewmate opens and is listed while open', async () => {
     ;(api.members as ReturnType<typeof vi.fn>).mockResolvedValue({
       members: [
         row('kirocrew', { source: 'builtin', ...NO }),
@@ -514,7 +480,6 @@ describe('MembersPage hides unlisted crewmates', () => {
         row('pkg-old', { ...NO, last_active_ts: 1 }),
       ],
     })
-    ;(api.defaultAgent as ReturnType<typeof vi.fn>).mockResolvedValue({ default_agent: 'default' })
     renderWithProviders(<MembersPage />)
     expect(await screen.findByTestId('chat-pane-stub')).toHaveTextContent('member-pkg-tool')
     await waitFor(() => expect(names()).toContain('pkg-tool'))
@@ -550,28 +515,5 @@ describe('MembersPage hides unlisted crewmates', () => {
       if (own) Object.defineProperty(window, 'matchMedia', own)
       else delete (window as unknown as { matchMedia?: typeof window.matchMedia }).matchMedia
     }
-  })
-
-  it('the default-crew failure notice hands the agent the journal report, not just its localized copy', async () => {
-    ;(api.defaultAgent as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Forbidden'))
-    await renderPage(MIXED)
-    await screen.findByTestId('member-default-agent-error', undefined, { timeout: 5000 })
-    const noticeProps = (ErrorNoticeMock as ReturnType<typeof vi.fn>).mock.calls
-      .map(([props]) => props)
-      .filter((props) => props.testId === 'member-default-agent-error')
-      .at(-1)
-    expect(noticeProps?.report).toEqual(FAKE_REPORT)
-  })
-
-  it('a failed REFRESH turns the hide rule off too, even while an older default is still cached', async () => {
-    const { queryClient } = await renderPage(MIXED)
-    await waitFor(() => expect(names()).toEqual(['radar', 'kirocrew', 'oncall']))
-    ;(api.defaultAgent as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('refresh failed'))
-    await act(async () => {
-      await queryClient.refetchQueries({ queryKey: ['default-agent'] })
-    })
-    // The default-crew read retries once before it says so (`retryThroughRestart`).
-    await waitFor(() => expect(screen.getByTestId('member-default-agent-error')).toHaveTextContent("Couldn't read the default crewmate, so every crewmate is shown"), { timeout: 5000 })
-    expect([...names()].sort()).toEqual(['kirocrew', 'legacy-aim', 'oncall', 'pkg-tool', 'radar'])
   })
 })

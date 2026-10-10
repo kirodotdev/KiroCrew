@@ -5852,16 +5852,19 @@
     },
     "agentDropdownList": {
       "active_in_this_session": "Actif dans cette session",
-      "could_not_change_the_default_agent": "Impossible de changer le coéquipier par défaut",
+      "default_write_failed_not_installed": "Impossible de changer l’agent personnalisé par défaut : {{name}} n’est pas un agent personnalisé installé. Installe-le, puis réessaie.",
+      "default_write_failed_overlaid": "Impossible de changer l’agent personnalisé par défaut : ton fichier de réglages local (config.local.json) le fixe. Modifie-le là.",
+      "default_write_failed_stale": "Impossible de changer l’agent personnalisé par défaut : {{name}} vient de changer. Recharge, puis réessaie.",
+      "could_not_change_the_default_custom_agent": "Impossible de changer l’agent personnalisé par défaut",
       "default": "Par défaut",
-      "default_agent_for_new_sessions": "Par défaut pour les nouvelles sessions",
+      "agent_is_the_default_for_new_sessions": "<agent/> est le choix par défaut pour les nouvelles sessions",
       "group_members": "Coéquipiers",
       "group_templates": "Agents personnalisés",
       "manage_agents": "Gérer les coéquipiers…",
       "new_sessions_start_with_this_agent": "Les nouvelles sessions démarrent avec ce coéquipier",
       "no_matches": "Aucun résultat",
       "set_default_agent": "Définir <agent/> par défaut pour les nouvelles sessions",
-      "group_templates_hint": "S'exécute dans l'espace de travail et la mémoire du coéquipier par défaut – rien de nouveau n'est créé."
+      "group_templates_hint_default_workspace": "Un agent personnalisé est une configuration d’agent réutilisable. En choisir un utilise ton espace de travail par défaut et la mémoire partagée ; aucun nouveau coéquipier n’est créé."
     },
     "agentImportFlow": {
       "back": "Retour",
@@ -13804,7 +13807,7 @@
         "change_directory_hint": "L'espace de travail lira sa mémoire, ses leçons, son historique et sa base de connaissances dans le nouveau dossier. Rien n'est déplacé.",
         "default_crewmate": "Coéquipier par défaut",
         "default_crewmate_failed": "Impossible de changer le coéquipier par défaut",
-        "default_crewmate_hint": "Le coéquipier avec lequel démarre une nouvelle session — le même réglage que celui qu’écrit la ★ du champ de discussion (Agent par défaut des nouvelles sessions). Les discussions déjà ouvertes gardent celui avec lequel elles ont commencé.",
+        "default_crewmate_hint_badge": "Le coéquipier qui reçoit le badge Par défaut sur la page des coéquipiers et ne peut pas être supprimé. Il ne décide pas ce qu’une nouvelle discussion exécute ; c’est « Définir … par défaut pour les nouvelles sessions » dans le sélecteur d’agent qui le fait.",
         "default_crewmate_refused_because": "Impossible de définir {{name}} comme coéquipier par défaut — {{reason}}. Recharge la page et choisis à nouveau.",
         "default_crewmate_unknown_reason": "{{name}} ne figure plus dans la liste des coéquipiers"
       },
@@ -17768,7 +17771,6 @@
       "filters_clear": "Effacer les filtres",
       "star": "Ajouter {{name}} aux favoris",
       "unstar": "Retirer {{name}} des favoris",
-      "default_agent_failed_title": "Impossible de lire le crewmate par défaut, tous les crewmates sont donc affichés",
       "all_hidden_hint": "Les crewmates que tu n'as pas encore utilisés sont masqués. Recherche-les pour les trouver.",
       "star_failed_title": "Favori non enregistré",
       "star_failed": "Impossible de mettre à jour le favori de ce coéquipier.",
