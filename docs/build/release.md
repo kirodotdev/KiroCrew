@@ -535,7 +535,8 @@ with the matching `*-mac.zip`.
    credentials are configured, so a drifted release of it can never observe the
    signing credentials.
 2. **notarize** (macos-15). `packaging/signing/notarize.sh` submits and polls
-   within a 30-minute budget, retrying transient status errors; `stapler staple`
+   within a 60-minute budget (`NOTARIZE_BUDGET_SECS` in `sign-and-notarize.yml`),
+   retrying transient status errors; `stapler staple`
    then runs before a
    fail-closed `spctl --assess` that must report `Notarized Developer ID`. On an
    `Invalid` verdict the itemized Apple log is printed. The branded

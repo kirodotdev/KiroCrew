@@ -69,7 +69,7 @@ Key properties, each load-bearing:
 
 `publish` is a separate ubuntu job on purpose: a transient publish failure retries
 as a roughly-two-minute job rather than repeating two Apple submissions with
-30-minute budgets each, and the expensive macOS runner never burns minutes on S3
+60-minute budgets each, and the expensive macOS runner never burns minutes on S3
 uploads. Linux publishing takes no part in this trust chain; the AppImage ships
 from `publish-linux.yml`.
 
