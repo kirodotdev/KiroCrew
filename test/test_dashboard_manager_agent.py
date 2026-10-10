@@ -1,9 +1,8 @@
 """The ``kirocrew-dashboard-manager`` subagent, and the base prompt that routes to it.
 
-Two surfaces that only work together. A crewmate holds `dashboard_fields` and
-`dashboard_write` and nothing else about the page, so every "show me another one"
-has to leave its session; the member base prompt is the only thing that tells it
-where to send one, and it sends it by NAME.
+Two surfaces that only work together. The crewmate composes its own page, and the
+subagent is extra capacity for a long page job; the member base prompt is the only
+thing that tells it that subagent exists, and it names it by NAME.
 
 That name is a wire string. kiro-cli resolves an agent by reading
 ``<agents dir>/<name>.json``, so a prompt naming something the installer does not
@@ -20,6 +19,7 @@ by omission.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -70,20 +70,42 @@ class TestTheNameIsOneString:
         """
         assert DASHBOARD_MANAGER_AGENT_FILENAME == f"{DASHBOARD_MANAGER_AGENT_NAME}.json"
 
-    def test_the_prompt_names_every_page_verb_the_crewmate_holds(self) -> None:
-        """The crewmate drives its OWN page, and the prompt has to say so.
+    def test_the_page_verbs_the_prompt_names_and_the_grants_are_the_same_set(self) -> None:
+        """Both directions, because each one catches a different silent failure.
 
-        An earlier wording routed every page request to the subagent and told the
-        crewmate it had no tools for it. ``_MEMBER_PANEL_GRANTS`` grants it all six,
-        and the crewmate is the one of the two whose identity the panel's tools can
-        resolve -- so that wording took a working path away and pointed at a weaker
-        one. Read the verbs off the GRANT tuple rather than spelling them, so a verb
-        added to the surface and not to the prompt fails here.
+        A verb GRANTED and unnamed is a tool the crewmate can reach with nothing
+        telling it what the tool is for, which is how a page gets handed over out of
+        a catalog when somebody asked what the page should show. A verb NAMED and
+        ungranted sends the crewmate to a tool that prompts or does not resolve, on
+        an unattended cycle where nobody is reading.
+
+        Read off the GRANT tuple rather than spelled here, so a verb added to or
+        renamed on the surface and not in the prompt fails. Naming a verb is not
+        teaching its flow: item 7 names the three catalog verbs to rule them out of
+        the page request, and the equality is what keeps that account complete.
         """
-        verbs = [ref.rsplit("/", 1)[-1] for ref in agent_mod._MEMBER_PANEL_GRANTS]
-        for verb in verbs:
-            if verb.startswith("dashboard_"):
-                assert verb in _MEMBER_DASHBOARD_ITEM, verb
+        granted = {
+            ref.rsplit("/", 1)[-1]
+            for ref in agent_mod._MEMBER_PANEL_GRANTS
+            if ref.rsplit("/", 1)[-1].startswith("dashboard_")
+        }
+        named = set(re.findall(r"`(dashboard_\w+)`", _MEMBER_DASHBOARD_ITEM))
+        assert granted, "the grant tuple carries no page verb at all"
+        assert named, "item 7 names no page verb at all"
+        assert sorted(named) == sorted(granted), {
+            "granted but unnamed": sorted(granted - named),
+            "named but ungranted": sorted(named - granted),
+        }
+
+    def test_the_prompt_names_the_three_verbs_the_page_flow_needs(self) -> None:
+        """Read the fields, fill the ones that are yours, go back.
+
+        Spelled against the GRANT tuple rather than as bare strings, so a verb
+        renamed on the surface and not in the prompt fails here.
+        """
+        for verb in ("dashboard_fields", "dashboard_write", "dashboard_rollback"):
+            assert f"@kirocrew-panel/{verb}" in agent_mod._MEMBER_PANEL_GRANTS, verb
+            assert f"`{verb}`" in _MEMBER_DASHBOARD_ITEM, verb
 
     def test_the_prompt_makes_the_subagent_optional(self) -> None:
         """It is extra capacity for a long job, never the only way to change a page.
@@ -94,14 +116,34 @@ class TestTheNameIsOneString:
         """
         assert "do not need it" in _MEMBER_DASHBOARD_ITEM
 
-    def test_the_prompt_says_the_crewmate_cannot_write_a_page(self) -> None:
-        """The F1 rule, where an agent reads it before it tries.
+    def test_the_prompt_says_the_crewmate_composes_its_own_page(self) -> None:
+        """The page is three declarations the crewmate makes, and the prompt is
+        where it reads that before it goes looking for a catalog to pick from.
 
-        Only a template that shipped with the product renders; a page an agent wrote
-        runs its own script against this crewmate's task titles and summaries inside
-        a frame that can navigate itself.
+        Each of the three is named, because a crewmate told only "compose a page"
+        has no way to know a theme is its to set or that a block may name only a
+        field the Model declares.
         """
-        assert "cannot write a page" in _MEMBER_DASHBOARD_ITEM
+        assert "yours to compose" in _MEMBER_DASHBOARD_ITEM
+        for part in ("fields the page holds", "blocks that draw them", "theme tokens"):
+            assert part in _MEMBER_DASHBOARD_ITEM, part
+
+    def test_the_prompt_names_the_data_types_a_field_may_be(self) -> None:
+        """Named here rather than left to the skill.
+
+        A crewmate reaching for a type the catalog does not hold spends a refusal
+        to learn five words, and this item is injected on every turn anyway.
+        """
+        for data_type in ("number", "text", "bool", "timestamp", "enum"):
+            assert f"`{data_type}`" in _MEMBER_DASHBOARD_ITEM, data_type
+
+    def test_the_prompt_sends_the_crewmate_to_the_manager_skill(self) -> None:
+        """The composition is a procedure, and it lives in one place.
+
+        The charter cannot carry the block catalogue or the call that saves a page,
+        so a crewmate that does not load the skill composes from memory.
+        """
+        assert "`dashboard-manager` skill" in _MEMBER_DASHBOARD_ITEM
 
     def test_the_prompt_keeps_the_ask_step(self) -> None:
         assert "ask first" in _MEMBER_DASHBOARD_ITEM
@@ -168,13 +210,11 @@ class TestTheSpecsSurfaceIsSmallOnPurpose:
         assert any("mcp-panel" in str(arg) for arg in entry["args"]), entry["args"]
 
     def test_it_has_no_file_write_and_no_shell(self, installed: dict[str, Any]) -> None:
-        """Every page it produces goes through ``dashboard_preview``.
+        """Every page it produces goes through the store's own write path.
 
-        That step validates the manifest/page pair and stages it where only
-        ``dashboard_apply`` can commit it. A file-writing tool would let this agent
-        put a template into the user catalogue directly, skipping both the
-        validation and the person's yes -- which are the two things the preview step
-        exists to be.
+        That path checks the Model, the View and the theme against the catalogues
+        before anything lands. A file-writing tool would let this agent drop a page
+        on disk directly, skipping both that check and the person's yes.
         """
         mounted = set(installed["tools"]) | set(installed["allowedTools"])
         for forbidden in ("fs_write", "code", "execute_bash"):
@@ -224,23 +264,55 @@ class TestTheSpecsSurfaceIsSmallOnPurpose:
         assert "Never type one" in prompt
         assert "dashboard" in prompt.lower()
 
-    def test_the_prompt_does_not_teach_writing_a_page(self) -> None:
-        """It taught a parity rule for a page the agent wrote, and cannot write one.
+    def test_the_prompt_teaches_the_three_declarations_a_page_is(self) -> None:
+        """The whole job, so an agent dispatched with nothing else can start.
 
-        Only a template that shipped with the product can be previewed or kept, so a
-        prompt that teaches an agent to write a manifest and markup teaches it to
-        spend a cycle earning a refusal -- and leaves it with no answer for the
-        person who asked.
+        A Model whose fields declare a type and a source, a View of blocks over
+        those fields, and a theme. Each is asserted by name: a prompt naming two of
+        the three leaves the agent to guess the shape of the one it cannot see, and
+        the guess costs a refusal from the store's own write check.
         """
         prompt = agent_mod._DASHBOARD_MANAGER_SYSTEM_PROMPT
-        assert "cannot write the page" in prompt
-        assert "data-dashboard-field" not in prompt, "still teaching page authoring"
-        # The old imperative, by its own words. Matched on the INSTRUCTION rather
-        # than on the phrase "manifest and html", which the current prompt still
-        # contains -- inside the sentence telling the agent not to send one.
-        assert "`dashboard_preview` the pair" not in prompt
-        assert "not write a manifest and html" in prompt
-        assert "template_id" in prompt, "the one argument preview takes is unnamed"
+        for part in ("**Model**", "**View**", "**theme**"):
+            assert part in prompt, part
+        assert '`kind="dashboard"`' in prompt, "the page is an artifact and the kind is named"
+        assert '{"agentic": true}' in prompt
+        assert '{"fold": <name>, "path": <dotted' in prompt
+
+    def test_the_prompt_names_the_data_types_from_the_catalog(self) -> None:
+        """Five names, and no sixth invented beside them.
+
+        An agent that reaches for a type the catalog does not hold earns a refusal
+        from the write path, which is a cycle this list costs nothing to save.
+        """
+        prompt = agent_mod._DASHBOARD_MANAGER_SYSTEM_PROMPT
+        for data_type in ("number", "text", "bool", "timestamp", "enum"):
+            assert f"`{data_type}`" in prompt, data_type
+
+    def test_the_prompt_sends_nobody_to_a_catalog_to_pick_from(self) -> None:
+        """The product offers no page to choose, so a prompt that sends an agent
+        looking for one spends a cycle on a search that answers nothing -- and
+        leaves it with no answer for the person who asked.
+
+        Asserted as the ABSENCE of the whole vocabulary rather than of one phrase,
+        because any one of these words is enough to start the agent down that path.
+        """
+        prompt = agent_mod._DASHBOARD_MANAGER_SYSTEM_PROMPT.lower()
+        for word in ("template", "preview", "catalog of pages", "builtin"):
+            assert word not in prompt, word
+        assert "data-dashboard-field" not in prompt, "still teaching html authoring"
+
+    def test_the_prompt_says_the_theme_is_the_agents_to_set(self) -> None:
+        """Nothing about the look is fixed by the product.
+
+        An agent that believes the style is the host's writes a page that reads as
+        every other page, and asks nobody about a decision that was its to make.
+        """
+        # Whitespace collapsed, so the claim survives a reflow of the paragraph it
+        # sits in rather than pinning where the line happens to wrap.
+        prompt = " ".join(agent_mod._DASHBOARD_MANAGER_SYSTEM_PROMPT.split())
+        assert "None of the look is fixed by the product" in prompt
+        assert "the tokens are where you set it" in prompt
 
     def test_the_prompt_forbids_doing_the_crewmates_work(self) -> None:
         """A subagent that answered the question the page is about would be a second

@@ -229,9 +229,12 @@ class TestTheAgenticWrite:
         with pytest.raises(dashboard_agentic.WriteRefused) as caught:
             dashboard_agentic.check_write(None, "open_items", 7)
         assert caught.value.code == "no_instance"
-        assert "adopt a template" in str(caught.value)
+        # The refusal names the way out, and the way out is to compose a page: the
+        # product offers none to adopt, so a sentence sending the agent looking for
+        # one would spend its next cycle on a search that answers nothing.
+        assert "compose one first" in str(caught.value)
 
-    def test_a_template_with_no_agentic_field_says_so_instead_of_offering_nothing(self) -> None:
+    def test_a_page_with_no_agentic_field_says_so_instead_of_offering_nothing(self) -> None:
         """Telling an agent to choose from an empty list would send it round the
         retry budget for no reason."""
         only_folds = instance(

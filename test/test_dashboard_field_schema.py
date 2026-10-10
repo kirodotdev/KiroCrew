@@ -268,14 +268,27 @@ class TestWhatDashboardFieldsReturns:
 
 
 class TestTheTurnBlock:
-    def test_the_block_names_the_template_and_its_agentic_fields(self) -> None:
+    def test_the_block_names_the_page_and_its_agentic_fields(self) -> None:
         block = dashboard_agentic.turn_block("code-reviewer")
         version = _builtin("project-report").version
         assert block.startswith("[DASHBOARD]\n"), block
-        assert f"template project-report v{version}" in block
+        assert f"project-report v{version}" in block
         assert "Fields you write: ci, for_you, verdict." in block
         assert "mistake" not in block.lower(), "the mistake book stays behind dashboard_fields"
         assert len(block.splitlines()) <= 4
+
+    def test_the_block_says_the_page_itself_is_changeable_and_where_to_read_how(
+        self,
+    ) -> None:
+        """A crewmate reading only the field list reads the page as given to it.
+
+        The one line that says otherwise names the skill, because the composition
+        is too long to carry on a block that is paid for on every turn.
+        """
+        block = dashboard_agentic.turn_block("code-reviewer")
+        assert "`dashboard-manager` skill" in block
+        for word in ("template", "preview", "apply"):
+            assert word not in block.lower(), word
 
     def test_the_member_section_carries_the_block(self) -> None:
         from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
