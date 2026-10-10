@@ -468,14 +468,16 @@ class LockProbeError(RuntimeError):
     is the typed subclass :class:`LockPathProbeError`.
 
     ``held`` tells the two cases apart for a caller that can act on them
-    differently. It is True when the probe POSITIVELY established the lock is
-    held but could not NAME a live holder (a draining gateway whose recorded pid
-    is unreadable under a Windows mandatory lock, or a forked-inheritor wedge):
-    a gateway IS alive, so a caller may wait for the lock to be released rather
-    than give up. It is False when the probe could not even establish whether
-    the lock is held (an unopenable lock file, an unmeasurable filesystem):
-    nothing is known, so waiting would be unbounded. ``stop``/``restart`` ignore
-    it and refuse either way; it exists for ``gateway-pid`` and the desktop
+    differently. It is True only when the probe POSITIVELY established the lock
+    is held and the stamped pid is unreadable: a draining gateway hiding its own
+    pid under a Windows mandatory lock. A gateway IS alive and its exit releases
+    the lock, so a caller may wait for that rather than give up. It is False
+    whenever waiting has no end: the probe could not establish whether the lock
+    is held (an unopenable lock file, an unmeasurable filesystem), or a
+    forked-inheritor wedge holds it (a dead kernel-named acquirer, a dead
+    recorded pid, a home anchor the lock file does not name), which an
+    orphaned child can keep alive indefinitely. ``stop``/``restart`` ignore it
+    and refuse either way; it exists for ``gateway-pid`` and the desktop
     recovery that polls on it.
     """
 
@@ -1261,11 +1263,12 @@ def lock_holder(home: Path) -> LockHolder:
         # on in a process that inherited the descriptor (a forked child), which
         # nothing here can name. Reporting the dead pid as "not alive" reads to
         # stop and restart as nobody running, and restart then spawns a
-        # replacement straight into the held lock. Indeterminate instead.
+        # replacement straight into the held lock. Indeterminate instead, and
+        # not ``held``: an orphaned inheritor need never exit, so waiting for
+        # this lock to be released has no end.
         raise LockProbeError(
             path,
             OSError(f"the lock is held but its recorded acquirer (pid {owner}) is gone"),
-            held=True,
         )
     if recorded is not None and recorded > 0 and platform_compat.pid_exists(recorded):
         return LockHolder(pid=recorded, alive=True, source="recorded_pid")
@@ -1275,8 +1278,13 @@ def lock_holder(home: Path) -> LockHolder:
     # is a running holder this process cannot identify, so it is indeterminate
     # rather than "nobody": "nobody" would make stop and restart report nothing
     # running while `kirocrew gateway` refuses to start on the very same lock.
+    # Only an unreadable stamp is ``held``: that is a live gateway hiding its
+    # own pid under a Windows mandatory lock, which the lock's release ends. A
+    # readable stamp naming a dead pid is an inheritor, which nothing ends.
     raise LockProbeError(
-        path, OSError("the lock is held but no live holder pid can be established"), held=True
+        path,
+        OSError("the lock is held but no live holder pid can be established"),
+        held=recorded is None,
     )
 
 
@@ -1320,7 +1328,6 @@ def _anchor_holder_or_nobody(home: Path, path: Path) -> LockHolder:
     raise LockProbeError(
         path,
         OSError(f"{home} is still held by a gateway that {LOCK_FILENAME} no longer names"),
-        held=True,
     )
 
 

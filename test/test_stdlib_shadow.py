@@ -46,6 +46,7 @@ from kiro_crew import __version__, stdlib_shadow
 _SRC = Path(__file__).resolve().parent.parent / "src"
 _BUILD_DESKTOP = _SRC.parent / "packaging" / "build-desktop.sh"
 _GATEWAY_SUPERVISOR = _SRC.parent / "website" / "electron" / "gateway-supervisor.js"
+_GATEWAY_RECOVERY = _SRC.parent / "website" / "electron" / "gateway-recovery.js"
 _BUILD_YML = _SRC.parent / ".github" / "workflows" / "build.yml"
 _WIN_INSTALLER_TEST = _SRC.parent / ".github" / "scripts" / "test-windows-installer.ps1"
 _WIN_SMOKE = _SRC.parent / "scripts" / "smoke-windows-install.ps1"
@@ -394,8 +395,13 @@ class TestLaunchersPassSafePath:
         assert 'python.exe" -s -P -m kiro_crew %%*' in text
 
     def test_electron_windows_direct_spawn(self) -> None:
-        text = _GATEWAY_SUPERVISOR.read_text(encoding="utf-8")
-        assert 'spawnArgs = ["-s", "-P", "-m", "kiro_crew", ...spawnArgs];' in text
+        recovery = _GATEWAY_RECOVERY.read_text(encoding="utf-8")
+        assert 'args: ["-s", "-P", "-m", "kiro_crew", ...subArgs],' in recovery
+        supervisor = _GATEWAY_SUPERVISOR.read_text(encoding="utf-8")
+        assert re.search(
+            r"\{ bin: spawnBin, args: spawnArgs \} = gatewayCliInvocation\(\s*bin,\s*\[\"gateway\"",
+            supervisor,
+        ), "the gateway spawn must take its argv from gatewayCliInvocation"
 
     def test_ci_windows_replicas_match_the_shipped_shape(self) -> None:
         """`build.yml` writes its own copy of the .cmd shim (declared byte-identical

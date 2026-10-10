@@ -996,9 +996,9 @@ class TestLockHolder:
         monkeypatch.setattr("kiro_crew.gateway_lock.platform_compat.pid_exists", lambda pid: False)
         with pytest.raises(LockProbeError, match="pid 222") as excinfo:
             lock_holder(tmp_path)
-        # Positively held (the kernel named an acquirer), just not nameable as a
-        # live holder: held=True so a caller may wait for the lock to release.
-        assert excinfo.value.held is True
+        # A forked inheritor holds it, and an orphan need never exit: held=False,
+        # so no caller waits for a release that may never come.
+        assert excinfo.value.held is False
 
     def test_held_lock_with_a_dead_recorded_pid_is_indeterminate(self, tmp_path, monkeypatch):
         # Held, no /proc/locks, and the file names a pid that is gone: somebody
@@ -1013,8 +1013,9 @@ class TestLockHolder:
         monkeypatch.setattr("kiro_crew.gateway_lock.platform_compat.pid_exists", lambda pid: False)
         with pytest.raises(LockProbeError) as excinfo:
             lock_holder(tmp_path)
-        # Positively held, holder unnameable (the Windows mandatory-lock shape): held=True.
-        assert excinfo.value.held is True
+        # A readable stamp naming a dead pid is an inheritor, not a gateway
+        # hiding its pid: held=False, so no caller waits on it.
+        assert excinfo.value.held is False
 
     def test_unreadable_lock_file_is_still_probed(self, tmp_path, monkeypatch):
         # The Windows shape: the gateway's mandatory lock makes the file's
@@ -1155,9 +1156,11 @@ class TestLockHolder:
         monkeypatch.setattr(
             "kiro_crew.gateway_lock.platform_compat.flock_owner_pid", lambda _p: None
         )
-        with pytest.raises(LockProbeError, match="no longer names"):
+        with pytest.raises(LockProbeError, match="no longer names") as excinfo:
             lock_holder(tmp_path)
         assert len(readings) == _IDENTITY_ATTEMPTS
+        # Nothing the lock file names will release the anchor: held=False.
+        assert excinfo.value.held is False
 
     @pytest.mark.skipif(platform_compat.IS_WINDOWS, reason="no home anchor on Windows")
     def test_an_anchor_probe_error_propagates_without_a_retry(self, tmp_path, monkeypatch):

@@ -524,16 +524,16 @@ def _gateway_pid() -> None:
       dead); nothing is holding it, so the caller may spawn at once.
 
     An indeterminate probe (:class:`gateway_lock.LockProbeError`) splits two
-    ways. When the lock is POSITIVELY held but its holder cannot be named -- a
-    draining gateway whose recorded pid is unreadable under a Windows mandatory
-    lock, or a forked-inheritor wedge -- it prints
-    ``{"holder": "held"}`` and exits 0: a gateway IS alive, so the caller waits
-    for the lock to be released (the gateway to finish exiting) and then spawns,
-    rather than giving up. When the probe could not even establish whether the
-    lock is held (an unopenable lock file, an unmeasurable filesystem) it prints
-    ``{"holder": "indeterminate", "reason": "..."}`` and exits 2: nothing is
-    known, so the caller must NOT spawn and must not wait unbounded -- it
-    surfaces the terminal error.
+    ways. When the lock is POSITIVELY held by a gateway that hides its own pid
+    -- a draining gateway whose stamp is unreadable under a Windows mandatory
+    lock -- it prints ``{"holder": "held"}`` and exits 0: a gateway IS alive,
+    so the caller waits for the lock to be released (the gateway to finish
+    exiting) and then spawns, rather than giving up. Otherwise -- the probe
+    could not establish whether the lock is held (an unopenable lock file, an
+    unmeasurable filesystem), or a forked inheritor that nothing ends holds it
+    -- it prints ``{"holder": "indeterminate", "reason": "..."}`` and exits 2:
+    waiting has no end, so the caller must NOT spawn and must not wait
+    unbounded -- it surfaces the terminal error.
     """
     try:
         holder = lock_holder(config_dir())
