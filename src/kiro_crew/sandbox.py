@@ -9734,11 +9734,12 @@ class SandboxUnavailableError(RuntimeError):
 #: Leading text of every line the Linux launcher writes when it ends WITHOUT
 #: exec'ing its child: ``_mount_or_die`` and the seccomp/prctl installs say
 #: ``sandbox: BLOCKED``, the two unshare steps say ``sandbox: unshare(``, a
-#: broken parent/child handshake or an unreadable ``known_hosts`` says
-#: ``sandbox: FATAL``, and a launcher invoked with no command says
-#: ``sandbox_launcher:``. The launcher is the only Kiro Crew code that writes
-#: a line shaped this way to a child's stderr, and it exits right after, so a
-#: refused child's captured output carries exactly one of these. Public because
+#: broken parent/child handshake, an unreadable ``known_hosts`` or a command
+#: the kernel will not exec says ``sandbox: FATAL``, and a launcher invoked
+#: with no command says ``sandbox_launcher:``. The launcher is the only Kiro
+#: Crew code that writes a line shaped this way to a child's stderr, and it
+#: exits right after, so a refused child's captured output carries exactly one
+#: of these. Public because
 #: it is the ONE definition every consumer keys on — :func:`launcher_refusal`
 #: here and the clone probe's exit classifier in
 #: ``apps/builtins/auto_improvement/backend/clone_setup.py`` — and each prefix
@@ -9798,9 +9799,10 @@ def launcher_refusal(output: str) -> tuple[str, str, str] | None:
       host and self-heals on the next spawn.
     * A refusal about HOST STATE is NOT a sandbox failure at all — a hardlinked
       credential, an unreadable ``known_hosts``: the sandbox worked and found
-      something it must not paper over. Reported as ``None`` so the launcher's
-      line reaches the operator as the child's own complaint, which names the
-      file to fix. A launcher invoked with no command (``sandbox_launcher:``)
+      something it must not paper over. A command the kernel will not exec is
+      the same kind: the sandbox was built, and the command is missing or not
+      executable inside it. Reported as ``None`` so the launcher's line reaches
+      the operator as the child's own complaint, which names the file to fix. A launcher invoked with no command (``sandbox_launcher:``)
       is the caller's defect, ``None`` for the same reason. Advisory
       ``sandbox: WARNING`` lines never match: the launcher continued past them.
     """

@@ -418,3 +418,63 @@ class TestClassifierMatchesTheLauncher:
         assert libc.calls[0].target == b"/"
         assert line == rendered
         assert sb.launcher_refusal(line) == ("no_backend", line, sb.REMEDY_MOUNT_DENIED)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="the namespace launcher is Linux-only")
+class TestAFailedExecIsOneLauncherLine:
+    """The exec is the launcher's last step, and a command the kernel will not run ends
+    it in one line naming the command and the reason, like the launcher's other stops,
+    so a caller that keeps only the head of stderr still shows both."""
+
+    def test_a_missing_command_is_named_with_the_kernels_reason(self, tmp_path: Path) -> None:
+        run = launch(tmp_path)
+        run.execvp = None  # the real os.execvp: a path that does not exist raises at once
+        missing = str(tmp_path / "masked" / "glab")
+        line = refusal(program.exec_agent, run, [missing, "api", "user"])
+        assert line == "sandbox: FATAL — cannot exec %s (%s)" % (
+            missing,
+            os.strerror(errno.ENOENT),
+        )
+
+    def test_a_refused_exec_names_its_own_reason(self, tmp_path: Path) -> None:
+        def refuse(file: str, args: list[str]) -> None:
+            raise PermissionError(errno.EACCES, os.strerror(errno.EACCES))
+
+        run = launch(tmp_path)
+        run.execvp = refuse
+        line = refusal(program.exec_agent, run, ["/opt/tools/bin/gh", "auth", "status"])
+        assert line == "sandbox: FATAL — cannot exec /opt/tools/bin/gh (%s)" % os.strerror(
+            errno.EACCES
+        )
+
+    def test_an_error_without_an_errno_still_gives_a_reason(self, tmp_path: Path) -> None:
+        def fail(file: str, args: list[str]) -> None:
+            raise OSError("the stand-in refused")
+
+        run = launch(tmp_path)
+        run.execvp = fail
+        line = refusal(program.exec_agent, run, ["/bin/agent"])
+        assert line == "sandbox: FATAL — cannot exec /bin/agent (the stand-in refused)"
+
+    def test_a_command_that_execs_gets_its_argv_unchanged(self, tmp_path: Path) -> None:
+        run = launch(tmp_path)
+        assert refusal(program.exec_agent, run, ["/bin/agent", "--flag"]) is None
+        assert run.execs == [["/bin/agent", "/bin/agent", "--flag"]]
+
+    def test_every_reader_of_launcher_stderr_keeps_its_verdict(self, tmp_path: Path) -> None:
+        # The line is one of the FATAL family, which each reader already handles: no
+        # sandbox refusal, no ACP sandbox-init failure, and a launcher failure to the
+        # clone probe, whose surfaced detail is the line that names the command.
+        from kiro_crew.acp.transport_errors import is_sandbox_init_failure_output
+        from kiro_crew.apps.builtins.auto_improvement.backend import clone_setup
+
+        def missing(file: str, args: list[str]) -> None:
+            raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT))
+
+        run = launch(tmp_path)
+        run.execvp = missing
+        line = refusal(program.exec_agent, run, ["/opt/tools/bin/glab", "api"])
+        assert line is not None and line.startswith(sb.LAUNCHER_EXIT_PREFIXES)
+        assert sb.launcher_refusal(line) is None
+        assert not is_sandbox_init_failure_output(line + "\n")
+        assert clone_setup._launcher_failure_detail(line + "\n") == line
