@@ -135,6 +135,12 @@ def register(app: web.Application) -> None:
     app.router.add_get(
         "/api/instances/{id}/capabilities", handlers_instances.api_instances_capabilities
     )
+    # The peer's YOLO flag and denied approval modes, for the crew window's
+    # approval-mode picker. Its own route so the window's poll reads one peer
+    # endpoint, not the whole roster. Also BEFORE the catch-all.
+    app.router.add_get(
+        "/api/instances/{id}/approval-state", handlers_instances.api_instances_approval_state
+    )
     # Peer live-session read for the merged-sessions sidebar. A dedicated route
     # rather than a bare proxy hop because the peer's reply needs a hub-side
     # filter: the peer lists the slots THIS hub drives for its own

@@ -11758,7 +11758,9 @@
         "approval_hint": "Aprovar executa apenas este comando. Rejeitar o ignora; o agente continua sem ele.",
         "retry": "Tentar novamente",
         "running_on_header": "Em {{name}}",
-        "approval_elsewhere": "O agente em {{name}} aguarda uma aprovação que esta janela não pode responder. Responda no painel da própria equipe."
+        "approval_elsewhere": "O agente em {{name}} aguarda uma aprovação que esta janela não pode responder. Responda no painel da própria equipe.",
+        "yolo_elsewhere": "O YOLO vale para todas as sessões em {{name}}. Altere-o no painel da própria crew.",
+        "mode_unknown": "Não foi possível ler o modo de aprovação em {{name}}. Tentando novamente…"
       },
       "messageContextMenu": {
         "copy_link_text": "Copiar texto do link",

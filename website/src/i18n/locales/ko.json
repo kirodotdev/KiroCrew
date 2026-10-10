@@ -11428,7 +11428,9 @@
         "approval_hint": "승인하면 이 명령 하나만 실행됩니다. 거부하면 건너뛰며, 에이전트는 그 없이 계속 진행합니다.",
         "retry": "다시 시도",
         "running_on_header": "{{name}}에서",
-        "approval_elsewhere": "{{name}}의 에이전트가 이 창에서는 응답할 수 없는 승인을 기다리고 있습니다. 크루의 자체 대시보드에서 응답하세요."
+        "approval_elsewhere": "{{name}}의 에이전트가 이 창에서는 응답할 수 없는 승인을 기다리고 있습니다. 크루의 자체 대시보드에서 응답하세요.",
+        "yolo_elsewhere": "YOLO는 {{name}}의 모든 세션에 적용됩니다. 크루의 대시보드에서 변경하세요.",
+        "mode_unknown": "{{name}}의 승인 모드를 읽을 수 없습니다. 다시 시도하는 중…"
       },
       "messageContextMenu": {
         "copy_link_text": "링크 텍스트 복사",

@@ -11758,7 +11758,9 @@
         "approval_hint": "Approuver exécute uniquement cette commande. Refuser l’ignore ; l’agent continue sans elle.",
         "retry": "Réessayer",
         "running_on_header": "Sur {{name}}",
-        "approval_elsewhere": "L’agent sur {{name}} attend une approbation à laquelle cette fenêtre ne peut pas répondre. Réponds-y sur le tableau de bord de l’équipage."
+        "approval_elsewhere": "L’agent sur {{name}} attend une approbation à laquelle cette fenêtre ne peut pas répondre. Réponds-y sur le tableau de bord de l’équipage.",
+        "yolo_elsewhere": "YOLO s'applique à toutes les sessions de {{name}}. Modifiez-le dans le tableau de bord de l'équipe.",
+        "mode_unknown": "Impossible de lire le mode d'approbation sur {{name}}. Nouvelle tentative…"
       },
       "messageContextMenu": {
         "copy_link_text": "Copier le texte du lien",

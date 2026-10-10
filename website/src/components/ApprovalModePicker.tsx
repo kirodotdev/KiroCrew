@@ -100,8 +100,25 @@ export const APPROVAL_MODE_ADJUSTED_LS_KEY = 'mc-approval-mode-adjusted'
  *  open request, so the user's eye lands on where the control lives. */
 const SPOTLIGHT_MS = 2000
 
+/** A session on ANOTHER machine (the crew window): the picker reads and writes
+ *  that machine's slot, never this gateway's. Only the per-session modes are
+ *  offered: YOLO is the other machine's own app-wide switch. That machine's
+ *  policy, not this one's, decides which modes it takes. */
+export interface ApprovalModeRemote {
+  /** Rejects only on THAT machine's policy refusal, which the menu shows as
+   *  it shows a local one; the host reports every other failure itself. */
+  write: (mode: 'normal' | 'trust_reads' | 'trust') => Promise<unknown>
+  /** The slot's Trust comes from an app's expiring grant, not the person's flag. */
+  trustScoped: boolean
+  /** Modes THAT machine's policy denies, hidden as the local picker hides this one's. */
+  disabledModes: string[]
+  /** Shown, in place of the rows, while that machine is in YOLO. */
+  note: string
+}
+
 type ApprovalModePickerProps = {
   mode: string; slotKey: string; compact?: boolean
+  remote?: ApprovalModeRemote
   /** Where focus goes after a PICK closes the menu. Radix's default returns
    *  focus to the trigger, which is right for a cancel (Escape, outside click:
    *  the user goes back to where they were) but wrong for a pick: the trigger
@@ -132,7 +149,7 @@ export default function ApprovalModePicker(props: ApprovalModePickerProps) {
   return <GuideTrustRootProvider><ApprovalModePickerBody {...props} /></GuideTrustRootProvider>
 }
 
-function ApprovalModePickerBody({ mode, slotKey, compact, openSignal, nudge, onNudgeDismiss, onNudgeHide, onPicked }: ApprovalModePickerProps) {
+function ApprovalModePickerBody({ mode, slotKey, compact, openSignal, nudge, onNudgeDismiss, onNudgeHide, onPicked, remote }: ApprovalModePickerProps) {
   const policyRefusedId = useId()
   const dispatch = useAppDispatch()
   const navigate = useNavigate()
@@ -142,14 +159,18 @@ function ApprovalModePickerBody({ mode, slotKey, compact, openSignal, nudge, onN
   // solo-operator default is unchanged. `normal` is the interactive floor and
   // is never in this list. Denied modes are HIDDEN from the menu below rather
   // than shown disabled — server-side enforcement remains the source of truth.
-  const disabledModes = useAppSelector(s => s.dashboard.status?.disabled_approval_modes) ?? []
+  // A remote session follows ITS machine's policy, which also answers the write.
+  const localDisabledModes = useAppSelector(s => s.dashboard.status?.disabled_approval_modes)
+  const disabledModes = (remote ? remote.disabledModes : localDisabledModes) ?? []
   const isModeBlocked = (k: string) => disabledModes.includes(k)
   // A mode ALREADY selected when the policy lands is the one exception to
   // hiding. The trigger renders `mode` unfiltered, so hiding its row too would
   // put "Trust" on the button with no Trust row and no checkmark anywhere in the
   // menu — the control would contradict itself with no explanation. The row
   // stays, disabled and labelled, until the user picks something else.
-  const isModeVisible = (k: string) => !isModeBlocked(k) || k === mode
+  // Remotely, YOLO is never a row, and while the other machine is IN YOLO no
+  // row is offered: a Normal pick there would end YOLO for all its sessions.
+  const isModeVisible = (k: string) => (!remote || (k !== 'yolo' && mode !== 'yolo')) && (!isModeBlocked(k) || k === mode)
   // Set when the gateway refuses a pick with 403 `mode_disabled_by_policy`.
   // Reachable in the load race before the first status frame arrives, when
   // `disabled_approval_modes` is still undefined and every mode renders: without
@@ -198,7 +219,7 @@ function ApprovalModePickerBody({ mode, slotKey, compact, openSignal, nudge, onN
   const displayText = segmentText(display.key)
   // Trust that comes from an app's expiring grant, not the person's own flag.
   const slot = useAppSelector(s => s.dashboard.slots?.find(x => x.key === slotKey))
-  const scopedTrust = mode === 'trust' && slotTrustIsScoped(slot)
+  const scopedTrust = mode === 'trust' && (remote ? remote.trustScoped : slotTrustIsScoped(slot))
   const scopedTooltip = scopedTrust ? i18nT('components.approvalModePicker.trust_scope_tooltip') : ''
 
   const onOpenChange = (o: boolean) => {
@@ -217,6 +238,16 @@ function ApprovalModePickerBody({ mode, slotKey, compact, openSignal, nudge, onN
 
   const pick = (m: ApprovalModeKey) => {
     setPolicyRefused('')
+    if (remote) {
+      // YOLO is never offered remotely. Every other pick is written, even one
+      // matching the shown mode: an earlier pick may still be on its way.
+      if (m !== 'yolo') {
+        remote.write(m).catch(() => { setPolicyRefused(m); onOpenChange(true) })
+      }
+      closingFromPickRef.current = true
+      onOpenChange(false)
+      return
+    }
     void dispatch(changeApprovalMode({ mode: m, slot: slotKey })).then(r => {
       // Only a POLICY refusal is held open and reported here. Any other failure
       // keeps the existing close-and-move-on behaviour: it is transient and
@@ -318,6 +349,7 @@ function ApprovalModePickerBody({ mode, slotKey, compact, openSignal, nudge, onN
             <div> here dropped the agent hand-off the rest of the dashboard
             offers. `inline` because this sits inside the menu's own flow rather
             than as a boxed banner. */}
+        {remote && mode === 'yolo' && <div className="px-2 py-1.5 text-[11px] text-muted" data-testid="approval-mode-remote-note">{remote.note}</div>}
         {policyRefused && (
           <>
             <ErrorNotice
