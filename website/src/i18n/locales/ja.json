@@ -358,7 +358,8 @@
     "metrics_card_cores_other": "{{count}} コア",
     "tab_title": "{{label}} — {{productName}}",
     "tab_title_chat": "チャット",
-    "tab_title_session": "{{session}} — {{panel}}"
+    "tab_title_session": "{{session}} — {{panel}}",
+    "titlebar_menu_disabled_footer": "一部の項目はここでは利用できません。表示されているショートカットは引き続き使用できます。"
   },
   "appSdk": {
     "chatEmbed": {

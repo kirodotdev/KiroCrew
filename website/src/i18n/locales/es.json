@@ -368,7 +368,8 @@
     "metrics_card_cores_other": "{{count}} núcleos",
     "tab_title": "{{label}} — {{productName}}",
     "tab_title_chat": "Chat",
-    "tab_title_session": "{{session}} — {{panel}}"
+    "tab_title_session": "{{session}} — {{panel}}",
+    "titlebar_menu_disabled_footer": "Algunos elementos no están disponibles aquí. Los atajos que se muestran siguen funcionando."
   },
   "appSdk": {
     "chatEmbed": {

@@ -358,7 +358,8 @@
     "metrics_card_cores_other": "코어 {{count}}개",
     "tab_title": "{{label}} — {{productName}}",
     "tab_title_chat": "채팅",
-    "tab_title_session": "{{session}} — {{panel}}"
+    "tab_title_session": "{{session}} — {{panel}}",
+    "titlebar_menu_disabled_footer": "일부 항목은 여기서 사용할 수 없습니다. 표시된 바로 가기는 계속 작동합니다."
   },
   "appSdk": {
     "chatEmbed": {

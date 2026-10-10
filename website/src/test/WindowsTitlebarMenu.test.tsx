@@ -11,11 +11,11 @@ function installMenuAPI() {
   const api: MenuAPI = {
     getAppMenuItems: vi.fn(async (id: string) => id === 'file-menu'
       ? [
-          { type: 'normal', index: 0, label: 'Settings…', accelerator: 'Alt+,', enabled: true, checked: false },
+          { type: 'normal', index: 0, label: 'Settings…', accelerator: 'Alt+,', enabled: true, gated: false, checked: false },
           { type: 'separator', index: 1 },
-          { type: 'normal', index: 2, label: 'Exit', accelerator: '', enabled: true, checked: false },
+          { type: 'normal', index: 2, label: 'Exit', accelerator: '', enabled: true, gated: false, checked: false },
         ]
-      : [{ type: 'normal', index: 0, label: 'Reload', accelerator: 'CmdOrCtrl+R', enabled: true, checked: false }]),
+      : [{ type: 'normal', index: 0, label: 'Reload', accelerator: 'CmdOrCtrl+R', enabled: true, gated: false, checked: false }]),
     executeAppMenuItem: vi.fn(),
   }
   ;(window as Window & { electronAPI?: MenuAPI }).electronAPI = api
@@ -237,9 +237,11 @@ describe('WindowsTitlebarMenu', () => {
   it('renders a checkbox item with its check state and a rewritten accelerator', async () => {
     const api = installMenuAPI()
     api.getAppMenuItems.mockResolvedValueOnce([
-      { type: 'checkbox', index: 0, label: 'Keep on Top', accelerator: '', enabled: true, checked: true },
-      { type: 'normal', index: 1, label: 'Zoom In', accelerator: 'CommandOrControl+Plus', enabled: true, checked: false },
-      { type: 'normal', index: 2, label: 'Unavailable', accelerator: '', enabled: false, checked: false },
+      { type: 'checkbox', index: 0, label: 'Keep on Top', accelerator: '', enabled: true, gated: false, checked: true },
+      { type: 'normal', index: 1, label: 'Zoom In', accelerator: 'CommandOrControl+Plus', enabled: true, gated: false, checked: false },
+      // Natively disabled — NOT gate-caused. Left as-is so the checkbox test does
+      // not inadvertently exercise the footer.
+      { type: 'normal', index: 2, label: 'Unavailable', accelerator: '', enabled: false, gated: false, checked: false },
     ])
     render(<header><WindowsTitlebarMenu /></header>)
 
@@ -250,6 +252,132 @@ describe('WindowsTitlebarMenu', () => {
     // The Electron accelerator token is rewritten to the cap the user reads.
     expect(screen.getByRole('menuitem', { name: /Zoom In/ })).toHaveTextContent('Ctrl+Plus')
     expect(screen.getByRole('menuitem', { name: /Unavailable/ })).toBeDisabled()
+  })
+
+  // A row greyed by the per-action LOCAL_ONLY gate carries NO per-row
+  // decoration: no keyboard glyph, no struck-out accelerator caption. Greying
+  // states the row is inert from this window and the footer names the remedy,
+  // which is the whole of what the renderer knows — the payload carries no
+  // accelerator-registration field, so there is nothing per-row to draw.
+  //
+  // This test is the fence. Both accelerator shapes appear below — one whose
+  // chord Electron routes natively and one display-only — and each renders a
+  // plain caption, so a decoration that returns for either fails here.
+  it('renders no per-row decoration on gated rows, whatever the accelerator state', async () => {
+    const api = installMenuAPI()
+    api.getAppMenuItems.mockResolvedValueOnce([
+      // Gated, accelerator DOES route through Electron's native dispatch.
+      { type: 'normal', index: 0, label: 'Paste', accelerator: 'CommandOrControl+V', enabled: false, gated: true, checked: false },
+      // Gated with a display-only chord. windows-menu-model suppresses the
+      // caption for this case, so the wire carries an empty accelerator and
+      // the row shows a label alone.
+      { type: 'normal', index: 1, label: 'Settings…', accelerator: '', enabled: false, gated: true, checked: false },
+      // Enabled control row.
+      { type: 'normal', index: 2, label: 'Zoom In', accelerator: 'CommandOrControl+Plus', enabled: true, gated: false, checked: false },
+    ])
+    render(<header><WindowsTitlebarMenu /></header>)
+    fireEvent.click(screen.getByRole('button', { name: 'Open menu' }))
+
+    const paste = await screen.findByRole('menuitem', { name: /Paste/ })
+    expect(paste).toBeDisabled()
+    expect(paste).toHaveTextContent('Ctrl+V')
+
+    const settings = screen.getByRole('menuitem', { name: /Settings/ })
+    expect(settings).toBeDisabled()
+    // No caption at all: the footer says the shortcuts shown still work, and
+    // this row's chord does not, so showing one would be the single false
+    // claim in the menu. Absence is the honest rendering, not a marker.
+    expect(settings).not.toHaveTextContent('Alt+,')
+    expect(settings).toHaveTextContent('Settings…')
+
+    // No glyph anywhere in the popup, for either accelerator state.
+    expect(document.querySelectorAll('[aria-label="Shortcut still available"]')).toHaveLength(0)
+
+    // No struck caption anywhere, for either accelerator state.
+    for (const row of [paste, settings, screen.getByRole('menuitem', { name: /Zoom In/ })]) {
+      for (const span of Array.from(row.querySelectorAll('span'))) {
+        expect(span.className).not.toContain('line-through')
+      }
+    }
+
+    // The footer carries two true statements: the rows are unavailable here,
+    // and the captions that remain are chords that still fire. It can make
+    // the second claim without hedging because windows-menu-model suppresses
+    // the caption on any gated row whose chord cannot fire, so "the shortcuts
+    // shown" names a set the user can see rather than one they must guess at.
+    expect(screen.getByText(/Some items are unavailable here/)).toBeInTheDocument()
+    expect(screen.getByText(/The shortcuts shown still work/)).toBeInTheDocument()
+    // Never the vague form: "some shortcuts work" names a distinction the
+    // user cannot resolve without trying each row.
+    expect(screen.queryByText(/Some keyboard shortcuts still work/)).toBeNull()
+  })
+
+  // Footer must render BELOW the menu items, not above them. Rendering the
+  // footer at the top of the popup pushes the first menu row (e.g.
+  // "Settings…") ~70px down versus the same menu in the main window, so
+  // gated menus read as a different, shifted surface — UX Review "footer
+  // sits above the items" watch on b1efe7fc9. The reviewer's own suggested
+  // fix, which this test pins: render the footer below the mapped items so
+  // menu-row geometry stays stable and the footer becomes a legend line the
+  // user reaches AFTER scanning the rows they came for.
+  it('renders the disabled-row footer below the menu items', async () => {
+    const api = installMenuAPI()
+    api.getAppMenuItems.mockResolvedValueOnce([
+      { type: 'normal', index: 0, label: 'Settings…', accelerator: 'Alt+,', enabled: false, gated: true, checked: false },
+      { type: 'normal', index: 1, label: 'Exit', accelerator: '', enabled: true, gated: false, checked: false },
+    ])
+    render(<header><WindowsTitlebarMenu /></header>)
+    fireEvent.click(screen.getByRole('button', { name: 'Open menu' }))
+
+    const firstItem = await screen.findByRole('menuitem', { name: /Settings/ })
+    const footer = screen.getByText(/Some items are unavailable here/)
+
+    // The footer's position relative to the FIRST menu row is what the user
+    // sees: if it's before Settings, Settings gets pushed down. Assert the
+    // footer follows Settings in document order.
+    expect(
+      firstItem.compareDocumentPosition(footer) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+  })
+
+  // The footer's claim — "shortcuts still work here" — is only accurate for
+  // ROWS THE GATE DISABLED. A natively-disabled row (e.g. an `undo` role
+  // with an empty history, or a `paste` role when the selection focus is
+  // gone) is disabled for its OWN runtime reasons, and its accelerator does
+  // NOT fire either. If the footer fired on those, the claim would be false.
+  // So the trigger is `item.gated`, not `!item.enabled`. This test pins that
+  // separation: a menu of only natively-disabled rows leaves the footer off.
+  it('omits the disabled-menu footer for natively disabled rows (not gate-caused)', async () => {
+    const api = installMenuAPI()
+    api.getAppMenuItems.mockResolvedValueOnce([
+      // Natively disabled — Electron's own dispatch marked it so (undo with
+      // no history, paste with no selection focus). NOT gate-caused.
+      { type: 'normal', index: 0, label: 'Undo', accelerator: 'CommandOrControl+Z', enabled: false, gated: false, checked: false },
+    ])
+    render(<header><WindowsTitlebarMenu /></header>)
+    fireEvent.click(screen.getByRole('button', { name: 'Open menu' }))
+    const undo = await screen.findByRole('menuitem', { name: /Undo/ })
+    expect(undo).toBeDisabled()
+    // No footer — the claim would misrepresent a native disable.
+    expect(
+      screen.queryByText(/Some items are unavailable here/),
+    ).toBeNull()
+  })
+
+  it('omits the disabled-menu footer when every row is enabled', async () => {
+    const api = installMenuAPI()
+    api.getAppMenuItems.mockResolvedValueOnce([
+      { type: 'normal', index: 0, label: 'Zoom In', accelerator: 'CommandOrControl+Plus', enabled: true, gated: false, checked: false },
+      { type: 'normal', index: 1, label: 'Zoom Out', accelerator: 'CommandOrControl+Minus', enabled: true, gated: false, checked: false },
+    ])
+    render(<header><WindowsTitlebarMenu /></header>)
+    fireEvent.click(screen.getByRole('button', { name: 'Open menu' }))
+    await screen.findByRole('menuitem', { name: /Zoom In/ })
+    // The footer only fires when there's something to explain — a fully-
+    // enabled menu stays clean of the extra line.
+    expect(
+      screen.queryByText(/Some items are unavailable here/),
+    ).toBeNull()
   })
 
   it('shows Settings as Alt+, on Windows, never a Ctrl chord (CJK IME comma, #9824)', async () => {
@@ -443,7 +571,9 @@ describe('WindowsTitlebarMenu', () => {
   it('does not dispatch a disabled item', async () => {
     const api = installMenuAPI()
     api.getAppMenuItems.mockResolvedValueOnce([
-      { type: 'normal', index: 0, label: 'Unavailable', accelerator: '', enabled: false, checked: false },
+      // Natively disabled — this test's intent is that a disabled item does not
+      // dispatch, independent of gate state.
+      { type: 'normal', index: 0, label: 'Unavailable', accelerator: '', enabled: false, gated: false, checked: false },
     ])
     render(<header><WindowsTitlebarMenu /></header>)
     fireEvent.click(screen.getByRole('button', { name: 'Open menu' }))

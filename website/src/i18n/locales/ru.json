@@ -373,7 +373,8 @@
     "metrics_card_cores_other": "{{count}} ядра",
     "tab_title": "{{label}} — {{productName}}",
     "tab_title_chat": "Чат",
-    "tab_title_session": "{{session}} — {{panel}}"
+    "tab_title_session": "{{session}} — {{panel}}",
+    "titlebar_menu_disabled_footer": "Некоторые пункты здесь недоступны. Показанные сочетания клавиш по-прежнему работают."
   },
   "appSdk": {
     "chatEmbed": {

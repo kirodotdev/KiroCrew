@@ -363,7 +363,8 @@
     "metrics_card_cores_other": "{{count}}টি কোর",
     "tab_title": "{{label}} — {{productName}}",
     "tab_title_chat": "চ্যাট",
-    "tab_title_session": "{{session}} — {{panel}}"
+    "tab_title_session": "{{session}} — {{panel}}",
+    "titlebar_menu_disabled_footer": "কিছু আইটেম এখানে উপলব্ধ নয়। দেখানো শর্টকাটগুলি এখনও কাজ করে।"
   },
   "appSdk": {
     "chatEmbed": {

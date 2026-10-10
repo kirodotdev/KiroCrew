@@ -368,7 +368,8 @@
     "metrics_card_cores_other": "{{count}} cœurs",
     "tab_title": "{{label}} — {{productName}}",
     "tab_title_chat": "Chat",
-    "tab_title_session": "{{session}} — {{panel}}"
+    "tab_title_session": "{{session}} — {{panel}}",
+    "titlebar_menu_disabled_footer": "Certains éléments ne sont pas disponibles ici. Les raccourcis affichés fonctionnent toujours."
   },
   "appSdk": {
     "chatEmbed": {
