@@ -2633,7 +2633,13 @@ export default function MembersPage() {
   const activeMemberName = active?.name ?? ''
   // Read only with the preview OFF: on, the tab is the dynamic dashboard regardless.
   const dashboardAdopted = useAppliedDashboard(activeSlug, activeMemberName, !dashboardPreview)
-  const showDynamicDashboard = dashboardPreview || dashboardAdopted
+  const showDynamicDashboard = dashboardPreview || dashboardAdopted.state === 'adopted'
+  // Until the adoption read answers, neither body: drawing the published view first
+  // and swapping it away is a flash of the wrong page on every open.
+  const dashboardDeciding = !dashboardPreview && dashboardAdopted.state === 'pending'
+  // A FAILED read is said, with a retry, rather than answered with the published
+  // view: that view would hide an adopted page behind a failure nobody was told about.
+  const dashboardReadFailed = !dashboardPreview && dashboardAdopted.state === 'error'
   // What a schedule created from the Schedules tab must carry in its `agent` field --
   // which is the provider template only for a crewmate whose identity the server will
   // KEEP. `wakesCrew` matches a job on `member_id` when there is one, and otherwise
@@ -4860,7 +4866,20 @@ export default function MembersPage() {
                 ? <p role="status" className="px-4 pt-3 text-sm text-muted">{t('pages.membersPage.opening_thread')}</p>
                 : null}
               {activeSlug && activeMemberName && (
-                showDynamicDashboard ? (
+                dashboardDeciding ? (
+                  <p role="status" className="px-4 pt-3 text-sm text-muted" data-testid="member-dashboard-deciding">{t('pages.membersPage.dashboard_loading')}</p>
+                ) : dashboardReadFailed ? (
+                  <div className="p-4 space-y-1.5">
+                    {/* No agent hand-off: this is the Members page's Dashboard tab, and the
+                        hand-off navigates to /chat, unmounting the page's unsaved Profile and
+                        crew-editor drafts without asking its leave guard. */}
+                    <ErrorNotice message={i18nT('pages.membersPage.dashboard_unavailable')} testId="member-dashboard-read-error" />
+                    <Btn onClick={dashboardAdopted.retry} data-testid="member-dashboard-read-retry">
+                      <RotateCw className="lucide-inline" aria-hidden />
+                      {i18nT('pages.membersPage.webview_retry')}
+                    </Btn>
+                  </div>
+                ) : showDynamicDashboard ? (
                   // Keyed per crewmate so the tab remounts on a switch instead of
                   // opening the next crewmate on the page held for this one.
                   <CrewDashboardTab

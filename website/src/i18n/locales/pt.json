@@ -17794,6 +17794,7 @@
       "webview_refresh_error": "Não foi possível atualizar a visualização publicada. Exibindo a última versão carregada.",
       "webview_refresh_error_aged": "Não foi possível atualizar a visualização publicada. Exibindo a versão de {{ago}}.",
       "webview_frame_title": "Visualização publicada por {{crew}}",
+      "dashboard_loading": "Carregando o painel…",
       "webview_rendering": "Exibindo a visualização publicada…",
       "webview_docked_rendering": "Renderizando o cartão de status…",
       "webview_docked_error": "Não foi possível renderizar o cartão de status. O painel completo ainda pode abrir abaixo.",

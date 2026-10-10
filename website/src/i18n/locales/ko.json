@@ -17286,6 +17286,7 @@
       "webview_refresh_error": "게시된 보기를 새로 고치지 못했습니다. 마지막으로 불러온 버전을 표시합니다.",
       "webview_refresh_error_aged": "게시된 보기를 새로 고치지 못했습니다. {{ago}} 버전을 표시합니다.",
       "webview_frame_title": "{{crew}}이(가) 게시한 보기",
+      "dashboard_loading": "대시보드 불러오는 중…",
       "webview_rendering": "게시된 보기 표시 중…",
       "webview_docked_rendering": "상태 카드를 렌더링하는 중…",
       "webview_docked_error": "상태 카드를 렌더링할 수 없습니다. 전체 대시보드는 아래에서 여전히 열 수 있습니다.",

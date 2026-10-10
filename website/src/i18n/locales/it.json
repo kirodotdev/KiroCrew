@@ -17794,6 +17794,7 @@
       "webview_refresh_error": "Impossibile aggiornare la vista pubblicata. È mostrata l’ultima versione caricata.",
       "webview_refresh_error_aged": "Impossibile aggiornare la vista pubblicata. È mostrata la versione di {{ago}}.",
       "webview_frame_title": "Vista pubblicata da {{crew}}",
+      "dashboard_loading": "Caricamento della dashboard…",
       "webview_rendering": "Visualizzazione della vista pubblicata…",
       "webview_docked_rendering": "Rendering della scheda di stato…",
       "webview_docked_error": "Non è stato possibile rendere la scheda di stato. La dashboard completa potrebbe comunque aprirsi qui sotto.",

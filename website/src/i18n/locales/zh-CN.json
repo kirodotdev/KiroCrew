@@ -17286,6 +17286,7 @@
       "webview_refresh_error": "无法刷新已发布视图。正在显示上次加载的版本。",
       "webview_refresh_error_aged": "无法刷新已发布视图。正在显示 {{ago}}的版本。",
       "webview_frame_title": "{{crew}} 发布的视图",
+      "dashboard_loading": "正在加载仪表板…",
       "webview_rendering": "正在显示已发布视图…",
       "webview_docked_rendering": "正在渲染状态卡片…",
       "webview_docked_error": "无法渲染状态卡片。完整的仪表板可能仍可在下方打开。",

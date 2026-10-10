@@ -7467,6 +7467,7 @@
       "webview_refresh_error": "Couldn’t refresh the published view. Showing the last version that loaded.",
       "webview_refresh_error_aged": "Couldn’t refresh the published view. Showing the version from {{ago}}.",
       "webview_frame_title": "Published view by {{crew}}",
+      "dashboard_loading": "Loading dashboard…",
       "webview_rendering": "Rendering the published view…",
       "webview_docked_rendering": "Rendering the status card…",
       "webview_docked_error": "The status card could not be rendered. The full dashboard may still open below.",

@@ -17286,6 +17286,7 @@
       "webview_refresh_error": "公開済みビューを更新できませんでした。最後に読み込んだバージョンを表示しています。",
       "webview_refresh_error_aged": "公開済みビューを更新できませんでした。{{ago}}のバージョンを表示しています。",
       "webview_frame_title": "{{crew}} が公開したビュー",
+      "dashboard_loading": "ダッシュボードを読み込み中…",
       "webview_rendering": "公開済みビューを表示中…",
       "webview_docked_rendering": "ステータスカードを描画しています…",
       "webview_docked_error": "ステータスカードを描画できませんでした。完全なダッシュボードは下からまだ開ける可能性があります。",
