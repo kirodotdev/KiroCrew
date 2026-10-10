@@ -17856,7 +17856,10 @@ async def _run_chat(
                 slot.key,
                 _death_attempts,
             )
-        if _should_suppress_requeue(slot):
+        # A Stop that already resolved to idle is invisible to the suppress
+        # check, and `_queue_recovery` takes no Stop snapshot of its own, so
+        # only this gate can see it (the same pairing as the lost-session arm).
+        if _should_suppress_requeue(slot) or _stop_pressed():
             pass
         elif _prompt_depth == 0 and _death_attempts <= SESSION_RECOVERY_MAX_ATTEMPTS:
             # Persisted card: reliably visible at turn-teardown (an ephemeral
@@ -17913,6 +17916,7 @@ async def _run_chat(
             _turn_emitted=_turn_emitted,
             _is_synthetic=_is_synthetic,
             _queue_recovery=_queue_recovery,
+            _stop_pressed=_stop_pressed,
         )
     except AcpError as exc:
         # The exception CLASS is logged alongside the message because the
@@ -17992,7 +17996,8 @@ async def _run_chat(
                 slot._prompt_busy_retries += 1
                 _exhausted = slot._prompt_busy_retries > 3
                 _status = "⟳ Session busy — retrying…"
-            if _should_suppress_requeue(slot):
+            # Resolved Stop: see the AcpProcessDied arm above.
+            if _should_suppress_requeue(slot) or _stop_pressed():
                 pass
             elif _exhausted:
                 logger.info(
@@ -18115,6 +18120,10 @@ async def _run_chat(
                 (_image_replay_owed := not _turn_emitted and _replay_owes_delivery())
                 or (
                     not _should_suppress_requeue(slot)
+                    # Resolved Stop: the `_image_stop_gen` snapshot below is
+                    # taken after the Stop moved the counter, so only this read
+                    # sees it (see the AcpProcessDied arm).
+                    and not _stop_pressed()
                     and not _has_user_queued_followup(slot)
                     and not getattr(slot, "_pending_steers", None)
                 )
@@ -18247,7 +18256,9 @@ async def _run_chat(
             # No tokens streamed (guarded above), so no chunk message exists;
             # strip defensively before re-queue all the same.
             slot.purge_chunks()
-            if _should_suppress_requeue(slot):
+            # Resolved Stop: skip the "retrying" card the post-backoff re-read
+            # would only withdraw (see the AcpProcessDied arm).
+            if _should_suppress_requeue(slot) or _stop_pressed():
                 pass
             elif _prompt_depth == 0:
                 # Single emit (see AcpProcessDied note): slot.append persists +
@@ -18910,6 +18921,9 @@ async def _run_chat(
                 and not slot._poisoned_reset_used
                 and _prompt_depth == 0
                 and not _should_suppress_requeue(slot)
+                # Resolved Stop: the canary snapshot below is taken after the
+                # Stop moved the counter (see the AcpProcessDied arm).
+                and not _stop_pressed()
             ):
                 # ── Canary probe: conversation-specific evidence, or bust ──
                 # Two exhausted ladders alone cannot distinguish a poisoned

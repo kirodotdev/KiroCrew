@@ -704,13 +704,19 @@ async def _requeue_after_prompt_busy(
     _turn_emitted: bool,
     _is_synthetic: bool,
     _queue_recovery: Callable[..., str],
+    _stop_pressed: Callable[[], bool],
 ) -> None:
     """Re-queue a turn whose provider was reset after prompt-busy retries ran out.
 
     Within the busy budget a top-level turn is re-queued on the fresh provider;
     past it, or nested, the transcript says so instead.
+
+    *_stop_pressed* is ``_run_chat``'s live Stop read: a Stop that already
+    resolved to idle is invisible to ``_should_suppress_requeue`` and
+    ``_queue_recovery`` takes no Stop snapshot of its own, so this gate is the
+    only place it can veto the replay (the same pairing as the other arms).
     """
-    if _should_suppress_requeue(slot):
+    if _should_suppress_requeue(slot) or _stop_pressed():
         pass
     elif _prompt_depth == 0 and slot._prompt_busy_retries <= 3:
         # Single emit: slot.append persists + broadcasts one chat_message
