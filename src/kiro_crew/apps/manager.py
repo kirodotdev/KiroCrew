@@ -503,14 +503,58 @@ def _tree_swap_spanned(before: _SwapState, after: _SwapState) -> bool:
     return after[1] is None and after[2] - before[2] >= _TREE_SWAP_LAST_CAP
 
 
+def _update_marker_dir(name: str) -> Path:
+    """Directory that exists while any process's update of *name* is in flight."""
+    return app_dir(name).parent / f".{name}-update-inflight"
+
+
+class _UpdateMarker:
+    """One update's token in ``_update_marker_dir``, held across the tree swap.
+
+    Each update adds its own file and, when done, removes it and then the
+    directory, which stays while another update still holds a token. A reader
+    asks one question of the directory -- does it exist -- so the check is a
+    single stat rather than a listing. A crash leaves the directory behind,
+    which only withholds grants from an app with nothing else on disk.
+    """
+
+    def __init__(self, token: Path) -> None:
+        self._token = token
+
+    @classmethod
+    def hold(cls, name: str) -> _UpdateMarker:
+        root = _update_marker_dir(name)
+        token = root / f"{os.getpid()}-{os.urandom(4).hex()}"
+        for _attempt in range(8):
+            root.mkdir(parents=True, exist_ok=True)
+            try:
+                token.touch(exist_ok=False)
+            except FileNotFoundError:
+                # Another update's cleanup removed the directory in between.
+                continue
+            return cls(token)
+        raise OSError(f"could not mark the update of {name!r} in progress")
+
+    def __enter__(self) -> _UpdateMarker:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        try:
+            self._token.unlink()
+        except OSError:
+            logger.warning("Could not remove update marker %s", self._token, exc_info=True)
+        try:
+            self._token.parent.rmdir()
+        except OSError:
+            pass  # another update still holds a token, or the directory is gone
+
+
 def _update_in_progress(name: str) -> bool:
-    """Whether an update has moved *name*'s tree aside (it may not be back yet)."""
-    parent = app_dir(name).parent
-    prefix = _update_retired_tree_prefix(name)
+    """Whether an update of *name* (in any process) may have its tree moved aside."""
     try:
-        return any(entry.name.startswith(prefix) for entry in parent.iterdir())
-    except OSError:
-        return parent.exists()
+        return os.path.lexists(_update_marker_dir(name))
+    except (OSError, ValueError):
+        return True
 
 
 def staged_app_grants(
@@ -1581,7 +1625,11 @@ def update_app(
     if tmp_secret.is_file() and secret_file.is_file():
         tmp_secret.unlink()
 
-    with _tree_swap(name):
+    try:
+        update_marker = _UpdateMarker.hold(name)
+    except OSError as exc:
+        return AppResult(ok=False, name=name, error=f"failed to update app files: {exc}")
+    with _tree_swap(name), update_marker:
         try:
             # The swap below takes the approved-set file with the old tree. A record
             # that stored a set must say so before then, or a reader meeting it

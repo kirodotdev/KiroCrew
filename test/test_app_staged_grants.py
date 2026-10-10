@@ -538,13 +538,76 @@ def test_a_record_retired_between_the_manifest_and_record_reads_grants_nothing(
 
     def _declare_then_retire():
         declared = [OLD_API, NEW_API]
+        # Another process's update: it holds its marker, then moves the tree.
+        marker = manager_mod._UpdateMarker.hold(APP)
         app_dir(APP).rename(retired)
+        markers.append(marker)
         return declared
 
+    markers: list = []
     try:
         assert staged_app_grants(APP, "api", _declare_then_retire) == []
     finally:
         retired.rename(app_dir(APP))
+        for marker in markers:
+            marker.__exit__(None, None, None)
+    assert not manager_mod._update_marker_dir(APP).exists()
+    assert _allowlist() == (OLD_API,)
+
+
+def test_a_moved_aside_tree_without_the_marker_reads_as_uninstalled(tmp_path, app_home):
+    # Pins what the marker is for: with the tree gone and no marker, the read
+    # is the "nothing on disk" case and passes the declared entries through.
+    _installed_v1(tmp_path)
+    assert _widen(tmp_path).ok
+    retired = app_dir(APP).parent / f".{APP}-update-old-1-abcd"
+
+    def _declare_then_retire():
+        app_dir(APP).rename(retired)
+        return [OLD_API, NEW_API]
+
+    try:
+        assert staged_app_grants(APP, "api", _declare_then_retire) == [OLD_API, NEW_API]
+    finally:
+        retired.rename(app_dir(APP))
+
+
+def test_an_update_marker_is_held_across_the_swap_and_removed_after(
+    tmp_path, app_home, monkeypatch
+):
+    _installed_v1(tmp_path)
+    seen: list[bool] = []
+    real_copy = manager_mod._copy_app_tree
+
+    def _copy(src, dest):
+        seen.append(manager_mod._update_in_progress(APP))
+        return real_copy(src, dest)
+
+    monkeypatch.setattr(manager_mod, "_copy_app_tree", _copy)
+    assert _widen(tmp_path).ok
+    assert seen == [True]
+    assert not manager_mod._update_in_progress(APP)
+
+
+def test_a_second_update_token_keeps_the_marker_until_both_finish(tmp_path, app_home):
+    _installed_v1(tmp_path)
+    first = manager_mod._UpdateMarker.hold(APP)
+    second = manager_mod._UpdateMarker.hold(APP)
+    first.__exit__(None, None, None)
+    assert manager_mod._update_in_progress(APP)
+    second.__exit__(None, None, None)
+    assert not manager_mod._update_in_progress(APP)
+
+
+def test_the_marker_check_does_not_list_the_apps_directory(tmp_path, app_home, monkeypatch):
+    # The check runs on async request paths; it must be a single stat.
+    _installed_v1(tmp_path)
+
+    def _no_listing(self):
+        raise AssertionError("listed a directory")
+
+    monkeypatch.setattr(type(app_dir(APP)), "iterdir", _no_listing)
+    assert manager_mod._update_in_progress(APP) is False
 
 
 def test_a_stale_pre_flag_record_write_keeps_the_set_marked_stored(tmp_path, app_home):
@@ -617,3 +680,53 @@ def test_an_unrelated_app_swap_does_not_fence_a_read(monkeypatch):
         pass
 
     assert not manager_mod._tree_swap_spanned(before, manager_mod._tree_swap_state(APP))
+
+
+def test_the_allowlist_prime_refreshes_off_the_event_loop(monkeypatch):
+    """A cache miss reads the app's tree in a worker thread, never on the loop."""
+    import asyncio
+    import threading
+
+    monkeypatch.setattr(token_auth, "_app_perms_cache", {})
+    seen: list[int] = []
+
+    def _fake(name):
+        seen.append(threading.get_ident())
+        with token_auth._app_perms_lock:
+            token_auth._app_perms_cache[name] = (token_auth.time.time(), ("/api/x",))
+        return ("/api/x",)
+
+    monkeypatch.setattr(token_auth, "_app_api_allowlist", _fake)
+
+    async def _run() -> int:
+        await token_auth._prime_app_api_allowlist(APP)
+        # A fresh entry is not refreshed again.
+        await token_auth._prime_app_api_allowlist(APP)
+        return threading.get_ident()
+
+    loop_thread = asyncio.run(_run())
+    assert len(seen) == 1
+    assert seen[0] != loop_thread
+
+
+def test_the_allowlist_prime_refreshes_an_entry_near_expiry(monkeypatch):
+    """An entry inside the margin is dropped so the same request finds it fresh."""
+    import asyncio
+
+    stale = token_auth.time.time() - (token_auth._APP_PERMS_TTL - 1.0)
+    monkeypatch.setattr(token_auth, "_app_perms_cache", {APP: (stale, ())})
+    calls: list[str] = []
+    monkeypatch.setattr(token_auth, "_app_api_allowlist", lambda name: calls.append(name) or ())
+
+    asyncio.run(token_auth._prime_app_api_allowlist(APP))
+    assert calls == [APP]
+    assert APP not in token_auth._app_perms_cache  # the fake stores nothing back
+
+
+def test_the_allowlist_prime_skips_dashboard_tokens(monkeypatch):
+    import asyncio
+
+    calls: list[str] = []
+    monkeypatch.setattr(token_auth, "_app_api_allowlist", lambda name: calls.append(name) or ())
+    asyncio.run(token_auth._prime_app_api_allowlist(""))
+    assert calls == []

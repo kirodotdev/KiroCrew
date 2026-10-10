@@ -1510,6 +1510,31 @@ def _app_api_allowlist(app_name: str) -> tuple[str, ...]:
     return allow
 
 
+# A primed entry is refreshed this long before it expires, so the synchronous
+# read that follows the prime in the same request finds it fresh.
+_APP_PERMS_PRIME_MARGIN = 5.0
+
+
+async def _prime_app_api_allowlist(app_name: str) -> None:
+    """Refresh *app_name*'s allowlist cache OFF the event loop when it is stale.
+
+    A refresh reads the manifest, the install record and the app's directory
+    (``staged_app_grants``); the async middleware awaits this before the
+    synchronous ``_enforce_app_scope`` so that I/O never runs on the loop
+    (no-blocking-call-on-event-loop). An entry within the margin of expiry is
+    dropped first, so the scope check in the same request still finds it fresh.
+    """
+    if not app_name:
+        return
+    with _app_perms_lock:
+        entry = _app_perms_cache.get(app_name)
+        if entry is not None:
+            if time.time() - entry[0] < _APP_PERMS_TTL - _APP_PERMS_PRIME_MARGIN:
+                return
+            del _app_perms_cache[app_name]
+    await asyncio.to_thread(_app_api_allowlist, app_name)
+
+
 # Literal first path segments registered under ``/api/apps/`` that are NOT the
 # ``/api/apps/{name}`` catch-all. Source of truth is the route table in
 # ``kiro_crew.apps.routes.setup_routes`` (the ``add_get``/``add_post`` calls for
@@ -3115,6 +3140,7 @@ def token_auth_middleware(
             # paths (e.g. /api/chat, /api/spawn are mixed_internal) — otherwise
             # an app token would reach them on loopback with NO app identity set
             # and be treated as the dashboard user (privilege escalation).
+            await _prime_app_api_allowlist(_app)
             _scope_deny = _enforce_app_scope(request, _app, path)
             if _scope_deny is not None:
                 return _scope_deny
@@ -3208,6 +3234,7 @@ def token_auth_middleware(
                 # POSITIVE dashboard-user signal for the WS scope gate (see
                 # the loopback branch above).
                 request["is_dashboard_user"] = not _app
+                await _prime_app_api_allowlist(_app)
                 _scope_deny = _enforce_app_scope(request, _app, path)
                 if _scope_deny is not None:
                     return _scope_deny
@@ -3591,6 +3618,7 @@ def token_auth_middleware(
         # its own namespace + its manifest ``permissions.api`` allowlist. This
         # is the primary enforcement point for the normal cookie/query-param
         # flow (e.g. /api/sessions, /api/config/*, the /apps/<other>/api proxy).
+        await _prime_app_api_allowlist(app_name)
         _scope_deny = _enforce_app_scope(request, app_name, path)
         if _scope_deny is not None:
             return _scope_deny
