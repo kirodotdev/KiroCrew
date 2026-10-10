@@ -1815,6 +1815,80 @@ The Athena query and aggregator Lambda live in the telemetry AWS account, so
 that implementation and deployment are an explicit infra-account task outside
 this repo and outside this PR.
 
+#### Catalog ranking document (client-side consumer)
+
+The client consumes the ranking via a published JSON document at a known location.
+This decouples the client from any specific pipeline: any producer satisfying the
+schema works. Source: `src/kiro_crew/apps/catalog_ranking.py`. Tests:
+`test/test_catalog_ranking.py`.
+
+**Document location and schema:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `schemaVersion` | int | Schema version; client rejects unknown versions. Currently `1`. |
+| `generatedAt` | string | ISO 8601 UTC timestamp of generation. |
+| `windowDays` | int | Trending window size in days (e.g. 30). |
+| `rankings` | array | List of per-app ranking entries. |
+
+Each ranking entry:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `appSlug` | string | The official catalog app slug. |
+| `cumulativeInstalls` | int | All-time `k=fresh` install count. |
+| `windowedInstalls` | int | `k=fresh` installs in the trailing `windowDays`. |
+
+The published location: `https://apps.crew.kiro.dev/catalog-ranking.json`.
+
+**Hard requirements enforced by the client:**
+
+1. **k=fresh only:** The schema carries `cumulativeInstalls` and `windowedInstalls`
+   for fresh installs only. There is no field for `k=update` counts; the
+   server-side aggregation filters on `k=fresh`.
+
+2. **Cumulative + windowed:** The schema supports both so Discover can show
+   "Popular" (all-time) and "Trending" (windowed) views.
+
+3. **No rank, not zero rank:** An app not in the document returns `None`, never
+   zero. `RankingDocument.get_cumulative_rank("unknown-app")` returns `None`, not `0`.
+   Entries with zero counts are filtered during parsing.
+
+4. **Never trust a zero:** An empty or all-zero document is treated as NO DATA
+   and triggers fallback to the stale cache with loud logging. This guards
+   against a rollup over an empty partition reporting success and publishing all
+   zeros, which would otherwise overwrite the last good ranking with nothing.
+
+5. **Rank not self-assertable:** The ranking module reads ONLY from the ranking
+   document. No registry-supplied field (`rank`, `popularity`, `featured`) can
+   influence ranking.
+
+6. **Stale-safe with fallback:** Cache with TTL (1 hour). On fetch failure, fall
+   back to stale cache. On invalid document (fails validation or no-data guard),
+   keep stale cache. A stale ranking beats none; an absent ranking beats wrong.
+
+7. **Aggregates only:** The document carries per-app counts and nothing else.
+   No tokens, user data, or raw records are exposed.
+
+**Cache behavior (mirrors registry index):**
+
+The fetch/cache/fallback pattern in `load_ranking_document`:
+
+1. Check the cache. If fresh, return it without network fetch.
+2. If cache is stale or missing, fetch from network.
+3. On fetch success, validate, check the no-data guard, write cache, return.
+4. On fetch failure OR invalid document, fall back to stale cache if available.
+5. If no fallback, return `None`; Discover orders by name (current behavior).
+
+Failure TTL (60s) prevents hammering the endpoint on outage.
+
+**Official catalog only (privacy boundary):**
+
+Only official catalog apps have rankings. Private/corporate app names never
+appear in the ranking document, keeping them off the wire. An app not in the
+ranking document simply has no rank; it does not appear at the bottom of a
+popularity list.
+
 ### Cross-machine identity hazard
 
 A snapshot restored onto a second machine must not clone the id — two hosts
