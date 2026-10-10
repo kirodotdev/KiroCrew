@@ -8016,6 +8016,15 @@ class PinnedDirectory:
         finally:
             os.close(fd)
 
+    def read_bytes(self, name: str, max_bytes: int | None = None) -> bytes:
+        """The bytes of the regular file *name*, read through this pin.
+
+        :meth:`read_text` without the decode, for a caller that parses binary
+        content. The same refusals apply: a link at the name, a non-regular entry,
+        a hardlink, and anything over *max_bytes* (``EFBIG``).
+        """
+        return self._read_bytes(name, max_bytes)
+
     def read_text(self, name: str, encoding: str = "utf-8", max_bytes: int | None = None) -> str:
         """The text of the regular file *name*, read through this pin.
 
@@ -8023,7 +8032,7 @@ class PinnedDirectory:
         descriptor's own ``fstat`` rejects a non-regular entry, a hardlink, and
         anything over *max_bytes* when the caller sets one, so the bytes come from the
         entry that was inspected and cannot exceed what the caller agreed to hold. The
-        layers under this one are private because nothing outside needs them -- a
+        descriptor layer under this and :meth:`read_bytes` is private -- a
         caller reaching for a raw descriptor here would be operating outside the pin
         this class exists to hold.
 

@@ -372,6 +372,13 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # ``pdfplumber`` commits a page's whole character list before any caller
         # can measure it, so the memory bound has to sit one process down.
         "pdf_extract.py::extract_pdf_segments",
+        # The OOXML extractor child: ONE fixed argv, ``sys.executable -P -m
+        # kiro_crew.office_extract_child --format=docx|pptx --max-chars=N
+        # --max-rss=BYTES``, every value a module constant or a member of a fixed
+        # set. The document travels on stdin, the env is ``scrub_env()``, and the
+        # spawn goes through ``popen_limited`` under ``RLIMIT_PROFILE_EXTRACTOR``
+        # so the parse can be killed at its deadline.
+        "office_extract.py::extract_office_text",
         # The shadow-venv update engine's one spawn seam. Nothing it runs is
         # agent-influenced, and none of it can route through sandboxed_spawn_argv,
         # because the engine's whole job is to build the NEXT gateway install

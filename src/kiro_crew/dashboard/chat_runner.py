@@ -118,6 +118,7 @@ from kiro_crew.context_blocks import (
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.dashboard import chat_turn as _chat_turn
 from kiro_crew.dashboard import directive_queue
+from kiro_crew.dashboard.attachment_documents import attachment_document_context
 from kiro_crew.dashboard.chat_delivery import (  # noqa: F401
     COMMANDS_OFF_META_KEY,
     STEER_STATE_CONSUMED,
@@ -11069,6 +11070,18 @@ async def _run_chat(
                     outcome="ok",
                     metadata={"count": str(_n_skills), "slot": slot.key},
                 )
+
+        # ── Attached documents: uploaded .pdf/.docx/.pptx text for the model ──
+        # Each uploaded document in `meta.files` adds a `[Document: …]` block to
+        # the request-prefix context. `message` is not modified, so the user's
+        # text stays the prompt tail and the persisted row is unchanged.
+        # Runs off the loop: file reads plus a parser child per PDF.
+        _attached_files = (_attachment_meta or {}).get("files") or []
+        if _attached_files and not is_slash and _prompt_depth < 1:
+            _document_context = await asyncio.to_thread(
+                attachment_document_context, _attached_files
+            )
+            _request_prefix_context += _document_context
 
         # Ensure the mirror-source message is always bound before both the Slack
         # and channel-neutral user-message mirror legs run. The assignment that

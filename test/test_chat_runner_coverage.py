@@ -657,6 +657,81 @@ async def test_no_context_builder_keeps_skill_context_before_user_tail(tmp_path)
     assert all(thread_id != event_loop_thread for thread_id in scan_threads)
 
 
+@pytest.mark.asyncio
+async def test_attached_document_text_lands_before_the_user_tail(tmp_path):
+    """An uploaded document's extracted text reaches the provider prompt as
+    request-prefix context: before the request header, with the user's own text
+    still the prompt tail. Only ``files`` are extracted, never ``dirs``, and the
+    extraction runs off the event loop."""
+    from kiro_crew.context import ContextBuilder
+    from kiro_crew.memory import MemoryStore
+    from kiro_crew.skills import SkillsLoader
+
+    request = "Summarize [attached_file 1] /uploads/x_report.pdf"
+    doc_block = "\n\n[Document: report.pdf]\n--- Page 1 ---\nRevenue grew\n[End of document]\n\n"
+    builder = ContextBuilder(
+        memory=MemoryStore(workspace=tmp_path / "ws"),
+        skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+    )
+    state, client = _runner_state(tmp_path, context_builder=builder)
+    client.mcp_session_report = MagicMock(return_value=None)
+    client.client = MagicMock(pop_pending_oauth_requests=MagicMock(return_value=[]))
+    slot = _slot()
+    slot._empty_response_retries = 2
+    _set_stream(client, [LLMEvent(kind=EVENT_TEXT_CHUNK, text="ok"), _complete()])
+    event_loop_thread = threading.get_ident()
+    seen: list[tuple[list[str], int]] = []
+
+    def _fake_context(paths):
+        seen.append((list(paths), threading.get_ident()))
+        return doc_block
+
+    with (
+        patch.object(chat_runner, "attachment_document_context", side_effect=_fake_context),
+        patch.object(chat_runner, "generate_session_summary", new=AsyncMock(return_value=None)),
+        _quiet_sel(),
+    ):
+        await chat_runner._run_chat(
+            state,
+            slot,
+            request,
+            _attachments=["/uploads/x_report.pdf", "/work/folder"],
+            _attachment_meta={"files": ["/uploads/x_report.pdf"], "dirs": ["/work/folder"]},
+        )
+        await _settle(slot)
+        await asyncio.gather(*list(state._background_tasks), return_exceptions=True)
+
+    prompt = client.stream.call_args_list[0].args[0]
+    header = "[CURRENT USER REQUEST -- respond to this]"
+    assert seen and seen[0][0] == ["/uploads/x_report.pdf"]
+    assert seen[0][1] != event_loop_thread
+    assert prompt.endswith(request)
+    assert "[Document: report.pdf]\n--- Page 1 ---\nRevenue grew\n[End of document]" in prompt
+    assert prompt.index("[Document: report.pdf]") < prompt.index(header) < prompt.rindex(request)
+
+
+@pytest.mark.asyncio
+async def test_a_turn_without_attachments_extracts_nothing(tmp_path):
+    state, client = _runner_state(tmp_path)
+    client.mcp_session_report = MagicMock(return_value=None)
+    client.client = MagicMock(pop_pending_oauth_requests=MagicMock(return_value=[]))
+    slot = _slot()
+    _set_stream(client, [LLMEvent(kind=EVENT_TEXT_CHUNK, text="ok"), _complete()])
+
+    with (
+        patch.object(
+            chat_runner,
+            "attachment_document_context",
+            side_effect=AssertionError("extraction ran for a turn with no attachments"),
+        ),
+        patch.object(chat_runner, "generate_session_summary", new=AsyncMock(return_value=None)),
+    ):
+        await _drive(state, slot, "plain question")
+        await asyncio.gather(*list(state._background_tasks), return_exceptions=True)
+
+    assert client.stream.call_args_list[0].args[0].endswith("plain question")
+
+
 def _errors(slot) -> list[str]:
     return [m.get("content", "") for m in slot.messages if m.get("role") == "error"]
 

@@ -213,6 +213,7 @@ it adds:
 | `[RESOURCES]` | `resource_status.probe` | host memory tight/critical, or the agent slice within `_SLICE_TASKS_TIGHT_RATIO` of its cgroup `pids.max`, or a macOS kernel memory-pressure level of WARN or worse |
 | `[FOLDER]` | sidebar ancestry | once per session, and after a move |
 | `[THEME PERSONA]` / `$skill` bodies | `request_prefix_context` | dashboard-generated |
+| `[Document: name]` … `[End of document]` | `request_prefix_context`, via `dashboard/attachment_documents.py` | dashboard turn whose `meta.files` names an uploaded `.pdf` / `.docx` / `.pptx` |
 | `[Skill: name]` bodies, `[Relevant skills for this message]` | trigger matching | see below |
 | `[Learned corrections — relevant to this message …]` | vector `turn_lessons` | `memory.inject_lessons_per_turn` (off by default), `lessons` group, not temporary or minimal; up to 3 lessons / 2,000 chars the session has not been shown |
 | `[Hook context:]` | `hooks.on_message` returning `HOOK_INJECT_CONTEXT` | matching hook |
@@ -225,6 +226,33 @@ it adds:
 The guidance paragraphs sit **before** the request header on purpose: trailing
 them displaced the request from the prompt's recency edge and the model regressed
 to an older question.
+
+### Attached documents (dashboard)
+
+`_run_chat` extracts each uploaded `.pdf` / `.docx` / `.pptx` listed in the turn's
+`meta.files` and adds a `[Document: name]` block (or a one-line
+`could not extract text` notice) to `request_prefix_context`. The block format
+matches `messaging.attachments.ingest_attachments`. The persisted row, the
+`[attached_file N]` marker and the UI are unchanged; only the provider prompt
+carries the text.
+
+- Each `meta.files` entry is screened by `hooks.validate_file_path` before any
+  other filesystem call (NUL bytes, the Windows UNC gate, Windows link targets,
+  `is_sensitive_path`). Only files directly inside the data home's `uploads/` are
+  read. `meta.files` is caller-supplied, so a path elsewhere is left to the
+  agent's governed tools.
+- Each file is read once through `platform_compat.PinnedDirectory.read_bytes` on
+  `uploads/`: a link at the name is refused by the open, and size and file type
+  are checked on the opened descriptor. The parsers receive those bytes.
+- Limits are the channels' `IngestLimits`: bytes per file, characters injected per
+  file (redacted, then truncated), files per message.
+- PDFs use `pdf_extract.extract_pdf_segments`. `.docx` / `.pptx` use
+  `office_extract.extract_office_text`, which runs `doc_parser.extract_text` in an
+  `extractor`-profile child process. Every document of one message shares one
+  30-second deadline; a child still running at the deadline is killed and the
+  model gets the could-not-extract notice.
+- Extraction runs off the loop at send time, per turn. Slash commands, the
+  recursive `_prompt_depth` path and steer (text-only) are not extracted.
 
 ### Trigger-matched skills
 
