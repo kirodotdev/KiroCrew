@@ -1842,6 +1842,14 @@ class SshTunnelManager:
         #: ``_credential_forward_moved``: it is what makes that comparison an
         #: identity rather than a port number, which a reused port defeats.
         self._chained_hop_identity: dict[str, tuple[str, int]] = {}
+        #: The ``gateway_id`` the far end of each chained forward reported when the
+        #: forward was built. The forward's local end is a loopback port on the
+        #: PARENT's host, which that port's owner can release (a parent gateway that
+        #: exits frees it) while the credential for the crew behind it stays valid;
+        #: whatever binds it next answers over the same ``ssh -L``. A process that
+        #: merely binds the port cannot report this id, so it is compared before
+        #: any credential travels (:meth:`_chained_far_end_holds`).
+        self._chained_far_end: dict[str, str] = {}
         # Retirement tasks, held so they are not garbage-collected mid-teardown.
         self._retirements: set[asyncio.Task] = set()
         self._lock = asyncio.Lock()
@@ -3731,6 +3739,10 @@ class SshTunnelManager:
                     await tunnel.stop()
                 self._tunnels.pop(instance_id, None)
                 return self._error_status(inst, cycle)
+            # Who answers at the far end of this hop right now: the crew the
+            # credential below is for. Recorded only once that credential is
+            # stored, so a refused connect leaves nothing behind.
+            far_end = await self._peer_gateway_id(local_port) if params.is_chained else ""
 
             # Mint a per-instance token over the same transport (never logged).
             # A fargate forward reaches a turn API, not a dashboard: there is no
@@ -3763,6 +3775,12 @@ class SshTunnelManager:
                         "the crew holding the hop moved this crew to another port while its "
                         "token was being minted. Connect again.",
                     )
+                if far_end:
+                    self._chained_far_end[instance_id] = far_end
+                else:
+                    # A crew whose build predates the field cannot be told apart
+                    # from a squatter, the same arrangement the cycle guard admits.
+                    self._chained_far_end.pop(instance_id, None)
                 self._schedule_token_refresh(instance_id)
                 await self._prime_peer_session(instance_id)
 
@@ -3874,6 +3892,7 @@ class SshTunnelManager:
         self._chained_ttl.pop(instance_id, None)
         self._chained_hop_port.pop(instance_id, None)
         self._chained_hop_identity.pop(instance_id, None)
+        self._chained_far_end.pop(instance_id, None)
         # The moment the hole opens: the forward above has just released the port, and
         # a chained credential naming it is still valid for the rest of its lease.
         # Taking OS ownership here is what stops any other local process -- including a
@@ -4066,6 +4085,7 @@ class SshTunnelManager:
                 tunnel = self._tunnels.pop(instance_id, None)
                 self._tokens.pop(instance_id, None)
                 self._peer_sessions.pop(instance_id, None)
+                self._chained_far_end.pop(instance_id, None)
                 if tunnel is not None:
                     with contextlib.suppress(Exception):
                         await tunnel.stop()
@@ -4766,6 +4786,44 @@ class SshTunnelManager:
         """
         return self._tokens.get(instance_id, "")
 
+    async def _chained_far_end_holds(self, instance_id: str) -> bool:
+        """Whether *instance_id*'s forward still reaches the crew it was built for.
+
+        ``True`` for every forward with no recorded far end: a top-level forward
+        rides no hop, and a chained crew that reported no id at build time has
+        nothing to compare. For a chained forward with a recorded id, the
+        current answer at its local port must equal it exactly. Anything else --
+        a different id, no id, an unreachable port -- fails closed: the forward
+        is retired (intent kept, so an ordinary reconnect can rebuild it on a
+        hop that is really ours) and the caller sends no credential.
+
+        The probe itself carries no credential, so asking it of a squatter
+        discloses nothing.
+        """
+        expected = self._chained_far_end.get(instance_id, "")
+        if not expected:
+            return True
+        st = self.status(instance_id)
+        port = int(getattr(st, "local_port", 0) or 0)
+        connected = st is not None and st.state is TunnelState.CONNECTED and port > 0
+        reported = await self._peer_gateway_id(port) if connected else ""
+        if reported == expected and self._chained_far_end.get(instance_id) == expected:
+            return True
+        reason = (
+            "the crew behind this forward no longer answers for the gateway it was "
+            "built against, so its credential is withheld. Connect again."
+        )
+        logger.warning("Withholding the credential for %s: far end changed", instance_id)
+        self._schedule_chained_retirement(instance_id, reason)
+        return False
+
+    def _instance_on_port(self, local_port: int) -> str:
+        """The id of the live forward listening on *local_port*, or ``""``."""
+        for instance_id, tunnel in self._tunnels.items():
+            if int(getattr(tunnel.status, "local_port", 0) or 0) == int(local_port):
+                return instance_id
+        return ""
+
     async def token_validates(self, local_port: int, token: str) -> bool:
         """Probe whether *token* still authenticates against the live tunnel.
 
@@ -4790,6 +4848,10 @@ class SshTunnelManager:
         (encrypted)→remote loopback and is never logged.
         """
         if not token or local_port <= 0:
+            return False
+        # The probe sends the token itself, so the far end is checked first.
+        owner = self._instance_on_port(local_port)
+        if owner and not await self._chained_far_end_holds(owner):
             return False
         url = f"http://{_LOOPBACK}:{int(local_port)}/api/status"
         timeout = aiohttp.ClientTimeout(total=_TOKEN_PROBE_TIMEOUT)
@@ -4949,6 +5011,10 @@ class SshTunnelManager:
         link = self._tokens.get(instance_id, "")
         if not link:
             raise _PeerUnavailable("no_credential")
+        # Both the link and the cached session are credentials for the crew this
+        # forward was built against; neither goes out unless that crew answers.
+        if not await self._chained_far_end_holds(instance_id):
+            raise _PeerUnavailable("not_connected")
         cached = self._peer_sessions.get(instance_id)
         if cached is not None and cached[0] == link:
             return {"Cookie": f"{cookie_name}={cached[1]}"}
@@ -4972,7 +5038,10 @@ class SshTunnelManager:
         """
         try:
             url, cookie_name = self._peer_target(instance_id, "api/status")
-            await self._peer_cookie_header(instance_id, url, cookie_name)
+            # The far-end check inside the header build awaits a probe, so the
+            # forward is revalidated around it like every other carrier.
+            stamp = self._peer_forward_stamp(instance_id)
+            await self._peer_headers_for(instance_id, url, cookie_name, stamp)
         except _PeerUnavailable:
             return
 
@@ -5914,6 +5983,10 @@ class SshTunnelManager:
         is never logged.
         """
         if not await self._refresh_token_once(instance_id):
+            return None
+        # The caller hands this token to the browser, whose pane loads it over
+        # the same forward.
+        if not await self._chained_far_end_holds(instance_id):
             return None
         return self.get_token(instance_id) or None
 
