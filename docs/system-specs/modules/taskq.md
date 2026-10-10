@@ -209,7 +209,9 @@ recovery ladder's DEFAULT schedule from `recovery/policy.py`, bound at import:
 deterministic because `next_run_at` orders rows (the dispatcher jitters on
 wake), and pure, so it is the one wait that does NOT follow the
 `agent.recovery_backoff_*` snapshot the process ladder takes at boot
-([session.md](session.md) § Recovery ladder)); `unknown`
+([session.md](session.md) § Recovery ladder)), at most `model.RECOVERY_MAX_ATTEMPTS`
+(3) times per row, after which the next lost owner ends the row `failed`
+(§ Reconcile-first boot); `unknown`
 rows go to `unknown_side_effect`. Every terminal `transition()` and every
 `cancel()` emits `kirocrew.taskq.completions{outcome=<state>}`. A
 subagent run is `unknown` unless its caller says otherwise: its task is
@@ -1040,7 +1042,7 @@ rows this incarnation has since claimed are skipped.
 | `admitted` | `queued` — claimed, never started, no side effect. The verdict is blind on purpose (no class, no probe), and what makes it sound is the claim/start boundary above: on the RUNNER path no executor holds a row that has not left `admitted`, because the `starting` write is a fence and no handle exists until it commits. The subagent path posts its mark instead, so its residual — a row whose start mark was refused AND that never reached a later mark (§ The claim/start boundary) — is exactly the row this verdict is blind about, and closes only with a durable pre-start marker |
 | kind without a recovery adapter (today: everything but `subagent`) | state kept, lease dropped, `awaiting_adapter` event |
 | class `unknown` | `unknown_side_effect` |
-| class `none` / `idempotent_key` | `recovering`, `next_run_at = now + backoff(attempts)` (`2·2^attempts`, cap 120s); the dispatcher re-claims it |
+| class `none` / `idempotent_key` | `recovering`, `next_run_at = now + backoff(attempts)` (`2·2^attempts`, cap 120s); the dispatcher re-claims it. A row this table already sent to `recovering` `model.RECOVERY_MAX_ATTEMPTS` (3) times goes to `failed` instead, with `reconciled: lost_owner_limit`, the count and a readable `error` on its transition event, so a run that takes its gateway down cannot restart it on every boot. The count is `store.lost_owner_recoveries`, read from the row's `reconciled: lost_owner` transitions into `recovering`, never `attempts`, which also counts `retry_wait` re-dispatches |
 
 The reconciler deliberately still examines only `ACTIVE` rows: it is
 kind-agnostic, and a CLAIMABLE row is normally its dispatcher's — a `queued`

@@ -103,6 +103,76 @@ def test_reconcile_settles_every_lost_owner_row_by_class(tmp_path: Path, clock: 
         s.close()
 
 
+def test_a_row_that_takes_its_owner_down_every_run_fails_once_its_recoveries_are_spent(
+    tmp_path: Path, clock: Clock
+) -> None:
+    """Each boot that finds the row's owner dead grants one recovery, up to the
+    recovery schedule's ``max_attempts``; the next lost owner ends the row
+    ``failed`` with the reason, so a run that kills its gateway cannot restart
+    it forever."""
+    path = tmp_path / "t.db"
+    s = TaskStore(path, clock=clock, network_fs=False).open()
+    s.accept([_rec("crashes_owner", side_effect_class=model.SIDE_EFFECT_NONE)])
+    s.close()
+    limit = model._RECOVERY_SCHEDULE.max_attempts
+    runs = 0
+    for _ in range(limit + 6):
+        s = _crash_and_reopen(path, clock)
+        reconcile_on_boot(s)
+        clock.t += 1000  # past the longest recovery backoff
+        claim = s.claim("crashes_owner")
+        if claim is None:
+            s.close()
+            break
+        runs += 1
+        s.transition("crashes_owner", model.STARTING, generation=claim.generation)
+        s.transition("crashes_owner", model.RUNNING, generation=claim.generation)
+        s.close()  # the run takes its gateway down with it
+    s = _crash_and_reopen(path, clock)
+    try:
+        rec = s.get("crashes_owner")
+        assert rec is not None
+        assert (runs, rec.state) == (limit + 1, model.FAILED)
+        last = s.events("crashes_owner")[-1]
+        assert last.kind == "transition"
+        assert last.data["to"] == model.FAILED
+        assert last.data["reconciled"] == "lost_owner_limit"
+        assert last.data["lost_owner_recoveries"] == limit
+        assert "gateway" in last.data["error"]
+        # A settled row stays settled on the next boot.
+        assert reconcile_on_boot(s).examined == 0
+    finally:
+        s.close()
+
+
+def test_the_recovery_limit_counts_lost_owners_not_dispatches(tmp_path: Path, clock: Clock) -> None:
+    """A row re-claimed many times for other reasons (a retry_wait re-dispatch)
+    still gets its lost-owner recovery: ``attempts`` counts dispatches, the
+    limit counts recoveries."""
+    path = tmp_path / "t.db"
+    s = TaskStore(path, clock=clock, network_fs=False).open()
+    s.accept([_rec("busy", side_effect_class=model.SIDE_EFFECT_IDEMPOTENT_KEY)])
+    for _ in range(model._RECOVERY_SCHEDULE.max_attempts + 3):
+        claim = s.claim("busy")
+        assert claim is not None
+        s.transition("busy", model.STARTING, generation=claim.generation)
+        s.transition("busy", model.RUNNING, generation=claim.generation)
+        s.transition("busy", model.RETRY_WAIT, generation=claim.generation)
+        s.transition("busy", model.QUEUED, generation=claim.generation)
+    claim = s.claim("busy")
+    assert claim is not None
+    s.transition("busy", model.STARTING, generation=claim.generation)
+    s.transition("busy", model.RUNNING, generation=claim.generation)
+    s.close()  # crash
+    s = _crash_and_reopen(path, clock)
+    try:
+        report = reconcile_on_boot(s)
+        assert report.recovering == 1
+        assert s.state_of("busy") == model.RECOVERING
+    finally:
+        s.close()
+
+
 def test_cancelled_never_revives_after_reconcile(tmp_path: Path, clock: Clock) -> None:
     path = tmp_path / "t.db"
     _seed_crash_scenario(path, clock)
