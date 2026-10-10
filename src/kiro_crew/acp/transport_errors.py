@@ -219,11 +219,22 @@ class AcpError(Exception):
     """
 
     def __init__(
-        self, *args: object, transient: bool | None = None, code: int | None = None
+        self,
+        *args: object,
+        transient: bool | None = None,
+        code: int | None = None,
+        user_worded: bool = False,
     ) -> None:
         super().__init__(*args)
         self.transient = transient
         self.code = code
+        # Whether Kiro Crew wrote this message for a person to read: a curated
+        # formatter branch, or a raise site with fixed recovery wording. False
+        # for the formatter's fallback, which passes the provider's own text or
+        # the raw error dict through. A surface that shows backend errors to a
+        # chat audience keys on this, not on ``transient``, which is a retry
+        # verdict and is set on the fallback too.
+        self.user_worded = user_worded
         # Reactive-fallback metadata, set by :func:`_raise_acp_error` when a
         # prompt-time error names a rejected model (so run_bg_oneliner can retry
         # once with a served model). Guarded so AcpModelUnavailable — which sets
@@ -483,6 +494,7 @@ class AcpModelUnavailable(AcpError):  # noqa: N818
                 f"account restriction; try another entry from the list or restart "
                 f"the session. Available models: {usable}.",
                 transient=False,
+                user_worded=True,
             )
             return
         # The hint is for every harness that signs in through the host kiro-cli
@@ -498,6 +510,7 @@ class AcpModelUnavailable(AcpError):  # noqa: N818
                 f"account you are signed in as with `kiro-cli whoami` — a Builder ID "
                 f"sign-in carries a different entitlement than organization SSO.",
                 transient=False,
+                user_worded=True,
             )
             return
         # The sign-in advice above is about the host kiro-cli identity store:
@@ -518,7 +531,7 @@ class AcpModelUnavailable(AcpError):  # noqa: N818
                 f"The model {model_id!r} is not among the models this {backend} "
                 f"session advertises."
             )
-        super().__init__(f"{detail} Available models: {usable}.", transient=False)
+        super().__init__(f"{detail} Available models: {usable}.", transient=False, user_worded=True)
 
     @classmethod
     def for_recorded_refusal(
@@ -1357,6 +1370,23 @@ def _format_acp_error(
 ) -> str:
     """Format a JSON-RPC error from the ACP backend into actionable user text.
 
+    See :func:`_format_acp_error_worded`, which also reports whether the text
+    came from a curated branch.
+    """
+    return _format_acp_error_worded(error, available_models, backend=backend)[0]
+
+
+def _format_acp_error_worded(
+    error: object,
+    available_models: Sequence[str] | None = None,
+    *,
+    backend: str = "",
+) -> tuple[str, bool]:
+    """Format a JSON-RPC error, and say whether a curated branch worded it.
+
+    The flag is False only for the fallback below, which shows the provider's own
+    message or the raw error dict. Every other branch writes fixed recovery text.
+
     The ACP backend (kiro-cli or claude-agent-acp) surfaces upstream Bedrock
     failures as JSON-RPC ``error`` objects with shape
     ``{"code": int, "message": str, "data": str}``.  The ``data`` field
@@ -1376,6 +1406,7 @@ def _format_acp_error(
     through ``redact_credentials`` and ``redact_exfiltration_urls`` before
     being raised to the dashboard / Slack / CLI surfaces.
     """
+    worded = True
     if isinstance(error, dict):
         data = str(error.get("data", "") or "")
         message = str(error.get("message", "") or "")
@@ -1681,6 +1712,7 @@ def _format_acp_error(
             # no fix; the declared message names the one that works.
             formatted = f"{host_auth.signed_out_message(backend)}{req_id_suffix}"
         else:
+            worded = False
             # Unrecognised failure mode. Show the PROVIDER'S OWN message when
             # there is one — it is the true error, and the same words the CLI
             # prints, so the two surfaces agree. This is the path every provider
@@ -1706,6 +1738,7 @@ def _format_acp_error(
             else:
                 formatted = f"Prompt error: {error}"
     else:
+        worded = False
         formatted = f"Prompt error: {error}"
 
     # Defense-in-depth: scrub any credentials or suspicious exfiltration URLs
@@ -1724,7 +1757,7 @@ def _format_acp_error(
             len(url_warnings),
             len(cred_warnings),
         )
-    return redacted
+    return redacted, worded
 
 
 # ---------------------------------------------------------------------------
@@ -1768,14 +1801,18 @@ def _raise_acp_error(
     so kiro's message is the right answer for it. The retry verdict does not
     depend on it.
     """
-    formatted = _format_acp_error(error, available_models, backend=backend)
+    formatted, worded = _format_acp_error_worded(error, available_models, backend=backend)
     # Detect prompt-busy from the raw error (before formatting rewrites it)
     raw_data = ""
     if isinstance(error, dict):
         raw_data = f"{error.get('data', '')} {error.get('message', '')}"
     if _PROMPT_BUSY_RE.search(raw_data):
-        raise AcpPromptBusy(formatted)
-    err = AcpError(formatted, transient=_is_transient_raw_error(error, available_models))
+        raise AcpPromptBusy(formatted, user_worded=worded)
+    err = AcpError(
+        formatted,
+        transient=_is_transient_raw_error(error, available_models),
+        user_worded=worded,
+    )
     # Tag a network-path drop so the interactive retry ladder can wait out a
     # short outage instead of spending the fixed provider-error budget. Only a
     # transient verdict qualifies, so a terminal frame never becomes waitable.
