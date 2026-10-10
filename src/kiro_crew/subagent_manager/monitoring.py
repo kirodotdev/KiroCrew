@@ -455,6 +455,16 @@ class OrphanStallMonitor(ManagerComponent):
             # injection path batches naturally via the parent slot's pending-
             # failures drain.)
             dm_pending: list[str] = []
+            # Written after the scan: a DM-bound notice's tombstone waits for the
+            # digest DM below, and a run whose notifier raised is tombstoned with them.
+            held_tombstones: list[tuple[str, dict[str, Any]]] = []
+
+            def _tombstone_unless_present(agent_id: str, fields: dict[str, Any]) -> None:
+                from kiro_crew.subagent_persistence import read_tombstone
+
+                if read_tombstone(agent_id) is None:
+                    write_tombstone(agent_id, **fields)
+
             for state in orphans:
                 agent_id = state.get("id", "")
                 if not agent_id or agent_id in self._manager._agents:
@@ -530,24 +540,22 @@ class OrphanStallMonitor(ManagerComponent):
                             except Exception:
                                 logger.debug("SEL audit failed for orphan %s", agent_id)
 
-                    try:
-                        # Off the loop: this writes a file and reads any existing
-                        # tombstone to preserve a recorded terminal outcome, and
-                        # this call site is a coroutine on the gateway's loop.
-                        await asyncio.to_thread(
-                            write_tombstone,
-                            agent_id,
-                            cause="gateway_restart",
-                            recovery_action=recovery,
-                            pid=pid,
-                            turns=state.get("turns", 0),
-                            last_tool=state.get("last_tool", ""),
-                            # A run that finished is completed, whichever reader
-                            # asks: the panel, this notice and the task queue.
-                            **({"outcome": "completed"} if result_is_whole(state) else {}),
-                        )
-                    except Exception:
-                        logger.debug("Failed to tombstone orphan %s", agent_id, exc_info=True)
+                    # The tombstone excludes the folder from every later
+                    # reconciliation, so it is written only once the notice is
+                    # recorded: by _notify_orphan when a slot took it, or after the
+                    # digest below for a notice bound for the owner DM. A notice
+                    # that is not recorded leaves the folder to the next start,
+                    # which announces the run again rather than never.
+                    tombstone: dict[str, Any] = {
+                        "cause": "gateway_restart",
+                        "recovery_action": recovery,
+                        "pid": pid,
+                        "turns": state.get("turns", 0),
+                        "last_tool": state.get("last_tool", ""),
+                        # A run that finished is completed, whichever reader
+                        # asks: the panel, this notice and the task queue.
+                        **({"outcome": "completed"} if result_is_whole(state) else {}),
+                    }
 
                     # Retain-by-default: session files are deliberately NOT
                     # deleted here — an orphaned run's transcript is still
@@ -571,8 +579,25 @@ class OrphanStallMonitor(ManagerComponent):
                         )
                         if undelivered:
                             dm_pending.append(undelivered)
+                            held_tombstones.append((agent_id, tombstone))
+                        else:
+                            # A slot took the notice: _notify_orphan writes its
+                            # delivered tombstone after the injection. When none
+                            # landed, this boot's own is written, as before.
+                            try:
+                                await asyncio.to_thread(
+                                    _tombstone_unless_present, agent_id, tombstone
+                                )
+                            except Exception:
+                                logger.debug(
+                                    "Failed to tombstone orphan %s", agent_id, exc_info=True
+                                )
                     except Exception:
                         logger.debug("Notification failed for orphan %s", agent_id, exc_info=True)
+                        # A notifier that raises would raise again at every start,
+                        # so the run is tombstoned as before, after the scan; only a
+                        # process that dies first leaves it to the next start.
+                        held_tombstones.append((agent_id, tombstone))
                 except Exception:
                     logger.warning("Failed to reconcile orphan %s", agent_id, exc_info=True)
 
@@ -593,7 +618,16 @@ class OrphanStallMonitor(ManagerComponent):
                 try:
                     await self._manager._send_orphan_slack_dm(digest)
                 except Exception:
+                    # Raised rather than died: tombstoned as before. A process that
+                    # dies before the DM leaves these runs to the next start.
                     logger.debug("Orphan digest DM failed", exc_info=True)
+            for agent_id, tombstone in held_tombstones:
+                try:
+                    # Off the loop: this writes a file and reads any existing
+                    # tombstone to preserve a recorded terminal outcome.
+                    await asyncio.to_thread(write_tombstone, agent_id, **tombstone)
+                except Exception:
+                    logger.debug("Failed to tombstone orphan %s", agent_id, exc_info=True)
         except Exception:
             logger.warning("Orphan reconciliation failed", exc_info=True)
 
@@ -688,6 +722,9 @@ class OrphanStallMonitor(ManagerComponent):
                             pid=state.get("pid"),
                             turns=state.get("turns", 0),
                             last_tool=state.get("last_tool", ""),
+                            # Written after the notice, so no earlier tombstone
+                            # carries the outcome forward: it is stated here.
+                            **({"outcome": "completed"} if result_is_whole(state) else {}),
                         )
                     except Exception:
                         pass
