@@ -13,7 +13,7 @@ import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from aiohttp import web
 
@@ -332,6 +332,25 @@ _COST_CACHE_TTL = 30.0
 # refetch. The shown/total pair travels with the list either way, so truncation
 # is stated rather than implied.
 _COST_TOP_CONVOS = 500
+# How many sessions ``slot_spend`` keeps for the folder roll-up, one key set
+# shared by both periods. It rides the memoised payload, so it needs a count
+# bound like every retained list. :class:`_SlotSpend` chooses the kept keys while
+# the rows are read (never more than twice this many entries), and
+# :class:`_ExactSlotSpend` then sums exact spend for those keys only. Sessions
+# past the cap are summed into ``overflow``, so every credit is still counted,
+# just not attributed to a folder.
+_COST_SLOT_SPEND_CAP = 5000
+#: Longest session key ``slot_spend`` retains. The count cap above bounds memory
+#: only when each retained field is bounded too, and the key is a field: a slot
+#: name reaches the token rows from the API, so 5000 entries of an unbounded
+#: string is unbounded. A longer key is never admitted; its spend goes to
+#: ``over_long``, apart from the count cap's ``overflow``, so it is counted (in
+#: Unfiled) but not attributed, and not described as past the cap. Generous by
+#: design and the same bound as
+#: ``messaging/turn_ceiling.py``'s ``MAX_RETAINED_KEY_CHARS``: real keys are
+#: ``chat-<n>-<ts>``, ``cron:<job>:<run>``, ``task-review-<token>`` or a surface
+#: name plus provider ids, well inside it.
+_COST_SLOT_KEY_MAX_CHARS = 256
 #: Keys that are not a session at all, and so are not rows.
 #:
 #: A subagent is a FRAGMENT of another session's turn, not a session with its own
@@ -941,6 +960,254 @@ def _row_iso(raw: Any) -> tuple[float, str] | None:
         return None
 
 
+def _per_turn(e: dict[str, Any]) -> float:
+    t = int(e["turns"])
+    return round(float(e["credits"]) / t, 1) if t else 0.0
+
+
+def rank_spend(
+    bucket: dict[str, dict[str, Any]], deltas: dict[str, float] | None, total: float
+) -> list[dict[str, Any]]:
+    """Rank one spend grouping, largest first, with share and period delta.
+
+    *bucket* maps a grouping key to ``{"name", "credits", "turns"}`` (plus any
+    extra identity fields, which are copied through); *deltas* maps the same key
+    to the preceding period's credits. The key and the displayed name differ only
+    for folders, whose names are not unique, so the delta is looked up by key.
+    """
+    out = []
+    for key, e in sorted(bucket.items(), key=lambda kv: -float(kv[1]["credits"])):
+        row = {
+            **{k: v for k, v in e.items() if k not in ("credits", "turns")},
+            "name": e["name"],
+            "credits": round(float(e["credits"]), 1),
+            "turns": int(e["turns"]),
+            "per_turn": _per_turn(e),
+            "share_pct": round(float(e["credits"]) / total * 100, 1) if total else 0.0,
+        }
+        if deltas is not None:
+            was = deltas.get(key, 0.0)
+            # A name with no prior spend has no percentage to report; the
+            # frontend renders that as "new" rather than a fake infinity.
+            row["delta_pct"] = (
+                round((float(e["credits"]) - was) / was * 100, 0) if was > 0 else None
+            )
+        out.append(row)
+    return out
+
+
+class _SlotEntry:
+    """One session's spend: both periods, one key."""
+
+    __slots__ = ("credits", "turns", "prior", "has_current", "has_prior")
+
+    def __init__(self) -> None:
+        self.credits = 0.0
+        self.turns = 0
+        self.prior = 0.0
+        self.has_current = False
+        self.has_prior = False
+
+    def count(self, credits: float, prior: bool) -> None:
+        if prior:
+            self.prior += credits
+            self.has_prior = True
+        else:
+            self.credits += credits
+            self.turns += 1
+            self.has_current = True
+
+
+class _SlotSpend:
+    """Pass 1 of the per-session spend: chooses which session keys to keep.
+
+    Fed one usage row at a time by :func:`cost_breakdown`. It only CHOOSES the
+    kept set; :class:`_ExactSlotSpend` then re-reads the same rows and sums the
+    kept sessions' spend exactly. The bound applies at admission, not
+    afterwards: a cap applied to a finished map still lets the map grow to one
+    entry per distinct key in the window first, and a slot name reaches the
+    token rows from the API.
+
+    * A key longer than ``_COST_SLOT_KEY_MAX_CHARS`` is never admitted.
+    * When admitting a new key would take the map past ``2 x
+      _COST_SLOT_SPEND_CAP`` entries, the lowest-ranked half is dropped first,
+      so the map never holds more than twice the cap. :meth:`kept` folds down
+      to the cap itself.
+    * ONE key set serves both periods, ranked by current credits, then prior
+      credits (both descending), then the key, so which sessions are kept is
+      deterministic.
+
+    The figures held here are partial whenever a key was dropped and seen
+    again (admitted afresh, without its earlier rows), so they only rank and
+    are never reported. That also means the kept set can differ from the
+    exact top ``_COST_SLOT_SPEND_CAP`` when an evicted key returns later in
+    the stream; the sessions it does keep are attributed exactly in both
+    periods by the second pass.
+    """
+
+    __slots__ = ("_entries",)
+
+    def __init__(self) -> None:
+        self._entries: dict[str, _SlotEntry] = {}
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def add(self, key: str, credits: float, *, prior: bool = False) -> None:
+        """Count one usage row toward *key*'s rank: current period, or the prior one."""
+        if len(key) > _COST_SLOT_KEY_MAX_CHARS:
+            return
+        entry = self._entries.get(key)
+        if entry is None:
+            if len(self._entries) >= 2 * _COST_SLOT_SPEND_CAP:
+                self._fold(_COST_SLOT_SPEND_CAP)
+            entry = self._entries[key] = _SlotEntry()
+        entry.count(credits, prior)
+
+    def _fold(self, keep: int) -> None:
+        """Keep the top *keep* entries and drop the rest."""
+        if len(self._entries) <= keep:
+            return
+        ranked = sorted(self._entries.items(), key=lambda kv: (-kv[1].credits, -kv[1].prior, kv[0]))
+        for key, _entry in ranked[keep:]:
+            del self._entries[key]
+
+    def kept(self) -> frozenset[str]:
+        """The chosen session keys, at most ``_COST_SLOT_SPEND_CAP`` of them."""
+        self._fold(_COST_SLOT_SPEND_CAP)
+        return frozenset(self._entries)
+
+
+class _ExactSlotSpend:
+    """Pass 2 of the per-session spend: exact sums for the kept keys only.
+
+    Fed the same rows :class:`_SlotSpend` saw, after it has chosen *kept*. A row
+    whose key is kept is summed into that key's entry; every other row is
+    summed by WHY it was not kept, because the two causes read differently to a
+    user:
+
+    * ``overflow``: a session past ``_COST_SLOT_SPEND_CAP``, the count cap;
+    * ``over_long``: a key longer than ``_COST_SLOT_KEY_MAX_CHARS``, which is
+      never retained however few sessions the window holds.
+
+    So the map holds at most ``len(kept)`` entries, every kept session's current
+    credits, turns and prior credits are exact, and kept plus both remainders is
+    every credit and turn in both periods. Neither remainder carries a session
+    count: each is summed per row, not per session.
+    """
+
+    __slots__ = ("_kept", "_entries", "_capped", "_over_long")
+
+    def __init__(self, kept: frozenset[str]) -> None:
+        self._kept = kept
+        self._entries: dict[str, _SlotEntry] = {}
+        self._capped = _SlotEntry()
+        self._over_long = _SlotEntry()
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def add(self, key: str, credits: float, *, prior: bool = False) -> None:
+        """Count one usage row: *credits* for the current period, or the prior one."""
+        if len(key) > _COST_SLOT_KEY_MAX_CHARS:
+            self._over_long.count(credits, prior)
+        elif key in self._kept:
+            entry = self._entries.get(key)
+            if entry is None:
+                entry = self._entries[key] = _SlotEntry()
+            entry.count(credits, prior)
+        else:
+            self._capped.count(credits, prior)
+
+    @staticmethod
+    def _remainder(e: _SlotEntry) -> dict[str, Any]:
+        return {"credits": e.credits, "turns": e.turns, "prior_credits": e.prior}
+
+    def result(self) -> dict[str, Any]:
+        """The kept sessions per period and the two summed remainders."""
+        return {
+            "current": {
+                k: {"credits": e.credits, "turns": e.turns}
+                for k, e in self._entries.items()
+                if e.has_current
+            },
+            "prior": {k: e.prior for k, e in self._entries.items() if e.has_prior},
+            "overflow": self._remainder(self._capped),
+            "over_long": self._remainder(self._over_long),
+        }
+
+
+def _usage_rows(
+    shard_paths: list[Path],
+    prior_cutoff: float,
+    *,
+    seen: dict[Path, int] | None = None,
+    upto: dict[Path, int] | None = None,
+) -> Iterator[tuple[dict[str, Any], str, float, float, str]]:
+    """The token rows :func:`cost_breakdown` counts, as ``(row, ts, epoch, credits, slot)``.
+
+    One filter for every pass over the shards, so the passes agree on the
+    population: a ``tokens`` row with a parseable timestamp inside the two-period
+    window, finite credits, and a slot that is empty or a session (see the
+    comment at the session test). An unreadable shard is skipped.
+
+    *seen*, when given, is filled with how many rows each shard yielded. *upto*
+    replays a previous pass: each shard yields at most that many rows, and a
+    shard missing from it yields none. The shards are append-only, so the first
+    N rows are the same rows, and a turn persisted between two passes cannot
+    reach the second one without having reached the first.
+    """
+    for shard_path in shard_paths:
+        limit = None if upto is None else upto.get(shard_path, 0)
+        if limit == 0:
+            continue
+        n = 0
+        try:
+            with shard_path.open("rb") as fh:
+                for line in bounded_records(fh, shard_path, label="usage"):
+                    try:
+                        obj = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(obj, dict) or obj.get("_type") != "tokens":
+                        continue
+                    ts_raw = str(obj.get("ts") or "")
+                    ts_epoch = _parse_row_ts(ts_raw)
+                    if ts_epoch is None or ts_epoch < prior_cutoff:
+                        continue
+
+                    credits = float(obj.get("credits") or 0.0)
+                    # Shards written before the persist-side guard can already
+                    # hold `NaN` / `Infinity` — `json.loads` accepts those bare
+                    # tokens even though they are not valid JSON. Letting one
+                    # through would poison every total it touches and make
+                    # `web.json_response` emit a body no browser can parse, so
+                    # the row is dropped rather than counted as free.
+                    if not math.isfinite(credits):
+                        continue
+                    slot = str(obj.get("slot") or "")
+
+                    # Dropped here, before ANY accumulator sees it, so every
+                    # figure on the page is computed over one population. A
+                    # subagent is a fragment of another session's turn rather
+                    # than a session, and it carries no field pointing back at
+                    # the session that spawned it, so it can be neither listed
+                    # nor attributed. Filtering at the grouping step instead
+                    # would leave it in the totals and force a reconciling
+                    # footnote for money with no row.
+                    if slot and not is_session_slot(slot):
+                        continue
+
+                    n += 1
+                    if seen is not None:
+                        seen[shard_path] = n
+                    yield obj, ts_raw, ts_epoch, credits, slot
+                    if limit is not None and n >= limit:
+                        break
+        except (OSError, UnicodeDecodeError):
+            continue
+
+
 def cost_breakdown(days: int = SPEND_WINDOW_DAYS) -> dict[str, Any]:
     """Aggregate per-turn spend from the token row store into a cost view.
 
@@ -996,98 +1263,77 @@ def cost_breakdown(days: int = SPEND_WINDOW_DAYS) -> dict[str, Any]:
     convos: dict[str, dict[str, Any]] = {}
     by_category: dict[str, dict[str, Any]] = {}
     prev_category: dict[str, float] = {}
+    slot_keys = _SlotSpend()
     priciest: dict[str, Any] = {"credits": 0.0, "slot": "", "ts": ""}
+    rows_read: dict[Path, int] = {}
 
-    for shard_path in shard_paths:
-        try:
-            with shard_path.open("rb") as fh:
-                for line in bounded_records(fh, shard_path, label="usage"):
-                    try:
-                        obj = json.loads(line)
-                    except ValueError:
-                        continue
-                    if not isinstance(obj, dict) or obj.get("_type") != "tokens":
-                        continue
-                    ts_raw = str(obj.get("ts") or "")
-                    ts_epoch = _parse_row_ts(ts_raw)
-                    if ts_epoch is None or ts_epoch < prior_cutoff:
-                        continue
+    for obj, ts_raw, ts_epoch, credits, slot in _usage_rows(
+        shard_paths, prior_cutoff, seen=rows_read
+    ):
+        model = str(obj.get("model") or "unknown")
 
-                    credits = float(obj.get("credits") or 0.0)
-                    # Shards written before the persist-side guard can already
-                    # hold `NaN` / `Infinity` — `json.loads` accepts those bare
-                    # tokens even though they are not valid JSON. Letting one
-                    # through would poison every total it touches and make
-                    # `web.json_response` emit a body no browser can parse, so
-                    # the row is dropped rather than counted as free.
-                    if not math.isfinite(credits):
-                        continue
-                    model = str(obj.get("model") or "unknown")
-                    slot = str(obj.get("slot") or "")
-
-                    # Dropped here, before ANY accumulator sees it, so every
-                    # figure on the page is computed over one population. A
-                    # subagent is a fragment of another session's turn rather
-                    # than a session, and it carries no field pointing back at
-                    # the session that spawned it, so it can be neither listed
-                    # nor attributed. Filtering at the grouping step instead
-                    # would leave it in the totals and force a reconciling
-                    # footnote for money with no row.
-                    if slot and not is_session_slot(slot):
-                        continue
-
-                    if ts_epoch < cutoff:
-                        prev_tot["credits"] += credits
-                        prev_tot["turns"] = int(prev_tot["turns"]) + 1
-                        prev_model[model] = prev_model.get(model, 0.0) + credits
-                        ch = telemetry_channel_of(slot or None)
-                        prev_channel[ch] = prev_channel.get(ch, 0.0) + credits
-                        cat = session_category(slot)
-                        prev_category[cat] = prev_category.get(cat, 0.0) + credits
-                        continue
-
-                    cur_tot["credits"] += credits
-                    cur_tot["turns"] = int(cur_tot["turns"]) + 1
-                    if credits > float(priciest["credits"]):
-                        priciest = {"credits": credits, "slot": slot, "ts": ts_raw}
-
-                    for bucket, name in (
-                        (by_model, model),
-                        (by_channel, telemetry_channel_of(slot or None)),
-                        (by_category, session_category(slot)),
-                    ):
-                        e = bucket.setdefault(name, {"name": name, "credits": 0.0, "turns": 0})
-                        e["credits"] = float(e["credits"]) + credits
-                        e["turns"] = int(e["turns"]) + 1
-
-                    used = _coerce_int(obj.get("context_used"))
-                    if used > 0 and credits > 0:
-                        bands.setdefault(min(used // 200_000, 5), []).append(credits)
-
-                    if slot:
-                        c = convos.setdefault(
-                            slot,
-                            {
-                                "slot": slot,
-                                "credits": 0.0,
-                                "turns": 0,
-                                "peak_pct": 0.0,
-                                "first_ts": ts_epoch,
-                                "last_ts": ts_epoch,
-                                "_occ": [],
-                            },
-                        )
-                        c["credits"] = float(c["credits"]) + credits
-                        c["turns"] = int(c["turns"]) + 1
-                        c["first_ts"] = min(float(c["first_ts"]), ts_epoch)
-                        c["last_ts"] = max(float(c["last_ts"]), ts_epoch)
-                        window = _coerce_int(obj.get("context_window"))
-                        if used > 0 and window > 0:
-                            pct = used / window * 100.0
-                            c["peak_pct"] = max(float(c["peak_pct"]), pct)
-                            c["_occ"].append((ts_epoch, pct))
-        except (OSError, UnicodeDecodeError):
+        if ts_epoch < cutoff:
+            prev_tot["credits"] += credits
+            prev_tot["turns"] = int(prev_tot["turns"]) + 1
+            prev_model[model] = prev_model.get(model, 0.0) + credits
+            ch = telemetry_channel_of(slot or None)
+            prev_channel[ch] = prev_channel.get(ch, 0.0) + credits
+            cat = session_category(slot)
+            prev_category[cat] = prev_category.get(cat, 0.0) + credits
+            slot_keys.add(slot, credits, prior=True)
             continue
+
+        cur_tot["credits"] += credits
+        cur_tot["turns"] = int(cur_tot["turns"]) + 1
+        if credits > float(priciest["credits"]):
+            priciest = {"credits": credits, "slot": slot, "ts": ts_raw}
+
+        for bucket, name in (
+            (by_model, model),
+            (by_channel, telemetry_channel_of(slot or None)),
+            (by_category, session_category(slot)),
+        ):
+            e = bucket.setdefault(name, {"name": name, "credits": 0.0, "turns": 0})
+            e["credits"] = float(e["credits"]) + credits
+            e["turns"] = int(e["turns"]) + 1
+        slot_keys.add(slot, credits)
+
+        used = _coerce_int(obj.get("context_used"))
+        if used > 0 and credits > 0:
+            bands.setdefault(min(used // 200_000, 5), []).append(credits)
+
+        if slot:
+            c = convos.setdefault(
+                slot,
+                {
+                    "slot": slot,
+                    "credits": 0.0,
+                    "turns": 0,
+                    "peak_pct": 0.0,
+                    "first_ts": ts_epoch,
+                    "last_ts": ts_epoch,
+                    "_occ": [],
+                },
+            )
+            c["credits"] = float(c["credits"]) + credits
+            c["turns"] = int(c["turns"]) + 1
+            c["first_ts"] = min(float(c["first_ts"]), ts_epoch)
+            c["last_ts"] = max(float(c["last_ts"]), ts_epoch)
+            window = _coerce_int(obj.get("context_window"))
+            if used > 0 and window > 0:
+                pct = used / window * 100.0
+                c["peak_pct"] = max(float(c["peak_pct"]), pct)
+                c["_occ"].append((ts_epoch, pct))
+
+    # Second pass, over exactly the rows the first one read: exact spend for the
+    # keys the first pass chose. Choosing first is what lets a kept session
+    # keep its prior-period spend even when the first pass evicted it before its
+    # current rows arrived; bounded by the kept set, like the first pass.
+    slot_spend = _ExactSlotSpend(slot_keys.kept())
+    for _obj, _ts_raw, ts_epoch, credits, slot in _usage_rows(
+        shard_paths, prior_cutoff, upto=rows_read
+    ):
+        slot_spend.add(slot, credits, prior=ts_epoch < cutoff)
 
     def _store(result: dict[str, Any]) -> dict[str, Any]:
         global _COST_CACHE, _COST_CACHE_KEY, _COST_CACHE_TS
@@ -1095,33 +1341,12 @@ def cost_breakdown(days: int = SPEND_WINDOW_DAYS) -> dict[str, Any]:
             _COST_CACHE, _COST_CACHE_KEY, _COST_CACHE_TS = result, cache_key, now
         return result
 
-    def _per_turn(e: dict[str, Any]) -> float:
-        t = int(e["turns"])
-        return round(float(e["credits"]) / t, 1) if t else 0.0
-
     total = float(cur_tot["credits"])
 
     def _rank(
         bucket: dict[str, dict[str, Any]], deltas: dict[str, float] | None
     ) -> list[dict[str, Any]]:
-        out = []
-        for e in sorted(bucket.values(), key=lambda x: -float(x["credits"])):
-            row = {
-                "name": e["name"],
-                "credits": round(float(e["credits"]), 1),
-                "turns": int(e["turns"]),
-                "per_turn": _per_turn(e),
-                "share_pct": round(float(e["credits"]) / total * 100, 1) if total else 0.0,
-            }
-            if deltas is not None:
-                was = deltas.get(str(e["name"]), 0.0)
-                # A model with no prior spend has no percentage to report; the
-                # frontend renders that as "new" rather than a fake infinity.
-                row["delta_pct"] = (
-                    round((float(e["credits"]) - was) / was * 100, 0) if was > 0 else None
-                )
-            out.append(row)
-        return out
+        return rank_spend(bucket, deltas, total)
 
     band_rows = []
     for idx in sorted(bands):
@@ -1212,6 +1437,12 @@ def cost_breakdown(days: int = SPEND_WINDOW_DAYS) -> dict[str, Any]:
             "by_model": _rank(by_model, prev_model),
             "by_channel": _rank(by_channel, prev_channel),
             "by_category": _rank(by_category, prev_category),
+            # Every session's own spend, current and preceding period, so a
+            # caller holding the dashboard state can group by something this
+            # module cannot see (the sidebar folder a session is filed in).
+            # Internal: the handler consumes and drops it before the payload
+            # leaves, since it is one entry per session in the window.
+            "slot_spend": slot_spend.result(),
             "context_bands": band_rows,
             "conversations": convo_rows,
             "conversation_count": len(convos),

@@ -17215,6 +17215,13 @@
       "gauges_latest": "letzter Messwert",
       "credits_by_origin": "Guthaben nach Ursprung",
       "credits_by_model": "Guthaben nach Modell",
+      "credits_by_folder": "Guthaben nach Ordner",
+      "folder_col": "Ordner",
+      "folder_unfiled": "Nicht zugeordnet",
+      "folder_col_tip": "Kosten nach dem Seitenleisten-Ordner, in dem jede Sitzung jetzt liegt. Eine Sitzung ohne Ordner oder mit nicht lesbarem Ordner (etwa ein geschlossener Task-Review-Tab) zählt als nicht zugeordnet. Jede Zeile zählt Sitzungen, die direkt in diesem Ordner liegen, nicht in seinen Unterordnern.",
+      "folder_direct_only": "Jede Zeile zählt Sitzungen, die direkt in diesem Ordner liegen, nicht in seinen Unterordnern.",
+      "folder_capped_spend": "„Nicht zugeordnet“ enthält Sitzungen jenseits der {{limit}}, die diese Ansicht Ordnern zuordnen kann (Guthaben {{credits}} · Züge {{turns}}).",
+      "folder_long_key_spend": "„Nicht zugeordnet“ enthält Sitzungen, deren ID zu lang ist, um sie Ordnern zuzuordnen (Guthaben {{credits}} · Züge {{turns}}).",
       "top_sessions": "Top-Sitzungen",
       "other_group": "Sonstige ({{n}})",
       "full_table": "Vollständige Tabelle"

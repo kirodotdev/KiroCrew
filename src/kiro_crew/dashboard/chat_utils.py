@@ -855,6 +855,43 @@ def slot_transcript_key(slot_key: str) -> str:
     return _history_key_for(slot_key)
 
 
+def usage_transcript_keys(key: str) -> tuple[str, ...]:
+    """The transcripts a usage-row session key's conversation may be stored under.
+
+    In the order to try them: the first that EXISTS is the answer, even when its
+    metadata leaves the question open. Usage rows are keyed by whatever the
+    writer had in hand, which is not
+    always a slot name (see ``persist_token_record_async``'s call sites), so a
+    new usage-key writer updates the rules here:
+
+    * a cron execution key, ``cron:<job>`` or ``cron:<job>:<run|agent>``: the
+      job's one transcript, ``cron:<job>``, the key its tab is linked to
+      (``cron_inject``);
+    * a slot named ``cron-<job>``: its own transcript first, then ``cron:<job>``
+      only when it has none.
+      A real cron tab has no transcript of its own (it writes the linked
+      ``cron:<job>``), but a slot name is client-supplied (``POST
+      /api/chat/slots``, an OpenAI-compat id), so a dashboard tab can carry the
+      name without being a cron tab, and must not read an unrelated job's;
+    * any other key with a ``:`` is already a session key (``dashboard:``,
+      ``slack:``, ``taskrunner:``, ``hook:``, ``wf:`` ...) and names its own
+      transcript;
+    * anything else is a slot name, resolved by :func:`slot_transcript_key`.
+
+    A closed task-review tab (``task-review-<token>``) cannot be resolved: its
+    transcript is filed under the task-runner key it was linked to, and nothing
+    records that link once the tab closes. It resolves to a transcript that does
+    not exist.
+    """
+    if key.startswith("cron:"):
+        return ("cron:" + key.removeprefix("cron:").split(":", 1)[0],)
+    if key.startswith("cron-"):
+        return (slot_transcript_key(key), "cron:" + key.removeprefix("cron-"))
+    if ":" in key:
+        return (key,)
+    return (slot_transcript_key(key),)
+
+
 def slot_history_key(slot: _ChatSlot) -> str:
     """The TRANSCRIPT key for *slot* — the file its conversation is stored in.
 

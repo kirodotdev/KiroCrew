@@ -17460,6 +17460,13 @@
       "gauges_latest": "ultimo campione",
       "credits_by_origin": "Crediti per origine",
       "credits_by_model": "Crediti per modello",
+      "credits_by_folder": "Crediti per cartella",
+      "folder_col": "Cartella",
+      "folder_unfiled": "Non archiviato",
+      "folder_col_tip": "Spesa per la cartella della barra laterale in cui si trova ora ogni sessione. Una sessione senza cartella, o la cui cartella non è leggibile (ad esempio una scheda di revisione attività chiusa), conta come non archiviata. Ogni riga conta le sessioni archiviate direttamente in quella cartella, non nelle sue sottocartelle.",
+      "folder_direct_only": "Ogni riga conta le sessioni archiviate direttamente in quella cartella, non nelle sue sottocartelle.",
+      "folder_capped_spend": "«Non archiviato» include sessioni oltre le {{limit}} che questa vista può ordinare in cartelle (crediti {{credits}} · turni {{turns}}).",
+      "folder_long_key_spend": "«Non archiviato» include sessioni il cui ID è troppo lungo per ordinarle in cartelle (crediti {{credits}} · turni {{turns}}).",
       "top_sessions": "Sessioni principali",
       "other_group": "Altri ({{n}})",
       "full_table": "Tabella completa"

@@ -17460,6 +17460,13 @@
       "gauges_latest": "dernier échantillon",
       "credits_by_origin": "Crédits par origine",
       "credits_by_model": "Crédits par modèle",
+      "credits_by_folder": "Crédits par dossier",
+      "folder_col": "Dossier",
+      "folder_unfiled": "Non classés",
+      "folder_col_tip": "Dépenses selon le dossier de la barre latérale où se trouve chaque session actuellement. Une session sans dossier, ou dont le dossier est illisible (par exemple un onglet de revue de tâche fermé), compte comme non classée. Chaque ligne compte les sessions rangées directement dans ce dossier, pas dans ses sous-dossiers.",
+      "folder_direct_only": "Chaque ligne compte les sessions rangées directement dans ce dossier, pas dans ses sous-dossiers.",
+      "folder_capped_spend": "« Non classés » inclut des sessions au-delà des {{limit}} que cette vue peut ranger dans des dossiers (crédits {{credits}} · tours {{turns}}).",
+      "folder_long_key_spend": "« Non classés » inclut des sessions dont l'identifiant est trop long pour les ranger dans des dossiers (crédits {{credits}} · tours {{turns}}).",
       "top_sessions": "Principales sessions",
       "other_group": "Autres ({{n}})",
       "full_table": "Tableau complet"

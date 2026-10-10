@@ -16970,6 +16970,13 @@
       "gauges_latest": "最新采样",
       "credits_by_origin": "按会话归属的额度",
       "credits_by_model": "按模型的额度",
+      "credits_by_folder": "按文件夹的额度",
+      "folder_col": "文件夹",
+      "folder_unfiled": "未归档",
+      "folder_col_tip": "按每个会话当前所在的侧边栏文件夹统计的花费。不在任何文件夹中、或文件夹无法读取的会话（例如已关闭的任务审查标签页）计为未归档。每一行只统计直接归档在该文件夹中的会话，不含其子文件夹。",
+      "folder_direct_only": "每一行只统计直接归档在该文件夹中的会话，不含其子文件夹。",
+      "folder_capped_spend": "未归档中包含此视图可归入文件夹的 {{limit}} 个会话之外的会话（额度 {{credits}} · 轮次 {{turns}}）。",
+      "folder_long_key_spend": "未归档中包含 ID 过长、无法归入文件夹的会话（额度 {{credits}} · 轮次 {{turns}}）。",
       "top_sessions": "花费最高的会话",
       "other_group": "其他（{{n}}）",
       "full_table": "完整表格"
