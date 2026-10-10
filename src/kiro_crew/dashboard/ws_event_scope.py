@@ -309,6 +309,15 @@ _OWNER_ONLY_EVENTS = MEMBER_LOG_EVENTS | frozenset({
     # A live-observation request to one owner tab (``handlers/guide.py``): ids
     # only, but which controls the agent is asking about is the operator's own.
     "guide_observe",
+    # One crewmate's dynamic-dashboard block values (see
+    # ``handlers/member_dashboard_push.BLOCK_FRAME``). Delivered through
+    # ``broadcast_ws_owners``, so an app token is already outside the socket
+    # set it reaches -- classified here anyway, for the reason the comment
+    # above gives: the frame carries work-ledger and crew-log values, which is
+    # what the whole ``/api/members`` surface withholds from an app, and a
+    # later literal broadcast of this name must not silently start reaching
+    # one.
+    "dashboard_block_patch",
 })
 
 

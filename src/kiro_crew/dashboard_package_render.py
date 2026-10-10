@@ -1385,9 +1385,9 @@ def blocks_reading(package: Mapping[str, Any], field_names: Sequence[str]) -> li
     """The ids of the blocks that render any of *field_names*, in view order.
 
     What a controller needs in order to push to the blocks a fold actually
-    moved rather than to the whole page. The same answer
-    ``DashboardModel.subscribers`` gives per field, over a set of fields and in
-    one call.
+    moved rather than to the whole page, and THE ONE PLACE that narrowing is
+    decided: ``block_patch`` below is its only caller, the push reaches it
+    through that, and the Model deliberately carries no second spelling of it.
     """
     wanted = set(field_names)
     return [

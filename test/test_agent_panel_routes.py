@@ -2419,32 +2419,40 @@ async def test_a_write_is_refused_for_every_package_state_that_has_no_model(
         assert (await resp.json())["code"] == code
 
 
-async def test_a_live_package_is_refused_while_the_display_still_reads_the_template(
+async def test_a_live_package_write_lands_because_the_display_reads_that_package(
     vetted, monkeypatch
 ):
-    """Fails CLOSED on this base, because the two paths select different Models.
+    """ONE declaration decides both halves on this base, so the value is kept.
 
-    The write would be checked against the PACKAGE's Model, while
-    ``api_member_dashboard`` renders the TEMPLATE instance -- that route reads no
-    package on this base. A package declaring a field with a different type than the
-    displayed template therefore lets a write land that the display cannot draw: a
-    string where the page reads a list empties the cards, with no error anywhere.
-
-    A refusal the agent can act on is the honest answer until the display reads the
-    same package, which is the change that lifts this.
+    ``api_member_dashboard`` composes this crewmate's page from the package bound to
+    them, and this route checks the write against that same package's Model. So a value
+    this check admits is a value the page can draw, and the two halves cannot disagree
+    about a field's type while they read one declaration. That is the property that
+    makes keeping the value safe, and it is the reason this check is enough on its own.
     """
-    from kiro_crew import dashboard_package
+    from kiro_crew import dashboard_agentic, dashboard_package
+    from kiro_crew.dashboard_templates.manifest import parse_manifest
 
-    # A LIVE read of a real PACKAGE, which is exactly what `read_package_model` answers
-    # for one: no Model, because the field table is not translated on this base, and
-    # `from_package` to say where the answer came from. The refusal turns on that flag
-    # and never needs a manifest, so this stand-in carries none either.
+    # A LIVE package whose Model declares `for_you`, sourced from the package rather
+    # than from a template instance: the case the display composes its page from.
+    manifest = parse_manifest(
+        {
+            "id": "dash-atlas",
+            "version": 1,
+            "title": "Atlas",
+            "description": "a composed page",
+            "source": "package",
+            "fields": {"for_you": {"type": "string", "source": {"agentic": True}}},
+        }
+    )
+    # CARRYING the Model, which is the half this PR restores: the translation is back,
+    # so a package read answers with the manifest the write is checked against.
     live = dashboard_package.PackageRead(
-        None,
+        dashboard_agentic.Instance(manifest=manifest, instance_version=2),
         dashboard_package.STATE_LIVE,
         "package 'dash-atlas' version 2",
-        from_package=True,
     )
+    assert manifest.source == dashboard_package.PACKAGE_MANIFEST_SOURCE
     monkeypatch.setattr(dashboard_package, "read_package_model", lambda member: live)
     async with _client() as c:
         resp = await c.post(
@@ -2452,12 +2460,65 @@ async def test_a_live_package_is_refused_while_the_display_still_reads_the_templ
             json={"field": "for_you", "value": "approve the plan"},
             headers={"X-Session-Key": "dashboard:chat-1"},
         )
-        assert resp.status == 400, await resp.text()
+        assert resp.status == 200, await resp.text()
         body = await resp.json()
-        assert body["code"] == "package_display_pending", body
-        # The remedy has to name WHY, or an agent reads it as "your value was wrong"
-        # and retries the same write forever.
-        assert "display" in body["error"].lower(), body
+        assert body["ok"] is True
+        assert body["written"]["field"] == "for_you"
+
+
+async def test_a_package_bound_write_is_checked_against_the_package_model(vetted, monkeypatch):
+    """THROUGH the translation, which is what this PR restores and why it lives here.
+
+    The pair to the case above. That one proves a package-bound write is kept; this one
+    proves it is still CHECKED, and checked against the package's OWN declaration: the
+    package declares ``open_prs`` as its ``number`` data type,
+    ``_PACKAGE_TYPE_TO_MANIFEST`` carries that across as the manifest's ``number``, and
+    a string is refused against it. Without the translation there is no spec to refuse
+    against and anything would land.
+
+    Driven through ``read_package_model`` rather than a hand-built manifest, so the
+    mapping itself is on the path: a row removed from it reddens this.
+    """
+    from kiro_crew import dashboard_package
+
+    package = {
+        "kind": "dashboard",
+        "bound_to": f"crewmate:{SLUG}",
+        "model": {
+            "types": {
+                "open_prs": {"type": "number", "source": {"agentic": True}},
+            }
+        },
+        "view": {"blocks": [{"id": "prs", "type": "stat", "fields": ["open_prs"]}]},
+        "theme": {"tokens": {}},
+    }
+    read = SimpleNamespace(content=json.dumps(package), version=3)
+    # Patched where `_from_package` imports them FROM, not on the reader's own module:
+    # both imports happen inside that function, so the names it binds are the store's.
+    from kiro_crew import artifacts as artifacts_mod
+    from kiro_crew.artifact_store import dashboard_package as store_pkg
+
+    monkeypatch.setattr(store_pkg, "resolve_bound_slug", lambda _b, **_k: "atlas-dash")
+    monkeypatch.setattr(
+        artifacts_mod, "get_default_store", lambda: SimpleNamespace(get=lambda _s: read)
+    )
+    assert dashboard_package.read_package_model(CREW).state == dashboard_package.STATE_LIVE
+    async with _client() as c:
+        refused = await c.post(
+            WRITE_PATH,
+            json={"field": "open_prs", "value": "not a number"},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert refused.status == 400, await refused.text()
+        assert (await refused.json())["field"] == "open_prs"
+
+        kept = await c.post(
+            WRITE_PATH,
+            json={"field": "open_prs", "value": 4},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert kept.status == 200, await kept.text()
+        assert (await kept.json())["written"] == {"field": "open_prs", "type": "number"}
 
 
 async def test_the_write_route_asks_for_a_package_by_member_and_not_by_slug(vetted, monkeypatch):

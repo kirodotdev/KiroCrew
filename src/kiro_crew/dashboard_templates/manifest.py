@@ -70,17 +70,17 @@ __all__ = [
 #: the loader instead of being collected as one more refusal.
 FIELD_TYPES: Final[frozenset[str]] = frozenset({"number", "string", "boolean", "array", "object"})
 FOLD_NAMES: Final[frozenset[str]] = frozenset(SESSION_FOLD_NAMES) | frozenset(SLOT_PROJECTION_NAMES)
-#: Where a manifest came from. Every value names a template DIRECTORY, which is what
-#: lets two consumers read this word and both be right: ``instance.RENDERABLE_SOURCES``
-#: gates whether a page may EXECUTE, and the catalogue's scan checks a directory's
-#: declared source against where the directory actually sits.
+#: Where a manifest came from. ``package`` is the one value that names no template
+#: directory at all: it marks a manifest SYNTHESIZED from an agent-composed dashboard
+#: package (:func:`kiro_crew.dashboard_package.read_package_model`), which exists only
+#: in memory and only so a write can be checked against field names and types.
 #:
-#: An agent-composed dashboard package gets a fourth value when a manifest is
-#: synthesized from one -- it has no directory and carries no page, so it has to be
-#: distinguishable from a template a person wrote. That value ships with the
-#: synthesis, because a source no manifest declares is a word both consumers would
-#: accept off disk and nothing would ever produce.
-SOURCES: Final[frozenset[str]] = frozenset({"builtin", "user", "shared"})
+#: Its own value rather than a borrowed ``user``, because two consumers read this word
+#: and would be answering about the wrong thing: ``instance.RENDERABLE_SOURCES`` gates
+#: whether a page may EXECUTE, and the catalogue's scan checks a directory's declared
+#: source against where the directory actually sits. A package has no directory and
+#: carries no page, so it must be distinguishable from a template a person wrote.
+SOURCES: Final[frozenset[str]] = frozenset({"builtin", "user", "shared", "package"})
 #: ``\Z``, never ``$``: Python's ``$`` also matches just before a TRAILING NEWLINE, so
 #: ``"report\n"`` satisfies a ``$``-anchored id. That id becomes a user-template
 #: directory name and a registry key, so it would sit beside ``report`` looking

@@ -146,37 +146,6 @@ PACKAGE_REFUSALS: Final[dict[str, str]] = {
     "error": "package_model_invalid",
 }
 
-#: The refusal a package-bound write gets while the DISPLAY still selects a different
-#: Model from the one the write would be checked against. Its own code, because the
-#: remedy is neither "create a package" nor "repair this one": the package is fine and
-#: the write is fine, and what is missing is the half that draws it.
-PACKAGE_DISPLAY_PENDING: Final[str] = "package_display_pending"
-
-
-def display_pending_refusal(field: str) -> WriteRefused:
-    """A live package whose values nothing would draw yet.
-
-    Checking a write against the package's Model while the member's page renders from
-    its TEMPLATE instance lets a value land that the display cannot draw -- a string
-    where the page reads a list renders as nothing, so the cards that were there
-    disappear and no error is raised anywhere. The old values are still in the log, but
-    a reader looking at the page cannot tell that from an empty list.
-
-    Refused rather than written, because the two halves disagreeing is not something an
-    agent can see or work around. The caller decides WHEN to ask this: the condition is
-    about the display, which is not this module's to read.
-    """
-    return WriteRefused(
-        PACKAGE_DISPLAY_PENDING,
-        field,
-        "this crewmate's page is composed from a dashboard package, and the display "
-        "still draws it from the template instance -- so a value checked against the "
-        "package could be one the page cannot draw, and writing it would blank what is "
-        "already there. Nothing is wrong with the package or the value: wait for the "
-        "display to read the package, and write it then",
-    )
-
-
 #: What each refusal tells the agent to DO, which is the half a bare state cannot
 #: supply. One sentence per state, and they differ in the action rather than in tone:
 #: create one, tell a human, stop reaching for it.
