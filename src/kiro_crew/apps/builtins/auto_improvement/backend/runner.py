@@ -95,11 +95,17 @@ TERMINAL_RECORD_NAME = "run.state.json"
 
 #: Statuses a persisted record is allowed to claim when it is read back at startup.
 #:
-#: The record is written only at a TERMINAL transition, so any other value in the file is
-#: stale or hand-edited. Restoring ``running`` from disk would make a fresh process report a
-#: live run with no thread behind it -- the same "UI spins forever" lie ``status()`` already
-#: guards against for a torn-down thread -- so a non-terminal record is ignored, not restored.
+#: A record is written twice per run: by ``start()`` before the run's thread exists, marked
+#: ``in_flight``, and at the TERMINAL transition, which overwrites it. Restoring ``running``
+#: from disk would make a fresh process report a live run with no thread behind it -- the
+#: same "UI spins forever" lie ``status()`` already guards against for a torn-down thread --
+#: so a non-terminal record is never restored. An ``in_flight`` record is a run a restart
+#: cut off and is read back as an error; any other non-terminal record is stale or
+#: hand-edited and is ignored.
 _PERSISTABLE_STATUSES = frozenset({STATUS_DONE, STATUS_ERROR})
+
+#: The error a run reports after a restart cut it off before its terminal transition.
+INTERRUPTED_BY_RESTART = "interrupted by a restart before it finished"
 
 
 class _CalibrationStopped(Exception):
@@ -330,8 +336,9 @@ class RunSupervisor:
         ``idle``, which is the "nothing persisted, no trace after a restart" half of the
         reported defect -- persisting a record nobody reads back fixes nothing.
 
-        Best-effort by construction. A missing, unreadable, malformed or non-terminal record
-        leaves the supervisor idle, which is the pre-existing behaviour, and this NEVER raises:
+        Best-effort by construction. A missing, unreadable or malformed record, or a
+        non-terminal one not marked ``in_flight``, leaves the supervisor idle, which is the
+        pre-existing behaviour, and this NEVER raises:
         it runs inside the process-wide singleton every run route resolves through, so a
         failure here would take out run reporting entirely rather than degrade it -- and
         because ``get_supervisor()`` caches only on success, one raise would 500 EVERY
@@ -352,7 +359,8 @@ class RunSupervisor:
             if not isinstance(record, dict):
                 return
             status = str(record.get("status") or "")
-            if status not in _PERSISTABLE_STATUSES:
+            interrupted = record.get("in_flight") is True
+            if not interrupted and status not in _PERSISTABLE_STATUSES:
                 return
             numbers = (
                 record.get("cycle"),
@@ -375,12 +383,14 @@ class RunSupervisor:
                 )
                 return
             self._state = RunState(
-                status=status,
+                # A run a restart cut off is reported as failed, never as live: no thread of
+                # this process is behind it, and it is not resumed.
+                status=STATUS_ERROR if interrupted else status,
                 run_id=str(record.get("run_id") or ""),
                 cycle=_as_count(record.get("cycle")),
                 kept=_as_count(record.get("kept")),
                 drafted=_as_count(record.get("drafted")),
-                error=str(record.get("error") or ""),
+                error=INTERRUPTED_BY_RESTART if interrupted else str(record.get("error") or ""),
                 started_at=_pos_float(record.get("started_at"), 0.0),
                 finished_at=_pos_float(record.get("finished_at"), 0.0),
                 offline_reason=str(record.get("offline_reason") or ""),
@@ -766,12 +776,20 @@ class RunSupervisor:
             )
             self._thread = thread
             self._reserved = True
+        # Written before the thread exists, so the run's own terminal write always lands after
+        # it and overwrites it. A restart in between leaves this record, and the next process
+        # reports the run as interrupted instead of showing nothing.
+        self._persist_terminal_state(in_flight=True)
         try:
             thread.start()
-        except BaseException:
-            # A spawn failure must not wedge the supervisor as permanently busy.
+        except BaseException as exc:
+            # A spawn failure must not wedge the supervisor as permanently busy, and must not
+            # leave the in-flight record behind: the next process would report a run that never
+            # started as cut off by a restart. Record the failure as the run's terminal state.
             with self._lock:
                 self._reserved = False
+            self._fail(exc)
+            self._persist_terminal_state()
             raise
         return {"run_id": run_id, "status": STATUS_RUNNING}
 
@@ -1075,8 +1093,13 @@ class RunSupervisor:
         with self._lock:
             self._state.activity.append({"t": time.time(), "note": text})
 
-    def _persist_terminal_state(self) -> None:
+    def _persist_terminal_state(self, *, in_flight: bool = False) -> None:
         """Write this run's terminal status/error/counters to disk. Call WITHOUT ``_lock``.
+
+        With ``in_flight`` it is the record ``start()`` writes before the run's thread starts:
+        the same fields with the run's live status, plus ``in_flight: true``, which
+        :meth:`_hydrate_terminal_record` reads back as a run a restart cut off. The terminal
+        write overwrites it with a record that carries no ``in_flight`` key.
 
         The half of the fix that outlives the process. :class:`RunState` is in-memory only, so
         before this a run's terminal status and error died with the gateway: a restart reported
@@ -1116,11 +1139,16 @@ class RunSupervisor:
                 "finished_at": st.finished_at,
                 "offline_reason": st.offline_reason,
             }
+            if in_flight:
+                record["in_flight"] = True
         try:
             store.write_json_atomic(path or _terminal_record_path(), record)
         except Exception:  # noqa: BLE001 -- a durability failure must not mask the outcome
             logger.warning(
-                "%s: could not persist the terminal run record", store.APP_NAME, exc_info=True
+                "%s: could not persist the %s run record",
+                store.APP_NAME,
+                "in-flight" if in_flight else "terminal",
+                exc_info=True,
             )
 
     def _run_loop(self, driver: Any) -> None:

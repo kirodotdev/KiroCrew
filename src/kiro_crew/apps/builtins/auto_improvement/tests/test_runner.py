@@ -538,6 +538,152 @@ class TestOfflineRunIsNotReportedAsDone:
         assert "available" in supervisor._offline_reason
 
 
+class TestRunCutOffByARestart:
+    """A run in flight when the gateway restarts is reported after it, as an error.
+
+    ``start()`` records the run before its thread exists; the terminal write overwrites that
+    record. A NEW ``RunSupervisor()`` on the same store is what the next process builds."""
+
+    _RECORD_KEYS = {
+        "run_id",
+        "status",
+        "error",
+        "cycle",
+        "kept",
+        "drafted",
+        "started_at",
+        "finished_at",
+        "offline_reason",
+    }
+
+    def test_a_run_cut_off_by_a_restart_is_reported_as_interrupted(
+        self, supervisor: R.RunSupervisor, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clone = _tiny_repo(tmp_path / "clone")
+        release = threading.Event()
+
+        class _ParkedDriver:
+            def run(self, **_kw: Any) -> Any:
+                release.wait(timeout=10.0)
+                return _FakeStats()
+
+            def request_stop(self) -> None:
+                release.set()
+
+        monkeypatch.setattr(supervisor, "_build_driver", lambda _cfg: _ParkedDriver())
+        started = supervisor.start({"clone": str(clone)})
+        try:
+            # The process dies here; the next one builds its own supervisor, twice for a
+            # second boot.
+            first_boot = R.RunSupervisor()
+            second_boot = R.RunSupervisor()
+            after = [first_boot.status(), second_boot.status()]
+        finally:
+            release.set()
+            _join(supervisor)
+
+        for status in after:
+            assert status["run_id"] == started["run_id"], status
+            assert status["status"] == R.STATUS_ERROR, status
+            assert status["error"] == R.INTERRUPTED_BY_RESTART
+        # Reported, never resumed: neither boot holds a thread for it.
+        assert first_boot._thread is None and second_boot._thread is None
+
+    def test_a_run_that_finishes_saves_exactly_the_terminal_record(
+        self, supervisor: R.RunSupervisor, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clone = _tiny_repo(tmp_path / "clone")
+
+        class _InstantDriver:
+            def run(self, **_kw: Any) -> Any:
+                return _FakeStats()
+
+            def request_stop(self) -> None:
+                pass
+
+        monkeypatch.setattr(supervisor, "_build_driver", lambda _cfg: _InstantDriver())
+        started = supervisor.start({"clone": str(clone)})
+        _join(supervisor)
+
+        record = json.loads(R._terminal_record_path().read_text(encoding="utf-8"))
+        assert set(record) == self._RECORD_KEYS
+        assert record["status"] == R.STATUS_DONE and record["run_id"] == started["run_id"]
+        assert R.RunSupervisor().status()["status"] == R.STATUS_DONE
+
+    def test_a_failed_write_at_start_is_logged_and_the_run_still_runs(
+        self,
+        supervisor: R.RunSupervisor,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        clone = _tiny_repo(tmp_path / "clone")
+
+        class _InstantDriver:
+            def run(self, **_kw: Any) -> Any:
+                return _FakeStats()
+
+            def request_stop(self) -> None:
+                pass
+
+        real_write = store.write_json_atomic
+        calls: list[dict] = []
+
+        def _first_write_fails(path: Path, data: Any) -> None:
+            calls.append(data)
+            if len(calls) == 1:
+                raise OSError("disk full")
+            real_write(path, data)
+
+        monkeypatch.setattr(store, "write_json_atomic", _first_write_fails)
+        monkeypatch.setattr(supervisor, "_build_driver", lambda _cfg: _InstantDriver())
+        with caplog.at_level("WARNING"):
+            assert supervisor.start({"clone": str(clone)})["status"] == R.STATUS_RUNNING
+            _join(supervisor)
+
+        assert calls[0].get("in_flight") is True
+        assert "could not persist the in-flight run record" in caplog.text
+        assert supervisor.status()["status"] == R.STATUS_DONE
+        record = json.loads(R._terminal_record_path().read_text(encoding="utf-8"))
+        assert record["status"] == R.STATUS_DONE and "in_flight" not in record
+
+    def test_a_run_whose_thread_cannot_start_is_not_reported_as_interrupted(
+        self, supervisor: R.RunSupervisor, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A spawn failure after the in-flight write records the failure, so the next boot
+        does not report a run that never started as cut off by a restart."""
+        clone = _tiny_repo(tmp_path / "clone")
+
+        class _InstantDriver:
+            def run(self, **_kw: Any) -> Any:
+                return _FakeStats()
+
+            def request_stop(self) -> None:
+                pass
+
+        class _UnstartableThread(threading.Thread):
+            def start(self) -> None:
+                raise RuntimeError("can't start new thread")
+
+        class _ThreadingWithoutStart:
+            """The runner's own ``threading`` with a Thread that cannot start; the rest is real."""
+
+            Thread = _UnstartableThread
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(threading, name)
+
+        monkeypatch.setattr(supervisor, "_build_driver", lambda _cfg: _InstantDriver())
+        monkeypatch.setattr(R, "threading", _ThreadingWithoutStart())
+        with pytest.raises(RuntimeError, match="can't start new thread"):
+            supervisor.start({"clone": str(clone)})
+
+        after = R.RunSupervisor().status()
+        assert after["status"] == R.STATUS_ERROR, after
+        assert after["error"] != R.INTERRUPTED_BY_RESTART
+        assert "can't start new thread" in after["error"]
+
+
 class TestStop:
     def test_stop_on_an_idle_supervisor_is_a_noop(self, supervisor: R.RunSupervisor) -> None:
         result = supervisor.stop()
