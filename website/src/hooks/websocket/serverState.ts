@@ -161,6 +161,10 @@ export function refreshServerStateAfterReconnect(queryClient: QueryClient): void
   queryClient.invalidateQueries({ queryKey: ['chat-threads'] })
   // A guide frame missed while the socket was down is recovered by re-reading.
   queryClient.invalidateQueries({ queryKey: GUIDE_PENDING_QUERY_KEY })
+  // The crew panel drawer reads its snapshot once and does not poll: only a
+  // `panel_published` frame re-reads it. One sent while the socket was down
+  // would leave the drawer stale until a reload, so re-read every observed one.
+  queryClient.invalidateQueries({ queryKey: ['member-panel'] })
   // A dropped socket is the one client-visible sign the gateway may have
   // restarted — and a restart drops an unmessaged member slot while its
   // binding survives. The Crew Members page mounts a cached thread key

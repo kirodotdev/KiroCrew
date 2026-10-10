@@ -358,6 +358,11 @@ export function useWebSocket() {
             // re-composes the page and re-checks ownership.
             handleDashboardMoved(queryClient, data)
             break
+          case 'dashboard_instance_changed':
+            // The crewmate's dashboard PAGE changed: a template applied or a
+            // version rolled back. Same {slug}-only frame, same re-read.
+            handleDashboardMoved(queryClient, data)
+            break
           case 'notification_ack':
             dispatch(ackNotificationByTs(data.ts))
             break
