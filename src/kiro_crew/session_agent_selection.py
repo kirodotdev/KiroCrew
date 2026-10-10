@@ -6,7 +6,7 @@ import hashlib
 import json
 import uuid
 from dataclasses import replace as dataclass_replace
-from typing import Any
+from typing import Any, NamedTuple
 
 from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
 from kiro_crew.config.loader import (
@@ -25,7 +25,35 @@ from kiro_crew.execution_context import (
 )
 from kiro_crew.memory_stores import UnknownMemoryStore
 
-SelectionChange = tuple[dict[str, Any] | None, dict[str, Any]]
+_LEGACY_BINDING_FIELDS = ("memory_store", "memory_mode")
+
+
+class SelectionChange(NamedTuple):
+    """What one selection write replaced, so a rollback can put it back.
+
+    ``prior`` is the execution record the session carried before the write and
+    ``published`` the one the write committed. A session with no execution
+    record can still carry a binding of its own in the metadata line's
+    ``memory_store`` / ``memory_mode`` fields (a transcript written before the
+    execution record existed). The write overwrites both, so ``legacy`` keeps
+    their raw pre-write values; a field the line did not carry is absent from it.
+    """
+
+    prior: dict[str, Any] | None
+    published: dict[str, Any]
+    legacy: dict[str, Any] | None = None
+
+
+def _legacy_binding(session_key: str) -> dict[str, Any] | None:
+    """The metadata line's own binding fields, read before a write replaces them."""
+    if not session_key or session_key.startswith("subagent:"):
+        return None
+    from kiro_crew.history import ConversationLog
+
+    metadata, readable = ConversationLog().get_metadata_status(session_key)
+    if not readable:
+        return None
+    return {field: metadata[field] for field in _LEGACY_BINDING_FIELDS if field in metadata}
 
 
 def _revision(execution: ExecutionContext | None) -> str:
@@ -214,12 +242,15 @@ def record_agent_selection(
         # a stated property rather than something rediscovered later.
         return None
     execution = dataclass_replace(execution, selection_revision=uuid.uuid4().hex)
+    # With no execution record, the line's own store and mode are the binding the
+    # publication below overwrites, so they are captured first for the rollback.
+    legacy = _legacy_binding(session_key) if prior is None else None
     # The comparison above is backed by the session record CAS during publication.
     bind_session_execution(
         session_key, execution, replace_existing=True, expected=prior, vouch=vouch
     )
     bindings.execution_context = execution
-    return prior.to_record() if prior else None, execution.to_record()
+    return SelectionChange(prior.to_record() if prior else None, execution.to_record(), legacy)
 
 
 def restore_agent_selection(session_key: str, change: SelectionChange | None) -> None:
@@ -228,7 +259,7 @@ def restore_agent_selection(session_key: str, change: SelectionChange | None) ->
     from kiro_crew.atomic_write import atomic_write
     from kiro_crew.history import ConversationLog
 
-    prior, published = change
+    prior, published, legacy = change
     from kiro_crew.execution_context import restore_live_session_execution
 
     if restore_live_session_execution(session_key, prior, published):
@@ -254,7 +285,13 @@ def restore_agent_selection(session_key: str, change: SelectionChange | None) ->
             return
         path = log._path(session_key)
         rows = path.read_text(encoding="utf-8").splitlines(keepends=True)
-        for field in ("execution_context", "memory_store", "memory_mode"):
-            metadata.pop(field, None)
+        metadata.pop("execution_context", None)
+        # The line's own pre-write binding comes back exactly as it was read: a
+        # field it carried is restored, a field it did not carry is removed.
+        for field in _LEGACY_BINDING_FIELDS:
+            if legacy and field in legacy:
+                metadata[field] = legacy[field]
+            else:
+                metadata.pop(field, None)
         rows[0] = json.dumps(metadata, ensure_ascii=False) + "\n"
         atomic_write(path, "".join(rows))
