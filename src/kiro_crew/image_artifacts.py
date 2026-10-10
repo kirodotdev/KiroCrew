@@ -52,10 +52,9 @@ from kiro_crew.artifacts import (
 )
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.messaging.outbound_files import (
-    IMAGE_MD_RE,
     is_remote_destination,
+    iter_image_destinations,
     local_destination,
-    md_destination,
     strip_url_syntax,
     unescape_md,
 )
@@ -162,7 +161,7 @@ def register_images(text: str, message_ts: str, session_key: str) -> list[str]:
         # the artifact (the frontend probe would never find it).
         return []
     try:
-        matches = list(IMAGE_MD_RE.finditer(text or ""))
+        matches = list(iter_image_destinations(text or ""))
     except Exception:  # pragma: no cover — regex scan must never break a turn
         logger.warning("image scan failed for message %s", message_ts, exc_info=True)
         return []
@@ -179,7 +178,7 @@ def register_images(text: str, message_ts: str, session_key: str) -> list[str]:
     considered = 0
     # Index by position among ALL image matches (including skipped remote ones)
     # so an image's ordinal is stable regardless of which siblings were skipped.
-    for index, m in enumerate(matches):
+    for index, (m, raw_path, _consumed) in enumerate(matches):
         if considered >= MAX_IMAGES_PER_MESSAGE:
             logger.warning(
                 "message %s references more than %d local images; registering the first %d",
@@ -191,9 +190,7 @@ def register_images(text: str, message_ts: str, session_key: str) -> list[str]:
         # Undo markdown escaping so the caption reads as written: the alt capture
         # now accepts `\]`, and leaving the backslashes in would surface them in
         # the artifact name and the image's accessible description.
-        alt = unescape_md(m.group(1) or "").strip()
-        # The destination starts right after the opening paren this match ended on.
-        raw_path = md_destination(text[m.end():])
+        alt = unescape_md(m.alt).strip()
         if not raw_path:
             continue
         if is_remote_destination(raw_path):

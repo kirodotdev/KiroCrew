@@ -74,9 +74,11 @@ All filesystem work here is blocking, so async callers MUST use
 from __future__ import annotations
 
 import asyncio
+import bisect
 import logging
 import os
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -111,6 +113,79 @@ logger = logging.getLogger(__name__)
 #: match, and the image is never seen at all.
 IMAGE_MD_RE = re.compile(r"!\[((?:[^\]\\]|\\.)*)\]\(")
 
+
+@dataclass(frozen=True)
+class ImageOpener:
+    """One ``![alt](`` opener, as :data:`IMAGE_MD_RE` would match it."""
+
+    #: Offset of the ``!``.
+    start: int
+    #: Offset just past the ``(``, where the destination begins.
+    end: int
+    #: The alt text as written, escapes intact (the pattern's group 1).
+    alt: str
+
+
+def _label_run_end(text: str, start: int) -> int:
+    r"""Where the label run of the opener at *start* stops.
+
+    The run is :data:`IMAGE_MD_RE`'s ``(?:[^\]\\]|\\.)*`` read by hand: any
+    character but ``]`` and a backslash, or a backslash followed by any character
+    except a line break. Scanned here rather than by the pattern so that no regex
+    is ever retried over the text.
+    """
+    i = start + 2
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "]":
+            break
+        if ch == "\\":
+            if i + 1 < n and text[i + 1] != "\n":
+                i += 2
+                continue
+            break
+        i += 1
+    return i
+
+
+def _image_label(text: str, start: int) -> tuple[ImageOpener | None, int]:
+    """The opener at *start* if its label closes with ``](``, and where its run stops.
+
+    The label run is tokenised the same way from every opener inside it: an
+    inner ``![`` is either an escaped ``\\!`` or a plain ``!`` followed by a plain
+    ``[``, so the token after it starts at the same offset in both runs. Every
+    opener inside the run therefore stops where this one stops and closes (or
+    fails to close) exactly as this one does, which is what lets a caller skip
+    the whole run after one attempt instead of rescanning it from each opener.
+    """
+    run_end = _label_run_end(text, start)
+    if text.startswith("](", run_end):
+        return ImageOpener(start, run_end + 2, text[start + 2 : run_end]), run_end
+    return None, run_end
+
+
+def iter_image_matches(text: str) -> Iterator[ImageOpener]:
+    """Yield the openers ``IMAGE_MD_RE.finditer(text)`` matches, in linear time.
+
+    ``finditer`` retries the pattern from every ``![``, and each failed attempt
+    scans the rest of the label run, so text made of many unclosed openers costs
+    quadratic time. Here a failed attempt skips its whole run (see
+    :func:`_image_label`), so each character is scanned a bounded number of times.
+    """
+    pos = 0
+    while True:
+        start = text.find("![", pos)
+        if start < 0:
+            return
+        opener, run_end = _image_label(text, start)
+        if opener is not None:
+            yield opener
+            pos = opener.end
+        else:
+            pos = max(run_end, start + 2)
+
+
 #: Unwraps a markdown backslash escape to the character it escaped.
 _MD_ESCAPE_RE = re.compile(r"\\(.)")
 
@@ -118,6 +193,13 @@ _MD_ESCAPE_RE = re.compile(r"\\(.)")
 #: backslash before anything else is a literal -- most importantly a Windows path
 #: separator (``C:\Users\me\shot.png``).
 _MD_ESCAPABLE = frozenset("()[]\\<>\"'")
+
+#: Deepest parenthesis nesting a destination may hold, its own opening ``(``
+#: counted as the first level, so 32 nested pairs inside it are allowed as in
+#: cmark. A ``(`` past it makes the destination unclosable. No real path nests
+#: that deep, and the bound is what keeps a text of nested images linear: a
+#: character can then sit inside at most this many destinations that are walked.
+_MAX_DESTINATION_PAREN_DEPTH = 33
 
 #: Prefixes of destinations that are not a local file. NOT the classifier: `//`
 #: is ambiguous, so this tuple is a necessary condition and not a sufficient
@@ -327,6 +409,8 @@ def _walk_destination(rest: str) -> tuple[str | None, int]:
             continue
         if ch == "(":
             depth += 1
+            if depth > _MAX_DESTINATION_PAREN_DEPTH:
+                return None, 0
         elif ch == ")":
             depth -= 1
             if depth == 0:
@@ -366,6 +450,77 @@ def md_destination(rest: str) -> str | None:
     belongs to prose).
     """
     return _walk_destination(rest)[0]
+
+
+class _ParenIndex:
+    """The ``)`` that closes each ``(`` of one text, under :func:`_walk_destination`'s rules.
+
+    Built in one pass, so finding where a destination ends is a lookup rather
+    than a walk to the end of the text from every image. The tokenisation is the
+    walk's: a backslash before a character in :data:`_MD_ESCAPABLE` makes the pair
+    one token that never moves the depth. A ``(`` maps to nothing when no ``)``
+    closes it before the next line break -- a destination holding a line break is
+    refused by :func:`_finish_destination` however it closes -- or when the walk
+    from it would pass :data:`_MAX_DESTINATION_PAREN_DEPTH` first. Each character
+    then lies inside at most that many destinations that are walked, so walking
+    every image's destination stays linear in the text.
+
+    The index is exact for a destination that starts right after the ``(`` of an
+    :data:`IMAGE_MD_RE` opener: that ``(`` follows a ``]``, never a backslash, so
+    it is a token of its own here exactly as it is for a walk started after it.
+    """
+
+    def __init__(self, text: str) -> None:
+        self._close: dict[int, int] = {}
+        stack: list[int] = []
+        # Positions whose walk stops on the depth cap before it closes: a ``(`` at
+        # stack index ``s`` is that deep once the stack holds
+        # ``s + _MAX_DESTINATION_PAREN_DEPTH + 1`` entries.
+        capped: set[int] = set()
+        i = 0
+        n = len(text)
+        while i < n:
+            ch = text[i]
+            if ch == "\\" and i + 1 < n and text[i + 1] in _MD_ESCAPABLE:
+                i += 2
+                continue
+            if ch == "(":
+                stack.append(i)
+                deep = len(stack) - _MAX_DESTINATION_PAREN_DEPTH - 1
+                if deep >= 0:
+                    capped.add(stack[deep])
+            elif ch == ")":
+                if stack:
+                    opened = stack.pop()
+                    if opened not in capped:
+                        self._close[opened] = i
+            elif ch in "\r\n":
+                stack.clear()
+            i += 1
+
+    def walk(self, text: str, start: int) -> tuple[str | None, int]:
+        """:func:`_walk_destination` of ``text[start:]``, where ``text[start - 1]`` is ``(``."""
+        close = self._close.get(start - 1)
+        if close is None:
+            return None, 0
+        return _walk_destination(text[start : close + 1])
+
+
+def iter_image_destinations(text: str) -> Iterator[tuple[ImageOpener, str | None, int]]:
+    """Each :func:`iter_image_matches` match with its walked destination and length.
+
+    The destination is ``md_destination(text[opener.end:])``. The length is
+    what that walk consumed when the destination is set; callers read it only
+    then, and it may be ``0`` when the destination is ``None``. Both come
+    through :class:`_ParenIndex`, so many images in one text do not each re-walk
+    the rest of it.
+    """
+    index: _ParenIndex | None = None
+    for opener in iter_image_matches(text):
+        if index is None:
+            index = _ParenIndex(text)
+        dest, consumed = index.walk(text, opener.end)
+        yield opener, dest, consumed
 
 
 def _inside(offset: int, spans: list[tuple[int, int]]) -> bool:
@@ -477,25 +632,66 @@ def _block_bounds(text: str, offset: int, fenced: list[tuple[int, int]]) -> tupl
     :func:`seam_carries_markup_debt` (which masks the block a sealed prefix ends
     in) so the two cannot drift into disagreeing about where a block begins.
     """
-    boundaries = [*fenced, *(m.span() for m in _BLANK_LINE_RE.finditer(text))]
-    start = max((end for _s, end in boundaries if end <= offset), default=0)
-    end = min((s for s, _e in boundaries if s > offset), default=len(text))
-    return start, end
+    return _MarkerReader(text, fenced).block_bounds(offset)
 
 
 def _literal_image_marker(text: str, offset: int, fenced: list[tuple[int, int]]) -> bool:
-    prefix = text[:offset]
-    escaped = (len(prefix) - len(prefix.rstrip("\\"))) % 2 == 1
-    line_start = text.rfind("\n", 0, offset) + 1
-    line = text[line_start:].split("\n", 1)[0]
-    column = offset - line_start
-    block_start, block_end = _block_bounds(text, offset, fenced)
-    return (
-        escaped
-        or _inside(offset, fenced)
-        or line[:column].expandtabs(4).startswith("    ")
-        or mask_inline_code(text[block_start:block_end])[offset - block_start] == " "
-    )
+    return _MarkerReader(text, fenced).literal(offset)
+
+
+class _MarkerReader:
+    """Whether a marker in one text is literal, in O(log n) per marker after one linear pass.
+
+    The verdict is :func:`_literal_image_marker`'s: an odd backslash run before
+    the marker, a fenced span, a four-wide indent, or an inline-code span in the
+    marker's block. The whole-text work behind it -- block boundaries, line
+    starts, the inline-code mask of each block -- is done once per text and
+    reused, so a scan that asks about every marker in a long text stays linear
+    instead of re-reading the text once per marker.
+    """
+
+    def __init__(self, text: str, fenced: list[tuple[int, int]]) -> None:
+        self._text = text
+        self._fenced_starts = [start for start, _end in fenced]
+        self._fenced_ends = [end for _start, end in fenced]
+        boundaries = [*fenced, *(m.span() for m in _BLANK_LINE_RE.finditer(text))]
+        self._boundary_starts = sorted(start for start, _end in boundaries)
+        self._boundary_ends = sorted(end for _start, end in boundaries)
+        self._newlines = [m.start() for m in re.finditer("\n", text)]
+        self._masks: dict[tuple[int, int], str] = {}
+
+    def block_bounds(self, offset: int) -> tuple[int, int]:
+        # Latest boundary end at or before *offset*; earliest boundary start after it.
+        i = bisect.bisect_right(self._boundary_ends, offset)
+        start = self._boundary_ends[i - 1] if i else 0
+        j = bisect.bisect_right(self._boundary_starts, offset)
+        end = self._boundary_starts[j] if j < len(self._boundary_starts) else len(self._text)
+        return start, end
+
+    def _fenced(self, offset: int) -> bool:
+        # Fenced spans are ordered and never overlap, so only the last one
+        # starting at or before *offset* can hold it.
+        i = bisect.bisect_right(self._fenced_starts, offset) - 1
+        return i >= 0 and offset < self._fenced_ends[i]
+
+    def literal(self, offset: int) -> bool:
+        text = self._text
+        backslashes = 0
+        while offset - backslashes > 0 and text[offset - backslashes - 1] == "\\":
+            backslashes += 1
+        if backslashes % 2 == 1 or self._fenced(offset):
+            return True
+        i = bisect.bisect_left(self._newlines, offset)
+        line_start = self._newlines[i - 1] + 1 if i else 0
+        # Four columns of indent depend on at most the first four characters,
+        # since every character expands to at least one column.
+        if text[line_start : min(offset, line_start + 4)].expandtabs(4).startswith("    "):
+            return True
+        bounds = self.block_bounds(offset)
+        mask = self._masks.get(bounds)
+        if mask is None:
+            mask = self._masks[bounds] = mask_inline_code(text[bounds[0] : bounds[1]])
+        return mask[offset - bounds[0]] == " "
 
 
 #: Windows extended-length path prefix (``\\?\``). ``os.readlink`` returns a
@@ -702,25 +898,24 @@ def iter_local_refs(text: str) -> list[LocalRef]:
     """Complete local image references not escaped or fenced, in order."""
     if not text:
         return []
-    matches = list(IMAGE_MD_RE.finditer(text))
+    matches = list(iter_image_destinations(text))
     if not matches:
         return []
-    fenced = list(iter_fence_spans(text))
+    reader = _MarkerReader(text, list(iter_fence_spans(text)))
     refs: list[LocalRef] = []
-    for match in matches:
-        if _literal_image_marker(text, match.start(), fenced):
+    for match, dest, consumed in matches:
+        if reader.literal(match.start):
             continue  # escaped or fenced: literal text, not markup
-        dest, consumed = _walk_destination(text[match.end() :])
         if not dest:
             continue  # malformed markup, or a `(` that belongs to prose
         if is_remote_destination(dest):
             continue  # remote or data URI: nothing local to upload
         refs.append(
             LocalRef(
-                start=match.start(),
-                end=match.end() + consumed,
+                start=match.start,
+                end=match.end + consumed,
                 dest=dest,
-                alt=unescape_md(match.group(1) or "").strip(),
+                alt=unescape_md(match.alt).strip(),
             )
         )
     return refs
@@ -730,16 +925,28 @@ def open_ref_start(text: str) -> int | None:
     """Earliest unclosed image marker not escaped or fenced, else ``None``."""
     if not text:
         return None
-    fenced = list(iter_fence_spans(text))
+    reader = _MarkerReader(text, list(iter_fence_spans(text)))
+    parens: _ParenIndex | None = None
+    # Every opener inside one label run closes where that run's first opener
+    # closes (see _image_label), so the run is scanned once and its answer reused.
+    run_end = -1
+    close_end: int | None = None
+    walked: tuple[int, str | None] | None = None
     for opener in re.finditer(r"!\[", text):
-        if _literal_image_marker(text, opener.start(), fenced):
+        start = opener.start()
+        if start >= run_end:
+            closed, run_end = _image_label(text, start)
+            close_end = closed.end if closed is not None else None
+        if reader.literal(start):
             continue  # escaped or fenced: literal text, not markup
-        closed = IMAGE_MD_RE.match(text, opener.start())
-        if closed is None:
-            return opener.start()  # label still arriving: no "](" landed yet
-        dest, _consumed = _walk_destination(text[closed.end() :])
-        if dest is None:
-            return opener.start()
+        if close_end is None:
+            return start  # label still arriving: no "](" landed yet
+        if walked is None or walked[0] != close_end:
+            if parens is None:
+                parens = _ParenIndex(text)
+            walked = (close_end, parens.walk(text, close_end)[0])
+        if walked[1] is None:
+            return start
     return None
 
 
@@ -890,6 +1097,15 @@ def _apply_cuts(text: str, cuts: list[tuple[int, int]]) -> str:
     """
     if not cuts:
         return text
+    # The union of the cuts as disjoint ordered spans, walked with one pointer, so
+    # each line visits only the spans that reach it.
+    merged: list[list[int]] = []
+    for cut_start, cut_end in sorted(cuts):
+        if merged and cut_start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], cut_end)
+        else:
+            merged.append([cut_start, cut_end])
+    first = 0
     kept: list[str] = []
     squeeze = False
     pos = 0
@@ -900,8 +1116,13 @@ def _apply_cuts(text: str, cuts: list[tuple[int, int]]) -> str:
         pieces: list[str] = []
         cursor = start
         touched = False
-        for cut_start, cut_end in cuts:
-            if cut_end <= start or cut_start >= end:
+        while first < len(merged) and merged[first][1] <= start:
+            first += 1
+        k = first
+        while k < len(merged) and merged[k][0] < end:
+            cut_start, cut_end = merged[k]
+            k += 1
+            if cut_end <= start:
                 continue
             touched = True
             if cut_start > cursor:

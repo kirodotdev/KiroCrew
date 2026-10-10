@@ -199,7 +199,6 @@ src/kiro_crew/eval/runner.py
 src/kiro_crew/eval/scenario.py
 src/kiro_crew/frontend.py
 src/kiro_crew/gateway_shutdown_budget.py
-src/kiro_crew/image_artifacts.py
 src/kiro_crew/imaging.py
 src/kiro_crew/knowledge/agent_fetch.py
 src/kiro_crew/knowledge/agent_source.py
