@@ -24,6 +24,7 @@ _ASYNC_CHECKED_FILES = [
     "dashboard/file_api/git_panel.py",
     "dashboard/file_api/office_preview.py",
     "dashboard/file_api/path_complete.py",
+    "dashboard/file_api/pinned_io.py",
     "dashboard/file_api/project_dirs.py",
     "dashboard/file_api/project_tree.py",
     "dashboard/file_api/search.py",

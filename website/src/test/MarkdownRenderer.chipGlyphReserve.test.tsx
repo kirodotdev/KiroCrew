@@ -4,6 +4,7 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import { __resetPathKindCache } from '../hooks/usePathKind'
+import { stubPathKinds } from './pathKindStub'
 
 /**
  * REGRESSION GUARD — a path chip's glyph must not change the paragraph's width.
@@ -42,9 +43,7 @@ function stubMissing() {
 }
 
 function stubKind(kind: 'file' | 'dir') {
-  globalThis.fetch = vi.fn(() =>
-    Promise.resolve({ ok: true, status: 200, headers: new Headers({ 'X-Path-Kind': kind }) } as Response),
-  ) as unknown as typeof fetch
+  stubPathKinds(() => kind)
 }
 
 /** The leading icon inside the code span, reserve or real glyph alike. */

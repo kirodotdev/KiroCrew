@@ -12,6 +12,7 @@ import MarkdownRenderer, {
 } from '../components/MarkdownRenderer'
 import { ThemeProvider } from '../hooks/useTheme'
 import { __resetPathKindCache } from '../hooks/usePathKind'
+import { stubPathKinds } from './pathKindStub'
 import { resetExpandedDiffFences } from '../components/FoldableDiffBlock'
 import { api } from '../api/client'
 
@@ -413,9 +414,7 @@ describe('MarkdownRenderer path chip with no file handler', () => {
   afterEach(() => { globalThis.fetch = realFetch; vi.restoreAllMocks() })
 
   it('reveals the file in the OS file manager when no onFileOpen is wired', async () => {
-    globalThis.fetch = vi.fn(() =>
-      Promise.resolve({ ok: true, status: 200, headers: new Headers({ 'X-Path-Kind': 'file' }) } as Response),
-    ) as unknown as typeof fetch
+    stubPathKinds(() => 'file')
     // Resolve the wire shape (the OS handled it, no copy path) so the shared
     // `revealOrOpen` can read `r.copy` without tripping over `undefined`.
     const reveal = vi.spyOn(api, 'revealPath').mockResolvedValue({} as never)

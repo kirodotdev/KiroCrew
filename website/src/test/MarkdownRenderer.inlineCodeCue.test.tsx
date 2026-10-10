@@ -16,17 +16,15 @@ import MarkdownRenderer, { COPIED_FLASH_MS } from '../components/MarkdownRendere
 import { OPEN_DELAY_MS } from '../components/InstantTip'
 import { copyToClipboard } from '../utils/clipboard'
 import { __resetPathKindCache } from '../hooks/usePathKind'
+import { stubPathKinds } from './pathKindStub'
 
 vi.mock('../utils/clipboard', () => ({ copyToClipboard: vi.fn(async () => true) }))
 
 const realFetch = globalThis.fetch
 
-/** Stub the HEAD probe so the backend "confirms" the span as a file or directory. */
+/** Stub the kind probe so the backend "confirms" the span as a file or directory. */
 function stubKind(kind: 'file' | 'dir' | null) {
-  const headers = new Headers(kind ? { 'X-Path-Kind': kind } : {})
-  globalThis.fetch = vi.fn(() =>
-    Promise.resolve({ ok: kind !== null, status: kind ? 200 : 404, headers } as Response),
-  ) as unknown as typeof fetch
+  stubPathKinds(() => kind)
 }
 
 /** Classes that turn an inline box atomic. A chip carrying any of them cannot
