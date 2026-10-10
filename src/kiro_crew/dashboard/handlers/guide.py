@@ -316,12 +316,12 @@ async def api_guide_agent_rename_self(request: web.Request) -> web.Response:
 
     The member is the one whose pinned thread the verified caller's slot is,
     never a name from the body: the body carries only the new display name. Like
-    every agent-half route it admits only a turn the user sent from the
-    dashboard (:func:`_resolve_agent_caller`), so a channel message, a schedule,
-    a subagent or an app cannot rename anyone.
+    every agent-half route it admits only a turn running in the caller's
+    dashboard slot that did not come from a messaging channel
+    (:func:`_resolve_agent_caller`); renaming is also one of the
+    :data:`_USER_TURN_OPERATIONS`, so that turn must be one the user sent. A
+    channel message, a schedule, a subagent or an app cannot rename anyone.
     """
-    import asyncio
-
     from kiro_crew import members as members_mod
 
     try:
