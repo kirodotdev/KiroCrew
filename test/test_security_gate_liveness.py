@@ -217,7 +217,12 @@ def _url_payload_command(n: int) -> str:
 #: subcommand. It is a security-deciding predicate, so it cannot leave the package,
 #: and no dead code remains to offset it. Its first word is split on space and tab
 #: only, the way bash splits, so a Unicode space cannot pose as a word break.
-_PACKAGE_LINE_BUDGET = 28_665
+#:
+#: Raised again, from 28,665, for the per-decision payload-walk memo: a
+#: ``ContextVar``-scoped memo in ``shell_normalizer`` and the decorator that opens it
+#: around ``is_denied``, so every floor of one decision shares a single walk of each
+#: distinct text instead of re-tokenizing the command once per floor.
+_PACKAGE_LINE_BUDGET = 28_735
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
