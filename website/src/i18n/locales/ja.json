@@ -7890,6 +7890,15 @@
       "question_x_of_y": "質問 {{current}} / {{total}}",
       "submit": "送信"
     },
+    "queuePrioritySubmenu": {
+      "agent_queue_priority": "サブエージェントの優先度",
+      "caption": "待機中のサブエージェントは、高のチャットから先に開始し、次に中、最後に低の順です。スケジュール済みのジョブも順番が回ってきます。再起動すると、すべてのチャットが中に戻ります。",
+      "change_failed": "サブエージェントの優先度を変更できませんでした",
+      "change_failed_retry": "優先度を保存できませんでした。もう一度お試しください。",
+      "high": "高",
+      "low": "低",
+      "medium_default": "中（デフォルト）"
+    },
     "queueStack": {
       "cancel_and_move_back_to_input": "キャンセルして入力に戻る",
       "cancel_queued_message": "キューに入っているメッセージをキャンセル",

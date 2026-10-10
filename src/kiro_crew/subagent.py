@@ -3577,6 +3577,9 @@ class SubagentManager:
         #: workflow ``ctx.agent()`` calls). Registered by the gateway through
         #: :meth:`set_cap_raise_listener`; None everywhere else.
         self._cap_raise_listener: Callable[[], object] | None = None
+        #: Returns ``{lane: "low"|"high"}`` for lanes whose owner set a queue
+        #: priority; see :meth:`set_lane_priority_source`. None: all medium.
+        self._lane_priority_source: Callable[[], Mapping[str, str]] | None = None
         self._default_turn_limit = default_turn_limit
         self._default_timeout = default_timeout if default_timeout > 0 else _TIMEOUT_SECS
         # A positive value pins the window; 0 derives it from the budget.
@@ -4915,6 +4918,17 @@ class SubagentManager:
         single runner lane and re-registration replaces the stale handle.
         """
         self._cap_raise_listener = listener
+
+    def set_lane_priority_source(self, source: Callable[[], Mapping[str, str]] | None) -> None:
+        """Install the ONE callable that answers each lane's queue priority.
+
+        It returns ``{lane: priority}`` (``low`` / ``medium`` / ``high``) for
+        the lanes whose owner chose one; any lane it omits is ``medium``. The
+        dispatcher calls it on every pick and every store refill, so it must
+        be cheap and must not block. It can run on the task store's writer
+        thread, so it may only take GIL-atomic snapshots of loop state.
+        """
+        self._lane_priority_source = source
 
     def _notify_cap_raised(self) -> None:
         """Fan freed capacity out to every gate the live cap bounds.

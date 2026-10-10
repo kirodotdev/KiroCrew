@@ -77,6 +77,7 @@ _TO_DICT_KEYS = (
     "folder_id",
     "pinned",
     "mutes_opened",
+    "queue_priority",
     "tags",
     "tags_revision",
     "color_index",

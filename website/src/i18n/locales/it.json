@@ -8130,6 +8130,15 @@
       "question_x_of_y": "Domanda {{current}} di {{total}}",
       "submit": "Invia"
     },
+    "queuePrioritySubmenu": {
+      "agent_queue_priority": "Priorità dei subagenti",
+      "caption": "I subagenti in attesa delle chat Alta partono per primi, poi Media, poi Bassa. I job pianificati hanno comunque il loro turno. Dopo un riavvio ogni chat torna a Media.",
+      "change_failed": "Non è stato possibile modificare la priorità dei subagenti",
+      "change_failed_retry": "La priorità non è stata salvata. Riprova.",
+      "high": "Alta",
+      "low": "Bassa",
+      "medium_default": "Media (predefinita)"
+    },
     "queueStack": {
       "cancel_and_move_back_to_input": "Annulla e torna all'input",
       "cancel_queued_message": "Annulla il messaggio in coda",

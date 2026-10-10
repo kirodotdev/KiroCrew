@@ -669,6 +669,7 @@
     "components.guideLayer.predicate_goal_loop_running": "Guide blocker before the goal button: no goal loop (auto-nudge) runs in the open chat, so its Pause is not there.",
     "components.guideLayer.predicate_monitor_running": "Guide blocker before the goal button: no unfinished monitor watches the open chat, so its Stop monitor is not there.",
     "components.guideLayer.select_the_only_one_tick": "Guide panel line on a choose-one step whose pick is the row's checkbox (the outline is on that checkbox) when the list holds exactly one job.",
-    "components.guideLayer.select_the_only_one_app": "Guide panel line on the Library's choose-the-app step when only one app card is listed: the outline is on that card's ⋯ (More actions) button."
+    "components.guideLayer.select_the_only_one_app": "Guide panel line on the Library's choose-the-app step when only one app card is listed: the outline is on that card's ⋯ (More actions) button.",
+    "components.queuePrioritySubmenu.low": "Lowest of three agent-queue priority tiers (high / medium / low) in the session menu's Sub-agent priority submenu: this chat's waiting sub-agent spawns start after every higher tier's. An adjective describing precedence in a waiting line, not volume, height or quality."
   }
 }

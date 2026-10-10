@@ -7890,6 +7890,15 @@
       "question_x_of_y": "问题 {{current}} / {{total}}",
       "submit": "提交"
     },
+    "queuePrioritySubmenu": {
+      "agent_queue_priority": "子代理优先级",
+      "caption": "等待中的子代理先从“高”聊天开始，然后是“中”，最后是“低”。计划任务仍会轮到执行。重启后所有聊天都会恢复为“中”。",
+      "change_failed": "无法更改子代理优先级",
+      "change_failed_retry": "未能保存优先级。请重试。",
+      "high": "高",
+      "low": "低",
+      "medium_default": "中（默认）"
+    },
     "queueStack": {
       "cancel_and_move_back_to_input": "取消并退回到输入框",
       "cancel_queued_message": "取消排队消息",

@@ -170,6 +170,8 @@ class _TaskqBridgeMixin(ManagerComponent):
 
         def fairness_settings(self) -> FairnessSettings: ...
 
+        def lane_priorities(self) -> dict[str, int]: ...
+
         def lane_of_entry(
             self, params: Mapping[str, Any], resolved: Mapping[str, str] | None = None
         ) -> str: ...
@@ -1985,13 +1987,16 @@ class _TaskqBridgeMixin(ManagerComponent):
         from kiro_crew import taskq as _taskq
 
         exclude = self.taskq_dispatch_excluded_ids()
+        # The child reserve's own top-up ignores the priority tiers: see
+        # :meth:`lane_refill_scheduler`.
+        sched = self.lane_refill_scheduler(tiered=not children_only)
         rows: list[_taskq.TaskRecord] = []
         if absent and room > 0:
             rows.extend(
                 store.fetch_dispatchable_fair(
                     _taskq.KIND_SUBAGENT,
                     limit=min(room, want),
-                    scheduler=self.lane_refill_scheduler(),
+                    scheduler=sched,
                     exclude_ids=exclude,
                     children_only=children_only,
                     lanes=absent,
@@ -2005,7 +2010,7 @@ class _TaskqBridgeMixin(ManagerComponent):
                 store.fetch_dispatchable_fair(
                     _taskq.KIND_SUBAGENT,
                     limit=room,
-                    scheduler=self.lane_refill_scheduler(),
+                    scheduler=sched,
                     exclude_ids=exclude,
                     children_only=children_only,
                 )
@@ -2252,9 +2257,18 @@ class _TaskqBridgeMixin(ManagerComponent):
             evicted += 1
         return evicted
 
-    def lane_refill_scheduler(self) -> "_lanes.LaneScheduler":
+    def lane_refill_scheduler(self, *, tiered: bool = True) -> "_lanes.LaneScheduler":
         """A second balance for the store->window refill, so filling the window
-        does not spend the credit the drain picks with."""
+        does not spend the credit the drain picks with.
+
+        ``tiered=False`` clears the tiers on it for this caller, which is how
+        the ``children_only`` refill (the child reserve's own top-up) hydrates
+        rows: the store reader drives :meth:`LaneScheduler.interleave` itself,
+        so the exemption is expressed on the scheduler handed to it rather than
+        as an argument. A tier there would hydrate one chat's queued children
+        pass after pass and leave another chat's in-flight tree with no head in
+        the window for the reserve to start.
+        """
         from kiro_crew.taskq import lanes as _lanes
 
         scheduler = getattr(self._manager, "_lane_refill_scheduler", None)
@@ -2264,6 +2278,7 @@ class _TaskqBridgeMixin(ManagerComponent):
             setattr(self._manager, "_lane_refill_scheduler", scheduler)
         else:
             scheduler.weights = settings.lane_weights
+        scheduler.priorities = self.lane_priorities() if tiered else {}
         return scheduler
 
     def taskq_should_window(self, agent_id: str) -> bool:

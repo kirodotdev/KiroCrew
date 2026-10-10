@@ -38,6 +38,24 @@ const ContextMenuGroup = ContextMenuPrimitive.Group
 const ContextMenuPortal = ContextMenuPrimitive.Portal
 const ContextMenuRadioGroup = ContextMenuPrimitive.RadioGroup
 
+/** The context-menu twin of `DropdownMenuRadioItem`: a row that reports which
+ *  option is in effect (`menuitemradio`, announced checked/unchecked). */
+const ContextMenuRadioItem = React.forwardRef<
+  React.ComponentRef<typeof ContextMenuPrimitive.RadioItem>,
+  React.ComponentPropsWithoutRef<typeof ContextMenuPrimitive.RadioItem>
+>(({ className, ...props }, ref) => (
+  <ContextMenuPrimitive.RadioItem
+    ref={ref}
+    className={cn(
+      'relative flex cursor-pointer select-none items-center gap-2 rounded-md px-3 py-1.5 text-[13px] outline-hidden transition-colors',
+      'focus:bg-bg-hover data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
+      className
+    )}
+    {...props}
+  />
+))
+ContextMenuRadioItem.displayName = ContextMenuPrimitive.RadioItem.displayName
+
 type ContextSubPhoneContextValue = { isPhone: boolean; expanded: boolean; toggle: () => void }
 const ContextSubPhoneContext = React.createContext<ContextSubPhoneContextValue | null>(null)
 
@@ -211,4 +229,5 @@ export {
   ContextMenuSubTrigger,
   ContextMenuSubContent,
   ContextMenuRadioGroup,
+  ContextMenuRadioItem,
 }

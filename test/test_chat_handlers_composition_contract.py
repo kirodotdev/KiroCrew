@@ -182,6 +182,7 @@ _BASE_ROUTES = (
     ("POST", "/api/favorite-projects", "api_favorite_project_add"),
     ("DELETE", "/api/favorite-projects", "api_favorite_project_remove"),
     ("PATCH", "/api/chat/slots/{slot}/color", "api_chat_slot_color"),
+    ("PATCH", "/api/chat/slots/{slot}/queue-priority", "api_chat_slot_queue_priority"),
     ("PATCH", "/api/chat/slots/{slot}/queue/{queue_id}", "api_chat_slot_queue_edit"),
     ("POST", "/api/chat", "api_chat"),
     ("POST", "/api/chat/mode", "api_chat_mode"),

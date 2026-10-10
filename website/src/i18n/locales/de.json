@@ -8010,6 +8010,15 @@
       "question_x_of_y": "Frage {{current}} von {{total}}",
       "submit": "Absenden"
     },
+    "queuePrioritySubmenu": {
+      "agent_queue_priority": "Subagenten-Priorität",
+      "caption": "Wartende Subagenten aus Chats mit Hoch starten zuerst, dann Mittel, dann Niedrig. Geplante Jobs kommen trotzdem an die Reihe. Nach einem Neustart steht jeder Chat wieder auf Mittel.",
+      "change_failed": "Subagenten-Priorität konnte nicht geändert werden",
+      "change_failed_retry": "Die Priorität wurde nicht gespeichert. Versuche es erneut.",
+      "high": "Hoch",
+      "low": "Niedrig",
+      "medium_default": "Mittel (Standard)"
+    },
     "queueStack": {
       "cancel_and_move_back_to_input": "Abbrechen und zur Eingabe zurückkehren",
       "cancel_queued_message": "Wartende Nachricht abbrechen",

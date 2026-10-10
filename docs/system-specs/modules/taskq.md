@@ -902,6 +902,37 @@ starts even and is never owed a burst. Inside a lane the order is FIFO by
 Weights use `agent.lane_weights{lane: w}` (1..64), including `system`.
 Every unlisted lane has weight 1.
 
+Above the weights sits a strict **priority tier** per lane: `low`, `medium`
+(the default) or `high`. `LaneScheduler.priorities` maps a lane to its rank,
+and a pick considers only the contending lanes of the highest tier present;
+the weighted round-robin runs inside that tier, and a lower tier neither wins
+nor accrues credit while a higher one has work. With every lane `medium` the
+order is exactly the weighted round-robin above. The tiers come from the
+manager's lane priority source (`SubagentManager.set_lane_priority_source`),
+which the dashboard installs as `DashboardState.lane_queue_priorities`: each
+chat's `queue_priority` keyed by the session its turns run on, set per chat
+by the owner through `PATCH /api/chat/slots/{slot}/queue-priority`. The tier
+lives in gateway memory only and every chat starts at `medium` after a restart:
+transcript metadata is agent-writable, so a tier restored from it would let an
+agent move its own chat past the owner-only route. The
+source is asked on every pick and every refill (both balances), so a change
+reaches the next dispatch; a failing source reads as all-`medium`. **The tier
+applies to picks for a free ROOT slot only.** A pick under the child reserve
+(`tiered=False`, and the `children_only` refill, which is handed a scheduler
+with the tiers cleared) is the plain weighted round-robin: the reserve is the
+capacity a tree already in flight depends on to finish, so a `high` chat that
+keeps a nested spawn queued cannot hold it pass after pass and leave another
+chat's running tree waiting on its own child. Strict
+tiers can starve a lower tier while a higher one keeps spawning, which is the
+point of choosing `low`. The `system` lane (cron, hooks, heartbeat) has no
+chat to raise, so the tier filter never drops it: it takes part in every
+tiered pick and keeps its weighted share beside the top tier's lanes, so a
+`high` chat that keeps spawning cannot hold automation back indefinitely.
+The delay is not one round in general: `system` carries its credit across
+picks, so after it last won against a heavy lane (weight 64) a weight-1 `high`
+lane can take 17 starts before the next automation grant. Against `low` chats
+alone the `system` lane still ranks `medium`.
+
 Two store readers serve the dispatcher: `pending_lanes(kind, exclude_ids,
 children_only)` → `{lane: eligible count}`, and `fetch_dispatchable_fair(kind,
 limit, scheduler, exclude_ids, children_only, lanes, per_lane_limit)` — each
@@ -917,7 +948,7 @@ credit the drain picks with. With one lane pending the fair order is exactly
 Metrics: a lane key is a session key and so never a metric attribute (the
 `kirocrew.taskq.*` attribute sets are closed). Per-lane depth is exposed as
 data instead: `GET /api/spawn/lanes` (`admission.lane_snapshot_async()`): per-lane
-`queued` / `running` / `waiting` / `weight`, the scheduler credit, and the
+`queued` / `running` / `waiting` / `weight` / `priority`, the scheduler credit, and the
 `CapacityView` (`cap_total`, `roots_cap`, `running`, `child_reserve`,
 `reserve_active`, `waiting_parents`, `lifted_from`). A closed
 `lane_kind ∈ {system, session}` attribute on `kirocrew.taskq.depth` is left to

@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Pencil, Circle, Pin, Locate, Link2, Tag as TagIcon, X, ExternalLink, Monitor, Undo2, RotateCw, PanelTop, Sparkles, GitFork, BellOff } from 'lucide-react'
 import type { ChatFolder } from '../types'
 import FolderMoveSubmenu from './FolderMoveSubmenu'
+import QueuePrioritySubmenu from './QueuePrioritySubmenu'
 import ErrorNotice, { ErrorNoticeMenuItem } from './ErrorNotice'
 import { useFolderSortMode } from '../hooks/useFolderSortMode'
 import SendToInstanceSubmenu from './SendToInstanceSubmenu'
@@ -120,7 +121,7 @@ export function collapseGroups<T>(groups: (T | false | null | undefined)[][]): T
  * Canonical order, five groups (each renders only if it has surviving items,
  * with dividers auto-collapsing between them):
  *   [informational]  MCP servers ▸  (header only)
- *   [tab modifiers]  Rename · Mark read/unread · Pin · Move to folder ▸ · Tags…
+ *   [tab modifiers]  Rename · Mark read/unread · Pin · Sub-agent priority ▸ · Move to folder ▸ · Tags…
  *   [nav / access]   Reveal in sidebar (header only) · Crew board (conductors only) · Copy link · Send a copy ▸ · Export to a file · Connected surfaces
  *   [colour]         colour swatches
  *   [close]          Close session
@@ -132,7 +133,7 @@ export default function SessionActionsMenu({
   const Separator = variant === 'context' ? ContextMenuSeparator : DropdownMenuSeparator
 
   // Generic, surface-agnostic actions — one definition, wired straight to the store.
-  const { toggleRead, togglePin, toggleMutesOpened, copyLink, move, reload, close } = useSessionActions(mode)
+  const { toggleRead, togglePin, toggleMutesOpened, setQueuePriority, queuePriorityError, copyLink, move, reload, close } = useSessionActions(mode)
   // Popped-out window coordination (shared singleton — one channel for all menus).
   const { isPoppedOut, isSelfPopout, open: openPopout, focus: focusPopout, bringBack, returnSelfToMain } = useChatPopouts()
   // This menu also renders INSIDE a popout window (via the header). There the
@@ -235,6 +236,13 @@ export default function SessionActionsMenu({
           <Separator />
         </React.Fragment>
       ),
+      <QueuePrioritySubmenu
+        key="queue-priority"
+        variant={variant}
+        current={slot?.queue_priority}
+        error={queuePriorityError?.key === slotKey ? queuePriorityError.message : null}
+        onPick={(priority) => setQueuePriority(slotKey, priority)}
+      />,
       folders.length > 0 && (
         <FolderMoveSubmenu
           key="move"

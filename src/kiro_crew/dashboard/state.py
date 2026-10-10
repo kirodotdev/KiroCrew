@@ -330,7 +330,7 @@ MAX_LIVE_SLOTS = 500
 
 #: Fields whose dashboard-user projection is identical for every slot-patch
 #: audience. Per-audience fields such as ``source_links`` require a full frame.
-_SLOT_PATCH_FIELDS = frozenset({"pinned", "mutes_opened", "title", "folder_id"})
+_SLOT_PATCH_FIELDS = frozenset({"pinned", "mutes_opened", "title", "folder_id", "queue_priority"})
 
 #: The most live slots ONE creator may hold, as a sub-ceiling under
 #: :data:`MAX_LIVE_SLOTS`. The global ceiling alone bounds the total but not the
@@ -2933,6 +2933,7 @@ class _ChatSlot:
         "_folder_suggested",
         "pinned",
         "mutes_opened",
+        "queue_priority",
         "tags",
         "tags_revision",
         "_pending_subagent_failures",
@@ -3638,6 +3639,11 @@ class _ChatSlot:
         # user through the slot's kebab menu, never set by an agent, and
         # derived from the durable ``created_by`` chain on the client.
         self.mutes_opened: bool = False
+        # Agent-queue priority of this chat's subagent spawns: "low", "medium"
+        # (default) or "high". Read by the dispatcher through the lane priority
+        # source DashboardState installs (see lane_queue_priorities). Memory
+        # only: transcript metadata is agent-writable (see kiro_crew.queue_priority).
+        self.queue_priority: str = "medium"
         self.tags: list[str] = []  # assigned tag ids (see DashboardState._tags)
         # Change identity for tag snapshots. Orderable (see mint_tags_revision):
         # equality identifies a specific frame, and the sequence prefix lets a
@@ -5998,6 +6004,12 @@ class DashboardState:
         # entry path is protected, including task/workflow continuations.
         self.kiro_prerequisite_service: Any = None
         self.subagents = subagents
+        # The per-chat agent-queue priority reaches the dispatcher through ONE
+        # pull source, so a restored, forked or deleted slot never leaves a
+        # stale pushed entry behind.
+        _set_source = getattr(subagents, "set_lane_priority_source", None)
+        if callable(_set_source):
+            _set_source(self.lane_queue_priorities)
         self.channel_manager: Any = None  # lazy-init in server.py
         # A gateway launch defers legacy channel-agent relaunch until memory
         # preparation settles. Standalone dashboard callers keep the immediate
@@ -8166,6 +8178,30 @@ class DashboardState:
                 )
         self.push_slots_update()
         return slot
+
+    def lane_queue_priorities(self) -> dict[str, str]:
+        """``{session_key: priority}`` for every slot whose agent-queue
+        priority is not the default.
+
+        The subagent dispatcher's lane priority source: a chat's spawns queue
+        in the lane named by the session its turns run on
+        (:func:`chat_utils.effective_session_key`, so a channel-born slot
+        answers for its channel key), and nested spawns inherit the root's
+        lane. May run on the task store's writer thread, so it reads only a
+        ``list()`` snapshot of the slot table.
+        """
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+
+        # The PATCH route writes a pick onto every slot sharing the session, so
+        # all non-default slots of one lane agree. Only Medium slots are skipped:
+        # an alias that appears after the pick starts at Medium and must not
+        # undo it.
+        resolved: dict[str, str] = {}
+        for slot in list(getattr(self, "_slots", {}).values()):
+            priority = getattr(slot, "queue_priority", "medium")
+            if priority != "medium":
+                resolved.setdefault(effective_session_key(slot), priority)
+        return resolved
 
     def live_slot_count(self) -> int:
         """Count published and allocated-but-unpublished slots."""
