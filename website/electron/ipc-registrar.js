@@ -155,6 +155,14 @@ function createIpcRegistrar({
     // happens to be talking to — takes all three of these, because a connection
     // window pointed at a REMOTE gateway shares this same preload.
     //
+    // The preload WITHHOLDS these channels' bridges from a window the shell
+    // opened against a configured crew (`--kc-remote-gateway`, decided by the
+    // same `isGatewayLocalForWindow` gate 2 reads), so that window's SPA never
+    // asks; shell-contract.test.js pins that the withheld set and the gated set
+    // are the same channels. That is a courtesy, not a boundary: a window pointed
+    // at a crew after it was created still carries the bridges, and this gate is
+    // what refuses it. Nothing here may be relaxed on the strength of the preload.
+    //
     // One function, not one copy per channel. `wsl:detect` and both
     // `crash-reports:*` channels need the identical three gates, and three
     // hand-maintained spellings of a security check are three chances for one of
