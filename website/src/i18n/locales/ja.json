@@ -12952,7 +12952,20 @@
           "error": "エラー",
           "paused": "一時停止中",
           "synced": "最新"
-        }
+        },
+        "edit_ignore_patterns": "除外パターンを編集",
+        "save_ignore_patterns": "パターンを保存",
+        "ignore_patterns_none": "除外パターンはありません",
+        "ignore_patterns_next_scan_hint": "保存すると、今後のスキャンで取り込む対象が変わります。ライブラリに既にあるファイルは残りますが、更新されなくなります。削除するには下のチェックボックスをオンにしてください。パターンはフォルダー内のパスに一致します（例: Archive/**）。",
+        "purge_ignored_matches": "これらのパターンに一致する、ライブラリ内の既存ファイルも削除する",
+        "purge_running": "一致するファイルを削除しています…",
+        "purge_done": "削除したファイル: {{count}}",
+        "purge_failed": "一致するファイルを削除できませんでした。パターンは保存済みです。チェックボックスをオンにしてもう一度保存すると再試行できます。",
+        "ignore_patterns_watcher_unavailable": "フォルダーの監視がオフの間はファイルを削除できません。パターンは保存されていません。",
+        "ignore_patterns_invalid": "パターンは最大 500 個、各 1024 文字以内にしてください。パターンは保存されていません。",
+        "ignore_patterns_placeholder": "例: .trash/*",
+        "save_and_purge_ignore_patterns": "保存して一致するファイルを削除",
+        "purge_none_matched": "これらのパターンに一致するファイルはありません"
       },
       "settings": {
         "title": "Ingestion Settings",

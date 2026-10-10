@@ -31,6 +31,7 @@ describe('parseSourceProps', () => {
         last_scan: 'zzq-scan-stamp',
         recursive: true,
         word_count: 4321,
+        ignore_patterns: ['zzq-skip/**', 7],
       }),
     }))
 
@@ -41,6 +42,7 @@ describe('parseSourceProps', () => {
       lastScan: 'zzq-scan-stamp',
       recursive: true,
       wordCount: 4321,
+      ignorePatterns: ['zzq-skip/**'],
     })
   })
 

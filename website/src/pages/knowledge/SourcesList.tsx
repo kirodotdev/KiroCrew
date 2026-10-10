@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Upload, FolderSync, FolderOpen, X, RefreshCw, AlertCircle, CheckCircle, ChevronDown, ChevronRight, Pause, Play, Pencil, Check, Coins } from 'lucide-react'
-import { Badge, EmptyState, ContentSkeleton } from '../../components/ui'
+import { Badge, Btn, Checkbox, EmptyState, ContentSkeleton, IconButton } from '../../components/ui'
+import ErrorNotice from '../../components/ErrorNotice'
 import Clickable from '../../components/Clickable'
 import { knowledgeApi } from './api'
 import { formatRelativeDate, FALLBACK_SUPPORTED_FORMATS } from './helpers'
@@ -172,6 +173,135 @@ function FolderConfirmDialog({ fileCount, uri, onConfirm, onCancel, isPending }:
           {isPending ? i18nT('pages.knowledge.sourcesList.starting') : fileCount === 0 ? i18nT('pages.knowledge.sourcesList.watch_anyway') : i18nT('pages.knowledge.sourcesList.start_scanning')}
         </button>
       </div>
+    </div>
+  )
+}
+
+/**
+ * View and edit a folder source's ignore patterns after it was added.
+ *
+ * Without this, a pattern missed at add time could only be fixed by removing the
+ * source and adding it again, which drops everything already indexed. The save
+ * only rewrites the pattern list, so future scans skip matching files while
+ * what is already indexed stays. Removing those matches is a separate, opt-in
+ * checkbox (off by default) because it deletes library content.
+ */
+function IgnorePatternsEditor({ source }: { source: Source }) {
+  const queryClient = useQueryClient()
+  const { ignorePatterns: current, lastPurge } = parseSourceProps(source)
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
+  const [purge, setPurge] = useState(false)
+
+  const saveMutation = useMutation({
+    mutationFn: ({ patterns, purgeIgnored }: { patterns: string[]; purgeIgnored: boolean }) =>
+      knowledgeApi(`/sources/${source.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(purgeIgnored
+          ? { ignore_patterns: patterns, purge_ignored: true }
+          : { ignore_patterns: patterns }),
+      }),
+    onSuccess: (res) => {
+      setEditing(false)
+      queryClient.invalidateQueries({ queryKey: ['knowledge-sources'] })
+      const started = res as { purge?: string; purge_id?: string } | undefined
+      if (started?.purge === 'started') setPurgeId(started.purge_id ?? '')
+    },
+  })
+
+  // The purge runs as a background task on the gateway, so the PATCH returns
+  // before the files are gone. It records its outcome on the source as
+  // ``last_purge`` under this request's id; until that lands, refetch the
+  // source and everything a purge changes, so the removed files leave the list
+  // and the editor can say how many went. Bounded: after two minutes it stops
+  // polling and the regular refresh takes over.
+  const [purgeId, setPurgeId] = useState<string | null>(null)
+  const outcome = purgeId && lastPurge?.id === purgeId ? lastPurge : undefined
+  useEffect(() => {
+    if (purgeId === null) return
+    const refresh = () => {
+      for (const key of [['source-files', source.id], ['knowledge-sources'], ['knowledge-items'],
+        ['knowledge-stats'], ['knowledge-graph'], ['knowledge-embedding-status']]) {
+        queryClient.invalidateQueries({ queryKey: key })
+      }
+    }
+    refresh()
+    if (outcome) return
+    const timer = setInterval(refresh, 1000)
+    const stop = setTimeout(() => clearInterval(timer), 120_000)
+    return () => { clearInterval(timer); clearTimeout(stop) }
+  }, [purgeId, outcome, queryClient, source.id])
+
+  const startEdit = () => { setDraft(current.join('\n')); setPurge(false); setPurgeId(null); saveMutation.reset(); setEditing(true) }
+  const patterns = draft.split('\n').map(p => p.trim()).filter(Boolean)
+  const save = () => saveMutation.mutate({ patterns, purgeIgnored: purge && patterns.length > 0 })
+  // Localized text for the refusals a user can actually hit; anything else
+  // keeps the gateway's own message.
+  const saveError = (() => {
+    const err = saveMutation.error as (Error & { code?: string }) | null
+    if (!err) return null
+    if (err.code === 'folder_watcher_unavailable') return i18nT('pages.knowledge.sourcesList.ignore_patterns_watcher_unavailable')
+    if (err.code === 'invalid_ignore_patterns') return i18nT('pages.knowledge.sourcesList.ignore_patterns_invalid')
+    return err.message || String(err)
+  })()
+
+  return (
+    <div className="border-t border-border mt-2 pt-2 space-y-1.5 text-[12px]">
+      <div className="flex items-center gap-1.5">
+        <span className="text-muted">{i18nT('pages.knowledge.sourcesList.ignore_patterns')}</span>
+        {!editing && (
+          <IconButton aria-label={i18nT('pages.knowledge.sourcesList.edit_ignore_patterns')} onClick={startEdit}>
+            <Pencil size={12} />
+          </IconButton>
+        )}
+      </div>
+      {editing ? (
+        <div className="space-y-1.5">
+          <textarea value={draft} onChange={e => setDraft(e.target.value)} rows={4}
+            aria-label={i18nT('pages.knowledge.sourcesList.ignore_patterns')}
+            placeholder={i18nT('pages.knowledge.sourcesList.ignore_patterns_placeholder')}
+            className="w-full bg-bg-elevated border border-border rounded-md px-2 py-1 text-[12px] font-mono text-text outline-hidden focus-ring" />
+          <p className="text-[11px] text-muted">{i18nT('pages.knowledge.sourcesList.ignore_patterns_next_scan_hint')}</p>
+          <label className="flex items-start gap-1.5 text-[11px] text-text">
+            <Checkbox checked={purge} onChange={e => setPurge(e.target.checked)}
+              aria-label={i18nT('pages.knowledge.sourcesList.purge_ignored_matches')}
+              disabled={patterns.length === 0} className="mt-0.5" />
+            <span>{i18nT('pages.knowledge.sourcesList.purge_ignored_matches')}</span>
+          </label>
+          {/* No hand-off: the unsaved ignore-pattern draft in the textarea would be lost */}
+          <ErrorNotice variant="inline" message={saveError} />
+          <div className="flex items-center gap-2">
+            <Btn primary onClick={save} disabled={saveMutation.isPending}>
+              <Check size={12} /> {purge && patterns.length > 0
+                ? i18nT('pages.knowledge.sourcesList.save_and_purge_ignore_patterns')
+                : i18nT('pages.knowledge.sourcesList.save_ignore_patterns')}
+            </Btn>
+            <Btn onClick={() => setEditing(false)} disabled={saveMutation.isPending}>
+              {i18nT('pages.knowledge.sourcesList.cancel')}
+            </Btn>
+          </div>
+        </div>
+      ) : current.length ? (
+        <ul className="font-mono text-[11px] text-text space-y-0.5">
+          {current.map(p => <li key={p} className="truncate">{p}</li>)}
+        </ul>
+      ) : (
+        <p className="text-[11px] text-muted">{i18nT('pages.knowledge.sourcesList.ignore_patterns_none')}</p>
+      )}
+      {!editing && purgeId !== null && (outcome?.failed
+        ? (
+          // No hand-off: the failure is already actionable here (save again with
+          // the box ticked), and leaving for the chat would lose that context.
+          <ErrorNotice variant="inline" message={i18nT('pages.knowledge.sourcesList.purge_failed')} />
+        ) : (
+          <p role="status" className="text-[11px] text-muted">
+            {!outcome
+              ? i18nT('pages.knowledge.sourcesList.purge_running')
+              : outcome.removed
+                ? i18nT('pages.knowledge.sourcesList.purge_done', { count: outcome.removed })
+                : i18nT('pages.knowledge.sourcesList.purge_none_matched')}
+          </p>
+        ))}
     </div>
   )
 }
@@ -641,6 +771,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
               </div>
             </div>
             {/* Inline expandable progress for folder sources */}
+            {isFolderType && isExpanded && <IgnorePatternsEditor source={s} />}
             {isFolderType && isExpanded && <FolderProgress sourceId={s.id} />}
           </div>
           )

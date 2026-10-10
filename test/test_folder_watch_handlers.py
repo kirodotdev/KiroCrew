@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -326,3 +327,173 @@ class TestRenameSource:
             resp = await client.patch(f"/api/knowledge/sources/{sid}", data="not json",
                                       headers={"Content-Type": "application/json"})
             assert resp.status == 400
+
+
+def _props(store, sid) -> dict:
+    row = store.db.execute("SELECT properties FROM sources WHERE id = ?", (sid,)).fetchone()
+    return json.loads(row["properties"] or "{}")
+
+
+class TestEditIgnorePatterns:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("source_type", ["local_folder", "obsidian_vault"])
+    async def test_sets_ignore_patterns_on_folder_source(self, store, source_type):
+        sid = store.add_source("Vault", source_type, "/tmp/vault",
+                               properties={"namespace": "work", "ignore_patterns": ["old/**"]})
+        async with TestClient(TestServer(_make_app(store))) as client:
+            resp = await client.patch(f"/api/knowledge/sources/{sid}",
+                                      json={"ignore_patterns": ["  generated/**  ", "", "*.tmp", "*.tmp"]})
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["ok"] is True
+            assert data["ignore_patterns"] == ["generated/**", "*.tmp"]
+        props = _props(store, sid)
+        assert props["ignore_patterns"] == ["generated/**", "*.tmp"]
+        assert props["namespace"] == "work"  # other properties survive the edit
+        row = store.db.execute("SELECT name FROM sources WHERE id = ?", (sid,)).fetchone()
+        assert row["name"] == "Vault"  # name untouched when not sent
+
+    @pytest.mark.asyncio
+    async def test_empty_list_clears_ignore_patterns(self, store):
+        sid = store.add_source("Vault", "local_folder", "/tmp/vault",
+                               properties={"ignore_patterns": ["old/**"]})
+        async with TestClient(TestServer(_make_app(store))) as client:
+            resp = await client.patch(f"/api/knowledge/sources/{sid}", json={"ignore_patterns": []})
+            assert resp.status == 200
+            assert (await resp.json())["ignore_patterns"] == []
+        assert "ignore_patterns" not in _props(store, sid)
+
+    @pytest.mark.asyncio
+    async def test_name_and_patterns_in_one_request(self, store):
+        sid = store.add_source("Old", "local_folder", "/tmp/vault")
+        async with TestClient(TestServer(_make_app(store))) as client:
+            resp = await client.patch(f"/api/knowledge/sources/{sid}",
+                                      json={"name": "New", "ignore_patterns": ["a/**"]})
+            assert resp.status == 200
+        row = store.db.execute("SELECT name FROM sources WHERE id = ?", (sid,)).fetchone()
+        assert row["name"] == "New"
+        assert _props(store, sid)["ignore_patterns"] == ["a/**"]
+
+    @pytest.mark.asyncio
+    async def test_rejected_for_non_folder_source(self, store):
+        sid = store.add_source("Doc", "local_file", "/tmp/doc.md")
+        async with TestClient(TestServer(_make_app(store))) as client:
+            resp = await client.patch(f"/api/knowledge/sources/{sid}", json={"ignore_patterns": ["a"]})
+            assert resp.status == 400
+        assert "ignore_patterns" not in _props(store, sid)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("payload", [
+        "a/**",                 # not a list
+        ["a/**", 3],            # non-string entry
+        ["x" * 1025],           # entry over the length cap
+        [f"p{i}" for i in range(501)],  # list over the count cap
+    ])
+    async def test_invalid_patterns_rejected_without_write(self, store, payload):
+        sid = store.add_source("Vault", "local_folder", "/tmp/vault",
+                               properties={"ignore_patterns": ["keep/**"]})
+        async with TestClient(TestServer(_make_app(store))) as client:
+            resp = await client.patch(f"/api/knowledge/sources/{sid}", json={"ignore_patterns": payload})
+            assert resp.status == 400
+        assert _props(store, sid)["ignore_patterns"] == ["keep/**"]
+
+    @pytest.mark.asyncio
+    async def test_invalid_patterns_do_not_apply_a_valid_rename(self, store):
+        sid = store.add_source("Old", "local_folder", "/tmp/vault")
+        async with TestClient(TestServer(_make_app(store))) as client:
+            resp = await client.patch(f"/api/knowledge/sources/{sid}",
+                                      json={"name": "New", "ignore_patterns": [1]})
+            assert resp.status == 400
+        row = store.db.execute("SELECT name FROM sources WHERE id = ?", (sid,)).fetchone()
+        assert row["name"] == "Old"
+
+    @pytest.mark.asyncio
+    async def test_body_without_editable_fields_rejected(self, store):
+        sid = store.add_source("Old", "local_folder", "/tmp/vault")
+        async with TestClient(TestServer(_make_app(store))) as client:
+            resp = await client.patch(f"/api/knowledge/sources/{sid}", json={})
+            assert resp.status == 400
+
+
+class TestPurgeIgnored:
+    def _watcher(self, purged=2):
+        watcher = MagicMock()
+        watcher._folder_watcher.purge_ignored = AsyncMock(return_value=purged)
+        return watcher
+
+    @pytest.mark.asyncio
+    async def test_save_without_purge_leaves_indexed_items_alone(self, store):
+        sid = store.add_source("Vault", "local_folder", "/tmp/vault")
+        watcher = self._watcher()
+        async with TestClient(TestServer(_make_app(store, watcher))) as client:
+            resp = await client.patch(f"/api/knowledge/sources/{sid}", json={"ignore_patterns": ["a/**"]})
+            assert resp.status == 200
+            assert "purge" not in await resp.json()
+        watcher._folder_watcher.purge_ignored.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_purge_ignored_removes_matches_after_saving(self, store):
+        sid = store.add_source("Vault", "local_folder", "/tmp/vault")
+        watcher = self._watcher(purged=3)
+        async with TestClient(TestServer(_make_app(store, watcher))) as client:
+            resp = await client.patch(f"/api/knowledge/sources/{sid}",
+                                      json={"ignore_patterns": ["a/**"], "purge_ignored": True})
+            assert resp.status == 200
+            # The purge is started in the background, like resume/confirm scans,
+            # so a large folder does not hold the request open.
+            body = await resp.json()
+            assert body["purge"] == "started"
+
+            async def recorded() -> dict:
+                while "last_purge" not in _props(store, sid):
+                    await asyncio.sleep(0.01)
+                return _props(store, sid)["last_purge"]
+            outcome = await asyncio.wait_for(recorded(), timeout=5)
+        watcher._folder_watcher.purge_ignored.assert_awaited_once_with(sid, "/tmp/vault", ["a/**"])
+        assert _props(store, sid)["ignore_patterns"] == ["a/**"]
+        # The outcome is recorded under the request's id so the UI can report it.
+        assert outcome == {"id": body["purge_id"], "removed": 3}
+
+    @pytest.mark.asyncio
+    async def test_failed_purge_is_recorded_and_keeps_the_patterns(self, store):
+        sid = store.add_source("Vault", "local_folder", "/tmp/vault")
+        watcher = self._watcher()
+        watcher._folder_watcher.purge_ignored = AsyncMock(side_effect=RuntimeError("disk"))
+        async with TestClient(TestServer(_make_app(store, watcher))) as client:
+            resp = await client.patch(f"/api/knowledge/sources/{sid}",
+                                      json={"ignore_patterns": ["a/**"], "purge_ignored": True})
+            body = await resp.json()
+
+            async def recorded() -> dict:
+                while "last_purge" not in _props(store, sid):
+                    await asyncio.sleep(0.01)
+                return _props(store, sid)["last_purge"]
+            outcome = await asyncio.wait_for(recorded(), timeout=5)
+        assert outcome == {"id": body["purge_id"], "failed": True}
+        assert _props(store, sid)["ignore_patterns"] == ["a/**"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("body, code", [
+        ({"purge_ignored": True}, "source_edit_empty"),                        # no editable field
+        ({"name": "Renamed", "purge_ignored": True}, "purge_requires_ignore_patterns"),
+        ({"ignore_patterns": ["a/**"], "purge_ignored": "yes"}, "invalid_purge_ignored"),
+    ])
+    async def test_invalid_purge_rejected_without_write(self, store, body, code):
+        sid = store.add_source("Vault", "local_folder", "/tmp/vault")
+        watcher = self._watcher()
+        async with TestClient(TestServer(_make_app(store, watcher))) as client:
+            resp = await client.patch(f"/api/knowledge/sources/{sid}", json=body)
+            assert resp.status == 400
+            assert (await resp.json())["code"] == code
+        assert "ignore_patterns" not in _props(store, sid)
+        assert store.db.execute("SELECT name FROM sources WHERE id = ?", (sid,)).fetchone()["name"] == "Vault"
+        watcher._folder_watcher.purge_ignored.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_purge_without_watcher_is_refused_before_writing(self, store):
+        sid = store.add_source("Vault", "local_folder", "/tmp/vault")
+        async with TestClient(TestServer(_make_app(store))) as client:
+            resp = await client.patch(f"/api/knowledge/sources/{sid}",
+                                      json={"ignore_patterns": ["a/**"], "purge_ignored": True})
+            assert resp.status == 503
+        assert "ignore_patterns" not in _props(store, sid)

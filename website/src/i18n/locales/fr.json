@@ -13350,7 +13350,20 @@
           "error": "Erreur",
           "paused": "En pause",
           "synced": "À jour"
-        }
+        },
+        "edit_ignore_patterns": "Modifier les motifs d’exclusion",
+        "save_ignore_patterns": "Enregistrer les motifs",
+        "ignore_patterns_none": "Aucun motif d’exclusion",
+        "ignore_patterns_next_scan_hint": "L’enregistrement modifie ce que les prochains scans prendront en compte. Les fichiers déjà présents dans la bibliothèque sont conservés, mais ne sont plus mis à jour, sauf si tu coches la case ci-dessous pour les supprimer. Les motifs s’appliquent au chemin dans le dossier, p. ex. Archive/**.",
+        "purge_ignored_matches": "Supprimer aussi les fichiers de la bibliothèque qui correspondent à ces motifs",
+        "purge_running": "Suppression des fichiers correspondants…",
+        "purge_done": "Fichiers supprimés : {{count}}",
+        "purge_failed": "Impossible de supprimer les fichiers correspondants. Tes motifs sont enregistrés ; enregistre à nouveau avec la case cochée pour réessayer.",
+        "ignore_patterns_watcher_unavailable": "Impossible de supprimer des fichiers tant que la surveillance des dossiers est désactivée. Tes motifs n’ont pas été enregistrés.",
+        "ignore_patterns_invalid": "Utilise au plus 500 motifs de 1024 caractères maximum chacun. Tes motifs n’ont pas été enregistrés.",
+        "ignore_patterns_placeholder": "p. ex. .trash/*",
+        "save_and_purge_ignore_patterns": "Enregistrer et supprimer les fichiers correspondants",
+        "purge_none_matched": "Aucun fichier ne correspond à ces motifs"
       },
       "settings": {
         "title": "Ingestion Settings",

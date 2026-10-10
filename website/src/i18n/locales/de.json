@@ -13151,7 +13151,20 @@
           "error": "Fehler",
           "paused": "Pausiert",
           "synced": "Aktuell"
-        }
+        },
+        "edit_ignore_patterns": "Ignoriermuster bearbeiten",
+        "save_ignore_patterns": "Muster speichern",
+        "ignore_patterns_none": "Keine Ignoriermuster",
+        "ignore_patterns_next_scan_hint": "Speichern ändert, was künftige Scans erfassen. Dateien, die schon in der Bibliothek sind, bleiben erhalten, werden aber nicht mehr aktualisiert, sofern du unten nicht das Kästchen ankreuzt, um sie zu entfernen. Muster gelten für den Pfad im Ordner, z. B. Archive/**.",
+        "purge_ignored_matches": "Auch Dateien aus der Bibliothek entfernen, die bereits indexiert sind und diesen Mustern entsprechen",
+        "purge_running": "Passende Dateien werden entfernt…",
+        "purge_done": "Entfernte Dateien: {{count}}",
+        "purge_failed": "Die passenden Dateien konnten nicht entfernt werden. Deine Muster sind gespeichert; speichere erneut mit angekreuztem Kästchen, um es nochmal zu versuchen.",
+        "ignore_patterns_watcher_unavailable": "Dateien können nicht entfernt werden, solange die Ordnerüberwachung aus ist. Deine Muster wurden nicht gespeichert.",
+        "ignore_patterns_invalid": "Verwende höchstens 500 Muster mit je höchstens 1024 Zeichen. Deine Muster wurden nicht gespeichert.",
+        "ignore_patterns_placeholder": "z. B. .trash/*",
+        "save_and_purge_ignore_patterns": "Speichern und passende Dateien entfernen",
+        "purge_none_matched": "Keine Dateien passen zu diesen Mustern"
       },
       "settings": {
         "title": "Ingestion Settings",

@@ -76,7 +76,7 @@ from kiro_crew.knowledge.store import (
     KnowledgeBundleError,
 )
 from kiro_crew.knowledge.sync import SyncScheduler
-from kiro_crew.knowledge.watcher import KnowledgeWatcher
+from kiro_crew.knowledge.watcher import FOLDER_SOURCE_TYPES, KnowledgeWatcher
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
 from kiro_crew.zip_vet import ZipInventoryRejected, vet_zip_inventory
@@ -85,6 +85,9 @@ logger = logging.getLogger(__name__)
 
 # Max length for a user-editable source display name (rename endpoint).
 _MAX_SOURCE_NAME_LEN = 200
+# Bounds for a folder source's user-edited ``ignore_patterns`` list.
+_MAX_IGNORE_PATTERNS = 500
+_MAX_IGNORE_PATTERN_LEN = 1024
 
 
 def _sel_log(tool: str, **kwargs: object) -> None:
@@ -1820,35 +1823,146 @@ async def delete_source(request: web.Request) -> web.Response:
     return web.json_response({"status": "deleted"})
 
 
-async def rename_source(request: web.Request) -> web.Response:
-    """PATCH /api/knowledge/sources/{id} -- rename a source (name only).
+def _clean_ignore_patterns(value: object) -> tuple[list[str] | None, str | None]:
+    """Validate a PATCH ``ignore_patterns`` value: ``(patterns, None)`` or ``(None, error)``.
 
-    Only ``name`` is editable; ``uri`` (the source identity) stays immutable.
+    Entries are stripped, blanks dropped and duplicates collapsed in first-seen
+    order, so the stored list is what the walk will apply. Case is kept: the walk
+    matches with ``fnmatchcase`` on every host.
+    """
+    if not isinstance(value, list):
+        return None, "ignore_patterns must be a list of strings"
+    if len(value) > _MAX_IGNORE_PATTERNS:
+        return None, f"ignore_patterns allows at most {_MAX_IGNORE_PATTERNS} entries"
+    cleaned: list[str] = []
+    for entry in value:
+        if not isinstance(entry, str):
+            return None, "ignore_patterns must be a list of strings"
+        entry = entry.strip()
+        if len(entry) > _MAX_IGNORE_PATTERN_LEN:
+            return None, (f"each ignore pattern must be {_MAX_IGNORE_PATTERN_LEN} "
+                          "characters or fewer")
+        if entry and entry not in cleaned:
+            cleaned.append(entry)
+    return cleaned, None
+
+
+def _apply_source_edit(store, source_id: str, *, name: str | None,
+                       ignore_patterns: list[str] | None) -> None:
+    """Write a validated source edit in ONE off-loop take.
+
+    ``ignore_patterns`` goes through ``merge_source_properties`` so a concurrent
+    pause or resume is not lost; an empty list removes the key. The next sweep
+    walks with the new list; files it already indexed are kept unless the caller
+    asked for ``purge_ignored``.
+    """
+    if name is not None:
+        store.update_source(source_id, name=name)
+    if ignore_patterns is not None:
+        if ignore_patterns:
+            store.merge_source_properties(source_id, set_keys={"ignore_patterns": ignore_patterns})
+        else:
+            store.merge_source_properties(source_id, remove_keys=("ignore_patterns",))
+
+
+async def rename_source(request: web.Request) -> web.Response:
+    """PATCH /api/knowledge/sources/{id} -- edit a source's ``name`` and/or ``ignore_patterns``.
+
+    ``ignore_patterns`` is accepted for folder sources only. ``uri`` (the source
+    identity) stays immutable. Both fields are validated before anything is
+    written, so a request with one bad field changes nothing.
     """
     owner_denied = await _require_knowledge_owner(request, "knowledge.source.rename")
     if owner_denied is not None:
         return owner_denied
     store = _store(request)
     source_id = request.match_info["id"]
-    if not await asyncio.to_thread(_source_row, store, source_id):
+    row = await asyncio.to_thread(_source_row, store, source_id)
+    if not row:
         return web.json_response({"error": "not found"}, status=404)
     body, body_err = await read_bounded_json(request, max_bytes=None)
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
-    name = body.get("name")
-    if not isinstance(name, str):
-        return web.json_response({"error": "name must be a string"}, status=400)
-    name = name.strip()
-    if not name:
-        return web.json_response({"error": "name cannot be empty"}, status=400)
-    if len(name) > _MAX_SOURCE_NAME_LEN:
+    if "name" not in body and "ignore_patterns" not in body:
         return web.json_response(
-            {"error": f"name must be {_MAX_SOURCE_NAME_LEN} characters or fewer"}, status=400)
+            {"error": "provide name and/or ignore_patterns",
+             "code": "source_edit_empty"}, status=400)
+    name: str | None = None
+    if "name" in body:
+        raw_name = body.get("name")
+        if not isinstance(raw_name, str):
+            return web.json_response({"error": "name must be a string"}, status=400)
+        name = raw_name.strip()
+        if not name:
+            return web.json_response({"error": "name cannot be empty"}, status=400)
+        if len(name) > _MAX_SOURCE_NAME_LEN:
+            return web.json_response(
+                {"error": f"name must be {_MAX_SOURCE_NAME_LEN} characters or fewer"}, status=400)
+    patterns: list[str] | None = None
+    if "ignore_patterns" in body:
+        if row["source_type"] not in FOLDER_SOURCE_TYPES:
+            return web.json_response(
+                {"error": "ignore_patterns applies to folder sources only",
+                 "code": "ignore_patterns_folder_only"}, status=400)
+        patterns, err = _clean_ignore_patterns(body.get("ignore_patterns"))
+        if err is not None:
+            return web.json_response(
+                {"error": err, "code": "invalid_ignore_patterns"}, status=400)
+    # Removing already-indexed matches is opt-in: a plain pattern edit only
+    # changes what future sweeps ingest, and the sweep retains tracked files
+    # that newly match. ``purge_ignored`` asks for the destructive half.
+    purge = body.get("purge_ignored", False)
+    if not isinstance(purge, bool):
+        return web.json_response({"error": "purge_ignored must be a boolean",
+                                  "code": "invalid_purge_ignored"}, status=400)
+    if purge and patterns is None:
+        return web.json_response(
+            {"error": "purge_ignored requires ignore_patterns",
+             "code": "purge_requires_ignore_patterns"}, status=400)
+    watcher = request.app.get("knowledge_watcher") if purge else None
+    if purge and watcher is None:
+        return web.json_response(
+            {"error": "folder watcher is not running; nothing was changed",
+             "code": "folder_watcher_unavailable"}, status=503)
+    fields: dict[str, object] = {"source_id": source_id}
+    if patterns is not None:
+        fields["ignore_patterns"] = len(patterns)
+        fields["purge_ignored"] = purge
     await _audited_write(
-        partial(store.update_source, source_id, name=name),
-        event="source.rename", fields={"source_id": source_id})
-    return web.json_response({"ok": True, "name": name})
+        partial(_apply_source_edit, store, source_id, name=name, ignore_patterns=patterns),
+        event="source.rename" if patterns is None else "source.edit", fields=fields)
+    response: dict[str, object] = {"ok": True}
+    if name is not None:
+        response["name"] = name
+    if patterns is not None:
+        response["ignore_patterns"] = patterns
+    if purge and patterns and watcher is not None:
+        # Background, like the confirm/resume scans: a large folder would
+        # otherwise hold the request open for the whole purge. The patterns are
+        # already saved, so a failed purge is logged and can be re-run. The
+        # outcome lands on the source as ``last_purge`` under this request's
+        # ``purge_id``, which is how the UI tells the user what was removed.
+        purge_id = uuid.uuid4().hex
+        task = asyncio.create_task(_run_purge(
+            store, watcher._folder_watcher, source_id, row["uri"], patterns, purge_id))
+        _track_scan_task(request.app, task)
+        response["purge"] = "started"
+        response["purge_id"] = purge_id
+    return web.json_response(response)
+
+
+async def _run_purge(store, folder_watcher, source_id: str, root: str,
+                     patterns: list[str], purge_id: str) -> None:
+    """Run ``purge_ignored`` and record its outcome as the source's ``last_purge``."""
+    outcome: dict[str, object] = {"id": purge_id}
+    try:
+        outcome["removed"] = await folder_watcher.purge_ignored(source_id, root, patterns)
+    except Exception:
+        logger.exception("Purge of newly ignored files failed for source %s", source_id)
+        outcome["failed"] = True
+    await asyncio.to_thread(
+        store.merge_source_properties, source_id, set_keys={"last_purge": outcome})
 
 
 def _adopt_source(store, source_id: str, *, event: str):

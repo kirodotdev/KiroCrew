@@ -13350,7 +13350,20 @@
           "error": "Errore",
           "paused": "In pausa",
           "synced": "Aggiornato"
-        }
+        },
+        "edit_ignore_patterns": "Modifica pattern da ignorare",
+        "save_ignore_patterns": "Salva pattern",
+        "ignore_patterns_none": "Nessun pattern da ignorare",
+        "ignore_patterns_next_scan_hint": "Il salvataggio cambia ciò che verrà acquisito dalle prossime scansioni. I file già presenti nella libreria restano, ma non vengono più aggiornati, a meno che tu non spunti la casella qui sotto per rimuoverli. I pattern si applicano al percorso all’interno della cartella, ad es. Archive/**.",
+        "purge_ignored_matches": "Rimuovi anche i file nella libreria che corrispondono a questi pattern",
+        "purge_running": "Rimozione dei file corrispondenti…",
+        "purge_done": "File rimossi: {{count}}",
+        "purge_failed": "Non è stato possibile rimuovere i file corrispondenti. I tuoi pattern sono salvati; salva di nuovo con la casella spuntata per riprovare.",
+        "ignore_patterns_watcher_unavailable": "Non puoi rimuovere file mentre il monitoraggio delle cartelle è disattivato. I tuoi pattern non sono stati salvati.",
+        "ignore_patterns_invalid": "Usa al massimo 500 pattern, ciascuno di 1024 caratteri o meno. I tuoi pattern non sono stati salvati.",
+        "ignore_patterns_placeholder": "ad es. .trash/*",
+        "save_and_purge_ignore_patterns": "Salva e rimuovi i file corrispondenti",
+        "purge_none_matched": "Nessun file corrisponde a questi pattern"
       },
       "settings": {
         "title": "Ingestion Settings",

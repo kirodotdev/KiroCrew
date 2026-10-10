@@ -13350,7 +13350,20 @@
           "error": "Error",
           "paused": "En pausa",
           "synced": "Actualizado"
-        }
+        },
+        "edit_ignore_patterns": "Editar patrones de exclusión",
+        "save_ignore_patterns": "Guardar patrones",
+        "ignore_patterns_none": "Sin patrones de exclusión",
+        "ignore_patterns_next_scan_hint": "Guardar cambia lo que recogerán los próximos escaneos. Los archivos que ya están en la biblioteca se conservan, pero dejan de actualizarse, salvo que marques la casilla de abajo para eliminarlos. Los patrones se aplican a la ruta dentro de la carpeta, p. ej. Archive/**.",
+        "purge_ignored_matches": "Eliminar también los archivos de la biblioteca que coinciden con estos patrones",
+        "purge_running": "Eliminando los archivos que coinciden…",
+        "purge_done": "Archivos eliminados: {{count}}",
+        "purge_failed": "No se pudieron eliminar los archivos que coinciden. Tus patrones están guardados; vuelve a guardar con la casilla marcada para reintentarlo.",
+        "ignore_patterns_watcher_unavailable": "No se pueden eliminar archivos mientras la vigilancia de carpetas está desactivada. Tus patrones no se guardaron.",
+        "ignore_patterns_invalid": "Usa como máximo 500 patrones de 1024 caracteres o menos cada uno. Tus patrones no se guardaron.",
+        "ignore_patterns_placeholder": "p. ej. .trash/*",
+        "save_and_purge_ignore_patterns": "Guardar y eliminar los archivos coincidentes",
+        "purge_none_matched": "Ningún archivo coincide con estos patrones"
       },
       "settings": {
         "title": "Ingestion Settings",

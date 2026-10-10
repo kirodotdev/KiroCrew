@@ -12952,7 +12952,20 @@
           "error": "오류",
           "paused": "일시 중지됨",
           "synced": "최신 상태"
-        }
+        },
+        "edit_ignore_patterns": "제외 패턴 편집",
+        "save_ignore_patterns": "패턴 저장",
+        "ignore_patterns_none": "제외 패턴 없음",
+        "ignore_patterns_next_scan_hint": "저장하면 이후 스캔에서 가져올 대상이 바뀝니다. 라이브러리에 이미 있는 파일은 유지되지만 더 이상 업데이트되지 않습니다. 제거하려면 아래 체크박스를 선택하세요. 패턴은 폴더 안의 경로에 적용됩니다(예: Archive/**).",
+        "purge_ignored_matches": "이 패턴과 일치하는 라이브러리의 기존 파일도 제거",
+        "purge_running": "일치하는 파일을 제거하는 중…",
+        "purge_done": "제거된 파일: {{count}}",
+        "purge_failed": "일치하는 파일을 제거하지 못했습니다. 패턴은 저장되었습니다. 체크박스를 선택한 채로 다시 저장하면 재시도합니다.",
+        "ignore_patterns_watcher_unavailable": "폴더 감시가 꺼져 있는 동안에는 파일을 제거할 수 없습니다. 패턴이 저장되지 않았습니다.",
+        "ignore_patterns_invalid": "패턴은 최대 500개, 각각 1024자 이하로 입력하세요. 패턴이 저장되지 않았습니다.",
+        "ignore_patterns_placeholder": "예: .trash/*",
+        "save_and_purge_ignore_patterns": "저장하고 일치하는 파일 제거",
+        "purge_none_matched": "이 패턴과 일치하는 파일이 없습니다"
       },
       "settings": {
         "title": "Ingestion Settings",

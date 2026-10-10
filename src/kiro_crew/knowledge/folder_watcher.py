@@ -328,6 +328,24 @@ def estimate_scan_cost(discovered: list[tuple[str, float]], *,
             "llm_calls": chunks + len(ordered)}
 
 
+def _matches_ignore_patterns(file_path: str, root: str, ignore_patterns: list[str]) -> bool:
+    """Whether *file_path* under *root* matches one of *ignore_patterns*.
+
+    Same rule as ``FolderWatcher._walk``: the root-relative path with ``/``
+    separators, matched case-sensitively with ``fnmatchcase``.
+    """
+    try:
+        rel = os.path.relpath(file_path, root)
+    except ValueError:  # different drive on Windows
+        return False
+    # Outside the root only when the first component IS "..": a file named
+    # "..notes.md" is a normal document inside it.
+    if rel == os.pardir or rel.startswith(os.pardir + os.sep):
+        return False
+    rel = rel.replace(os.sep, "/")
+    return any(fnmatchcase(rel, pat) for pat in ignore_patterns)
+
+
 class FolderWatcher:
     """Recursively scans a directory source, tracks file state, triggers ingestion."""
 
@@ -419,7 +437,9 @@ class FolderWatcher:
         filters = walk_filters(props, source_type)
 
         # 1. Discover files
-        discovered = await asyncio.to_thread(self._walk, uri, **filters)
+        pattern_only: list[str] = []
+        discovered = await asyncio.to_thread(
+            self._walk, uri, **filters, pattern_only=pattern_only)
 
         # Capture all discovered paths before cap (for accurate deletion detection)
         all_discovered_paths = {fp for fp, _ in discovered}
@@ -449,9 +469,17 @@ class FolderWatcher:
         ingested_paths: list[str] = []  # files (re)ingested this scan, for targeted dedup
         chunks_ingested = 0  # against chunk_budget
 
-        # 4. Detect deleted files (use full set, not capped set, to avoid false deletions)
-        for file_path in list(existing.keys()):
-            if file_path not in all_discovered_paths:
+        # 4. Detect deleted files (use full set, not capped set, to avoid false deletions).
+        # A tracked file that still exists and is excluded by ``ignore_patterns``
+        # ALONE is RETAINED: editing the patterns stops new ingestion, and
+        # removing what is already indexed is the explicit ``purge_ignored``
+        # step, not a side effect of the next sweep. A file any other walk
+        # filter now drops (``.kiroignore``, extension, size, the security
+        # filters) is archived as before.
+        missing = [fp for fp in existing if fp not in all_discovered_paths]
+        retained = set(pattern_only)
+        for file_path in missing:
+            if file_path not in retained:
                 await self._handle_deleted(source_id, file_path, existing[file_path])
                 stats["deleted"] += 1
 
@@ -656,8 +684,15 @@ class FolderWatcher:
     def _walk(self, root: str, ignore_patterns: list[str], extra_skip_dirs: set[str],
               include_extensions: set[str] | None = None,
               min_size: int = 0,
-              confine_to_root: bool = False) -> list[tuple[str, float]]:
+              confine_to_root: bool = False,
+              pattern_only: list[str] | None = None) -> list[tuple[str, float]]:
         """Walk directory, return [(file_path, mtime)] for supported files.
+
+        ``ignore_patterns`` is tested LAST, after every other filter. When
+        *pattern_only* is a list, each file the walk would have returned but for
+        a pattern match is appended to it: the sweep keeps exactly those tracked
+        files, so retention follows this one filter chain and a file any other
+        filter drops is archived as before.
 
         ``include_extensions`` NARROWS what is taken; it can never widen it. A
         value of ``None`` means "no extension allowlist" -- every reader-supported
@@ -713,6 +748,7 @@ class FolderWatcher:
                 if any(fnmatch(fname.lower(), pat) for pat in DEFAULT_IGNORE_GLOBS):
                     continue
                 rel_path = os.path.join(rel_dir, fname) if rel_dir != "." else fname
+                rel_patterned = rel_path.replace(os.sep, "/")
                 # Patterns are written with "/" separators, so the path has to be
                 # normalized before matching or every pattern containing a
                 # separator silently never matches on Windows.
@@ -726,8 +762,6 @@ class FolderWatcher:
                 # swallow `security.md`. The pattern is authoritative on every
                 # host. The "/" normalization above is what carries separator
                 # patterns, since `fnmatchcase` folds neither operand.
-                if any(fnmatchcase(rel_path.replace(os.sep, "/"), pat) for pat in ignore_patterns):
-                    continue
                 if kiroignore is not None and kiroignore.is_ignored(
                         _rel_posix(rel_dir, fname), is_dir=False):
                     continue
@@ -738,7 +772,12 @@ class FolderWatcher:
                 if include_extensions is not None and ext not in include_extensions:
                     continue
                 full_path = os.path.join(dirpath, fname)
-                resolved = str(Path(full_path).resolve())
+                try:
+                    resolved = str(Path(full_path).resolve())
+                except (OSError, RuntimeError):
+                    # RuntimeError: a symlink loop on Python < 3.13. One
+                    # unresolvable entry must not abort the whole sweep.
+                    continue
                 if is_sensitive_path(resolved):
                     continue
                 if confine_to_root and not _within(resolved, root_real):
@@ -749,6 +788,12 @@ class FolderWatcher:
                 except OSError:
                     continue
                 if min_size and st.st_size < min_size:
+                    continue
+                # Last, so a file reported in *pattern_only* has passed every
+                # other filter above (see the docstring).
+                if any(fnmatchcase(rel_patterned, pat) for pat in ignore_patterns):
+                    if pattern_only is not None:
+                        pattern_only.append(full_path)
                     continue
                 results.append((full_path, st.st_mtime))
 
@@ -925,6 +970,29 @@ class FolderWatcher:
             except Exception:
                 return False
         return bool((props or {}).get("scan_paused"))
+
+    async def purge_ignored(self, source_id: str, root: str, ignore_patterns: list[str]) -> int:
+        """Remove the indexed items of tracked files that match *ignore_patterns*.
+
+        The opt-in counterpart of the retention in ``_do_scan``: called when the
+        user asks for already-indexed matches to be removed. Goes through the
+        deleted-file path so a copy another source holds survives, and holds the
+        same per-source lock as ``scan_source`` so it never races a sweep over
+        the same state rows. Returns the number of files purged.
+        """
+        if not ignore_patterns:
+            return 0
+        if source_id not in self._locks:
+            self._locks[source_id] = asyncio.Lock()
+        async with self._locks[source_id]:
+            existing = await asyncio.to_thread(self._load_state, source_id)
+            purged = 0
+            for file_path, state in existing.items():
+                if _matches_ignore_patterns(file_path, root, ignore_patterns):
+                    await self._handle_deleted(source_id, file_path, state)
+                    purged += 1
+        logger.info("Purged %d newly ignored file(s) from source %s", purged, source_id)
+        return purged
 
     async def _handle_deleted(self, source_id: str, file_path: str, state: dict):
         """Archive items for a deleted file and remove state row."""

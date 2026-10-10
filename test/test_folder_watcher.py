@@ -372,6 +372,162 @@ class TestFolderWatcherScan:
         stats = await fw.scan_source(source)
         assert stats["deleted"] == 1
 
+    async def _index_vault(self, store, pipeline, vault):
+        fw = FolderWatcher(store, pipeline)
+        source_id = store.add_source("test", "local_folder", str(vault))
+        source = {"id": source_id, "uri": str(vault), "source_type": "local_folder", "properties": "{}"}
+        items_by_name: dict[str, str] = {}
+
+        async def fake_ingest(path, *, on_committed=None, **kwargs):
+            item_id = store.add_item("title", "content", "doc", source_id=source_id)
+            items_by_name[Path(path).name] = item_id
+            if on_committed is not None:
+                on_committed([item_id])
+            return "job1"
+        pipeline.ingest_file = fake_ingest
+        await fw.scan_source(source)
+        return fw, source, items_by_name
+
+    def _tracked(self, store, source_id) -> set[str]:
+        return {Path(r["file_path"]).name for r in store.db.execute(
+            "SELECT file_path FROM folder_file_state WHERE source_id = ?", (source_id,)).fetchall()}
+
+    @pytest.mark.asyncio
+    async def test_newly_ignored_files_are_kept_on_next_scan(self, store, pipeline, vault):
+        """Editing ``ignore_patterns`` after indexing does NOT remove what is already
+        in the library: a file that still exists but now matches is retained, and
+        removing it is the explicit ``purge_ignored`` step."""
+        fw, source, items = await self._index_vault(store, pipeline, vault)
+        deep_item = items["deep.md"]
+
+        source["properties"] = json.dumps({"ignore_patterns": ["sub/**"]})
+        stats = await fw.scan_source(source)
+
+        assert stats["deleted"] == 0
+        assert store.db.execute("SELECT 1 FROM items WHERE id = ?", (deep_item,)).fetchone()
+        assert "deep.md" in self._tracked(store, source["id"])
+
+    @pytest.mark.asyncio
+    async def test_retained_ignored_file_is_dropped_once_deleted_from_disk(self, store, pipeline, vault):
+        fw, source, items = await self._index_vault(store, pipeline, vault)
+        source["properties"] = json.dumps({"ignore_patterns": ["sub/**"]})
+        (vault / "sub" / "deep.md").unlink()
+
+        stats = await fw.scan_source(source)
+
+        assert stats["deleted"] == 1
+        assert store.db.execute("SELECT 1 FROM items WHERE id = ?", (items["deep.md"],)).fetchone() is None
+
+    @pytest.mark.asyncio
+    async def test_purge_ignored_removes_only_matching_tracked_files(self, store, pipeline, vault):
+        fw, source, items = await self._index_vault(store, pipeline, vault)
+
+        purged = await fw.purge_ignored(source["id"], str(vault), ["sub/**"])
+
+        assert purged == 1
+        assert store.db.execute("SELECT 1 FROM items WHERE id = ?", (items["deep.md"],)).fetchone() is None
+        assert store.db.execute("SELECT 1 FROM items WHERE id = ?", (items["note1.md"],)).fetchone()
+        assert self._tracked(store, source["id"]) == {"note1.md", "note2.md"}
+
+    @pytest.mark.asyncio
+    async def test_purge_ignored_waits_for_a_running_scan(self, store, pipeline, vault):
+        """Purge takes the same per-source lock as ``scan_source``, so it never
+        races a sweep over the same ``folder_file_state`` rows."""
+        fw, source, items = await self._index_vault(store, pipeline, vault)
+        lock = fw._locks.setdefault(source["id"], asyncio.Lock())
+        await lock.acquire()
+        task = asyncio.create_task(fw.purge_ignored(source["id"], str(vault), ["sub/**"]))
+        try:
+            # Positive signal first: the purge is queued on THIS lock, not merely
+            # unscheduled, before the absence of its effect is asserted.
+            async def queued_on_lock() -> None:
+                while not getattr(lock, "_waiters", None):
+                    await asyncio.sleep(0.01)
+            await asyncio.wait_for(queued_on_lock(), timeout=5)
+            assert not task.done()
+            assert store.db.execute("SELECT 1 FROM items WHERE id = ?", (items["deep.md"],)).fetchone()
+        finally:
+            lock.release()
+        assert await asyncio.wait_for(task, timeout=5) == 1
+
+    @pytest.mark.asyncio
+    async def test_retained_file_still_dropped_when_another_walk_filter_excludes_it(
+            self, store, pipeline, vault):
+        """Retention protects a file excluded by ``ignore_patterns`` alone. One the
+        walk would also drop for another reason (here ``.kiroignore``) is archived."""
+        fw, source, items = await self._index_vault(store, pipeline, vault)
+        (vault / ".kiroignore").write_text("sub/\n")
+        source["properties"] = json.dumps({"ignore_patterns": ["sub/**"]})
+
+        stats = await fw.scan_source(source)
+
+        assert stats["deleted"] == 1
+        assert store.db.execute("SELECT 1 FROM items WHERE id = ?", (items["deep.md"],)).fetchone() is None
+
+    @pytest.mark.asyncio
+    async def test_retained_file_still_dropped_when_it_becomes_a_sensitive_path(
+            self, store, pipeline, vault, monkeypatch):
+        """The security filters keep removing what they exclude, even when the file
+        also matches a user pattern."""
+        fw, source, items = await self._index_vault(store, pipeline, vault)
+        import kiro_crew.knowledge.folder_watcher as fw_mod
+        monkeypatch.setattr(fw_mod, "is_sensitive_path", lambda p, *a, **k: p.endswith("deep.md"))
+        source["properties"] = json.dumps({"ignore_patterns": ["sub/**"]})
+
+        stats = await fw.scan_source(source)
+
+        assert stats["deleted"] == 1
+        assert store.db.execute("SELECT 1 FROM items WHERE id = ?", (items["deep.md"],)).fetchone() is None
+
+    @pytest.mark.asyncio
+    async def test_file_named_with_leading_dots_is_retained(self, store, pipeline, vault):
+        """``..notes.md`` is a normal file inside the root, not a parent reference."""
+        (vault / "..notes.md").write_text("# Dots\nStill inside the root")
+        fw, source, items = await self._index_vault(store, pipeline, vault)
+        assert "..notes.md" in items
+        source["properties"] = json.dumps({"ignore_patterns": ["*.md"]})
+
+        stats = await fw.scan_source(source)
+
+        assert stats["deleted"] == 0
+        assert store.db.execute("SELECT 1 FROM items WHERE id = ?", (items["..notes.md"],)).fetchone()
+
+    def test_walk_reports_paths_excluded_by_patterns_alone(self, store, pipeline, vault):
+        """Retention reads the walk's own decision, so there is one filter chain:
+        a path is reported only when ``ignore_patterns`` was the sole reason the
+        walk dropped it."""
+        (vault / ".kiroignore").write_text("note2.md\n")
+        fw = FolderWatcher(store, pipeline)
+        pattern_only: list[str] = []
+
+        files = fw._walk(str(vault), ["sub/**", "note2.md"], set(), pattern_only=pattern_only)
+
+        assert {Path(p).name for p, _ in files} == {"note1.md"}
+        # note2.md is ALSO excluded by .kiroignore, so it is not pattern-only.
+        assert {Path(p).name for p in pattern_only} == {"deep.md"}
+
+    @pytest.mark.asyncio
+    async def test_ignored_symlink_loop_does_not_abort_the_sweep(self, store, pipeline, vault):
+        """An indexed file replaced by a self-referencing symlink while it matches a
+        pattern is skipped; the rest of the source is still swept."""
+        fw, source, items = await self._index_vault(store, pipeline, vault)
+        deep = vault / "sub" / "deep.md"
+        deep.unlink()
+        deep.symlink_to(deep)
+        (vault / "note1.md").write_text("# Note 1\nChanged")
+        source["properties"] = json.dumps({"ignore_patterns": ["sub/**"]})
+
+        stats = await fw.scan_source(source)
+
+        assert stats["changed"] == 1
+        assert stats["deleted"] == 1
+
+    @pytest.mark.asyncio
+    async def test_purge_ignored_with_no_patterns_is_a_noop(self, store, pipeline, vault):
+        fw, source, _ = await self._index_vault(store, pipeline, vault)
+        assert await fw.purge_ignored(source["id"], str(vault), []) == 0
+        assert self._tracked(store, source["id"]) == {"note1.md", "note2.md", "deep.md"}
+
     @pytest.mark.asyncio
     async def test_max_files_cap(self, store, pipeline, tmp_path):
         vault = tmp_path / "big_vault"

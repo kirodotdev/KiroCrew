@@ -7,6 +7,9 @@ export interface ParsedSourceProps {
   lastScan?: string
   recursive?: boolean
   wordCount?: number
+  ignorePatterns: string[]
+  /** Outcome of the latest opt-in purge, recorded by the gateway under its ``purge_id``. */
+  lastPurge?: { id: string; removed?: number; failed: boolean }
 }
 
 export function parseSourceProps(s: Source): ParsedSourceProps {
@@ -23,7 +26,18 @@ export function parseSourceProps(s: Source): ParsedSourceProps {
     lastScan: props.last_scan as string | undefined,
     recursive: props.recursive as boolean | undefined,
     wordCount: props.word_count as number | undefined,
+    ignorePatterns: Array.isArray(props.ignore_patterns)
+      ? (props.ignore_patterns as unknown[]).filter((p): p is string => typeof p === 'string')
+      : [],
+    lastPurge: parseLastPurge(props.last_purge),
   }
+}
+
+function parseLastPurge(raw: unknown): ParsedSourceProps['lastPurge'] {
+  if (!raw || typeof raw !== 'object') return undefined
+  const p = raw as Record<string, unknown>
+  if (typeof p.id !== 'string') return undefined
+  return { id: p.id, removed: typeof p.removed === 'number' ? p.removed : undefined, failed: p.failed === true }
 }
 
 export function getSyncBadgeVariant(syncStatus: string): 'ok' | 'err' | 'aim' | 'warn' {

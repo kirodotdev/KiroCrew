@@ -13350,7 +13350,20 @@
           "error": "Erro",
           "paused": "Pausado",
           "synced": "Atualizado"
-        }
+        },
+        "edit_ignore_patterns": "Editar padrões de exclusão",
+        "save_ignore_patterns": "Salvar padrões",
+        "ignore_patterns_none": "Nenhum padrão de exclusão",
+        "ignore_patterns_next_scan_hint": "Salvar altera o que as próximas verificações vão incluir. Os arquivos que já estão na biblioteca permanecem, mas deixam de ser atualizados, a menos que você marque a caixa abaixo para removê-los. Os padrões se aplicam ao caminho dentro da pasta, por exemplo Archive/**.",
+        "purge_ignored_matches": "Remover também os arquivos da biblioteca que correspondem a estes padrões",
+        "purge_running": "Removendo os arquivos correspondentes…",
+        "purge_done": "Arquivos removidos: {{count}}",
+        "purge_failed": "Não foi possível remover os arquivos correspondentes. Seus padrões estão salvos; salve de novo com a caixa marcada para tentar outra vez.",
+        "ignore_patterns_watcher_unavailable": "Não é possível remover arquivos enquanto o monitoramento de pastas está desativado. Seus padrões não foram salvos.",
+        "ignore_patterns_invalid": "Use no máximo 500 padrões, cada um com até 1024 caracteres. Seus padrões não foram salvos.",
+        "ignore_patterns_placeholder": "por exemplo .trash/*",
+        "save_and_purge_ignore_patterns": "Salvar e remover os arquivos correspondentes",
+        "purge_none_matched": "Nenhum arquivo corresponde a estes padrões"
       },
       "settings": {
         "title": "Ingestion Settings",

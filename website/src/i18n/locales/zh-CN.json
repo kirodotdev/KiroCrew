@@ -12952,7 +12952,20 @@
           "error": "错误",
           "paused": "已暂停",
           "synced": "已是最新"
-        }
+        },
+        "edit_ignore_patterns": "编辑忽略模式",
+        "save_ignore_patterns": "保存模式",
+        "ignore_patterns_none": "没有忽略模式",
+        "ignore_patterns_next_scan_hint": "保存后会改变以后扫描所收录的内容。资料库中已有的文件会保留，但不再更新，除非你勾选下方的复选框将其移除。模式匹配文件夹内的路径，例如 Archive/**。",
+        "purge_ignored_matches": "同时移除资料库中与这些模式匹配的已有文件",
+        "purge_running": "正在移除匹配的文件…",
+        "purge_done": "已移除文件：{{count}}",
+        "purge_failed": "无法移除匹配的文件。你的模式已保存；勾选复选框后再次保存即可重试。",
+        "ignore_patterns_watcher_unavailable": "文件夹监视关闭时无法移除文件。你的模式未保存。",
+        "ignore_patterns_invalid": "最多使用 500 个模式，每个不超过 1024 个字符。你的模式未保存。",
+        "ignore_patterns_placeholder": "例如 .trash/*",
+        "save_and_purge_ignore_patterns": "保存并移除匹配的文件",
+        "purge_none_matched": "没有文件匹配这些模式"
       },
       "settings": {
         "title": "Ingestion Settings",
