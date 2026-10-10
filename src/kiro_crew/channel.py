@@ -162,6 +162,9 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     # Changing a session's model decides what the user's next turn there runs
     # on and spends; same containment reason as stop.
     "session_set_model",
+    # Recoloring a session acts on a session the channel agent would name from
+    # thread text other people wrote; same containment reason as stop.
+    "session_set_color",
     # Reload relaunches another session's agent process; same containment
     # reason as stop.
     "session_reload",

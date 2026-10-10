@@ -958,6 +958,38 @@ def _session_tools() -> tuple[Tool, ...]:
             routes=("POST /api/session-control/reload",),
         ),
         Tool(
+            name="session_set_color",
+            description=(
+                "Set the sidebar color of a session you created, so a "
+                'conductor can group its workers at a glance. ``color`` is one of: "0" to '
+                '"6", the seven palette swatches the sidebar color menu shows (they follow '
+                'the viewer\'s theme), or "none" to clear the color. Custom hex colors and '
+                "anything else are refused. Metadata only: the transcript, model and any "
+                "running turn are untouched. This session itself and sessions you did not "
+                "create are refused, including the person's own tabs."
+            ),
+            schema={
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": (
+                            "Session key from list_sessions or session_status, or its "
+                            "exact title."
+                        ),
+                    },
+                    "color": {
+                        "type": "string",
+                        "description": '"0"-"6" palette swatch, or "none" to clear.',
+                    },
+                },
+                "required": ["target", "color"],
+            },
+            run=_run_session_set_color,
+            identity="strict",
+            routes=("POST /api/session-control/set-color",),
+        ),
+        Tool(
             name="session_close",
             description=(
                 "Close another session — the same thing as pressing the ✕ on that tab. "
@@ -2848,6 +2880,21 @@ def _run_session_reload(args: dict[str, Any], ctx: ToolContext) -> str:
         f"\U0001f504 `{target}` is relaunching its agent process with the conversation "
         "kept. Its transcript shows the reload notice."
     )
+
+
+def _run_session_set_color(args: dict[str, Any], ctx: ToolContext) -> str:
+    try:
+        resp = ctx.client.post(
+            "/api/session-control/set-color",
+            {"target": args["target"], "color": args["color"]},
+            session_key=ctx.caller_key,
+        )
+    except DashboardError as refused:
+        return f"Error: could not set that session's color: {refused.error}"
+    target = resp.get("target", args["target"])
+    if resp.get("color_index") is None:
+        return redact(f"Cleared the color of `{target}`.")
+    return redact(f"Set the color of `{target}` to palette swatch {resp['color_index']}.")
 
 
 def _run_session_close(args: dict[str, Any], ctx: ToolContext) -> str:

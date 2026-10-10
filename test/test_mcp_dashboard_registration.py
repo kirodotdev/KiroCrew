@@ -379,6 +379,9 @@ class TestWhatThisSetGrants:
         "session_end_wait",
         "session_retry",
         "session_set_model",
+        # Tints only a session the caller created; the route's creator
+        # fence is narrower than the rest of this group's.
+        "session_set_color",
         "session_reload",
         "session_close",
         "session_revive",

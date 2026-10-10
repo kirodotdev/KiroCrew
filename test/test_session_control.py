@@ -4163,6 +4163,7 @@ _DASHBOARD_TOOL_CALLS = {
     "session_retry": {"target": "chat-2"},
     "session_set_model": {"target": "chat-2", "model": "sonnet"},
     "session_reload": {"target": "chat-2"},
+    "session_set_color": {"target": "chat-2", "color": "1"},
     "session_close": {"target": "chat-2"},
     "session_revive": {"target": "chat-2"},
     "session_send": {"target": "chat-2", "message": "hi"},

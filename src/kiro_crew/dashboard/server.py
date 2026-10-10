@@ -703,6 +703,7 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         "/api/session-control/end-wait",
         "/api/session-control/retry",
         "/api/session-control/set-model",
+        "/api/session-control/set-color",
         "/api/session-control/reload",
         "/api/session-control/close",
         "/api/session-control/revive",

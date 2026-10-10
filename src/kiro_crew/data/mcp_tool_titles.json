@@ -108,6 +108,7 @@
     "session_end_wait": "End session wait",
     "session_retry": "Retry session turn",
     "session_set_model": "Set session model",
+    "session_set_color": "Set session color",
     "session_reload": "Reload session",
     "session_status": "Read session roster",
     "session_revive": "Reopen session",

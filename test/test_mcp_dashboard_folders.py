@@ -1697,6 +1697,7 @@ class TestAdvertisedSet:
             "session_end_wait",
             "session_retry",
             "session_set_model",
+            "session_set_color",
             "session_reload",
             "session_close",
             "session_revive",

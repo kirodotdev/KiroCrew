@@ -24,6 +24,7 @@ unreachable in production because the caller's `X-Internal-Secret` is ignored.
 | `session_end_wait` | `POST /api/session-control/end-wait` | Wake a session the caller CREATED from the `wait` tool early, keeping its turn; any other target is refused `not_creator`, for every caller class |
 | `session_retry` | `POST /api/session-control/retry` | Re-run a failed last turn through `continue_slot_turn`, the Resume button's path, with `require_interrupted=True` (`turn_not_failed` otherwise) and `authorize_target` re-run synchronously under the slot lock before the continuation is queued |
 | `session_set_model` | `POST /api/session-control/set-model` | Record a pending model and/or reasoning-effort pick on an idle session; `apply_pending_model_pick` commits it at the start of the target's next turn after re-running `authorize_target` in the same synchronous step. Each half yields separately to a newer user pick from its own control. A busy target is refused with `target_busy` and keeps its settings |
+| `session_set_color` | `POST /api/session-control/set-color` | Set the sidebar tint (palette index 0-6, or clear). `authorize_target` (self refused), then a creator fence for every caller: only sessions it created |
 | `session_reload` | `POST /api/session-control/reload` | Relaunch the agent process of an idle session the caller created, through `chat_handlers.reload_slot_session` (shared with the tab menu's Reload session). The transcript is kept and gets one notice naming the caller. Self, remote-crew and busy targets (turn running or starting, queued messages, sub-agents) are refused |
 | `session_close` | `POST /api/session-control/close` | Close (archive) another session, or the caller itself, as the tab ✕ does — heavier than stop, and recoverable rather than a delete |
 | `session_revive` | `POST /api/session-control/revive` | Bring an archived session back into the live sidebar, as clicking it in the History tab does — the mirror of close, optionally filing it into a folder |
@@ -748,8 +749,9 @@ Two rules give a member caller its shape:
 
 Ordinary (non-member) callers are untouched: they still require the switch.
 The exceptions are `session_end_wait`, whose own creator fence (below, "Ending
-a wait early") binds every caller class, owner sessions included, and
-`session_reload`, whose creator fence binds every caller class the same way.
+a wait early") binds every caller class, owner sessions included,
+`session_reload`, whose creator fence binds every caller class the same way,
+and `session_set_color`, whose creator fence also binds every caller class.
 
 #### The strict-internal surface admits a crew member in either spelling, not every scoped caller
 

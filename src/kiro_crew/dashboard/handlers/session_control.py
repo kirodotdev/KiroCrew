@@ -424,6 +424,30 @@ async def api_session_control_reload(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+async def api_session_control_set_color(request: web.Request) -> web.Response:
+    """POST /api/session-control/set-color — tint a session the caller created."""
+    refused = await _require_internal(request)
+    if refused is not None:
+        return refused
+    # No prewarm here, for the reason `api_session_control_stop` gives.
+    state: DashboardState = request.app["state"]
+    try:
+        body = await _body(request)
+        color = body.get("color")
+        if not isinstance(color, str):
+            raise sc.SessionControlError("color must be a string", code="bad_request")
+        result = await sc.set_color_target(
+            state,
+            caller_session_key=_read_session_key(request),
+            target=_target(body),
+            color=color,
+            caller_fenced=_carried_fence(request),
+        )
+    except sc.SessionControlError as exc:
+        return _refusal(exc)
+    return web.json_response(result)
+
+
 async def api_session_control_close(request: web.Request) -> web.Response:
     """POST /api/session-control/close — archive another session (tab ✕)."""
     refused = await _require_internal(request)

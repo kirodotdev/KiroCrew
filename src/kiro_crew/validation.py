@@ -4020,6 +4020,26 @@ SESSION_RELOAD_SCHEMA = ToolSchema(
     ],
 )
 
+#: Swatches in the sidebar color menu. Mirrors ``PALETTE_SIZE`` in
+#: ``website/src/utils/sessionColors.ts``; a test pins the two together. The
+#: color route itself accepts a wider index range for older palettes, but an
+#: agent is held to what the menu offers.
+SESSION_PALETTE_SIZE = 7
+
+#: ``session_set_color``'s accepted values: "none" clears, "0".."6" name the
+#: sidebar color menu's swatches. The tool schema and the route's parser both
+#: read this one set. The clear value is a non-empty word so that an input
+#: sanitized down to "" is refused by ``required`` instead of reading as a clear.
+SESSION_COLOR_CHOICES: frozenset[str] = frozenset({"none", *map(str, range(SESSION_PALETTE_SIZE))})
+
+SESSION_SET_COLOR_SCHEMA = ToolSchema(
+    tool_name="session_set_color",
+    fields=[
+        FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
+        FieldSpec("color", str, required=True, allowed=SESSION_COLOR_CHOICES),
+    ],
+)
+
 SESSION_CLOSE_SCHEMA = ToolSchema(
     tool_name="session_close",
     fields=[
@@ -4363,6 +4383,7 @@ MCP_DASHBOARD_SCHEMAS: dict[str, ToolSchema] = {
     "session_retry": SESSION_RETRY_SCHEMA,
     "session_set_model": SESSION_SET_MODEL_SCHEMA,
     "session_reload": SESSION_RELOAD_SCHEMA,
+    "session_set_color": SESSION_SET_COLOR_SCHEMA,
     "session_close": SESSION_CLOSE_SCHEMA,
     "session_revive": SESSION_REVIVE_SCHEMA,
     "session_send": SESSION_SEND_SCHEMA,
