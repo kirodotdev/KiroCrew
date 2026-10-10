@@ -217,7 +217,13 @@ def _url_payload_command(n: int) -> str:
 #: subcommand. It is a security-deciding predicate, so it cannot leave the package,
 #: and no dead code remains to offset it. Its first word is split on space and tab
 #: only, the way bash splits, so a Unicode space cannot pose as a word break.
-_PACKAGE_LINE_BUDGET = 28_665
+#:
+#: Raised again, from 28,665, for the no-event-loop branch of the hosts-file
+#: verdict in ``argv_floor.py``: a thread with no running loop (a cron-launched
+#: MCP server) parses a large hosts file in the call instead of refusing as
+#: pending with no retry coming. One branch, reusing ``atomic_write.on_event_loop``,
+#: and the docstring and comment naming it; the on-loop path is unchanged.
+_PACKAGE_LINE_BUDGET = 28_673
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
