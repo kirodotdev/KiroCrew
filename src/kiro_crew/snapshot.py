@@ -25,7 +25,7 @@ import filecmp
 import importlib
 import json
 import os
-import shutil
+import shutil  # noqa: F401 - facade re-exports (tests patch snapshot.shutil)
 import socket
 import stat as _stat
 import sys
@@ -139,6 +139,9 @@ from kiro_crew.snapshot_merge import (  # noqa: F401 - facade re-exports
     NotificationCopyUnsupported,
     _copy_locked,
     _copy_tree_no_overwrite,
+    _core_file_not_installed,
+    _cron_rewrite_in_place,
+    _install_core_file_if_absent,
     _install_notifications,
     _merge_crons,
     _merge_memory,
@@ -146,10 +149,12 @@ from kiro_crew.snapshot_merge import (  # noqa: F401 - facade re-exports
     _merge_notifications,
     _notification_key,
     _open_notification_file,
+    _read_cron_store_once,
     _report_unmerged_databases,
     _serialise_with_notification_writes,
     _usable_cron_shape,
     _validate_identifier,
+    _write_merged_crons,
 )
 from kiro_crew.snapshot_restore import (  # noqa: F401 - facade re-exports
     _OWNER_ONLY_SETTINGS_FILES,
@@ -1365,14 +1370,26 @@ def _do_merge(
     print("🔀 Merge mode — importing...")
 
     if _want(components, "memory") and (snap / "memory.db").is_file():
+        memory_ok = True
         if not (mc / "memory.db").is_file():
-            shutil.copy2(str(snap / "memory.db"), str(mc / "memory.db"))
-            if (snap / "memory_index.db").is_file():
-                shutil.copy2(str(snap / "memory_index.db"), str(mc / "memory_index.db"))
-            print("  Memory: copied (no existing memory.db)")
+            # Pinned, not copy2: see `_install_core_file_if_absent`. The index is
+            # only installed beside a memory.db this call installed.
+            if _install_core_file_if_absent(snap / "memory.db", mc / "memory.db"):
+                if (snap / "memory_index.db").is_file() and not _install_core_file_if_absent(
+                    snap / "memory_index.db", mc / "memory_index.db"
+                ):
+                    # The index is never overwritten, so a leftover one does not
+                    # match the memory.db just installed: search misses its rows
+                    # until the index is rebuilt.
+                    print(f"  ↩️  {_core_file_not_installed(mc / 'memory_index.db', index=True)}")
+                print("  Memory: copied (no existing memory.db)")
+            else:
+                print(f"  ↩️  {_core_file_not_installed(mc / 'memory.db')}")
+                memory_ok = False
         else:
             _merge_memory(snap / "memory.db", mc / "memory.db")
-        print("  ✅ memory")
+        if memory_ok:
+            print("  ✅ memory")
 
     # The markdown half of memory (preferences, projects, history, knowledge). Named
     # by the memory component so restoring memory does not require the whole
@@ -1421,9 +1438,11 @@ def _do_merge(
         if sc.is_file():
             if dc.is_file():
                 crons_ok = _merge_crons(sc, dc)
-            else:
-                shutil.copy2(str(sc), str(dc))
+            elif _install_core_file_if_absent(sc, dc):
                 print("  Crons: copied (no existing crons)")
+            else:
+                print(f"  ↩️  {_core_file_not_installed(dc)}")
+                crons_ok = False
         if crons_ok:
             print("  ✅ crons")
         else:

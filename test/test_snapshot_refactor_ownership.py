@@ -141,6 +141,9 @@ OWNERS: dict[str, tuple[str, ...]] = {
         "_TERMINATORS",
         "_copy_locked",
         "_copy_tree_no_overwrite",
+        "_core_file_not_installed",
+        "_cron_rewrite_in_place",
+        "_install_core_file_if_absent",
         "_install_notifications",
         "_merge_crons",
         "_merge_memory",
@@ -148,10 +151,12 @@ OWNERS: dict[str, tuple[str, ...]] = {
         "_merge_notifications",
         "_notification_key",
         "_open_notification_file",
+        "_read_cron_store_once",
         "_report_unmerged_databases",
         "_serialise_with_notification_writes",
         "_usable_cron_shape",
         "_validate_identifier",
+        "_write_merged_crons",
     ),
     # What the facade itself defines: the two commands, the outbound redaction seam
     # (every redaction call name stays in this one module), the manifest writer, the

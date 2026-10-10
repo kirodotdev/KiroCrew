@@ -63,7 +63,9 @@ from kiro_crew.snapshot import (
     NotificationCopyUnsupported,
     _copy_notifications,
     _copy_tree_no_overwrite,
+    _core_file_not_installed,
     _do_replace,
+    _install_core_file_if_absent,
     _merge_crons,
     _merge_memory,
     _merge_named_stores,
@@ -2275,10 +2277,25 @@ def apply_import_zip(
             # Merge mode
             if (snap / "memory.db").is_file():
                 if not (mc / "memory.db").is_file():
-                    shutil.copy2(str(snap / "memory.db"), str(mc / "memory.db"))
-                    if (snap / "memory_index.db").is_file():
-                        shutil.copy2(str(snap / "memory_index.db"), str(mc / "memory_index.db"))
-                    summary["items"].append("memory (copied)")
+                    # Pinned, not copy2: see `_install_core_file_if_absent`.
+                    if _install_core_file_if_absent(snap / "memory.db", mc / "memory.db"):
+                        summary["items"].append("memory (copied)")
+                        if (snap / "memory_index.db").is_file() and not (
+                            _install_core_file_if_absent(
+                                snap / "memory_index.db", mc / "memory_index.db"
+                            )
+                        ):
+                            # Never overwritten, so a leftover index does not match
+                            # the memory.db just installed; see `_core_file_not_installed`.
+                            summary["items"].append(
+                                _core_file_not_installed(
+                                    mc / "memory_index.db", index=True, dashboard=True
+                                )
+                            )
+                            summary.setdefault("refused_merges", []).append("memory_index")
+                    else:
+                        summary["items"].append("memory (skipped: not a regular file)")
+                        summary.setdefault("refused_merges", []).append("memory")
                 else:
                     _merge_memory(snap / "memory.db", mc / "memory.db")
                     summary["items"].append("memory (merged)")
@@ -2296,9 +2313,11 @@ def apply_import_zip(
                         # log the import as partial rather than a flat ok.
                         summary["items"].append("crons (skipped: unreadable or invalid cron store)")
                         summary.setdefault("refused_merges", []).append("crons")
-                else:
-                    shutil.copy2(str(snap / "crons.json"), str(mc / "crons.json"))
+                elif _install_core_file_if_absent(snap / "crons.json", mc / "crons.json"):
                     summary["items"].append("crons (copied)")
+                else:
+                    summary["items"].append("crons (skipped: not a regular file)")
+                    summary.setdefault("refused_merges", []).append("crons")
 
             # The team list, like hooks.json: installed only where the destination has
             # none -- decided and written under the store's own lock, document only, so
@@ -2312,8 +2331,11 @@ def apply_import_zip(
 
             if (snap / "hooks.json").is_file():
                 if not (mc / "hooks.json").is_file():
-                    shutil.copy2(str(snap / "hooks.json"), str(mc / "hooks.json"))
-                    summary["items"].append("hooks (copied)")
+                    if _install_core_file_if_absent(snap / "hooks.json", mc / "hooks.json"):
+                        summary["items"].append("hooks (copied)")
+                    else:
+                        summary["items"].append("hooks (skipped: not a regular file)")
+                        summary.setdefault("refused_merges", []).append("hooks")
                 else:
                     summary["items"].append("hooks (skipped, already exists)")
 
