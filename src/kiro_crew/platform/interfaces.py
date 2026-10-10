@@ -262,6 +262,25 @@ class CredentialPolicy(Protocol):
         """
         ...
 
+    def token_param_exempt_url_prefixes(self) -> "frozenset[str]":
+        """``https://host/path`` prefixes whose ``?token=`` value pass 4 leaves alone.
+
+        WIRED: pass 4 skips only a literal ``?token=`` immediately after a member
+        whose local boundary and preceding text prove it is not nested in another
+        destination (any earlier URL, backslash, scheme, ``&`` or ``<`` is a signal,
+        scanned raw and never decoded), whose value is one URL-safe/base64 run plus
+        closers, and which no earlier pass claimed. A companion must list the host in
+        ``exempt_exact_hosts()`` too, or earlier base64/query heuristics can redact
+        the URL before pass 4. For user-opened approval links whose token is a lookup
+        key rather than a bearer credential. Streaming windows never apply this
+        exemption because they lack the complete preceding destination context.
+
+        Members without a path are ignored (a bare host prefix would match
+        ``host.evil.example``). Public default = ``frozenset()``. Like
+        ``exempt_exact_hosts`` this is NEVER sourced from ``config.json``.
+        """
+        ...
+
 
 class SlackEnterpriseGate(Protocol):
     """Slack enterprise/workspace allowlist + per-message origin gate.

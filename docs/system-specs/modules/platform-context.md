@@ -713,6 +713,33 @@ Wired sites:
   `frozenset()` — the empty set means MORE redaction (every host runs the
   heuristics), the safe direction, and stricter than any companion-supplied list
   could be; NO logging on the degrade path (runs inside the stdio MCP servers).
+- Pass-4 token-parameter URL prefixes
+  (`CredentialPolicy.token_param_exempt_url_prefixes()`) — redaction pass 4
+  redacts every `token=` URL value by name. It skips only a literal `?token=`
+  immediately after a companion-supplied `https://host/path` prefix whose local
+  boundary and preceding text prove it is not nested in another destination,
+  whose value is one URL-safe/base64 run plus closers, and which no earlier pass
+  claimed. The companion must list the host in `exempt_exact_hosts()` too, or
+  earlier base64/query heuristics can redact the URL before pass 4. The
+  preceding-text guard rejects URL, backslash, scheme and HTML
+  destination signals — any `&` (character reference) or `<` (tag) counts, scanned
+  over the raw text and never decoded — after blanking earlier links that already
+  passed the exemption together with their own `<` autolink opener, so a list of
+  approval links remains usable without making whitespace a trust boundary.
+  Context-incomplete streaming windows never apply the exemption; the complete
+  stored message may apply it when the destination guards can inspect all prior text.
+  While the prefix set is non-empty, the dashboard's per-delta redaction of the text
+  it accumulates for that stored message leaves pass 4 to the whole-segment run
+  (`redact_credentials(..., defer_token_param=True)`), so a delta cut inside the
+  link cannot redact a value the whole text would exempt; every other pass still
+  runs per delta, and the live wire window still redacts the value.
+  For links the user must open whose token is a lookup key, e.g. a one-time
+  approval workflow. Read lazily on the first pass-4 match via
+  `installed_context()` (declared in `PEEK_CALLERS`) with the same degrade
+  contract as `exempt_exact_hosts`: no context, a pre-method adapter, an
+  exception or a member without a path all mean MORE redaction. The display
+  redaction memo folds the prefix set into its key. Public default:
+  `frozenset()`; never sourced from `config.json`.
   The set is read via `installed_context()`, so a process with no installed
   context takes that same empty set WITHOUT resolving one: resolving would load
   config and discover entry points per call, and on a non-standalone profile
