@@ -5441,6 +5441,7 @@ async def switch_slot_agent(
         # silently erase an action that happened after the agent pick).
         pre_await_workspace = slot.workspace
         pre_await_project = slot.project
+        pre_await_project_cleared = slot.project_cleared
         pre_await_memory_store = slot.memory_store
 
         # Resolve workspace from agent bindings. The response value is seeded
@@ -5674,7 +5675,14 @@ async def switch_slot_agent(
         if slot.workspace == pre_await_workspace:
             slot.workspace = _CommitToken(new_workspace)
             committed_workspace = slot.workspace
-        if slot.project == pre_await_project:
+        if slot.project == pre_await_project and slot.project_cleared == pre_await_project_cleared:
+            # The marker joins this compare because the project VALUE alone cannot see a
+            # clear: clearing an already-empty project leaves the value at "" and only
+            # raises the marker, so a project-only compare still passes and the rollback
+            # below would restore the marker to its pre-await False, silently retracting a
+            # clear this request never owned.
+            # No retraction here: the setter does it, and only for a TRUTHY binding. A switch
+            # to an agent with no workspace and no folder leaves ``new_project`` empty.
             slot.project = _CommitToken(new_project)
             committed_project = slot.project
         # The store is the THIRD field of that binding, and leaving it behind
@@ -5714,6 +5722,7 @@ async def switch_slot_agent(
                 slot.workspace = pre_await_workspace
             if committed_project is not None and slot.project is committed_project:
                 slot.project = pre_await_project
+                slot.project_cleared = pre_await_project_cleared
             if committed_memory_store is not None and slot.memory_store is committed_memory_store:
                 slot.memory_store = pre_await_memory_store
             # Re-mark unconditionally: the periodic flush writes a slot's
@@ -8190,6 +8199,7 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
             )
         prior_workspace = slot.workspace
         prior_project = slot.project
+        prior_project_cleared = slot.project_cleared
         # Commit as identity tokens (the agent handler's _CommitToken
         # precedent): ``slot.project`` has lock-free writers -- the in-turn
         # set_project directive lands during the reset await -- so a rollback
@@ -8216,6 +8226,9 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
                 slot.workspace = prior_workspace
             if slot.project is committed_project:
                 slot.project = prior_project
+                # Identity-gated like the project it accompanies: the marker carries
+                # no identity, so an unconditional restore erases a concurrent clear.
+                slot.project_cleared = prior_project_cleared
             slot._dirty = True
 
         # skip_if_busy: message dispatch does not take slot._lock, so a send
@@ -8417,6 +8430,7 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
         if denied is not None:
             return denied
         old_project = slot.project
+        old_project_cleared = slot.project_cleared
         # _CommitToken (identity-gated rollback), the agent handler's pattern:
         # slot.project has unlocked writers (the in-turn set_project directive
         # writes this field without the lock, and may legitimately write the
@@ -8425,6 +8439,9 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
         # would erase it; a per-request identity token can.
         committed_project = _CommitToken(project)
         slot.project = committed_project
+        # An empty body is the OTHER way a project is removed, so the clear is
+        # recorded here too -- keyed on the same emptiness the save below uses.
+        slot.project_cleared = not project
         logger.info("Slot %s project set to %r", name, project)
         sel().log_api_access(
             caller=request.get("user", "dashboard"),
@@ -8446,11 +8463,16 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
         # Reset the session so the next message cold-starts with the new CWD and
         # picks up project-level .kiro/steering/**/*.md (mirrors api_chat_slot_agent).
         # Only on an actual change — avoids a needless cold start on a no-op set.
+        # The MARKER counts as a change, not just the project text: a slot with no
+        # project can still be bound to a session resumed onto a stored cwd, so
+        # clearing an already-empty project has to tear that binding down even
+        # though the text did not move. A text-only gate leaves the turn running
+        # in the directory the user removed.
         #
         # Deferred via a flag because this endpoint is reachable over loopback HTTP
         # from inside the kiro-cli process group (the set_project MCP tool); an
         # inline reset would killpg() the caller. Consumed in chat_runner.
-        if project != old_project:
+        if project != old_project or slot.project_cleared != old_project_cleared:
             if effective_session_key(slot) != session_key:
                 # The slot was bound to a different session while the
                 # recent-project save awaited: arming the flag with the key
@@ -8466,6 +8488,14 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
                 # same 409 the sibling switch handlers use.
                 if slot.project is committed_project:
                     slot.project = old_project
+                    # Identity-gated: the marker carries no identity of its own, so
+                    # an unconditional restore would erase a concurrent clear.
+                    slot.project_cleared = old_project_cleared
+                # Re-marked for the same reason the sibling switch handler's rollback
+                # is: the flush runs unlocked and may already have written the
+                # provisional commit during the recent-project await above, so without
+                # this the rejected project outlives the 409 on disk.
+                slot._dirty = True
                 return web.json_response(
                     {
                         "error": "slot session was rebound during the switch",
@@ -8479,6 +8509,12 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
             # deferred reset itself, but only when no turn is running — the
             # same killpg constraint that deferred the reset applies to it.
             schedule_eager_spawn(state, slot, start_priority=owner_start_priority(request))
+        # Mark for the periodic flush (the workspace handler's precedent): the flush
+        # writes a slot's metadata line only while ``_dirty`` is set, and nothing else
+        # on this path sets it, so a crash before the next turn's save restores the old
+        # project over a clear this endpoint already answered 200 to. Unconditional
+        # because emptying an already-empty project moves the marker on its own.
+        slot._dirty = True
     state.push_slots_update()
     return web.json_response({"ok": True, "project": project})
 
