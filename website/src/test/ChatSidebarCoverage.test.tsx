@@ -328,6 +328,26 @@ describe('ChatSidebar — Switch All Sessions panel', () => {
     expect(skip).toBeChecked()
   })
 
+  it('says the conversation is kept and warns only once running sessions will switch', async () => {
+    renderSidebar({ slots: SLOTS })
+    await openHeaderPanel('Switch all to model…')
+    expect(screen.getByText(/The conversation is kept and continues on the new model\./)).toBeTruthy()
+    expect(screen.queryByText(/resets its conversation/)).toBeNull()
+    // Skip is ticked by default, so nothing running is at risk and no caveat shows.
+    expect(screen.queryByTestId('bulk-model-running-caveat')).toBeNull()
+    fireEvent.click(screen.getByRole('checkbox'))
+    const caveat = screen.getByTestId('bulk-model-running-caveat')
+    expect(caveat.textContent).toBe('Running sessions switch too, and their current reply is stopped.')
+    expect(caveat.className).toContain('text-danger')
+  })
+
+  it('omits the running-reply caveat when no session is running', async () => {
+    renderSidebar({ slots: SLOTS.map(s => ({ ...s, running: false })) })
+    await openHeaderPanel('Switch all to model…')
+    expect(screen.getByText(/The conversation is kept/)).toBeTruthy()
+    expect(screen.queryByTestId('bulk-model-running-caveat')).toBeNull()
+  })
+
   it('reports a partial failure and keeps the panel open', async () => {
     mocks.chatSlotsModel.mockResolvedValue({ ok: true, failed: ['k-a'] })
     renderSidebar({ slots: SLOTS })

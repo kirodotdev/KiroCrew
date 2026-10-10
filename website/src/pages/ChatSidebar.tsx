@@ -4671,12 +4671,19 @@ function ChatSidebar({
       })()}
 
       {/* Switch-all-to-model dialog — mirrors the Clean Up panel. Picking a
-       *  model applies it to every live session (each switch resets that
-       *  session); running sessions are skipped by default. */}
+       *  model applies it to every live session; running sessions are skipped
+       *  by default. A switch restarts each session's agent process and keeps
+       *  its conversation: the next turn resumes it on the new model. The one
+       *  thing a switch can destroy is a reply in flight, and only for a
+       *  running session left unskipped, so the red caveat renders only once
+       *  the skip box is cleared with some session running. */}
       {bulkModelOpen && (
         <div className="mx-2 mb-2 p-3 rounded-lg bg-bg border border-border shadow-md text-sm animate-rise">
           <div className="font-medium text-text-strong mb-2"><Cpu size={14} className="lucide-inline" /> {i18nT('pages.chatSidebar.switch_all_sessions')}</div>
-          <div className="text-muted text-[12px] mb-2">{i18nT('pages.chatSidebar.pick_a_model_for_every_session_switching_a_sessi')} <span className="text-danger">{i18nT('pages.chatSidebar.resets_its_conversation')}</span>.</div>
+          <div className="text-muted text-[12px] mb-2">
+            {i18nT('pages.chatSidebar.bulk_switch_keeps_conversation')}
+            {bulkRunningCount > 0 && !bulkSkipRunning && <> <span data-testid="bulk-model-running-caveat" className="text-danger">{i18nT('pages.chatSidebar.bulk_switch_stops_running_reply')}</span></>}
+          </div>
           {bulkModelsFailed && (
             <div className="flex flex-wrap items-center gap-2 mb-2">
               {/* No hand-off: the chosen bulkModel/skipRunning selection is unsaved,
