@@ -80,6 +80,41 @@ def _log_safe(text: str) -> str:
     return "".join(out) or "?"
 
 
+def drop_gate_withheld(refs: list[str]) -> list[str]:
+    """*refs* without the ones whose managed server a closed ``spec_gate`` withholds.
+
+    A managed server with a closed gate (``kirocrew-computer`` on Linux, or with
+    Computer Use off) is omitted from every emitted spec ON PURPOSE, while its
+    ``@server`` ref stays in ``tools`` so the grant comes back when the gate
+    opens. Its absence from the wire is therefore the healthy state, not a
+    finding, and reporting it put "declared by the agent spec but not
+    configured" into every session's model-facing summary.
+    ``kirocrew doctor`` already skips the same case through
+    ``_spec_gate_closed()``.
+
+    Only a gate that ANSWERS closed drops its ref, through
+    ``agent._spec_gate_answers_closed``, the same predicate doctor's
+    ``_spec_gate_closed()`` calls. A gate that raises keeps the ref reported:
+    emission withholds such a server to stay safe, but a diagnostic that also
+    went quiet would hide the broken gate, and "closed" is exactly what silences
+    the finding. An unreadable registry drops nothing, for the same reason.
+    """
+    if not refs:
+        return refs
+    try:
+        from kiro_crew import agent as agent_mod
+
+        names = list(agent_mod._MANAGED_MCP_SERVERS)
+        answers_closed = agent_mod._spec_gate_answers_closed
+    except Exception:
+        logger.debug("managed MCP registry unreadable; dropping no refs", exc_info=True)
+        return refs
+    withheld = {name for name in names if answers_closed(name)}
+    if not withheld:
+        return refs
+    return [ref for ref in refs if ref.lstrip("@") not in withheld]
+
+
 def warn_unresolved_server_refs(
     spec: Any,
     wire_servers: Any,
@@ -113,7 +148,7 @@ def warn_unresolved_server_refs(
     channel is the projection. Reading the line without knowing which world it
     came from is what made this defect take three diagnoses.
     """
-    raw = unresolved_server_refs(spec, wire_servers, backend=backend)
+    raw = drop_gate_withheld(unresolved_server_refs(spec, wire_servers, backend=backend))
     if not raw:
         return []
     unresolved = [safe for safe in (sanitize_sink_text(ref, NAME_CAP) for ref in raw) if safe]

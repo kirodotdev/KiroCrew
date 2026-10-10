@@ -1212,3 +1212,86 @@ class TestTheSpawnHopCarriesTheSnapshot:
         hop = inspect.getsource(AcpClient._prepare_spawn_workspace)
         assert "ensure_directory(self._work_dir)" in hop
         assert "self._mcp_ref_spec = self._read_mcp_ref_spec()" in hop
+
+
+class TestGateWithheldServers:
+    """A managed server a closed ``spec_gate`` withholds is not a finding."""
+
+    _SPEC = {"tools": ["@kirocrew-computer", "@glean"], "mcpServers": {}}
+
+    def _gate(self, monkeypatch, closed):
+        is_open = "kirocrew-computer" not in closed
+        self._set_gate(monkeypatch, lambda: is_open)
+
+    @staticmethod
+    def _set_gate(monkeypatch, gate):
+        entry = dict(agent_mod._MANAGED_MCP_SERVERS["kirocrew-computer"], spec_gate=gate)
+        monkeypatch.setitem(agent_mod._MANAGED_MCP_SERVERS, "kirocrew-computer", entry)
+
+    def test_a_gate_withheld_ref_is_not_reported(self, monkeypatch, caplog):
+        self._gate(monkeypatch, {"kirocrew-computer"})
+        with caplog.at_level(logging.WARNING, logger=mcp_ref_guard.__name__):
+            found = warn_unresolved_server_refs(
+                self._SPEC, [], backend=ACP_BACKEND_CODEX, agent="a", gateway_enabled=False
+            )
+        assert found == ["@glean"]
+        assert "kirocrew-computer" not in caplog.records[-1].getMessage()
+
+    def test_only_withheld_refs_means_no_warning_at_all(self, monkeypatch, caplog):
+        self._gate(monkeypatch, {"kirocrew-computer"})
+        spec = {"tools": ["@kirocrew-computer"], "mcpServers": {}}
+        with caplog.at_level(logging.WARNING, logger=mcp_ref_guard.__name__):
+            found = warn_unresolved_server_refs(
+                spec, [], backend=ACP_BACKEND_CODEX, agent="a", gateway_enabled=False
+            )
+        assert found == []
+        assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+
+    def test_an_open_gate_ref_is_still_reported(self, monkeypatch):
+        self._gate(monkeypatch, set())
+        found = warn_unresolved_server_refs(
+            self._SPEC, [], backend=ACP_BACKEND_CODEX, agent="a", gateway_enabled=False
+        )
+        assert found == ["@glean", "@kirocrew-computer"]
+
+    def test_a_raising_gate_keeps_its_ref_reported(self, monkeypatch):
+        # Emission withholds the server; the diagnostic still names it, as doctor does.
+        from kiro_crew.agent_materialization import managed_mcp
+
+        def boom():
+            raise RuntimeError("unreadable keystone")
+
+        self._set_gate(monkeypatch, boom)
+        assert "kirocrew-computer" in managed_mcp._gated_off_servers()
+        found = warn_unresolved_server_refs(
+            self._SPEC, [], backend=ACP_BACKEND_CODEX, agent="a", gateway_enabled=False
+        )
+        assert found == ["@glean", "@kirocrew-computer"]
+
+    def test_an_unreadable_registry_drops_nothing(self, monkeypatch):
+        class Broken(dict):
+            def __iter__(self):
+                raise RuntimeError("registry unreadable")
+
+        monkeypatch.setattr(agent_mod, "_MANAGED_MCP_SERVERS", Broken())
+        assert mcp_ref_guard.drop_gate_withheld(["@kirocrew-computer"]) == ["@kirocrew-computer"]
+
+    def test_doctor_and_the_report_share_one_predicate(self, monkeypatch):
+        from kiro_crew import cli_doctor
+
+        calls = []
+
+        def spy(name):
+            calls.append(name)
+            return True
+
+        monkeypatch.setattr(agent_mod, "_spec_gate_answers_closed", spy)
+        assert cli_doctor._spec_gate_closed("kirocrew-computer") is True
+        assert mcp_ref_guard.drop_gate_withheld(["@kirocrew-computer"]) == []
+        assert calls[0] == "kirocrew-computer" and "kirocrew-computer" in calls[1:]
+
+    def test_doctors_static_rows_apply_the_same_filter(self):
+        from kiro_crew.agent_sdk.drivers import acp as acp_driver
+
+        src = inspect.getsource(acp_driver.agent_spec_mcp_refs)
+        assert "drop_gate_withheld(unresolved_server_refs(" in src
