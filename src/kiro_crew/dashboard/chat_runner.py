@@ -618,9 +618,11 @@ from kiro_crew.trust_patterns import (  # noqa: F401 -- compatibility re-export
 )
 from kiro_crew.validation import ValidationError, validate_ask_user_question
 from kiro_crew.wakatime.heartbeats import (  # noqa: F401
+    CADENCE_MIN_INTERVAL_SECS,
     is_coding_event,
     line_changes_from_file_changes,
     note_coding_activity,
+    note_coding_cadence,
 )
 from kiro_crew.widget_artifacts import register_widgets_off_loop
 
@@ -9515,12 +9517,41 @@ async def _run_chat(
     _wt_coded_this_turn = False
     _wt_deciding_coding = False
     _wt_pending_dropped = 0
+    # Monotonic timestamp of the last cadence heartbeat emitted this turn, so
+    # confirmation-time emission is throttled to CADENCE_MIN_INTERVAL_SECS and
+    # does not flood WakaTime's ~2-minute buckets. 0.0 means none emitted yet.
+    _wt_last_cadence = 0.0
+
+    def _wt_maybe_cadence() -> None:
+        """Emit a throttled cadence heartbeat for CONFIRMED coding activity.
+
+        Fires only after a coding call is confirmed by an approved permission
+        decision, never at pre-decision announcement, so a denied tool never
+        produces a row. Same scope as the end-of-turn beat: interactive user
+        turns only, never a restricted or app slot, and never a gateway-restart
+        replay whose actor stamp was lost. Throttled per turn so a burst of
+        coding calls yields one beat, giving WakaTime intra-turn timestamps to
+        accrue duration without flooding its ~2-minute buckets.
+        """
+        nonlocal _wt_last_cadence
+        if (
+            _crew_log_actor != "user"
+            or _turn_provenance_restored
+            or slot.is_restricted
+            or slot._app
+        ):
+            return
+        _wt_now = time.monotonic()
+        if _wt_last_cadence == 0.0 or _wt_now - _wt_last_cadence >= CADENCE_MIN_INTERVAL_SECS:
+            _wt_last_cadence = _wt_now
+            note_coding_cadence(_wt_turn_project)
 
     def _wt_note_approved(event) -> None:  # noqa: ANN001 -- ACP event union
         """Count one approved coding call without retaining its id."""
         nonlocal _wt_coded_this_turn, _wt_deciding_coding
         if _wt_deciding_coding:
             _wt_coded_this_turn = True
+            _wt_maybe_cadence()
         _wt_deciding_coding = False
 
     # Positive backend provenance for builtin identity. It starts fail-closed and
@@ -12750,6 +12781,20 @@ async def _run_chat(
             elif event.kind == EVENT_TOOL_RESULT:
                 if event.tool_final and event.tool_call_id:
                     _turn_successful_tool_call_ids.add(event.tool_call_id)
+                    # An auto-approved coding tool reaches its completed frame
+                    # without ever passing through a permission decision, so
+                    # _wt_note_approved never emitted a cadence beat for it and
+                    # its key is still pending (an approved tool's key was
+                    # drained at EVENT_PERMISSION_REQUEST and already got its
+                    # beat). Emit the throttled beat here, where the tool has
+                    # demonstrably executed, so a turn of pre-authorized coding
+                    # tools accrues intra-turn duration like a prompted one. The
+                    # key stays pending for the end-of-turn attribution beat;
+                    # this only adds the mid-turn timestamp. Same throttle and
+                    # scope guard as the per-approval path.
+                    _wt_result_key = _tcid_identity_key(event.tool_call_id)
+                    if _wt_result_key and _wt_result_key in _wt_pending_coding:
+                        _wt_maybe_cadence()
                 _out = _redact_tool_field(event.tool_output)
                 # Redact the join key once for the WS broadcast and the
                 # message-meta comparison below. `_tool_meta` stores the
