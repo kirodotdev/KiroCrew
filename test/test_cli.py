@@ -5549,13 +5549,73 @@ class TestDoctorStt:
             patch("kiro_crew.cli_doctor.config_dir", return_value=tmp_path),
             patch("kiro_crew.cli_doctor.probe_server", side_effect=_noop_probe_server),
             patch("kiro_crew.slack.enterprise.validate_enterprise", return_value=True),
-            patch.dict("sys.modules", modules or {}),
+            pytest.MonkeyPatch.context() as _mp,
         ):
+            # Fake ONLY the named sys.modules keys, each restored to its exact prior
+            # state (present, absent or None) on exit. A whole-dict
+            # patch.dict("sys.modules", ...) would instead evict a submodule this
+            # run imports for the first time inside the block
+            # (kiro_crew.acp.skill_projection, reached lazily via the ACP driver),
+            # leaving the kiro_crew.acp package attribute pointing at a now-orphan
+            # module object -- cross-test pollution a co-runner then trips over.
+            # setitem is the scoped restore testing-conventions D11 mandates.
+            for _name, _mod in (modules or {}).items():
+                _mp.setitem(sys.modules, _name, _mod)
             try:
                 _doctor()
             except SystemExit as exc:
                 code = int(exc.code or 0)
         return capsys.readouterr().out, code
+
+    def test_report_module_faking_does_not_evict_lazily_imported_modules(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """``_report``'s ``modules=`` faking must not corrupt a co-runner's module identity.
+
+        The doctor run inside ``_report`` reaches ``kiro_crew.acp.skill_projection``
+        lazily (through the ACP driver), so on a cold xdist worker that submodule is
+        imported for the FIRST time inside the module-faking block. The faking must
+        leave it in place: after ``_report`` returns, ``sys.modules``, the
+        ``kiro_crew.acp`` package attribute and a re-import all have to name one
+        module object.
+
+        A whole-dict ``patch.dict("sys.modules", ...)`` restores its entry snapshot
+        on exit and so evicts that submodule while the package attribute still
+        names it. A later test on the same worker then re-imports it as a second
+        object, monkeypatches that one, and the runtime's function-local
+        ``from kiro_crew.acp.skill_projection import ...`` resolves the unpatched
+        real preparer. This drives the real helper, so it fails on that restore.
+        """
+        import importlib
+
+        name = "kiro_crew.acp.skill_projection"
+        # Drop every trace so the doctor's import is a genuine first import, the
+        # window a cold xdist worker hits. monkeypatch puts both back at teardown.
+        acp_pkg = importlib.import_module("kiro_crew.acp")
+        monkeypatch.delitem(sys.modules, name, raising=False)
+        monkeypatch.delattr(acp_pkg, "skill_projection", raising=False)
+
+        faked = {
+            "amazon_transcribe": MagicMock(),
+            "amazon_transcribe.client": MagicMock(),
+            "boto3": MagicMock(),
+        }
+        # Each faked key's prior state: real modules on a host with the voice extra,
+        # absent on one without. The pin asserts restoration of THIS state, so it is
+        # host-independent.
+        missing = object()
+        before = {k: sys.modules.get(k, missing) for k in faked}
+
+        self._report(tmp_path, capsys, modules=faked)
+
+        for k in faked:
+            assert sys.modules.get(k, missing) is before[k]
+        # The doctor really did import the submodule inside the block; without this
+        # the identity assertions below would pass vacuously.
+        survivor = getattr(acp_pkg, "skill_projection", None)
+        assert survivor is not None, "the doctor run no longer imports skill_projection"
+        assert sys.modules.get(name) is survivor
+        assert importlib.import_module(name) is survivor
 
     def test_doctor_stt_local_engine_and_model_ready(self, tmp_path, capsys, monkeypatch):
         """The ready state names the resolved catalog model AND where it sits, so
