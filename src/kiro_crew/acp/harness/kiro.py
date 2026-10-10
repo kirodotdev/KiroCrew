@@ -21,6 +21,7 @@ from typing import Any
 # compared by identity, never substituted.
 from kiro_crew import agent as agent_mod
 from kiro_crew import sandbox as sandbox_mod
+from kiro_crew.acp import managed_agent_shadow as managed_shadow_mod
 from kiro_crew.acp.child_env_defaults import apply_child_env_defaults
 from kiro_crew.acp.harness._common import (
     KIRO_FAMILY_ALIASES,
@@ -111,6 +112,14 @@ class KiroHarness(MembershipHarness):
             await asyncio.to_thread(agent_mod.require_fork_governance, ctx.agent, ctx.work_dir)
         except ForkGovernanceUnresolved as exc:
             raise AcpRuntimeError(str(exc)) from exc
+        # kiro-cli resolves ``--agent`` against ``ctx.work_dir`` first, so a checkout
+        # that declares a managed agent name would run its own copy in place of the
+        # installed one. Off the loop: it scans the checkout's agents directory.
+        shadowed = await asyncio.to_thread(
+            managed_shadow_mod.managed_agent_shadow_refusal, ctx.agent, ctx.work_dir
+        )
+        if shadowed:
+            raise AcpRuntimeError(shadowed)
 
         overlap = await asyncio.to_thread(
             sandbox_mod.delegated_workspace_exposes_sealed_target, ctx.work_dir
