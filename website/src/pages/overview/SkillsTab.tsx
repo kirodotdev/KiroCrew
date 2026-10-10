@@ -1015,9 +1015,11 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, related,
           <ul className="mt-0.5 space-y-1">
             {related.map(item => (
               <li key={item.target} className="min-w-0 space-y-0.5">
-                <button
+                {/* The shared Btn, restyled as a text link: twMerge lets these
+                    classes override its padding, border and background. */}
+                <Btn
                   type="button"
-                  className="max-w-full truncate text-left text-accent underline underline-offset-2 hover:text-text-strong"
+                  className="inline-block max-w-full truncate rounded-none border-0 bg-transparent p-0 text-left text-[11px] text-accent underline underline-offset-2 hover:border-0 hover:bg-transparent hover:text-text-strong active:scale-100"
                   title={item.target}
                   onClick={() => onOpenRelated(p.slug, item.target)}
                 >
@@ -1025,7 +1027,7 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, related,
                   <span className="text-muted">
                     ({i18nT(RELATED_CLASSIFICATION_KEY[item.classification])})
                   </span>
-                </button>
+                </Btn>
                 {!isUpdate && item.canRestage && (
                   <div className="min-w-0">
                     <Btn

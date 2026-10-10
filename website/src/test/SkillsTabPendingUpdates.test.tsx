@@ -51,6 +51,12 @@ vi.mock('../components/DiffBlock', () => ({
 
 import SkillsTab from '../pages/overview/SkillsTab'
 
+// The audit modal sits behind SkillsTab's retryableLazy boundary
+// (pages/overview/SkillsAuditModal.tsx). A cold chunk import on a loaded CI
+// shard can outlast findBy*/waitFor's 1 s default, so every wait for the
+// modal, its query or its contents names this timeout.
+const LAZY_AUDIT_MOUNT = { timeout: 5000 }
+
 function renderWithQuery() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   // MemoryRouter: the pending-review panel reads (and clears) the `?review=<slug>`
@@ -219,7 +225,7 @@ describe('SkillsTab pending updates', () => {
       name: 'auto/deploy-helper (Covers this candidate)',
     }))
 
-    expect(await screen.findByTestId('skills-audit-modal')).toHaveTextContent('auto/deploy-helper')
+    expect(await screen.findByTestId('skills-audit-modal', undefined, LAZY_AUDIT_MOUNT)).toHaveTextContent('auto/deploy-helper')
     expect(screen.getByTestId('skills-audit-modal')).not.toHaveTextContent('auto/unrelated')
   })
 
@@ -341,10 +347,10 @@ describe('SkillsTab pending updates', () => {
     renderWithQuery()
 
     fireEvent.click(await screen.findByRole('button', { name: /Find overlapping skills/ }))
-    fireEvent.click(await screen.findByRole('button', { name: 'auto/gone-one' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'auto/gone-one' }, LAZY_AUDIT_MOUNT))
 
-    expect(await screen.findByTestId('skills-audit-selection-failure')).toBeTruthy()
-    await waitFor(() => expect(mockApi.skillsAudit).toHaveBeenCalledTimes(2))
+    expect(await screen.findByTestId('skills-audit-selection-failure', undefined, LAZY_AUDIT_MOUNT)).toBeTruthy()
+    await waitFor(() => expect(mockApi.skillsAudit).toHaveBeenCalledTimes(2), LAZY_AUDIT_MOUNT)
   })
 
   it('shows loading, then an empty state, in the related-skills modal', async () => {
@@ -363,9 +369,9 @@ describe('SkillsTab pending updates', () => {
     renderWithQuery()
 
     fireEvent.click(await screen.findByRole('button', { name: /Find overlapping skills/ }))
-    expect(await screen.findByTestId('skills-audit-loading')).toBeTruthy()
+    expect(await screen.findByTestId('skills-audit-loading', undefined, LAZY_AUDIT_MOUNT)).toBeTruthy()
     resolveAudit({ clusters: [] })
-    expect(await screen.findByTestId('skills-audit-empty')).toHaveTextContent('No overlapping skills.')
+    expect(await screen.findByTestId('skills-audit-empty', undefined, LAZY_AUDIT_MOUNT)).toHaveTextContent('No overlapping skills.')
   })
 
   it('shows the server-computed diff with the version transition on Review', async () => {

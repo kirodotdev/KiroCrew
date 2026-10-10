@@ -4,8 +4,14 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import ErrorNotice from '../../components/ErrorNotice'
 import Modal from '../../components/Modal'
+import { Btn } from '../../components/ui'
 import { fmtPercent } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
+
+/** Text-link styling for a shared `Btn`: twMerge drops Btn's own padding,
+ *  border, background and press scale in favour of these classes. */
+const AUDIT_LINK_CLASS =
+  'inline-block min-w-0 max-w-full truncate rounded-none border-0 bg-transparent p-0 text-left text-[12px] text-accent underline underline-offset-2 hover:border-0 hover:bg-transparent hover:text-text-strong active:scale-100'
 
 export interface SkillAuditMember {
   id: string
@@ -163,9 +169,11 @@ export default function SkillsAuditModal({
               <ul className="mt-1 space-y-0.5 text-[12px] text-muted">
                 {visibleMembers.map(member => (
                   <li key={member.id} className="flex min-w-0 items-center gap-1.5">
-                    <button
+                    {/* The shared Btn, restyled as a text link: twMerge lets these
+                        classes override its padding, border and background. */}
+                    <Btn
                       type="button"
-                      className="min-w-0 truncate text-left text-accent underline underline-offset-2 hover:text-text-strong"
+                      className={AUDIT_LINK_CLASS}
                       translate="no"
                       title={member.name}
                       onClick={() => {
@@ -179,7 +187,7 @@ export default function SkillsAuditModal({
                       }}
                     >
                       {member.name}
-                    </button>
+                    </Btn>
                     {member.kind === 'pending' && (
                       <span
                         className="shrink-0 rounded border border-border px-1 text-[10px] uppercase tracking-wide"

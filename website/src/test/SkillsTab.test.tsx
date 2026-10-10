@@ -60,6 +60,12 @@ vi.mock('../components/SkillDirectoryBrowser', () => ({
 import SkillsTab from '../pages/overview/SkillsTab'
 import { ERROR_HANDOFF_KEY, recordError, __resetErrorJournalForTests } from '../utils/errorReport'
 
+// The audit modal sits behind SkillsTab's retryableLazy boundary
+// (pages/overview/SkillsAuditModal.tsx). A cold chunk import on a loaded CI
+// shard can outlast findBy*/waitFor's 1 s default, so every wait for the
+// modal, its query or its contents names this timeout.
+const LAZY_AUDIT_MOUNT = { timeout: 5000 }
+
 function renderWithQuery() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
   // MemoryRouter: the pending-review panel reads (and clears) the `?review=<slug>`
@@ -117,10 +123,10 @@ describe('SkillsTab', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Find overlapping skills' }))
 
-    await waitFor(() => expect(mockApi.skillsAudit).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(mockApi.skillsAudit).toHaveBeenCalledTimes(1), LAZY_AUDIT_MOUNT)
     // Await an element that only exists once audit results render. /Overlapping/
     // also matches the modal title, which renders before the results arrive.
-    expect(await screen.findByTestId('skills-audit-similarity')).toHaveTextContent('50% similar')
+    expect(await screen.findByTestId('skills-audit-similarity', undefined, LAZY_AUDIT_MOUNT)).toHaveTextContent('50% similar')
     expect(screen.getByRole('button', { name: 'deploy-one' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'deploy-two' }))
     await waitFor(() =>
@@ -157,9 +163,9 @@ describe('SkillsTab', () => {
     await waitFor(() => expect(screen.getByText('Save')).toBeInTheDocument())
 
     fireEvent.click(screen.getByRole('button', { name: 'Find overlapping skills' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'deploy-two' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'deploy-two' }, LAZY_AUDIT_MOUNT))
 
-    expect(await screen.findByTestId('skills-audit-selection-failure')).toHaveTextContent(
+    expect(await screen.findByTestId('skills-audit-selection-failure', undefined, LAZY_AUDIT_MOUNT)).toHaveTextContent(
       'Save or cancel your open skill draft first, then pick another skill.',
     )
     const draftNotice = screen.getByTestId('skills-audit-selection-failure')
@@ -188,7 +194,7 @@ describe('SkillsTab', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Find overlapping skills' }))
 
-    const failures = await screen.findAllByTestId(/audit.*failure/)
+    const failures = await screen.findAllByTestId(/audit.*failure/, undefined, LAZY_AUDIT_MOUNT)
     for (const failure of failures) {
       expect(within(failure).queryByRole('button', { name: /agent/i })).toBeNull()
       expect(within(failure).queryByRole('link', { name: /agent/i })).toBeNull()
@@ -220,7 +226,7 @@ describe('SkillsTab', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Find overlapping skills' }))
 
-    expect(await screen.findByTestId('skills-audit-omitted-relations')).toHaveTextContent('+4')
+    expect(await screen.findByTestId('skills-audit-omitted-relations', undefined, LAZY_AUDIT_MOUNT)).toHaveTextContent('+4')
     expect(screen.getByTestId('skills-audit-omitted-update-targets')).toHaveTextContent(
       '+2 update suggestions not shown',
     )
@@ -1483,7 +1489,7 @@ describe('SkillsTab audit result bounds', () => {
     renderWithQuery()
     fireEvent.click(await screen.findByRole('button', { name: 'Find overlapping skills' }))
 
-    expect(await screen.findByTestId('skills-audit-similarity')).toHaveTextContent('91% similar')
+    expect(await screen.findByTestId('skills-audit-similarity', undefined, LAZY_AUDIT_MOUNT)).toHaveTextContent('91% similar')
     expect(screen.getByRole('button', { name: 'member-7' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'member-8' })).not.toBeInTheDocument()
     expect(screen.getByText('+2 more')).toBeInTheDocument()
@@ -1563,8 +1569,8 @@ describe('SkillsTab audit result bounds', () => {
     renderWithQuery()
     fireEvent.click(await screen.findByRole('button', { name: 'Find overlapping skills' }))
 
-    expect(await screen.findByText('Overlapping skills')).toBeInTheDocument()
-    expect(await screen.findAllByTestId('skills-audit-pending-badge')).toHaveLength(1)
+    expect(await screen.findByText('Overlapping skills', undefined, LAZY_AUDIT_MOUNT)).toBeInTheDocument()
+    expect(await screen.findAllByTestId('skills-audit-pending-badge', undefined, LAZY_AUDIT_MOUNT)).toHaveLength(1)
     fireEvent.click(screen.getByRole('button', { name: 'auto/gone' }))
 
     expect(screen.getByTestId('skills-audit-modal')).toBeInTheDocument()

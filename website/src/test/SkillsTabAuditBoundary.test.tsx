@@ -24,6 +24,12 @@ vi.mock('../pages/overview/SkillsAuditModal', () => ({
 
 import SkillsTab from '../pages/overview/SkillsTab'
 
+// The audit modal sits behind SkillsTab's retryableLazy boundary
+// (pages/overview/SkillsAuditModal.tsx). A cold chunk import on a loaded CI
+// shard can outlast findBy*/waitFor's 1 s default, so every wait for the
+// modal, its query or its contents names this timeout.
+const LAZY_AUDIT_MOUNT = { timeout: 5000 }
+
 beforeEach(() => {
   Object.values(mockApi).forEach(m => m.mockReset())
   mockApi.skills.mockResolvedValue([])
@@ -43,7 +49,7 @@ describe('SkillsTab audit modal crash isolation', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Find overlapping skills' }))
 
-    expect(await screen.findByText('Something went wrong')).toBeTruthy()
+    expect(await screen.findByText('Something went wrong', undefined, LAZY_AUDIT_MOUNT)).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Find overlapping skills' })).toBeTruthy()
   })
 
@@ -69,7 +75,7 @@ describe('SkillsTab audit modal crash isolation', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Find overlapping skills' }))
 
-    expect(await screen.findByText('Something went wrong')).toBeTruthy()
+    expect(await screen.findByText('Something went wrong', undefined, LAZY_AUDIT_MOUNT)).toBeTruthy()
     expect(screen.queryByRole('button', { name: /agent/i })).toBeNull()
     expect(screen.queryByRole('link', { name: /agent/i })).toBeNull()
     expect(screen.getByText('Save')).toBeTruthy()
