@@ -934,7 +934,9 @@ jobs:
           needs.sign-and-notarize-arm64.result == 'success' &&
           needs.sign-and-notarize-x64.result == 'success' }}
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && github.event_name == 'push' && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
-    timeout-minutes: 20
+    # 60, not 20: the assets now upload one at a time (see `preserve_order` on
+    # the Create GitHub Release step), several GB in all.
+    timeout-minutes: 60
     permissions:
       contents: write
     steps:
@@ -1341,6 +1343,15 @@ jobs:
       # into one separate action taken only once the upload finished.
       # Runs only on the create path. The steps above still ran, but they only
       # assemble locally, so a run the probe told to skip touches nothing remote.
+      #
+      # preserve_order uploads the assets ONE AT A TIME. The action's default is
+      # to start every upload at once, and since 0.9.0 ships three macOS DMG/zip
+      # pairs the set holds six files of about 1 GB each. On v0.9.0-insider.3 the
+      # step stopped with no error line twice, after 16 and then 8 of the assets;
+      # the most likely cause is the parallel upload exhausting the runner. With
+      # overwrite_files (the action's default) a rerun also deletes each asset
+      # just before it re-uploads it, so in parallel a rerun first empties the
+      # page; one at a time, at most one asset is missing at any moment.
       - name: Create GitHub Release
         if: steps.page.outputs.action == 'create'
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
@@ -1350,6 +1361,8 @@ jobs:
           draft: ${{ steps.page.outputs.draft }}
           prerelease: ${{ needs.version.outputs.channel == 'insider' }}
           files: release/*
+          preserve_order: true
+          fail_on_unmatched_files: true
 
   # Record the exact prerelease deliverables only after every publishing lane
   # succeeds. Stable resolves this immutable GitHub artifact by the successful
