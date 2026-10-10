@@ -10544,6 +10544,10 @@ class TestHostsFileWarmUp:
         # No live DNS, no netlink read, no real /etc/hosts, and no thread is
         # ever started: every spawn is recorded instead.  Every global the
         # code under test writes is pinned here so monkeypatch restores it.
+        # The gate runs on the gateway's event loop unless a test says
+        # otherwise; the no-loop tests put the real check back.
+        self._real_loop_check = getattr(_argv_floor, "_event_loop_running", None)
+        monkeypatch.setattr(_argv_floor, "_event_loop_running", lambda: True, raising=False)
         self.started: "list[str]" = []
         started = self.started
 
@@ -10603,6 +10607,11 @@ class TestHostsFileWarmUp:
         assert os.stat(hosts).st_size == _argv_floor._HOSTS_FILE_READ_CHUNK + 1
         return str(hosts)
 
+    def _real_loop(self, monkeypatch):
+        """Undo the fixture's on-loop pin: the gate sees this thread's real loop state."""
+        if self._real_loop_check is not None:
+            monkeypatch.setattr(_argv_floor, "_event_loop_running", self._real_loop_check)
+
     @staticmethod
     def _parser_must_not_run(monkeypatch):
         def _boom(*_a, **_k):
@@ -10639,6 +10648,53 @@ class TestHostsFileWarmUp:
         assert _denied_by("ssh dev-dsk uptime") is None
         assert _denied_by("ssh farbox uptime") is None
         assert _denied_by("ssh loopalias uptime") == self._RULE
+
+    def test_a_thread_with_no_event_loop_parses_a_large_file_in_call(self, monkeypatch):
+        # A process with no event loop (a cron-launched MCP server) gets no
+        # retry, so a cold gate there parses the large file in the call.
+        self._real_loop(monkeypatch)
+        path = self._big_hosts(monkeypatch, "10.4.4.4 farbox\n127.0.0.1 loopalias\n")
+        monkeypatch.setattr(_argv_floor, "_hosts_file_paths", lambda: (path,))
+        assert _denied_by("ssh dev-dsk uptime") is None
+        assert _denied_by("ssh farbox uptime") is None
+        assert _denied_by("ssh loopalias uptime") == self._RULE
+        assert path in _argv_floor._HOSTS_FILE_CACHE
+        assert "kirocrew-hosts-warm" not in self.started
+
+    def test_the_event_loop_thread_still_defers_a_large_file(self, monkeypatch):
+        self._real_loop(monkeypatch)
+        path = self._big_hosts(monkeypatch, "10.4.4.4 farbox\n")
+        monkeypatch.setattr(_argv_floor, "_hosts_file_paths", lambda: (path,))
+        self._parser_must_not_run(monkeypatch)
+
+        async def _on_loop():
+            return _denied_by("ssh dev-dsk uptime")
+
+        assert asyncio.run(_on_loop()) == self._RULE
+        assert self.started.count("kirocrew-hosts-warm") == 1
+
+    def test_a_no_loop_read_failure_is_pending_and_not_cached(self, monkeypatch):
+        self._real_loop(monkeypatch)
+        path = self._big_hosts(monkeypatch, "10.4.4.4 farbox\n")
+        monkeypatch.setattr(_argv_floor, "_hosts_file_paths", lambda: (path,))
+
+        def _eio(*_a, **_k):
+            raise OSError(5, "I/O error")
+
+        monkeypatch.setattr(_argv_floor, "_parse_hosts_file", _eio)
+        assert _denied_by("ssh farbox uptime") == self._RULE
+        assert path not in _argv_floor._HOSTS_FILE_CACHE
+
+    def test_a_no_loop_file_over_the_read_cap_is_read_truncated(self, monkeypatch):
+        # Past the read cap the no-loop parse truncates, as the warm does, so
+        # a name before the cap still gets a verdict instead of a refusal.
+        self._real_loop(monkeypatch)
+        chunk = _argv_floor._HOSTS_FILE_READ_CHUNK
+        monkeypatch.setattr(_argv_floor, "_HOSTS_FILE_READ_CAP", 2 * chunk)
+        path = self._hosts(monkeypatch, "10.4.4.4 farbox\n" + "#" * (3 * chunk) + "\n")
+        assert os.stat(path).st_size > 2 * chunk
+        assert _denied_by("ssh farbox uptime") is None
+        assert path in _argv_floor._HOSTS_FILE_CACHE
 
     def test_no_hosts_file_is_not_pending(self, monkeypatch):
         monkeypatch.setattr(

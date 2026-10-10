@@ -70,6 +70,8 @@ except ImportError:  # pragma: no cover - non-Linux platforms lack fcntl
 # the reader module rather than bound here at import: the facade mirrors a patch
 # onto the owning module's namespace, so a name bound into THIS namespace would
 # keep resolving the unpatched object and the instrument would count nothing.
+from kiro_crew.atomic_write import on_event_loop as _event_loop_running
+
 from . import shell_normalizer as _shell_normalizer
 from .denied_rules import _GIT_PUBLISH_UNGATED
 from .host_addresses import (  # noqa: F401  (parser re-imported as a test entry point)
@@ -1427,9 +1429,9 @@ _HOSTS_FILE_READ_CHUNK = 64 * 1024
 
 # path -> (key, {name -> maps-to-local}), key = (mtime, ctime, size, content
 # digest or None, published, own set).  Background threads parse
-# (``_warm_hosts_file_cache``).  On a miss the gate path parses in the
-# same call only a file no larger than one read chunk; a larger file
-# answers pending and schedules one warm thread.
+# (``_warm_hosts_file_cache``).  On a miss the gate path on an event loop
+# parses in the same call only a file no larger than one read chunk; a larger
+# file answers pending and schedules one warm thread.
 # A changed file, publication or own-address set is a new key, so an own
 # address learned later re-marks an alias.  Two threads
 # (the enrichment worker and the on-demand warm) may parse at once without a
@@ -1658,7 +1660,11 @@ def _hosts_file_verdict(host: str) -> "bool | None":
     refusal lasts only while the file cannot be read.  A larger file is
     not parsed here: the answer is True, a pending refusal, checked before
     any path's verdict is used, and one single-flight warm thread is
-    started; the same command succeeds once the warm lands.
+    started; the same command succeeds once the warm lands.  A thread with
+    no running event loop (a cron-launched MCP server, or a gateway worker
+    thread such as the cron fire-time vet) has no loop to keep free, so it
+    parses a larger file in the call exactly as the warm would, read up to
+    ``_HOSTS_FILE_READ_CAP`` and truncated past it.
 
     A same-size rewrite that restores mtime is a new key: on POSIX through
     ``st_ctime``, with no extra read; on Windows, where ``st_ctime`` is
@@ -1686,13 +1692,15 @@ def _hosts_file_verdict(host: str) -> "bool | None":
             return True
         cached = _HOSTS_FILE_CACHE.get(path)
         if cached is None or cached[0] != key:
-            if key[2] > _HOSTS_FILE_READ_CHUNK:
+            on_loop = _event_loop_running()
+            if key[2] > _HOSTS_FILE_READ_CHUNK and on_loop:
                 # Every call on an uncached key re-schedules the warm, so a
                 # retry does not hang on one thread that failed to start.
                 _schedule_hosts_file_warm()
                 return True
+            limit = _HOSTS_FILE_READ_CHUNK if on_loop else None
             try:
-                result = _parse_and_cache_for_key(path, key, limit=_HOSTS_FILE_READ_CHUNK)
+                result = _parse_and_cache_for_key(path, key, limit=limit)
             except OSError:
                 result = "changed"
             if isinstance(result, str):
