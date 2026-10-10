@@ -3002,6 +3002,18 @@ class DashboardConfig:
             "by hand is never changed. Takes effect on the next title; no restart.",
         ),
     )
+    upload_max_mb: int = field(
+        default=100,
+        metadata=_meta(
+            "Upload Size Limit (MB)",
+            "Largest file, in megabytes, the dashboard accepts from the chat "
+            "composer and the Knowledge upload (1-512). The Knowledge upload "
+            "is also bounded by knowledge.max_ingest_file_mb. Video keeps its own "
+            "512 MB ceiling. A chat upload is held in memory while its type is "
+            "checked, so a large value costs gateway memory per upload. Takes "
+            "effect on the next upload; no restart.",
+        ),
+    )
     mcp_probe_timeout_secs: int = field(
         default=15,
         metadata=_meta(
@@ -4053,6 +4065,14 @@ COMPLETION_KEEP_CHARS_MIN = 0
 # ``test_the_completion_keep_ceiling_matches_its_owner`` -- a test can import both
 # without the cycle, which is the only place the two spellings can be held together.
 COMPLETION_KEEP_CHARS_MAX = 512_000
+# ``dashboard.upload_max_mb``: the per-file ceiling for chat-composer and
+# Knowledge uploads. The ceiling bounds memory: a non-media chat upload is
+# buffered whole while its signature is checked. MAX must not exceed the video
+# ceiling (``handlers.files._MAX_VIDEO_UPLOAD_BYTES``, 512 MB): both composers
+# exempt video from their pre-check on the premise that video's cap is the
+# higher one. Pinned by ``test_video_ceiling_stays_above_the_document_cap``.
+UPLOAD_MAX_MB_MIN = 1
+UPLOAD_MAX_MB_MAX = 512
 MCP_PROBE_TIMEOUT_MIN = 5
 MCP_PROBE_TIMEOUT_MAX = 120
 # ``dashboard.title_refresh_every_turns``: 0 is "built-in schedule"; any other

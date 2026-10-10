@@ -23,7 +23,6 @@ if TYPE_CHECKING:
         _ALLOWED_VIDEO_EXT,
         _HEIF_BRANDS,
         _MAGIC_PREFIXES,
-        _MAX_UPLOAD_BYTES,
         _MAX_UPLOAD_FILES,
         _MAX_VIDEO_UPLOAD_BYTES,
         _MEDIA_EXT_MIME,
@@ -40,6 +39,7 @@ if TYPE_CHECKING:
         logger,
         part_stream,
         sniff_raster_mime,
+        upload_max_bytes,
     )
 
 
@@ -188,6 +188,10 @@ async def api_upload_file(request: web.Request) -> web.Response:
 
     upload_dir = _upload_dir()
     ensure_directory(upload_dir)  # 0700 in the data home: uploads are user files
+    # Read once per request, off the loop: a config load stats and may parse
+    # files. ``dashboard.upload_max_mb``; video keeps _MAX_VIDEO_UPLOAD_BYTES.
+    max_upload_bytes = await asyncio.to_thread(upload_max_bytes)
+    max_upload_mb = max_upload_bytes // 1024 // 1024
     reader = await request.multipart()
     paths: list[str] = []
     allowed = (
@@ -281,7 +285,7 @@ async def api_upload_file(request: web.Request) -> web.Response:
                 return web.json_response({"error": "Invalid filename"}, status=400)
             if ext in _ALLOWED_VIDEO_EXT or ext in _ALLOWED_AUDIO_EXT:
                 is_video = ext in _ALLOWED_VIDEO_EXT
-                max_bytes = _MAX_VIDEO_UPLOAD_BYTES if is_video else _MAX_UPLOAD_BYTES
+                max_bytes = _MAX_VIDEO_UPLOAD_BYTES if is_video else max_upload_bytes
                 accepted_exts = _ALLOWED_VIDEO_EXT if is_video else _ALLOWED_AUDIO_EXT
                 media_name = "video" if is_video else "audio"
                 # Media streams to an unpublished temp file because neither ACP
@@ -349,7 +353,7 @@ async def api_upload_file(request: web.Request) -> web.Response:
                 if not chunk:
                     break
                 data.extend(chunk)
-                if len(data) > _MAX_UPLOAD_BYTES:
+                if len(data) > max_upload_bytes:
                     await _cleanup()
                     _sel().log_api_access(
                         caller=caller,
@@ -359,7 +363,11 @@ async def api_upload_file(request: web.Request) -> web.Response:
                         resources=f"file:{fname} reason:too_large:{len(data)}",
                     )
                     return web.json_response(
-                        {"error": f"File too large (max {_MAX_UPLOAD_BYTES // 1024 // 1024}MB)"},
+                        {
+                            "error": f"File too large: {Path(fname).name} (max {max_upload_mb} MB)",
+                            "code": "file_too_large",
+                            "max_mb": max_upload_mb,
+                        },
                         status=413,
                     )
             # Content-signature gate (CWE-434): verify magic bytes match the

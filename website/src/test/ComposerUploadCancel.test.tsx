@@ -201,7 +201,7 @@ describe.each([
     // the user-visible half of the fix: the control disappears with the spinner.
     await waitFor(() => expect(cancelControl()).not.toBeInTheDocument())
     // A cancel the user asked for is not an upload failure.
-    expect(screen.queryByText(/max 50 MB/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/max \d+ MB/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Upload failed/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/aborted/i)).not.toBeInTheDocument()
   })
