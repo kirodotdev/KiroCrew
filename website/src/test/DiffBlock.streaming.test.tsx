@@ -1,5 +1,5 @@
 import { describe, it, vi, beforeEach, expect } from 'vitest'
-import { render, screen, act, within } from '@testing-library/react'
+import { render, screen, act, within, fireEvent } from '@testing-library/react'
 import type { ComponentProps, ReactElement } from 'react'
 
 /** A stand-in `PierrePatch` the header-ownership cases drive by hand. `null`
@@ -97,14 +97,14 @@ describe('DiffBlock streaming', () => {
   it('omits the layout toggle and keeps at most two header actions while streaming', async () => {
     const { container } = render(<DiffBlock code={fullPatch} complete={false} onFileOpen={vi.fn()} />)
     await flush()
-    const open = within(container).getByRole('button', {
-      name: i18nT('components.diffBlock.open_in_side_panel', { path: '/home/user/example/src/greet.py' }),
-    })
+    const open = within(container).getByRole('button', { name: 'More options' })
     const actions = within(open.parentElement!)
     expect(actions.queryByRole('button', { name: i18nT('components.diffBlock.switch_to_split_view') })).toBeNull()
     expect(actions.queryByRole('button', { name: i18nT('components.diffBlock.switch_to_unified_view') })).toBeNull()
     expect(actions.getByRole('button', { name: i18nT('components.diffBlock.copy_patch') })).toBeTruthy()
     expect(actions.getAllByRole('button')).toHaveLength(2)
+    fireEvent.keyDown(open, { key: 'Enter' })
+    expect(screen.queryByRole('menuitem', { name: /Switch to .* view/ })).toBeNull()
   })
   /** The GATE: an unfinished block must not reach Pierre at all. Pierre re-parses
    *  and re-tokenizes the WHOLE patch per frame (its cache key is content-derived,
@@ -128,9 +128,8 @@ describe('DiffBlock streaming', () => {
     expect(plain?.textContent).not.toContain('+++ /home/user/example/src/greet.py')
     expect(plain?.textContent).not.toContain('@@ -1,5 +1,7 @@')
     // The full path survives, on the row's control: a basename-shortened path would not open.
-    expect(within(container).getByRole('button', {
-      name: i18nT('components.diffBlock.open_in_side_panel', { path: '/home/user/example/src/greet.py' }),
-    })).toBeTruthy()
+    fireEvent.keyDown(within(container).getByRole('button', { name: 'More options' }), { key: 'Enter' })
+    expect(screen.getByTitle(i18nT('components.diffBlock.open_in_side_panel', { path: '/home/user/example/src/greet.py' }))).toBeTruthy()
   })
 
   /** The gate, read at the seam: the double stands in for `PierrePatch`, so
@@ -183,8 +182,8 @@ describe('DiffBlock streaming', () => {
     expect(headers()[0]).toBe(streamingHeader)
     expect(copies()).toHaveLength(1)
     expect(copies()[0].closest('[data-diffs-header]')).toBe(streamingHeader)
-    // The controls exist exactly once: Copy plus the layout toggle, which joins
-    // the row once the block is final, and nothing inside Pierre's surface.
+    // The controls exist exactly once: Copy plus More, with nothing inside
+    // Pierre's surface.
     expect(within(container).getAllByRole('button')).toHaveLength(2)
     expect(container.querySelectorAll('[data-testid="pierre"] button')).toHaveLength(0)
   })

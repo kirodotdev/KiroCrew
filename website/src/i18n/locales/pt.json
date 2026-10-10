@@ -6694,10 +6694,8 @@
       "open": "Abrir",
       "open_in_side_panel": "Abrir {{path}} no painel lateral",
       "plain_view": "Sem realce — visualização em texto simples",
-      "split_view": "Visualização dividida",
       "switch_to_split_view": "Alternar para visualização dividida",
-      "switch_to_unified_view": "Alternar para visualização unificada",
-      "unified_view": "Visualização unificada"
+      "switch_to_unified_view": "Alternar para visualização unificada"
     },
     "diffPanel": {
       "click_to_copy_path": "Clique para copiar o caminho",
@@ -7404,6 +7402,7 @@
       "trace_load_failed": "Não foi possível carregar o rastreamento desta execução."
     },
     "markdownPanel": {
+      "downloading": "Baixando…",
       "add_to_artifact_library": "Adicionar à biblioteca de artefatos",
       "add_to_artifacts": "Adicionar aos artefatos",
       "add_to_knowledge": "Adicionar ao Conhecimento",
@@ -9305,6 +9304,7 @@
       "phone_connection_is_disabled_by_policy_on_this_dep": "A conexão do telefone está desativada por política nesta implantação."
     },
     "filePathMenu": {
+      "download_current_file": "Baixar o arquivo atual no disco: {{path}}",
       "copy_failed": "Não foi possível copiar o caminho",
       "copy_path": "Copiar caminho",
       "path_copied": "Caminho copiado",

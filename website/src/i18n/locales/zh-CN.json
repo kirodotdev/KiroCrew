@@ -6486,10 +6486,8 @@
       "open": "打开",
       "open_in_side_panel": "在侧边面板中打开 {{path}}",
       "plain_view": "无语法高亮 — 纯文本视图",
-      "split_view": "分屏视图",
       "switch_to_split_view": "切换到分屏视图",
-      "switch_to_unified_view": "切换到统一视图",
-      "unified_view": "统一视图"
+      "switch_to_unified_view": "切换到统一视图"
     },
     "diffPanel": {
       "click_to_copy_path": "点击复制路径",
@@ -7180,6 +7178,7 @@
       "trace_load_failed": "无法加载此次运行的跟踪记录。"
     },
     "markdownPanel": {
+      "downloading": "下载中…",
       "add_to_artifact_library": "添加到产物库",
       "add_to_artifacts": "添加到产物",
       "add_to_knowledge": "添加到知识库",
@@ -9049,6 +9048,7 @@
       "phone_connection_is_disabled_by_policy_on_this_dep": "此部署已通过策略禁用手机连接。"
     },
     "filePathMenu": {
+      "download_current_file": "下载磁盘上的当前文件：{{path}}",
       "copy_failed": "无法复制路径",
       "copy_path": "复制路径",
       "path_copied": "路径已复制",

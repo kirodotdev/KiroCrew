@@ -1,6 +1,6 @@
 /**
  * Shared file-path context menu: Open in default app, Reveal in Finder / file
- * manager, Copy path. Exposed as a right-click wrapper (`FilePathMenu`); the
+ * manager, Download, Copy path. Exposed as a right-click wrapper (`FilePathMenu`); the
  * item rows themselves are a private building block (`FilePathMenuItems`).
  *
  * The two OTHER file-location surfaces (MarkdownPanel's overflow and
@@ -13,8 +13,8 @@
  *
  * Open/Reveal items render only when `directLocal` is true (the backend reports
  * the request comes from a browser on the same machine). Remote and tunneled
- * sessions see Copy path only, because opening Finder on a host the user is not
- * looking at is useless.
+ * sessions can download files and copy paths; opening Finder on a host the user
+ * is not looking at is useless.
  *
  * The reveal label is platform-aware — it reuses the same gatewayPlatform-driven
  * wording MarkdownPanel's overflow menu uses, so the two menus name the identical
@@ -38,6 +38,8 @@ import {
   ContextMenuContent,
   ContextMenuItem,
 } from './ui/context-menu'
+import FileDownloadMenuItem from './FileDownloadMenuItem'
+import { isAbsolutePath } from '../utils/fileReadUrl'
 import ErrorNotice, { ErrorNoticeMenuItem } from './ErrorNotice'
 import { useBranding } from '../hooks/useBranding'
 import { useGatewayPlatform } from '../hooks/useGatewayPlatform'
@@ -177,6 +179,8 @@ interface FilePathMenuItemsProps {
   /** Whether the path is a file or a directory. The Open item is suppressed for
    *  directories, which the reveal endpoint cannot `open`. */
   kind?: FilePathKind
+  /** The panel owns a buffer-aware download in its overflow menu. */
+  showDownload?: boolean
 }
 
 /**
@@ -260,7 +264,7 @@ export function useCopyAck(filePath: string) {
  * Renders the file-path action items (Open / Reveal / Copy path) as
  * ContextMenu items. Drop these into any ContextMenuContent.
  */
-function FilePathMenuItems({ filePath, kind }: FilePathMenuItemsProps) {
+function FilePathMenuItems({ filePath, kind, showDownload, onDownloadSuccess }: FilePathMenuItemsProps & { onDownloadSuccess: () => void }) {
   const revealErrorId = useId()
   const editorErrorId = useId()
   const isLocal = useBranding().directLocal
@@ -379,6 +383,7 @@ function FilePathMenuItems({ filePath, kind }: FilePathMenuItemsProps) {
           describedBy={revealErrorId}
         />
       )}
+      {showDownload && kind !== 'dir' && isAbsolutePath(filePath) && <FileDownloadMenuItem key={filePath} Item={ContextMenuItem} filePath={filePath} onSuccess={onDownloadSuccess} />}
       <ContextMenuItem
         onSelect={(e) => { e.preventDefault(); void copyPath() }}
         aria-label={copyLabel}
@@ -403,6 +408,8 @@ export interface FilePathMenuProps {
   children: ReactNode
   /** File or directory — directories hide the Open item (see FilePathMenuItems). */
   kind?: FilePathKind
+  /** The panel owns a buffer-aware download in its overflow menu. */
+  showDownload?: boolean
 }
 
 /**
@@ -414,16 +421,30 @@ export interface FilePathMenuProps {
  * </FilePathMenu>
  * ```
  */
-export default function FilePathMenu({ filePath, children, kind }: FilePathMenuProps) {
+export default function FilePathMenu({ filePath, children, kind, showDownload = true }: FilePathMenuProps) {
+  const [open, setOpen] = useState(false)
   return (
-    <ContextMenu>
-      <ContextMenuTrigger asChild>
+    <ContextMenu open={open} onOpenChange={setOpen}>
+      <ContextMenuTrigger asChild onKeyDown={event => {
+        // Radix's trigger listens for contextmenu, not these keyboard shortcuts.
+        // Explicitly route them through that same handler (verified in macOS Chrome).
+        // Prevent the browser's default shortcut action so it cannot also open
+        // the menu. Children own focusability; other keys keep normal behavior.
+        if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return
+        event.preventDefault()
+        const bounds = event.currentTarget.getBoundingClientRect()
+        event.currentTarget.dispatchEvent(new MouseEvent('contextmenu', {
+          bubbles: true, cancelable: true, clientX: bounds.left, clientY: bounds.bottom,
+        }))
+      }}>
         {children}
       </ContextMenuTrigger>
       <ContextMenuContent className="min-w-[180px]" onClick={e => e.stopPropagation()}>
         <FilePathMenuItems
           filePath={filePath}
           kind={kind}
+          showDownload={showDownload}
+          onDownloadSuccess={() => setOpen(false)}
         />
       </ContextMenuContent>
     </ContextMenu>

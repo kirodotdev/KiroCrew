@@ -149,7 +149,8 @@ export function FileHeaderBreadcrumb({ filePath }: { filePath: string }) {
     // header BAR (its relative ancestor), not to this row, so its width is the
     // panel's, not the compressed breadcrumb's -- see the readout comment.
     <>
-      <FilePathMenu filePath={filePath}>
+      {/* The overflow owns Download, including the last copy of a deleted file. */}
+      <FilePathMenu filePath={filePath} showDownload={false}>
         {/* Focusable so a keyboard user can read the full path: a screen reader
             from the accessible name, a sighted keyboard user from the readout
             below. Same focusable-region pattern as CodeBlock / FileRenderers. */}

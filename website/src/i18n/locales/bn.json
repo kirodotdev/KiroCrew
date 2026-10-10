@@ -6590,10 +6590,8 @@
       "open": "খুলুন",
       "open_in_side_panel": "সাইড প্যানেলে {{path}} খোলো",
       "plain_view": "হাইলাইটিং নেই — সাধারণ ভিউ",
-      "split_view": "স্প্লিট ভিউ",
       "switch_to_split_view": "স্প্লিট ভিউতে যাও",
-      "switch_to_unified_view": "ইউনিফায়েড ভিউতে যাও",
-      "unified_view": "ইউনিফায়েড ভিউ"
+      "switch_to_unified_view": "ইউনিফায়েড ভিউতে যাও"
     },
     "diffPanel": {
       "click_to_copy_path": "পাথ কপি করতে ক্লিক করুন",
@@ -7292,6 +7290,7 @@
       "trace_load_failed": "এই রানের ট্রেস লোড করা যায়নি।"
     },
     "markdownPanel": {
+      "downloading": "ডাউনলোড হচ্ছে…",
       "add_to_artifact_library": "আর্টিফ্যাক্ট লাইব্রেরিতে যোগ করুন",
       "add_to_artifacts": "আর্টিফ্যাক্টে যোগ করুন",
       "add_to_knowledge": "নলেজে যোগ করুন",
@@ -9177,6 +9176,7 @@
       "phone_connection_is_disabled_by_policy_on_this_dep": "এই ডিপ্লয়মেন্টে নীতি অনুযায়ী ফোন সংযোগ নিষ্ক্রিয় করা আছে।"
     },
     "filePathMenu": {
+      "download_current_file": "ডিস্কে থাকা বর্তমান ফাইল ডাউনলোড করো: {{path}}",
       "copy_failed": "পাথ কপি করা যায়নি",
       "copy_path": "পাথ কপি করুন",
       "path_copied": "পাথ কপি করা হয়েছে",

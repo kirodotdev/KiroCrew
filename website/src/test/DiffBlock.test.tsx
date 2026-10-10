@@ -1,6 +1,13 @@
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render as rtlRender, screen, fireEvent, waitFor } from '@testing-library/react'
 import DiffBlock, { extractFilePath } from '../components/DiffBlock'
+
+// Exercise overflow actions through the same keyboard entry point a reader uses.
+function render(...args: Parameters<typeof rtlRender>) {
+  const result = rtlRender(...args)
+  fireEvent.keyDown(screen.getByRole('button', { name: 'More options' }), { key: 'Enter' })
+  return result
+}
 
 // The block's controls live in its own header row, but Pierre's lazy chunk still
 // mounts beneath that row in every highlighted-mode case below. Warm it once so
@@ -63,8 +70,8 @@ describe('DiffBlock', () => {
     render(<DiffBlock code={simpleDiff} complete={true} />)
     // Unseeded default is split — the shared `mc-diff-split` preference's
     // default — so the button offers the way back to unified.
-    fireEvent.click(await screen.findByTitle('Unified view'))
-    expect(await screen.findByTitle('Split view')).toBeInTheDocument()
+    fireEvent.click(await screen.findByTitle('Switch to unified view'))
+    expect(await screen.findByTitle('Switch to split view')).toBeInTheDocument()
     // The choice lands in the shared preference (#6024), not per-block state.
     expect(localStorage.getItem('mc-diff-split')).toBe('0')
   })
@@ -73,7 +80,7 @@ describe('DiffBlock', () => {
     localStorage.setItem('mc-diff-split', '0')
     render(<DiffBlock code={simpleDiff} complete={true} />)
     // Persisted unified → the button offers split.
-    expect(await screen.findByTitle('Split view')).toBeInTheDocument()
+    expect(await screen.findByTitle('Switch to split view')).toBeInTheDocument()
   })
 
   it('shows View file button when onFileOpen is provided', async () => {
@@ -183,7 +190,7 @@ describe('DiffBlock', () => {
     expect(screen.queryByTitle(/^Open .* in side panel$/)).not.toBeInTheDocument()
   })
 
-  it('Open button is text-only and hover-gated like the other diff actions', async () => {
+  it('Open is text-only inside the hover-gated overflow menu', async () => {
     // All three actions (side-by-side / copy / Open) are hover-gated together.
     // Open uses a plain text label rather than an icon since the diff header
     // already prefixes the file name.
@@ -192,10 +199,8 @@ describe('DiffBlock', () => {
     await waitFor(() => expect(screen.getByText('Open')).toBeInTheDocument())
     // No labeled icon variant.
     expect(screen.queryByText('Open file')).toBeNull()
-    // Sits inside the same opacity-0 hover-reveal container as the
-    // side-by-side / copy buttons: the <span> DiffBlock renders as the actions
-    // cluster of its own header row, which is the element that carries the gate.
-    const actions = screen.getByText('Open').closest('span')!
+    // The overflow trigger stays in the header's hover/focus action cluster.
+    const actions = screen.getByRole('button', { name: 'More options' }).closest('span')!
     expect(actions.className).toMatch(/opacity-0/)
     expect(actions.className).toMatch(/group-hover\/diff:opacity-100/)
   })
@@ -342,8 +347,8 @@ describe('DiffBlock', () => {
       // Copy being present proves the header row rendered, so these absences are
       // the guard's doing rather than an unrendered header.
       expect(screen.getByTitle('Copy patch')).toBeInTheDocument()
-      expect(screen.queryByTitle('Unified view')).not.toBeInTheDocument()
-      expect(screen.queryByTitle('Split view')).not.toBeInTheDocument()
+      expect(screen.queryByTitle('Switch to unified view')).not.toBeInTheDocument()
+      expect(screen.queryByTitle('Switch to split view')).not.toBeInTheDocument()
     })
 
     it('is off unless the preference is set — the highlighted diff stays the default', async () => {
@@ -351,7 +356,7 @@ describe('DiffBlock', () => {
       // The layout toggle renders only while colour is on, so its presence is
       // the block reading the preference as off.
       expect(await headerMounted()).toBeInTheDocument()
-      expect(await screen.findByTitle('Unified view')).toBeInTheDocument()
+      expect(await screen.findByTitle('Switch to unified view')).toBeInTheDocument()
     })
   })
 })

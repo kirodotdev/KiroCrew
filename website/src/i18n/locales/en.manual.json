@@ -1577,6 +1577,9 @@
     }
   },
   "components": {
+    "filePathMenu": {
+      "download_current_file": "Download current file on disk: {{path}}"
+    },
     "fileChangeChips": {
       "diff_unavailable_file_exceeds_snapshot_limit": "Diff unavailable: file is too large to compare (over {{limit}} characters).",
       "file_only": "File only",
@@ -2268,10 +2271,8 @@
       "now_executable": "now executable",
       "open_in_side_panel": "Open {{path}} in side panel",
       "plain_view": "No highlighting — plain view",
-      "split_view": "Split view",
       "switch_to_split_view": "Switch to split view",
-      "switch_to_unified_view": "Switch to unified view",
-      "unified_view": "Unified view"
+      "switch_to_unified_view": "Switch to unified view"
     },
     "discoverySearchBar": {
       "found_for_query": "found for “{{query}}”",
@@ -2731,6 +2732,7 @@
       "copy_url_of": "Copy URL of {{name}}"
     },
     "markdownPanel": {
+      "downloading": "Downloading…",
       "add_to_artifact_library": "Add to artifact library",
       "adding": "Adding…",
       "adding_2": "Adding...",

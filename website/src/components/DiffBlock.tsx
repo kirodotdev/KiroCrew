@@ -1,5 +1,9 @@
 import { Fragment, memo, useState, useMemo, useEffect, useRef } from 'react'
-import { Copy, Check, Columns2, Rows2 } from 'lucide-react'
+import { Copy, Check, Columns2, Rows2, MoreHorizontal } from 'lucide-react'
+import { Btn } from './ui'
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from './ui/dropdown-menu'
+import FileDownloadMenuItem from './FileDownloadMenuItem'
+import { downloadFileName, isAbsolutePath } from '../utils/fileReadUrl'
 import { copyToClipboard } from '../utils/clipboard'
 import { fileReadUrl } from '../utils/fileReadUrl'
 import { isSafePath } from '../utils/safePath'
@@ -154,6 +158,7 @@ function changeNote(words: string[]) {
 export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint }: { code: string; complete: boolean; onFileOpen?: (path: string) => void; pathHint?: string }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [copied, setCopied] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
   // Shares the app-wide `mc-diff-split` preference with the side panel and
   // markdown panel (#6024): the choice made on any diff surface sticks and
   // seeds the next block, instead of every fence resetting to unified.
@@ -251,23 +256,6 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint }:
 
   const copy = async () => { if (await copyToClipboard(code)) { setCopied(true); setTimeout(() => setCopied(false), 1500) } }
 
-  // Patch-level controls, in the block's own header row (light DOM, so
-  // outer-tree styling and the group-hover reveal both apply).
-  // Space for the Open affordance is reserved on exactly the condition that runs
-  // the probe, so the probe's OUTCOME never changes this row's geometry.
-  //
-  // Without the reserve, a successful HEAD adds a third button to the actions row
-  // after an async round-trip. On a pointer surface that reflows the diff body by a
-  // couple of pixels; under `HOVER_NONE_ACTIONS_ROW_CLS` (touch) the row is
-  // `flex-wrap` with `p-3` targets, so the third button WRAPS it to a second line
-  // and the header grows by a whole row — the transcript below then slides by that
-  // much, mid-read, which is what "the file diff's loading pushed it up" is.
-  //
-  // Reserved space costs a phone row even for a file that turns out to be missing.
-  // That is the right trade: a header that is one row taller from first paint is
-  // stationary, and a header that changes height while someone is reading is not.
-  const reserveOpen = Boolean(onFileOpen && probePath && isSafePath(probePath))
-
   // Frames are still arriving: render the patch as plain text and mount Pierre
   // only once the block is final. Pierre re-parses and re-tokenizes the WHOLE
   // patch on every frame -- `contentCacheKey` is content-derived, so each frame
@@ -316,39 +304,78 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint }:
   ), [sections])
   const plainViewLabel = plainBody ? i18nT('components.diffBlock.plain_view') : undefined
 
+  // Resolve each section independently: a multi-file card must never offer a
+  // single Download that silently chooses its first file. Deleted files have
+  // no current contents to retrieve. Use the section parser's decoded name for
+  // quoted git paths, binary changes and renames. Rootless filesystem paths
+  // still need independent corroboration before we choose an absolute target.
+  //
+  // Relative paths cannot use the gateway's current project: a transcript may
+  // belong to another checkout. Only an absolute target or an independently
+  // named absolute hint for that exact section identifies the file to download.
+  const downloadPaths = sections.flatMap(section => {
+    if (section.kind === 'deleted') return []
+    const candidate = section.name ?? pathHint
+    if (!candidate || !isSafePath(candidate)) return []
+    if (isAbsolutePath(candidate)) return [candidate]
+    if (!pathHint || !isAbsolutePath(pathHint) || !isSafePath(pathHint)) return []
+    // A rootless conventional filesystem path has the stricter existing rule:
+    // only its exact rooted spelling corroborates it, never another suffix.
+    if (ROOTLESS_ABS_RE.test(candidate)) return pathHint === '/' + candidate ? [pathHint] : []
+    const windowsHint = /^(?:[A-Za-z]:[\\/]|\\\\)/.test(pathHint)
+    const hint = windowsHint ? pathHint.replaceAll('\\', '/') : pathHint
+    return hint.endsWith('/' + candidate) ? [pathHint] : []
+  })
+
+  const canChangeLayout = !plain && !standInForStream && !plainBody
+  // Keep the direct toggle where the pre-download header already reserved
+  // Open + layout + Copy. Elsewhere, overflow avoids growing two controls to three.
+  const directLayout = Boolean(onFileOpen && probePath && isSafePath(probePath))
+  const menuLayout = canChangeLayout && !directLayout
+  const hasMenuActions = Boolean(filePath && onFileOpen) || menuLayout || (complete && downloadPaths.length > 0)
+
   const headerControls = () => (
     <span className={`relative z-10 flex items-center gap-1 opacity-0 group-hover/diff:opacity-100 group-focus-within/diff:opacity-100 transition-opacity ${HOVER_NONE_ACTIONS_ROW_CLS}`}>
-      {reserveOpen && (
-        <button
-          className={`px-1.5 py-0.5 rounded text-[12px] text-muted hover:text-text hover:bg-bg-hover cursor-pointer ${filePath ? '' : 'invisible pointer-events-none'}`}
-          onClick={filePath && onFileOpen ? () => onFileOpen(filePath) : undefined}
-          disabled={!filePath}
-          aria-hidden={!filePath}
-          tabIndex={filePath ? undefined : -1}
-          title={filePath ? i18nT('components.diffBlock.open_in_side_panel', { path: filePath }) : undefined}
-          aria-label={filePath ? i18nT('components.diffBlock.open_in_side_panel', { path: filePath }) : undefined}
-        >
-          {i18nT('components.diffBlock.open')}
-        </button>
-      )}
-      {/* Split/unified is a PIERRE layout option, so omit it while plain mode
-          or the streaming stand-in renders the raw patch, and while Pierre
-          itself shows plain text (pool down, unparseable section): over plain
-          text the toggle would change nothing the reader can see, and with
-          Open offered the row stays at two actions
-          (`max-two-buttons-per-row`). The row's label says why the body is
-          plain; the toggle returns with the highlighted diff. */}
-      {!plain && !standInForStream && !plainBody && (
-        <button
-          className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
+      <Btn className="p-1 border-0 rounded text-muted" onClick={copy} title={copied ? i18nT('components.diffBlock.copied') : i18nT('components.diffBlock.copy_patch')} aria-label={copied ? i18nT('components.diffBlock.copied') : i18nT('components.diffBlock.copy_patch')}>{copied ? <Check size={13} /> : <Copy size={13} />}</Btn>
+      {canChangeLayout && directLayout && (
+        <Btn
+          className="p-1 border-0 rounded text-muted"
           onClick={() => setSideBySide(!sideBySide)}
-          title={sideBySide ? i18nT('components.diffBlock.unified_view') : i18nT('components.diffBlock.split_view')}
+          title={sideBySide ? i18nT('components.diffBlock.switch_to_unified_view') : i18nT('components.diffBlock.switch_to_split_view')}
           aria-label={sideBySide ? i18nT('components.diffBlock.switch_to_unified_view') : i18nT('components.diffBlock.switch_to_split_view')}
         >
-          {sideBySide ? <Rows2 size={13} /> : <Columns2 size={13} />}
-        </button>
+          {sideBySide ? <Rows2 size={13} aria-hidden /> : <Columns2 size={13} aria-hidden />}
+        </Btn>
       )}
-      <button className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer" onClick={copy} title={copied ? i18nT('components.diffBlock.copied') : i18nT('components.diffBlock.copy_patch')} aria-label={copied ? i18nT('components.diffBlock.copied') : i18nT('components.diffBlock.copy_patch')}>{copied ? <Check size={13} /> : <Copy size={13} />}</button>
+      <DropdownMenu modal={false} open={menuOpen} onOpenChange={setMenuOpen}>
+        <DropdownMenuTrigger asChild>
+          <Btn disabled={!hasMenuActions} className="p-1 border-0 rounded text-muted" aria-label={i18nT('components.markdownPanel.more_options')} title={i18nT('components.markdownPanel.more_options')}>
+            <MoreHorizontal size={13} aria-hidden />
+          </Btn>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="max-w-[calc(100vw-2rem)]" onClick={event => event.stopPropagation()}>
+          {filePath && onFileOpen && (
+            <DropdownMenuItem onSelect={() => onFileOpen(filePath)} title={i18nT('components.diffBlock.open_in_side_panel', { path: filePath })}>
+              {i18nT('components.diffBlock.open')}
+            </DropdownMenuItem>
+          )}
+          {menuLayout && (
+            <DropdownMenuItem
+              onSelect={event => { event.preventDefault(); setSideBySide(!sideBySide) }}
+              title={sideBySide ? i18nT('components.diffBlock.switch_to_unified_view') : i18nT('components.diffBlock.switch_to_split_view')}
+              aria-label={sideBySide ? i18nT('components.diffBlock.switch_to_unified_view') : i18nT('components.diffBlock.switch_to_split_view')}
+            >
+              {sideBySide ? <Rows2 size={13} aria-hidden /> : <Columns2 size={13} aria-hidden />}
+              {sideBySide ? i18nT('components.diffBlock.switch_to_unified_view') : i18nT('components.diffBlock.switch_to_split_view')}
+            </DropdownMenuItem>
+          )}
+          {complete && [...new Set(downloadPaths)].map(path => (
+            <FileDownloadMenuItem key={path} Item={DropdownMenuItem} filePath={path}
+              pathLabel={cardRow ? (downloadPaths.some(other => other !== path && downloadFileName(other) === downloadFileName(path)) ? path : downloadFileName(path)) : undefined}
+              onSuccess={() => setMenuOpen(false)} />
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
     </span>
   )
 

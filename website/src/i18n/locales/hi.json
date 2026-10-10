@@ -6590,10 +6590,8 @@
       "open": "खोलें",
       "open_in_side_panel": "{{path}} को साइड पैनल में खोलो",
       "plain_view": "हाइलाइटिंग नहीं — सादा व्यू",
-      "split_view": "स्प्लिट व्यू",
       "switch_to_split_view": "स्प्लिट व्यू पर जाएँ",
-      "switch_to_unified_view": "यूनिफ़ाइड व्यू पर जाएँ",
-      "unified_view": "यूनिफ़ाइड व्यू"
+      "switch_to_unified_view": "यूनिफ़ाइड व्यू पर जाएँ"
     },
     "diffPanel": {
       "click_to_copy_path": "पथ कॉपी करने के लिए क्लिक करें",
@@ -7292,6 +7290,7 @@
       "trace_load_failed": "इस रन का ट्रेस लोड नहीं किया जा सका।"
     },
     "markdownPanel": {
+      "downloading": "डाउनलोड हो रहा है…",
       "add_to_artifact_library": "आर्टिफ़ैक्ट लाइब्रेरी में जोड़ें",
       "add_to_artifacts": "आर्टिफ़ैक्ट में जोड़ें",
       "add_to_knowledge": "ज्ञान में जोड़ें",
@@ -9177,6 +9176,7 @@
       "phone_connection_is_disabled_by_policy_on_this_dep": "इस परिनियोजन में नीति द्वारा फ़ोन कनेक्शन अक्षम है।"
     },
     "filePathMenu": {
+      "download_current_file": "डिस्क पर मौजूदा फ़ाइल डाउनलोड करो: {{path}}",
       "copy_failed": "पथ कॉपी नहीं किया जा सका",
       "copy_path": "पथ कॉपी करें",
       "path_copied": "पथ कॉपी किया गया",

@@ -85,11 +85,28 @@ function rightClick(el: Element) {
 
 // ── FilePathMenu (right-click wrapper) ───────────────────────────────────────
 
+describe('download targets retain their recorded location', () => {
+  it.each([true, false])('omits a relative download but keeps Copy path (local: %s)', directLocal => {
+    brandingEnv.directLocal = directLocal
+    renderWithProviders(<FilePathMenu filePath="src/report.csv" kind="file"><span>report.csv</span></FilePathMenu>)
+    fireEvent.contextMenu(screen.getByText('report.csv'))
+    expect(screen.getByRole('menuitem', { name: 'Copy path' })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: 'Download' })).not.toBeInTheDocument()
+  })
+
+  it.each([true, false])('offers an absolute download (local: %s)', directLocal => {
+    brandingEnv.directLocal = directLocal
+    renderWithProviders(<FilePathMenu filePath="/session/report.csv" kind="file"><span>report.csv</span></FilePathMenu>)
+    fireEvent.contextMenu(screen.getByText('report.csv'))
+    expect(screen.getByRole('menuitem', { name: 'Download' })).toBeInTheDocument()
+  })
+})
+
 describe('FilePathMenu', () => {
   const TEST_PATH = '/home/user/project/report.md'
 
   describe('when directLocal is true', () => {
-    it('renders all three items: open, reveal, copy path', async () => {
+    it('renders open, reveal, download and copy path', async () => {
       renderWithProviders(
         <FilePathMenu filePath={TEST_PATH}>
           <span data-testid="trigger">report.md</span>
@@ -103,6 +120,7 @@ describe('FilePathMenu', () => {
       })
       expect(screen.getByText('Show in file manager')).toBeInTheDocument()
       expect(screen.getByText('Copy path')).toBeInTheDocument()
+      expect(screen.getByText('Download')).toBeInTheDocument()
     })
 
     it('calls revealPath with "open" when Open item is selected', async () => {
@@ -164,7 +182,7 @@ describe('FilePathMenu', () => {
   describe('when directLocal is false (remote session)', () => {
     beforeEach(() => { brandingEnv.directLocal = false })
 
-    it('hides open and reveal items, shows only copy path', async () => {
+    it('hides host actions while offering download and copy path', async () => {
       renderWithProviders(
         <FilePathMenu filePath={TEST_PATH}>
           <span data-testid="trigger">report.md</span>
@@ -176,6 +194,7 @@ describe('FilePathMenu', () => {
       await waitFor(() => {
         expect(screen.getByText('Copy path')).toBeInTheDocument()
       })
+      expect(screen.getByText('Download')).toBeInTheDocument()
       expect(screen.queryByText('Open with default app')).not.toBeInTheDocument()
       expect(screen.queryByText('Show in file manager')).not.toBeInTheDocument()
     })
