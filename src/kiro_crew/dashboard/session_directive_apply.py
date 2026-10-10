@@ -240,6 +240,12 @@ def _describe_next_wake(loop: Any, *, verb: str = "first wake") -> str:
     return f"{verb} in ~{remaining}s ({stamp})"
 
 
+# The provenance gate's set: the user-surface directives plus ``suggest_followup``,
+# whose surface gate alone (``_DASHBOARD_ONLY_DIRECTIVES``) only asks whether a tab
+# exists -- which a cron or sub-agent turn riding a user's slot satisfies.
+_USER_ORIGIN_DIRECTIVES = _USER_SURFACE_DIRECTIVES | frozenset({"suggest_followup"})
+
+
 def _has_user_surface(session_key: str) -> bool:
     """Return whether *session_key* names a user-facing conversation."""
     return has_dashboard_surface(session_key) or is_channel_session_key(session_key)
@@ -380,19 +386,27 @@ async def apply_session_directive_outcome(
         and _has_user_surface(session_key)
     )
     if (
-        kind in _USER_SURFACE_DIRECTIVES
+        kind in _USER_ORIGIN_DIRECTIVES
         and not wake_reset
         and (not producer_is_user_facing or not _has_user_surface(session_key))
     ):
         # A cron turn can run on a user's slot and a sub-agent can share its
-        # parent's slot. Positive admission prevents either from silently
-        # retargeting the user's project/CWD.
+        # parent's slot, so both inherit a surface they never opened.
         _audit(session_key, kind, "denied")
+        if kind in _USER_SURFACE_DIRECTIVES:
+            # Unchanged wording: extending the set must not silently reword an
+            # unrelated tool's refusal.
+            return DirectiveOutcome(
+                f"Error: {kind} only works from a user-facing session (dashboard "
+                f"or a messaging channel); headless callers such as cron jobs and "
+                f"sub-agents are refused (this turn is {session_key!r}). "
+                "Nothing was changed."
+            )
         return DirectiveOutcome(
-            f"Error: {kind} only works from a user-facing session (dashboard "
-            f"or a messaging channel); headless callers such as cron jobs and "
-            f"sub-agents are refused (this turn is {session_key!r}). "
-            "Nothing was changed."
+            f"Error: {kind} only works from a turn a person sent; cron jobs, "
+            f"sub-agents, task-runner turns and this session's own wakes are "
+            f"refused even when this session has an open dashboard tab "
+            f"(this turn is {session_key!r}). Nothing was changed."
         )
     # SELF-ARM PROVENANCE: which turns count as "the session's own" for the
     # crew/member rule. Two producers, each named explicitly: a turn a HUMAN
