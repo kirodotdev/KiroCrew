@@ -515,7 +515,7 @@ const FIXTURE_OVERRIDES = async (language, path, route) => {
  * of asset table in the CI log. On failure the tail is printed, which is the only time
  * any of it is useful.
  */
-function runViteDevBuild(cwd, outDir, label) {
+function runViteDevBuild(cwd, outDir, label, extraEnv = {}) {
   const vite = fileURLToPath(new URL('../node_modules/vite/bin/vite.js', import.meta.url))
   if (!existsSync(vite)) die(`cannot find vite at ${vite}; run \`npm ci\` in website/ first.`)
   const started = Date.now()
@@ -528,7 +528,7 @@ function runViteDevBuild(cwd, outDir, label) {
       // development` alone is not enough: Vite derives DEV from NODE_ENV, and with
       // just the mode flag the en-XA catalog is tree-shaken out and every surface
       // renders English.
-      env: { ...process.env, NODE_ENV: 'development' },
+      env: { ...process.env, NODE_ENV: 'development', ...extraEnv },
       encoding: 'utf-8',
     },
   )
@@ -736,7 +736,10 @@ function buildBaseBundle(sha) {
   linkNodeModulesView(NODE_MODULES, join(baseWeb, 'node_modules'))
   writeBaseUiAuto(baseWeb, dir, sha)
 
-  runViteDevBuild(baseWeb, 'dist-dev', `base ${sha.slice(0, 8)}`)
+  // The ui-auto stamp manifest under that node_modules was cut from HEAD's
+  // sources, so every file the branch edits would read as stale in the base
+  // tree and fail its build. Stamps are data attributes, not rendered text.
+  runViteDevBuild(baseWeb, 'dist-dev', `base ${sha.slice(0, 8)}`, { KIROCREW_UI_AUTO_STAMP: 'off' })
   TEMP_DIRS.push(dir)
   return { dist: join(baseWeb, 'dist-dev'), baseWeb }
 }

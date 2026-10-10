@@ -25,7 +25,7 @@ import {
   scanCandidates,
   scanImports,
 } from '../../scripts/lib/ui-index.mjs'
-import { applyAutoStamps } from '../../scripts/lib/ui-auto-stamp.mjs'
+import { applyAutoStamps, uiAutoStampPlugin } from '../../scripts/lib/ui-auto-stamp.mjs'
 import { UI_CONDITIONS, UI_REVEAL_STATES } from './conditions'
 
 type AutoLoc = {
@@ -186,6 +186,28 @@ describe('the marker step', () => {
 
   it('hashes exactly the text it was cut from', () => {
     expect(entry.sha256).toBe(createHash('sha256').update(src).digest('hex'))
+  })
+
+  it('fails a build on a stale file unless stamping is switched off for it', () => {
+    const files = { 'src/A.tsx': entry }
+    const opts = {
+      root: '/virtual',
+      manifestPath: '/m/sites.json',
+      artifactPath: '/m/auto.json',
+      readFile: () => JSON.stringify({ files, build_digest: 'sha256:x' }),
+      exists: () => true,
+    }
+    type Hooks = {
+      config?: (c: object, e: { command: string }) => unknown
+      transform?: (this: { error: (m: string) => never }, code: string, id: string) => unknown
+    }
+    const ctx = { error: (m: string): never => { throw new Error(m) } }
+    const on = uiAutoStampPlugin({ ...opts, env: {} }) as Hooks
+    on.config?.({}, { command: 'build' })
+    expect(() => on.transform?.call(ctx, `${src}\n`, '/virtual/src/A.tsx')).toThrow(/changed after the auto stamp manifest/)
+    const off = uiAutoStampPlugin({ ...opts, env: { KIROCREW_UI_AUTO_STAMP: 'off' } }) as Hooks
+    expect(off.transform).toBeUndefined()
+    expect(off.config).toBeUndefined()
   })
 })
 

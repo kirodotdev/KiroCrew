@@ -72,6 +72,11 @@ export function applyAutoStamps(code, entry) {
 export function uiAutoStampPlugin({ root, manifestPath, artifactPath, readFile, exists, env = process.env }) {
   const name = 'kirocrew-ui-auto-stamp'
   if (env.VITEST) return { name }
+  // `check-i18n-render.mjs` builds the merge base against THIS checkout's
+  // node_modules, so the manifest it would read was cut from HEAD's sources. A
+  // file the branch edits then reads as stale and fails the base build. That
+  // gate compares rendered text only, so it switches stamping off for the base.
+  if (env.KIROCREW_UI_AUTO_STAMP === 'off') return { name }
   const manifest = exists(manifestPath) ? JSON.parse(readFile(manifestPath)) : null
   const files = manifest?.files ?? {}
   const digest = typeof manifest?.build_digest === 'string' ? manifest.build_digest : ''
