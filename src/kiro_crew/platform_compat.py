@@ -6614,6 +6614,11 @@ def _own_identity_token(pid: int) -> str | None:
     return None
 
 
+def process_incarnation_id(pid: int) -> str | None:
+    """Read a reboot-unique process token without the caller-lifetime cache."""
+    return _own_identity_token(pid)
+
+
 def own_process_start_time() -> str | None:
     """This process's own start-time identity, read once and cached.
 

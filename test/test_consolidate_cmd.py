@@ -451,3 +451,25 @@ class TestExpireIdleSelFailure:
         mock_reset.assert_called_once_with(
             "expired-cb", expect_session=sess, skip_if_busy=True, skip_if_injecting=True
         )
+
+
+def test_refused_consolidation_cli_does_not_claim_zero_spend(capsys):
+    from kiro_crew.cli import _consolidate_cmd
+
+    with (
+        patch("kiro_crew.cli.sel"),
+        patch("kiro_crew.cli.SkillsLoader"),
+        patch("kiro_crew.cli.SessionManager"),
+        patch("kiro_crew.cli.MemoryStore"),
+        patch("kiro_crew.cli.KiroCrewConfig"),
+        patch("kiro_crew.cli.build_provider_factory"),
+        patch("kiro_crew.cli.ConversationLog") as log,
+        patch("kiro_crew.cli.HistoryConsolidator") as consolidator,
+    ):
+        log.return_value.unconsolidated_count.return_value = 3
+        consolidator.return_value.consolidate_now = AsyncMock(return_value=False)
+        _consolidate_cmd(argparse.Namespace(session_key="test_session", consolidate_all=False))
+    output = capsys.readouterr().out
+    assert "no completed pass recorded" in output
+    assert "nothing ran" not in output
+    assert "done" not in output

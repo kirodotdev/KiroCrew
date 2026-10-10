@@ -68,6 +68,36 @@ HISTORY_DIR_NAME = "history"
 PREFERENCES_FILE = "preferences.md"
 PROJECTS_FILE = "projects.md"
 
+_CONSOLIDATION_RECEIPT_LIMIT = 128
+_CONSOLIDATION_RECEIPT_RE = re.compile(r"<!-- consolidation-publication: [0-9a-f]{64} -->")
+
+
+def _publication_receipt(publication_id: str) -> str:
+    if not re.fullmatch(r"[0-9a-f]{64}", publication_id):
+        raise ValueError("Consolidation publication identity must be a SHA-256 digest")
+    return f"<!-- consolidation-publication: {publication_id} -->"
+
+
+def _with_publication_receipts(content: str, current: str, publication_id: str | None) -> str:
+    receipts = dict.fromkeys(
+        _CONSOLIDATION_RECEIPT_RE.findall(current) + _CONSOLIDATION_RECEIPT_RE.findall(content)
+    )
+    if publication_id is not None:
+        receipt = _publication_receipt(publication_id)
+        receipts.pop(receipt, None)
+        receipts[receipt] = None
+    retained = list(receipts)[-_CONSOLIDATION_RECEIPT_LIMIT:]
+    return _without_publication_receipts(content) + "".join(
+        f"\n{receipt}\n" for receipt in retained
+    )
+
+
+def _without_publication_receipts(content: str) -> str:
+    for receipt in _CONSOLIDATION_RECEIPT_RE.findall(content):
+        content = content.replace(f"\n{receipt}\n", "")
+    return content
+
+
 _DEFAULT_PREFERENCES = "# User Preferences\n\n<!-- Learned from conversations -->\n"
 _DEFAULT_PROJECTS = "# Active Projects\n\n<!-- Current work context -->\n"
 
@@ -379,10 +409,16 @@ class MemoryStore:
         # U+FFFD over the original bytes with no backup on the V1 path. An
         # undecodable file raises and is left intact and recoverable — which is
         # why this is ``read_text`` and not ``read_entry``.
-        return self._files.read_text(self._preferences_file)
+        return _without_publication_receipts(self._files.read_text(self._preferences_file))
 
     @named_store_operation
-    def write_preferences(self, content: str, *, expected_baseline: str | None = None) -> bool:
+    def write_preferences(
+        self,
+        content: str,
+        *,
+        expected_baseline: str | None = None,
+        publication_id: str | None = None,
+    ) -> bool:
         """Write user preferences and update FTS index.
 
         Serialized behind the same advisory ``file_lock`` mechanism
@@ -404,12 +440,26 @@ class MemoryStore:
         write happened.
         """
         with self._files.lock(self._memory_dir):
+            current = self._files.read_text_for_rewrite(self._preferences_file)
+            if publication_id is not None and _publication_receipt(publication_id) in current:
+                self._index_file(self._preferences_file, current)
+                return True
+            if expected_baseline is not None and expected_baseline not in (
+                current,
+                _without_publication_receipts(current),
+            ):
+                return False
+            content = _with_publication_receipts(content, current, publication_id)
             # One call, not compare-then-write: the baseline check and the write
             # have to be a single step, because between a separate check and a
             # later write the document can change again and the write would
             # publish over bytes nobody compared against. An implementation whose
             # storage is remote can only be atomic if it is handed the base.
-            if not self._files.replace_if(self._preferences_file, content, base=expected_baseline):
+            if not self._files.replace_if(
+                self._preferences_file,
+                content,
+                base=current if expected_baseline is not None else None,
+            ):
                 return False
             # Indexed INSIDE the lock: with concurrent writers, indexing
             # after release lets writer B's file land while writer A's
@@ -435,10 +485,16 @@ class MemoryStore:
         require_memory_ready(self._memory_store_name)
         # Strict decode — see read_preferences: this value feeds read-modify-write
         # callers, so a lossy read must not round-trip.
-        return self._files.read_text(self._projects_file)
+        return _without_publication_receipts(self._files.read_text(self._projects_file))
 
     @named_store_operation
-    def write_projects(self, content: str, *, expected_baseline: str | None = None) -> bool:
+    def write_projects(
+        self,
+        content: str,
+        *,
+        expected_baseline: str | None = None,
+        publication_id: str | None = None,
+    ) -> bool:
         """Write active projects, adding header if missing, and update FTS index.
 
         Locking and ``expected_baseline`` (compare-and-swap) semantics: see
@@ -446,7 +502,19 @@ class MemoryStore:
         """
         full = normalize_projects_document(content, today=datetime.now().strftime("%Y-%m-%d"))
         with self._files.lock(self._memory_dir):
-            if not self._files.replace_if(self._projects_file, full, base=expected_baseline):
+            current = self._files.read_text_for_rewrite(self._projects_file)
+            if publication_id is not None and _publication_receipt(publication_id) in current:
+                self._index_file(self._projects_file, current)
+                return True
+            if expected_baseline is not None and expected_baseline not in (
+                current,
+                _without_publication_receipts(current),
+            ):
+                return False
+            full = _with_publication_receipts(full, current, publication_id)
+            if not self._files.replace_if(
+                self._projects_file, full, base=current if expected_baseline is not None else None
+            ):
                 return False
             # Indexed inside the lock — see write_preferences.
             self._index_file(self._projects_file, full)
@@ -512,7 +580,43 @@ class MemoryStore:
         return self._history_dir / f"{date}.md"
 
     @named_store_operation
-    def append_history(self, entry: str) -> None:
+    def consolidation_history_prefix(self, publication_id: str, messages: list[dict]) -> int | None:
+        """Return the already published prefix, refusing changed source rows."""
+        from kiro_crew.vector_memory import consolidation_source_digest
+
+        receipt = _publication_receipt(publication_id)
+        with self._files.lock(self._history_dir):
+            for day in self._files.glob(self._history_dir, "????-??-??.md"):
+                content = self._files.read_text_for_rewrite(day)
+                if receipt not in content:
+                    continue
+                match = re.search(
+                    re.escape(receipt)
+                    + r"\n<!-- consolidation-source: ([0-9]+) ([0-9a-f]{64}) -->",
+                    content,
+                )
+                if match is None:
+                    raise ValueError("Consolidation publication receipt has no source span")
+                count = int(match[1])
+                if (
+                    count <= 0
+                    or count > len(messages)
+                    or (consolidation_source_digest(messages[:count]) != match[2])
+                ):
+                    raise ValueError(
+                        "Committed consolidation source changed before acknowledgement"
+                    )
+                return count
+        return None
+
+    @named_store_operation
+    def append_history(
+        self,
+        entry: str,
+        *,
+        publication_id: str | None = None,
+        source_messages: list[dict] | None = None,
+    ) -> None:
         """Append a timestamped entry to today's daily history file.
 
         The whole read-modify-write is serialized behind an exclusive advisory
@@ -531,6 +635,16 @@ class MemoryStore:
         timestamp = datetime.now().astimezone().strftime("%H:%M %Z")
 
         with self._files.lock(self._history_dir):
+            receipt = _publication_receipt(publication_id) if publication_id is not None else None
+            if receipt is not None:
+                # The output and receipt share one atomic replacement; the lock
+                # spans all days so a takeover after midnight cannot replay it.
+                for day in self._files.glob(self._history_dir, "????-??-??.md"):
+                    committed = self._files.read_text_for_rewrite(day)
+                    if receipt in committed:
+                        self._index_file(day, committed)
+                        self._invalidate_history_cache()
+                        return
             # The leaf link / lone-inode admission is part of reading a file
             # the caller is about to rewrite, so it lives in
             # ``read_text_for_rewrite`` with the rest of the read hardening.
@@ -540,6 +654,13 @@ class MemoryStore:
                 content = f"# {date}\n"
 
             content += f"\n#### {timestamp}\n{entry.strip()}\n"
+            if receipt is not None:
+                content += receipt + "\n"
+                if source_messages is not None:
+                    from kiro_crew.vector_memory import consolidation_source_digest
+
+                    digest = consolidation_source_digest(source_messages)
+                    content += f"<!-- consolidation-source: {len(source_messages)} {digest} -->\n"
             self._atomic_write_text(path, content)
             # Indexed inside the lock — see write_preferences.
             self._index_file(path, content)
@@ -848,7 +969,11 @@ class MemoryStore:
         entry = self._files.read_entry(
             path, require_readable=require_readable, missing_ok=missing_ok
         )
-        return {"path": entry.path, "updated_at": entry.updated_at, "content": entry.content}
+        return {
+            "path": entry.path,
+            "updated_at": entry.updated_at,
+            "content": _without_publication_receipts(entry.content),
+        }
 
     # ── Context Injection ──
 

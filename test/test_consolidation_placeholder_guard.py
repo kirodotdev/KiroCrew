@@ -13,9 +13,10 @@ mandated markdown header; these tests pin the gate and the write path around it.
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
+from consolidation_lease_helpers import lease_aware_log
 
 from kiro_crew.history import HistoryConsolidator, _is_plausible_memory_file
 
@@ -105,14 +106,12 @@ class TestIsPlausibleMemoryFile:
 
 
 def _make_consolidator(memory: MagicMock) -> HistoryConsolidator:
-    log = MagicMock()
+    log = lease_aware_log()
     log.snapshot_for_consolidation.return_value = (
         [{"role": "user", "content": "hi"}],
         1,
         0,
     )
-    log.get_metadata.return_value = {}
-    log.get_metadata_status.return_value = ({}, True)
     log.consolidation_retry_state.return_value = (0, 0.0)
     return HistoryConsolidator(
         log=log,
@@ -167,10 +166,10 @@ class TestConsolidatePlaceholderGuard:
             await c._consolidate("k", include_history=False)
 
         memory.write_preferences.assert_called_once_with(
-            new_prefs, expected_baseline="# User Preferences\n\n- old\n"
+            new_prefs, expected_baseline="# User Preferences\n\n- old\n", publication_id=ANY
         )
         memory.write_projects.assert_called_once_with(
-            new_projects, expected_baseline="# Active Projects\n\n## Old\n"
+            new_projects, expected_baseline="# Active Projects\n\n## Old\n", publication_id=ANY
         )
 
     @pytest.mark.asyncio
@@ -186,7 +185,9 @@ class TestConsolidatePlaceholderGuard:
             llm.return_value = {"projects_update": trimmed}
             await c._consolidate("k", include_history=False)
 
-        memory.write_projects.assert_called_once_with(trimmed, expected_baseline=bloated)
+        memory.write_projects.assert_called_once_with(
+            trimmed, expected_baseline=bloated, publication_id=ANY
+        )
 
     @pytest.mark.asyncio
     async def test_omitted_update_keys_write_nothing(self):

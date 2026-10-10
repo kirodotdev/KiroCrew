@@ -407,15 +407,16 @@ async def test_lost_transcript_ack_recovers_committed_prefix_without_another_mod
 ):
     from unittest.mock import AsyncMock, MagicMock
 
+    from consolidation_lease_helpers import lease_aware_log
+
     from kiro_crew.context import ContextBuilder
     from kiro_crew.history_consolidation import HistoryConsolidator
 
-    log = MagicMock()
+    log = lease_aware_log()
     first = {"role": "user", "content": "The release codename is aurora 中文."}
     second = {"role": "assistant", "content": "Recorded the original decision."}
     log.snapshot_for_consolidation.return_value = ([first, second], 2, 0)
     log.consolidation_retry_state.return_value = (0, 0.0)
-    log.get_metadata.return_value = {}
     memory = MagicMock()
     memory.read_preferences.return_value = ""
     memory.read_projects.return_value = ""

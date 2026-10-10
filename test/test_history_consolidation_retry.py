@@ -16,7 +16,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from windows_sim import replace_sharing_violation
@@ -44,7 +44,7 @@ KEY = "dashboard:chat-retry"
 @pytest.mark.parametrize("mode", ["persistent", "incognito", "temporary"])
 async def test_consolidation_captures_execution_off_loop(tmp_path, monkeypatch, mode):
     from kiro_crew import execution_context
-    from kiro_crew.history_consolidation import _CONSOLIDATION_REFUSED
+    from kiro_crew.history_consolidation import _CONSOLIDATION_BUSY, _CONSOLIDATION_REFUSED
 
     captured = execution_context.ExecutionContext(
         None, execution_context.MemoryStoreRef("default"), "template", "kirocrew", mode
@@ -60,7 +60,7 @@ async def test_consolidation_captures_execution_off_loop(tmp_path, monkeypatch, 
     consolidator = _make_consolidator(_seed_log(tmp_path, count=0))
     consolidator._call_llm = AsyncMock()
     result = await asyncio.wait_for(consolidator._consolidate(KEY), 10)
-    assert result is (None if mode == "persistent" else _CONSOLIDATION_REFUSED)
+    assert result is (_CONSOLIDATION_BUSY if mode == "persistent" else _CONSOLIDATION_REFUSED)
     consolidator._call_llm.assert_not_awaited()
     assert len(reads) == 1
     assert reads[0][0] != loop_thread
@@ -226,20 +226,20 @@ class TestTheLineIsValidatedWithTheRows:
         c._call_llm = AsyncMock(return_value={"history_entry": "leaked"})
         # Unreadable only from the snapshot's own lock hold onward, so the
         # pre-checks (which read the line too) pass and the snapshot is the gate.
-        real_locked_stems = type(log).locked_stems
+        real_snapshot = type(log).snapshot_for_consolidation
         real_status = type(log)._read_metadata_status
         inside = {"lock": False}
 
-        def _locked_then_unreadable(self, stems):
+        def _snapshot_then_unreadable(self, key, **kwargs):
             inside["lock"] = True
-            return real_locked_stems(self, stems)
+            return real_snapshot(self, key, **kwargs)
 
         def _status(self, key):
             if inside["lock"] and key == KEY:
                 return {}, False
             return real_status(self, key)
 
-        monkeypatch.setattr(type(log), "locked_stems", _locked_then_unreadable)
+        monkeypatch.setattr(type(log), "snapshot_for_consolidation", _snapshot_then_unreadable)
         monkeypatch.setattr(type(log), "_read_metadata_status", _status)
 
         outcome = await asyncio.wait_for(c._consolidate(KEY, include_history=True), 10)
@@ -308,7 +308,7 @@ async def test_persistence_flip_after_first_commit_finishes_the_run(tmp_path, mo
     c._migrated = False
     disabled = False
 
-    def append_history(_entry):
+    def append_history(_entry, *, publication_id, source_messages):
         nonlocal disabled
         disabled = True
 
@@ -327,9 +327,11 @@ async def test_persistence_flip_after_first_commit_finishes_the_run(tmp_path, mo
     outcome = await asyncio.wait_for(c._consolidate(KEY, include_history=True), 10)
 
     assert outcome is None
-    c._memory.append_history.assert_called_once_with("committed history")
+    c._memory.append_history.assert_called_once_with(
+        "committed history", publication_id=ANY, source_messages=ANY
+    )
     c._memory.write_preferences.assert_called_once_with(
-        "# User Preferences\n- dark mode", expected_baseline=""
+        "# User Preferences\n- dark mode", expected_baseline="", publication_id=ANY
     )
     mark_consolidated.assert_called_once()
     assert log.consolidation_counts(KEY)[1] == 0
@@ -366,7 +368,7 @@ async def test_cas_refused_first_publication_does_not_arm_commit_latch(tmp_path,
 
     assert outcome is _CONSOLIDATION_REFUSED
     c._memory.write_preferences.assert_called_once_with(
-        "# User Preferences\n- dark mode", expected_baseline=""
+        "# User Preferences\n- dark mode", expected_baseline="", publication_id=ANY
     )
     c._memory.write_projects.assert_not_called()
     c._memory.append_history.assert_not_called()
@@ -434,7 +436,9 @@ async def test_a_refused_hold_after_the_first_commit_marks_the_span(
 
     assert outcome is None
     assert calls["n"] == 2, "publication continued past the refused hold"
-    c._memory.append_history.assert_called_once_with("committed history")
+    c._memory.append_history.assert_called_once_with(
+        "committed history", publication_id=ANY, source_messages=ANY
+    )
     c._memory.write_preferences.assert_not_called()
     c._memory.write_projects.assert_not_called()
     mark_consolidated.assert_called_once_with(KEY, 3, 0)
@@ -506,7 +510,9 @@ async def test_a_marker_failure_after_a_refused_later_hold_is_charged(tmp_path, 
     with pytest.raises(history_mod.HistoryLockTimeout):
         await asyncio.wait_for(c._consolidate(KEY, include_history=True), 10)
 
-    c._memory.append_history.assert_called_once_with("committed history")
+    c._memory.append_history.assert_called_once_with(
+        "committed history", publication_id=ANY, source_messages=ANY
+    )
     assert int(log.get_metadata(KEY).get("consolidation_attempts", 0)) == 1
 
 

@@ -857,7 +857,7 @@ def _consolidate_cmd(args) -> None:
                     continue
                 print(f"  {key}: consolidating {count} messages...")
                 if not await consolidator.consolidate_now(key):
-                    print(f"  {key}: skipped (consolidation retry backoff)")
+                    print(f"  {key}: no completed pass recorded")
                     continue
                 # consolidate_now drains the tail over as many bounded passes as
                 # it takes, but it can stop short — a backoff armed part-way

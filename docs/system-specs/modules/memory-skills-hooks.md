@@ -322,6 +322,16 @@ keyed on `(days, today)` so the decay window shifting at midnight invalidates
 naturally; `append_history` and `prune_history` call `_invalidate_history_cache()`
 so a new or pruned entry is visible immediately.
 
+V1 consolidation publications store a transcript-incarnation/session/span digest
+receipt as a Markdown comment in the same atomic replacement as each output.
+The transcript's durable `created_at` identity is captured under the lease-checked
+snapshot lock and remains stable across retries. History appends check all
+retained daily files under their shared lock; preference and project replacements
+preserve the latest 128 receipts and check them before their baseline guard.
+Indexes are derived from the committed files and are not the receipt authority.
+Receipts are omitted from preference/project reads and guarded context injection;
+baseline comparisons still protect the exact stored document under its lock.
+
 ### History Pruning
 
 For V1, `prune_history(keep_days)` deletes daily files older than `keep_days` (default 365). It runs once per day via heartbeat (`_PRUNE_TICKS = 1440`), parses `YYYY-MM-DD.md` filenames and skips non-date files. For V2 it returns zero without deleting anything, regardless of the age setting.
@@ -450,8 +460,8 @@ marked; after it, the run stops publishing at that output -- a restricted line
 must not be learned from and a busy lock cannot be vouched for -- logs at
 warning which stage was refused and why, and still marks the span consolidated.
 The outputs after the first are best-effort memory, while leaving the span
-pending re-runs it on the next idle sweep and `append_history`, which carries no
-receipt, appends the same history entry twice; a transcript restricted mid-run
+pending re-runs it on the next idle sweep. V1 publication receipts deduplicate
+outputs already committed on that span; a transcript restricted mid-run
 is refused by the derivation seam on every later run, so marking it loses
 nothing. The run-level latch counts only a publication
 whose writer reports success, or a no-result writer that completes without raising.

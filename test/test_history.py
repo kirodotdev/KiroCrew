@@ -11,6 +11,7 @@ import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from consolidation_lease_helpers import lease_aware_log
 from windows_sim import builtin_open_sharing_violation
 
 from kiro_crew import history, history_search
@@ -3129,13 +3130,10 @@ class TestConsolidationDoesNotBlockLoop:
         loop_thread_id = threading.get_ident()
         write_thread_id: dict[str, int] = {}
 
-        log = MagicMock()
+        log = lease_aware_log()
         log.snapshot_for_consolidation.return_value = (
             [{"role": "user", "content": "hi"}], 1, 0
         )
-        log.get_metadata.return_value = {}
-        # A fresh span is eligible; _consolidate's inner gate reads this.
-        log.get_metadata_status.return_value = ({}, True)
         log.consolidation_retry_state.return_value = (0, 0.0)
 
         memory = MagicMock()
@@ -3179,13 +3177,10 @@ class TestConsolidationDoesNotBlockLoop:
         loop_thread_id = threading.get_ident()
         save_thread_id: dict[str, int] = {}
 
-        log = MagicMock()
+        log = lease_aware_log()
         log.snapshot_for_consolidation.return_value = (
             [{"role": "user", "content": "hi"}], 1, 0
         )
-        log.get_metadata.return_value = {}
-        # A fresh span is eligible; _consolidate's inner gate reads this.
-        log.get_metadata_status.return_value = ({}, True)
         log.consolidation_retry_state.return_value = (0, 0.0)
 
         memory = MagicMock()

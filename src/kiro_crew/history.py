@@ -3758,6 +3758,7 @@ class ConversationLog:
         guard: Callable[[dict], bool],
         *,
         require_existing: bool = False,
+        require_write: bool = False,
         after_commit_under_lock: Callable[[], None] | None = None,
     ) -> bool:
         return self._metadata_projection.update_metadata_if(
@@ -3765,11 +3766,12 @@ class ConversationLog:
             fields,
             guard,
             require_existing=require_existing,
+            require_write=require_write,
             after_commit_under_lock=after_commit_under_lock,
         )
 
-    def _update_metadata_locked(self, key: str, fields: dict) -> None:
-        self._metadata_projection._update_metadata_locked(key, fields)
+    def _update_metadata_locked(self, key: str, fields: dict) -> bool:
+        return self._metadata_projection._update_metadata_locked(key, fields)
 
     def mtime_of(self, key: str) -> float | None:
         return self._metadata_projection.mtime_of(key)

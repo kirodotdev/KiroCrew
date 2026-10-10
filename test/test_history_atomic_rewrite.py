@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 
 import pytest
+from consolidation_lease_helpers import lease_aware_log
 
 from kiro_crew.history import ConversationLog
 
@@ -61,13 +62,11 @@ class TestMarkConsolidatedOffloaded:
         loop_thread_id = threading.get_ident()
         mark_thread_id: dict[str, int] = {}
 
-        log = MagicMock()
+        log = lease_aware_log()
         log.snapshot_for_consolidation.return_value = (
             [{"role": "user", "content": "hi"}], 1, 0
         )
-        log.get_metadata.return_value = {}
         # A fresh span is eligible; _consolidate's inner gate reads this.
-        log.get_metadata_status.return_value = ({}, True)
         log.consolidation_retry_state.return_value = (0, 0.0)
         log.mark_consolidated.side_effect = lambda *a, **k: mark_thread_id.__setitem__(
             "id", threading.get_ident()

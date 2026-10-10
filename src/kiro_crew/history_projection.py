@@ -1843,9 +1843,15 @@ class SessionMetadataProjection:
         guard: Callable[[dict], bool],
         *,
         require_existing: bool = False,
+        require_write: bool = False,
         after_commit_under_lock: Callable[[], None] | None = None,
     ) -> bool:
         """Merge fields only when the locked on-disk metadata passes a guard.
+
+        *require_write* refuses a skipped write on a legacy message-first file.
+        By default, a passing guard still returns True for that no-op; callers
+        requiring durable fields must read them back. The commit callback runs
+        only when the metadata line was actually written.
 
         *require_existing* additionally refuses a session that has no file at
         all. The guard cannot express that itself: :meth:`_read_metadata_status`
@@ -1888,6 +1894,9 @@ class SessionMetadataProjection:
         with self._log._locked(key):
             if require_existing and not self._log._path(key).exists():
                 return False
+            # Peer metadata writes can preserve mtime; CAS must read disk under
+            # the writer lock even when the local cache identity still matches.
+            self._log._meta_cache.pop(key, None)
             metadata, readable = self._log._read_metadata_status(key)
             if not readable:
                 if self._log.metadata_line_state(key) != METADATA_LINE_CORRUPT:
@@ -1895,15 +1904,23 @@ class SessionMetadataProjection:
                 metadata = {"memory_mode": STRICTEST_MEMORY_MODE}
             if not guard(metadata):
                 return False
-            self._log._update_metadata_locked(key, fields)
+            if not self._log._update_metadata_locked(key, fields):
+                # Legacy callers use read-back to distinguish a skipped write;
+                # lease callers require a persisted claim before reporting success.
+                return not require_write
             if after_commit_under_lock is not None:
                 after_commit_under_lock()
         if "tab_id" in fields:
             self._log.invalidate_tab_id_cache()
         return True
 
-    def _update_metadata_locked(self, key: str, fields: dict) -> None:
+    def _update_metadata_locked(self, key: str, fields: dict) -> bool:
         """Merge or upsert one metadata line while the owner lock is held.
+
+        Returns True when the line was written, False when the write was
+        SKIPPED — a first line that is JSON but not a metadata object (a
+        legacy row-first file) is left as it was, as before, and the caller's
+        CAS can require a write rather than report a claim that is not on disk.
 
         A first line that is not JSON is REWRITTEN rather than left alone: the
         old bytes are dropped, the rows after them are kept, and the new line
@@ -1937,9 +1954,9 @@ class SessionMetadataProjection:
                     "memory_mode": STRICTEST_MEMORY_MODE,
                 }
             if not isinstance(metadata, dict):
-                return
+                return False
             if metadata.get("_type") != "metadata":
-                return
+                return False
         else:
             self._log._dir.mkdir(parents=True, exist_ok=True)
             metadata = {
@@ -1981,6 +1998,7 @@ class SessionMetadataProjection:
             raise
         _history_facade()._restore_mtime(path, previous_mtime)
         self._log._invalidate_cache(key)
+        return True
 
     def mtime_of(self, key: str) -> float | None:
         """Return a session file mtime without reading its contents."""
