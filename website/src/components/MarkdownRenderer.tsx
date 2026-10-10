@@ -507,13 +507,21 @@ const MD_COMPONENTS = {
   // keys are added through the assertion below rather than inline — react-markdown
   // resolves the component by tag name at runtime regardless of the static type.
   'blocked-link'({ node }: { node?: HastElement }) {
-    return <BlockedLinkChip domain={String(node?.properties?.domain ?? '')} placeholder={String(node?.properties?.placeholder ?? '')} />
+    const p = node?.properties
+    return (
+      <BlockedLinkChip
+        domain={String(p?.domain ?? '')}
+        placeholder={String(p?.placeholder ?? '')}
+        block={String(p?.block ?? '')}
+        chip={String(p?.chip ?? '')}
+      />
+    )
   },
   'cred-tag'({ node }: { node?: HastElement }) {
     return <CredentialTag ordinal={Number(node?.properties?.ordinal)} placeholder={String(node?.properties?.placeholder ?? '')} />
   },
   'redaction-card-slot'({ node }: { node?: HastElement }) {
-    return <RedactionCardSlot ids={String(node?.properties?.ids ?? '')} />
+    return <RedactionCardSlot ids={String(node?.properties?.ids ?? '')} ends={String(node?.properties?.ends ?? '')} />
   },
 } as Components
 
@@ -1146,8 +1154,8 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
   const blockMarkers = useMemo<Array<RedactionMarkers | undefined>>(() => {
     if (credentialOrdinals.size === 0 && blockedDomains.size === 0) return blocks.map(() => undefined)
     let base = 0
-    return blocks.map(b => {
-      const m: RedactionMarkers = { ordinals: credentialOrdinals, domains: blockedDomains, held: heldDomains, credentials: credentialMap, base }
+    return blocks.map((b, block) => {
+      const m: RedactionMarkers = { ordinals: credentialOrdinals, domains: blockedDomains, held: heldDomains, credentials: credentialMap, base, block }
       base += countCredentialTags(b.content)
       return m
     })

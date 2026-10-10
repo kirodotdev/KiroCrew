@@ -1,5 +1,6 @@
 [
   "components.redaction.coach_title",
+  "components.redaction.link_title_set",
   "pages.overview.vectorMemoryCard.repair_deferred",
   "pages.overview.vectorMemoryCard.repair_invalidation",
   "pages.overview.vectorMemoryCard.repair_vectors",

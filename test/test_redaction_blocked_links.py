@@ -1213,3 +1213,66 @@ class TestAVariantsRecordsAreCheckedOnServe:
         out = _prepare_messages(msgs, False, live_child="")
 
         assert out[0]["variants"][0]["blocked_links"] == records
+
+
+class TestARawCopyNeverOutlivesTheTextItMirrors:
+    """Through the real ``_run_chat``: a site that clears the visible text mid-turn
+    clears its raw copy too, so an address streamed before the boundary is never
+    listed against the reply the reader sees after it.
+
+    The reply after the boundary opens on a link redacted inside its own delta,
+    so the flush takes that address's record from the raw copy: the reset
+    beside each clear is the only thing keeping the earlier address out, which
+    is what these pin.
+    """
+
+    _HOST = "h.example-sink.net"
+
+    def _events(self, boundary: object) -> list[object]:
+        from kiro_crew.acp.types import (
+            EVENT_COMPLETE,
+            EVENT_TEXT_CHUNK,
+            STOP_REASON_END_TURN,
+            AcpEvent,
+        )
+
+        unseen = f"https://{self._HOST}/before?q=" + "x" * 250
+        after = f"https://{self._HOST}/after?q=" + "y" * 250
+        return [
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text="draft "),
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text=unseen),
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text=" . "),
+            boundary,
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text=after),
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text=" is the one."),
+            AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+        ]
+
+    def _paths(self, record: object) -> list[object]:
+        rows = [r for r in record.rows("assistant") if "is the one" in str(r.get("content"))]
+        assert len(rows) == 1
+        return [link.get("path") for link in (rows[0].get("meta") or {}).get("blocked_links", [])]
+
+    @pytest.mark.asyncio
+    async def test_a_compaction_boundary_clears_the_raw_copy(self) -> None:
+        from turn_harness import TurnScript, run_turn
+
+        from kiro_crew.acp.types import EVENT_COMPACTION_STATUS, AcpEvent
+
+        boundary = AcpEvent(kind=EVENT_COMPACTION_STATUS, text="completed", context_usage_pct=40.0)
+        record = await run_turn(TurnScript(events=self._events(boundary)))
+
+        assert self._paths(record) == ["/after"]
+
+    @pytest.mark.asyncio
+    async def test_a_mid_turn_clear_clears_the_raw_copy(self) -> None:
+        from turn_harness import SlotSpec, TurnScript, run_turn
+
+        from kiro_crew.acp.types import EVENT_CLEAR_STATUS, AcpEvent
+
+        record = await run_turn(
+            TurnScript(events=self._events(AcpEvent(kind=EVENT_CLEAR_STATUS))),
+            slot=SlotSpec(rows=[("user", "earlier"), ("assistant", "earlier answer")]),
+        )
+
+        assert self._paths(record) == ["/after"]

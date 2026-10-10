@@ -4229,6 +4229,18 @@ def _accumulate_segment_raw(slot: _ChatSlot, text: str) -> None:
     slot.segment_raw_text = raw if len(raw) <= _SEGMENT_RAW_MAX_CHARS else None
 
 
+def _cleared_segment_text(slot: _ChatSlot) -> str:
+    """Clear the slot's raw segment copy and return the cleared streamed text.
+
+    The one way a turn drops its streamed text mid-segment
+    (``assistant_text = _cleared_segment_text(slot)``), so the raw copy that
+    mirrors that text can never outlive it: records taken from a copy that
+    outlived its text would describe addresses the reader never saw.
+    """
+    slot.segment_raw_text = ""
+    return ""
+
+
 def _redact_segment(slot: _ChatSlot, text: str) -> tuple[str, list[dict], list[dict]]:
     """Redact one assistant segment and describe every placeholder it wrote.
 
@@ -9058,7 +9070,8 @@ async def _run_chat(
             # the empty-response branch and requeue the ORIGINAL prompt —
             # re-running its side effects.
             _produced_visible_output = True
-        assistant_text = ""
+        # The flush consumes the raw copy; a blank segment does not.
+        assistant_text = _cleared_segment_text(slot)
 
     # Partial-output guard for transient-5xx retry: flipped True once ANY
     # assistant token streams or a tool call fires this turn. A transient
@@ -15167,7 +15180,7 @@ async def _run_chat(
                         _compaction_dropped_leak = _compaction_dropped_leak or has_leaked_tool_call(
                             assistant_text
                         )
-                        assistant_text = ""
+                        assistant_text = _cleared_segment_text(slot)
                         _wsred.reset()
             elif event.kind == EVENT_CLEAR_STATUS:
                 # A confirmed native clear is the one destructive slash command:
@@ -15207,7 +15220,7 @@ async def _run_chat(
                 # elapsed/credits stats.
                 _turn_msg_boundary = 0
                 _turn_start_mid = ""
-                assistant_text = ""
+                assistant_text = _cleared_segment_text(slot)
                 _wsred.reset()
                 _produced_visible_output = True
                 # slot_clear FIRST: it wipes the client's message list, so the
@@ -15346,7 +15359,7 @@ async def _run_chat(
                         _spec_hooks_cwd,
                     ) = await _prepare_spec_hooks(state, slot, client, new_agent, is_new=False)
                     selected_binding = _current_binding()
-                    assistant_text = ""
+                    assistant_text = _cleared_segment_text(slot)
                     _wsred.reset()
                     _produced_visible_output = True
                     slot.append(
@@ -16213,7 +16226,7 @@ async def _run_chat(
             # the notice is cleared by this same purge rather than by suppression
             # upstream.
             slot.purge_chunks()
-            assistant_text = ""
+            assistant_text = _cleared_segment_text(slot)
             _wsred.reset()
             _produced_visible_output = True
             await _send_chat_done(state, slot, continuing=True)

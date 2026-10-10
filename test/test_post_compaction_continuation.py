@@ -610,7 +610,9 @@ def test_the_runner_only_clears_text_on_an_observed_terminal() -> None:
     # three lines by the formatter, so each shape is named).
     filler = r"(?:[ \t]*(?:#[^\n]*|_compaction_dropped_leak = [^\n]*|assistant_text|\))\n)*"
     assert re.search(
-        r"if not event\.synthesized:[ \t]*\n" + filler + r'[ \t]*assistant_text = ""[ \t]*\n'
+        r"if not event\.synthesized:[ \t]*\n"
+        + filler
+        + r'[ \t]*assistant_text = (?:""|_cleared_segment_text\(slot\))[ \t]*\n'
         r"[ \t]*_wsred\.reset\(\)",
         src,
     ), "the compaction-terminal text reset must be guarded by `not event.synthesized`"

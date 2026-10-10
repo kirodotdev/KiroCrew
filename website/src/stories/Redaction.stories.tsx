@@ -109,6 +109,83 @@ export const LinkAddressTooLong: Story = {
   },
 }
 
+const CHIP = '[data-testid="blocked-link-inspect"]'
+
+/** One host blocked in four places (in one, with `single`). `steps` are
+ *  clicked in order (`selector@n` clicks the n-th match); `list` puts the four
+ *  in one bulleted list, so their chips share one card. Allowing the host
+ *  re-serves the reply the way the server does: the links restored, their
+ *  records gone. */
+function SameHostLinks({ steps, list = false, single = false, merge = false }: { steps: string[]; list?: boolean; single?: boolean; merge?: boolean }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const [restored, setRestored] = useState(false)
+  const host = 'reviews.corp.example'
+  const blocked = (single ? ['/mine'] : ['/open', '/mine', '/stale', '/security']).map(path => {
+    const url = `https://${host}${path}?filter=${REVIEWS_FILTER}&sort=-created&view=table`
+    return { domain: host, rule: 'exfil_query_length', path, query_chars: url.length - url.indexOf('?') - 1, url, url_withheld: null }
+  })
+  const labels = single ? ['Assigned to me'] : ['Open reviews', 'Assigned to me', 'Stale for a week', 'Security label']
+  const line = (label: string, i: number) => `${list ? '- ' : ''}${label}: ${restored ? `[the page](${blocked[i].url})` : `[REDACTED: suspicious URL to ${host}]`}`
+  // `merge`: the restored reply joins the first two paragraphs and the last
+  // two, so every block after the first moves.
+  const content = merge && restored
+    ? [labels.slice(0, 2), labels.slice(2)].map(g => g.map(l => line(l, labels.indexOf(l))).join('\n')).join('\n\n')
+    : labels.map(line).join(list ? '\n' : '\n\n')
+  useEffect(() => {
+    const a = api as unknown as Record<string, unknown>
+    a.redactionAllowHost = async () => ({ ok: true, workspace: 'default' })
+    a.redactionRevokeHost = async () => ({ ok: true, removed: true })
+    const onChange = () => setRestored(true)
+    window.addEventListener('mc:redaction-hosts-changed', onChange)
+    let i = 0
+    const next = () => {
+      if (i >= steps.length) return
+      const [sel, n] = steps[i++].split('@')
+      ref.current?.querySelectorAll<HTMLElement>(sel)[Number(n ?? 0)]?.click()
+      setTimeout(next, 400)
+    }
+    const t = setTimeout(next, 100)
+    return () => { clearTimeout(t); window.removeEventListener('mc:redaction-hosts-changed', onChange) }
+  }, [steps])
+  return (
+    <div ref={ref} className="max-w-[900px] p-4 text-[14px] leading-6 text-text">
+      <MarkdownRenderer content={content} blockedLinks={restored ? [] : blocked} slotKey="story" messageTs="2026-10-07T00:00:00Z" />
+    </div>
+  )
+}
+
+/** Inspect on the third of four paragraphs opens one card, under that
+ *  paragraph. It lists the host's four blocked links, each under its own
+ *  address, and presents none as the one clicked. */
+export const BlockedLinksOneHostSeveralBlocks: StoryObj<typeof SameHostLinks> = {
+  render: args => <SameHostLinks {...args} />,
+  args: { steps: [`${CHIP}@2`] },
+}
+/** The same card after Allow and the reload that shows the host's links as
+ *  plain links: still one card, under the third paragraph, with Undo. */
+export const BlockedLinksOneHostAllowed: StoryObj<typeof SameHostLinks> = {
+  render: args => <SameHostLinks {...args} />,
+  args: { steps: [`${CHIP}@2`, '[data-testid="blocked-link-allow"]', '[data-testid="blocked-link-allow-confirmed"]'] },
+}
+/** Allow from the fourth paragraph's card, then a reload that joins the
+ *  paragraphs in pairs: the card reopens under the block that now holds the
+ *  fourth link, with Undo. */
+export const BlockedLinksOneHostAllowedMerged: StoryObj<typeof SameHostLinks> = {
+  render: args => <SameHostLinks {...args} />,
+  args: { merge: true, steps: [`${CHIP}@3`, '[data-testid="blocked-link-allow"]@3', '[data-testid="blocked-link-allow-confirmed"]'] },
+}
+/** Four chips in one list share its one card: Inspect on the first. */
+export const BlockedLinksOneListFirst: StoryObj<typeof SameHostLinks> = {
+  render: args => <SameHostLinks {...args} />,
+  args: { list: true, steps: [`${CHIP}@0`] },
+}
+/** One blocked address on the host: the card lists that one address under
+ *  the same set title, never as the link clicked. */
+export const BlockedLinkOneOnItsHost: StoryObj<typeof SameHostLinks> = {
+  render: args => <SameHostLinks {...args} />,
+  args: { single: true, steps: [`${CHIP}@0`] },
+}
+
 // ── credential card states ───────────────────────────────────────────────
 
 /** A secret found in a command's output: the card offers the command the

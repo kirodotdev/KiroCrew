@@ -1,0 +1,13 @@
+{
+  "content": "Link: [REDACTED: suspicious URL to my-bucket.s3.us-east-1.amazonaws.com]&X-Amz-Date=20261008T000000Z&X-Amz-Expires=3600&X-Amz-SignedHeaders=host&X-Amz-Signature=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa . plain https://my-bucket.s3.us-east-1.amazonaws.com/other-a?X-Amz-Credential=[REDACTED: credential]%2Fx . ",
+  "blocked_links": [
+    {
+      "domain": "my-bucket.s3.us-east-1.amazonaws.com",
+      "rule": "exfil_hard_credential",
+      "path": "/other-a",
+      "query_chars": 41,
+      "url": null,
+      "url_withheld": "credential"
+    }
+  ]
+}
