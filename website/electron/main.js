@@ -35,6 +35,8 @@ const { seedRenamedStore } = require("./store-rename");
 const { resolveHome, secretCandidates } = require("./home-dir");
 const { identityFamily } = require("./instance-guard");
 const { describeSingletonLock } = require("./singleton-lock");
+const { startLinuxDesktopIntegration } = require("./linux-desktop-integration");
+const { resolveLinuxInstall } = require("./auto-update");
 const { initNativeLogging } = require("./native-logging");
 const { armCrashCollector, collectCrashReports } = require("./crash-collector");
 const { initGpuPolicy } = require("./disable-gpu");
@@ -597,6 +599,32 @@ app.whenReady().then(async () => {
   ipcRegistrar.registerShell();
   windows.createTray();
   const mainWindow = windows.createMainWindow();
+
+  // Linux AppImage desktop integration. It creates the first launcher and then
+  // reconciles only files whose hashes still match bytes Kiro Crew wrote. The
+  // reconciliation itself (synchronous filesystem work plus one packaged
+  // helper process per fingerprint, publish, and cleanup step) runs on a worker
+  // thread; the main thread only evaluates the plan and receives the result,
+  // and no thread is started on a non-AppImage install. The promise never
+  // rejects by contract; the catch below is the last fence for a defect in it.
+  try {
+    startLinuxDesktopIntegration({
+      env: process.env,
+      installKind: resolveLinuxInstall({
+        env: process.env,
+        resourcesPath: process.resourcesPath,
+      }).kind,
+      version: app.getVersion(),
+      stateDir: app.getPath("userData"),
+      uid: typeof process.geteuid === "function" ? process.geteuid() : null,
+      resourcesPath: process.resourcesPath,
+      log: (m) => { try { glog(`desktop-integration: ${m}`); } catch { /* ignore */ } },
+    }).catch((e) => {
+      try { glog(`desktop-integration: failed: ${e && e.message}`); } catch { /* ignore */ }
+    });
+  } catch (e) {
+    try { glog(`desktop-integration: skipped: ${e && e.message}`); } catch { /* ignore */ }
+  }
 
   // The global accelerator needs an existing main window. The updater needs
   // that same window for notifications, but MUST be fully registered before

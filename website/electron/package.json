@@ -156,6 +156,7 @@
       "zoom.js",
       "instance-guard.js",
       "singleton-lock.js",
+      "linux-desktop-integration.js",
       "context-menu.js",
       "find-bin.js",
       "gateway-env.js",
