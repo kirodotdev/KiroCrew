@@ -270,6 +270,41 @@ them in bulk — by default only HOMEs whose last activity is older than 3 days
 (`--all` sweeps every age; each delete still routes through the same
 stop-drain-verify path `down` uses, with liveness re-checked per name).
 
+An orphan by definition has no loaded unit, so the reclaim's stop step reports
+`Unit … not loaded` — the one stop failure that cannot mean a live unit. The
+delete is then gated on the pod's own evidence rather than the service
+manager's (`runtime_home.reclaim_blocker`), because a gateway started outside
+the template unit serves with no unit at all. It proceeds only when both hold:
+
+- **No boot can reach the HOME.** The checkout pin
+  (`~/.kiro/crew/pods/<name>.env`) is absent, names no `CHECKOUT=`, or names a
+  checkout with no runnable venv — a check every boot makes, in every checkout
+  version, before it touches the HOME. The judgment runs under the per-name
+  lock every pin write takes, so a boot that starts meanwhile reads the same
+  pin and refuses on it. An orphan whose pinned checkout can still boot is
+  refused, and the refusal says how to clear it.
+- **No positive sign of a live pod**: a running `pod _run <name>`, the gateway
+  pid record in the HOME (accepted only with a matching start-time identity, so
+  a recycled pid cannot attest), a responder on the pod's port that is not
+  provably a foreign process, or a process seen holding a path under the HOME
+  (`cwd`, `root`, `exe`, an open descriptor, of any of its threads, or a
+  command line naming it).
+
+A process whose `/proc` links cannot be read — non-dumpable, or root seen from
+a non-root scan — is judged only by its command line. Whether it holds the HOME
+cannot be decided from an unprivileged `/proc`, and refusing on that shape
+refuses every reclaim on an ordinary host (systemd's `(sd-pam)`, `ssh-agent`,
+every ssh session's `sshd`), so the delete proceeds and the post-delete
+verification reports a survivor, the posture the unit path's cgroup drain takes
+for an unobservable cgroup. The pin is read without following a link and
+without blocking on a FIFO.
+
+`pod ls` lists every orphan from a plain directory scan and prints, beside
+each, either the reclaim command or the exact reason `pod down` would refuse —
+the same predicate (`runtime_lifecycle.reclaim_refusal`), judged from one
+`/proc` pass for the whole listing. `pod prune` skips a refused orphan with
+that reason rather than counting it as a failed delete.
+
 ### Port derivation and allocation
 
 `port = base + (cksum(name) % 199) + 1` (base `7810` → `7811..8009`), unless a

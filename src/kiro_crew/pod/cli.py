@@ -1077,6 +1077,8 @@ def _print_orphans(cfg: PodConfig, orphans: list[str]) -> None:
     if not orphans:
         return
     now = time.time()
+    # One /proc pass for the whole listing rather than one per orphan.
+    procs = None if (rt.IS_MACOS or rt.IS_WINDOWS) else rt._proc_snapshot()
     print(
         f"\n{len(orphans)} orphaned pod HOME(s) — left by a pod that went away "
         "without an explicit `down` (a crash, a raw service stop, a reboot):"
@@ -1089,7 +1091,13 @@ def _print_orphans(cfg: PodConfig, orphans: list[str]) -> None:
             age = _relative_age(now - _orphan_last_alive(cfg, n))
         except OSError:
             age = "age unknown"
-        print(f"  {n:<26} {age:<12} reclaim: kirocrew pod down {n}")
+        # The same judgment `pod down` applies, so a listed orphan never carries a
+        # reclaim command the delete refuses without saying why.
+        refusal = rt.reclaim_refusal(cfg, n, snapshot=procs)
+        if refusal is None:
+            print(f"  {n:<26} {age:<12} reclaim: kirocrew pod down {n}")
+        else:
+            print(f"  {n:<26} {age:<12} not reclaimable by `pod down`: {refusal}")
     print("  bulk reclaim: kirocrew pod prune [--all] [--dry-run] (default keeps the last 3d)")
 
 
@@ -1193,6 +1201,9 @@ def _prune(cfg: PodConfig, args: argparse.Namespace) -> None:
         raise
     dry_run = bool(getattr(args, "dry_run", False))
     results: list[dict[str, str]] = []
+    # One /proc pass classifies every orphan; each delete still re-judges
+    # through stop_pod with a fresh one.
+    procs = None if (rt.IS_MACOS or rt.IS_WINDOWS or not orphans) else rt._proc_snapshot()
     for name in orphans:
         if threshold is not None:
             # A HOME that cannot be statted cannot be proven old enough —
@@ -1209,13 +1220,21 @@ def _prune(cfg: PodConfig, args: argparse.Namespace) -> None:
                 continue
         if dry_run:
             # Apply the DETERMINISTIC classification so the preview matches a
-            # real run: an invalid name is skipped either way. The liveness
-            # rechecks are moment-in-time and stay out of the preview.
+            # real run: an invalid name is skipped either way. The unit-state
+            # rechecks are moment-in-time and stay out of the preview; the
+            # unit-less reclaim judgment is the one the real run applies, so a
+            # name it refuses is previewed as skipped with the same reason.
             try:
                 rt.validate_name(name)
             except rt.PodError:
                 results.append(
                     {"name": name, "status": "skipped", "detail": "not a valid pod name"}
+                )
+                continue
+            refusal = rt.reclaim_refusal(cfg, name, snapshot=procs)
+            if refusal is not None:
+                results.append(
+                    {"name": name, "status": "skipped", "detail": f"not reclaimable: {refusal}"}
                 )
                 continue
             results.append({"name": name, "status": "would-reclaim", "detail": ""})
@@ -1227,12 +1246,12 @@ def _prune(cfg: PodConfig, args: argparse.Namespace) -> None:
             # visible, never parsed.
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
-                row = _prune_one(cfg, name)
+                row = _prune_one(cfg, name, procs)
             if buf.getvalue():
                 print(buf.getvalue(), file=sys.stderr, end="")
             results.append(row)
         else:
-            results.append(_prune_one(cfg, name))
+            results.append(_prune_one(cfg, name, procs))
     counts = {
         s: sum(1 for r in results if r["status"] == s)
         for s in ("reclaimed", "would-reclaim", "kept", "skipped", "failed")
@@ -1270,7 +1289,7 @@ def _prune(cfg: PodConfig, args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
-def _prune_one(cfg: PodConfig, name: str) -> dict[str, str]:
+def _prune_one(cfg: PodConfig, name: str, procs: list | None = None) -> dict[str, str]:
     """Reclaim ONE orphaned HOME through the safe delete path; never raises.
 
     Structured so the SEL audit CANNOT be skipped: every decision path returns
@@ -1279,12 +1298,14 @@ def _prune_one(cfg: PodConfig, name: str) -> dict[str, str]:
     does not reach the trail is invisible to the operator — adding a new
     return path to the decide helper keeps this property by construction.
     """
-    status, detail, outcome, err = _prune_one_decide(cfg, name)
+    status, detail, outcome, err = _prune_one_decide(cfg, name, procs)
     _audit("pod.prune", outcome, f"name={name}", error=err)
     return {"name": name, "status": status, "detail": detail}
 
 
-def _prune_one_decide(cfg: PodConfig, name: str) -> tuple[str, str, str, str]:
+def _prune_one_decide(
+    cfg: PodConfig, name: str, procs: list | None = None
+) -> tuple[str, str, str, str]:
     """The decision half of :func:`_prune_one`: ``(status, detail, outcome, error)``.
 
     Every delete routes through :func:`rt.stop_pod` — the path that drains the
@@ -1331,6 +1352,13 @@ def _prune_one_decide(cfg: PodConfig, name: str) -> tuple[str, str, str, str]:
                 return "skipped", "pod is now installed", "denied", "pod is now installed"
             if rt.IS_WINDOWS and rt.win_backend.task_script_path(cfg, name).exists():
                 return "skipped", "pod is now installed", "denied", "pod is now installed"
+            # A HOME the unit-less reclaim refuses is skipped with its reason, not
+            # counted as a failed delete: it is an orphan this sweep is not allowed
+            # to take, and a failure would pin every later prune's exit at 1.
+            # stop_pod re-judges under its gate, so this only classifies.
+            refusal = rt.reclaim_refusal(cfg, name, snapshot=procs)
+            if refusal is not None:
+                return "skipped", f"not reclaimable: {refusal}", "denied", refusal[:120]
             cp = rt.stop_pod(cfg, name)
             if cp.returncode != 0:
                 err = (cp.stderr or "").strip() or f"stop rc={cp.returncode}"
