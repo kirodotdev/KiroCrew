@@ -3812,6 +3812,17 @@ READ_SLACK_PROFILE_SCHEMA = ToolSchema(
     ],
 )
 
+READ_SLACK_HISTORY_SCHEMA = ToolSchema(
+    tool_name="read_slack_history",
+    fields=[
+        FieldSpec("channel", str, required=True, max_len=CHANNEL_MAX_LEN, pattern=CHANNEL_ID_RE),
+        FieldSpec("limit", int, required=False, min_val=1, max_val=100, default=20),
+        FieldSpec("thread_ts", str, max_len=30, pattern=re.compile(r"^\d+\.\d+$")),
+        FieldSpec("oldest", str, max_len=30, pattern=re.compile(r"^\d+\.\d+$")),
+        FieldSpec("include_bot", bool, default=False),
+    ],
+)
+
 WAIT_SCHEMA = ToolSchema(
     tool_name="wait",
     fields=[
@@ -4152,6 +4163,7 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "send_message": SEND_MESSAGE_SCHEMA,
     "send_notification": SEND_NOTIFICATION_SCHEMA,
     "read_slack_profile": READ_SLACK_PROFILE_SCHEMA,
+    "read_slack_history": READ_SLACK_HISTORY_SCHEMA,
     "wait": WAIT_SCHEMA,
     "register_hook": REGISTER_HOOK_SCHEMA,
     "file_send": FILE_SEND_SCHEMA,
