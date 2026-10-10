@@ -3162,6 +3162,13 @@ function ChatSidebar({
           if (k) moveByDrag(k, folder.id)
         }}
       >
+        {/* Right-click (or long-press) on the row opens the SAME menu the ⋯
+         *  button does, as on the list-view row (see renderFolderHeader). The
+         *  trigger is the header row alone: the session rows in the body open
+         *  their own menu. Rename mode opts out so the name input keeps the
+         *  browser's own edit menu. */}
+        <ContextMenu>
+          <ContextMenuTrigger asChild disabled={editingId === folder.id && editScope === columnId}>
         {/* Same rule as the tree row: a column copy with no body has nothing to
          *  toggle, so it is not a control - no button role, no tab stop, no
          *  pointer cursor, no expanded state and no handler. It stays draggable,
@@ -3239,47 +3246,7 @@ function ChatSidebar({
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" className="min-w-[180px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
-                <DropdownMenuItem onClick={() => { suppressMenuRestoreRef.current = true; setEditingId(folder.id); setEditScope(columnId); setEditName(folder.name) }}><Pencil size={13} /> {i18nT('pages.chatSidebar.rename')}</DropdownMenuItem>
-                <DropdownMenuItem data-testid={`col-${columnId}-folder-${folder.id}-new-sub`} onClick={() => { setFolderModal({ mode: 'create', parentId: folder.id }) }}><FolderPlus size={13} /> {i18nT('pages.chatSidebar.new_subfolder')}</DropdownMenuItem>
-                {(() => {
-                  const rows = (
-                    <>
-                      {/* Menu create entries take NO open-in-tab gesture (#10575,
-                       *  scoped out): a menu closes on select, and Radix keyboard
-                       *  activation synthesizes a modifier-free click, so the
-                       *  gesture would be mouse-only and undiscoverable. */}
-                      <DropdownMenuItem data-testid={`col-${columnId}-folder-${folder.id}-new-incognito`} onClick={() => { createChatInFolder(folder.id, { columnId, memoryMode: 'incognito' }) }}><EyeOff size={13} className="text-warn" /> {i18nT('components.welcomeView.incognito')}</DropdownMenuItem>
-                      <DropdownMenuItem data-testid={`col-${columnId}-folder-${folder.id}-new-temporary`} onClick={() => { createChatInFolder(folder.id, { columnId, memoryMode: 'temporary' }) }}><VenetianMask size={13} className="text-aim" /> {i18nT('components.welcomeView.temporary')}</DropdownMenuItem>
-                    </>
-                  )
-                  // A flyout has nowhere to open at phone width, so inline the rows
-                  // under a caption there instead (parity with the + New menu).
-                  if (isMobile) {
-                    return (
-                      <>
-                        <DropdownMenuLabel className="text-[11px] uppercase tracking-[.04em] flex items-center gap-2"><Ghost size={13} className="text-muted" /> {i18nT('pages.chatSidebar.new_ephemeral_chat')}</DropdownMenuLabel>
-                        {rows}
-                      </>
-                    )
-                  }
-                  return (
-                    <DropdownMenuSub>
-                      <DropdownMenuSubTrigger data-testid={`col-${columnId}-folder-${folder.id}-new-ephemeral`}>
-                        <Ghost size={13} className="text-muted" /> {i18nT('pages.chatSidebar.new_ephemeral_chat')}
-                        <ChevronRight size={13} className="ml-auto text-muted" />
-                      </DropdownMenuSubTrigger>
-                      <DropdownMenuSubContent>{rows}</DropdownMenuSubContent>
-                    </DropdownMenuSub>
-                  )
-                })()}
-                {/* Re-parent: board-view parity with the list-view folder menu. */}
-                <FolderMoveSubmenu variant="dropdown" label={i18nT('pages.chatSidebar.move_folder_to')} sortMode={folderSortMode}
-                  folders={reparentTargets}
-                  currentFolderId={folder.parent_id || null}
-                  onPick={pid => moveFolderTo(folder.id, pid)} />
-                <DropdownMenuItem data-testid={`col-${columnId}-folder-${folder.id}-settings`} onClick={() => { setFolderModal({ mode: 'edit', folderId: folder.id }) }}><Settings size={13} /> {i18nT('components.folderConfigModal.folder_settings')}</DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem className="text-danger focus:text-danger" onClick={() => { if (confirm(i18nT('pages.chatSidebar.delete_folder_confirm', { name: folder.name }))) deleteFolderMutation.mutate(folder.id) }}><X size={13} /> {i18nT('pages.chatSidebar.delete_folder')}</DropdownMenuItem>
+                {renderFolderMenuItems(folder, reparentTargets, 'dropdown', columnId)}
               </DropdownMenuContent>
             </DropdownMenu>
             {/* Same three-gesture contract as the header New button; the
@@ -3300,6 +3267,11 @@ function ChatSidebar({
           </span>
           )}
         </div>
+          </ContextMenuTrigger>
+          <ContextMenuContent data-testid={`col-${columnId}-folder-${folder.id}-context-menu`} className="min-w-[180px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
+            {renderFolderMenuItems(folder, reparentTargets, 'context', columnId)}
+          </ContextMenuContent>
+        </ContextMenu>
         {renderFolderCreateError(folder.id, columnId)}
         {!emptyBody && (
         <FolderBody padding={FOLDER_BODY_OPEN_PADDING} open={!collapsed && !forceCollapsed}>
@@ -3628,27 +3600,30 @@ function ChatSidebar({
   // `variant` -- the same shape SessionActionsMenu and FolderMoveSubmenu use.
   // `data-testid`s carry a `-ctx` suffix in the context variant so a test can
   // tell the two copies apart when both are mounted for one folder.
-  const renderFolderMenuItems = (folder: ChatFolder, reparentTargets: readonly ChatFolder[], variant: 'dropdown' | 'context') => {
+  // `columnId` is set for a folder copy in a board column. A root folder renders
+  // once per column, so its ids carry the column, Rename opens in that column
+  // only and a new chat lands in it. The two hide items are list-view only.
+  const renderFolderMenuItems = (folder: ChatFolder, reparentTargets: readonly ChatFolder[], variant: 'dropdown' | 'context', columnId?: string) => {
     const ctx = variant === 'context'
     const Item = ctx ? ContextMenuItem : DropdownMenuItem
     const Separator = ctx ? ContextMenuSeparator : DropdownMenuSeparator
     const Sub = ctx ? ContextMenuSub : DropdownMenuSub
     const SubTrigger = ctx ? ContextMenuSubTrigger : DropdownMenuSubTrigger
     const SubContent = ctx ? ContextMenuSubContent : DropdownMenuSubContent
-    const tid = (name: string) => `folder-${name}-${folder.id}${ctx ? '-ctx' : ''}`
+    const tid = (name: string) => `${columnId ? `col-${columnId}-folder-${folder.id}-${name}` : `folder-${name}-${folder.id}`}${ctx ? '-ctx' : ''}`
     const ephemeralRows = (
       <>
         {/* Menu create entries take NO open-in-tab gesture (#10575,
          *  scoped out): a menu closes on select, and Radix keyboard
          *  activation synthesizes a modifier-free click, so the
          *  gesture would be mouse-only and undiscoverable. */}
-        <Item data-testid={tid('new-incognito')} onClick={() => { createChatInFolder(folder.id, { memoryMode: 'incognito' }) }}><EyeOff size={13} className="text-warn" /> {i18nT('components.welcomeView.incognito')}</Item>
-        <Item data-testid={tid('new-temporary')} onClick={() => { createChatInFolder(folder.id, { memoryMode: 'temporary' }) }}><VenetianMask size={13} className="text-aim" /> {i18nT('components.welcomeView.temporary')}</Item>
+        <Item data-testid={tid('new-incognito')} onClick={() => { createChatInFolder(folder.id, { columnId, memoryMode: 'incognito' }) }}><EyeOff size={13} className="text-warn" /> {i18nT('components.welcomeView.incognito')}</Item>
+        <Item data-testid={tid('new-temporary')} onClick={() => { createChatInFolder(folder.id, { columnId, memoryMode: 'temporary' }) }}><VenetianMask size={13} className="text-aim" /> {i18nT('components.welcomeView.temporary')}</Item>
       </>
     )
     return (
       <>
-        <Item data-testid={tid('rename')} onClick={() => { suppressMenuRestoreRef.current = true; setEditingId(folder.id); setEditScope('list'); setEditName(folder.name) }}><Pencil size={13} /> {i18nT('pages.chatSidebar.rename')}</Item>
+        <Item data-testid={tid('rename')} onClick={() => { suppressMenuRestoreRef.current = true; setEditingId(folder.id); setEditScope(columnId ?? 'list'); setEditName(folder.name) }}><Pencil size={13} /> {i18nT('pages.chatSidebar.rename')}</Item>
         <Item data-testid={tid('new-subfolder')} onClick={() => { setFolderModal({ mode: 'create', parentId: folder.id }) }}><FolderPlus size={13} /> {i18nT('pages.chatSidebar.new_subfolder')}</Item>
         {/* A flyout has nowhere to open at phone width, so inline the rows
          *  under a caption there instead (parity with the + New menu). The
@@ -3682,12 +3657,14 @@ function ChatSidebar({
          *  folder itself — which is where the user is looking when they
          *  decide a folder is noise. Distinct from "Hide when empty"
          *  below, which is a server-persisted archive affordance. */}
+        {!columnId && (
         <Item data-testid={tid('visibility')} onClick={() => { toggleFolderFilter(folder.id) }}>
           {filterHiddenFolders.has(folder.id)
             ? <><Eye size={13} /> {i18nT('pages.chatSidebar.show_folder')}</>
             : <><EyeOff size={13} /> {i18nT('pages.chatSidebar.hide_folder')}</>}
         </Item>
-        {folderOffersHide(folder, foldersWithActiveSubtree) && (
+        )}
+        {!columnId && folderOffersHide(folder, foldersWithActiveSubtree) && (
           <Item data-testid={tid('hide')} onClick={() => { updateFolderMutation.mutate({ id: folder.id, body: { hidden: true } }) }}><EyeOff size={13} /> {i18nT('pages.chatSidebar.hide_when_empty')}</Item>
         )}
         <Separator />
