@@ -21,6 +21,7 @@ from kiro_crew.apps.backend_runtime.pidfile import (
     _forget_app_pid_if,
     _proc_start_time,
     _restore_app_pid,
+    quarantine_backend,
 )
 from kiro_crew.apps.backend_runtime.ports import _allocated_ports, _port_is_listening
 from kiro_crew.apps.backend_runtime.probe import _health_probe
@@ -365,13 +366,25 @@ def stop_app_backend(
 
     def _restore_for_retry() -> None:
         """Undo exactly what the transition above removed, so a retry can proceed."""
+        restored = True
         if forgotten_row is not None:
-            _restore_app_pid(app_name, forgotten_row)
+            restored = _restore_app_pid(app_name, forgotten_row)
         with _lock:
             if ap is not None:
                 _processes.setdefault(app_name, ap)
                 if ap.port:
                     _allocated_ports.setdefault(app_name, ap.port)
+        if not restored:
+            # GPT F1: this path refuses the stop so a later sweep retries, but the
+            # durable row the retry reads after a gateway restart did NOT land (the
+            # restore write was swallowed under ENOSPC/EDQUOT). The in-memory handle
+            # restored above is lost across a restart, and adoption provenance fails
+            # closed with no row -- so without a backstop a backend under a WITHDRAWN
+            # ceiling could keep serving un-trusted code with nothing left to stop it
+            # by. Quarantine the name: the in-memory backstop refuses any later
+            # adoption of this generation even when its own marker write also fails,
+            # and the operator is warned, rather than silently stranding tracking.
+            quarantine_backend(app_name, "stop refused; provenance restore not persisted")
 
     if not ap:
         return False
@@ -726,6 +739,21 @@ def stop_app_backend(
                 )
             _restore_for_retry()
             return False
+
+        elif _retry_if_serving is None and forgotten_row is not None:
+            # ORDINARY adopted stop (no withdrawn ceiling): the recorded PIDs were
+            # signalled, but the app's own spawn-tree supervisor can have started a
+            # REPLACEMENT listener on the port -- the same tolerated-survivor case the
+            # spawned-root ordinary stop handles above. The pidfile RECOVERY ROW is the
+            # only handle a later re-enable has to re-attribute that surviving listener;
+            # dropped, the replacement is refused "no spawn recorded" and the app's own
+            # backend is permanently unattributable with no self-correcting path. Put the
+            # row back ONLY when the port is still listening (a survivor actually exists):
+            # a clean stop leaves nothing on the port and keeps the row dropped, so a
+            # later start launches fresh rather than re-adopting a stopped backend. Same
+            # cheap loopback probe and same restore the spawned-root branch uses.
+            if ap.port and _port_is_listening(ap.port):
+                _restore_app_pid(app_name, forgotten_row)
 
     if ap.proc:
         logger.info("Stopped app %s backend (pid %d)", app_name, ap.pid)

@@ -82,7 +82,11 @@ class _PidfileGuard:
         try:
             path = self._lock_path()
             path.parent.mkdir(parents=True, exist_ok=True)
-            self._flock_fd = os.open(str(path), os.O_RDWR | os.O_CREAT, 0o644)
+            # 0o600: this sidecar lives in the owner-only data home, so a
+            # fresh boot must not leave it readable by other users. The pidfile
+            # itself is already owner-only (atomic_write defaults a data-home
+            # target to 0o600); the lock takes the same restriction.
+            self._flock_fd = os.open(str(path), os.O_RDWR | os.O_CREAT, 0o600)
             cm = platform_compat.file_lock(self._flock_fd, exclusive=True)
             cm.__enter__()
             self._flock_cm = cm
@@ -313,7 +317,7 @@ def _forget_app_pid_if(app_name: str, pid: int, start_time: str | None) -> dict[
         return None
 
 
-def _restore_app_pid(app_name: str, row: dict[str, Any]) -> None:
+def _restore_app_pid(app_name: str, row: dict[str, Any]) -> bool:
     """Put back a row a refused stop removed, unless the name has been re-recorded.
 
     Deliberately ``setdefault`` and not an overwrite: between the removal and the
@@ -321,16 +325,24 @@ def _restore_app_pid(app_name: str, row: dict[str, Any]) -> None:
     the older row would aim both the stale-reap and adoption provenance at a process
     that is gone. Never raises -- a restore that cannot happen leaves the retry no
     worse off than before this function existed.
+
+    Returns whether the row is durably present after the call: ``True`` when it was
+    written, or when a fresh spawn already holds the name (``setdefault`` left it in
+    place); ``False`` when the write was swallowed (ENOSPC/EDQUOT) so the row did NOT
+    land on disk. A caller that needs the restore to survive a gateway restart -- a
+    refused stop under a withdrawn ceiling -- reads the ``False`` and takes a
+    fail-closed backstop, rather than silently reporting a restore that never persisted.
     """
     try:
         with _pidfile_lock:
             data = _read_pidfile()
             if app_name in data:
-                return
+                return True
             data[app_name] = row
-            _write_pidfile(data)
+            return _write_pidfile(data)
     except Exception as exc:  # noqa: BLE001
         logger.debug("Could not restore app pid for %s: %s", app_name, exc)
+        return False
 
 
 def _unrevoke_app_pid(app_name: str, original: dict[str, Any] | None) -> None:

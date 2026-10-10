@@ -398,9 +398,9 @@ def _attach_backend_notice(payload: dict[str, Any], name: str) -> dict[str, Any]
 # The update skipped its restart because the old spawn record's removal was not
 # confirmed: starting now could adopt the old version still holding the port.
 _UPDATE_NOT_RESTARTED_NOTICE = (
-    "Update installed; the {name} backend was not restarted.\n"
-    "The previous version may still be running. Close it, check the disk has free "
-    "space, then turn the app off and on again."
+    "Update installed, but the background service for {name} was not restarted "
+    "because the previous version may still be running and holding its port. "
+    "Close that program, then turn the app off and on again."
 )
 
 

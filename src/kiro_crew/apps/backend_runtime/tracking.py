@@ -406,16 +406,15 @@ def backend_notice(app_name: str) -> str | None:
 
 def _unattributed_listener_notice(app_name: str, port: int) -> str:
     return (
-        f"Port {port} is in use by another program, so the {app_name} backend could "
-        f"not start. Close the program using port {port}, then turn the app off and "
-        "on again."
+        f"Port {port} is in use by another program, so the background service for "
+        f"{app_name} could not start. Close the program using port {port}, then turn "
+        "the app off and on again."
     )
 
 
 def _quarantined_listener_notice(app_name: str, port: int) -> str:
     return (
-        f"Port {port} is in use, possibly by the previous version of {app_name} left "
-        "running after an update, so its backend could not start. Close the program "
-        f"using port {port}, check the disk has free space, then turn the app off and "
-        "on again."
+        f"The previous version of {app_name} is still running on port {port} after an "
+        f"update, so the background service could not start. Close the program using "
+        f"port {port}, then turn the app off and on again."
     )

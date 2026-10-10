@@ -1887,6 +1887,29 @@ class TestARefusedStopRestoresTheProvenanceRecord:
         assert bmod.stop_app_backend("ext") is False
         assert bmod._read_pidfile().get("ext") == self.ROW
 
+    def test_a_refusal_whose_restore_write_fails_quarantines_the_backend(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GPT F1: when the refusal's durable restore does NOT persist (ENOSPC/EDQUOT
+        swallows the write), the row the retry reads after a gateway restart is gone
+        and adoption provenance fails closed with no row -- so a backend under a
+        withdrawn ceiling could keep serving un-trusted code with nothing left to stop
+        it by. The refusal must then quarantine the name: the in-memory backstop
+        refuses any later adoption of this generation even when its own marker write
+        also fails, rather than silently stranding tracking.
+        """
+        self._track(healthy=True)
+        bmod._quarantined_backends.discard("ext")
+        # The restore does not persist (ENOSPC/EDQUOT swallowed the write), so the
+        # durable row the retry reads after a restart is gone.
+        monkeypatch.setattr(bmod, "_restore_app_pid", lambda *_a, **_k: False)
+        try:
+            assert bmod.stop_app_backend("ext") is False
+            # The durable row did not land, but the fail-closed backstop holds.
+            assert bmod.is_backend_quarantined("ext") is True
+        finally:
+            bmod._quarantined_backends.discard("ext")
+
     def test_a_refusal_on_a_replacement_still_serving_puts_the_row_back(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -2233,8 +2256,8 @@ class TestARefusedStopRestoresTheProvenanceRecord:
         assert restored.get("spawn_instance") == self.ROW["spawn_instance"]
         assert not restored.get("revoked"), "the restored row must not carry the stamp"
         assert not restored.get("tombstone")
-        # The row is back and un-revoked, so adoption no longer refuses it for the
-        # ``revoked`` reason — the lost-recovery defect this guards against is gone.
+        # The restored row carries no stamp, so adoption does not refuse it for the
+        # ``revoked`` reason.
         _, reason = bmod._adoption_provenance("upd", [self.ROW["pid"]])
         assert "revoked" not in reason
 
@@ -2254,6 +2277,24 @@ class TestARefusedStopRestoresTheProvenanceRecord:
         assert (
             live is not None and live.get("pid") == successor["pid"]
         ), "a successor's real spawn row must be left untouched"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file mode bits")
+    def test_the_pidfile_lock_sidecar_is_owner_only(self) -> None:
+        """A fresh boot must not leave the interprocess lock sidecar readable by
+        other users: it lives in the owner-only data home, so it is created 0o600,
+        with no group or other bits set."""
+
+        import stat
+
+        prior_umask = os.umask(0o022)
+        try:
+            with bmod._pidfile_lock:
+                lock = bmod._pidfile_lock._lock_path()
+                assert lock.exists(), "the lock sidecar is created on acquisition"
+                mode = stat.S_IMODE(lock.stat().st_mode)
+                assert mode & 0o077 == 0, f"lock sidecar is group/other-accessible: {oct(mode)}"
+        finally:
+            os.umask(prior_umask)
 
     def test_revoke_backend_provenance_is_idempotent_on_an_already_revoked_row(
         self,
@@ -4605,6 +4646,55 @@ class TestStopAdoptedBackend:
         # Tracking is restored so a retry after re-adoption is possible.
         assert bmod._processes["ext"] is ap
         assert bmod._allocated_ports["ext"] == ap.port
+
+    def test_an_ordinary_adopted_stop_leaving_a_replacement_keeps_the_row(
+        self, kills: list[tuple[int, int]], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GPT F1: an ORDINARY adopted stop (``_retry_if_serving`` is None) signals
+        the recorded PIDs and reports success, but the app's own spawn-tree
+        supervisor can leave a REPLACEMENT listener on the port. The pidfile row is
+        the only handle a later re-enable has to re-attribute that survivor; dropped,
+        re-enable refuses the app's own replacement as "no spawn recorded" with no
+        self-correcting path. The row must be put back when the port still listens,
+        matching the spawned-root ordinary-stop restore.
+        """
+
+        row = {
+            "pid": 111,
+            "start_time": "st-111",
+            "port": bmod._MIN_PORT + 12,
+            "spawn_instance": "sp-a",
+        }
+        self._track(adopted_pids=[111], adopted_start_times={111: "st-111"}, healthy=True)
+        bmod._write_pidfile({"ext": dict(row)})
+        monkeypatch.setattr(bmod, "_proc_start_time", lambda _pid: "st-111")
+        # The recorded PID is signalled and gone, but a replacement supervisor still
+        # answers the port -> ordinary stop tolerates it and returns success.
+        monkeypatch.setattr(bmod, "_port_is_listening", lambda _port: True)
+        assert bmod.stop_app_backend("ext") is True
+        # The recovery row survives so the replacement stays attributable.
+        assert bmod._read_pidfile().get("ext") == row
+
+    def test_an_ordinary_adopted_stop_with_a_clean_port_drops_the_row(
+        self, kills: list[tuple[int, int]], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The complement: when the port is silent after an ordinary adopted stop
+        (no replacement survived), the row is dropped as before -- re-persisting it
+        on every clean stop would let a later start re-adopt a backend that genuinely
+        stopped instead of launching fresh."""
+
+        row = {
+            "pid": 111,
+            "start_time": "st-111",
+            "port": bmod._MIN_PORT + 12,
+            "spawn_instance": "sp-a",
+        }
+        self._track(adopted_pids=[111], adopted_start_times={111: "st-111"}, healthy=True)
+        bmod._write_pidfile({"ext": dict(row)})
+        monkeypatch.setattr(bmod, "_proc_start_time", lambda _pid: "st-111")
+        monkeypatch.setattr(bmod, "_port_is_listening", lambda _port: False)
+        assert bmod.stop_app_backend("ext") is True
+        assert "ext" not in bmod._read_pidfile()
 
     def test_only_identity_verified_pids_are_signalled(
         self, kills: list[tuple[int, int]], monkeypatch: pytest.MonkeyPatch

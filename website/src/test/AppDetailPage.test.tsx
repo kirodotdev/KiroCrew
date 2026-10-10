@@ -370,7 +370,9 @@ describe('AppDetailPage — backend notice', () => {
   it('shows the server notice for an enabled app whose backend was refused', async () => {
     getApp.mockResolvedValue({ ...BUILTIN, enabled: true, backend_notice: NOTICE })
     renderDetail()
-    const notice = await screen.findByTestId('app-backend-notice')
+    // renderDetail -> load() awaits a three-request chain (getApp, then listRegistry,
+    // then system) before it renders, so give this wait an explicit ceiling.
+    const notice = await screen.findByTestId('app-backend-notice', undefined, { timeout: 5000 })
     expect(notice.textContent).toContain(NOTICE)
     // The shared error surface, with its agent hand-off.
     expect(notice.getAttribute('role')).toBe('alert')
@@ -379,7 +381,9 @@ describe('AppDetailPage — backend notice', () => {
   it('shows nothing for a disabled app, where the notice no longer applies', async () => {
     getApp.mockResolvedValue({ ...BUILTIN, enabled: false, backend_notice: NOTICE })
     renderDetail()
-    await screen.findByTestId('app-icon')
+    // renderDetail -> load() awaits a three-request chain (getApp, then listRegistry,
+    // then system) before it renders, so give this wait an explicit ceiling.
+    await screen.findByTestId('app-icon', undefined, { timeout: 5000 })
     expect(screen.queryByTestId('app-backend-notice')).toBeNull()
   })
 })
