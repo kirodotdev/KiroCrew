@@ -73,3 +73,31 @@ def test_search_docs_and_find_ui_are_pre_approved_reads_on_every_agent():
         agent._GUIDE_AUTO_GRANTS
     )
     assert "@kirocrew-guide" in shipped["tools"]
+
+
+def test_search_docs_reads_each_page_once_until_it_changes(tmp_path, monkeypatch):
+    """A query does not re-read every packaged page; an edited page is read again."""
+    from pathlib import Path
+
+    (tmp_path / "alpha.md").write_text("# Alpha\nconnect slack here\n", encoding="utf-8")
+    (tmp_path / "beta.md").write_text("# Beta\nnothing\n", encoding="utf-8")
+    monkeypatch.setattr(mcp_guide, "_DOCS_DIR", tmp_path)
+    mcp_guide._read_doc.cache_clear()
+    reads: list[str] = []
+    real = Path.read_text
+
+    def counting(self, *a, **k):
+        reads.append(self.name)
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(Path, "read_text", counting)
+    assert [r["page"] for r in mcp_guide.search_docs("slack")["results"]] == ["alpha"]
+    assert sorted(reads) == ["alpha.md", "beta.md"]
+    reads.clear()
+    mcp_guide.search_docs("slack")
+    assert reads == []
+    (tmp_path / "beta.md").write_text(
+        "# Beta\nslack and more slack, now longer\n", encoding="utf-8"
+    )
+    assert {r["page"] for r in mcp_guide.search_docs("slack")["results"]} == {"alpha", "beta"}
+    assert reads == ["beta.md"]

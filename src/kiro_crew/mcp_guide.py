@@ -57,6 +57,7 @@ state. Nothing here holds per-caller data between calls.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import re
@@ -807,6 +808,22 @@ def _doc_pages() -> dict[str, Path]:
         return {}
 
 
+@functools.lru_cache(maxsize=128)
+def _read_doc(path: Path, mtime_ns: int, size: int) -> str:
+    """*path*'s text, cached under the ``(mtime_ns, size)`` it was read at.
+
+    The shipped docs only, never anything about who asked: a changed file has
+    another stamp and is read again.
+    """
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _doc_text(path: Path) -> str:
+    """*path*'s text, read again only when its mtime or size changed."""
+    st = path.stat()
+    return _read_doc(path, st.st_mtime_ns, st.st_size)
+
+
 def _doc_title(text: str, fallback: str) -> str:
     for line in text.splitlines():
         if line.startswith("#"):
@@ -827,7 +844,7 @@ def search_docs(query: str = "", page: str = "", offset: int = 0) -> dict[str, A
         path = pages.get(name)
         if path is None:
             return {"error": f"no documentation page '{name[:80]}'; search first"}
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = _doc_text(path)
         start = max(0, int(offset or 0))
         out: dict[str, Any] = {
             "page": name,
@@ -843,7 +860,7 @@ def search_docs(query: str = "", page: str = "", offset: int = 0) -> dict[str, A
     scored: list[tuple[int, str, str, list[str]]] = []
     for name, path in pages.items():
         try:
-            text = path.read_text(encoding="utf-8", errors="replace")
+            text = _doc_text(path)
         except OSError:
             continue
         lower, lname = text.lower(), name.lower()
@@ -898,7 +915,71 @@ def _dashboard_ui_lang() -> str | None:
     return tag if isinstance(tag, str) and tag else None
 
 
-def _with_live(d: dict[str, Any]) -> dict[str, Any]:
+def _observable_ids(d: dict[str, Any]) -> list[str]:
+    """The results' ids a tab can be asked about, in result order."""
+    results = d.get("results")
+    if not isinstance(results, list):
+        return []
+    from kiro_crew.guide_catalog import ui_build_manifest
+
+    manifest = ui_build_manifest()
+    ids: list[str] = []
+    for r in results:
+        rid = r.get("id") if isinstance(r, dict) else None
+        # Curated locations, and auto ones the auto tier made pointable.
+        if (
+            isinstance(rid, str)
+            and (rid in manifest.observable or rid in manifest.auto_sites)
+            and rid not in ids
+        ):
+            ids.append(rid)
+    return ids
+
+
+def _observe(ids: list[str]) -> dict[str, Any]:
+    """One bounded ask of the gateway for *ids*; ``{}`` when it could not be asked.
+
+    The answer also carries ``ui_lang``, the language the caller's dashboard
+    shows, so a search needs no second round trip for it.
+    """
+    sk, err = _strict_session_key()
+    if err or not ids:
+        return {}
+    try:
+        obs = _post(
+            "/api/guide/agent/observe",
+            {"targets": ids[:_LIVE_MAX_TARGETS]},
+            session_key=sk,
+            timeout=_LIVE_WAIT_SECONDS,
+        )
+    except Exception:  # a hint must never fail the search
+        logger.debug("find_ui live observation failed", exc_info=True)
+        return {}
+    return obs if isinstance(obs, dict) else {}
+
+
+def _find_with_live(query: str, lang: str | None, surface: str | None) -> dict[str, Any]:
+    """``find_ui`` labelled in the dashboard's language, with ``live`` per result.
+
+    The observation and the dashboard's language come back in ONE gateway
+    call: the ids to observe do not depend on the label language (that only
+    picks the language labels are written in), so the search runs first, the
+    tab is asked once, and the results are relabelled in the language it
+    reported. Only when no observation could be asked (no observable id, or
+    the call failed) is the language asked for on its own.
+    """
+    from kiro_crew.ui_index import find_ui
+
+    probe = find_ui(query, lang, surface)
+    ids = _observable_ids(probe)
+    obs = _observe(ids)
+    tag = obs.get("ui_lang")
+    shown = (tag or None) if isinstance(tag, str) else _dashboard_ui_lang()
+    d = find_ui(query, lang, surface, label_lang=shown) if shown else probe
+    return _with_live(d, obs=obs)
+
+
+def _with_live(d: dict[str, Any], *, obs: dict[str, Any] | None = None) -> dict[str, Any]:
     """Add ``live`` to each search result: what the user's tab shows right now.
 
     One bounded ask of the gateway for the curated ids among the results; the
@@ -914,7 +995,8 @@ def _with_live(d: dict[str, Any]) -> dict[str, Any]:
     with ``predicates``), ``hidden_in_scope`` (the control is hidden or not
     rendered and a reveal scope on its path reports closed, with ``scopes``),
     or ``not_observed`` (no fresh reply, with ``reason`` when known). See
-    :func:`_blocker_for`.
+    :func:`_blocker_for`. *obs* is an observation already made for these
+    results (:func:`_find_with_live`); without it one is made here.
     """
     results = d.get("results")
     if not isinstance(results, list) or not results:
@@ -922,35 +1004,14 @@ def _with_live(d: dict[str, Any]) -> dict[str, Any]:
     from kiro_crew.guide_catalog import ui_build_manifest
 
     manifest = ui_build_manifest()
-    observable = manifest.observable
-    ids: list[str] = []
-    for r in results:
-        rid = r.get("id") if isinstance(r, dict) else None
-        # Curated locations, and auto ones the auto tier made pointable.
-        if (
-            isinstance(rid, str)
-            and (rid in observable or rid in manifest.auto_sites)
-            and rid not in ids
-        ):
-            ids.append(rid)
+    ids = _observable_ids(d)
     live: dict[str, dict[str, Any]] = {}
     scope_states: dict[str, str] = {}
     predicate_states: dict[str, str] = {}
     reason = ""
     if ids:
-        sk, err = _strict_session_key()
-        obs: dict[str, Any] = {}
-        if not err:
-            try:
-                obs = _post(
-                    "/api/guide/agent/observe",
-                    {"targets": ids[:_LIVE_MAX_TARGETS]},
-                    session_key=sk,
-                    timeout=_LIVE_WAIT_SECONDS,
-                )
-            except Exception:  # a hint must never fail the search
-                logger.debug("find_ui live observation failed", exc_info=True)
-                obs = {}
+        if obs is None:
+            obs = _observe(ids)
         if obs.get("status") == "observed" and isinstance(obs.get("targets"), list):
             at = obs.get("observed_at")
             for t in obs["targets"]:
@@ -1065,7 +1126,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # caller identity. Only the optional live observation of a search's
         # results resolves the strict key, and a refusal there leaves every
         # result not_observed instead of failing the search.
-        from kiro_crew.ui_index import browse_ui, find_ui
+        from kiro_crew.ui_index import browse_ui
 
         query, area = (args.get("query") or "").strip(), (args.get("area") or "").strip()
         if bool(query) == bool(area):
@@ -1076,15 +1137,11 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             return "Error: `offset` pages an `area` listing; a search takes none"
         # Labels are spelled as the user's own dashboard shows them, whatever
         # language the question is in; ``lang`` only reads the question.
-        shown = _dashboard_ui_lang()
         if area:
+            shown = _dashboard_ui_lang()
             d = browse_ui(area, args.get("lang") or None, args.get("offset") or 0, label_lang=shown)
         else:
-            d = _with_live(
-                find_ui(
-                    query, args.get("lang") or None, args.get("surface") or None, label_lang=shown
-                )
-            )
+            d = _find_with_live(query, args.get("lang") or None, args.get("surface") or None)
             hint = _find_ui_next(d)
             if hint and not d.get("error"):
                 d = {**d, "next": hint}

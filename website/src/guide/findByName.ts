@@ -49,6 +49,7 @@ import { i18nT } from '../i18n/t'
 import { GUIDE_PLANS } from '../uiLocations/guidePlans.gen'
 import { closestRegistered, registeredId } from '../uiLocations/targetRegistry'
 import { isDisabled, isDisplayed } from './liveRegistry'
+import { inUntrustedContent } from './guideMarkers'
 import { isTrustRootPath, isTrustRootTarget } from './findTargetPolicy'
 import { GUIDE_LAYER_SELECTOR, isPersonInput, PERSON_INPUTS, probeTargetById, probeTargets, type ProbeEntry, type ProbeKind } from './probeRegistry'
 
@@ -188,10 +189,13 @@ function operable(el: Element): boolean {
 /** How many operable elements *root* holds. */
 const operableCount = (root: Element) => Array.from(root.querySelectorAll(OPERABLE_SELECTOR)).filter(operable).length
 
-/** Every element a person can operate, outside the guide's own layer, that *shown* accepts. */
+/** Every element a person can operate, outside the guide's own layer and any
+ *  agent- or file-authored content, that *shown* accepts. The untrusted check
+ *  is made here, not left to *shown*: a caller with its own predicate must
+ *  never match a control an agent wrote into markdown or an artifact. */
 function interactive(root: ParentNode, shown: Shown): HTMLElement[] {
   const all = root.querySelectorAll<HTMLElement>(OPERABLE_SELECTOR)
-  return Array.from(all).filter(el => operable(el) && !el.closest(GUIDE_LAYER) && shown(el) && !tooSmallToSee(el))
+  return Array.from(all).filter(el => operable(el) && !el.closest(GUIDE_LAYER) && !inUntrustedContent(el) && shown(el) && !tooSmallToSee(el))
 }
 
 /**

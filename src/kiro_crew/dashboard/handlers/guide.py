@@ -147,7 +147,7 @@ async def _json_body(request: web.Request) -> dict[str, Any]:
 #: see, on their word: only a turn they sent may. ``member.rename_self`` is a
 #: crewmate taking the name the user gave it, so a wake or the hidden welcome
 #: kickoff cannot pick one.
-_USER_TURN_OPERATIONS = frozenset({"guide.start", "member.rename_self"})
+_USER_TURN_OPERATIONS = frozenset({"guide.start", "guide.observe", "member.rename_self"})
 
 
 async def _resolve_agent_caller(request: web.Request, operation: str) -> tuple[str, str]:
@@ -163,8 +163,10 @@ async def _resolve_agent_caller(request: web.Request, operation: str) -> tuple[s
     proves nothing about who is asking; the turn's own opener provenance
     (``_turn_channel_origin``) and any channel steer admitted into it
     (``_turn_channel_narrowed``) are what the gateway recorded when the turn
-    started. An operation that puts something in front of the person (a guide)
-    or renames the calling crewmate (:data:`_USER_TURN_OPERATIONS`) also needs
+    started. An operation that puts something in front of the person (a guide),
+    asks the person's tab what it shows (an observation, which a timeout turns
+    into a change to their running guide) or renames the calling crewmate
+    (:data:`_USER_TURN_OPERATIONS`) also needs
     the turn to be one the person sent (``_turn_user_sent``): a loop wake, a cron or app
     injection, a ``session_send`` and a sub-agent completion are refused with
     403 ``not_user_turn``, and so is a user's turn once any text that is not the
@@ -393,7 +395,11 @@ async def api_guide_agent_observe(request: web.Request) -> web.Response:
     and answered within ``guide_observe.OBSERVE_WAIT_SECONDS``: an
     ``observed`` result with one enum status per id, or ``not_observed`` with
     a ``reason`` (``no_tab``, ``stale_tab``, ``build_mismatch``). Never blocks
-    longer, never stores the answer.
+    longer, never stores the answer. Every answer also carries ``ui_lang``, the
+    language the caller's dashboard shows (as ``GET /api/guide/agent/language``
+    reads it), so a search needs one round trip, not two. Only a turn the
+    person sent may ask: an observation goes to their tab, and its timeout
+    marks their running guide's tab stale.
     """
     try:
         slot_key, sk = await _resolve_agent_caller(request, "guide.observe")
@@ -403,12 +409,18 @@ async def api_guide_agent_observe(request: web.Request) -> web.Response:
     except GuideError as exc:
         return _refusal(exc)
     state = request.app["state"]
+    ui_lang, _source = caller_ui_locale(state, slot_key)
+
+    def not_observed(reason: str) -> web.Response:
+        _audit(sk, "guide.observe", "not_observed", reason)
+        return web.json_response({"status": NOT_OBSERVED, "reason": reason, "ui_lang": ui_lang})
+
     manifest = guide_catalog.ui_build_manifest()
     owned = _store(request).owner_tab_for_slot(slot_key)
     hub = observation_hub_for(state)
     tab = owned[1] if owned else hub.sender_for(slot_key)
     if not tab or not manifest.build_digest:
-        return web.json_response({"status": NOT_OBSERVED, "reason": REASON_NO_TAB})
+        return not_observed(REASON_NO_TAB)
     # An auto location is observed through its one stamped render site: the
     # tab is asked for the site id and the answer is named back by location id.
     wire = tuple(manifest.auto_sites.get(t, t) for t in targets)
@@ -426,7 +438,7 @@ async def api_guide_agent_observe(request: web.Request) -> web.Response:
     try:
         delivered = await _deliver_observe_request(state, pending)
         if delivered == 0:
-            return web.json_response({"status": NOT_OBSERVED, "reason": REASON_NO_TAB})
+            return not_observed(REASON_NO_TAB)
         try:
             result = await asyncio.wait_for(
                 asyncio.shield(pending.future), timeout=OBSERVE_WAIT_SECONDS
@@ -436,16 +448,21 @@ async def api_guide_agent_observe(request: web.Request) -> web.Response:
                 noted = _store(request).note_stale_tab(owned[0])
                 if noted is not None:
                     await _broadcast(state, noted)
-            return web.json_response({"status": NOT_OBSERVED, "reason": REASON_STALE_TAB})
+            return not_observed(REASON_STALE_TAB)
     finally:
         hub.end(pending.request_id)
-    _audit(sk, "guide.observe", "ok")
+    if isinstance(result, dict) and result.get("status") != "observed":
+        _audit(sk, "guide.observe", "not_observed", str(result.get("reason") or "")[:64])
+    else:
+        _audit(sk, "guide.observe", "ok")
     if isinstance(result, dict) and isinstance(result.get("targets"), list):
         renamed: list[Any] = []
         for t in result["targets"]:
             tid = t.get("id") if isinstance(t, dict) else None
             renamed.append({**t, "id": back.get(tid, tid)} if isinstance(tid, str) else t)
         result = {**result, "targets": renamed}
+    if isinstance(result, dict):
+        result = {**result, "ui_lang": ui_lang}
     return web.json_response(result)
 
 

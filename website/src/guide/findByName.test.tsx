@@ -17,6 +17,7 @@ import {
 import { isCautionTarget, isTrustRootTarget } from './findTargetPolicy'
 import { probeTargets, registerProbeTarget } from './probeRegistry'
 import { guideCaution, guideTrustRoot, GuideTrustRootProvider } from './trustRoot'
+import { guideUntrusted } from './guideMarkers'
 import TrustDropdown from '../components/TrustDropdown'
 import Modal from '../components/Modal'
 import { SettingsSubNav } from '../components/SettingsSubNav'
@@ -45,6 +46,14 @@ afterEach(() => {
 })
 
 describe('searchByName', () => {
+  it('never matches a control inside agent-authored content, whatever predicate the caller passes', () => {
+    render(<><div {...guideUntrusted}><button>Run Now</button></div><button>Run Now</button></>)
+    const everything = () => true
+    const r = searchByName({ label: 'Run Now' }, document, everything as never)
+    expect(r.result).toBe('found')
+    expect(r.element!.closest('[data-guide-untrusted]')).toBeNull()
+  })
+
   it('finds an exact name, and says the name the page uses', () => {
     render(<><button>Run Now</button><button>Run Now later</button></>)
     const r = searchByName({ label: 'Run Now' })

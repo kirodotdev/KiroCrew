@@ -158,11 +158,8 @@ if (outIdx >= 0) {
 /** Matches `DEFAULT_PRODUCT_NAME` in src/i18n/index.ts (not imported: it pulls i18next in). */
 const PRODUCT_NAME = 'Kiro Crew'
 
-const readInputs = new Map()
 function read(abs) {
-  const text = fs.readFileSync(abs, 'utf-8')
-  readInputs.set(path.relative(REPO, abs).split(path.sep).join('/'), text)
-  return text
+  return fs.readFileSync(abs, 'utf-8')
 }
 const rel = (abs) => path.relative(ROOT, abs).split(path.sep).join('/')
 
@@ -211,7 +208,7 @@ const { BUILTIN_SURFACE_NAV, CAPABILITY_SUB_ITEM_NAV, capabilitySubItemNav } = a
 const { EXTRA_PAGES, EXTRA_PAGE_TITLE_KEY } = await loadTs('src/components/commandPalette/providers/pagesData.ts')
 const { UI_LOCATION_AREAS, PREVIEW_FLAG_ENABLERS, SETTINGS_TAB_PREVIEW, SEARCH_TERMS, LEGACY_PAGE_CANONICAL } = await loadTs('src/uiLocations/descriptors.ts')
 // The registered locations live one file per area; every file there is an
-// input (digested whether or not git tracks it), and the merge refuses an id
+// input whether or not git tracks it, and the merge refuses an id
 // two areas declare or an area file the aggregator does not list.
 const AREAS_DIR = path.join(SRC, 'uiLocations/areas')
 const areaFiles = fs.readdirSync(AREAS_DIR).filter((n) => /\.ts$/.test(n) && !/\.(test|d)\.ts$/.test(n)).sort()
@@ -360,18 +357,18 @@ const indexInputs = {
   productName: PRODUCT_NAME,
 }
 
-const digest = createHash('sha256')
-for (const [name, text] of [...readInputs.entries()].sort(([a], [b]) => (a < b ? -1 : 1))) {
-  digest.update(`${name}\0${text}\0`)
-}
-const committedDigest = `sha256:${digest.digest('hex')}`
-
 // The committed index: generated + curated tiers. Built WITHOUT auto
 // candidates, and its digest carries nothing the auto tier derived, so an
 // unregistered control added to a page never stales it.
-const built = buildUiIndex({ ...indexInputs, inputDigest: committedDigest })
+const built = buildUiIndex({ ...indexInputs, inputDigest: '' })
 errors.push(...built.errors)
 errors.push(...attachStateLabels(built.index, UI_LOCATIONS, UI_CONDITIONS, UI_REVEAL_STATES))
+// `input_digest` is a digest of what the index SAYS, not of the bytes it was
+// read from: an edit to an input that changes nothing in the index (a label
+// no location uses, a comment in a page) leaves the committed file untouched,
+// so unrelated changes neither stale it nor collide on this line.
+const committedDigest = `sha256:${createHash('sha256').update(JSON.stringify({ ...built.index, input_digest: '' })).digest('hex')}`
+built.index.input_digest = committedDigest
 const collisions = termCollisions(built.index, UI_LOCATION_AREAS)
 
 // The auto tier: which one page each core candidate is drawn on, hung off the

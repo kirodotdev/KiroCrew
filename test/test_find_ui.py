@@ -1052,6 +1052,33 @@ def test_find_ui_asks_the_gateway_which_language_the_dashboard_shows(
     assert listing["resolved_locale"] == "en"
 
 
+def test_find_ui_reads_the_dashboard_language_from_the_observation_in_one_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The observation answers carry ``ui_lang``: no second round trip for it."""
+    gets: list[str] = []
+    posts: list[str] = []
+
+    def get(path: str, **_kw: Any) -> dict[str, Any]:
+        gets.append(path)
+        return {"ui_lang": "zh-CN", "source": "tab"}
+
+    def post(path: str, body: dict[str, Any], **_kw: Any) -> dict[str, Any]:
+        posts.append(path)
+        return {"status": "not_observed", "reason": "no_tab", "ui_lang": "en"}
+
+    monkeypatch.setattr(mcp_guide, "_strict_session_key", lambda: ("dashboard:chat-x", ""))
+    monkeypatch.setattr(mcp_guide, "_get", get)
+    monkeypatch.setattr(mcp_guide, "_post", post)
+    english = _top(ui_index.find_ui("older sessions", "en"))
+    out = json.loads(
+        mcp_guide._call_tool_inner("find_ui", {"query": "较早的会话", "lang": "zh-CN"})
+    )
+    assert posts == ["/api/guide/agent/observe"] and gets == []
+    assert out["locale_source"] == "dashboard"
+    assert out["results"][0]["label"] == english["label"]
+
+
 def test_find_ui_keeps_the_question_language_when_the_dashboard_language_is_unknown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

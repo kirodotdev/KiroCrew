@@ -281,8 +281,33 @@ def test_with_no_identifiable_tab_the_answer_is_not_observed_and_nothing_is_sent
     state = TabState(answer=_tab_reply)
     state.open_slot("chat-1")
     status, body = _observe(state, {"targets": [TARGET]}, agent("dashboard:chat-1"))
-    assert (status, body) == (200, {"status": "not_observed", "reason": "no_tab"})
+    assert (status, body) == (200, {"status": "not_observed", "reason": "no_tab", "ui_lang": ""})
     assert state.frames == []
+
+
+def test_a_turn_the_user_did_not_send_cannot_observe_their_tab(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A loop wake or an injected turn asks nothing of the tab and leaves the guide alone."""
+    from kiro_crew.dashboard.handlers import guide as guide_routes
+
+    monkeypatch.setattr(guide_routes, "OBSERVE_WAIT_SECONDS", 0.05)
+    state = TabState(answer=None)
+    state.open_slot("chat-1")._turn_user_sent = False
+    store = guide_store_for(state)
+    g = store.start(
+        slot_key="chat-1",
+        session_key="dashboard:chat-1",
+        actions=[{"id": "ui.show", "params": {"location_id": TARGET}}],
+    )
+    g = store.claim(
+        guide_id=g["guide_id"], tab_id="tab-owner", revision=g["revision"], placements=["desktop"]
+    )
+    status, body = _observe(state, {"targets": [TARGET]}, agent("dashboard:chat-1"))
+    assert (status, body["code"]) == (403, "not_user_turn")
+    assert state.frames == []
+    held = store.status_for_caller(slot_key="chat-1")
+    assert held["reason"] != "stale_tab" and held["revision"] == g["revision"]
 
 
 def test_a_tab_that_does_not_answer_in_time_is_not_observed_and_marks_its_guide_stale(
@@ -303,7 +328,7 @@ def test_a_tab_that_does_not_answer_in_time_is_not_observed_and_marks_its_guide_
         guide_id=g["guide_id"], tab_id="tab-owner", revision=g["revision"], placements=["desktop"]
     )
     status, body = _observe(state, {"targets": [TARGET]}, agent("dashboard:chat-1"))
-    assert (status, body) == (200, {"status": "not_observed", "reason": "stale_tab"})
+    assert (status, body) == (200, {"status": "not_observed", "reason": "stale_tab", "ui_lang": ""})
     held = store.status_for_caller(slot_key="chat-1")
     assert held["reason"] == "stale_tab" and held["revision"] == g["revision"]
     assert observation_hub_for(state).pending_count() == 0
@@ -317,7 +342,10 @@ def test_a_tab_on_another_build_is_not_observed() -> None:
     state.open_slot("chat-1")
     observation_hub_for(state).note_sender("chat-1", "tab-A")
     status, body = _observe(state, {"targets": [TARGET]}, agent("dashboard:chat-1"))
-    assert (status, body) == (200, {"status": "not_observed", "reason": "build_mismatch"})
+    assert (status, body) == (
+        200,
+        {"status": "not_observed", "reason": "build_mismatch", "ui_lang": ""},
+    )
 
 
 def test_a_reply_carrying_text_is_refused_and_the_answer_is_not_observed(
@@ -330,7 +358,7 @@ def test_a_reply_carrying_text_is_refused_and_the_answer_is_not_observed(
     state.open_slot("chat-1")
     observation_hub_for(state).note_sender("chat-1", "tab-A")
     status, body = _observe(state, {"targets": [TARGET]}, agent("dashboard:chat-1"))
-    assert body == {"status": "not_observed", "reason": "stale_tab"}
+    assert body == {"status": "not_observed", "reason": "stale_tab", "ui_lang": ""}
     assert state.replies and state.replies[0][0] == 400
 
 

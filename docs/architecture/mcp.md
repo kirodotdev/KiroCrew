@@ -2202,8 +2202,10 @@ are resolved whole and in dependency order, whatever order the descriptors are
 declared in: a child picks the parent placement on its surface whose viewport
 does not conflict with its own, inherits that placement's chain, route and
 requirements, and must name `parentPlacement` when two compatible parent
-placements differ. The digest covers the bytes of every input read, never a clock
-or a git hash. `npm run gen:ui -- --check` regenerates in memory and
+placements differ. The index's `input_digest` is a digest of
+the committed index's own content (never a clock or a git hash), so an edit to an
+input that changes nothing in the index, such as a label no location uses, leaves
+the committed file byte-identical and does not stale it. `npm run gen:ui -- --check` regenerates in memory and
 byte-compares the COMMITTED index (generated and curated tiers only; the auto
 tier below is never compared); it runs in `frontend-lint` and as the first step
 of `npm run build`, the build every packaging path (`make frontend`,
