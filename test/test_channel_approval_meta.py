@@ -272,3 +272,103 @@ def test_serialize_round_trips_meta_and_tolerates_its_absence():
     assert by_id["m2"].meta is None
     assert by_id["m3"].meta is None
     assert by_id["m1"].to_dict() == with_meta.to_dict()
+
+
+# --------------------------------------------------------------------------- #
+# How long an unanswered card waits: agent.tool_approval_timeout_secs, capped
+# --------------------------------------------------------------------------- #
+
+
+def _silent_channel():
+    """Channel stub whose card nobody answers."""
+    ch = SimpleNamespace(id="c1", trusted=False, members={})
+    ch.post = AsyncMock()
+    return ch
+
+
+async def _expire_one_card(monkeypatch, *, agent_config):
+    """Run one approval to expiry; return (waited, steered reasons, client).
+
+    The module's own ``asyncio`` binding is replaced by a namespace that
+    delegates every other name to the real module, so ``wait_for`` reports the
+    window it was given and expires at once: no wall clock is involved.
+    ``agent_config`` is the raw ``agent`` section the operator wrote, or None
+    for a config that cannot be read.
+    """
+    import asyncio
+    import types
+
+    import kiro_crew.channel as channel_mod
+
+    if agent_config is None:
+
+        def _raw():
+            raise OSError("config unreadable")
+
+    else:
+
+        def _raw():
+            return {"agent": dict(agent_config)}
+
+    loaded = SimpleNamespace(
+        agent=SimpleNamespace(
+            tool_approval_timeout_secs=(agent_config or {}).get("tool_approval_timeout_secs", 600)
+        )
+    )
+    # ``raising=False``: on a channel module that never read the setting, these
+    # names are absent, and the test must still reach its window assertion.
+    monkeypatch.setattr(channel_mod, "_raw_config", _raw, raising=False)
+    monkeypatch.setattr(
+        channel_mod, "KiroCrewConfig", SimpleNamespace(load=lambda: loaded), raising=False
+    )
+    waited: list = []
+
+    async def _expiring_wait_for(aw, timeout=None):
+        waited.append(timeout)
+        if asyncio.iscoroutine(aw):
+            aw.close()
+        raise asyncio.TimeoutError
+
+    fake_asyncio = types.SimpleNamespace(**vars(asyncio))
+    fake_asyncio.wait_for = _expiring_wait_for
+    monkeypatch.setattr(channel_mod, "asyncio", fake_asyncio)
+    steered = AsyncMock()
+    monkeypatch.setattr(channel_mod, "_steer_host_deny", steered)
+
+    client = _make_client([_perm_event(text="Run tool"), _done()])
+    await asyncio.wait_for(_stream_task(_make_agent(), _silent_channel(), client, "hi"), timeout=5)
+    reasons = [c.args[2] for c in steered.await_args_list]
+    return waited, reasons, client
+
+
+@pytest.mark.asyncio
+async def test_an_unanswered_card_waits_the_configured_approval_window(monkeypatch):
+    waited, reasons, client = await _expire_one_card(
+        monkeypatch, agent_config={"tool_approval_timeout_secs": 30}
+    )
+    assert waited == [30]
+    client.reject_tool.assert_awaited_once()  # the expired card is still declined
+    assert reasons == ["the channel approval card went unanswered for 30s"]
+
+
+@pytest.mark.asyncio
+async def test_an_unanswered_card_waits_the_full_cap_when_no_window_is_set(monkeypatch):
+    waited, reasons, client = await _expire_one_card(monkeypatch, agent_config={})
+    assert waited == [3600]
+    client.reject_tool.assert_awaited_once()
+    assert reasons == ["the channel approval card went unanswered for 3600s"]
+
+
+@pytest.mark.asyncio
+async def test_a_configured_window_above_the_cap_is_capped(monkeypatch):
+    waited, _reasons, _client = await _expire_one_card(
+        monkeypatch, agent_config={"tool_approval_timeout_secs": 7200}
+    )
+    assert waited == [3600]
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_config_keeps_the_full_cap(monkeypatch):
+    waited, reasons, _client = await _expire_one_card(monkeypatch, agent_config=None)
+    assert waited == [3600]
+    assert reasons == ["the channel approval card went unanswered for 3600s"]

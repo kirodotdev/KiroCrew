@@ -24,7 +24,8 @@ from typing import Any
 
 from kiro_crew import name_grant, permission_floor
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.config import live
+from kiro_crew.config import KiroCrewConfig, live
+from kiro_crew.config.loader import _raw_config
 from kiro_crew.config.paths import config_dir
 from kiro_crew.constants import (
     DENY_CAUSE_APPROVAL_OVERSIZE,
@@ -56,8 +57,10 @@ _MAX_MESSAGES = 200
 # sees the whole command, and a cut title beside a live Approve button is an
 # approval of a suffix nobody read. The refusal notice is itself bounded.
 _APPROVAL_FIELD_MAX_CHARS = 500
-# How long a posted approval card waits for a reader before the HOST declines
-# it. Named so the in-band notice can quote the same figure the wait used.
+# The longest a posted approval card waits for a reader before the HOST
+# declines it, and the wait when ``agent.tool_approval_timeout_secs`` is not set
+# (see :func:`_channel_approval_window_secs`). The in-band notice quotes the
+# window the wait actually used.
 _APPROVAL_TIMEOUT_SECS = 3600
 # The card title of a grantable shell command is this prefix plus the command;
 # the exact tier sends the title back (minus the prefix) as its consent proof.
@@ -1253,6 +1256,29 @@ async def _recover_busy_agent(
     return None
 
 
+def _channel_approval_window_secs() -> int:
+    """How long an unanswered channel approval card waits before it is declined.
+
+    ``agent.tool_approval_timeout_secs`` when the operator set it, capped at
+    :data:`_APPROVAL_TIMEOUT_SECS`; the cap itself when the setting is absent,
+    not positive, or config cannot be read. The value is the loader's, so it
+    carries the loader's two clamps: first into 30..7200 s, then down to at most
+    ``APPROVAL_TURN_MARGIN_SECS`` (60 s) below ``agent.chat_turn_timeout_secs``,
+    never under 30 s. Reads ``config.json``: call it off the loop.
+    """
+    try:
+        raw_agent = _raw_config().get("agent")
+        if not isinstance(raw_agent, dict) or "tool_approval_timeout_secs" not in raw_agent:
+            return _APPROVAL_TIMEOUT_SECS
+        configured = int(KiroCrewConfig.load().agent.tool_approval_timeout_secs)
+    except Exception:
+        logger.debug("channel approval window: config unavailable; using the cap", exc_info=True)
+        return _APPROVAL_TIMEOUT_SECS
+    if configured <= 0:
+        return _APPROVAL_TIMEOUT_SECS
+    return min(_APPROVAL_TIMEOUT_SECS, configured)
+
+
 async def _stream_task(
     agent: ChannelAgent,
     channel: Channel,
@@ -1618,10 +1644,14 @@ async def _stream_task(
                     "base_command": _base_binary or "",
                 }
                 _approval_timed_out = False
+                _approval_window = _APPROVAL_TIMEOUT_SECS
                 try:
                     # Posting and waiting are one ownership scope. If the post
                     # itself fails, neither the Future nor its command authority
                     # may leak onto the next approval handled by this agent.
+                    # The window is read here, inside that scope, for the same
+                    # reason: a cancel while it is read still clears the Future.
+                    _approval_window = await asyncio.to_thread(_channel_approval_window_secs)
                     await channel.post(
                         agent.id,
                         f"⚠️ Approval needed: **{sanitized_name}**\n```\n{sanitized_input}\n```",
@@ -1630,9 +1660,7 @@ async def _stream_task(
                         thread_id=thread_id,
                         meta=approval_meta,
                     )
-                    decision = await asyncio.wait_for(
-                        approval_future, timeout=_APPROVAL_TIMEOUT_SECS
-                    )
+                    decision = await asyncio.wait_for(approval_future, timeout=_approval_window)
                 except asyncio.TimeoutError:
                     # Nobody answered: the HOST declines, not the reader.
                     # Recorded apart from the decision so the reject below can
@@ -1693,8 +1721,7 @@ async def _stream_task(
                         await _steer_host_deny(
                             client,
                             event,
-                            "the channel approval card went unanswered for "
-                            f"{_APPROVAL_TIMEOUT_SECS}s",
+                            f"the channel approval card went unanswered for {_approval_window}s",
                             cause=DENY_CAUSE_APPROVAL_TIMEOUT,
                             title=event.text or event.title or "",
                         )
