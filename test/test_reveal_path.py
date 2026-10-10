@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from kiro_crew import external_editor
 from kiro_crew.dashboard.handlers.files import api_reveal_path
 
 
@@ -210,3 +212,250 @@ async def test_open_action_on_directory_returns_400(mock_sel, tmp_path):
             assert resp.status == 400
             body = await resp.json()
             assert body == {"error": "not a regular file"}
+
+
+# ── action=editor ────────────────────────────────────────────────────────────
+#
+# The one action that is deliberately NOT behind the direct-local gate, because
+# the editor it reaches is attached to this host over Remote-SSH and paints its
+# window on the caller's own machine. Every case below therefore asserts against
+# the shared path validation and the shared sensitive-path refusal -- the endpoint
+# widens which ORIGIN may spawn an editor, never which paths anyone may reach.
+
+
+@pytest.mark.asyncio
+async def test_editor_action_opens_the_path_and_audits_the_action(mock_sel, tmp_path):
+    """The happy path: 200, and the audit record names the editor action."""
+    f = tmp_path / "main.py"
+    f.write_text("print('hi')")
+    with (
+        patch(
+            "kiro_crew.external_editor.open_path",
+            return_value="/tmp/vscode-ipc-zzq.sock",
+        ) as open_path,
+    ):
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post("/api/reveal", json={"path": str(f), "action": "editor"})
+            assert resp.status == 200
+            assert await resp.json() == {"ok": True}
+    assert open_path.call_args.args[0] == str(f)
+    mock_sel.log_tool_invocation.assert_called_with(
+        session_key="api",
+        source="api",
+        tool_name="reveal_path",
+        outcome="success",
+        resources=str(f),
+        metadata={"action": "editor"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_editor_action_serves_a_tunneled_caller(mock_sel, tmp_path):
+    """The reason the action exists: a remote caller is who it serves.
+
+    A reveal degrades to a clipboard copy here, because it would paint a window
+    on a machine the caller is not sitting at. The editor inverts that, so the
+    same origin must get a real open rather than the degrade.
+    """
+    f = tmp_path / "main.py"
+    f.write_text("print('hi')")
+    with (
+        patch("kiro_crew.dashboard.handlers.files.is_direct_local_request", return_value=False),
+        patch(
+            "kiro_crew.external_editor.open_path", return_value=""
+        ) as open_path,
+    ):
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post("/api/reveal", json={"path": str(f), "action": "editor"})
+            assert resp.status == 200
+            body = await resp.json()
+    # Not the `copy` degrade the reveal action returns to this same caller.
+    assert body == {"ok": True}
+    open_path.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_editor_action_sensitive_path_denied_before_any_spawn(mock_sel):
+    """The editor action rides the endpoint's EXISTING refusal, not a second check."""
+    with (
+        patch("kiro_crew.dashboard.handlers.files.is_sensitive_path", return_value=True),
+        patch("kiro_crew.external_editor.open_path") as open_path,
+    ):
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post(
+                "/api/reveal",
+                json={"path": "/home/user/.ssh/id_rsa", "action": "editor"},
+            )
+            assert resp.status == 403
+            assert await resp.json() == {"error": "access denied"}
+    open_path.assert_not_called()
+    mock_sel.log_tool_invocation.assert_called_with(
+        session_key="api",
+        source="api",
+        tool_name="reveal_path",
+        outcome="denied",
+        error="sensitive_path",
+        resources="/home/user/.ssh/id_rsa",
+        metadata={"action": "editor"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_editor_action_traversal_rejected_before_any_spawn(mock_sel):
+    with patch("kiro_crew.external_editor.open_path") as open_path:
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post(
+                "/api/reveal", json={"path": "/tmp/../etc/passwd", "action": "editor"}
+            )
+            assert resp.status == 400
+            assert await resp.json() == {"error": "invalid path"}
+    open_path.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_editor_action_no_attached_window_is_503(mock_sel, tmp_path):
+    """503, not 500: nothing is wrong with the request, and the state self-heals
+    the moment the user connects a window."""
+    f = tmp_path / "main.py"
+    f.write_text("x = 1")
+    with (
+        patch(
+            "kiro_crew.external_editor.open_path",
+            side_effect=external_editor.EditorUnavailable("no window attached"),
+        ),
+    ):
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post("/api/reveal", json={"path": str(f), "action": "editor"})
+            assert resp.status == 503
+            body = await resp.json()
+    assert body == {"error": "no window attached", "code": "editor_unavailable"}
+    mock_sel.log_tool_invocation.assert_called_with(
+        session_key="api",
+        source="api",
+        tool_name="reveal_path",
+        outcome="failure",
+        error="editor_unavailable",
+        resources=str(f),
+        metadata={"action": "editor"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_editor_action_launch_failure_is_502(mock_sel, tmp_path):
+    f = tmp_path / "main.py"
+    f.write_text("x = 1")
+    with (
+        patch(
+            "kiro_crew.external_editor.open_path",
+            side_effect=external_editor.EditorOpenFailed("zzq refused the open"),
+        ),
+    ):
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post("/api/reveal", json={"path": str(f), "action": "editor"})
+            assert resp.status == 502
+            body = await resp.json()
+    assert body == {"error": "zzq refused the open", "code": "editor_open_failed"}
+    mock_sel.log_tool_invocation.assert_called_with(
+        session_key="api",
+        source="api",
+        tool_name="reveal_path",
+        outcome="failure",
+        error="editor_open_failed",
+        resources=str(f),
+        metadata={"action": "editor"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_editor_action_missing_path_is_400(mock_sel):
+    """A malformed body is a coded 400, never a 500 out of the action."""
+    with patch("kiro_crew.external_editor.open_path") as open_path:
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post("/api/reveal", json={"action": "editor"})
+            assert resp.status == 400
+            assert await resp.json() == {"error": "invalid path"}
+    open_path.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_unparseable_body_is_400_not_500(mock_sel):
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post(
+            "/api/reveal",
+            data=b"{not json",
+            headers={"Content-Type": "application/json"},
+        )
+        assert resp.status == 400
+
+
+# ── action=editor: the target is absolutized before it is screened ────────────
+#
+# The route takes the path as its caller spelled it, so a relative or `~` path
+# is the ordinary case rather than the odd one. Two properties are pinned here:
+# the editor receives the ANCHORED path, and the anchored path is what the
+# sensitive-path refusal judges -- a relative `.ssh/id_rsa` is unremarkable as a
+# string and names a key once joined to a project directory.
+
+
+@pytest.mark.asyncio
+async def test_editor_action_anchors_a_relative_path_to_the_project_dir(mock_sel, tmp_path):
+    """The editor receives the anchored path, not the text the caller sent."""
+    (tmp_path / "website").mkdir()
+    (tmp_path / "website" / "main.tsx").write_text("export {}")
+    with (
+        patch.dict(os.environ, {"KIROCREW_PROJECT_DIR": str(tmp_path)}),
+        patch(
+            "kiro_crew.external_editor.open_path",
+            return_value="/tmp/vscode-ipc-zzq.sock",
+        ) as open_path,
+    ):
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post(
+                "/api/reveal", json={"path": "website/main.tsx", "action": "editor"}
+            )
+            assert resp.status == 200
+    assert open_path.call_args.args[0] == os.path.join(str(tmp_path), "website/main.tsx")
+
+
+@pytest.mark.asyncio
+async def test_editor_action_refuses_a_relative_path_with_no_project_dir(mock_sel):
+    """Ambiguity is a coded refusal: every candidate base names a different file."""
+    with (
+        patch("kiro_crew.external_editor.open_path") as open_path,
+        patch.dict(os.environ, {}, clear=False),
+    ):
+        os.environ.pop("KIROCREW_PROJECT_DIR", None)
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post(
+                "/api/reveal", json={"path": "website/main.tsx", "action": "editor"}
+            )
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "path_unresolved"
+    open_path.assert_not_called()
+    assert mock_sel.log_tool_invocation.call_args.kwargs["error"] == "path_unresolved"
+
+
+@pytest.mark.asyncio
+async def test_editor_action_screens_the_path_it_resolved_to(mock_sel, tmp_path):
+    """A relative path that is innocuous as text and sensitive once anchored."""
+    seen: list[str] = []
+
+    def _sensitive(path_str: str) -> bool:
+        seen.append(path_str)
+        # Only the ANCHORED form names the key: as a bare relative string this is
+        # an unremarkable path, which is exactly why the second screen exists.
+        return os.path.isabs(path_str) and path_str.endswith("id_rsa")
+
+    with (
+        patch("kiro_crew.dashboard.handlers.files.is_sensitive_path", side_effect=_sensitive),
+        patch.dict(os.environ, {"KIROCREW_PROJECT_DIR": str(tmp_path)}),
+        patch("kiro_crew.external_editor.open_path") as open_path,
+    ):
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post(
+                "/api/reveal", json={"path": ".ssh/id_rsa", "action": "editor"}
+            )
+            assert resp.status == 403
+    # The raw string passed the first screen; the anchored one is what refused it.
+    assert seen == [".ssh/id_rsa", os.path.join(str(tmp_path), ".ssh/id_rsa")]
+    open_path.assert_not_called()

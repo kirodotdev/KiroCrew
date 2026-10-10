@@ -19,11 +19,88 @@ if TYPE_CHECKING:
         _run_path_probe,
         _sel,
         data_home,
+        external_editor,
         is_direct_local_request,
         is_sensitive_path,
         platform_compat,
         read_bounded_json,
     )
+
+
+def _resolve_screened(path: str, action: str) -> tuple[str | None, web.Response | None]:
+    """Absolutize *path* as written, then screen the RESOLVED form.
+
+    The route takes a path as its caller spelled it, so ``~/notes.md`` and
+    project-relative paths can arrive as well as absolute ones. The two strings are
+    different paths for the sensitive-path refusal: ``.ssh/id_rsa`` is
+    unremarkable as written and names a key once anchored to a project
+    directory, so the anchored path is what gets judged.
+
+    Returns ``(target, None)`` or ``(None, refusal)``; every refusal is audited.
+    """
+
+    def _deny(error: str, resource: str) -> None:
+        _sel().log_tool_invocation(
+            session_key="api",
+            source="api",
+            tool_name="reveal_path",
+            outcome="denied",
+            error=error,
+            resources=resource,
+            metadata={"action": action},
+        )
+
+    target = external_editor.resolve_target(path)
+    if target is None:
+        _deny("path_unresolved", path)
+        return None, web.json_response(
+            {
+                "error": (
+                    "This path is relative and there is no project directory "
+                    "to resolve it against, so the file it names is ambiguous."
+                ),
+                "code": "path_unresolved",
+            },
+            status=400,
+        )
+    if is_sensitive_path(target):
+        _deny("sensitive_path", target)
+        return None, web.json_response({"error": "access denied"}, status=403)
+    return target, None
+
+
+async def _open_in_editor(path: str) -> web.Response:
+    """Hand *path* to the editor window attached to this host, audited.
+
+    Each outcome gets a CONSTANT status and its own machine ``code``. The caller
+    has already resolved and screened *path*. The socket probes and the spawn
+    are blocking, so the whole transaction runs in a worker thread.
+    """
+
+    def _audit(outcome: str, error: str = "") -> None:
+        kw = {"error": error} if error else {}
+        _sel().log_tool_invocation(
+            session_key="api",
+            source="api",
+            tool_name="reveal_path",
+            outcome=outcome,
+            resources=path,
+            metadata={"action": "editor"},
+            **kw,
+        )
+
+    try:
+        await asyncio.to_thread(external_editor.open_path, path)
+    except external_editor.EditorUnavailable as exc:
+        _audit("failure", "editor_unavailable")
+        # 503, not 500: nothing is wrong with the request; no editor window is
+        # attached right now, a state that changes the moment one connects.
+        return web.json_response({"error": str(exc), "code": "editor_unavailable"}, status=503)
+    except external_editor.EditorOpenFailed as exc:
+        _audit("failure", "editor_open_failed")
+        return web.json_response({"error": str(exc), "code": "editor_open_failed"}, status=502)
+    _audit("success")
+    return web.json_response({"ok": True})
 
 
 async def api_reveal_path(request: web.Request) -> web.Response:
@@ -34,7 +111,7 @@ async def api_reveal_path(request: web.Request) -> web.Response:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
     path = body.get("path", "")
-    action = body.get("action", "reveal")  # "reveal" or "open"
+    action = body.get("action", "reveal")  # "reveal", "open" or "editor"
     # A non-string path (a number, list or object) is caller error: Path() and
     # the sensitive-path check below would raise TypeError, a 500.
     if not isinstance(path, str) or not path or ".." in Path(path).parts:
@@ -50,6 +127,17 @@ async def api_reveal_path(request: web.Request) -> web.Response:
             metadata={"action": action},
         )
         return web.json_response({"error": "access denied"}, status=403)
+    if action == "editor":
+        # Runs the remote CLI of a window attached to this host over Remote-SSH:
+        # the CLI runs here, the window it drives is on the caller's desk, so
+        # this does not sit behind the direct-local gate below. The CLI resolves
+        # a relative path against the gateway's working directory, so the path
+        # is anchored and screened again here first.
+        target, refusal = _resolve_screened(path, action)
+        if refusal is not None:
+            return refusal
+        assert target is not None
+        return await _open_in_editor(target)
     # Gate: only spawn native openers from direct-local requests. Remote/tunneled
     # callers get the copy-to-clipboard fallback — spawning Finder on a machine
     # the user is not looking at is surprising and useless.

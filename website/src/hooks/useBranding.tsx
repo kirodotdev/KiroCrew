@@ -14,6 +14,10 @@ interface Branding {
   avatar: string
   directLocal: boolean
   desktopLauncher: boolean
+  /** Whether a Kiro window is attached to the gateway host over Remote-SSH, so
+   *  the gateway can open a path in it through that window's remote CLI (the
+   *  Markdown panel's "Open in Kiro" row). */
+  editorAvailable: boolean
   /** `dashboard.remote_editor.editor` and `.host` for the "Open in <editor>"
    *  row in the Markdown panel's ⋯ menu (`MarkdownPanelHeader.tsx`); "" = not set. */
   remoteEditor: string
@@ -25,6 +29,7 @@ const defaults: Branding = {
   avatar: '/logo.png',
   directLocal: false,
   desktopLauncher: false,
+  editorAvailable: false,
   remoteEditor: '',
   remoteEditorHost: '',
 }
@@ -52,6 +57,7 @@ export function BrandingProvider({ children }: { children: ReactNode }) {
         avatar: data.avatar || defaults.avatar,
         directLocal: !!data.direct_local,
         desktopLauncher: !!data.desktop_launcher,
+        editorAvailable: !!data.editor_available,
         remoteEditor: data.remote_editor?.editor ?? '',
         remoteEditorHost: data.remote_editor?.host ?? '',
       }
