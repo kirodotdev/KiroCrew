@@ -148,6 +148,28 @@ def effective_wake_budget(job: CronJob) -> int:
     return int(raw) if 1 <= raw <= 86400 else seams._JOB_TIMEOUT_SECS
 
 
+def run_parks_one_shot(job: CronJob) -> bool:
+    """Whether this run of ``job`` leaves it, a one-shot ``at`` job, disabled.
+
+    A fired one-shot that keeps its row is parked so it cannot run again, and a
+    fire-time denial is parked too: its due time has passed, so left enabled it
+    would be due on every tick. A run whose payload never started
+    (``run_never_started``: refused before dispatch, or starved in the queue) is
+    not parked, whatever the job's shape: nothing ran, so the one-shot stays
+    enabled and retries, as :meth:`CronService._merge_job_result` keeps a
+    ``delete_after_run`` one-shot whose fire never started. The exception is a
+    plain one-shot refused for a reason in its own configuration
+    (``refusal_cannot_clear``): a retry meets the same refusal, so it is parked.
+    """
+    if job.schedule.kind != "at":
+        return False
+    if job.fire_time_denied:
+        return True
+    if job.delete_after_run:
+        return False
+    return not job.run_never_started or job.refusal_cannot_clear
+
+
 def close_run(
     job: CronJob, *, started_at: float, generation: int, being_cancelled: bool
 ) -> tuple[CronJob, str, str | None]:
@@ -211,7 +233,7 @@ def apply_run_record(target: CronJob, run: CronJob) -> None:
     # Propagate the fired/parked disable for at-jobs — including a
     # fire-time-DENIED one (parked disabled instead of deleted so
     # it cannot refire every tick yet stays re-enableable).
-    if run.schedule.kind == "at" and (not run.delete_after_run or run.fire_time_denied):
+    if run_parks_one_shot(run):
         target.enabled = run.enabled
         target.user_paused = not run.enabled
     # auto_paused is execution-owned (repeated-failure auto-pause and

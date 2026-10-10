@@ -593,6 +593,29 @@ def is_due(job: CronJob, now: float) -> bool:
     return True
 
 
+#: How long an enabled one-shot waits after an attempt whose fire never started.
+#: Such a job stays enabled past its ``at_ts`` so it runs once dispatch opens;
+#: keyed on ``at_ts`` alone its wake would be zero for as long as the refusal
+#: lasts, and the timer would re-fire it on every pass.
+_AT_RETRY_FLOOR_SECS = _TIMER_POLL_SECS
+
+
+def _at_next_attempt_ts(job: CronJob) -> float:
+    """When the timer should next attempt the one-shot ``job``.
+
+    Its ``at_ts``, unless an attempt already ran at or after that time. A
+    one-shot that fires, fails or is denied is parked or removed, so an enabled
+    one with such an attempt is one whose fire never started, and it is next
+    attempted one floor after that attempt. Only the wake moves: ``is_due`` is
+    unchanged, so a tick that runs for another job may still attempt it.
+    """
+    at_ts = job.schedule.at_ts or 0.0
+    last = job.last_run_ts
+    if last is not None and last >= at_ts:
+        return max(at_ts, last + _AT_RETRY_FLOOR_SECS)
+    return at_ts
+
+
 def next_wake_secs(jobs: Iterable[CronJob], claimed: Container[str], now: float) -> float | None:
     """Seconds from ``now`` until the next of ``jobs`` should fire, or None when none will.
 
@@ -609,7 +632,7 @@ def next_wake_secs(jobs: Iterable[CronJob], claimed: Container[str], now: float)
             next_run = last + job.schedule.every_secs
             delays.append(max(0.0, next_run - now))
         elif job.schedule.kind == "at" and job.schedule.at_ts:
-            delays.append(max(0.0, job.schedule.at_ts - now))
+            delays.append(max(0.0, _at_next_attempt_ts(job) - now))
         elif job.schedule.kind == "cron":
             # Wake ON the next cron boundary (as `at`/`every` do), not on a
             # flat poll whose phase is unrelated to the schedule -- a phase
