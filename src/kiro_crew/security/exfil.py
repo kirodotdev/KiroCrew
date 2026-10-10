@@ -403,6 +403,7 @@ _ENDPOINT_EXTENSION_CAP = 50
 # rejects wildcards, schemes, ports, userinfo, percent-escapes, whitespace,
 # backslashes, and bracketed IPv6. Empty labels reject leading/trailing dots.
 # The lookahead bounds total length to the DNS maximum.
+# ``redaction_allow`` validates allowed link hosts with this same regex.
 _OAUTH_EXTENSION_HOST_RE = re.compile(
     r"\A(?=.{1,253}\Z)"
     r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?"
@@ -539,35 +540,50 @@ def _emit_oauth_extension_used_event(host: str, path: str) -> None:
     if (host, path) in _OAUTH_EXTENSION_AUDITED:
         return
     _OAUTH_EXTENSION_AUDITED.add((host, path))
-    try:
+
+    def metadata() -> dict:
         # Function-local for the same loader-cycle reason as
         # _load_operator_oauth_endpoints.
         from kiro_crew.config import loader as config_loader
 
+        return {
+            "host": host,
+            "path": path,
+            "file": str(config_loader.oauth_endpoints_path()),
+            "mechanism": "OAUTH_ENDPOINT_EXTENSION",
+        }
+
+    _log_operator_list_use(
+        "oauth_endpoint_extension_used", "oauth_banner_check", f"{host}{path}", metadata
+    )
+
+
+def _log_operator_list_use(
+    event_type: str, operation: str, resources: str, metadata: Callable[[], dict]
+) -> None:
+    """Write one best-effort ``allowed`` SEL event for an operator-list use.
+
+    Shared by the OAuth endpoint extension and the allowed link hosts. A failed
+    write, ``metadata()`` included, is logged at debug and never raised: the
+    operator vouched for the entry, so the allow stands either way.
+    """
+    try:
         SecurityEventLog().log(
             SecurityEvent(
                 event_id=uuid.uuid4().hex[:16],
                 timestamp=datetime.now(tz=timezone.utc).isoformat(),
-                event_type="oauth_endpoint_extension_used",
+                event_type=event_type,
                 caller_identity="",
                 agent="kirocrew",
                 source="security",
-                operation="oauth_banner_check",
+                operation=operation,
                 outcome="allowed",
-                resources=f"{host}{path}",
-                metadata={
-                    "host": host,
-                    "path": path,
-                    "file": str(config_loader.oauth_endpoints_path()),
-                    "mechanism": "OAUTH_ENDPOINT_EXTENSION",
-                },
+                resources=resources,
+                metadata=metadata(),
             )
         )
     except Exception:
-        logger.debug(
-            "SEL audit failed for oauth_endpoint_extension_used (allow stands)",
-            exc_info=True,
-        )
+        logger.debug("SEL audit failed for %s (allow stands)", event_type, exc_info=True)
 
 
 def _approved_oauth_authorization_endpoint(host: str, path: str) -> bool:
@@ -1554,7 +1570,28 @@ def restore_allowed_links(
         return address.get(m.group(1).lower(), m.group(0))
 
     out = _PLACEHOLDER_RE.sub(swap, text)
+    for domain in address:
+        _emit_allowed_host_used_event(domain, records)
     return out, [r for i, r in enumerate(records) if i not in restored]
+
+
+# One ``redaction_allowed_host_used`` event per host per process: every history
+# load and live frame re-restores the same links.
+_ALLOWED_HOST_AUDITED: set[str] = set()
+
+
+def _emit_allowed_host_used_event(host: str, records: list[dict]) -> None:
+    """SEL-audit that a reader-allowed host put a blocked link back on screen."""
+    if host in _ALLOWED_HOST_AUDITED:
+        return
+    _ALLOWED_HOST_AUDITED.add(host)
+    rules = sorted(
+        {str(r.get("rule")) for r in records if str(r.get("domain", "")).lower() == host}
+    )
+    meta = {"host": host, "rules": rules, "mechanism": "REDACTION_ALLOWED_HOST"}
+    _log_operator_list_use(
+        "redaction_allowed_host_used", "restore_allowed_links", host, lambda: meta
+    )
 
 
 def current_scoped_exempt_hosts() -> frozenset[str]:

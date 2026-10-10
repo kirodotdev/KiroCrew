@@ -9255,6 +9255,7 @@
       "cred_view_token_title": "토큰 보기",
       "cred_why": "왜?",
       "link_allow": "이 호스트에 대해 허용",
+      "link_allow_unsupported": "example.com 같은 호스트 이름만 허용할 수 있습니다. 대신 “한 번 열기”를 사용하세요.",
       "link_allow_confirm_aria": "허용 확인",
       "link_allow_confirm_body": "이 설정은 <0>이 워크스페이스에만</0> 적용됩니다. 대시보드가 이 선택을 저장합니다. 에이전트는 절대 기록할 수 없습니다. 긴 쿼리와 인코딩된 데이터(base64) 검사만 완화됩니다. 자격 증명 규칙은 계속 활성 상태로 유지됩니다. 설정 → 보안 → 가리기에서 취소하세요.",
       "link_allow_confirm_title": "{{host}}에서 긴 쿼리를 허용하시겠습니까?",

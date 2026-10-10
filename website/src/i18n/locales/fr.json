@@ -9515,6 +9515,7 @@
       "cred_view_token_title": "Afficher le jeton",
       "cred_why": "pourquoi ?",
       "link_allow": "Autoriser pour cet hôte",
+      "link_allow_unsupported": "Seul un nom d’hôte comme example.com peut être autorisé. Utilise plutôt « Ouvrir une fois ».",
       "link_allow_confirm_aria": "Confirmation d’autorisation",
       "link_allow_confirm_body": "Cela s’applique <0>à cet espace de travail uniquement</0>. Le tableau de bord enregistre ce choix. Un agent ne peut jamais l’écrire. Seules les vérifications de requête longue et de données encodées (base64) sont assouplies. Les règles d’identifiants restent actives. Révoque-le dans Paramètres → Sécurité → Masquage.",
       "link_allow_confirm_title": "Autoriser les requêtes longues sur {{host}} ?",

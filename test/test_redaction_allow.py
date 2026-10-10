@@ -59,6 +59,80 @@ def test_off_shape_host_is_refused() -> None:
     assert not redaction_allow.allow_host("ws1", "https://x.example")
 
 
+@pytest.mark.parametrize(
+    "host",
+    [
+        "127.0.0.1",
+        "10.0.0.5",
+        "[::1]",
+        "[::ffff:10.0.0.5]",
+        "git.example.com:8443",
+        "*.example.com",
+        "-bad.example.com",
+        "bad-.example.com",
+        "under_score.example.com",
+        "a..example.com",
+        "example",
+    ],
+)
+def test_ip_literals_ports_and_wildcards_are_refused(host: str) -> None:
+    assert not redaction_allow.valid_host(host)
+    assert not redaction_allow.allow_host("ws1", host)
+
+
+def test_an_ip_literal_left_in_the_file_is_dropped_on_load(_store: Path) -> None:
+    import json
+
+    _store.parent.mkdir(parents=True)
+    _store.write_text(json.dumps({"ws1": ["10.0.0.5", "[::1]", "git.example.com"]}))
+    assert redaction_allow.list_allowed() == {"ws1": ["git.example.com"]}
+
+
+def test_restoring_an_allowed_link_is_audited_once_per_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kiro_crew.security import exfil
+
+    logged: list = []
+
+    class _Log:
+        def log(self, event) -> None:
+            logged.append(event)
+
+    monkeypatch.setattr(exfil, "SecurityEventLog", _Log)
+    monkeypatch.setattr(exfil, "_ALLOWED_HOST_AUDITED", set())
+    url = "https://wiki.example.org/page?state=" + "a" * 260
+    saved, _, records = redact_exfiltration_urls_with_records(url)
+    assert url not in saved and records
+
+    # An unlisted host restores nothing and records nothing.
+    exfil.restore_allowed_links(saved, records, frozenset({"git.example.com"}))
+    assert logged == []
+
+    for _ in range(3):
+        shown, left = exfil.restore_allowed_links(saved, records, frozenset({"wiki.example.org"}))
+        assert shown == url and left == []
+    [event] = logged
+    assert event.event_type == "redaction_allowed_host_used"
+    assert event.resources == "wiki.example.org"
+    assert event.metadata["rules"] == ["exfil_query_length"]
+
+
+def test_a_failing_audit_does_not_stop_the_restore(monkeypatch: pytest.MonkeyPatch) -> None:
+    from kiro_crew.security import exfil
+
+    class _Broken:
+        def log(self, event) -> None:
+            raise OSError("disk full")
+
+    monkeypatch.setattr(exfil, "SecurityEventLog", _Broken)
+    monkeypatch.setattr(exfil, "_ALLOWED_HOST_AUDITED", set())
+    url = "https://wiki.example.org/page?state=" + "a" * 260
+    saved, _, records = redact_exfiltration_urls_with_records(url)
+    shown, _ = exfil.restore_allowed_links(saved, records, frozenset({"wiki.example.org"}))
+    assert shown == url
+
+
 def test_a_corrupt_file_means_nothing_is_allowed(_store: Path) -> None:
     _store.parent.mkdir(parents=True)
     _store.write_text("{not json")

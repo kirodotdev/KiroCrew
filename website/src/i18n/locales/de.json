@@ -9385,6 +9385,7 @@
       "cred_view_token_title": "Den Token ansehen",
       "cred_why": "warum?",
       "link_allow": "Für diesen Host erlauben",
+      "link_allow_unsupported": "Erlaubt werden kann nur ein Hostname wie example.com. Verwende stattdessen „Einmal öffnen“.",
       "link_allow_confirm_aria": "Bestätigung zum Erlauben",
       "link_allow_confirm_body": "Dies gilt <0>nur für diesen Workspace</0>. Das Dashboard speichert diese Wahl. Ein Agent kann sie niemals schreiben. Nur die Prüfungen auf lange Abfragen und codierte Daten (base64) werden gelockert. Regeln für Zugangsdaten bleiben aktiv. Widerrufe es unter Einstellungen → Sicherheit → Schwärzung.",
       "link_allow_confirm_title": "Lange Abfragen auf {{host}} erlauben?",

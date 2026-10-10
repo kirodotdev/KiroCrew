@@ -217,7 +217,13 @@ def _url_payload_command(n: int) -> str:
 #: subcommand. It is a security-deciding predicate, so it cannot leave the package,
 #: and no dead code remains to offset it. Its first word is split on space and tab
 #: only, the way bash splits, so a Unicode space cannot pose as a word break.
-_PACKAGE_LINE_BUDGET = 28_665
+#:
+#: Raised again, from 28,665, for the ``redaction_allowed_host_used`` audit event
+#: in ``exfil.py``. It shares ``_log_operator_list_use`` with the OAuth extension
+#: event, so the event construction was folded into one helper rather than
+#: copied, and the allowed-host list reuses ``_OAUTH_EXTENSION_HOST_RE`` instead
+#: of a second host regex. No check was relaxed.
+_PACKAGE_LINE_BUDGET = 28_704
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

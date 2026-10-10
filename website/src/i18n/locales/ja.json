@@ -9255,6 +9255,7 @@
       "cred_view_token_title": "トークンを表示",
       "cred_why": "なぜ？",
       "link_allow": "このホストで許可",
+      "link_allow_unsupported": "許可できるのは example.com のようなホスト名だけです。代わりに「1 回だけ開く」を使ってください。",
       "link_allow_confirm_aria": "許可の確認",
       "link_allow_confirm_body": "これは<0>このワークスペースのみ</0>に適用されます。ダッシュボードがこの選択を保存します。エージェントが書き込むことはできません。緩和されるのは長いクエリとエンコードされたデータ（base64）のチェックだけです。認証情報のルールは有効なままです。設定 → セキュリティ → 秘匿 で取り消せます。",
       "link_allow_confirm_title": "{{host}} で長いクエリを許可しますか？",

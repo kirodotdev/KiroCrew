@@ -9515,6 +9515,7 @@
       "cred_view_token_title": "Ver el token",
       "cred_why": "¿por qué?",
       "link_allow": "Permitir para este host",
+      "link_allow_unsupported": "Solo se puede permitir un nombre de host como example.com. Usa «Abrir una vez» en su lugar.",
       "link_allow_confirm_aria": "Confirmación de permiso",
       "link_allow_confirm_body": "Esto se aplica <0>solo a este espacio de trabajo</0>. El panel guarda esta elección. Un agente nunca puede escribirla. Solo se relajan las comprobaciones de consulta larga y de datos codificados (base64). Las reglas de credenciales siguen activas. Revócalo en Ajustes → Seguridad → Redacción.",
       "link_allow_confirm_title": "¿Permitir consultas largas en {{host}}?",

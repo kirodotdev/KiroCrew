@@ -9515,6 +9515,7 @@
       "cred_view_token_title": "Visualizza il token",
       "cred_why": "perché?",
       "link_allow": "Consenti per questo host",
+      "link_allow_unsupported": "Si può consentire solo un nome host come example.com. Usa invece «Apri una volta».",
       "link_allow_confirm_aria": "Conferma del consenso",
       "link_allow_confirm_body": "Vale <0>solo per questo workspace</0>. La dashboard salva questa scelta. Un agente non può mai scriverla. Vengono allentati solo i controlli sulle query lunghe e sui dati codificati (base64). Le regole sulle credenziali restano attive. Revocala in Impostazioni → Sicurezza → Oscuramento.",
       "link_allow_confirm_title": "Consentire query lunghe su {{host}}?",

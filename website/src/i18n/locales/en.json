@@ -5742,6 +5742,7 @@
       "cred_view_token_title": "View the token",
       "cred_why": "why?",
       "link_allow": "Allow for this host",
+      "link_allow_unsupported": "Only a host name like example.com can be allowed. Use “Open once” instead.",
       "link_allow_confirm_aria": "Allow confirmation",
       "link_allow_confirm_body": "This applies to <0>this workspace only</0>. The dashboard saves this choice. An agent can never write it. Only the long-query and encoded-data (base64) checks are relaxed. Credential rules stay active. Revoke it in Settings → Security → Redaction.",
       "link_allow_confirm_title": "Allow long queries on {{host}}?",

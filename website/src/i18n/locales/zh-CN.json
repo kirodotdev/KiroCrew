@@ -9255,6 +9255,7 @@
       "cred_view_token_title": "查看该令牌",
       "cred_why": "为什么？",
       "link_allow": "允许此主机",
+      "link_allow_unsupported": "只能允许 example.com 这样的主机名。请改用“打开一次”。",
       "link_allow_confirm_aria": "允许确认",
       "link_allow_confirm_body": "这仅对<0>此工作区</0>生效。仪表板会保存此选择。代理永远无法写入它。仅放宽长查询和编码数据（base64）检查，凭证规则仍然有效。可在“设置 → 安全 → 脱敏”中撤销。",
       "link_allow_confirm_title": "允许在 {{host}} 上使用长查询？",

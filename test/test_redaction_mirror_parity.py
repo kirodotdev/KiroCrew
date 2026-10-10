@@ -304,3 +304,22 @@ class TestPrefilledIssueCarveOutParity:
             "the dashboard no longer renders its own anchor from the structured "
             "field — the trusted issue-link channel moved"
         )
+
+
+def test_blocked_link_card_offers_allow_only_for_hosts_the_server_accepts() -> None:
+    """The card's Allow gate mirrors the server's allowed-host shape exactly.
+
+    `RedactionCards.tsx` hides "Allow for this host" with its own copy of the
+    host regex because the browser cannot import Python. If the two drift, the
+    card offers an Allow the server always refuses, or hides one it would
+    accept. The expectation is derived from the backend regex at run time.
+    """
+    from kiro_crew.security import redaction_allow
+
+    backend = redaction_allow._HOST_RE.pattern
+    assert backend.startswith("\\A") and backend.endswith("\\Z")
+    expected = "^" + backend[2:-2].replace("\\Z", "$") + "$"
+    cards = (ROOT / "website" / "src" / "components" / "RedactionCards.tsx").read_text(encoding="utf-8")
+    match = re.search(r"^const ALLOWABLE_HOST_RE = /(.+)/$", cards, re.MULTILINE)
+    assert match, "ALLOWABLE_HOST_RE is no longer a one-line regex literal in RedactionCards.tsx"
+    assert match.group(1) == expected
