@@ -522,6 +522,16 @@ class CronService:
         # _save consults it so a degraded-to-empty job list is never persisted
         # over a store that still holds records — see _save's refusal.
         self._load_failed: bool = False
+        # A pre-publication save failed after memory changed. The next sync must
+        # replace that rejected snapshot from disk, including when no store exists.
+        # Separate from _load_failed: the store may be perfectly readable or absent.
+        self._save_failed: bool = False
+        # Set only while this process holds the store lock for a MUTATING hold
+        # (see _file_lock's ``mutating`` arg). A timer tick that times out behind
+        # a local mutation must not snapshot its uncommitted state; a read-only
+        # hold (a dashboard/MCP snapshot) leaves it clear so the tick may still
+        # fire committed memory.
+        self._local_store_lock_active = threading.Event()
         # Every job's run claim (its trigger and start stamp, the tracked task,
         # the in-flight marker token, the generation, the monotonic start the
         # reaper measures on and the jitter it allows for), the reaper's and
@@ -1919,7 +1929,7 @@ class CronService:
         Applies the same dead-parent guard as :meth:`_persist_add_locked`; see
         :meth:`_drop_owner_if_parent_gone`.
         """
-        with self._file_lock():
+        with self._file_lock(mutating=True):
             self._sync_for_write()
             if any(predicate(existing) for existing in self._jobs):
                 return False
@@ -1975,7 +1985,7 @@ class CronService:
         Applies the dead-parent guard before the append; see
         :meth:`_drop_owner_if_parent_gone`.
         """
-        with self._file_lock():
+        with self._file_lock(mutating=True):
             self._sync_for_write()
             bind_cron_memory(job)
             self._drop_owner_if_parent_gone(job)
@@ -2150,7 +2160,7 @@ class CronService:
         # to, and clobberable by, the others. A dict the caller allocated is seen
         # by that caller alone.
         chat_folder_out = kwargs.pop("chat_folder_transition_out", None)
-        with self._file_lock():
+        with self._file_lock(mutating=True):
             self._sync_for_write()
             for job in self._jobs:
                 if job.id != job_id:
@@ -2460,7 +2470,7 @@ class CronService:
         Removing a job also releases every job that job OWNS, in the same locked
         write — see :meth:`_release_children_of_removed`.
         """
-        with self._file_lock():
+        with self._file_lock(mutating=True):
             self._sync_for_write()
             # Bump UNCONDITIONALLY: grant_epoch_ids() raises on corrupt epoch
             # state, so removing even a missing id surfaces that corruption
@@ -2567,7 +2577,7 @@ class CronService:
         """
         removed: list[str] = []
         missing: list[str] = []
-        with self._file_lock():
+        with self._file_lock(mutating=True):
             self._sync_for_write()
             present = {j.id for j in self._jobs}
             targets = set()
@@ -2692,7 +2702,7 @@ class CronService:
         ``_load_failed`` clear, so a fresh install still tears down silently.
         """
         removed: list[str] = []
-        with self._file_lock():
+        with self._file_lock(mutating=True):
             self._sync_for_write()
             removed = [j.id for j in self._jobs if getattr(j, "created_by", "") == owner_prefix]
             if removed:
@@ -2784,7 +2794,7 @@ class CronService:
 
     def _adopt_job_locked(self, job_id: str, session_key: str) -> bool:
         """Lock/reload/mutate/save core of :meth:`adopt_job` (no timer work)."""
-        with self._file_lock():
+        with self._file_lock(mutating=True):
             self._sync_for_write()
             for job in self._jobs:
                 if job.id == job_id:
@@ -2866,7 +2876,7 @@ class CronService:
         if not owners:
             return []
         released: list[str] = []
-        with self._file_lock():
+        with self._file_lock(mutating=True):
             self._sync_for_write()
             active_keys = self.active_session_keys()
             # Principal liveness, decided on the state the reload just brought
@@ -3074,7 +3084,7 @@ class CronService:
         when an expected owner is supplied; ordinary host calls retain False
         for a missing job.
         """
-        with self._file_lock():
+        with self._file_lock(mutating=True):
             self._sync_for_write()
             for job in self._jobs:
                 if job.id == job_id:
@@ -3124,7 +3134,7 @@ class CronService:
 
     def _ack_job_locked(self, job_id: str, summary: str) -> bool:
         """Lock/reload/mutate/save core of :meth:`ack_job`."""
-        with self._file_lock():
+        with self._file_lock(mutating=True):
             self._sync_for_write()
             for job in self._jobs:
                 if job.id == job_id:
@@ -3154,7 +3164,7 @@ class CronService:
 
     def _unack_job_locked(self, job_id: str) -> bool:
         """Lock/reload/mutate/save core of :meth:`unack_job`."""
-        with self._file_lock():
+        with self._file_lock(mutating=True):
             self._sync_for_write()
             for job in self._jobs:
                 if job.id == job_id and job.acked_items:
@@ -3600,23 +3610,87 @@ class CronService:
         Drains deferred removals BEFORE snapshotting so a completed
         ``delete_after_run`` job whose immediate removal hit a busy store (see
         :meth:`defer_removal`) is deleted here and can never appear due — even
-        though the ``_sync`` above may have re-derived it as enabled. If the
-        store is too contended to lock this tick, degrades to the in-memory
-        snapshot without draining (the next tick retries; ``defer_removal``'s
-        in-memory disable keeps a completed one-shot from re-firing meanwhile).
+        though the ``_sync`` above may have re-derived it as enabled.
+
+        Degrades to the in-memory snapshot without draining on a store the tick
+        could not lock or write (the next tick retries; ``defer_removal``'s
+        in-memory disable keeps a completed one-shot from re-firing meanwhile)
+        — EXCEPT when the tick entered with uncommitted local state: a
+        *mutating* ``_file_lock`` hold in flight in this process
+        (:attr:`_local_store_lock_active`), or a prior save that failed after
+        mutating memory (:attr:`_save_failed`). That snapshot is NOT safe to
+        fire — it may hold a mutation a concurrent writer has not committed, or
+        one a failed save rejected — so the tick DEFERS (returns no jobs).
+
+        The decision reads TWO signals, because neither alone is sufficient.
+        (1) The ENTRY sample (before the locked transaction): the drain's own
+        ``_save()`` can set ``_save_failed`` on its way out THIS tick, so gating
+        only on the post-transaction value would let one broken deferred delete
+        stop every unrelated schedule — the contract this method must not break.
+        (2) The POST-REFRESH latch (after the transaction returns WITHOUT
+        raising): ``_sync()``/``_load`` degrade an unreadable store to an empty
+        list and latch ``_load_failed`` WITHOUT raising, so a tick that entered
+        dirty and then could not read the store finishes the ``try`` with no
+        exception while still holding the rejected snapshot — persist-before-you-
+        publish requires DEFERRING it. Conversely, once the authoritative reload
+        RESOLVES the dirty state (both latches clear), the stale entry sample
+        must not keep suppressing schedules — a run of deferred-delete write
+        faults that finally cleared still fires. A read-only lock hold (a
+        dashboard/MCP snapshot) does NOT set the flag, so a tick whose spin
+        expires behind such a read still fires committed in-memory jobs.
+
+        A failed TERMINAL/background save (a completed run's result merge) does
+        NOT latch ``_save_failed`` (see :meth:`_save`'s ``caller_mutation``), so
+        a retained one-shot's completion survives a result-save fault instead of
+        being reloaded away and re-executed — only a rejected CALLER mutation is
+        discarded here.
+
         A worker-thread ``_sync()`` reload may reach ``_arm_timer``, which hands
         the (re)arm back to the bound event loop thread-safely (see
         :meth:`_arm_timer`) — no caller-side drain is required.
         """
         drained: list[str] = []
+        # Sample the uncommitted-state latch BEFORE the locked transaction. A
+        # drain's own _save() can set _save_failed on its way out THIS tick, so
+        # reading only the post-transaction value would let a single
+        # deferred-removal write fault stop every unrelated schedule — the
+        # handler would see the latch its own tick just set. But the entry
+        # sample is only HALF the signal: _sync()/_load degrade an unreadable
+        # store to an empty list WITHOUT raising (they latch _load_failed and
+        # return), so a tick that entered dirty and then failed to read the
+        # store completes the `try` with NO exception while still holding the
+        # rejected/uncommitted snapshot. The decision therefore reads the latch
+        # state AFTER the transaction too (see the post-lock gate below).
+        entered_dirty = self._local_store_lock_active.is_set() or self._save_failed
         try:
-            with self._file_lock():
+            with self._file_lock(mutating=True):
                 self._sync()
                 drained = self._drain_pending_removals_locked()
         except CronStoreBusy:
+            if entered_dirty:
+                logger.debug("Cron timer tick: uncommitted store mutation, deferring")
+                return []
             logger.debug("Cron timer tick: store busy, using in-memory snapshot")
         except OSError as exc:
             logger.warning("Cron timer tick: store write failed, using in-memory snapshot: %s", exc)
+            if entered_dirty:
+                return []
+        else:
+            # The transaction completed WITHOUT raising. That is NOT proof the
+            # snapshot is safe: _sync() can swallow a read fault and latch
+            # _load_failed, so a tick that entered dirty may still hold a
+            # rejected/uncommitted snapshot the authoritative reload could not
+            # replace. If the store is still unreadable, DEFER rather than fire
+            # it (persist-before-you-publish). A _save_failed that _sync() did
+            # NOT clear means the authoritative reload could not resolve the
+            # rejected state either — defer the same way.
+            if entered_dirty and (self._load_failed or self._save_failed):
+                logger.debug("Cron timer tick: dirty state unresolved after refresh, deferring")
+                return []
+            # Otherwise the authoritative reload RESOLVED the dirty state: the
+            # in-memory jobs are now the committed disk state, so the sampled
+            # entry flag is stale and must not suppress unrelated schedules
+            # (a run of deferred-delete write faults that finally cleared).
         # Post-lock on purpose: the emit must never extend the store-lock hold
         # (see audit_one_shot_removal). Still on this worker thread, so the
         # queue append cannot block the event loop either.
@@ -4200,7 +4274,7 @@ class CronService:
         consumed ``delete_after_run`` at-job enabled on disk, due again on
         every tick. The consume already tolerates the row being gone.
         """
-        with self._file_lock():
+        with self._file_lock(mutating=True):
             self._sync()
             by_id = {j.id: j for j in self._jobs}
             if job.id in by_id and job.run_generation < by_id[job.id].run_generation:
@@ -4281,7 +4355,7 @@ class CronService:
             # must not surface as a job-runner crash. The run result is lost,
             # which is strictly better than clobbering the store.
             try:
-                self._save()
+                self._save(caller_mutation=False)
             except BaseException as exc:
                 # EVERY save failure rolls back the child release, not just
                 # CronStoreUnreadable: the release lives in memory only until the
@@ -4371,7 +4445,7 @@ class CronService:
         count when ``count_failure``), and the save after them has nothing to
         record once they are skipped.
         """
-        with self._file_lock():
+        with self._file_lock(mutating=True):
             self._sync()
             by_id = {j.id: j for j in self._jobs}
             target = by_id.get(job_id)
@@ -4404,7 +4478,7 @@ class CronService:
             # BACKGROUND writer: reached from the reaper timeout and user
             # cancel. An unreadable store must not abort the reaper loop.
             try:
-                self._save()
+                self._save(caller_mutation=False)
             except Exception as exc:
                 # Keep scheduling as the disk says (like the loop-stall breaker):
                 # a pause the store did not take must not stop the job in memory.
@@ -4505,7 +4579,7 @@ class CronService:
         marker = attribution.job
         if marker is None:  # pragma: no cover - the caller checks
             return (True, None)
-        with self._file_lock():
+        with self._file_lock(mutating=True):
             self._sync()
             if self._load_failed:
                 logger.warning("loop-stall auto-pause deferred: cron store not readable")
@@ -4537,7 +4611,7 @@ class CronService:
                 f"`kirocrew cron resume {job.id}`."
             )
             try:
-                self._save()
+                self._save(caller_mutation=False)
             except CronStoreUnreadable as exc:
                 # The in-memory job must match the store it could not reach:
                 # still enabled, still due, so this session schedules it as the
@@ -4603,7 +4677,11 @@ class CronService:
 
     @contextmanager
     def _file_lock(
-        self, *, timeout: float = _FILE_LOCK_TIMEOUT_SECS, poll: float = _FILE_LOCK_POLL_SECS
+        self,
+        *,
+        timeout: float = _FILE_LOCK_TIMEOUT_SECS,
+        poll: float = _FILE_LOCK_POLL_SECS,
+        mutating: bool = False,
     ) -> Iterator[None]:
         """Cross-process advisory lock on the cron store.
 
@@ -4641,7 +4719,17 @@ class CronService:
         """
         self._guard_off_event_loop()
         with cron_store_lock(self._dir, timeout=timeout, poll=poll):
-            yield
+            # Mark the hold as an in-flight local MUTATION only when the caller
+            # says so. A read-only hold (_synced_snapshot, _owner_keys_locked)
+            # leaves the flag clear so a tick whose spin expires behind that read
+            # may still fire committed in-memory jobs instead of deferring.
+            if mutating:
+                self._local_store_lock_active.set()
+            try:
+                yield
+            finally:
+                if mutating:
+                    self._local_store_lock_active.clear()
 
     def _record_fingerprint(self) -> None:
         """Snapshot the store file's fingerprint as the last-loaded state.
@@ -4759,9 +4847,10 @@ class CronService:
             # this is the ordinary no-store path, where the reaper's in-memory
             # mutation is still waiting to be saved and wiping it would lose the
             # update (test_cron_reaper's test_reaper_persists_state).
-            if self._load_failed:
+            if self._load_failed or self._save_failed:
                 self._jobs = []
             self._load_failed = False
+            self._save_failed = False
             return
         try:
             raw = self._path.read_bytes()
@@ -4806,6 +4895,7 @@ class CronService:
         and a store repaired between two loads heals itself.
         """
         self._load_failed = False
+        self._save_failed = False
         if not self._path.exists():
             self._jobs = []
             self._reset_fingerprint()
@@ -4933,7 +5023,7 @@ class CronService:
         if self._load_failed:
             raise self._unreadable_error()
 
-    def _save(self) -> None:
+    def _save(self, *, caller_mutation: bool = True) -> None:
         """Atomic write (tmp → rename) and update mtime tracking.
 
         RAISES :exc:`CronStoreUnreadable` when the last :meth:`_load` could not
@@ -4994,11 +5084,32 @@ class CronService:
             raise self._unreadable_error()
         self._dir.mkdir(parents=True, exist_ok=True)
         document = encode_store(self._jobs)
-        # Atomic write: unique tmp → rename
+        # Atomic write: unique tmp → rename, then publish the directory entry.
         # Deferred import to avoid circular dependency (pre-existing)
-        from kiro_crew.atomic_write import atomic_write
+        from kiro_crew.atomic_write import atomic_write, fsync_dir
 
-        atomic_write(self._path, document)
+        try:
+            atomic_write(self._path, document, fsync=True)
+        except BaseException:
+            if caller_mutation:
+                # A REJECTED CALLER MUTATION: the add/update/remove the caller
+                # was told failed preceded this failed write. Force the next
+                # locked mutation to reload the authoritative disk state first,
+                # and latch so the next _load/_sync DISCARDS this rejected
+                # snapshot — the caller believes it did not happen.
+                self._reset_fingerprint()
+                self._save_failed = True
+            # A TERMINAL/BACKGROUND merge (a completed run's result, a reaper's
+            # terminal state, a loop-stall pause) is NOT discarded: the run
+            # really completed, so the in-memory disable/stamp must SURVIVE and
+            # be retried, never reloaded away. Leaving the fingerprint intact
+            # keeps the next _sync from reloading the still-enabled disk record
+            # over the completed in-memory job and re-executing a retained
+            # one-shot; the caller's finalizer records the OSError and the merge
+            # retries on a later tick once the store recovers.
+            raise
+        fsync_dir(self._path.parent, best_effort=True)
+        self._save_failed = False
         # Refresh the (mtime_ns, size) fingerprint so _sync recognizes this as
         # our own write and does not reload it back over the in-memory state.
         self._record_fingerprint()

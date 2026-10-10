@@ -1334,7 +1334,7 @@ def _bounded_lock(svc: CronService):  # type: ignore[no-untyped-def]
     """A ``_file_lock`` bound to a short timeout so contention tests fail fast."""
     real = type(svc)._file_lock
 
-    def _fast(*, timeout: float = 0.3, poll: float = 0.02):  # type: ignore[no-untyped-def]
-        return real(svc, timeout=0.3, poll=0.02)
+    def _fast(*, timeout: float = 0.3, poll: float = 0.02, mutating: bool = False):  # type: ignore[no-untyped-def]
+        return real(svc, timeout=0.3, poll=0.02, mutating=mutating)
 
     return _fast

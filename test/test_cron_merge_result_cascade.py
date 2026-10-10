@@ -46,7 +46,7 @@ def test_merge_job_result_rolls_back_child_release_on_save_failure(tmp_path, mon
     parent = _completed_one_shot(service)
     child = service.add_job("child", "run", every_secs=3600, session_key=f"cron:{parent.id}")
 
-    def boom() -> None:
+    def boom(*, caller_mutation: bool = True) -> None:
         raise CronStoreUnreadable("store unreadable")
 
     monkeypatch.setattr(service, "_save", boom)
@@ -65,7 +65,7 @@ def test_merge_job_result_queues_consume_on_non_unreadable_save_failure(tmp_path
     service = CronService(base_dir=tmp_path)
     parent = _completed_one_shot(service)
 
-    def boom() -> None:
+    def boom(*, caller_mutation: bool = True) -> None:
         raise OSError("disk full")
 
     monkeypatch.setattr(service, "_save", boom)

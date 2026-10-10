@@ -380,6 +380,263 @@ class TestCronService:
 
         assert [j.name for j in CronService(base_dir=tmp_path).list_jobs()] == ["first"]
 
+    def test_save_fsyncs_the_cron_store_and_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A completed save requests both available durability steps."""
+        import kiro_crew.atomic_write as atomic_write_module
+
+        real_atomic_write = atomic_write_module.atomic_write
+        real_fsync_dir = atomic_write_module.fsync_dir
+        observed: dict[str, object] = {}
+        calls: list[str] = []
+
+        def recording_atomic_write(path: Path, content: str, **kwargs: object) -> None:
+            calls.append("atomic_write")
+            observed.update(kwargs)
+            real_atomic_write(path, content, **kwargs)
+
+        def recording_fsync_dir(path: Path | str, *, best_effort: bool = False) -> None:
+            calls.append("fsync_dir")
+            observed["fsync_dir"] = Path(path)
+            observed["best_effort"] = best_effort
+            real_fsync_dir(path, best_effort=best_effort)
+
+        monkeypatch.setattr(atomic_write_module, "atomic_write", recording_atomic_write)
+        monkeypatch.setattr(atomic_write_module, "fsync_dir", recording_fsync_dir)
+
+        svc = CronService(base_dir=tmp_path)
+        svc.add_job(name="durable", message="m", every_secs=300)
+
+        assert observed["fsync"] is True
+        assert observed["fsync_dir"] == tmp_path
+        assert observed["best_effort"] is True
+        assert calls == ["atomic_write", "fsync_dir"]
+
+    def test_failed_save_reloads_before_the_next_mutation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A rejected in-memory mutation cannot leak into a later save."""
+        import kiro_crew.atomic_write as atomic_write_module
+
+        path = tmp_path / "crons.json"
+        path.write_text('{"version": 2, "jobs": []}', encoding="utf-8")
+        svc = CronService(base_dir=tmp_path)
+        real_atomic_write = atomic_write_module.atomic_write
+        attempts = 0
+
+        def fail_once(write_path: Path, content: str, **kwargs: object) -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise OSError("file sync failed")
+            real_atomic_write(write_path, content, **kwargs)
+
+        monkeypatch.setattr(atomic_write_module, "atomic_write", fail_once)
+        with pytest.raises(OSError, match="file sync failed"):
+            svc.add_job(name="rejected", message="m", every_secs=300)
+
+        svc.add_job(name="accepted", message="m", every_secs=300)
+
+        assert attempts == 2
+        assert [j.name for j in CronService(base_dir=tmp_path).list_jobs()] == ["accepted"]
+
+    def test_failed_first_save_clears_before_the_next_mutation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A rejected first job cannot land with the next successful job."""
+        import kiro_crew.atomic_write as atomic_write_module
+
+        svc = CronService(base_dir=tmp_path)
+        real_atomic_write = atomic_write_module.atomic_write
+        attempts = 0
+
+        def fail_once(write_path: Path, content: str, **kwargs: object) -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise OSError("file sync failed")
+            real_atomic_write(write_path, content, **kwargs)
+
+        monkeypatch.setattr(atomic_write_module, "atomic_write", fail_once)
+        with pytest.raises(OSError, match="file sync failed"):
+            svc.add_job(name="rejected", message="m", every_secs=300)
+        assert not (tmp_path / "crons.json").exists()
+
+        svc.add_job(name="accepted", message="m", every_secs=300)
+
+        assert attempts == 2
+        assert [j.name for j in CronService(base_dir=tmp_path).list_jobs()] == ["accepted"]
+
+    def test_tick_defers_while_a_local_store_mutation_holds_the_lock(self, tmp_path: Path) -> None:
+        """A contended tick must not execute a local uncommitted snapshot."""
+        from kiro_crew.cron import CronStoreBusy
+
+        svc = CronService(base_dir=tmp_path)
+        svc._jobs = [CronJob(id="pending", name="pending", message="m")]
+        svc._local_store_lock_active.set()
+
+        @contextlib.contextmanager
+        def contended_lock(*_args: object, **_kwargs: object):
+            raise CronStoreBusy("local mutation")
+            yield  # pragma: no cover
+
+        svc._file_lock = contended_lock  # type: ignore[method-assign]
+
+        assert svc._tick_scan_locked() == []
+        svc._local_store_lock_active.clear()
+        svc._save_failed = True
+        assert svc._tick_scan_locked() == []
+
+    def test_tick_uses_committed_memory_on_unrelated_storage_error(self, tmp_path: Path) -> None:
+        """A disk fault alone must not starve every unrelated schedule."""
+        svc = CronService(base_dir=tmp_path)
+        committed = CronJob(id="committed", name="committed", message="m")
+        svc._jobs = [committed]
+
+        @contextlib.contextmanager
+        def broken_lock(*_args: object, **_kwargs: object):
+            raise OSError("disk unavailable")
+            yield  # pragma: no cover
+
+        svc._file_lock = broken_lock  # type: ignore[method-assign]
+
+        assert svc._tick_scan_locked() == [committed]
+        svc._save_failed = True
+        assert svc._tick_scan_locked() == []
+
+    def test_tick_fault_set_by_this_tick_does_not_starve_schedules(self, tmp_path: Path) -> None:
+        """Regression: a drain save failure latching ``_save_failed`` DURING the
+        tick must not make the handler defer that same tick (which would stop
+        every unrelated schedule). The latch is sampled at ENTRY — clear here —
+        so the tick degrades to committed in-memory jobs even though the drain's
+        own ``_save()`` set the latch on its way out.
+        """
+        svc = CronService(base_dir=tmp_path)
+        committed = CronJob(id="committed", name="committed", message="m")
+        svc._jobs = [committed]
+        # Entered clean: no in-flight local mutation, no prior rejected save.
+        assert not svc._local_store_lock_active.is_set()
+        assert svc._save_failed is False
+
+        @contextlib.contextmanager
+        def lock_whose_drain_fails(*_args: object, **_kwargs: object):
+            yield
+            # The drain's own _save() raised and latched on its way out, exactly
+            # as a deferred-removal write fault would, then re-raised through the
+            # OSError arm.
+            svc._save_failed = True
+            raise OSError("deferred-delete save failed")
+
+        svc._file_lock = lock_whose_drain_fails  # type: ignore[method-assign]
+
+        # Sampled-at-entry latch was clear, so unrelated committed jobs still fire.
+        assert svc._tick_scan_locked() == [committed]
+
+    def test_tick_defers_when_sync_silently_latches_load_failed_while_dirty(
+        self, tmp_path: Path
+    ) -> None:
+        """GPT F1 regression: _sync() degrades an unreadable store to an empty
+        list WITHOUT raising, so a tick that entered dirty (a prior save failed)
+        and then could not read the store completes the transaction with NO
+        exception while still holding the rejected snapshot. The post-refresh
+        gate must DEFER it rather than fire the enabled job it holds.
+        """
+        svc = CronService(base_dir=tmp_path)
+        rejected = CronJob(id="rejected", name="rejected", message="m")
+        svc._jobs = [rejected]
+        # Entered dirty: a prior caller mutation's save failed.
+        svc._save_failed = True
+
+        @contextlib.contextmanager
+        def lock_whose_sync_latches(*_args: object, **_kwargs: object):
+            # Mimic _sync() swallowing a read fault: latch _load_failed and
+            # return without raising, exactly as _load's unreadable path does.
+            svc._load_failed = True
+            yield
+
+        svc._file_lock = lock_whose_sync_latches  # type: ignore[method-assign]
+
+        # No exception was raised, but the store is still unreadable and we
+        # entered dirty — the rejected snapshot must not be dispatched.
+        assert svc._tick_scan_locked() == []
+
+    def test_tick_fires_once_dirty_state_resolves_after_refresh(self, tmp_path: Path) -> None:
+        """GPT FINDING regression: once the authoritative reload RESOLVES the
+        dirty state (both latches clear), the stale entry sample must not keep
+        suppressing unrelated schedules — a run of deferred-delete write faults
+        that finally cleared still fires.
+        """
+        svc = CronService(base_dir=tmp_path)
+        committed = CronJob(id="committed", name="committed", message="m")
+        svc._jobs = [committed]
+        # Entered dirty from a prior failure...
+        svc._save_failed = True
+
+        @contextlib.contextmanager
+        def lock_whose_sync_clears(*_args: object, **_kwargs: object):
+            # ...but this tick's authoritative reload succeeds and clears it.
+            svc._load_failed = False
+            svc._save_failed = False
+            yield
+
+        svc._file_lock = lock_whose_sync_clears  # type: ignore[method-assign]
+
+        assert svc._tick_scan_locked() == [committed]
+
+    def test_a_failed_terminal_result_save_does_not_discard_the_completion(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GPT F2 regression: a terminal/background save (a completed run's
+        result) that fails must NOT latch _save_failed or reset the fingerprint
+        — doing so would make the next _sync reload the still-enabled disk
+        record over the completed in-memory job and re-execute a retained
+        one-shot. Only a REJECTED CALLER MUTATION is discarded.
+        """
+        import kiro_crew.atomic_write as atomic_write_module
+
+        svc = CronService(base_dir=tmp_path)
+        svc.add_job(name="done", message="m", every_secs=300)
+        # A real save ran, so the fingerprint is a concrete (non-reset) value.
+        fp_before = (svc._last_mtime_ns, svc._last_size, svc._last_digest)
+        assert fp_before != (0, -1, b""), "precondition: a real save set the fingerprint"
+
+        def always_fail(*_a: object, **_k: object) -> None:
+            raise OSError("EROFS")
+
+        monkeypatch.setattr(atomic_write_module, "atomic_write", always_fail)
+
+        # A terminal/background save: the completion really happened.
+        with pytest.raises(OSError):
+            svc._save(caller_mutation=False)
+        assert svc._save_failed is False, "a terminal save failure must not latch the reject flag"
+        assert (svc._last_mtime_ns, svc._last_size, svc._last_digest) == fp_before, (
+            "a terminal save failure must not reset the fingerprint"
+        )
+
+        # A caller mutation still latches and resets to the no-store sentinel.
+        with pytest.raises(OSError):
+            svc._save(caller_mutation=True)
+        assert svc._save_failed is True
+        assert (svc._last_mtime_ns, svc._last_size, svc._last_digest) == (0, -1, b"")
+
+    def test_file_lock_marks_only_a_mutating_hold(self, tmp_path: Path) -> None:
+        """The timer guard spans only a MUTATING local lock body and clears it;
+        a read-only hold leaves the flag clear so a tick behind it can still fire.
+        """
+        svc = CronService(base_dir=tmp_path)
+
+        assert not svc._local_store_lock_active.is_set()
+        with svc._file_lock(mutating=True):
+            assert svc._local_store_lock_active.is_set()
+        assert not svc._local_store_lock_active.is_set()
+
+        # A read-only hold (the default) must NOT set the flag — otherwise a tick
+        # whose spin expires behind a dashboard/MCP snapshot would wrongly defer.
+        with svc._file_lock():
+            assert not svc._local_store_lock_active.is_set()
+        assert not svc._local_store_lock_active.is_set()
+
     def test_a_repaired_store_becomes_writable_again(self, tmp_path: Path) -> None:
         """NC2, third half. The refusal must not latch.
 
