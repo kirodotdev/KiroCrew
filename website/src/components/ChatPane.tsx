@@ -1924,14 +1924,14 @@ export default function ChatPane({
                     is on screen, so "hasn't said anything" would sit under a
                     line that shows it busy. */}
                 {crewmateCreated}
-                {/* `earlierHidden` guards the quiet reading: a crewmate whose
-                    conversation was just discarded has rows in `paneMessages`
-                    and none drawn, which is the exact shape "has been quiet"
-                    tests for — but it has not been quiet, it has been reset, and
-                    the fresh-thread hint is the true line there. */}
-                {messages.length === 0 && !(crewmate ? crewmateLive : running) && !slotDetailFailed && !hideEmptyHint && !crewmateQuietUnproven && (
-                  <div className="text-center text-muted text-[13px] px-4 py-8" data-testid={crewmate && paneMessages.length > 0 && earlierHidden === 0 ? 'crewmate-quiet-hint' : undefined}>
-                    {crewmate && paneMessages.length > 0 && earlierHidden === 0 ? (
+                {/* No hint at all while a reset withholds rows: the "Chat reset"
+                    line is then the only row drawn, and it already says the
+                    thread starts here. A "Session ready" line above it read as
+                    a second, contradicting empty state; "has been quiet" would
+                    be false outright, since the rows exist. */}
+                {messages.length === 0 && earlierHidden === 0 && !(crewmate ? crewmateLive : running) && !slotDetailFailed && !hideEmptyHint && !crewmateQuietUnproven && (
+                  <div className="text-center text-muted text-[13px] px-4 py-8" data-testid={crewmate && paneMessages.length > 0 ? 'crewmate-quiet-hint' : undefined}>
+                    {crewmate && paneMessages.length > 0 ? (
                       <>
                         <div>{i18nT('components.chatPane.crewmate_quiet', { name: crewmate.label || crewmate.name })}</div>
                         {/* Where the work went: Profile > Sessions. A link when the host

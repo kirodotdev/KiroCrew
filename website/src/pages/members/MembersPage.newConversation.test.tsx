@@ -6,11 +6,9 @@ import { memberProjectionStore } from '../../state/memberProjectionStore'
 
 /* "New conversation" on a crewmate's DM. The model forgets; nothing is deleted.
  *
- * The control lives in the crewmate's PROFILE card, not in the thread header
- * (reviewer's call): the one occasion anybody reaches for it is a crewmate stuck
- * in a turn, which is rare enough that a header button spends permanent space on
- * it. The row and its look are pinned in CrewProfilePanel.test.tsx; what this
- * file owns is the flow behind the press.
+ * The control is a small muted "Reset chat" link under the crewmate's name on
+ * its profile card: there when looked for, quiet otherwise. This file owns that
+ * entry and the flow behind the press.
  *
  * Four things have to hold for that flow to be honest, and each one fails
  * quietly:
@@ -136,23 +134,19 @@ async function openThread(overrides: Record<string, unknown> = {}) {
   await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-oncall'))
 }
 
-/** Open the crewmate's profile card, which is where the control lives. The card
- *  can open on another tab (Sessions, for a crewmate with no chat yet), so the
- *  Profile tab is picked explicitly, the way a user reaches the row. */
-async function openProfile() {
+/** Open the crewmate's profile card and return the "Reset chat" link under
+ *  its name. The identity pill is the door, as for a user. */
+async function openResetItem() {
   const pill = await screen.findByTestId('member-identity-pill')
   act(() => { fireEvent.click(pill) })
-  const tabs = await screen.findByTestId('crew-profile-tabs')
-  const profileTab = within(tabs).getAllByRole('tab').find((el) => /profile/i.test(el.textContent || el.getAttribute('aria-label') || ''))
-  if (profileTab) act(() => { fireEvent.click(profileTab) })
   return screen.findByTestId('crew-profile-new-conversation')
 }
 
-/** Press the profile row and answer its dialog. */
+/** Press the "Reset chat" link and answer its dialog. */
 async function pressAndConfirm() {
-  const button = await openProfile()
+  const button = await openResetItem()
   act(() => { fireEvent.click(button) })
-  const confirm = await screen.findByRole('button', { name: 'Start a new conversation' })
+  const confirm = await within(await screen.findByRole('dialog')).findByRole('button', { name: 'Reset chat' })
   await act(async () => { fireEvent.click(confirm) })
 }
 
@@ -174,28 +168,28 @@ describe('the New conversation control', () => {
   it('asks before it acts, and says what survives', async () => {
     await openThread()
 
-    const button = await openProfile()
+    const button = await openResetItem()
     act(() => { fireEvent.click(button) })
 
     expect(reset()).not.toHaveBeenCalled()
-    const body = await screen.findByText(/starts over/)
+    const body = await screen.findByText(/will forget this chat/)
     // Named, not templated: the copy carries `{{name}}`, and a body handed no
     // interpolation renders that placeholder to the user verbatim. Quoted,
     // because a crewmate named "Everything" would otherwise read as a sentence
     // about everything (destructiveConfirm.test.ts pins the glyph per locale).
-    expect(body.textContent).toMatch(/^\u201concall\u201d starts over/)
+    expect(body.textContent).toMatch(/^\u201concall\u201d will forget this chat and start fresh/)
     // "long-term memory" by its own name. A crewmate has two things a reader
     // could call memory -- this chat's context, which the reset drops, and the
     // store it writes to, which survives -- so the bare word names the thing
     // being dropped just as well as the thing being kept.
-    expect(body.textContent).toMatch(/What it has saved to its long-term memory stays/)
-    expect(body.textContent).toMatch(/Show earlier messages/)
+    expect(body.textContent).toMatch(/Its long-term memory is kept/)
+    expect(body.textContent).toMatch(/Your messages stay here, above a \u201cChat reset\u201d line/)
   })
 
   it('does nothing when the ask is declined', async () => {
     await openThread()
 
-    const button = await openProfile()
+    const button = await openResetItem()
     act(() => { fireEvent.click(button) })
     const cancel = await screen.findByRole('button', { name: 'Cancel' })
     await act(async () => { fireEvent.click(cancel) })
@@ -213,17 +207,19 @@ describe('the New conversation control', () => {
     await waitFor(() => expect(reset()).toHaveBeenCalledWith('member-oncall'))
   })
 
-  it('is not in the thread header any more', async () => {
-    /* Reviewer's call: too visible for a control whose only occasion is a stuck
-     * crewmate. It is a profile row, so the header is back to the three-column
-     * layout it had before the feature — the narrow-width short label existed
-     * only to fit a named action beside the panel toggle at 320px. */
+  it('is a small link under the name on the profile card, not in the header', async () => {
     await openThread()
 
-    expect(screen.queryByTestId('member-new-conversation')).toBeNull()
+    expect(screen.queryByTestId('member-thread-menu')).toBeNull()
     const header = screen.getByTestId('member-thread-header')
     expect(header.className).toContain('grid-cols-[1fr_minmax(0,auto)_1fr]')
-    expect(header.className).not.toMatch(/sm:grid-cols/)
+    const link = await openResetItem()
+    expect(link).toHaveTextContent(/^Reset chat$/)
+    // Quiet: muted small text, no danger colour.
+    expect(link.className).toContain('text-muted')
+    expect(link.className).not.toMatch(/text-danger/)
+    // Beside the person: in the card's head, right after the name.
+    expect(screen.getByTestId('crew-profile-name').nextElementSibling).toBe(link)
   })
 
   it('says the current turn is stopped first, so that is consented to too', async () => {
@@ -232,11 +228,11 @@ describe('the New conversation control', () => {
      * control precisely when a turn IS running, so the dialog states it. */
     await openThread()
 
-    const button = await openProfile()
+    const button = await openResetItem()
     act(() => { fireEvent.click(button) })
 
-    const body = await screen.findByText(/starts over/)
-    expect(body.textContent).toMatch(/If it is working right now, that work is stopped first\./)
+    const body = await screen.findByText(/will forget this chat/)
+    expect(body.textContent).toMatch(/If it is working now, that work is stopped first\./)
   })
 
   it('stops the running turn, waits for it to let go, and only then resets', async () => {
@@ -255,6 +251,8 @@ describe('the New conversation control', () => {
     // asked for. Without this the test would pass on a flow that fires both at
     // once and happens to order the mocks.
     expect(reset()).not.toHaveBeenCalled()
+    // The link is a spinner while the flow runs, so the press plainly landed.
+    expect(screen.getByTestId('crew-profile-new-conversation').querySelector('.animate-spin')).not.toBeNull()
 
     pushSlotRunning(false)
 
@@ -304,7 +302,7 @@ describe('the New conversation control', () => {
       await waitFor(() => expect(reset()).toHaveBeenCalledWith('member-oncall'))
 
       const notice = await screen.findByTestId('member-new-conversation-error')
-      expect(notice.textContent).toMatch(/oncall is handling a message from another place/)
+      expect(notice.textContent).toMatch(/oncall is still answering a message from somewhere else/)
     } finally {
       vi.useRealTimers()
     }
@@ -324,9 +322,7 @@ describe('the New conversation control', () => {
     expect(screen.queryByTestId('member-new-conversation-error')).toBeNull()
   })
 
-  it('reports a refusal under the profile row while that card is open', async () => {
-    /* One state, one copy, mounted where the reader is looking — under the row
-     * they just pressed. */
+  it('reports a refusal once, above the thread', async () => {
     await openThread()
     reset().mockRejectedValueOnce(
       new StubApiError(409, 'a turn is in flight', '{"code":"turn_in_flight"}'),
@@ -334,10 +330,8 @@ describe('the New conversation control', () => {
 
     await pressAndConfirm()
 
-    const notice = await screen.findByTestId('member-new-conversation-error')
-    expect(screen.getByTestId('crew-profile-pane-profile')).toContainElement(notice)
-    // Exactly one: a second copy above the thread would be a second thing to
-    // dismiss for one outcome.
+    await screen.findByTestId('member-new-conversation-error')
+    // Exactly one copy: one outcome, one thing to dismiss.
     expect(screen.getAllByTestId('member-new-conversation-error')).toHaveLength(1)
   })
 
@@ -353,14 +347,14 @@ describe('the New conversation control', () => {
     const notice = await screen.findByTestId('member-new-conversation-error')
     // Its OWN heading. The refusal heading over this body tells the reader the
     // reverse of what the body says: that the reset did not happen.
-    expect(notice.textContent).toMatch(/New conversation started, line not saved/)
+    expect(notice.textContent).toMatch(/Chat reset, but the line is missing/)
     // Opens on the ACTION that works, and the reassurance is the very next
     // sentence. A notice that opens on what the crewmate has forgotten reads as
     // a warning against the only step that repairs the state it is reporting.
     // A reload is NOT that step: it reads the same projection, which holds no
     // boundary, so telling the user to reload promises nothing.
     expect(notice.textContent).toMatch(
-      /Press Start a new conversation again to add the \u201cNew conversation starts here\u201d line\. No messages are lost\./,
+      /oncall has forgotten this chat, but the \u201cChat reset\u201d line was not saved, so old messages still look current\. Reset again to add it;/,
     )
     expect(notice.textContent).not.toMatch(/Reload/)
     // The line is named with the words the pane prints on it, so the reader is
@@ -371,9 +365,9 @@ describe('the New conversation control', () => {
     // The cost comes after the reassurance, and is still stated: pressing again
     // moves the boundary to now, so this turn's own messages go with it.
     expect(notice.textContent).toMatch(
-      /messages oncall has already forgotten still look current, and pressing again forgets anything said since too/,
+      /Reset again to add it; that also clears anything said since\./,
     )
-    expect(notice.textContent).not.toMatch(/Couldn't start a new conversation/)
+    expect(notice.textContent).not.toMatch(/Couldn't reset the chat/)
   })
 
   it('stays quiet when the slot has no member log to write into', async () => {
@@ -422,9 +416,9 @@ describe('the New conversation control', () => {
       // the count says how many boundaries were dropped and never which, so
       // naming this thread would assert something nothing on this page knows.
       expect(note.textContent).toMatch(
-        /The \u201cNew conversation starts here\u201d line for an earlier new conversation was lost/,
+        /Some older \u201cChat reset\u201d lines for this crewmate were lost/,
       )
-      expect(note.textContent).toMatch(/Press Start a new conversation to mark a fresh start/)
+      expect(note.textContent).toMatch(/Reset the chat to mark a fresh start/)
     })
 
     it('stays quiet once this slot has a boundary of its own', async () => {
@@ -483,9 +477,9 @@ describe('the New conversation control', () => {
     // Says WHERE, not just WHY. "is handling a message" beside an "Idle" pill
     // reads as a contradiction the reader has to resolve; naming the other
     // place the message came from is what makes both true at once.
-    expect(notice.textContent).toMatch(/oncall is handling a message from another place/)
-    expect(notice.textContent).toMatch(/such as a channel/)
-    expect(notice.textContent).toMatch(/this thread still looks idle/)
+    expect(notice.textContent).toMatch(/oncall is still answering a message from somewhere else/)
+    expect(notice.textContent).toMatch(/such as a Slack channel/)
+    expect(notice.textContent).toMatch(/Try again in a moment/)
     expect(notice.textContent).not.toMatch(/turn is in flight/)
   })
 

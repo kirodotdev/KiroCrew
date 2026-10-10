@@ -6243,7 +6243,7 @@
       "split_right_d": "向右分屏（⌘D）",
       "type_to_filter": "输入以筛选…",
       "show_earlier_messages": "显示更早的消息",
-      "conversation_boundary": "新对话从这里开始",
+      "conversation_boundary": "聊天已重置",
       "hide_earlier_messages": "隐藏更早的消息"
     },
     "cliPanel": {
@@ -17436,16 +17436,16 @@
       "dashboard_frame_title": "{{crew}} 的仪表板",
       "dashboard_rendering": "正在绘制仪表板…",
       "back_to_roster": "返回队友列表",
-      "new_conversation": "开始新对话",
-      "new_conversation_row_sub": "之前的消息会保留 · 会先停掉正在进行的工作",
-      "new_conversation_confirm_title": "和“{{name}}”开始新对话？",
-      "new_conversation_confirm_body": "“{{name}}”从头开始：这次聊过什么它都不记得了。存进长期记忆里的东西还在，更早消息也都还在这里，可从“显示更早的消息”查看。 如果它现在正在做事，会先把那件事停掉。",
-      "new_conversation_confirm_action": "开始新对话",
-      "new_conversation_failed_title": "无法开始新对话",
-      "new_conversation_boundary_failed": "再按一次“开始新对话”就能补上“新对话从这里开始”这条线。一条消息也不会丢。没有这条线，{{name}} 已经忘掉的消息看起来还像是当前内容；再按一次，从那之后说过的话也会忘掉。",
-      "new_conversation_boundary_failed_title": "新对话已开始，分界线没保存",
-      "new_conversation_busy": "{{name}} 正在处理从别处来的一条消息，比如某个频道里的消息，所以这段聊天看起来还很安静。过一会儿再试一次。",
-      "conversation_boundary_evicted": "更早一次新对话的“新对话从这里开始”线丢失了，所以它上面的消息可能早于这段对话。点击“开始新对话”来标记一个新的开始。"
+      "new_conversation": "重置聊天",
+      "new_conversation_row_busy": "正在重置聊天…",
+      "new_conversation_confirm_title": "重置与 “{{name}}” 的聊天？",
+      "new_conversation_confirm_body": "“{{name}}” 会忘掉这段聊天，重新开始。你的消息仍留在这里，位于“聊天已重置”线上方。它的长期记忆不受影响。如果它正在工作，会先停下这项工作。",
+      "new_conversation_confirm_action": "重置聊天",
+      "new_conversation_failed_title": "无法重置聊天",
+      "new_conversation_boundary_failed": "{{name}} 已忘掉这段聊天，但“聊天已重置”线没有保存，所以旧消息看起来仍是当前的。再重置一次即可补上，但之后说的内容也会被忘掉。",
+      "new_conversation_boundary_failed_title": "聊天已重置，但分隔线丢失",
+      "new_conversation_busy": "{{name}} 还在回复来自别处的消息，比如 Slack 频道。请稍后再试。",
+      "conversation_boundary_evicted": "这位成员有几条较早的“聊天已重置”线丢失了，所以这里的旧消息可能看起来仍是当前对话。重置聊天即可标出新的起点。"
     },
     "tasksCapacityCard": {
       "title": "任务与容量",

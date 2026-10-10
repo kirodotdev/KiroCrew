@@ -6445,7 +6445,7 @@
       "split_right_d": "Dividir a la derecha (⌘D)",
       "type_to_filter": "Escribe para filtrar…",
       "show_earlier_messages": "Mostrar mensajes anteriores",
-      "conversation_boundary": "Aquí empieza la nueva conversación",
+      "conversation_boundary": "Chat restablecido",
       "hide_earlier_messages": "Ocultar mensajes anteriores"
     },
     "cliPanel": {
@@ -17952,16 +17952,16 @@
       "dashboard_frame_title": "Panel de {{crew}}",
       "dashboard_rendering": "Dibujando el panel…",
       "back_to_roster": "Volver a los compañeros",
-      "new_conversation": "Iniciar una nueva conversación",
-      "new_conversation_row_sub": "Los mensajes anteriores se conservan · primero detiene el trabajo en curso",
-      "new_conversation_confirm_title": "¿Empezar una nueva conversación con “{{name}}”?",
-      "new_conversation_confirm_body": "“{{name}}” empieza de nuevo: no recordará nada de lo dicho en este chat. Lo que haya guardado en su memoria a largo plazo se mantiene, y todos los mensajes anteriores siguen aquí en “Mostrar mensajes anteriores”. Si está trabajando ahora mismo, ese trabajo se detiene primero.",
-      "new_conversation_confirm_action": "Empezar una nueva conversación",
-      "new_conversation_failed_title": "No se pudo empezar una nueva conversación",
-      "new_conversation_boundary_failed": "Pulsa “Iniciar una nueva conversación” otra vez para añadir la línea “Aquí empieza la nueva conversación”. No se pierde ningún mensaje. Sin la línea, los mensajes que {{name}} ya olvidó siguen pareciendo actuales, y pulsar otra vez también olvida lo dicho desde entonces.",
-      "new_conversation_boundary_failed_title": "Nueva conversación empezada, línea no guardada",
-      "new_conversation_busy": "{{name}} está atendiendo un mensaje que llegó por otro sitio, como un canal, así que este chat sigue pareciendo tranquilo. Inténtalo otra vez en un momento.",
-      "conversation_boundary_evicted": "Se perdió la línea “Aquí empieza la nueva conversación” de una conversación anterior, así que los mensajes por encima pueden ser anteriores a esta conversación. Pulsa “Iniciar una nueva conversación” para marcar un nuevo comienzo."
+      "new_conversation": "Restablecer chat",
+      "new_conversation_row_busy": "Restableciendo el chat…",
+      "new_conversation_confirm_title": "¿Restablecer el chat con “{{name}}”?",
+      "new_conversation_confirm_body": "“{{name}}” olvidará este chat y empezará de cero. Tus mensajes se quedan aquí, encima de una línea «Chat restablecido». Su memoria a largo plazo se conserva. Si está trabajando ahora, primero se detiene ese trabajo.",
+      "new_conversation_confirm_action": "Restablecer chat",
+      "new_conversation_failed_title": "No se pudo restablecer el chat",
+      "new_conversation_boundary_failed": "{{name}} ha olvidado este chat, pero la línea «Chat restablecido» no se guardó, así que los mensajes antiguos siguen pareciendo actuales. Restablécelo otra vez para añadirla; eso también borra lo que se haya dicho desde entonces.",
+      "new_conversation_boundary_failed_title": "Chat restablecido, pero falta la línea",
+      "new_conversation_busy": "{{name}} todavía está respondiendo un mensaje de otro sitio, como un canal de Slack. Inténtalo de nuevo en un momento.",
+      "conversation_boundary_evicted": "Se perdieron algunas líneas «Chat restablecido» antiguas de este compañero, así que los mensajes antiguos de aquí pueden parecer actuales. Restablece el chat para marcar un nuevo comienzo."
     },
     "tasksCapacityCard": {
       "title": "Tareas y capacidad",

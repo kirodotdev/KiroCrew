@@ -6445,7 +6445,7 @@
       "split_right_d": "Dividi a destra (⌘D)",
       "type_to_filter": "Digita per filtrare…",
       "show_earlier_messages": "Mostra i messaggi precedenti",
-      "conversation_boundary": "Qui inizia la nuova conversazione",
+      "conversation_boundary": "Chat reimpostata",
       "hide_earlier_messages": "Nascondi i messaggi precedenti"
     },
     "cliPanel": {
@@ -17952,16 +17952,16 @@
       "dashboard_frame_title": "Dashboard di {{crew}}",
       "dashboard_rendering": "Disegno della dashboard…",
       "back_to_roster": "Torna ai compagni",
-      "new_conversation": "Avvia una nuova conversazione",
-      "new_conversation_row_sub": "I messaggi precedenti restano · prima ferma il lavoro in corso",
-      "new_conversation_confirm_title": "Avviare una nuova conversazione con «{{name}}»?",
-      "new_conversation_confirm_body": "«{{name}}» riparte da zero: non ricorderà nulla di quanto detto in questa chat. Quello che ha salvato nella sua memoria a lungo termine rimane e tutti i messaggi precedenti restano qui sotto «Mostra i messaggi precedenti». Se sta lavorando in questo momento, quel lavoro viene fermato prima.",
-      "new_conversation_confirm_action": "Avvia una nuova conversazione",
-      "new_conversation_failed_title": "Non è stato possibile avviare una nuova conversazione",
-      "new_conversation_boundary_failed": "Premi di nuovo «Avvia una nuova conversazione» per aggiungere la linea «Qui inizia la nuova conversazione». Nessun messaggio va perso. Senza la linea, i messaggi che {{name}} ha già dimenticato sembrano ancora attuali, e premere di nuovo dimentica anche quanto detto da allora.",
-      "new_conversation_boundary_failed_title": "Nuova conversazione avviata, linea non salvata",
-      "new_conversation_busy": "{{name}} sta gestendo un messaggio arrivato da un'altra parte, per esempio da un canale, così questa chat sembra ancora tranquilla. Riprova tra un attimo.",
-      "conversation_boundary_evicted": "La linea «Qui inizia la nuova conversazione» di una conversazione precedente è andata persa, perciò i messaggi sopra potrebbero essere anteriori a questa conversazione. Premi «Avvia una nuova conversazione» per segnare un nuovo inizio."
+      "new_conversation": "Reimposta chat",
+      "new_conversation_row_busy": "Reimpostazione della chat…",
+      "new_conversation_confirm_title": "Reimpostare la chat con «{{name}}»?",
+      "new_conversation_confirm_body": "«{{name}}» dimenticherà questa chat e ricomincerà da capo. I tuoi messaggi restano qui, sopra una linea «Chat reimpostata». La memoria a lungo termine viene mantenuta. Se sta lavorando adesso, quel lavoro viene prima fermato.",
+      "new_conversation_confirm_action": "Reimposta chat",
+      "new_conversation_failed_title": "Impossibile reimpostare la chat",
+      "new_conversation_boundary_failed": "{{name}} ha dimenticato questa chat, ma la linea «Chat reimpostata» non è stata salvata, quindi i messaggi vecchi sembrano ancora attuali. Reimposta di nuovo per aggiungerla; così si perde anche ciò che è stato detto nel frattempo.",
+      "new_conversation_boundary_failed_title": "Chat reimpostata, ma manca la linea",
+      "new_conversation_busy": "{{name}} sta ancora rispondendo a un messaggio arrivato da altrove, ad esempio da un canale Slack. Riprova tra un momento.",
+      "conversation_boundary_evicted": "Alcune linee «Chat reimpostata» più vecchie di questo membro della crew sono andate perse, quindi i messaggi vecchi qui possono sembrare attuali. Reimposta la chat per segnare un nuovo inizio."
     },
     "tasksCapacityCard": {
       "title": "Attività e capacità",

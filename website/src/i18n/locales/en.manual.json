@@ -2126,7 +2126,7 @@
       "stop_failed": "Couldn't stop this turn ({{error}}). Press Stop again.",
       "stop_failed_network": "Couldn't reach the server to stop this turn. Press Stop again.",
       "show_earlier_messages": "Show earlier messages",
-      "conversation_boundary": "New conversation starts here",
+      "conversation_boundary": "Chat reset",
       "hide_earlier_messages": "Hide earlier messages"
     },
     "cliPanel": {
@@ -8248,16 +8248,16 @@
     "membersPage": {
       "drawer_delegated_working": "Delegated work running",
       "back_to_roster": "Back to crewmates",
-      "new_conversation": "Start a new conversation",
-      "new_conversation_row_sub": "Earlier messages are kept · stops current work first",
-      "new_conversation_confirm_title": "Start a new conversation with “{{name}}”?",
-      "new_conversation_confirm_body": "“{{name}}” starts over: it will not remember anything said in this chat. What it has saved to its long-term memory stays, and every earlier message stays right here under “Show earlier messages”. If it is working right now, that work is stopped first.",
-      "new_conversation_confirm_action": "Start a new conversation",
-      "new_conversation_failed_title": "Couldn't start a new conversation",
-      "new_conversation_boundary_failed": "Press Start a new conversation again to add the “New conversation starts here” line. No messages are lost. Without the line, messages {{name}} has already forgotten still look current, and pressing again forgets anything said since too.",
-      "new_conversation_boundary_failed_title": "New conversation started, line not saved",
-      "new_conversation_busy": "{{name}} is handling a message from another place, such as a channel, so this thread still looks idle. Try again in a moment.",
-      "conversation_boundary_evicted": "The “New conversation starts here” line for an earlier new conversation was lost, so messages above it may predate this conversation. Press Start a new conversation to mark a fresh start."
+      "new_conversation": "Reset chat",
+      "new_conversation_row_busy": "Resetting chat…",
+      "new_conversation_confirm_title": "Reset chat with “{{name}}”?",
+      "new_conversation_confirm_body": "“{{name}}” will forget this chat and start fresh. Your messages stay here, above a “Chat reset” line. Its long-term memory is kept. If it is working now, that work is stopped first.",
+      "new_conversation_confirm_action": "Reset chat",
+      "new_conversation_failed_title": "Couldn't reset the chat",
+      "new_conversation_boundary_failed": "{{name}} has forgotten this chat, but the “Chat reset” line was not saved, so old messages still look current. Reset again to add it; that also clears anything said since.",
+      "new_conversation_boundary_failed_title": "Chat reset, but the line is missing",
+      "new_conversation_busy": "{{name}} is still answering a message from somewhere else, such as a Slack channel. Try again in a moment.",
+      "conversation_boundary_evicted": "Some older “Chat reset” lines for this crewmate were lost, so old messages here may look current. Reset the chat to mark a fresh start."
     }
   },
   "privacyDisclosure": {

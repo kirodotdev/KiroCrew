@@ -2726,10 +2726,9 @@ export default function MembersPage() {
   /** Stop whatever turn is running on `slot`, then wait for it to let go.
    *
    *  The reason this exists: the reset route refuses a busy slot with 409
-   *  `turn_in_flight`, and a busy slot is the case the action is FOR. "New
-   *  conversation" lives in the profile card because the one time anybody
-   *  reaches for it is a crewmate stuck mid-turn — so a flow that only works on
-   *  an idle slot works in exactly the situation nobody needs it.
+   *  `turn_in_flight`, and a busy slot is the case the action is FOR: people
+   *  reach for "Reset chat" when a crewmate is stuck mid-turn — so a flow that
+   *  only works on an idle slot works in exactly the situation nobody needs it.
    *
    *  Three presses' worth of work, done for the user: Stop, watch, Stop again.
    *  The second stop is not a retry — the route escalates a second stop to a
@@ -2809,15 +2808,9 @@ export default function MembersPage() {
         title: t('pages.membersPage.new_conversation_confirm_title', { name }),
         body: t('pages.membersPage.new_conversation_confirm_body', { name }),
         confirmLabel: t('pages.membersPage.new_conversation_confirm_action'),
-        // NOT destructive, which is the whole copy above in one visual: nothing
-        // is deleted. The dialog's default is the red button, and red beside
-        // "the earlier messages stay" reads as a warning the sentence denies.
-        // Weighty, because the model's context does not come back — which is
-        // what a non-danger confirm is for. PRIMARY so it is still the obvious
-        // answer: without it confirm and Cancel are two plain outline buttons
-        // the reader has to tell apart by reading both labels.
-        danger: false,
-        primary: true,
+        // The red default, matching the red row that opened it: the
+        // crewmate's context does not come back, and one colour for the whole
+        // flow is easier to read than a red door into a purple button.
       })
       if (!ok || slot !== activeDmSlotRef.current) return
       setResetError(null)
@@ -2843,6 +2836,10 @@ export default function MembersPage() {
         // reached the pane would leave a discarded conversation reading as
         // current. A refetch costs one request and settles it either way.
         void queryClient.invalidateQueries({ queryKey: MEMBERS_ROSTER_QUERY_KEY })
+        // A clean reset closes the card, so the reader lands on the thread and
+        // sees the "Chat reset" line; left open, the card can cover it. A
+        // failed boundary keeps the card and its notice.
+        if (answer.boundary !== 'failed' && slot === activeDmSlotRef.current) setProfile(null)
       } catch (err) {
         const raw = err instanceof Error ? err.message : String(err)
         // The route's own busy refusal gets the user's words, not the gateway's.
@@ -2861,11 +2858,9 @@ export default function MembersPage() {
       }
     })()
   }, [activeSlot, activeView, confirmReset, queryClient, stopTurnBeforeReset, t])
-  /** The one notice for the one outcome, mounted in whichever of its two places
-   *  the reader is looking at: under the profile card's row while that card is
-   *  open (where the press happened), above the thread once it is closed. Built
-   *  once so the two sites cannot drift into two different notices — and ONE
-   *  state behind it, so there is never a second copy to dismiss. */
+  /** The one notice for a refused or failed "Reset chat": under the link while
+   *  the profile card is open, above the thread once it is closed. One state,
+   *  so there is never a second copy to dismiss. */
   const resetErrorNotice = resetError ? (
     <ErrorNotice
       message={resetError.message}
@@ -4713,11 +4708,8 @@ export default function MembersPage() {
                 testId="member-panel-action-error"
               />
             )}
-            {/* A refused or failed "New conversation", for the case where the
-                profile card that asked for it is no longer open — the card
-                renders the same notice under its own row (see
-                `resetErrorNotice`), and whichever of the two is mounted is the
-                only copy. Above the thread, where the notices around it live,
+            {/* A refused or failed "Reset chat". Above the thread, where the
+                notices around it live,
                 and dismissable: the conversation below is intact and unchanged,
                 so this is a report rather than a verdict on the thread. No
                 hand-off, for the reason its neighbours give — the DM composer
@@ -5261,8 +5253,7 @@ export default function MembersPage() {
               onRequestBack={requestProfileBack}
               onEdit={() => setEditingCrew(active.name)}
               onOpenFiles={() => openCrewView('files')}
-              // Only with a confirmed thread: with no slot there is no
-              // conversation to start over, and the row would be a dead press.
+              // Only with a confirmed thread: with no slot there is nothing to reset.
               onNewConversation={activeSlot ? requestNewConversation : undefined}
               newConversationBusy={resetting}
               newConversationError={resetErrorNotice}

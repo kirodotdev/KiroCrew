@@ -1,16 +1,16 @@
 /**
- * Screenshot harness for "New conversation" on a crewmate's DM (#16339).
+ * Screenshot harness for "Reset chat" on a crewmate's DM (#16339).
  *
- * The control is the LAST row of the crewmate's profile card, in the theme's
- * danger colour — not a thread-header button (reviewer's call: the one occasion
+ * The control is a small muted "Reset chat" link under the crewmate's name on
+ * its profile card — quiet, beside the person, not in the header (the one occasion
  * anybody reaches for it is a crewmate stuck in a turn). The states a reviewer
  * has to judge:
  *
- *   01  the row, last on the Profile tab, red label
+ *   01  the profile card with the small "Reset chat" link under the name
  *   02  the confirm dialog — what is forgotten, what survives, and that a
  *       running turn is stopped first
  *   03  the thread after the reset: the discarded rows behind
- *       "Show earlier messages", the fresh thread's own hint below it
+ *       "Show earlier messages", and no "Session ready" hint stacked on it
  *   04  the same thread with the earlier messages revealed
  *   05  the row still AVAILABLE while the crewmate is working, which is the
  *       whole reason it moved here
@@ -233,16 +233,9 @@ async function open({ reset = false, running = false, messages, boundaryMs = BOU
   return { context, page, stopCount: () => stops }
 }
 
-/** Open the crewmate's profile card, where the control lives, and hand back the
- *  row. The identity pill is the door: it is the same gesture a user makes, so
- *  nothing here reaches the row by a route the UI does not offer. */
+/** Open the profile card and hand back the "Reset chat" link under the name. */
 async function openProfileRow(page) {
   await page.getByTestId('member-identity-pill').click()
-  // The card may open on another tab (Sessions, for a crewmate it has not
-  // chatted with yet), so pick Profile the way a user would.
-  const tabs = page.getByTestId('crew-profile-tabs')
-  await tabs.waitFor({ state: 'visible', timeout: 15000 })
-  await tabs.getByRole('tab', { name: /profile/i }).click()
   const row = page.getByTestId('crew-profile-new-conversation')
   await row.waitFor({ state: 'visible', timeout: 15000 })
   await page.waitForTimeout(450)
@@ -254,8 +247,8 @@ async function pressAndConfirm(page) {
   const row = await openProfileRow(page)
   await row.click()
   // Scoped to the dialog: the row and the dialog's action now share the one
-  // name "Start a new conversation", so an unscoped by-name match is ambiguous.
-  const confirm = page.getByRole('dialog').getByRole('button', { name: 'Start a new conversation' })
+  // name "Reset chat", so an unscoped by-name match is ambiguous.
+  const confirm = page.getByRole('dialog').getByRole('button', { name: 'Reset chat' })
   await confirm.waitFor({ state: 'visible', timeout: 10000 })
   await confirm.click()
   return row
@@ -291,14 +284,13 @@ if (process.env.RECORD_VIDEO === '1') {
   const row = await openProfileRow(page)
   await page.waitForTimeout(1200)
   await row.click()
-  const confirm = page.getByRole('dialog').getByRole('button', { name: 'Start a new conversation' })
+  const confirm = page.getByRole('dialog').getByRole('button', { name: 'Reset chat' })
   await confirm.waitFor({ state: 'visible', timeout: 10000 })
   // Long enough to read the dialog, which is the half of the flow that says
   // what is kept.
   await page.waitForTimeout(2600)
   await confirm.click()
-  // The card goes back down, so the clip's second half is the transcript alone.
-  await page.getByTestId('crew-profile-close').click()
+  await page.getByTestId('crew-profile-close').waitFor({ state: 'detached', timeout: 15000 })
 
   // The collapse: the roster refetch lands and the discarded half goes behind
   // the control.
@@ -344,54 +336,36 @@ if (process.env.RECORD_VIDEO === '1') {
   check('and nothing is collapsed before it either', (await page.getByTestId('chat-pane-show-earlier').count()) === 0)
 
   const button = await openProfileRow(page)
-  check('the row is on the crewmate\'s Profile tab', await button.isVisible())
-  check('it carries the feature\'s own name', (await button.innerText()).split('\n')[0].trim() === 'Start a new conversation')
-  check('and says what it is for', /Earlier messages are kept/.test(await button.innerText()), (await button.innerText()).replace(/\n/g, ' | '))
-  // LAST on the tab, below every other row, in its own group: the rows above
-  // are doors into what the crewmate IS, this one throws away what it knows.
-  const lastRow = await page.evaluate(() => {
-    const pane = document.querySelector('[data-testid="crew-profile-pane-profile"]')
-    const rows = Array.from(pane.querySelectorAll('button[data-testid^="crew-profile-"]'))
-    return rows[rows.length - 1]?.getAttribute('data-testid')
-  })
-  check(`it is the last row on the tab (${lastRow})`, lastRow === 'crew-profile-new-conversation')
-  // Red, from the theme token rather than a literal, and on the LABEL only --
-  // the sub line is the quieter half.
-  const red = await page.evaluate(() => {
-    const row = document.querySelector('[data-testid="crew-profile-new-conversation"]')
-    const label = row.querySelector('.font-semibold')
-    const danger = getComputedStyle(document.documentElement).getPropertyValue('--danger').trim()
-    return { cls: label.className, colour: getComputedStyle(label).color, danger, muted: getComputedStyle(row.querySelector('.text-muted')).color }
-  })
-  check('the label reads in the danger token', red.cls.includes('text-danger') && red.danger !== '', JSON.stringify(red))
-  check('and it is a different colour from the sub line beside it', red.colour !== red.muted, `${red.colour} vs ${red.muted}`)
-  await page.mouse.move(5, 5)
+  check('the link is on the profile card', await button.isVisible())
+  check('it sits right under the name', await page.evaluate(() => document.querySelector('[data-testid="crew-profile-name"]')?.nextElementSibling?.getAttribute('data-testid') === 'crew-profile-new-conversation'))
+  check('it is quiet: muted, no danger colour', await button.evaluate((el) => el.className.includes('text-muted') && !el.className.includes('text-danger')))
+  check('it carries the feature\'s own name', (await button.innerText()).trim() === 'Reset chat')
+  check('nothing in the header', (await page.getByTestId('member-thread-menu').count()) === 0)
   await page.screenshot({ path: join(OUT, '01-profile-row.png') })
-  await page.getByTestId('crew-profile-reset-group').screenshot({ path: join(OUT, '01b-profile-row-closeup.png') })
+  await page.getByTestId('crew-profile-face').locator('..').screenshot({ path: join(OUT, '01b-profile-row-closeup.png') })
 
   // 02: the ask.
   await button.click()
-  const ask = page.getByText(/starts over/)
+  const ask = page.getByText(/will forget this chat/)
   await ask.waitFor({ state: 'visible', timeout: 10000 })
   await page.waitForTimeout(400)
   const copy = await ask.innerText()
-  check('the ask names the crewmate, quoted', /^\u201cKiro\u201d starts over/.test(copy), copy)
-  check('the ask names the memory that survives', /What it has saved to its long-term memory stays/.test(copy), copy)
-  check('the ask says what the crewmate forgets', /will not remember anything said in this chat/.test(copy))
-  check('the ask says where the earlier messages are', /Show earlier messages/.test(copy))
+  check('the ask names the crewmate, quoted', /^\u201cKiro\u201d will forget this chat/.test(copy), copy)
+  check('the ask names the memory that survives', /Its long-term memory is kept/.test(copy), copy)
+  check('the ask says what the crewmate forgets', /will forget this chat and start fresh/.test(copy))
+  check('the ask says where the earlier messages are', /above a \u201cChat reset\u201d line/.test(copy))
   // The second thing being consented to: the flow stops a running turn before
   // it asks for the reset, and the user presses this precisely when one runs.
-  check('the ask says a running turn is stopped first', /If it is working right now, that work is stopped first\./.test(copy), copy)
-  check('the ask uses the control\'s own name', /Start a new conversation/.test(await page.getByRole('dialog').getByRole('button', { name: 'Start a new conversation' }).innerText()))
+  check('the ask says a running turn is stopped first', /If it is working now, that work is stopped first\./.test(copy), copy)
+  check('the ask uses the control\'s own name', /Reset chat/.test(await page.getByRole('dialog').getByRole('button', { name: 'Reset chat' }).innerText()))
   await page.screenshot({ path: join(OUT, '02-confirm-dialog.png') })
 
   // 03: the press has landed. The boundary is NOW, so it sits past every
   // message in the thread -- which is what a reset actually leaves behind, and
   // the state the user lands on.
-  await page.getByRole('dialog').getByRole('button', { name: 'Start a new conversation' }).click()
-  // The card is the door, not the outcome: the result is the thread, so close
-  // it the way a user does once the press has landed.
-  await page.getByTestId('crew-profile-close').click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Reset chat' }).click()
+  await page.getByTestId('crew-profile-close').waitFor({ state: 'detached', timeout: 15000 })
+  check('a clean reset closes the profile card', (await page.getByTestId('crew-profile-close').count()) === 0)
   const earlier = page.getByTestId('chat-pane-show-earlier')
   await earlier.waitFor({ state: 'visible', timeout: 15000 })
   await page.waitForTimeout(500)
@@ -399,6 +373,7 @@ if (process.env.RECORD_VIDEO === '1') {
   check('the press collapses the whole discarded conversation', (await page.getByText('And the member log?').count()) === 0)
   check('nothing from before the reset is drawn', (await page.getByText(/Start again: what does the reset button do\?/).count()) === 0)
   check('the thread reads as fresh, not as a quiet crewmate', (await page.getByTestId('crewmate-quiet-hint').count()) === 0)
+  check('no second empty-state line above the reset line', (await page.getByText('Session ready. Type a message to start.').count()) === 0)
   check('the line is drawn', (await page.getByTestId('conversation-boundary-row').count()) === 1)
   check('nothing is reported when the boundary is recorded', (await page.getByTestId('member-new-conversation-error').count()) === 0)
   // The row holds the reveal control too, and its label flips on reveal -- so
@@ -406,7 +381,7 @@ if (process.env.RECORD_VIDEO === '1') {
   const lineOnly = async () => (await page.getByTestId('conversation-boundary-row').innerText())
     .replace(/\n/g, ' ').replace(/(Show|Hide) earlier messages/, '').trim()
   const lineAfter = await lineOnly();
-  check(`the line names itself and carries the reset's own time (${lineAfter})`, /New conversation starts here/.test(lineAfter))
+  check(`the line names itself and carries the reset's own time (${lineAfter})`, /Chat reset/.test(lineAfter))
   await page.mouse.move(5, 5)
   await page.screenshot({ path: join(OUT, '03-after-reset-collapsed.png') })
 
@@ -430,8 +405,7 @@ if (process.env.RECORD_VIDEO === '1') {
   await context.close()
 }
 
-// 05 and 06 and 12: the STUCK case, which is the whole reason the control moved
-// into the profile card. The reset route refuses a busy slot (409
+// 05 and 06 and 12: the STUCK case. The reset route refuses a busy slot (409
 // `turn_in_flight`), and busy is what a stuck crewmate is -- so a row disabled
 // on `running`, or a flow that posts the reset straight away, is unavailable in
 // exactly the situation it exists for.
@@ -443,13 +417,11 @@ if (process.env.RECORD_VIDEO === '1') {
 {
   const { context, page, stopCount } = await open({ running: true, refuse: true, messages: [...DISCARDED, ...CURRENT] })
   const row = await openProfileRow(page)
-  check('the row is AVAILABLE while the crewmate works', await row.isEnabled())
-  check('and the crewmate really is reading as working', (await page.getByTestId('crew-profile-face').count()) === 1)
-  await page.mouse.move(5, 5)
+  check('the link is AVAILABLE while the crewmate works', await row.isEnabled())
   await page.screenshot({ path: join(OUT, '05-row-while-working.png') })
 
   await row.click()
-  const confirm = page.getByRole('dialog').getByRole('button', { name: 'Start a new conversation' })
+  const confirm = page.getByRole('dialog').getByRole('button', { name: 'Reset chat' })
   await confirm.waitFor({ state: 'visible', timeout: 10000 })
   await confirm.click()
 
@@ -457,15 +429,14 @@ if (process.env.RECORD_VIDEO === '1') {
   // wait runs: a second press would stack a second stop-and-reset on one slot.
   await page.waitForTimeout(1200)
   check('the turn is asked to stop before the reset is', stopCount() >= 1)
-  check('the row is held while its own flow runs', await row.isDisabled())
-  check('and it is held with a spinner, so the press plainly landed', (await row.locator('.animate-spin').count()) === 1)
+  check('the link is held with a spinner while its own flow runs', (await row.isDisabled()) && (await row.locator('.animate-spin').count()) === 1)
   await page.mouse.move(5, 5)
   await page.screenshot({ path: join(OUT, '06-stopping-then-resetting.png') })
 
   // Past the halfway mark the page presses Stop a second time, which the route
   // escalates to a hard kill -- what a person does after watching a cooperative
   // stop fail to take.
-  await page.waitForTimeout(10_000)
+  await page.waitForTimeout(11_000)
   check(`the wait escalates to a second stop (${stopCount()} stops)`, stopCount() === 2)
 
   // And the budget is BOUNDED: the reset is asked for regardless, so a provider
@@ -474,13 +445,8 @@ if (process.env.RECORD_VIDEO === '1') {
   const notice = page.getByTestId('member-new-conversation-error')
   await notice.waitFor({ state: 'visible', timeout: 25_000 })
   await page.waitForTimeout(400)
-  check('the refusal is reported under the row that caused it', await notice.isVisible())
-  const placed = await page.evaluate(() => {
-    const pane = document.querySelector('[data-testid="crew-profile-pane-profile"]')
-    return !!pane?.contains(document.querySelector('[data-testid="member-new-conversation-error"]'))
-  })
-  check('and it is inside the profile card, beside the control', placed)
-  check('the row is available again, so a retry is one press away', await row.isEnabled())
+  check('the refusal is reported in the card, under the link', await notice.isVisible())
+  check('the link is available again, so a retry is one press away', await row.isEnabled())
   await page.mouse.move(5, 5)
   await page.screenshot({ path: join(OUT, '12-stuck-turn-refusal.png') })
   await context.close()
@@ -494,15 +460,11 @@ if (process.env.RECORD_VIDEO === '1') {
   await pressAndConfirm(page)
   const notice = page.getByTestId('member-new-conversation-error')
   await notice.waitFor({ state: 'visible', timeout: 15000 })
-  // Closing the card moves the one notice above the thread: one state, one
-  // copy, mounted wherever the reader is looking.
+  await page.waitForTimeout(400)
   await page.getByTestId('crew-profile-close').click()
-  // The card animates out, so its copy is still in the DOM for a moment. Wait
-  // for the card to be gone before reading the one notice left.
   await page.getByTestId('crew-profile-panel').waitFor({ state: 'detached', timeout: 10000 })
   await notice.waitFor({ state: 'visible', timeout: 10000 })
-  await page.waitForTimeout(400)
-  check('the refusal follows the reader out of the card, above the thread', await notice.isVisible())
+  check('closing the card moves the one notice above the thread', await notice.isVisible())
   check('and there is exactly one copy of it', (await notice.count()) === 1)
   check('the conversation is still drawn under it', (await page.getByText(/Start again: what does the reset button do\?/).count()) === 1)
   await page.mouse.move(5, 5)
@@ -521,11 +483,11 @@ if (process.env.RECORD_VIDEO === '1') {
   await notice.waitFor({ state: 'visible', timeout: 15000 })
   await page.waitForTimeout(400)
   const copy = await notice.innerText()
-  check('the heading does not contradict the body', /New conversation started, line not saved/.test(copy) && !/Couldn't start a new conversation/.test(copy), copy.replace(/\n/g, ' | '))
-  check('it names an action a reload cannot do', /Press Start a new conversation again to add the \u201cNew conversation starts here\u201d line/.test(copy) && !/Reload/.test(copy))
-  check('it names the line with the words the pane prints on it', /\u201cNew conversation starts here\u201d line/.test(copy), copy.replace(/\n/g, ' | '))
-  check('the reassurance is the sentence right after the action', /line\. No messages are lost\./.test(copy), copy.replace(/\n/g, ' | '))
-  check('and the cost is still stated, after it', /pressing again forgets anything said since too/.test(copy), copy.replace(/\n/g, ' | '))
+  check('the heading does not contradict the body', /Chat reset, but the line is missing/.test(copy) && !/Couldn't reset the chat/.test(copy), copy.replace(/\n/g, ' | '))
+  check('it names an action a reload cannot do', /Reset again to add it/.test(copy) && !/Reload/.test(copy))
+  check('it names the line with the words the pane prints on it', /\u201cChat reset\u201d line/.test(copy), copy.replace(/\n/g, ' | '))
+  check('it says what is wrong on screen', /old messages still look current\./.test(copy), copy.replace(/\n/g, ' | '))
+  check('and the cost is still stated, after it', /Reset again to add it; that also clears anything said since\./.test(copy), copy.replace(/\n/g, ' | '))
   await page.mouse.move(5, 5)
   await page.screenshot({ path: join(OUT, '09-boundary-not-saved.png') })
   await context.close()
@@ -540,7 +502,7 @@ if (process.env.RECORD_VIDEO === '1') {
   await notice.waitFor({ state: 'visible', timeout: 15000 })
   await page.waitForTimeout(400)
   const copy = await notice.innerText()
-  check('the busy refusal says WHERE the message is, so it does not fight the Idle pill', /Kiro is handling a message from another place/.test(copy) && /such as a channel/.test(copy) && /this thread still looks idle/.test(copy) && !/turn is in flight/.test(copy), copy.replace(/\n/g, ' | '))
+  check('the busy refusal says WHERE the message is, so it does not fight the Idle pill', /Kiro is still answering a message from somewhere else/.test(copy) && /such as a Slack channel/.test(copy) && !/turn is in flight/.test(copy), copy.replace(/\n/g, ' | '))
   await page.mouse.move(5, 5)
   await page.screenshot({ path: join(OUT, '10-busy-refusal.png') })
   await context.close()
@@ -548,7 +510,7 @@ if (process.env.RECORD_VIDEO === '1') {
 
 // 08: 320px. The boundary row has to stay inside the pane -- a non-wrapping
 // boundary group is clipped by the transcript's own hidden horizontal overflow,
-// taking the reveal with it -- and the profile card's row has to be reachable
+// taking the reveal with it -- and the header 22ee and its item have to be reachable
 // and readable at phone width, where the card floats over the DM column rather
 // than taking one of its own.
 //
@@ -563,14 +525,15 @@ if (process.env.RECORD_VIDEO === '1') {
   const box = await control.boundingBox()
   check(`the reveal is inside the 320px pane (right edge ${Math.round(box.x + box.width)})`, box.x >= 0 && box.x + box.width <= 320)
   const pillBox = await page.getByTestId('member-identity-pill').boundingBox()
-  check(`the identity pill gets the width back (${Math.round(pillBox.width)}px)`, pillBox.width >= 100 && pillBox.x + pillBox.width <= 320)
+  // Main folds the pill to its face at this width (#18549); only its bounds are this PR's concern.
+  check(`the identity pill stays inside the pane (${Math.round(pillBox.width)}px)`, pillBox.x + pillBox.width <= 320)
 
   const row = await openProfileRow(page)
   const rowBox = await row.boundingBox()
-  check(`the row is inside the 320px card (right edge ${Math.round(rowBox.x + rowBox.width)})`, rowBox.x >= 0 && rowBox.x + rowBox.width <= 320)
+  check(`the link is inside the 320px pane (right edge ${Math.round(rowBox.x + rowBox.width)})`, rowBox.x >= 0 && rowBox.x + rowBox.width <= 320)
   // Readable, not merely present: the label is what a reader needs before
   // pressing, so it must not be the first thing the width eats.
-  check('its label is not truncated away at phone width', /Start a new conversation/.test(await row.innerText()))
+  check('its label is not truncated away at phone width', /Reset chat/.test(await row.innerText()))
   await page.mouse.move(5, 5)
   await page.screenshot({ path: join(OUT, '08-narrow-320px.png') })
   await context.close()
@@ -604,7 +567,7 @@ if (process.env.RECORD_VIDEO === '1') {
   await page.waitForTimeout(400)
   const text = (await note.innerText()).replace(/\n/g, ' ')
   check('the note is on screen above the thread', await note.isVisible())
-  check('it names the line with the words the pane prints on it', /\u201cNew conversation starts here\u201d line/.test(text), text)
+  check('it names the line with the words the pane prints on it', /\u201cChat reset\u201d line/.test(text), text)
   check('it says "for this crewmate", never "for this thread"', /for this crewmate/.test(text) && !/for this thread/.test(text), text)
   check('it has a dismiss control', await page.getByTestId('member-boundary-evicted-dismiss').isVisible())
   check('the conversation is drawn whole under it', (await page.getByText('And the member log?').count()) === 1)

@@ -6243,7 +6243,7 @@
       "split_right_d": "오른쪽으로 분할 (⌘D)",
       "type_to_filter": "입력하여 필터링…",
       "show_earlier_messages": "이전 메시지 보기",
-      "conversation_boundary": "여기서부터 새 대화",
+      "conversation_boundary": "채팅 초기화됨",
       "hide_earlier_messages": "이전 메시지 숨기기"
     },
     "cliPanel": {
@@ -17436,16 +17436,16 @@
       "dashboard_frame_title": "{{crew}}의 대시보드",
       "dashboard_rendering": "대시보드 그리는 중…",
       "back_to_roster": "크루메이트 목록으로",
-      "new_conversation": "새 대화 시작",
-      "new_conversation_row_sub": "이전 메시지는 유지됩니다 · 진행 중인 작업을 먼저 멈춥니다",
-      "new_conversation_confirm_title": "‘{{name}}’와 새 대화를 시작할까요?",
-      "new_conversation_confirm_body": "‘{{name}}’는 처음부터 시작합니다. 이 대화에서 나눔 이야기는 기억하지 못합니다. 장기 기억에 저장한 것은 그대로 남고, 이전 메시지도 모두 ‘이전 메시지 보기’ 아래 그대로 남습니다. 지금 작업 중이면 그 작업을 먼저 멈춥니다.",
-      "new_conversation_confirm_action": "새 대화 시작",
-      "new_conversation_failed_title": "새 대화를 시작할 수 없습니다",
-      "new_conversation_boundary_failed": "‘여기서부터 새 대화’ 선을 추가하려면 ‘새 대화 시작’를 다시 누르세요. 메시지는 하나도 사라지지 않습니다. 선이 없으면 {{name}}이(가) 이미 잊은 메시지가 지금 것처럼 보이고, 다시 누르면 그 뒤에 한 이야기도 잊힙니다.",
-      "new_conversation_boundary_failed_title": "새 대화는 시작됐지만 선을 저장하지 못했습니다",
-      "new_conversation_busy": "{{name}}은(는) 다른 곳에서 오는 새 메시지, 예를 들어 채널 메시지를 처리하고 있습니다. 그래서 이 대화는 조용해 보입니다. 잠시 뒤에 다시 시도하세요.",
-      "conversation_boundary_evicted": "이전 새 대화의 ‘여기서부터 새 대화’ 선이 사라졌습니다. 그래서 그 위의 메시지는 이 대화보다 이전 것일 수 있습니다. ‘새 대화 시작’을 눌러 새로운 시작을 표시하세요."
+      "new_conversation": "채팅 초기화",
+      "new_conversation_row_busy": "채팅을 초기화하는 중…",
+      "new_conversation_confirm_title": "‘{{name}}’과(와)의 채팅을 초기화하시겠습니까?",
+      "new_conversation_confirm_body": "‘{{name}}’은(는) 이 채팅을 잊고 새로 시작합니다. 메시지는 ‘채팅 초기화됨’ 선 위에 그대로 남습니다. 장기 메모리는 유지됩니다. 지금 작업 중이라면 먼저 그 작업을 멈춥니다.",
+      "new_conversation_confirm_action": "채팅 초기화",
+      "new_conversation_failed_title": "채팅을 초기화하지 못했습니다",
+      "new_conversation_boundary_failed": "{{name}}은(는) 이 채팅을 잊었지만 ‘채팅 초기화됨’ 선이 저장되지 않아 이전 메시지가 아직 현재 대화처럼 보입니다. 다시 초기화하면 선이 추가되지만, 그 이후에 나눈 내용도 잊습니다.",
+      "new_conversation_boundary_failed_title": "채팅은 초기화되었지만 선이 없습니다",
+      "new_conversation_busy": "{{name}}이(가) 아직 다른 곳(예: Slack 채널)에서 온 메시지에 답하고 있습니다. 잠시 후 다시 시도하세요.",
+      "conversation_boundary_evicted": "이 크루원의 이전 ‘채팅 초기화됨’ 선 일부가 사라져, 여기 있는 이전 메시지가 현재 대화처럼 보일 수 있습니다. 채팅을 초기화하면 새 시작점을 표시할 수 있습니다."
     },
     "tasksCapacityCard": {
       "title": "작업 및 용량",

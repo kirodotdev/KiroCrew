@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useRef, useState, type HTMLAttributes, type ReactNode, type Ref, type ForwardedRef } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
-import { AlarmClock, Brain, ChevronLeft, ChevronRight, FolderOpen, Goal, IdCard, Loader2, MessageSquarePlus, NotebookPen, Pencil, Route, X } from 'lucide-react'
+import { AlarmClock, Brain, ChevronLeft, ChevronRight, FolderOpen, Goal, IdCard, Loader2, NotebookPen, Pencil, RotateCcw, Route, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { MemberRosterRow } from '../../api/client'
 import { crewDisplayName } from '../../components/AgentSelector'
@@ -68,43 +68,29 @@ export interface CrewProfilePanelProps {
   /** Runs a pushed-page back action through the host's draft guard. */
   onRequestBack: (proceed: () => void) => void
   onEdit: () => void
-  onOpenFiles: () => void
-  /** Start a fresh conversation on this crewmate's thread: it forgets what was
-   *  said, the transcript and its long-term memory stay. The host owns the ask,
-   *  the call and the outcome — this card owns only the door. Absent when there
-   *  is no confirmed thread to reset. */
+  /** Reset the crewmate's chat: it forgets this conversation, the messages
+   *  stay. The host owns the ask, the call and the outcome. Absent when there is
+   *  no confirmed thread to reset. */
   onNewConversation?: () => void
-  /** That flow is running: the stop, the wait for the turn to let go, the
-   *  reset. Holds the row, because a second press would stack a second flow on
-   *  the same slot. */
+  /** The reset flow is running (stop, wait, reset). */
   newConversationBusy?: boolean
-  /** The flow's own refusal or failure, rendered under the row — beside the
-   *  control that caused it. The host keeps the state and shows it above the
-   *  thread instead whenever this card is closed, so there is one copy. */
+  /** The flow's refusal or failure, shown under the link while the card is open. */
   newConversationError?: ReactNode
+  onOpenFiles: () => void
 }
 
-const TONE: Record<'accent' | 'ok' | 'warn' | 'info' | 'danger', string> = {
+const TONE: Record<'accent' | 'ok' | 'warn' | 'info', string> = {
   accent: 'bg-accent-subtle text-accent',
   ok: 'bg-ok-subtle text-ok',
   warn: 'bg-warn-subtle text-warn',
   info: 'bg-info-subtle text-info',
-  danger: 'bg-danger-subtle text-danger',
 }
 
-const Row = forwardRef(function Row({ icon, tone = 'accent', label, sub, danger, busy, onClick, testId, 'data-ui-location': uiLocationId }: {
+const Row = forwardRef(function Row({ icon, tone = 'accent', label, sub, onClick, testId, 'data-ui-location': uiLocationId }: {
   icon: ReactNode
   tone?: keyof typeof TONE
   label: string
   sub?: string
-  /** The row's own label reads in the theme's danger colour. For a row whose
-   *  action cannot be undone, so the colour is the warning the reader gets
-   *  before the dialog states it. The SUB line stays muted: red on both lines
-   *  makes the row shout, and the consequence sentence is the quieter half. */
-  danger?: boolean
-  /** The row's action is running. Held rather than hidden, so the row keeps its
-   *  place, and the chevron becomes a spinner: the press did land. */
-  busy?: boolean
   onClick: () => void
   testId: string
   /** A registered find_ui location (`{...uiLocation(id)}` spread on the row). */
@@ -114,22 +100,16 @@ const Row = forwardRef(function Row({ icon, tone = 'accent', label, sub, danger,
     <button
       type="button"
       onClick={onClick}
-      disabled={busy}
-      className={cn(
-        'flex items-center gap-3 w-full px-3.5 py-3 text-left border-t border-border first:border-t-0 transition-colors',
-        busy ? 'opacity-60 cursor-default' : 'hover:bg-bg-hover cursor-pointer',
-      )}
+      className="flex items-center gap-3 w-full px-3.5 py-3 text-left border-t border-border first:border-t-0 hover:bg-bg-hover transition-colors cursor-pointer"
       data-testid={testId}
       {...forwardUiLocation(uiLocationId, forwardedRef)}
     >
       <span className={cn('w-8 h-8 rounded-[9px] grid place-items-center shrink-0', TONE[tone])} aria-hidden="true">{icon}</span>
       <span className="flex-1 min-w-0 leading-tight">
-        <span className={cn('block text-[13px] font-semibold truncate', danger && 'text-danger')}>{label}</span>
+        <span className="block text-[13px] font-semibold truncate">{label}</span>
         {sub && <span className="block text-[12px] text-muted truncate">{sub}</span>}
       </span>
-      {busy
-        ? <Loader2 size={15} className="text-muted shrink-0 animate-spin" aria-hidden="true" />
-        : <ChevronRight size={15} className="text-muted shrink-0" aria-hidden="true" />}
+      <ChevronRight size={15} className="text-muted shrink-0" aria-hidden="true" />
     </button>
   )
 })
@@ -312,6 +292,29 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
             {/* Face and name only: the id, the role and the activity line were
                 dropped from the head (they live in the pill and the editor). */}
             <div className="mt-1 text-[19px] font-bold tracking-tight text-text-strong leading-tight" data-testid="crew-profile-name">{name}</div>
+            {/* Reset chat: a small muted link under the name, where the person
+                is. Quiet on purpose -- the composer's /clear already does this,
+                and the dialog carries the warning. NOT held while the crewmate
+                works: a stuck turn is when people reach for it, and the host's
+                flow stops that turn first. Held only while its own flow runs. */}
+            {p.onNewConversation && (
+              <button
+                type="button"
+                onClick={p.onNewConversation}
+                disabled={p.newConversationBusy}
+                className={cn(
+                  'inline-flex items-center gap-1 bg-transparent border-none p-0 text-[12px] text-muted transition-colors focus-ring rounded',
+                  p.newConversationBusy ? 'cursor-default' : 'hover:text-text cursor-pointer',
+                )}
+                data-testid="crew-profile-new-conversation"
+              >
+                {p.newConversationBusy
+                  ? <Loader2 size={12} className="animate-spin" aria-hidden="true" />
+                  : <RotateCcw size={12} aria-hidden="true" />}
+                {p.newConversationBusy ? t('pages.membersPage.new_conversation_row_busy') : t('pages.membersPage.new_conversation')}
+              </button>
+            )}
+            {p.newConversationError && <div className="w-full text-left mt-1">{p.newConversationError}</div>}
             <button
               type="button"
               onClick={p.onEdit}
@@ -376,37 +379,6 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
                 </div>
 
                 {p.settingsBody}
-                {/* LAST on the tab, and on purpose. The rows above are doors
-                    into what the crewmate IS; this one throws away what it
-                    currently knows, so it sits below everything else in its own
-                    group rather than in the list of doors — a reader scanning
-                    the card reaches it only after there is nothing else left.
-                    Red label for the same reason: the colour is the warning
-                    that arrives before the dialog's sentence.
-
-                    NOT disabled while the crewmate is working, which is the
-                    whole point of it living here: a stuck turn is the one
-                    occasion anybody wants this, and the host's flow stops that
-                    turn before it asks for the reset. */}
-                {p.onNewConversation && (
-                  <div className="rounded-2xl border border-border bg-bg overflow-hidden" data-testid="crew-profile-reset-group">
-                    <Row
-                      icon={<MessageSquarePlus size={16} />}
-                      tone="danger"
-                      danger
-                      busy={p.newConversationBusy}
-                      // "Start a new conversation": one term used everywhere in
-                      // this flow — the row, the dialog, its button and the
-                      // notices all say it, so a reader pressing "again" finds
-                      // the same words here.
-                      label={t('pages.membersPage.new_conversation')}
-                      sub={t('pages.membersPage.new_conversation_row_sub', { name })}
-                      onClick={p.onNewConversation}
-                      testId="crew-profile-new-conversation"
-                    />
-                  </div>
-                )}
-                {p.newConversationError}
               </div>
             )}
             {tab === 'schedule' && (

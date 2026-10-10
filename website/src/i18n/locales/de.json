@@ -6344,7 +6344,7 @@
       "split_right_d": "Nach rechts teilen (⌘D)",
       "type_to_filter": "Zum Filtern tippen…",
       "show_earlier_messages": "Frühere Nachrichten anzeigen",
-      "conversation_boundary": "Hier beginnt das neue Gespräch",
+      "conversation_boundary": "Chat zurückgesetzt",
       "hide_earlier_messages": "Frühere Nachrichten ausblenden"
     },
     "cliPanel": {
@@ -17694,16 +17694,16 @@
       "dashboard_frame_title": "Dashboard von {{crew}}",
       "dashboard_rendering": "Dashboard wird gezeichnet…",
       "back_to_roster": "Zurück zu den Crewmates",
-      "new_conversation": "Neues Gespräch beginnen",
-      "new_conversation_row_sub": "Frühere Nachrichten bleiben · stoppt zuerst die laufende Arbeit",
-      "new_conversation_confirm_title": "Ein neues Gespräch mit „{{name}}“ beginnen?",
-      "new_conversation_confirm_body": "„{{name}}“ beginnt neu: An das in diesem Chat Gesagte erinnert es sich nicht mehr. Was es in seinem Langzeitgedächtnis gespeichert hat, bleibt, und jede frühere Nachricht bleibt genau hier unter „Frühere Nachrichten anzeigen“. Wenn es gerade arbeitet, wird diese Arbeit zuerst gestoppt.",
-      "new_conversation_confirm_action": "Neues Gespräch beginnen",
-      "new_conversation_failed_title": "Neues Gespräch konnte nicht begonnen werden",
-      "new_conversation_boundary_failed": "Drücke noch einmal „Neues Gespräch beginnen“, um die Linie „Hier beginnt das neue Gespräch“ hinzuzufügen. Keine Nachricht geht verloren. Ohne die Linie sehen Nachrichten, die {{name}} schon vergessen hat, weiter aktuell aus, und ein zweiter Druck vergisst auch alles seitdem Gesagte.",
-      "new_conversation_boundary_failed_title": "Neues Gespräch begonnen, Linie nicht gespeichert",
-      "new_conversation_busy": "{{name}} bearbeitet eine Nachricht von anderswo, etwa aus einem Kanal – deshalb sieht dieser Chat weiter ruhig aus. Versuch es gleich noch einmal.",
-      "conversation_boundary_evicted": "Die Linie „Hier beginnt das neue Gespräch“ eines früheren neuen Gesprächs ging verloren, daher stammen Nachrichten darüber womöglich aus der Zeit vor diesem Gespräch. Wähle „Neues Gespräch beginnen“, um einen Neustart zu markieren."
+      "new_conversation": "Chat zurücksetzen",
+      "new_conversation_row_busy": "Chat wird zurückgesetzt …",
+      "new_conversation_confirm_title": "Chat mit „{{name}}“ zurücksetzen?",
+      "new_conversation_confirm_body": "„{{name}}“ vergisst diesen Chat und fängt neu an. Deine Nachrichten bleiben hier, über einer Linie „Chat zurückgesetzt“. Das Langzeitgedächtnis bleibt erhalten. Läuft gerade eine Arbeit, wird sie zuerst gestoppt.",
+      "new_conversation_confirm_action": "Chat zurücksetzen",
+      "new_conversation_failed_title": "Chat konnte nicht zurückgesetzt werden",
+      "new_conversation_boundary_failed": "{{name}} hat diesen Chat vergessen, aber die Linie „Chat zurückgesetzt“ wurde nicht gespeichert, daher wirken alte Nachrichten noch aktuell. Setze erneut zurück, um sie hinzuzufügen; dabei geht auch alles seitdem Gesagte verloren.",
+      "new_conversation_boundary_failed_title": "Chat zurückgesetzt, aber die Linie fehlt",
+      "new_conversation_busy": "{{name}} beantwortet noch eine Nachricht von woanders, zum Beispiel aus einem Slack-Kanal. Versuche es gleich noch einmal.",
+      "conversation_boundary_evicted": "Einige ältere Linien „Chat zurückgesetzt“ für dieses Crewmitglied sind verloren gegangen, daher können alte Nachrichten hier aktuell wirken. Setze den Chat zurück, um einen neuen Anfang zu markieren."
     },
     "tasksCapacityCard": {
       "title": "Aufgaben & Kapazität",

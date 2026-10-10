@@ -29,11 +29,6 @@ export interface ConfirmOptions {
   /** Every earlier caller confirms a destructive act, so danger styling is the
    *  default. Pass `false` for a weighty but non-destructive confirm (a grant). */
   danger?: boolean
-  /** Style the confirm button as the PRIMARY action. Only meaningful with
-   *  `danger: false`, which otherwise leaves confirm and Cancel as two plain
-   *  outline buttons the reader has to tell apart by reading both labels. A
-   *  non-destructive confirm still needs one obvious answer. */
-  primary?: boolean
   /** `top` paints the prompt above a full-screen overlay (`z-[9999]`) the
    *  caller may be raising it from; see `Modal`'s `layer`. */
   layer?: 'dialog' | 'top'
@@ -108,14 +103,7 @@ export function useConfirm(): {
             {i18nT('components.confirmDialog.cancel')}
           </Btn>
           {/* What a guide's destructive step waits for: this press, never a cancel. */}
-          <Btn
-            danger={opts.danger !== false}
-            // Only on a non-danger confirm: the two would otherwise compete,
-            // and `danger` is already the one obvious answer.
-            primary={opts.danger === false && opts.primary === true}
-            onClick={() => settle(true)}
-            {...guideConfirm()}
-          >
+          <Btn danger={opts.danger !== false} onClick={() => settle(true)} {...guideConfirm()}>
             {opts.confirmLabel}
           </Btn>
         </>
