@@ -680,6 +680,9 @@ class WorkflowRunner:
         return a run_id instantly instead of blocking on a slow synchronous author.
         """
         args = args or {}
+        # B5: the run's ONE wall-clock deadline, taken before authoring so the
+        # in-run author step and the script share the ceiling.
+        deadline = time.monotonic() + self._timeout_secs
         stream = EventStream(run_id, clock=host_now_iso)
         events: list[WorkflowEvent] = []
 
@@ -733,8 +736,33 @@ class WorkflowRunner:
             def _auth_progress(msg: str) -> None:
                 emit(stream.log(now, message=msg))
 
+            # Authoring runs under the run's deadline with the same guard and the
+            # same cancellation handling the script gets in _exec_validated: a
+            # hung author ends at the ceiling, and a caller cancel is answered
+            # with a result instead of escaping run().
+            author_task: Optional["asyncio.Future[Any]"] = None
             try:
-                authored = await author_fn(intent, on_progress=_auth_progress)
+                author_task = asyncio.ensure_future(author_fn(intent, on_progress=_auth_progress))
+                done, _pending = await asyncio.wait(
+                    {author_task}, timeout=max(0.0, deadline - time.monotonic())
+                )
+                if author_task not in done:
+                    author_task.cancel()
+                    await _drain_cleanup(author_task)
+                    emit(
+                        stream.run_failed(
+                            now, error=f"run exceeded {self._timeout_secs}s", where="ceiling"
+                        )
+                    )
+                    return RunResult(run_id, ok=False, result=None, events=events, error="timeout")
+                authored = author_task.result()
+            except asyncio.CancelledError:
+                if author_task is not None:
+                    if not author_task.done():
+                        author_task.cancel()
+                    await _drain_cleanup(author_task)
+                emit(stream.run_cancelled(now, reason="cancelled"))
+                return RunResult(run_id, ok=False, result=None, events=events, error="cancelled")
             except Exception as exc:  # noqa: BLE001 - authoring failure → failed run
                 emit(stream.run_failed(now, error=f"authoring error: {exc!r}", where="author"))
                 return RunResult(
@@ -770,6 +798,7 @@ class WorkflowRunner:
                 )
             return await self._exec_validated(
                 source,
+                deadline=deadline,
                 run_id=run_id,
                 now=now,
                 args=args,
@@ -807,6 +836,7 @@ class WorkflowRunner:
         )
         return await self._exec_validated(
             source,
+            deadline=deadline,
             run_id=run_id,
             now=now,
             args=args,
@@ -827,6 +857,7 @@ class WorkflowRunner:
         self,
         source: str,
         *,
+        deadline: float,
         run_id: str,
         now: str,
         args: dict,
@@ -845,6 +876,8 @@ class WorkflowRunner:
         """Build the run context, exec the (already validated) script under the
         wall-clock guard, and emit the terminal event. Shared by the source-given
         and the author-in-run paths; assumes ``run_started`` was already emitted.
+        *deadline* is the run's ``time.monotonic()`` deadline, taken when
+        :meth:`run` starts, so the script gets only what authoring left of it.
         """
         # Defense-in-depth: re-validate before exec so a future refactor that
         # bypasses the caller's validate() step cannot reach exec unchecked.
@@ -939,7 +972,11 @@ class WorkflowRunner:
             # ``run_failed`` (where="ceiling") instead of propagating cancellation.
             run_task: "asyncio.Task[Any]" = asyncio.ensure_future(entry(ctx))
             task = run_task  # keep an outer ref for the cancel handler below
-            done, _pending = await asyncio.wait({run_task}, timeout=self._timeout_secs)
+            # What is left of the run's deadline: authoring, when it ran, already
+            # spent its share, so the script never gets a second full ceiling.
+            done, _pending = await asyncio.wait(
+                {run_task}, timeout=max(0.0, deadline - time.monotonic())
+            )
             if run_task not in done:
                 # Runaway: cancel it and drain its cancellation quietly so no
                 # CancelledError escapes and no "task was destroyed" warning fires.
