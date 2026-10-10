@@ -11731,6 +11731,7 @@
       "could_not_generate_title": "Es konnte kein Titel erzeugt werden",
       "could_not_open_side_chat": "Seitenchat konnte nicht geöffnet werden",
       "side_command_not_run": "Der Befehl /side wurde nicht ausgeführt. Deine Nachricht ist noch im Eingabefeld.",
+      "command_not_available_here": "{{command}} funktioniert nur im Hauptchat. Deine Nachricht ist noch im Eingabefeld.",
       "could_not_send_to_side_chat": "Senden an den Seitenchat fehlgeschlagen",
       "could_not_switch_agent": "Agent konnte nicht gewechselt werden",
       "agent_command_not_run": "Der Befehl /agent wurde nicht ausgeführt. Deine Nachricht ist noch im Eingabefeld.",

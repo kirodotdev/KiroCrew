@@ -125,6 +125,8 @@ interface Props {
    * Enter is a newline, so the announcement must name Ctrl+Enter instead.
    */
   sendOnEnter?: SendMode
+  /** Commands the host refuses; left out of the list. */
+  hidden?: readonly string[]
 }
 
 /**
@@ -147,16 +149,20 @@ const FRONTEND_COMMAND_NAMES = ['/btw', '/kb', '/onboarding', '/plain'] as const
 
 const FRONTEND_COMMANDS: SlashCommand[] = FRONTEND_COMMAND_NAMES.map(name => ({ name }))
 
-export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, open = true, sendOnEnter = 'enter' }: Props) {
+export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, open = true, sendOnEnter = 'enter', hidden }: Props) {
   const { data: apiCommands = FALLBACK_COMMANDS, isFetching, isError } = useQuery<SlashCommand[]>({
     queryKey: ['slash-commands'],
     queryFn: ({ signal }) => api.slashCommands(signal),
     enabled: typeof api.slashCommands === 'function',
   })
-  const commands = useMemo(() => {
+  const allCommands = useMemo(() => {
     const names = new Set(apiCommands.map(c => c.name))
     return [...apiCommands, ...FRONTEND_COMMANDS.filter(c => !names.has(c.name))].sort((a, b) => a.name.localeCompare(b.name))
   }, [apiCommands])
+  const commands = useMemo(
+    () => (hidden?.length ? allCommands.filter(c => !hidden.includes(c.name)) : allCommands),
+    [allCommands, hidden],
+  )
 
   const match = input.match(/^\/([a-z]*)$/)
   const visible = open && !!match

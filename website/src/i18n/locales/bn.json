@@ -11731,6 +11731,7 @@
       "could_not_generate_title": "শিরোনাম তৈরি করা যায়নি",
       "could_not_open_side_chat": "সাইড চ্যাট খোলা যায়নি",
       "side_command_not_run": "/side কমান্ড চলেনি। আপনার বার্তা এখনও কম্পোজারে আছে।",
+      "command_not_available_here": "{{command}} শুধু মূল চ্যাটে কাজ করে। তোমার বার্তা এখনও চ্যাট বক্সে আছে।",
       "could_not_send_to_side_chat": "সাইড চ্যাটে পাঠানো যায়নি",
       "could_not_switch_agent": "এজেন্ট বদলানো যায়নি",
       "agent_command_not_run": "/agent কমান্ড চলেনি। তোমার বার্তা এখনও কম্পোজারে আছে।",

@@ -30,7 +30,7 @@ import { ThemeProvider } from '../src/hooks/useTheme'
 import { initI18n } from '../src/i18n/all'
 import { store } from '../src/store'
 import { sseSlots } from '../src/store/dashboardSlice'
-import { appendSlotMessage, selectSlotMessages, sseChatMessage } from '../src/store/chatSlice'
+import { appendSlotMessage, selectSlotMessages, sseChatMessage, sseSideResult } from '../src/store/chatSlice'
 import { memberProjectionStore } from '../src/state/memberProjectionStore'
 import '../src/index.css'
 
@@ -63,6 +63,12 @@ window.addEventListener('capture:frame', (e) => {
       { name: d.slug, slug: d.slug, last_active_ts: d.ts ?? Date.now() / 1000 },
       d.seq ?? 5,
     )
+  }
+  // The side chat's result frames for a question asked by `/side`: the user
+  // row and the answer, the way the WebSocket delivers `side_result`.
+  if (d.kind === 'side-echo') {
+    store.dispatch(sseSideResult({ slot: d.slot, run_id: 'side-run-1', role: 'user', content: d.text ?? '' }))
+    store.dispatch(sseSideResult({ slot: d.slot, run_id: 'side-run-1', role: 'assistant', content: 'Two PRs merged since your last look: #4211 and #4213.', final: true }))
   }
   if (d.kind === 'steer-echo') {
     // The server echoes the sendId it received in the POST's meta; mirror that

@@ -23,6 +23,12 @@ export interface SlashInterceptOptions {
   /** `/agent <name>` before the chat has a slot: hold the pick for the slot
    *  the next send creates, as the agent picker does. */
   onPendingAgent?: (agent: string) => void
+  /** Brings this slot's Side Chat on screen once the side session is open.
+   *  Absent: the chat page's activity panel (`openActivityToTab('side')`). A
+   *  host whose Side Chat lives elsewhere (the Members page drawer, a split
+   *  pane re-binding the panel) passes its own; `false` means it did not open,
+   *  so the question is not sent into a Side Chat nobody can see. */
+  openSide?: () => boolean | void | Promise<boolean | void>
 }
 
 /** The message of a rejected side-chat request, for the caller's notice. The
@@ -56,6 +62,12 @@ const AGENT_SUBCOMMANDS = new Set([
 export function agentSwitchTarget(trimmed: string): string | null {
   const name = trimmed.match(AGENT_RE)?.[1]
   return name && !AGENT_SUBCOMMANDS.has(name.toLowerCase()) ? name : null
+}
+
+/** Whether trimmed composer text is a `/side` (or `/btw`) command. A host
+ *  with no Side Chat surface refuses it before anything opens server-side. */
+export function isSideCommand(trimmed: string): boolean {
+  return SIDE_RE.test(trimmed)
 }
 
 /** Sync predicate for the commands interceptSlashCommand handles. The steer
@@ -125,7 +137,11 @@ export async function interceptSlashCommand(
     console.warn('[/side] sideOpen failed:', e)
     return { intercepted: true, failed: true, error: failureMessage(e), stage: 'open' }
   }
-  dispatch(openActivityToTab('side'))
+  if (opts.openSide) {
+    if ((await opts.openSide()) === false) return { intercepted: true, failed: true, stage: 'open' }
+  } else {
+    dispatch(openActivityToTab('side'))
+  }
   if (message) {
     let failed = false
     let error = ''

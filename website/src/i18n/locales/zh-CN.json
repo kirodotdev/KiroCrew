@@ -11565,6 +11565,7 @@
       "could_not_generate_title": "无法生成标题",
       "could_not_open_side_chat": "无法打开随手问",
       "side_command_not_run": "/side 命令未执行。你的消息仍保留在输入框中。",
+      "command_not_available_here": "{{command}} 只能在主聊天中使用。你的消息仍保留在输入框中。",
       "could_not_send_to_side_chat": "无法发送到随手问",
       "could_not_switch_agent": "无法切换代理",
       "agent_command_not_run": "/agent 命令未执行。你的消息仍保留在输入框中。",

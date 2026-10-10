@@ -11897,6 +11897,7 @@
       "could_not_generate_title": "Impossibile generare un titolo",
       "could_not_open_side_chat": "Impossibile aprire la chat laterale",
       "side_command_not_run": "Il comando /side non è stato eseguito. Il tuo messaggio è ancora nel campo di scrittura.",
+      "command_not_available_here": "{{command}} funziona solo nella chat principale. Il tuo messaggio è ancora nel campo di scrittura.",
       "could_not_send_to_side_chat": "Impossibile inviare alla chat laterale",
       "could_not_switch_agent": "Impossibile cambiare agente",
       "agent_command_not_run": "Il comando /agent non è stato eseguito. Il tuo messaggio è ancora nel campo di scrittura.",

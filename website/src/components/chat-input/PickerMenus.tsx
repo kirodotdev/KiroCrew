@@ -9,13 +9,14 @@ import type { ChatInputProps } from './props'
 
 /** The trigger menus anchored to the composer, and the consent dialog a
  *  project skill asks for before its token can be inserted. */
-export function ComposerPickerMenus({ pickers, value, onChange, composerAnchorRef, sendOnEnter, typedCommandMenus, project, agentName, onFileSelect, onFileOpen }: {
+export function ComposerPickerMenus({ pickers, value, onChange, composerAnchorRef, sendOnEnter, typedCommandMenus, hiddenCommands, project, agentName, onFileSelect, onFileOpen }: {
   pickers: ReturnType<typeof useComposerPickers>
   value: string
   onChange: (v: string) => void
   composerAnchorRef: React.RefObject<HTMLElement>
   sendOnEnter: SendMode
   typedCommandMenus: boolean
+  hiddenCommands?: readonly string[]
   project?: string
   agentName?: string
   onFileSelect: ChatInputProps['onFileSelect']
@@ -29,7 +30,7 @@ export function ComposerPickerMenus({ pickers, value, onChange, composerAnchorRe
   } = pickers
   return (
     <>
-      {typedCommandMenus && <SlashCommandMenu input={value} anchorRef={composerAnchorRef} open={slashMenuOpen} sendOnEnter={sendOnEnter} onSelect={cmd => { onChange(cmd); setSlashMenuOpen(false) }} onClose={() => setSlashMenuOpen(false)} />}
+      {typedCommandMenus && <SlashCommandMenu input={value} anchorRef={composerAnchorRef} open={slashMenuOpen} hidden={hiddenCommands} sendOnEnter={sendOnEnter} onSelect={cmd => { onChange(cmd); setSlashMenuOpen(false) }} onClose={() => setSlashMenuOpen(false)} />}
 
       {onFileSelect && (
         <FilePickerMenu
