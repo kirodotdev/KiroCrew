@@ -3265,6 +3265,7 @@
         "closeBlocked_one": "{{count}} पर अभी निर्णय बाकी है",
         "closeBlocked_other": "{{count}} पर अभी निर्णय बाकी है",
         "closeMeeting": "मीटिंग बंद करें",
+        "closing": "प्रतिलेख सहेजा जा रहा है…",
         "file": "दर्ज करें",
         "filedSection": "{{provider}} में दर्ज",
         "filing": "दर्ज हो रहा है…",

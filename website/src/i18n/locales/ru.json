@@ -3385,6 +3385,7 @@
         "closeBlocked_one": "{{count}} задача ещё ждёт решения",
         "closeBlocked_other": "{{count}} задачи ещё ждут решения",
         "closeMeeting": "Закрыть встречу",
+        "closing": "Сохранение стенограммы…",
         "file": "Зарегистрировать",
         "filedSection": "Зарегистрировано в {{provider}}",
         "filing": "Регистрация…",

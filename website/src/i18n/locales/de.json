@@ -3354,6 +3354,7 @@
         "closeBlocked_one": "{{count}} braucht noch eine Entscheidung",
         "closeBlocked_other": "{{count}} brauchen noch eine Entscheidung",
         "closeMeeting": "Besprechung abschließen",
+        "closing": "Transkript wird gespeichert…",
         "file": "Anlegen",
         "filedSection": "In {{provider}} angelegt",
         "filing": "Wird angelegt…",

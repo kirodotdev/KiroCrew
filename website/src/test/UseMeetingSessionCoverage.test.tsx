@@ -48,8 +48,9 @@ const stt = vi.hoisted(() => ({
   active: false,
   start: vi.fn(() => Promise.resolve()),
   stop: vi.fn(),
+  flush: vi.fn(() => Promise.resolve()),
   onCaption: undefined as ((text: string) => void) | undefined,
-  onFinal: undefined as ((text: string) => string | boolean | void) | undefined,
+  onFinal: undefined as ((text: string, at?: number) => string | boolean | void) | undefined,
   onError: undefined as ((code: string) => void) | undefined,
 }))
 
@@ -61,7 +62,7 @@ vi.mock('../apps/meetings/api', async importOriginal => {
 interface SttOptions {
   meetingId: string
   onCaption: (text: string) => void
-  onFinal?: (text: string) => string | boolean | void
+  onFinal?: (text: string, at?: number) => string | boolean | void
   onError?: (code: string) => void
 }
 
@@ -75,7 +76,13 @@ vi.mock('../apps/meetings/hooks/useMeetingTranscription', async importOriginal =
       stt.onCaption = opts.onCaption
       stt.onFinal = opts.onFinal
       stt.onError = opts.onError
-      return { active: stt.active, start: stt.start, stop: stt.stop, supported: true }
+      return {
+        active: stt.active,
+        start: stt.start,
+        stop: stt.stop,
+        flush: stt.flush,
+        supported: true,
+      }
     },
   }
 })
@@ -418,6 +425,31 @@ describe('useMeetingSession transcription binding', () => {
     expect(stt.onFinal?.('next topic')).toBe('next topic')
   })
 
+  it('judges a held repeat by its arrival time, not by when it was released', async () => {
+    await mountLoaded()
+    const heardAt = 1_000_000
+
+    // Two finals held behind a draining lease reach the dedup in one tick, but
+    // they were heard 7 s apart: both are speech, not a repeat.
+    expect(stt.onFinal?.('yes', heardAt)).toBe('yes')
+    expect(stt.onFinal?.('yes', heardAt + 7_000)).toBe('yes')
+    // The same arrival is still the same utterance.
+    expect(stt.onFinal?.('yes', heardAt + 7_000)).toBe(false)
+  })
+
+  it('a held final judged against a later-arriving predecessor final is not read as a repeat', async () => {
+    await mountLoaded()
+    const t = 1_000_000
+
+    // The predecessor's trailing final arrived 8 s after the successor's held
+    // one, and is dispatched first: the held final is released with an EARLIER
+    // arrival than the segment it is judged against.
+    expect(stt.onFinal?.('yes', t + 8_000)).toBe('yes')
+    expect(stt.onFinal?.('yes', t)).toBe('yes')
+    // Inside the window of the last segment, a repeat is still a repeat.
+    expect(stt.onFinal?.('yes', t + 2_000)).toBe(false)
+  })
+
   it.each([
     ['dispatch', 'apps.meetings.session.sttDispatchFailed'],
     ['unsupported', 'apps.meetings.session.sttUnsupported'],
@@ -568,6 +600,41 @@ describe('useMeetingSession lifecycle actions', () => {
     await waitFor(() => expect(view.result.current.pending.settingStatus).toBeNull())
   })
 
+  it('a pause flushes held finals before it asks the server to change status', async () => {
+    const view = await mountLoaded()
+    let flushSettled = false
+    let releaseFlush!: () => void
+    stt.flush.mockImplementationOnce(() => {
+      // What the transcription hook's flush does: dispatch what it held, then
+      // resolve once those dispatches settle.
+      void apiMocks.dispatch('weekly_sync', 'held words')
+      return new Promise<void>(resolve => {
+        releaseFlush = () => { flushSettled = true; resolve() }
+      })
+    })
+    const flushSettledAtStatus: boolean[] = []
+    apiMocks.setStatus.mockImplementationOnce(async () => {
+      flushSettledAtStatus.push(flushSettled)
+      return {}
+    })
+
+    act(() => {
+      view.result.current.actions.pause()
+    })
+    expect(stt.flush).toHaveBeenCalledTimes(1)
+    // Let every queued microtask run: an ungated mutation would reach the
+    // server here.
+    await act(async () => {})
+    expect(apiMocks.setStatus).not.toHaveBeenCalled()
+
+    act(() => releaseFlush())
+    await waitFor(() => expect(apiMocks.setStatus).toHaveBeenCalledWith('weekly_sync', 'paused'))
+    expect(flushSettledAtStatus).toEqual([true])
+    expect(apiMocks.dispatch).toHaveBeenCalledWith('weekly_sync', 'held words')
+    expect(apiMocks.dispatch.mock.invocationCallOrder[0])
+      .toBeLessThan(apiMocks.setStatus.mock.invocationCallOrder[0])
+  })
+
   it('ends the meeting and refreshes the meeting list', async () => {
     const view = await mountLoaded()
     const invalidate = vi.spyOn(view.queryClient, 'invalidateQueries')
@@ -577,11 +644,133 @@ describe('useMeetingSession lifecycle actions', () => {
     })
 
     await waitFor(() => expect(apiMocks.stop).toHaveBeenCalledWith('weekly_sync'))
+    // Ending closes ingress as well, so held finals are flushed first.
+    expect(stt.flush.mock.invocationCallOrder[0])
+      .toBeLessThan(apiMocks.stop.mock.invocationCallOrder[0])
     expect(view.notify).toHaveBeenCalledWith(
       i18nT('apps.meetings.session.ended'),
       { type: 'info' },
     )
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['meetings', 'list'] })
+  })
+
+  it('a second End inside the flush window is dropped, and End resolves once the stop lands', async () => {
+    const view = await mountLoaded()
+    let releaseFlush!: () => void
+    stt.flush.mockImplementationOnce(
+      () => new Promise<void>(resolve => { releaseFlush = resolve }),
+    )
+    let landed: boolean | undefined
+    const first = view.result.current.actions.stop()
+    void first.then(value => { landed = value })
+    // The latch flips before the flush starts, so the repeat is a no-op that
+    // follows the running stop rather than a second stop queued behind the
+    // same flush.
+    const second = view.result.current.actions.stop()
+    expect(stt.flush).toHaveBeenCalledTimes(1)
+    expect(second).toBe(first)
+    await act(async () => {})
+    expect(apiMocks.stop).not.toHaveBeenCalled()
+    expect(landed).toBeUndefined()
+
+    act(() => releaseFlush())
+    await waitFor(() => expect(apiMocks.stop).toHaveBeenCalledTimes(1))
+    await act(async () => { await first })
+    expect(landed).toBe(true)
+  })
+
+  it('End reads as pending from the click, through the flush, until the stop lands', async () => {
+    const view = await mountLoaded()
+    let releaseFlush!: () => void
+    stt.flush.mockImplementationOnce(
+      () => new Promise<void>(resolve => { releaseFlush = resolve }),
+    )
+    let releaseStop!: (value: Record<string, never>) => void
+    apiMocks.stop.mockImplementationOnce(
+      () => new Promise(resolve => { releaseStop = resolve }),
+    )
+    expect(view.result.current.pending.stopping).toBe(false)
+
+    act(() => {
+      void view.result.current.actions.stop()
+    })
+    // Pending while the held finals drain: the request has not gone out yet,
+    // so nothing but this flag can tell the control it was heard.
+    await waitFor(() => expect(view.result.current.pending.stopping).toBe(true))
+    expect(apiMocks.stop).not.toHaveBeenCalled()
+
+    act(() => releaseFlush())
+    await waitFor(() => expect(apiMocks.stop).toHaveBeenCalledTimes(1))
+    expect(view.result.current.pending.stopping).toBe(true)
+
+    act(() => releaseStop({}))
+    await waitFor(() => expect(view.result.current.pending.stopping).toBe(false))
+  })
+
+  it('a failed End resolves false and clears its latch, so End can be retried and an unwaited End leaves nothing to catch', async () => {
+    const view = await mountLoaded()
+    apiMocks.stop.mockImplementationOnce(() => Promise.reject(new Error('boom')))
+
+    // The failure is already the notice the mutation posts; the promise only
+    // says whether the stop landed, so a caller that does not wait on it
+    // cannot leak an unhandled rejection.
+    let landed: boolean | undefined
+    await act(async () => {
+      landed = await view.result.current.actions.stop()
+    })
+    expect(landed).toBe(false)
+    await waitFor(() => expect(view.result.current.pending.stopping).toBe(false))
+
+    await act(async () => {
+      await view.result.current.actions.stop()
+    })
+    expect(stt.flush).toHaveBeenCalledTimes(2)
+    expect(apiMocks.stop).toHaveBeenCalledTimes(2)
+  })
+
+  it('a failed End exposes its error until the next End starts', async () => {
+    const view = await mountLoaded()
+    const failure = new Error('boom')
+    apiMocks.stop.mockImplementationOnce(() => Promise.reject(failure))
+
+    await act(async () => {
+      await view.result.current.actions.stop()
+    })
+    await waitFor(() => expect(view.result.current.stopError).toBe(failure))
+
+    // The retry clears it as its request starts, before that request answers.
+    let releaseStop!: (value: Record<string, never>) => void
+    apiMocks.stop.mockImplementationOnce(
+      () => new Promise(resolve => { releaseStop = resolve }),
+    )
+    act(() => {
+      void view.result.current.actions.stop()
+    })
+    await waitFor(() => expect(apiMocks.stop).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(view.result.current.stopError).toBeNull())
+    expect(view.result.current.pending.stopping).toBe(true)
+
+    act(() => releaseStop({}))
+    await waitFor(() => expect(view.result.current.pending.stopping).toBe(false))
+    expect(view.result.current.stopError).toBeNull()
+  })
+
+  it('a status control reads as pending through the flush, before its request goes out', async () => {
+    const view = await mountLoaded()
+    let releaseFlush!: () => void
+    stt.flush.mockImplementationOnce(
+      () => new Promise<void>(resolve => { releaseFlush = resolve }),
+    )
+
+    act(() => {
+      view.result.current.actions.pause()
+    })
+    await waitFor(() => expect(view.result.current.pending.settingStatus).toBe('paused'))
+    expect(apiMocks.setStatus).not.toHaveBeenCalled()
+
+    act(() => releaseFlush())
+    await waitFor(() => expect(apiMocks.setStatus).toHaveBeenCalledWith('weekly_sync', 'paused'))
+    await waitFor(() => expect(view.result.current.pending.settingStatus).toBeNull())
   })
 
   it('holds a minutes save pending until the outputs refetch lands', async () => {
@@ -818,7 +1007,6 @@ describe('useMeetingSession failure reporting', () => {
   it.each([
     ['start', 'start', 'apps.meetings.session.startFailed'],
     ['pause', 'setStatus', 'apps.meetings.session.statusFailed'],
-    ['stop', 'stop', 'apps.meetings.session.stopFailed'],
     ['broadcast', 'dispatch', 'apps.meetings.session.broadcastFailed'],
     ['messageAgent', 'message', 'apps.meetings.session.messageFailed'],
     ['toggleAgent', 'toggleAgent', 'apps.meetings.session.agentToggleFailed'],
@@ -840,6 +1028,20 @@ describe('useMeetingSession failure reporting', () => {
 
     await waitFor(() =>
       expect(view.notify).toHaveBeenCalledWith(i18nT(key), { type: 'error' }))
+  })
+
+  it('a failed End is said beside the control, not also in the feed', async () => {
+    apiMocks.stop.mockRejectedValue(new Error('boom'))
+    const view = await mountLoaded()
+
+    await act(async () => {
+      await view.result.current.actions.stop()
+    })
+    await waitFor(() => expect(view.result.current.stopError).not.toBeNull())
+    expect(view.notify).not.toHaveBeenCalledWith(
+      i18nT('apps.meetings.session.stopFailed'),
+      { type: 'error' },
+    )
   })
 
   it('explains a 409 as another meeting already running', async () => {

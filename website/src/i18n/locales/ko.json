@@ -3293,6 +3293,7 @@
         "backToMeeting": "회의로 돌아가기",
         "closeBlocked_other": "{{count}}건에 대한 결정이 필요합니다",
         "closeMeeting": "회의 마감",
+        "closing": "기록을 저장하는 중…",
         "file": "등록",
         "filedSection": "{{provider}}에 등록됨",
         "filing": "등록 중…",

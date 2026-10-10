@@ -93,7 +93,9 @@ export function newSegmentText(
 ): string {
   const trimmed = text.trim()
   if (!trimmed) return ''
-  if (now - previous.ts >= DEDUP_WINDOW_MS || !previous.text) return trimmed
+  // Absolute: a held final is released after a predecessor's trailing final
+  // that arrived LATER, so `now` can precede `previous.ts`.
+  if (Math.abs(now - previous.ts) >= DEDUP_WINDOW_MS || !previous.text) return trimmed
   if (trimmed === previous.text) return ''
   if (trimmed.startsWith(previous.text)) {
     // A growing final: send only what was added.
@@ -297,10 +299,22 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
   // whichever settles first would re-enable the controls while the other is
   // still in flight. The ref flips before the mutation starts, immune to
   // closure staleness, so the second click is a no-op instead. The DISPLAY
-  // half of the pending state is not tracked here — it derives from the
-  // mutation itself (`statusMutation.isPending ? variables : null`), the same
-  // spelling `filing` uses below.
+  // half derives from the mutation itself (`statusMutation.isPending ?
+  // variables : null`, the same spelling `filing` uses below) once the request
+  // is out; `flushingStatus` covers the window before it, because every status
+  // change flushes the held finals first and the mutation is not pending yet
+  // while that runs, so the control that was clicked would otherwise read as
+  // idle for up to `FLUSH_TIMEOUT_MS`. Set with the latch, cleared where the
+  // latch clears.
   const statusInFlightRef = useRef(false)
+  const [flushingStatus, setFlushingStatus] = useState<MeetingStatus | null>(null)
+  // End's latch, holding the in-flight stop. End flushes first too, and a
+  // second click inside that window would otherwise queue a second stop; the
+  // repeat gets the same promise, so a caller awaiting it still follows the one
+  // stop that is running. `stopRequested` is its display half, true from the
+  // click until that stop settles.
+  const stopInFlightRef = useRef<Promise<boolean> | null>(null)
+  const [stopRequested, setStopRequested] = useState(false)
 
   const metaQuery = useQuery({
     queryKey: [...scope, 'meta'],
@@ -530,14 +544,19 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
 
   const onCaption = useCallback((text: string) => setCaption(text), [])
 
-  /** Returns `false` for an overlapping repeat, which suppresses its dispatch. */
-  const onSegment = useCallback((text: string): string | false => {
-    const now = Date.now()
-    const fresh = newSegmentText(text, lastSegmentRef.current, now)
+  /**
+   * Returns `false` for an overlapping repeat, which suppresses its dispatch.
+   *
+   * Judged at `at`, the time the final ARRIVED: finals held behind a draining
+   * lease are released together, and timing them by the release would read two
+   * utterances heard seconds apart as one repeat inside the window.
+   */
+  const onSegment = useCallback((text: string, at = Date.now()): string | false => {
+    const fresh = newSegmentText(text, lastSegmentRef.current, at)
     if (!fresh) return false
     // Track the FULL text, not the suffix: the next segment's overlap is against
     // everything recognized so far, not just the part last dispatched.
-    lastSegmentRef.current = { text: text.trim(), ts: now }
+    lastSegmentRef.current = { text: text.trim(), ts: at }
     return fresh
   }, [])
 
@@ -673,6 +692,7 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
         ])
       } finally {
         statusInFlightRef.current = false
+        setFlushingStatus(null)
       }
     },
     onError: error => failureNotice(error, i18nT('apps.meetings.session.statusFailed')),
@@ -682,10 +702,15 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
   // another status change is pending is dropped rather than queued: the server
   // serializes them anyway, and replaying a stale intent after the first change
   // settles would move the meeting somewhere the user no longer means.
+  //
+  // A status change closes ingress, so the finals still held behind a draining
+  // lease, and every dispatch still retrying, must land first: one that reaches
+  // the server after the change is refused and lost from the notes.
   const requestStatus = (next: MeetingStatus) => {
     if (statusInFlightRef.current) return
     statusInFlightRef.current = true
-    statusMutation.mutate(next)
+    setFlushingStatus(next)
+    void transcriptionRef.current.flush().then(() => statusMutation.mutate(next))
   }
 
   const stopMutation = useMutation({
@@ -695,7 +720,8 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
       invalidate()
       void queryClient.invalidateQueries({ queryKey: ['meetings', 'list'] })
     },
-    onError: error => failureNotice(error, i18nT('apps.meetings.session.stopFailed')),
+    // A failed stop is reported by the review view, beside the close control,
+    // through `stopError`; a feed notice on top of it would say it twice.
   })
 
   // The saved title goes straight into the cache so the header shows it at once.
@@ -848,6 +874,8 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
     setTranslationOpen,
     loading: initQuery.isLoading || metaQuery.isLoading,
     error: (initQuery.error ?? metaQuery.error) as Error | null,
+    /** Why the last End failed, kept for the review view until the next End's request starts. */
+    stopError: stopMutation.error,
     agentsPaused: Boolean(live?.agents_paused),
     syncing: metaQuery.isFetching || outputsQuery.isFetching || transcriptQuery.isFetching,
     setSelectedPreset,
@@ -859,7 +887,26 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
       resume: () => requestStatus('active'),
       review: () => requestStatus('reviewing'),
       backToMeeting: () => requestStatus('paused'),
-      stop: () => stopMutation.mutate(),
+      // Ending closes ingress too, so it flushes first, as `requestStatus` does,
+      // and is latched the same way. The promise resolves to whether the stop
+      // landed and never rejects: the failure is already the notice the
+      // mutation posts. So the review view can leave the meeting once the stop
+      // has landed and stay to retry when it has not, and a caller that does
+      // not wait on it has nothing to catch.
+      stop: () => {
+        if (stopInFlightRef.current) return stopInFlightRef.current
+        setStopRequested(true)
+        const stop = transcriptionRef.current
+          .flush()
+          .then(() => stopMutation.mutateAsync())
+          .then(() => true, () => false)
+          .finally(() => {
+            stopInFlightRef.current = null
+            setStopRequested(false)
+          })
+        stopInFlightRef.current = stop
+        return stop
+      },
       rename: (title: string) => renameMutation.mutateAsync(title),
       mute: (agentId: string, muted: boolean) => muteMutation.mutate({ agentId, muted }),
       toggleAgent: (agentId: string, enable: boolean) =>
@@ -884,9 +931,10 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
     },
     pending: {
       starting: startMutation.isPending,
-      stopping: stopMutation.isPending,
-      /** The target status of an in-flight pause/resume/review change, or null. */
-      settingStatus: statusMutation.isPending ? statusMutation.variables ?? null : null,
+      /** True from the End click until its stop settles, the flush included. */
+      stopping: stopMutation.isPending || stopRequested,
+      /** The target status of a pause/resume/review change, from its click until it settles, or null. */
+      settingStatus: statusMutation.isPending ? statusMutation.variables ?? null : flushingStatus,
       filing: fileTaskMutation.isPending ? fileTaskMutation.variables : null,
     },
   }
