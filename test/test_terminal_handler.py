@@ -23,6 +23,7 @@ from spawn_test_helpers import strip_spawn_shim
 from kiro_crew import platform_compat
 from kiro_crew.dashboard import terminal_commands
 from kiro_crew.dashboard.handlers import terminal
+from kiro_crew.testing.ids import UNALLOCATABLE_PID
 
 
 @pytest.fixture(autouse=True)
@@ -74,10 +75,19 @@ def _make_request(
 
 
 def _make_session(session_id="s1", alive=True, ws=None, disconnect=None):
-    """Build a mock _TerminalSession."""
+    """Build a mock _TerminalSession.
+
+    The mock child's pid is ``UNALLOCATABLE_PID`` (testing-conventions D6), never
+    a plausible live pid. ``_kill_session`` signals ``sess.proc.pid`` for real
+    unless a test stubs ``platform_compat.kill_process_tree(_async)``, and a
+    plausible number names whatever the host runs at that pid: under xdist, a
+    sibling worker or one of its threads, which the SIGHUP meant for the mock
+    then kills mid-test. A pid above every ``pid_max`` cannot be delivered
+    anywhere: ``os.getpgid`` raises ``OverflowError`` before any syscall.
+    """
     proc = MagicMock()
     proc.returncode = None if alive else 0
-    proc.pid = 12345
+    proc.pid = UNALLOCATABLE_PID
     proc.wait = AsyncMock()
     sess = terminal._TerminalSession(
         session_id=session_id,
@@ -689,7 +699,7 @@ class TestKillSession:
         with patch("os.close"), \
                 patch("kiro_crew.dashboard.handlers.terminal.platform_compat.kill_process_tree") as mock_kill:
             await terminal._kill_session(sess)
-        mock_kill.assert_any_call(12345, platform_compat.SIGTERM)
+        mock_kill.assert_any_call(UNALLOCATABLE_PID, platform_compat.SIGTERM)
 
     @pytest.mark.asyncio
     async def test_the_process_tree_is_hung_up_and_ended_before_the_pty_is_closed(self):
@@ -746,8 +756,8 @@ class TestKillSession:
                 patch("kiro_crew.dashboard.handlers.terminal.platform_compat.kill_process_tree") as mock_kill:
             await terminal._kill_session(sess)
         calls = [c.args for c in mock_kill.call_args_list]
-        assert (12345, platform_compat.SIGTERM) in calls
-        assert (12345, platform_compat.SIGKILL) in calls
+        assert (UNALLOCATABLE_PID, platform_compat.SIGTERM) in calls
+        assert (UNALLOCATABLE_PID, platform_compat.SIGKILL) in calls
 
     @pytest.mark.asyncio
     async def test_ends_child_before_closing_controller_fd(self):
@@ -943,7 +953,13 @@ class TestKillSession:
     @pytest.mark.asyncio
     async def test_master_fd_cleared_before_await_survives_cancellation(self):
         """If the coroutine is cancelled while suspended on the executor close,
-        master_fd must already be -1 so the fd is not left referenced."""
+        the controller fd field must already be -1 so the fd is not left
+        referenced.
+
+        The tree-kill is stubbed like in every sibling: this test is about the
+        descriptor handoff, and the mock session's pid is never signalled for
+        real.
+        """
         loop = asyncio.get_running_loop()
         closing = loop.create_future()
         entered = asyncio.Event()
@@ -954,7 +970,10 @@ class TestKillSession:
 
         sess = _make_session()
         sess.master_fd = 42
-        with patch.object(loop, "run_in_executor", side_effect=submit):
+        with patch.object(loop, "run_in_executor", side_effect=submit), patch(
+            "kiro_crew.dashboard.handlers.terminal.platform_compat.kill_process_tree_async",
+            AsyncMock(),
+        ):
             task = asyncio.create_task(terminal._kill_session(sess))
             try:
                 await asyncio.wait_for(entered.wait(), 5)
@@ -990,7 +1009,7 @@ class TestKillSession:
             await terminal._kill_session(sess)
         # The close error was swallowed and teardown continued to the tree-kill.
         assert sess.master_fd == -1
-        mock_kill.assert_any_call(12345, platform_compat.SIGTERM)
+        mock_kill.assert_any_call(UNALLOCATABLE_PID, platform_compat.SIGTERM)
 
 
 # ── api_terminal_create ──
@@ -3322,7 +3341,7 @@ class TestApiTerminalList:
         assert len(body["sessions"]) == 1
         s = body["sessions"][0]
         assert s["session_id"] == "s1"
-        assert s["pid"] == 12345
+        assert s["pid"] == UNALLOCATABLE_PID
         assert s["alive"] is True
         assert s["cols"] == 120
         assert s["rows"] == 40
@@ -5783,10 +5802,9 @@ class TestTerminalWsIntegration:
         cfg_file.write_text(json.dumps({"dashboard": {"terminal": {"enabled": True}}}))
         monkeypatch.setattr(terminal, "config_path", lambda: cfg_file)
         monkeypatch.setattr(terminal, "_sel", lambda: MagicMock())
-        # This test seeds a mock session (proc.pid=12345) and deletes it. Stub the
-        # tree-kill so teardown does no real process signalling: on POSIX
-        # os.killpg(getpgid(12345)) fails fast, but on Windows taskkill /T /PID
-        # 12345 targets a real system PID (slow timeout / could kill it). Real
+        # This test seeds a mock session (an unallocatable proc.pid) and deletes
+        # it. Stub the tree-kill so teardown does no real process signalling at
+        # all; on Windows taskkill /T /PID would still spawn for the number. Real
         # teardown is covered by the ConPTY integration test.
         monkeypatch.setattr(terminal.platform_compat, "kill_process_tree_async", AsyncMock())
 
@@ -5909,7 +5927,7 @@ class TestSessionTitle:
     each branch is exercised deterministically (no real PTY needed)."""
 
     def _sess(self):
-        # _make_session gives master_fd=99 and proc.pid=12345.  # wokeignore:rule=master
+        # _make_session gives master_fd=99 and proc.pid=UNALLOCATABLE_PID.  # wokeignore:rule=master
         return _make_session()
 
     def test_returns_none_on_non_posix(self):
@@ -5928,7 +5946,7 @@ class TestSessionTitle:
             assert terminal._session_title(self._sess()) is None
 
     def test_returns_foreground_command_name(self):
-        # fg pgid (999) != shell pid (12345) -> a command is running.
+        # fg pgid (999) != shell pid (UNALLOCATABLE_PID) -> a command is running.
         with patch.object(terminal.platform_compat, "IS_POSIX", True), \
              patch("os.tcgetpgrp", return_value=999), \
              patch.object(terminal, "_proc_comm", return_value="vim"):
@@ -5937,7 +5955,7 @@ class TestSessionTitle:
     def test_falls_back_to_cwd_basename_when_idle(self):
         # fg pgid == shell pid -> at the prompt -> cwd basename.
         with patch.object(terminal.platform_compat, "IS_POSIX", True), \
-             patch("os.tcgetpgrp", return_value=12345), \
+             patch("os.tcgetpgrp", return_value=UNALLOCATABLE_PID), \
              patch.object(terminal, "_proc_cwd", return_value="/home/u/my-project"):
             assert terminal._session_title(self._sess()) == "my-project"
 
@@ -5951,7 +5969,7 @@ class TestSessionTitle:
 
     def test_returns_none_when_cwd_unavailable(self):
         with patch.object(terminal.platform_compat, "IS_POSIX", True), \
-             patch("os.tcgetpgrp", return_value=12345), \
+             patch("os.tcgetpgrp", return_value=UNALLOCATABLE_PID), \
              patch.object(terminal, "_proc_cwd", return_value=None):
             assert terminal._session_title(self._sess()) is None
 
@@ -6113,7 +6131,7 @@ class TestCwdProbeSharing:
         # Exactly the pair of calls one poll tick makes, in order.
         sess = _make_session()
         with patch.object(terminal.platform_compat, "IS_POSIX", True), \
-             patch("os.tcgetpgrp", return_value=12345), \
+             patch("os.tcgetpgrp", return_value=UNALLOCATABLE_PID), \
              patch.object(terminal, "_proc_cwd", return_value="/home/u/proj") as probe:
             assert terminal._session_title(sess) == "proj"
             assert terminal._session_cwd(sess) == "/home/u/proj"
