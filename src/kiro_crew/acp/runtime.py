@@ -2016,12 +2016,28 @@ class AcpRuntime:
         the pre-spawn gate's own refusal (a mirror that CANNOT be re-derived) arrives as
         ``AcpRuntimeError`` and is not retried, because a second attempt would fail the
         same way for the same reason.
+
+        The first attempt's reap is a ``kill()``, which marks this runtime dead, so the
+        retry runs only after :meth:`_revive_after_failed_start` has cleared that death.
+        When it cannot -- the reap did not confirm the first child gone, or a reply
+        task the first child started would not stop -- the stale spec is reported as
+        the failure, unretried: a second child beside a first one this handle still
+        holds is exactly the leak the failed-start guard exists to prevent.
         """
         from kiro_crew.agent import DerivedSpecStale
 
         try:
             await self._spawn_admitted()
         except DerivedSpecStale as first:
+            if not await self._revive_after_failed_start():
+                logger.warning(
+                    "acp_cold_start stage=rederive outcome=not_retried backend=%s reason=%s: "
+                    "the failed start left a child or a reply task this runtime could not "
+                    "confirm stopped",
+                    self._acp_backend or "kiro",
+                    first,
+                )
+                raise AcpRuntimeError(str(first)) from first
             logger.info(
                 "acp_cold_start stage=rederive outcome=retry backend=%s reason=%s",
                 self._acp_backend or "kiro",
@@ -2031,6 +2047,74 @@ class AcpRuntime:
                 await self._spawn_admitted()
             except DerivedSpecStale as second:
                 raise AcpRuntimeError(str(second)) from second
+
+    #: How long a revive waits for the failed child's reply tasks to stop once
+    #: cancelled. None of them absorbs a cancellation, so this is only a bound.
+    _REVIVE_ANSWER_DRAIN_TIMEOUT = 1.0
+
+    async def _revive_after_failed_start(self) -> bool:
+        """Clear the death a failed start's reap left, so this handle can start again.
+
+        The failed-start guard reaps the child with ``kill()``, and ``kill()`` marks
+        the runtime dead; every request path refuses a dead runtime, so a second
+        start on this handle would have its own ``initialize`` refused with "runtime
+        is dead" and never reach the check it is retrying. A start that failed
+        before ``initialize`` completed served no session, so its death has no
+        tenant left to tell, and clearing it is what lets the same handle start
+        again.
+
+        Clears what the dead child left behind that a later reading would attribute
+        to the next one: the death state and record, its stderr ring, the auth and
+        sandbox latches armed from it, and its scratch directory, which the next
+        launch would otherwise adopt as the session's tree. Fields the next spawn
+        assigns before it reads them (pid, start identity, capabilities) are left
+        for it to assign.
+
+        The child's reply tasks are cancelled and awaited first. ``kill()`` does
+        not stop them, and the runtime being dead is the only thing that keeps one
+        of them -- a host-auth answer waiting on a token refresh -- from writing its
+        reply into the next child's stdin under an id that child never sent.
+
+        Returns False, changing nothing about the death, unless the reap dropped the
+        process handle AND confirmed the root and its tracked descendants gone. A
+        declined kill, a Windows tree drain still pending, or a root that outlived
+        its signals all leave that unconfirmed, and spawning a second child beside
+        the first is the leak the guard prevents. Also False once a session is
+        registered, which a start that never initialized cannot have, and when a
+        reply task outlives its cancellation.
+        """
+        if (
+            not self._dead
+            or self._process is not None
+            or not self._process_tree_confirmed_dead
+            or self._initialized
+            or self._session_queues
+        ):
+            return False
+        replies = [task for task in self._answer_tasks if not task.done()]
+        for task in replies:
+            task.cancel()
+        if replies:
+            _, still_running = await asyncio.wait(
+                replies, timeout=self._REVIVE_ANSWER_DRAIN_TIMEOUT
+            )
+            if still_running:
+                return False
+        self._scratch_dir = None
+        self._dead = False
+        self._process_tree_confirmed_dead = False
+        self._death_summary = None
+        self._death_reason = ""
+        self._death_label = ""
+        self._death_tail = ""
+        self._death_expected = False
+        self._stdin_stall_death = False
+        self._stall_turn_sessions = frozenset()
+        self._stderr_lines.clear()
+        self._saw_auth_failure = False
+        self._saw_sandbox_init_failure = False
+        runtime_death.retract(self)
+        return True
 
     async def _spawn_admitted(self) -> None:
         """Spawn and initialize after the caller has acquired cold-start admission."""

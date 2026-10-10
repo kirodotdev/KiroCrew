@@ -169,6 +169,22 @@ def announce(
     return death
 
 
+def retract(runtime: object) -> None:
+    """Forget *runtime*'s death record, because the same handle is starting again.
+
+    Only for a runtime whose START failed and is being revived for a retry: it
+    served no session, so no tenant has read the record or will. Leaving it in
+    place would let a later reading attribute the failed first child's death to
+    the process the handle runs next. Keyed by the runtime itself, never a
+    provider in front of it, so a retract cannot reach another runtime's record.
+    """
+    try:
+        _deaths.pop(runtime, None)
+    except TypeError:
+        # Not weak-referenceable, so announce() never keyed a record for it.
+        pass
+
+
 def death_of(target: object) -> RuntimeDeath | None:
     """The death record for *target*, or None when it has not died here.
 
