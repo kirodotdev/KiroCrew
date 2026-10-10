@@ -128,6 +128,109 @@ export interface DashboardManifest {
   fields: Record<string, DashboardFieldSpec>
 }
 
+/**
+ * The dashboard artifact a page is drawn from, as the READ names it.
+ *
+ * A DESCRIPTOR and not the package content. The browser never receives
+ * `model` / `view` / `theme`: the document is composed server-side from them, so
+ * what the page needs is the artifact's identity, the `version` a patch's
+ * `layout` is compared against, and the binding -- which is what makes "is this
+ * page still this crewmate's" answerable without shipping the layout.
+ *
+ * `DashboardPackage` in `types/dashboardPackage.ts` is the content type, for the
+ * Artifacts library and anything that reads the artifact itself.
+ */
+export interface DashboardPackageRef {
+  /** The dashboard artifact's slug. */
+  slug: string
+  /** The artifact's version. This is the `layout` a block patch carries, and a
+   *  change to it means the page must be recomposed rather than patched. */
+  version: number
+  /** The canonical fingerprint of `model` + `view` + `theme`. The controller
+   *  compares it alongside the version, because the two disagreeing is how a
+   *  rewritten layout at the same version would otherwise go unnoticed. */
+  layout_fingerprint: string
+  /** `crewmate:<slug>` or `session:<slot key>`. */
+  bound_to: string
+}
+
+/**
+ * `GET /api/members/{slug}/dashboard?member=<name>` -- the crewmate's dashboard.
+ *
+ * ADDITIVE, which is the one thing to understand about this type. The controller
+ * (D2, chat-2622) serves a v3 PACKAGE body when the crewmate has a readable
+ * dashboard package, and the pre-existing template-registry body otherwise --
+ * the template registry is still a live feature and this round does not retire
+ * it. A reader tells the two apart by ONE key: `package` present means the v3
+ * body, and every v3-only key below travels with it.
+ *
+ * The page's own rule is narrower than this type and does not vary with it:
+ * `state === 'live'` with a `rendered_html` is the only thing that draws, so a
+ * body from either path that reports anything else gets the empty state rather
+ * than a page. That is where "no default page" is enforced on this side.
+ */
+export interface MemberDashboardRead {
+  /** `live`, `empty`, `stale` or `error`. The ONLY field that decides whether a
+   *  page draws. `stale` belongs to the template path alone -- it means the
+   *  registry moved past a copy, and a package has no registry behind it. */
+  state: 'empty' | 'live' | 'stale' | 'error'
+  /** One sentence naming why, for a non-live state. Never shown raw to a reader:
+   *  the frame's own copy says what happened, and this is for a log. */
+  state_reason?: string
+  /** The composed page, values already filled in. Absent when the renderer
+   *  refused or the state is not one it composes. */
+  rendered_html?: string
+
+  // -- the v3 package path. Present together, keyed by `package`. ------------ //
+
+  /** The dashboard artifact behind this page, or absent on the template path. */
+  package?: DashboardPackageRef
+  /** Where the block-patch stream stood when this body was composed, so the
+   *  FIRST patch after a read is checkable for a gap like every later one. */
+  push_version?: number
+  /** The WS message type a patch for this page arrives as, named BY THE SERVER
+   *  so the seam is the shape rather than a constant spelled in two languages.
+   *  The router still needs a static case to dispatch on, so the frontend holds
+   *  the constant too -- and checks it against this, which turns a rename into a
+   *  visible disagreement instead of a push path that silently stops. */
+  push_frame?: string
+  /**
+   * The TWO postMessage types the document listens for, both named by the server
+   * so the frontend need hold neither.
+   *
+   * `page_message` is the FULL PAINT: that listener replaces the whole read and
+   * re-initialises every block. `page_patch_message` is the narrow one a fold
+   * push forwards. They are different strings on purpose -- using the full-paint
+   * one for a fold advance gives a block that owns a canvas a second canvas, with
+   * two scenes animating over each other, and the server has a test asserting the
+   * two values differ.
+   *
+   * A push forwards the frame's `patch` VERBATIM and that object carries its own
+   * `type`, so `page_patch_message` is here for the comparison rather than to be
+   * put on a message this side builds.
+   */
+  page_message?: string
+  page_patch_message?: string
+  /** Block id -> field name -> value: every block's values, which IS the whole
+   *  page in data. The page reads the KEYS as the set of blocks it is showing,
+   *  because `view.blocks` itself never crosses to the browser. */
+  blocks?: Record<string, Record<string, unknown>>
+  /** Field names whose fold path did not resolve. Named rather than sent as a
+   *  null, which would render as a zero. */
+  missing?: string[]
+
+  // -- the template path, unchanged. ---------------------------------------- //
+
+  /** The crewmate's instance version on the template path. */
+  instance_version?: number
+  /** Which template the instance copied. */
+  template?: { id: string; version: number }
+  /** The stored copy. NEVER mounted -- see `CrewDynamicDashboard`. */
+  html?: string
+  /** The manifest of the template the instance copied. */
+  manifest?: DashboardManifest
+}
+
 export interface CrewPanelMeta {
   template: string
   title: string
@@ -258,17 +361,24 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, sessio
       fetch(
         '/api/members/' + encodeURIComponent(slug) + '/panel?member=' + encodeURIComponent(member),
       ).then(j) as Promise<{ panel: CrewPanelMeta | null; html: string | null }>,
-    // The crewmate's dynamic dashboard INSTANCE: which template it copied, its own
-    // edited page, the manifest that says where each field's value comes from, and
-    // the instance's state. Served by the registry (contract v3 part 4/7) and read
-    // here because the frame beside the chat is what renders it.
+    // The crewmate's dynamic dashboard: its LAYOUT PACKAGE and the page composed
+    // from it. Read here because the frame beside the chat is what renders it.
     //
-    // `html` and `manifest` travel TOGETHER on purpose: the page binds fields by
-    // name and the manifest is what says which of those names are the crewmate's
-    // own writes rather than folded numbers. Two reads could pair a page with a
-    // manifest from a different instance version, and the frame would then mark the
-    // wrong cells as agentic -- which is the one thing this surface must not get
-    // wrong, because it is the reader's only signal of how much to trust a number.
+    // There is no template registry on this path any more. The dashboard is a
+    // `kind="dashboard"` artifact holding `bound_to`, `model`, `view` and `theme`,
+    // and `package_version` is that artifact's version -- which moves only when the
+    // layout does, because a dashboard package carries no values. So there is no
+    // "stored copy" beside a "composed page" to choose between, and no builtin page
+    // to fall back to: a crewmate with no package has NO dashboard, which the
+    // `empty` state says and the frame's empty state draws.
+    //
+    // `package` and `rendered_html` travel together for the reason the manifest and
+    // the page used to: the composed document binds blocks by id and fields by
+    // name, and the package is what says which of those fields the crewmate wrote
+    // itself (`source.agentic`) rather than read out of a fold. Two reads could pair
+    // a document with a package from a different version, and the page would then
+    // address a push at a block the layout no longer places.
+    //
     // `member` is the exact crew name, as every member route takes it (slugs are lossy).
     // `locale` is the UI language the page should render its own words in; the
     // gateway checks it against the shipped catalogs and falls back to English.
@@ -279,17 +389,7 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, sessio
         '/api/members/' + encodeURIComponent(slug) + '/dashboard?member=' + encodeURIComponent(member)
           + (locale ? '&locale=' + encodeURIComponent(locale) : '')
           + (preview ? '&preview=1' : ''),
-      ).then(j) as Promise<{
-        instance_version: number
-        template: { id: string; version: number }
-        html: string
-        /** The live page with its values already filled in by the gateway (data
-         * island + bootstrap + page), absent when the fill failed or the state is not
-         * live. The frame prefers it; the raw `html` is the fallback. */
-        rendered_html?: string
-        manifest: DashboardManifest
-        state: 'empty' | 'live' | 'stale' | 'error'
-      } | null>,
+      ).then(j) as Promise<MemberDashboardRead | null>,
     // The crewmate's self-maintained briefing markdown. Read-only from the UI
     // (no editor: the file is agent-written and edited where the crewmate keeps
     // it). `member` is the exact crew name (slugs are lossy).

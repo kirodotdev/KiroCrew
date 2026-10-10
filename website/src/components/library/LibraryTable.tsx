@@ -27,6 +27,15 @@ export const KIND_BADGE: Record<Artifact['kind'], 'ok' | 'err' | 'warn' | 'aim'>
   text: 'ok',
   webapp: 'aim',
   image: 'warn',
+  // A crewmate's dashboard package. `aim` with `widget` and `webapp`, the other
+  // two kinds whose content is a thing that RUNS rather than a document someone
+  // reads: a package is a layout the gateway composes a page from.
+  //
+  // It appears in the library at all because the store lists and versions it like
+  // any other record -- that is where a dashboard's revert and its history come
+  // from. Nobody can create one here: the backend keeps `dashboard` out of
+  // `USER_SELECTABLE_KINDS`, and no picker in this UI offers it.
+  dashboard: 'aim',
 }
 
 export function isoToTs(iso: string): number {

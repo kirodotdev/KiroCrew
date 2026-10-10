@@ -1799,7 +1799,14 @@ export interface RemoteArtifact {
 export interface Artifact {
   slug: string
   name: string
-  kind: 'widget' | 'html' | 'markdown' | 'svg' | 'json' | 'text' | 'webapp' | 'image'
+  /** `dashboard` is a CREWMATE'S DASHBOARD PACKAGE -- `bound_to`, `model`, `view`
+   *  and `theme`, typed in `types/dashboardPackage.ts`. It is in this union
+   *  because the Artifacts library lists and versions it like any other record
+   *  (that is where its revert and its history come from), and deliberately NOT
+   *  in `ArtifactsPage`'s `KIND_OPTIONS` or any other picker: the backend keeps
+   *  it out of `USER_SELECTABLE_KINDS` so nobody can mint one by hand, and a
+   *  kind offered in the UI that the server refuses is a dead menu entry. */
+  kind: 'widget' | 'html' | 'markdown' | 'svg' | 'json' | 'text' | 'webapp' | 'image' | 'dashboard'
   /** Provenance/origin bucket. Carries either a legacy bucket
    * (chat|cron|subagent|manual|import) or the actual session origin
    * (dashboard|slack|cli|task-runner|unknown), so treated as an open string. */

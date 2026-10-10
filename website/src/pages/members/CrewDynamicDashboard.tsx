@@ -1,7 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { RotateCw } from 'lucide-react'
-import { api, type DashboardManifest } from '../../api/client'
+import { api, type DashboardPackageRef } from '../../api/client'
+import {
+  DASHBOARD_BLOCK_PATCH_FRAME,
+  PAGE_FULL_PAINT_MESSAGE_TYPE,
+  patchFitsPage,
+  seedVersion,
+  subscribeBlockPatch,
+  verdictFor,
+  type DashboardBlockPatch,
+} from './dashboardBlockPush'
 import { Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useTheme } from '../../hooks/useTheme'
@@ -38,8 +47,14 @@ import { useLanguage } from '../../i18n/LanguageProvider'
  */
 export const CREW_DASHBOARD_SANDBOX = 'allow-scripts'
 
-/** The gateway's refill message type. Mirrors `dashboard_frame.DATA_MESSAGE_TYPE`. */
-const DATA_MESSAGE_TYPE = 'kirocrew-dashboard:data'
+/**
+ * The FULL-PAINT message type. Mirrors `dashboard_frame.DATA_MESSAGE_TYPE`.
+ *
+ * Reached through `dashboardBlockPush` rather than spelled twice. It is NOT what
+ * a fold push sends -- that forwards the renderer's own patch, which carries a
+ * different type of its own, because this listener re-initialises every block.
+ */
+const DATA_MESSAGE_TYPE = PAGE_FULL_PAINT_MESSAGE_TYPE
 
 /** The page's readiness beacon. Mirrors `dashboard_frame.READY_MESSAGE_TYPE`. */
 const READY_MESSAGE_TYPE = 'kirocrew-dashboard:ready'
@@ -95,24 +110,52 @@ const READY_TIMEOUT_MS = 6000
  */
 export const DASHBOARD_FALLBACK_REFETCH_MS = 60_000
 
+/**
+ * A page the read resolved: the composed document, and what the push path needs
+ * to decide whether a patch belongs to it.
+ *
+ * `pkg` is nullable and the document is not, which is the asymmetry worth
+ * reading twice. The document is what a person sees, so without it there is no
+ * page at all. The package reference is what the PUSH PATH needs -- it carries
+ * the `layout` a patch's own `layout` is compared against -- so a page served by
+ * the template path, which has no package, still draws and simply has no patch
+ * stream, with the finite fallback refetch underneath it.
+ *
+ * `blockIds` is the set of blocks the document is showing, taken from the read's
+ * own `blocks` map. It is here rather than derived on demand because the browser
+ * never receives `view.blocks`: the document is composed server-side, so the
+ * keys of that map ARE the view as far as this code can know it.
+ */
 interface Loaded {
   html: string
-  manifest: DashboardManifest
-  instanceVersion: number
-  templateId: string
-  templateVersion: number
+  pkg: DashboardPackageRef | null
+  /** The package artifact's version, or 0 on the template path. The number a
+   *  patch's `layout` must equal. */
+  layout: number
+  blockIds: string[]
 }
 
 /**
  * The crewmate's dynamic dashboard, in the Dashboard tab beside the chat.
  *
- * It renders the INSTANCE -- the crewmate's own copy of a template -- which the
- * registry serves from `GET /api/members/{slug}/dashboard`. The gateway composes
- * the document: it fills every `data-dashboard-field` element from the folded
- * values, sets `window.kirocrew`, marks the agentic cells and raises its own stale
- * band. This component's jobs are the three the document cannot do for itself:
- * mint it into a sandbox, keep the last page that successfully loaded, and offer a
- * way out when nothing loads at all.
+ * It renders the crewmate's DASHBOARD PACKAGE -- a `kind="dashboard"` artifact
+ * holding `bound_to`, `model`, `view` and `theme` -- which the controller serves
+ * from `GET /api/members/{slug}/dashboard` together with the document it composed
+ * from that package's view. The gateway fills every block from the folded values,
+ * sets `window.kirocrew` and raises its own stale band. This component's jobs are
+ * the four the document cannot do for itself: mint it into a sandbox, keep the
+ * last page that successfully loaded, hand it the pushed blocks a fold advance
+ * produces, and offer a way out when nothing loads at all.
+ *
+ * ## THERE IS NO DEFAULT PAGE
+ *
+ * A crewmate with no package has no dashboard, and this tab says so. Not a
+ * builtin template, not a starter layout, not an empty copy of someone else's
+ * page: the EMPTY STATE, which is an answer rather than a failure. `state` is
+ * the only field that decides whether a page draws, so a body that carries a
+ * document for a non-live state does not get it drawn -- which is the exact
+ * regression `CrewDynamicDashboard.test.tsx` pins, because a fallback is a
+ * single `if` away at all times and nothing about it looks wrong in a diff.
  *
  * The LAST GOOD PAGE is kept on two distinct failures, which is why the state is a
  * held value rather than a flag:
@@ -194,48 +237,86 @@ export default function CrewDynamicDashboard({ slug, member, displayName, onAct,
   const [reverted, setReverted] = useState(false)
 
   useEffect(() => {
-    if (!data || !data.html) return
-    // STATE `error` NEVER becomes a page. The read answers 200 for it and `wire()`
-    // always carries `html`, but the gateway deliberately does not compose that state
-    // -- `_render` is skipped, so there is no data island, no bootstrap and no ready
-    // beacon. Promoting it would draw the template's own placeholder markup as a
-    // healthy dashboard: every cell empty, nothing marked missing, no band, and no
-    // sign to a reader that what they are looking at is not their data.
+    if (!data) return
+    // STATE `error` NEVER becomes a page. The read answers 200 for it, but the
+    // controller deliberately does not compose that state -- no data island, no
+    // bootstrap, no ready beacon. Promoting it would draw placeholder markup as a
+    // healthy dashboard: every cell empty, nothing marked missing, no band.
     if (data.state === 'error') return
-    // ONLY the composed page is ever mounted. `data.html` is the crewmate's STORED
-    // copy, out of a writable `instance.json`; `data.rendered_html` is what the
-    // gateway built from the catalog's own template for the id that record names.
-    // Falling back to the stored copy handed the sandbox -- which runs scripts --
-    // exactly the bytes the gateway had just declined to run, so the refusal bought
-    // nothing. No composed page means there is no page to show, which the
-    // unavailable state below says truthfully.
+    // STATE `empty` NEVER BECOMES A PAGE EITHER, AND THIS LINE IS THE FALLBACK
+    // REMOVAL.
+    //
+    // The route used to answer `empty` WITH a rendered DEFAULT TEMPLATE, on the
+    // reasoning that "an empty frame answers none of the questions a person opened
+    // the tab with" -- and the old promotion here accepted it, because it refused
+    // only `error`. So a crewmate who had composed nothing was shown a full
+    // dashboard of a shipped layout, carrying their own fold values, with
+    // `instance_version` 0 and nothing on it saying it was not theirs.
+    //
+    // v3's rule is that there is no default page: a dashboard exists once the agent
+    // writes a layout, and until then the empty state IS the answer. A rule like
+    // that cannot live in the server alone -- the body is free to carry a
+    // `rendered_html` for any state it likes, and this is what declines to draw it.
+    //
+    // DELIBERATELY NOT a `state !== 'live'` gate, which would have been one
+    // character shorter and would also have stopped `stale`. A stale instance is a
+    // crewmate's OWN adopted dashboard whose template shipped a new version; it is
+    // not a fallback, and refusing it would blank a page the crewmate chose in
+    // order to remove one nobody did.
+    if (data.state === 'empty') return
+    // No composed document is not a page either. The renderer refused, or the
+    // package named a block it could not draw; either way there is nothing to
+    // mount, and the unavailable state below says that truthfully rather than
+    // mounting something adjacent.
     if (!data.rendered_html) return
     const next: Loaded = {
       html: data.rendered_html,
-      manifest: data.manifest,
-      instanceVersion: data.instance_version,
-      templateId: data.template?.id ?? '',
-      templateVersion: data.template?.version ?? 0,
+      // Absent on the template path, which has no package. The page still draws;
+      // see `Loaded`.
+      pkg: data.package ?? null,
+      layout: data.package?.version ?? 0,
+      blockIds: Object.keys(data.blocks ?? {}),
     }
-    // Keyed on the INSTANCE VERSION, not the html: contract v3 says every change
-    // bumps it, so it is the server's own statement that this is a different page,
-    // and a different page is what probation exists for.
+    // Keyed on the PACKAGE VERSION, not the html: a dashboard artifact versions
+    // only when `model` / `view` / `theme` change, so this number moving IS the
+    // server's statement that the layout is different -- and a different layout is
+    // exactly what probation exists for, because it is the case where a page that
+    // used to load might not any more.
     setCandidate(prev => {
       if (!prev) return next
-      if (prev.instanceVersion !== next.instanceVersion) return next
+      if (prev.layout !== next.layout) return next
       return prev.html === next.html ? prev : next
     })
-    // A re-render of the SAME version is new VALUES, not a new page -- which is most
-    // of what a refetch brings, and all of what an unadopted crewmate ever gets,
-    // since the default instance sits at version 0 forever. Swapped in place with no
-    // probation: the page on screen has already proved it loads, so withholding its
-    // own fresher numbers behind a readiness beacon would freeze the tab on the
-    // values it happened to open with.
+    // A re-render at the SAME version is new VALUES, not a new layout -- which is
+    // most of what a refetch brings, since values never version. Swapped in place
+    // with no probation: the page on screen has already proved it loads, so
+    // withholding its own fresher numbers behind a readiness beacon would freeze
+    // the tab on the values it happened to open with.
     setGood(prev => {
-      if (!prev || prev.instanceVersion !== next.instanceVersion) return prev
+      if (!prev || prev.layout !== next.layout) return prev
       return prev.html === next.html ? prev : next
     })
   }, [data])
+
+  // A DASHBOARD THAT WENT AWAY IS GONE, and the held page goes with it.
+  //
+  // "Keep the last good page" is for a page that FAILED -- a mint that did not
+  // settle, a document that never beaconed -- where the previous one is still the
+  // best available answer about the same dashboard. `empty` is not that: it is the
+  // read saying this crewmate has no dashboard, so the page on screen is a layout
+  // that no longer exists, drawn under the name of a crewmate who no longer has
+  // one. Holding it would reintroduce the default page from the other direction:
+  // not a builtin served to someone with nothing, but a deleted one that never
+  // stops being served.
+  //
+  // `error` is deliberately NOT here. It says the dashboard is there and could not
+  // be composed, which is the failure case the kept-page band exists for.
+  useEffect(() => {
+    if (data?.state !== 'empty') return
+    setGood(null)
+    setCandidate(null)
+    setReverted(false)
+  }, [data?.state])
 
   // The FIRST page is shown without probation: there is no previous page to keep,
   // so withholding it would leave the tab empty to protect nothing.
@@ -244,22 +325,26 @@ export default function CrewDynamicDashboard({ slug, member, displayName, onAct,
   }, [candidate, good])
 
   const shown = good
-  // The stored copy does not parse, so the gateway sent no rendered page. Held apart
-  // from `isError`, which is the read itself failing: this read SUCCEEDED and told us
-  // the copy is broken, and a page already on screen stays on screen under a band.
+  // The dashboard exists and does not parse, so the controller composed nothing.
+  // Held apart from `isError`, which is the read itself failing: this read
+  // SUCCEEDED and told us the stored dashboard is broken, and a page already on
+  // screen stays on screen under a band.
   const broken = data?.state === 'error'
   // The read has a page but the two effects above have not promoted it yet, so
   // `shown` is still null for a tick while `isLoading` is already false. Without
   // this the tab paints "could not be loaded" over a page that loaded fine --
   // invisible on a fast first paint, and the whole frame on a slow one.
-  // `!broken` because that state never promotes a page: `wire()` carries its `html`,
-  // so without it the tab waits on a first page that is never coming and shows the
-  // skeleton for good.
   //
-  // Keyed on `rendered_html` and not on `html` for the same reason the promotion
-  // above is: a read that carries a stored copy the gateway declined to compose has
-  // no page coming either, so waiting on it would show the skeleton for good.
-  const awaitingFirstPage = Boolean(data?.rendered_html) && !good && !broken
+  // THE SAME TWO STATES the promotion refuses, and it has to be the same two: a
+  // body the promotion will never accept has no page coming, so waiting on it
+  // would hold the skeleton up for good over an answer the tab already has. For
+  // `empty` that answer is every crewmate's first one, so the skeleton would be
+  // the whole feature.
+  const awaitingFirstPage =
+    Boolean(data?.rendered_html)
+    && data?.state !== 'empty'
+    && !good
+    && !broken
   const srcdoc = useMemo(
     () =>
       shown && !isError
@@ -294,7 +379,7 @@ export default function CrewDynamicDashboard({ slug, member, displayName, onAct,
    * unreachable from the parent -- `postMessage` is the only channel, which is the
    * same constraint that makes the height reporter a message rather than a read.
    */
-  const probating = Boolean(candidate && good && candidate.instanceVersion !== good.instanceVersion)
+  const probating = Boolean(candidate && good && candidate.layout !== good.layout)
   const timer = useRef<number | null>(null)
 
   // A new page must actually be MOUNTED to get the chance to beacon, so the
@@ -320,6 +405,104 @@ export default function CrewDynamicDashboard({ slug, member, displayName, onAct,
     [probating, candidate, isError, themeVars, theme],
   )
   const probe = useSandboxDoc(probeSrcdoc)
+
+  /**
+   * THE BLOCK PATCH, received.
+   *
+   * A fold advancing no longer re-reads the whole dashboard. The controller
+   * pushes the blocks that subscribe to that fold, and this hands them to the
+   * document -- the one channel there is, because the frame sits on an opaque
+   * origin and its DOM is unreachable from here.
+   *
+   * `lastVersion` is a ref and not state deliberately: it is a position in a
+   * stream, read and written inside one callback, and making it state would
+   * re-run this effect on every frame and re-subscribe mid-stream.
+   *
+   * Every answer but `apply` is handled by RE-READING rather than by patching,
+   * because the push protocol is an optimisation over the read and never the
+   * only way a value arrives. The fallback refetch sits underneath all of it.
+   */
+  const lastVersion = useRef<number | null>(null)
+  // Re-seeded on every read, so a refetch for any reason -- a layout change, a
+  // gap, the finite fallback -- restarts the stream at the position the body was
+  // composed at rather than at whatever the previous page had reached.
+  useEffect(() => {
+    lastVersion.current = seedVersion(data)
+  }, [data])
+
+  // THE FRAME NAME, CHECKED BOTH WAYS. The router dispatches on a static case, so
+  // this bundle holds the type string; the controller also NAMES it in the body
+  // for exactly this comparison. A rename that reaches the server first turns the
+  // push path off, and a silent push path is indistinguishable from a quiet crew
+  // log -- so it is said out loud once, where a developer running the dashboard
+  // sees it, rather than discovered from a page that stopped moving.
+  const serverFrame = data?.push_frame
+  useEffect(() => {
+    if (!serverFrame || serverFrame === DASHBOARD_BLOCK_PATCH_FRAME) return
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[dashboard] the gateway pushes "${serverFrame}" and this build listens for `
+        + `"${DASHBOARD_BLOCK_PATCH_FRAME}": block patches will not arrive and the tab `
+        + 'falls back to its refetch interval.',
+    )
+  }, [serverFrame])
+
+  const onPatch = useCallback(
+    (patch: DashboardBlockPatch) => {
+      const at = shown
+      // No page, so nothing to paint into. Not a refetch either: whatever state
+      // the tab is in has its own answer and a patch cannot improve it.
+      if (!at) return
+      const verdict = verdictFor(patch, { layout: at.layout, lastVersion: lastVersion.current })
+      if (verdict === 'refetch') {
+        // The READ re-seeds the position, not this line. `held` comes from the
+        // body -- `push_version` and `package.version` -- because a refetch exists
+        // precisely for the case where what this tab holds cannot be trusted, and
+        // taking the new position from the frame that failed the check would carry
+        // the untrustworthy half forward.
+        void refetch()
+        return
+      }
+      // THE VIEW HAS TO AGREE. A patch naming a block this page is not showing
+      // means the page and the controller disagree about the view while `layout`
+      // says they do not, which is the one case that number cannot catch -- so it
+      // is answered the same way a layout change is.
+      //
+      // A page with no package (`pkg === null`, the template path) lands here too:
+      // it has no patch stream at all, so a frame addressed to it is a
+      // disagreement by definition.
+      if (!at.pkg || !patchFitsPage(patch, at.blockIds)) {
+        void refetch()
+        return
+      }
+      const win = frameRef.current?.contentWindow
+      if (!win) return
+      // THE RENDERER'S OWN PATCH, FORWARDED VERBATIM. Not a message built here:
+      // it arrives with its own type, its own per-block narrowing and its own
+      // formatted strings, so the narrowing, the formatting and the message name
+      // all stay in one language and this side constructs no payload at all.
+      //
+      // Deliberately NOT the full-paint message. That listener replaces the whole
+      // read and RE-INITIALISES every block, so using it for a fold advance gives
+      // a block that owns a canvas a second canvas, with two scenes animating over
+      // each other on top of the cells they were drawing. The two message types
+      // are distinct for that reason and a test pins that they differ.
+      //
+      // `'*'` is the only deliverable target: the document is sandboxed WITHOUT
+      // `allow-same-origin`, so it has an opaque origin that cannot be named. The
+      // bound on what that costs is the document itself -- it runs no network
+      // (`connect-src 'none'`), carries no agent-authored script, and checks that
+      // the sender is its own `parent` before reading a word of this.
+      win.postMessage(patch.patch, '*')
+      // `held` advances ONLY on an applied frame, which is what makes the strict
+      // check above mean anything: the next frame is checked against the last one
+      // this page actually painted.
+      lastVersion.current = patch.version
+    },
+    [shown, refetch],
+  )
+
+  useEffect(() => subscribeBlockPatch(slug, onPatch), [slug, onPatch])
 
   useEffect(() => {
     if (!probating || !candidate) return
@@ -391,10 +574,33 @@ export default function CrewDynamicDashboard({ slug, member, displayName, onAct,
     )
   }
 
+  if (data?.state === 'empty') {
+    return (
+      // NOTHING COMPOSED AND NOTHING WRONG, which are different answers. The
+      // controller reports `empty` for a crewmate with no dashboard package, so
+      // this is a state and not a failure: no error styling and NO retry, because
+      // re-reading returns the same empty answer and a button that cannot change
+      // anything reads as a fault the reader could clear. What clears it is the
+      // crewmate composing a dashboard.
+      //
+      // UNCONDITIONAL, and that is the whole of v3's "no default page" on this
+      // side. Three ways this branch used to be reachable past a page are now
+      // closed by it: the body's own `rendered_html` cannot promote itself (the
+      // `state !== 'live'` gate above), a held page from an earlier read is
+      // dropped rather than kept (the clearing effect above), and the old
+      // `!shown &&` guard that let either of those win is gone. A dashboard that
+      // was deleted is gone, and a ghost of it under this crewmate's name is the
+      // worst of the three: it reads as current.
+      <div className="p-4 text-sm text-muted" data-testid="crew-dashboard-none">
+        {i18nT('pages.membersPage.dashboard_none_yet')}
+      </div>
+    )
+  }
+
   if (broken && !shown) {
     return (
       // Nothing good to keep, so the frame is not drawn at all rather than drawn from
-      // markup the gateway refused to fill.
+      // a package the controller refused to compose.
       <div className="p-4 space-y-1.5">
         {/* No hand-off: this tab sits on the Members page, which holds unsaved
             Profile and crew-editor drafts; the hand-off navigates to /chat and
@@ -413,27 +619,13 @@ export default function CrewDynamicDashboard({ slug, member, displayName, onAct,
     )
   }
 
-  if (!shown && data?.state === 'empty') {
-    return (
-      // Nothing is adopted and nothing is wrong, which are different answers. The
-      // route reports `empty` for a crewmate with no page, so this is a state and
-      // not a failure: no error styling and NO retry, because re-reading returns
-      // the same empty answer and a button that cannot change anything reads as a
-      // fault the reader could clear.
-      <div className="p-4 text-sm text-muted" data-testid="crew-dashboard-none">
-        {i18nT('pages.membersPage.dashboard_none_yet')}
-      </div>
-    )
-  }
-
   if (!shown) {
     return (
-      // A page the gateway could not resolve while NOT reporting `empty`: the read
-      // answers a body for every other state, so a missing one here is the registry
-      // failing to load. The copy names THAT, not publishing -- a reader told to
-      // publish would watch the crewmate confirm it published and still see
-      // nothing, because this tab renders the dashboard and no longer renders a
-      // published document.
+      // A page the controller could not resolve while NOT reporting `empty`: the
+      // read answers a body for every state, so a `live` body with no document
+      // here is the composition failing rather than an absent dashboard. The copy
+      // names THAT, not composing -- a reader told to ask the crewmate to compose
+      // one would watch it confirm it had and still see nothing.
       <div className="p-4 space-y-1.5">
         {/* No hand-off: the Members page's unsaved Profile and crew-editor drafts,
             as at the isError branch above. */}
@@ -530,7 +722,7 @@ export default function CrewDynamicDashboard({ slug, member, displayName, onAct,
           style={{ colorScheme: theme }}
           title={i18nT('pages.membersPage.dashboard_frame_title', { crew: displayName })}
           data-testid="crew-dashboard-iframe"
-          data-instance-version={shown.instanceVersion}
+          data-layout-version={shown.layout}
         />
       ) : failed && !pending ? null : (
         <div className="p-4 text-[11px] text-muted">{i18nT('pages.membersPage.dashboard_rendering')}</div>

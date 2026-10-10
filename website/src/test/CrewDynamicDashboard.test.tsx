@@ -1,22 +1,41 @@
 // @vitest-environment jsdom
 /**
- * The crewmate's dynamic dashboard frame: which page it reads, and what it shows
- * for each state the read can answer with.
+ * The crewmate's dynamic dashboard frame: which dashboard it reads, what it
+ * shows for each state the read can answer with, and what it does with a block
+ * patch.
  *
  * The page pipeline lives here rather than in the Members page's own test file,
  * because it is asynchronous in a way a page case cannot contain: the frame reads
  * the dashboard, then mints a sandbox document for it, and a mint settling after
  * its case has ended lands a state update on whichever case runs next. The page
  * file mocks this component and pins only the identity it passes in.
+ *
+ * ## THE CASES THAT MATTER MOST ARE THE ABSENCES
+ *
+ * `no default page` below is the whole of v3's "no default page" rule on this
+ * side, and it is pinned as an absence because that is the shape of the
+ * regression: the server is free to answer `empty` WITH a composed default
+ * template -- it did exactly that before this change, and still does for a
+ * crewmate on the template registry -- so one `if` here decides whether a person
+ * who composed nothing is shown somebody else's layout filled with their own
+ * numbers. A diff reintroducing it looks like a kindness.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
-import { api, type DashboardManifest } from '../api/client'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { api } from '../api/client'
 import { renderWithProviders } from './helpers'
 import CrewDynamicDashboard, {
   DASHBOARD_FALLBACK_REFETCH_MS,
   READY_MESSAGE_TYPE,
 } from '../pages/members/CrewDynamicDashboard'
+import {
+  DASHBOARD_BLOCK_PATCH_FRAME,
+  PAGE_FULL_PAINT_MESSAGE_TYPE,
+  PATCH_REASON_LAYOUT,
+  __resetBlockPatchForTests,
+  publishBlockPatch,
+  type DashboardBlockPatch,
+} from '../pages/members/dashboardBlockPush'
 import { handleDashboardMoved } from '../hooks/useWebSocket'
 import { LANG_STORAGE_KEY } from '../i18n/detect'
 
@@ -47,26 +66,66 @@ vi.mock('../hooks/useSandboxDoc', () => ({
   },
 }))
 
-const MANIFEST: DashboardManifest = {
-  id: 'project-report',
-  version: 1,
-  title: 'Project report',
-  fields: [],
-} as unknown as DashboardManifest
-
+/** The v3 PACKAGE body, as the controller composes it: a package descriptor, the
+ *  push counter the page starts from, the frame name, every block's values, and
+ *  the composed document. */
 function page(over: Record<string, unknown> = {}) {
   return {
-    instance_version: 1,
-    template: { id: 'project-report', version: 1 },
-    // BOTH halves, because a healthy read carries both. `html` is the crewmate's
-    // stored copy and `rendered_html` is what the gateway composed from the
-    // catalog's template for the id that record names -- and the composed one is
-    // the ONLY one this component mounts, so a default carrying just `html` would
-    // model a state the gateway never answers for a page it is willing to run.
-    html: '<!doctype html><title>stored</title><p>hello</p>',
-    rendered_html: '<!doctype html><title>report</title><p>hello</p>',
-    manifest: MANIFEST,
     state: 'live' as const,
+    instance_version: 3,
+    package: {
+      slug: 'oncall-dashboard',
+      version: 3,
+      layout_fingerprint: 'sha256:abc',
+      bound_to: 'crewmate:oncall',
+    },
+    push_version: 0,
+    push_frame: DASHBOARD_BLOCK_PATCH_FRAME,
+    blocks: { prs: { open_prs: 12 }, notes: { my_call: 'ship it' } },
+    missing: [],
+    rendered_html: '<!doctype html><title>report</title><p>hello</p>',
+    ...over,
+  }
+}
+
+/** The renderer's block-patch type, distinct from the full-paint one. */
+const PATCH_TYPE = 'kirocrew-dashboard:block-patch'
+
+/** A renderer payload labelled so a case can tell its own frame from a sibling's.
+ *  The message carries no version, so the label is how the two are told apart. */
+function payload(label: string, over: Record<string, unknown> = {}) {
+  return {
+    type: PATCH_TYPE,
+    blocks: { prs: { fields: { open_prs: 31 }, display: { open_prs: label } } },
+    seq: 44,
+    stale: false,
+    missing: [],
+    ...over,
+  }
+}
+
+/** A frame as the controller sends it, defaulted to fit `page()`.
+ *
+ *  `blocks` names the fields that moved and is derived from `patch` by the
+ *  server; `patch` is the renderer's own payload, forwarded verbatim. */
+function patch(over: Partial<DashboardBlockPatch> = {}): DashboardBlockPatch {
+  return {
+    slug: 'oncall',
+    dashboard: 'oncall-dashboard',
+    version: 1,
+    layout: 3,
+    fold: 'work',
+    blocks: { prs: ['open_prs'] },
+    missing: [],
+    patch: {
+      type: PATCH_TYPE,
+      blocks: { prs: { fields: { open_prs: 31 }, display: { open_prs: '31' } } },
+      seq: 44,
+      stale: false,
+      missing: [],
+    },
+    refetch: false,
+    reason: '',
     ...over,
   }
 }
@@ -75,6 +134,49 @@ function mount() {
   return renderWithProviders(
     <CrewDynamicDashboard slug="oncall" member="oncall" displayName="On Call" />,
   )
+}
+
+/**
+ * Give the mounted frame a `contentWindow` with a spy, since jsdom never loads
+ * the stub url and the component posts into whatever is there.
+ *
+ * FLUSHES BEFORE RETURNING, and that is not belt-and-braces. The patch listener
+ * closes over the page on screen, so the component re-subscribes on the commit
+ * that promotes one -- and `findByTestId` resolves ON that commit, before its
+ * effects have run. A patch published the instant this returns can therefore
+ * reach the PREVIOUS closure, which has no page and drops it. Every case in the
+ * block-patch group was open to that; one of them failed in a full-file run
+ * while passing alone, which is how it surfaced.
+ */
+async function spyOnFrame() {
+  const frame = await screen.findByTestId('crew-dashboard-iframe')
+  const postMessage = vi.fn()
+  Object.defineProperty(frame, 'contentWindow', {
+    value: { postMessage },
+    configurable: true,
+  })
+  await flushEffects()
+  return postMessage
+}
+
+/**
+ * Let every pending effect and the state updates it schedules run.
+ *
+ * Needed by the absence cases below, and the reason is worth stating because it
+ * is what a mutation run revealed: an element committed in the SAME pass as the
+ * read -- the empty state is one -- is not a signal that the component has
+ * finished deciding. The promotion effect runs after that commit, so an
+ * assertion placed right after `findByTestId` asks its question one tick too
+ * early and passes however the component goes on to behave.
+ *
+ * A timer rather than a bare microtask flush, because the chain is read commit
+ * -> promotion effect -> first-page effect -> render -> mint, and each link is a
+ * separate task.
+ */
+async function flushEffects() {
+  await act(async () => {
+    await new Promise(resolve => setTimeout(resolve, 50))
+  })
 }
 
 /**
@@ -92,9 +194,10 @@ describe('CrewDynamicDashboard', () => {
     mints.length = 0
     retries = 0
     retrySpy.mockClear()
+    __resetBlockPatchForTests()
   })
 
-  it('reads the crewmate\'s own instance by slug AND exact member name', async () => {
+  it('reads the crewmate\'s own dashboard by slug AND exact member name', async () => {
     const read = vi.spyOn(api, 'memberDashboard').mockResolvedValue(page())
     mount()
     await waitFor(() => expect(read).toHaveBeenCalledWith('oncall', 'oncall', 'en'))
@@ -119,22 +222,17 @@ describe('CrewDynamicDashboard', () => {
     expect(frame).toHaveAttribute('sandbox', 'allow-scripts')
   })
 
-  it('mounts the gateway-composed page and never the stored copy', async () => {
-    // Not a PREFERENCE between two pages: the stored copy is not a fallback at all.
-    // It comes out of a writable `instance.json`, the composed one comes from the
-    // catalog's own template, and this frame grants scripts -- so mounting the
-    // stored copy when the gateway declined to compose would hand the sandbox
-    // exactly the bytes the gateway had just refused.
-    vi.spyOn(api, 'memberDashboard').mockResolvedValue(
-      page({
-        rendered_html: '<!doctype html><title>filled</title>',
-        html: '<!doctype html><title>stored</title><script>stolen()</script>',
-      }),
-    )
+  it('marks the frame with the LAYOUT version the document was composed at', async () => {
+    // The number a patch's own `layout` is compared against, so it is on the
+    // element a reader of the DOM can see: a page showing values from one layout
+    // under another layout's blocks is the failure this whole comparison exists
+    // to prevent, and it is invisible in a screenshot.
+    vi.spyOn(api, 'memberDashboard').mockResolvedValue(page())
     mount()
-    expect(await screen.findByTestId('crew-dashboard-frame')).toBeInTheDocument()
-    expect(mints.at(-1)).toContain('filled')
-    expect(mints.at(-1)).not.toContain('stolen()')
+    expect(await screen.findByTestId('crew-dashboard-iframe')).toHaveAttribute(
+      'data-layout-version',
+      '3',
+    )
   })
 
   it('never paints "could not be loaded" over a page that loaded', async () => {
@@ -169,11 +267,10 @@ describe('CrewDynamicDashboard', () => {
     expect([...seen]).not.toContain('crew-dashboard-error')
   })
 
-  it('shows fresher VALUES for the same page version without waiting for probation', async () => {
-    // The instance version only moves when the PAGE changes, so a refetch that brings
-    // new fold values answers with the same version and different html -- and that is
-    // the ordinary case, not an edge one: the default instance an unadopted crewmate
-    // gets sits at version 0 forever, so for most crewmates the version NEVER moves.
+  it('shows fresher VALUES at the same layout without waiting for probation', async () => {
+    // A dashboard artifact versions only when `model` / `view` / `theme` change, so
+    // a refetch that brings new fold values answers at the same layout with a
+    // different document -- and that is the ordinary case, not an edge one.
     // Holding such a read back leaves the tab frozen on whatever it opened with.
     const read = vi
       .spyOn(api, 'memberDashboard')
@@ -185,20 +282,30 @@ describe('CrewDynamicDashboard', () => {
     await queryClient.invalidateQueries({ queryKey: DASHBOARD_KEY })
     await waitFor(() => expect(read.mock.calls.length).toBeGreaterThan(1))
     await waitFor(() => expect(mints.some((m) => m.includes('31 credits'))).toBe(true))
-    // Same version, so this was never a new page and nothing was withheld.
+    // Same layout, so this was never a new page and nothing was withheld.
     expect(screen.queryByTestId('crew-dashboard-kept-band')).not.toBeInTheDocument()
   })
 
   it('lets the kept-page band\'s Retry promote the page it re-mints', async () => {
-    // The band appears because a NEWER page did not beacon in time, which closes the
-    // handshake's `settled` latch. Retry re-mints that candidate at a new url and the
-    // fresh document beacons -- but only an effect that RE-RAN can hear it, because the
-    // latch set by the timeout is still closed in the old one. So the button's whole
-    // purpose depends on the re-mint being a dependency of the handshake, and the band
-    // clearing is the only outward sign that the beacon was heard.
+    // The band appears because a NEWER layout did not beacon in time, which closes
+    // the handshake's `settled` latch. Retry re-mints that candidate at a new url
+    // and the fresh document beacons -- but only an effect that RE-RAN can hear it,
+    // because the latch set by the timeout is still closed in the old one. So the
+    // button's whole purpose depends on the re-mint being a dependency of the
+    // handshake, and the band clearing is the only outward sign the beacon landed.
     vi.spyOn(api, 'memberDashboard')
-      .mockResolvedValueOnce(page({ instance_version: 1 }))
-      .mockResolvedValue(page({ instance_version: 2, rendered_html: '<!doctype html><p>v2</p>' }))
+      .mockResolvedValueOnce(page())
+      .mockResolvedValue(
+        page({
+          package: {
+            slug: 'oncall-dashboard',
+            version: 4,
+            layout_fingerprint: 'sha256:def',
+            bound_to: 'crewmate:oncall',
+          },
+          rendered_html: '<!doctype html><p>v2</p>',
+        }),
+      )
     const { queryClient, rerender } = mount()
     await screen.findByTestId('crew-dashboard-frame')
 
@@ -245,52 +352,24 @@ describe('CrewDynamicDashboard', () => {
     expect(failed.textContent).not.toContain('reload the page')
   })
 
-  it('says the dashboard is unavailable when the read resolves no page at all', async () => {
-    // An answer with no page and no `empty` state means the registry did not load --
-    // which is what the copy names, rather than telling the reader to publish
-    // something.
+  it('says the dashboard is unavailable when the read resolves no body at all', async () => {
     vi.spyOn(api, 'memberDashboard').mockResolvedValue(null)
     mount()
     expect(await screen.findByTestId('crew-dashboard-empty')).toBeInTheDocument()
     expect(screen.getByTestId('crew-dashboard-empty-retry')).toBeInTheDocument()
   })
 
-  it('reports nothing adopted as a STATE, with no retry', async () => {
-    // Nothing adopted and nothing wrong are different answers. Until a built-in page
-    // ships, `empty` is what EVERY crewmate's read answers, so rendering it as a
-    // failure put a permanent error on every tab -- and offered a Try again that
-    // re-reads the same empty answer forever, which reads as a fault the reader could
-    // clear. Asserted together: the state's own line IS there, and neither the failure
-    // notice nor its retry is.
+  it('never draws a page when the stored dashboard does not parse', async () => {
+    // The controller answers 200 for `error` but deliberately does not compose that
+    // state: no data island, no bootstrap, no beacon. Drawing anything here would
+    // show placeholder markup as a healthy dashboard -- every cell empty, nothing
+    // marked missing, no band.
     vi.spyOn(api, 'memberDashboard').mockResolvedValue(
-      // The shape the route actually answers for this state: an empty body, not an
-      // absent key. `instance._empty_instance` sets `html=""`, and the gateway
-      // composes nothing for a state it will not render.
-      page({
-        state: 'empty',
-        state_reason: 'no template adopted',
-        html: '',
-        rendered_html: undefined,
-      }),
-    )
-    mount()
-    expect(await screen.findByTestId('crew-dashboard-none')).toBeInTheDocument()
-    expect(screen.queryByTestId('crew-dashboard-empty')).toBeNull()
-    expect(screen.queryByTestId('crew-dashboard-empty-retry')).toBeNull()
-  })
-
-  it('never draws the raw template when the stored copy does not parse', async () => {
-    // The gateway answers 200 for `error` and `wire()` always carries `html`, but it
-    // deliberately does NOT compose that state: no data island, no bootstrap, no
-    // beacon. Falling back to `html` drew the template's placeholder markup as a
-    // healthy dashboard -- every cell empty, nothing marked missing, no band.
-    vi.spyOn(api, 'memberDashboard').mockResolvedValue(
-      page({ state: 'error', state_reason: 'manifest does not parse', rendered_html: undefined }),
+      page({ state: 'error', state_reason: 'package does not parse', rendered_html: undefined }),
     )
     mount()
     await screen.findByTestId('crew-dashboard-broken')
     expect(screen.getByTestId('crew-dashboard-broken-retry')).toBeInTheDocument()
-    // The frame is not drawn at all, and the template's own text never reaches the DOM.
     expect(screen.queryByTestId('crew-dashboard-frame')).toBeNull()
     expect(mints).toHaveLength(0)
     expect(document.body.textContent).not.toContain('hello')
@@ -305,12 +384,7 @@ describe('CrewDynamicDashboard', () => {
     const before = mints.length
 
     read.mockResolvedValue(
-      page({
-        instance_version: 2,
-        state: 'error',
-        state_reason: 'manifest does not parse',
-        rendered_html: undefined,
-      }),
+      page({ state: 'error', state_reason: 'package does not parse', rendered_html: undefined }),
     )
     await queryClient.refetchQueries({ queryKey: DASHBOARD_KEY })
 
@@ -322,6 +396,7 @@ describe('CrewDynamicDashboard', () => {
     // The broken copy minted nothing, so the document on screen is still the good one.
     expect(mints).toHaveLength(before)
   })
+
   describe('live refresh', () => {
     it('re-renders the tab when a crewmate writes a value, with no reload', async () => {
       // THE WHOLE CHAIN, end to end: the gateway's `dashboard_value_written` frame,
@@ -347,24 +422,7 @@ describe('CrewDynamicDashboard', () => {
       expect(screen.getByTestId('crew-dashboard-frame')).toBeInTheDocument()
     })
 
-    it('re-reads when a fold advances, not only on a crewmate write', async () => {
-      // A `member_projection` frame IS a fold advance, and every number on the page
-      // but the crewmate's own writes comes from a fold. A tab live only for writes
-      // would sit on stale costs and counts for the whole of a long turn.
-      const read = vi.spyOn(api, 'memberDashboard').mockResolvedValue(page())
-      const { queryClient } = mount()
-      await waitFor(() => expect(read).toHaveBeenCalled())
-      const before = read.mock.calls.length
-
-      handleDashboardMoved(queryClient, { slug: 'oncall', key: 'workstreams', seq: 12 })
-
-      await waitFor(() => expect(read.mock.calls.length).toBeGreaterThan(before))
-    })
-
     it('leaves another crewmate\'s open tab alone', async () => {
-      // The frame is slug-keyed, so a write to one crewmate must not cost every other
-      // open dashboard a read. Without the slug in the key this passes anyway and the
-      // cost only shows up on a roster.
       const read = vi.spyOn(api, 'memberDashboard').mockResolvedValue(page())
       const { queryClient } = mount()
       await waitFor(() => expect(read).toHaveBeenCalled())
@@ -389,59 +447,525 @@ describe('CrewDynamicDashboard', () => {
       expect(DASHBOARD_FALLBACK_REFETCH_MS).toBeGreaterThan(0)
     })
   })
+
+  describe('the block patch', () => {
+    it('posts a fitting patch into the document instead of re-reading', async () => {
+      // THE POINT OF THE WHOLE PUSH PATH. A fold advanced, the controller composed
+      // the one block that subscribes to it, and the page hands those values to the
+      // document -- no refetch, so the tab does not pay for a whole recomposed
+      // page to learn one number.
+      const read = vi.spyOn(api, 'memberDashboard').mockResolvedValue(page())
+      mount()
+      const postMessage = await spyOnFrame()
+      const before = read.mock.calls.length
+
+      publishBlockPatch(patch())
+
+      await waitFor(() => expect(postMessage).toHaveBeenCalled())
+      // THE DOCUMENT'S OWN REFILL SHAPE: its listener matches this type exactly and
+      // does `read = freeze(data.read)`, so this is the whole message. `blocks` is
+      // not forwarded -- the document re-fills itself.
+      // VERBATIM: the very object off the frame, not a message built here. And
+      // NOT the full-paint type -- that listener re-initialises every block.
+      expect(postMessage.mock.calls[0][0]).toEqual(patch().patch)
+      expect(postMessage.mock.calls[0][0].type).toBe(PATCH_TYPE)
+      expect(postMessage.mock.calls[0][0].type).not.toBe(PAGE_FULL_PAINT_MESSAGE_TYPE)
+      // `'*'`: the document is sandboxed without `allow-same-origin`, so its opaque
+      // origin cannot be named.
+      expect(postMessage.mock.calls[0][1]).toBe('*')
+      expect(read.mock.calls.length).toBe(before)
+    })
+
+    it('hands over the renderer\'s formatted strings without touching them', async () => {
+      // The page shows `read.display`, which the RENDERER formatted. Nothing in
+      // TypeScript parses, rounds or localises a value: a second formatter is how a
+      // reader ends up looking at a bare `1200000000` under a label that said
+      // `1.2 GB` a second earlier, on the same page, from the same number.
+      vi.spyOn(api, 'memberDashboard').mockResolvedValue(page())
+      mount()
+      const postMessage = await spyOnFrame()
+
+      publishBlockPatch(
+        patch({
+          patch: {
+            type: PATCH_TYPE,
+            blocks: { disk: { fields: { disk: 1200000000 }, display: { disk: '1.2 GB' } } },
+            seq: 9,
+            stale: false,
+            missing: [],
+          },
+        }),
+      )
+
+      await waitFor(() => expect(postMessage).toHaveBeenCalled())
+      expect(postMessage.mock.calls[0][0].blocks.disk.display).toEqual({ disk: '1.2 GB' })
+      expect(postMessage.mock.calls[0][0].blocks.disk.fields).toEqual({ disk: 1200000000 })
+    })
+
+    it('re-reads rather than forwarding an empty payload', async () => {
+      // The server sends no frame at all when nothing subscribes, so a frame shaped
+      // like this is a gateway and a bundle that disagree. Forwarding it would post
+      // a typeless message the document drops in silence, while this side spent a
+      // version on it and moved past the gap it should have re-read for.
+      const read = vi.spyOn(api, 'memberDashboard').mockResolvedValue(page())
+      mount()
+      const postMessage = await spyOnFrame()
+      const before = read.mock.calls.length
+
+      publishBlockPatch(patch({ patch: {} }))
+
+      await waitFor(() => expect(read.mock.calls.length).toBeGreaterThan(before))
+      expect(postMessage).not.toHaveBeenCalled()
+    })
+
+    it('re-reads instead of applying when the LAYOUT moved', async () => {
+      // A recompose produces a perfectly contiguous version, so the layout check is
+      // the only thing that catches it -- and applying would paint the new layout's
+      // values into the old layout's blocks.
+      const read = vi.spyOn(api, 'memberDashboard').mockResolvedValue(page())
+      mount()
+      const postMessage = await spyOnFrame()
+      const before = read.mock.calls.length
+
+      publishBlockPatch(patch({ layout: 4 }))
+
+      await waitFor(() => expect(read.mock.calls.length).toBeGreaterThan(before))
+      expect(postMessage).not.toHaveBeenCalled()
+    })
+
+    it('re-reads on a refetch frame and applies none of it', async () => {
+      // The server already decided. A refetch frame carries no values at all, so
+      // there is nothing to apply even though its numbers line up.
+      const read = vi.spyOn(api, 'memberDashboard').mockResolvedValue(page())
+      mount()
+      const postMessage = await spyOnFrame()
+      const before = read.mock.calls.length
+
+      publishBlockPatch(patch({ refetch: true, blocks: {}, patch: {}, fold: '', reason: PATCH_REASON_LAYOUT }))
+
+      await waitFor(() => expect(read.mock.calls.length).toBeGreaterThan(before))
+      expect(postMessage).not.toHaveBeenCalled()
+    })
+
+    it('re-reads on a version GAP', async () => {
+      // The read seeded the counter at 0, so version 3 means frames 1 and 2 never
+      // arrived and the blocks on screen are not what the server composed.
+      const read = vi.spyOn(api, 'memberDashboard').mockResolvedValue(page())
+      mount()
+      const postMessage = await spyOnFrame()
+      const before = read.mock.calls.length
+
+      publishBlockPatch(patch({ version: 3 }))
+
+      await waitFor(() => expect(read.mock.calls.length).toBeGreaterThan(before))
+      expect(postMessage).not.toHaveBeenCalled()
+    })
+
+    it('re-reads a LOWER version instead of posting it, which is the restart case', async () => {
+      // The push counter is in memory on the server, per live page, so a gateway
+      // restart arms a fresh page at 0 and the next frame arrives BELOW what this
+      // tab holds. Read as a replay it would be dropped, and so would every frame
+      // after it -- the tab frozen on pre-restart values with nothing saying so.
+      //
+      // The tab holds 9 (from `push_version`) and the frame says 1.
+      const read = vi.spyOn(api, 'memberDashboard').mockResolvedValue(page({ push_version: 9 }))
+      mount()
+      const postMessage = await spyOnFrame()
+      const before = read.mock.calls.length
+
+      publishBlockPatch(patch({ version: 1, patch: payload('after the restart') }))
+
+      await waitFor(() => expect(read.mock.calls.length).toBeGreaterThan(before))
+      expect(postMessage).not.toHaveBeenCalled()
+    })
+
+    it('re-reads a repeat of the frame it already applied', async () => {
+      // Strict equality: a duplicate is not special-cased either. One extra read is
+      // the cheaper mistake than a branch that also swallows a restart.
+      const read = vi.spyOn(api, 'memberDashboard').mockResolvedValue(page({ push_version: 4 }))
+      mount()
+      const postMessage = await spyOnFrame()
+      const before = read.mock.calls.length
+
+      publishBlockPatch(patch({ version: 4, patch: payload('the duplicate') }))
+
+      await waitFor(() => expect(read.mock.calls.length).toBeGreaterThan(before))
+      expect(postMessage).not.toHaveBeenCalled()
+    })
+
+    it('re-reads a patch naming a block the page is not showing', async () => {
+      // The page and the controller disagree about the view while `layout` says they
+      // do not -- the one case that number cannot catch.
+      const read = vi.spyOn(api, 'memberDashboard').mockResolvedValue(page())
+      mount()
+      const postMessage = await spyOnFrame()
+      const before = read.mock.calls.length
+
+      publishBlockPatch(patch({ blocks: { ghost: ['x'] } }))
+
+      await waitFor(() => expect(read.mock.calls.length).toBeGreaterThan(before))
+      expect(postMessage).not.toHaveBeenCalled()
+    })
+
+    it('takes its position back from the READ after a gap, not from the bad frame', async () => {
+      // A refetch does NOT advance `held` from the frame that failed the check.
+      // `held` comes from the body (`push_version`, `package.version`), because a
+      // refetch exists for the case where what this tab holds cannot be trusted --
+      // carrying the untrustworthy half forward would defeat it.
+      //
+      // The read re-seeds at 3 here, so the frame after the gap is 4 and applies.
+      const read = vi.spyOn(api, 'memberDashboard').mockResolvedValue(page({ push_version: 3 }))
+      mount()
+      const postMessage = await spyOnFrame()
+      const afterMount = read.mock.calls.length
+
+      // 5 against a held 3: a gap, so a re-read rather than a post.
+      publishBlockPatch(patch({ version: 5 }))
+      await waitFor(() => expect(read.mock.calls.length).toBeGreaterThan(afterMount))
+      expect(postMessage).not.toHaveBeenCalled()
+
+      // The re-read put it back at 3, so 4 is the very next frame and applies.
+      publishBlockPatch(patch({ version: 4, patch: payload('after the gap') }))
+      await waitFor(() => expect(postMessage).toHaveBeenCalled())
+      expect(postMessage.mock.calls[0][0].blocks.prs.display).toEqual({ open_prs: 'after the gap' })
+    })
+
+    it('leaves another crewmate\'s patch alone', async () => {
+      const read = vi.spyOn(api, 'memberDashboard').mockResolvedValue(page())
+      mount()
+      const postMessage = await spyOnFrame()
+      const before = read.mock.calls.length
+
+      publishBlockPatch(patch({ slug: 'release-captain', patch: payload('the foreign one') }))
+      // Positive control, as above: this crewmate's own patch must still post.
+      publishBlockPatch(patch())
+
+      await waitFor(() => expect(postMessage).toHaveBeenCalledTimes(1))
+      expect(postMessage.mock.calls[0][0].blocks.prs.display).toEqual({ open_prs: '31' })
+      expect(read.mock.calls.length).toBe(before)
+    })
+
+    it('says so out loud when the gateway pushes a frame name this build does not listen for', async () => {
+      // A renamed frame turns the push path off, and a silent push path is
+      // indistinguishable from a quiet crew log: no error, no red, just a page that
+      // stops moving. The controller names the type in the body for exactly this
+      // comparison, so the disagreement is reported where a developer sees it.
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      vi.spyOn(api, 'memberDashboard').mockResolvedValue(page({ push_frame: 'dashboard_blocks_v9' }))
+      mount()
+      await screen.findByTestId('crew-dashboard-frame')
+      await waitFor(() => expect(warn).toHaveBeenCalled())
+      expect(String(warn.mock.calls[0][0])).toContain('dashboard_blocks_v9')
+      expect(String(warn.mock.calls[0][0])).toContain(DASHBOARD_BLOCK_PATCH_FRAME)
+    })
+
+    it('stays quiet when the names agree', async () => {
+      // The control for the case above: a warning on every healthy mount would train
+      // a reader to ignore it.
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      vi.spyOn(api, 'memberDashboard').mockResolvedValue(page())
+      mount()
+      await screen.findByTestId('crew-dashboard-frame')
+      expect(warn).not.toHaveBeenCalled()
+    })
+  })
 })
 
-
-describe('the stored copy is never mounted', () => {
-  // THE CLIENT HALF of the finding the gateway's `_trusted_page` closes.
-  //
-  // `data.html` is the crewmate's STORED page, out of a writable `instance.json`;
-  // `data.rendered_html` is what the gateway composed from the catalog's own
-  // template for the id that record names. Falling back from the second to the
-  // first handed this sandbox -- which grants scripts -- exactly the bytes the
-  // gateway had just declined to run, so the server-side refusal bought nothing.
+describe('no default page', () => {
+  // v3's rule: a dashboard exists once the agent writes a layout, and until then
+  // the empty state IS the answer. The rule cannot live in the server alone --
+  // the body is free to carry a composed page for any state, and the template
+  // registry path STILL composes a default template for a crewmate who adopted
+  // nothing. These are the cases that decline to draw it.
   beforeEach(() => {
     vi.restoreAllMocks()
     mints.length = 0
     retries = 0
     retrySpy.mockClear()
+    __resetBlockPatchForTests()
   })
 
-  it('a healthy read the gateway would not compose mounts no page', async () => {
-    // `state: live` on purpose. This is not the broken-manifest case, which has
-    // its own refusal: this is a record that LOOKS healthy and whose page the
-    // gateway refused to compose -- a tampered one, or an id the catalog does not
-    // serve.
-    vi.spyOn(api, 'memberDashboard').mockResolvedValue(
-      page({
-        state: 'live',
-        rendered_html: undefined,
-        html: '<!doctype html><title>stored</title><script>stolen()</script>',
-      }),
-    )
+  it('reports nothing composed as a STATE, with no retry', async () => {
+    // Nothing composed and nothing wrong are different answers. Rendering this as a
+    // failure would put a permanent error on every crewmate's tab and offer a Try
+    // again that re-reads the same empty answer forever -- which reads as a fault
+    // the reader could clear. Asserted together: the state's own line IS there, and
+    // neither the failure notice nor its retry is.
+    vi.spyOn(api, 'memberDashboard').mockResolvedValue({
+      state: 'empty',
+      state_reason: 'no dashboard package',
+      instance_version: 0,
+    })
+    mount()
+    expect(await screen.findByTestId('crew-dashboard-none')).toBeInTheDocument()
+    expect(screen.queryByTestId('crew-dashboard-empty')).toBeNull()
+    expect(screen.queryByTestId('crew-dashboard-empty-retry')).toBeNull()
+  })
+
+  it('DRAWS NOTHING when the body carries a composed page for the empty state', async () => {
+    // THE REGRESSION THIS FILE EXISTS FOR.
+    //
+    // The route answered `empty` WITH a rendered default template, reasoning that
+    // "an empty frame answers none of the questions a person opened the tab with".
+    // The old promotion accepted it, because it refused only `error`. So a
+    // crewmate who had composed nothing was shown a full dashboard of a shipped
+    // layout, carrying their own fold values, with `instance_version` 0 and
+    // nothing on it saying it was not theirs.
+    //
+    // The body here is exactly that: `empty`, and a page. Nothing may be minted
+    // from it, and the template's own text must not reach the DOM.
+    vi.spyOn(api, 'memberDashboard').mockResolvedValue({
+      state: 'empty',
+      state_reason: 'no dashboard package',
+      instance_version: 0,
+      template: { id: 'project-report', version: 1 },
+      rendered_html: '<!doctype html><title>default</title><p>someone else\'s layout</p>',
+      html: '<!doctype html><p>stored</p>',
+    })
     mount()
     // SETTLE FIRST, on a positive signal. `waitFor` resolves the moment its callback
     // stops throwing, so waiting for the frame to be ABSENT succeeds on the first
-    // poll -- before the read has even landed -- and the case passes whatever the
-    // component goes on to do. Waiting for the unavailable state is waiting for the
-    // read to have arrived and the component to have decided.
+    // poll -- before the read has even landed -- and the case would pass whatever
+    // the component went on to do.
+    expect(await screen.findByTestId('crew-dashboard-none')).toBeInTheDocument()
+    // AND THEN FLUSH, which is the part a mutation run is needed to discover.
+    // `crew-dashboard-none` is committed in the same pass as the read, so finding
+    // it proves the read landed and NOT that the component has finished deciding:
+    // the promotion effect runs after that commit. Without this flush, deleting
+    // the promotion's own empty gate left every assertion below still green,
+    // because the page was minted one tick after they ran.
+    await flushEffects()
+    // `mints` is the detector that survives a second gate. Even with the render
+    // branch refusing to draw, a promoted page is a MINTED page: the srcdoc is
+    // built during render from whatever was promoted, so this sees a fallback that
+    // got as far as being prepared, not merely one that got as far as the screen.
+    expect(mints).toEqual([])
+    expect(screen.queryByTestId('crew-dashboard-frame')).toBeNull()
+    expect(screen.queryByTestId('crew-dashboard-iframe')).toBeNull()
+    expect(document.body.textContent).not.toContain("someone else's layout")
+    // Still the empty state after the flush, so this is the settled answer rather
+    // than a frame the component was about to replace.
+    expect(screen.getByTestId('crew-dashboard-none')).toBeInTheDocument()
+  })
+
+  it('and goes on drawing nothing on a package-bound member\'s SECOND empty read, which is where the promotion gate holds', async () => {
+    // THE CASE THAT MAKES THE PROMOTION'S OWN GATE LOAD-BEARING, found by
+    // mutating it away and watching every other case stay green.
+    //
+    // Two gates refuse an `empty` body independently: the promotion refuses to
+    // hold it, and the clearing effect drops whatever is held. On the FIRST empty
+    // read the clearing effect covers for the promotion, so deleting the
+    // promotion's gate changes nothing visible -- which is exactly how such a
+    // line gets deleted as redundant.
+    //
+    // It is not redundant on the second one. The clearing effect is keyed on
+    // `data.state`, so a second `empty` read does not re-run it: the state string
+    // did not change. The promotion effect is keyed on the whole body and DOES
+    // re-run. And a second empty read is the ordinary case, not a contrived one --
+    // the tab's fallback interval re-reads on its own, and for a crewmate with no
+    // dashboard every one of those answers `empty`.
+    // PACKAGE-BOUND on purpose, so this one case pins the promotion gate AND
+    // pins it on the shape the server-side scoping makes the dangerous one: a
+    // member whose dashboard comes from a package, reported `empty`, sent a
+    // composed page anyway.
+    const bound = {
+      state: 'empty' as const,
+      state_reason: 'package bound but not composed',
+      instance_version: 0,
+      package: {
+        slug: 'oncall-dashboard',
+        version: 4,
+        layout_fingerprint: 'sha256:abc',
+        bound_to: 'crewmate:oncall',
+      },
+      push_version: 0,
+      push_frame: DASHBOARD_BLOCK_PATCH_FRAME,
+      blocks: { prs: ['open_prs'] },
+      missing: [],
+    }
+    const read = vi.spyOn(api, 'memberDashboard').mockResolvedValue({
+      ...bound,
+      rendered_html: '<!doctype html><p>default on the first read</p>',
+    })
+    const { queryClient } = mount()
+    await screen.findByTestId('crew-dashboard-none')
+    await flushEffects()
+
+    // The same state, a different body -- which is what a re-read of a composed
+    // default looks like, since its values move even while its layout does not.
+    read.mockResolvedValue({
+      ...bound,
+      rendered_html: '<!doctype html><p>default on the second read</p>',
+    })
+    await queryClient.refetchQueries({ queryKey: DASHBOARD_KEY })
+    await waitFor(() => expect(read.mock.calls.length).toBeGreaterThan(1))
+    await flushEffects()
+
+    expect(mints).toEqual([])
+    expect(screen.getByTestId('crew-dashboard-none')).toBeInTheDocument()
+    expect(screen.queryByTestId('crew-dashboard-iframe')).toBeNull()
+    expect(document.body.textContent).not.toContain('default on the second read')
+  })
+
+  it('DRAWS NOTHING for a PACKAGE-BOUND empty member that is sent a page anyway', async () => {
+    // THE PRECISE REGRESSION THE TWO HALVES ARE SCOPED AROUND, and the one the
+    // other cases in this block do not cover: every fixture above is either the
+    // template-registry shape (`template:`) or carries no package key at all.
+    //
+    // The server half of the fix is SCOPED: the controller suppresses the builtin
+    // fallback only for a member whose dashboard comes from a PACKAGE
+    // (`fallback = None if packaged.bound else default_instance(slug)`), so the
+    // shipped templates keep working for everyone else. That scoping is exactly
+    // what makes this body the dangerous one: a package-bound member, `empty`,
+    // and a composed page -- which is the shape the server would start sending
+    // again if that condition were ever widened, inverted, or lost in a merge.
+    //
+    // So this body is the one the frontend must refuse on its own authority, with
+    // no help from the server. `bound_to` names this crewmate and a layout version
+    // is present, so nothing about it looks like the registry path.
+    vi.spyOn(api, 'memberDashboard').mockResolvedValue({
+      state: 'empty',
+      state_reason: 'package bound but not composed',
+      instance_version: 0,
+      package: {
+        slug: 'oncall-dashboard',
+        version: 4,
+        layout_fingerprint: 'sha256:abc',
+        bound_to: 'crewmate:oncall',
+      },
+      push_version: 0,
+      push_frame: DASHBOARD_BLOCK_PATCH_FRAME,
+      blocks: { prs: ['open_prs'] },
+      missing: [],
+      rendered_html: '<!doctype html><title>default</title><p>a layout nobody here composed</p>',
+    })
+    mount()
+    expect(await screen.findByTestId('crew-dashboard-none')).toBeInTheDocument()
+    await flushEffects()
+    expect(mints).toEqual([])
+    expect(screen.queryByTestId('crew-dashboard-iframe')).toBeNull()
+    expect(document.body.textContent).not.toContain('a layout nobody here composed')
+    // And the empty state is still what is on screen after the flush, so this is
+    // the settled answer rather than a frame about to replace it.
+    expect(screen.getByTestId('crew-dashboard-none')).toBeInTheDocument()
+  })
+
+  it('does not hold the skeleton up waiting for a page that is not coming', async () => {
+    // The other half. The readiness gate used to wait on `rendered_html` alone, so
+    // a body carrying a page for a state that never promotes left the loading
+    // skeleton on screen for good -- and for `empty`, which is every crewmate's
+    // first answer, that skeleton would BE the feature.
+    vi.spyOn(api, 'memberDashboard').mockResolvedValue({
+      state: 'empty',
+      instance_version: 0,
+      rendered_html: '<!doctype html><p>default</p>',
+    })
+    mount()
+    expect(await screen.findByTestId('crew-dashboard-none')).toBeInTheDocument()
+    expect(screen.queryByTestId('crew-dashboard-loading')).toBeNull()
+  })
+
+  it('DROPS a page already on screen when a later read says empty', async () => {
+    // "Keep the last good page" is for a page that FAILED, where the previous one
+    // is still the best answer about the same dashboard. `empty` is not that: the
+    // dashboard is gone, so the page on screen is a layout that no longer exists
+    // under the name of a crewmate who no longer has one. Holding it would
+    // reintroduce the default page from the other direction -- not a builtin
+    // served to someone with nothing, but a deleted one that never stops being
+    // served, which is worse because it reads as current.
+    const read = vi.spyOn(api, 'memberDashboard').mockResolvedValue(page())
+    const { queryClient } = mount()
+    await screen.findByTestId('crew-dashboard-frame')
+
+    read.mockResolvedValue({ state: 'empty', state_reason: 'package deleted', instance_version: 0 })
+    await queryClient.refetchQueries({ queryKey: DASHBOARD_KEY })
+
+    expect(await screen.findByTestId('crew-dashboard-none')).toBeInTheDocument()
+    expect(screen.queryByTestId('crew-dashboard-frame')).toBeNull()
+    expect(screen.queryByTestId('crew-dashboard-kept-band')).toBeNull()
+  })
+
+  it('and does not resurrect it when a NEW dashboard is composed later', async () => {
+    // THE CASE THAT MAKES THE DROP LOAD-BEARING, and the one the case above cannot
+    // see: with the render branch refusing to draw an `empty` state anyway, merely
+    // asserting the frame is gone says nothing about whether the old page is still
+    // HELD behind it. A mutation that neutered the clearing effect left the case
+    // above green.
+    //
+    // Here the crewmate composes a new dashboard at a NEW layout. A held page from
+    // the deleted one would make that a version CHANGE rather than a first page --
+    // so the new page would go on probation against a ghost, the readiness window
+    // would lapse, and the tab would show the DELETED layout under a kept-page
+    // band saying the newer one did not load. With the page dropped there is no
+    // previous page to keep, so the new one is shown at once and no band appears.
+    const read = vi
+      .spyOn(api, 'memberDashboard')
+      .mockResolvedValue(page({ rendered_html: '<!doctype html><p>the deleted one</p>' }))
+    const { queryClient } = mount()
+    await screen.findByTestId('crew-dashboard-frame')
+
+    read.mockResolvedValue({ state: 'empty', state_reason: 'package deleted', instance_version: 0 })
+    await queryClient.refetchQueries({ queryKey: DASHBOARD_KEY })
+    await screen.findByTestId('crew-dashboard-none')
+    await flushEffects()
+
+    read.mockResolvedValue(
+      page({
+        package: {
+          slug: 'oncall-dashboard-2',
+          version: 9,
+          layout_fingerprint: 'sha256:new',
+          bound_to: 'crewmate:oncall',
+        },
+        rendered_html: '<!doctype html><p>the newly composed one</p>',
+      }),
+    )
+    await queryClient.refetchQueries({ queryKey: DASHBOARD_KEY })
+
+    const frame = await screen.findByTestId('crew-dashboard-iframe')
+    expect(frame).toHaveAttribute('data-layout-version', '9')
+    await flushEffects()
+    // No probation against a ghost, so no band and no held predecessor.
+    expect(screen.queryByTestId('crew-dashboard-kept-band')).toBeNull()
+    expect(screen.queryByTestId('crew-dashboard-probe')).toBeNull()
+    // And the document on screen is the new one, not the deleted layout.
+    expect(mints.at(-1)).toContain('the newly composed one')
+  }, 20000)
+
+  it('still draws a STALE page, which is the crewmate\'s own and not a fallback', async () => {
+    // The gate is on `empty`, not on "anything but live", and this is why. A stale
+    // instance is a dashboard the crewmate adopted whose template shipped a new
+    // version; refusing it would blank a page somebody chose in order to remove one
+    // nobody did. The template registry is a live feature and this change does not
+    // retire it.
+    vi.spyOn(api, 'memberDashboard').mockResolvedValue({
+      state: 'stale',
+      instance_version: 2,
+      template: { id: 'project-report', version: 3 },
+      rendered_html: '<!doctype html><p>adopted and stale</p>',
+    })
+    mount()
+    expect(await screen.findByTestId('crew-dashboard-frame')).toBeInTheDocument()
+    expect(mints.some((m) => m.includes('adopted and stale'))).toBe(true)
+  })
+
+  it('and the stored copy is never mounted for any state', async () => {
+    // THE CLIENT HALF of the finding the gateway's `_trusted_page` closes. `html` is
+    // the crewmate's STORED page out of a writable record; `rendered_html` is what
+    // the gateway composed. Falling back from the second to the first handed this
+    // sandbox -- which grants scripts -- exactly the bytes the gateway had just
+    // declined to run, so the server-side refusal bought nothing.
+    vi.spyOn(api, 'memberDashboard').mockResolvedValue({
+      state: 'live',
+      instance_version: 2,
+      rendered_html: undefined,
+      html: '<!doctype html><title>stored</title><script>stolen()</script>',
+    })
+    mount()
     await screen.findByTestId('crew-dashboard-empty')
-    // Now the absence means something: nothing was minted, so nothing is mounted.
-    // The frame is built from a minted document, and `mints` is every document this
-    // component asked for.
     expect(mints).toEqual([])
     expect(screen.queryByTestId('crew-dashboard-frame')).toBeNull()
     expect(document.body.innerHTML).not.toContain('stolen()')
-  })
-
-  it('and it does not wait forever for a page that is not coming', async () => {
-    // The other half: refusing to mount must not leave the skeleton up for good.
-    // A reader has to be told the page is unavailable.
-    vi.spyOn(api, 'memberDashboard').mockResolvedValue(
-      page({ state: 'live', rendered_html: undefined }),
-    )
-    mount()
-    expect(await screen.findByTestId('crew-dashboard-empty')).toBeInTheDocument()
     expect(screen.queryByTestId('crew-dashboard-loading')).toBeNull()
   })
 })
