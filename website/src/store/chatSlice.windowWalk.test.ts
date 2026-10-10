@@ -32,6 +32,8 @@ let STALL_CURSOR = false
 /** When set, the newest-window read (no cursor) reports a turn in flight and
  *  every older page reports it finished -- a turn ending mid-walk. */
 let TURN_ENDS_MID_WALK = false
+/** When set, the newest-window re-read reports a successor turn and process identity. */
+let TURN_ADVANCES_ON_NEWEST_REREAD = false
 /** Newest-window reads answered so far; the turn is over after the first. */
 let NEWEST_READS = 0
 /** Fired once, on the first OLDER page request -- the moment the walk is in flight. */
@@ -53,12 +55,21 @@ vi.mock('../api/client', () => ({
       const eff = limit === undefined ? undefined : Math.min(limit, SERVER_CLAMP)
       const start = eff === undefined ? 0 : Math.max(0, end - eff)
       const newestRead = before === undefined ? ++NEWEST_READS : 0
+      const successor = TURN_ADVANCES_ON_NEWEST_REREAD && newestRead > 1
       return Promise.resolve({
         messages: corpus.slice(start, end),
         has_more: start > 0,
         total,
         next_before: STALL_CURSOR && before !== undefined ? before : start,
-        running: TURN_ENDS_MID_WALK && newestRead === 1,
+        running: TURN_ADVANCES_ON_NEWEST_REREAD
+          ? true
+          : TURN_ENDS_MID_WALK && newestRead === 1,
+        ...(TURN_ADVANCES_ON_NEWEST_REREAD
+          ? {
+              turn: successor ? 2 : 1,
+              turn_gen: successor ? 'gateway-b' : 'gateway-a',
+            }
+          : {}),
       })
     }),
     resumeChatSlot: vi.fn(() => Promise.resolve({ ok: true })),
@@ -99,6 +110,7 @@ describe('walkWindowBackTo', () => {
     vi.clearAllMocks()
     STALL_CURSOR = false
     TURN_ENDS_MID_WALK = false
+    TURN_ADVANCES_ON_NEWEST_REREAD = false
     NEWEST_READS = 0
     ON_OLDER = null
   })
@@ -163,6 +175,30 @@ describe('walkWindowBackTo', () => {
       expect(requests().length).toBeGreaterThan(1)
       expect(res.payload.running).toBe(false)
       expect(store.getState().chat.slotRunning).toBe(false)
+    })
+
+    it('carries the newest-edge running turn identity through the walk', async () => {
+      HISTORY = rows(1300)
+      const store = makeStore({
+        messages: HISTORY.slice(1260),
+        slotHasMore: true,
+        slotOldestIndex: 1260,
+        slotCursorKey: SLOT,
+      })
+      HISTORY = rows(2000)
+      TURN_ADVANCES_ON_NEWEST_REREAD = true
+
+      const res = await store.dispatch(refreshSlot(SLOT) as never) as {
+        payload: { running: boolean; turn?: number; turn_gen?: string }
+      }
+
+      expect(requests().length).toBeGreaterThan(1)
+      expect(res.payload).toMatchObject({
+        running: true,
+        turn: 2,
+        turn_gen: 'gateway-b',
+      })
+      expect(store.getState().chat.slotRunning).toBe(true)
     })
 
     it('spends at most WINDOW_WALK_MAX_PAGES older pages, then hands the reducer what it has', async () => {

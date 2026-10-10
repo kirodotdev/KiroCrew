@@ -48,6 +48,7 @@ from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.config import live
 from kiro_crew.config.sections import ResolvedBindings
 from kiro_crew.dashboard import chat_runner
+from kiro_crew.dashboard.chat_utils import chunk_generation
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.history import ConversationLog
 from kiro_crew.memory_stores import UnknownMemoryStore
@@ -3505,7 +3506,14 @@ class TestFinishQueueCycle:
         assert slot.task is None
         state.refresh_slot_source_status.assert_called_once_with(slot.key)
         state.broadcast_ws.assert_any_call(
-            "chat_done", {"slot": slot.key, "continuing": False, "needs_input": False}
+            "chat_done",
+            {
+                "slot": slot.key,
+                "turn": slot._turn_generation,
+                "turn_gen": chunk_generation(),
+                "continuing": False,
+                "needs_input": False,
+            },
         )
         assert slot._cycle_reached_provider is False, "the next cycle starts unserved"
 

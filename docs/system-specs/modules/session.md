@@ -45,6 +45,31 @@ allocation discard work superseded while configuration or resolution awaits.
 Configuration migrations retain their fresh-document delta persistence and
 writer-lock ordering, including when this speculative load is the first load.
 
+The dashboard reads a live `slots` row's `running`, which `slot_projection.py`
+projects from `turn_running`, and treats the first row reporting false as the
+end of that slot's turn. `settleEndedActiveTurn` in
+`website/src/store/chat/runState.ts` settles the active mirror; background rows
+apply the same `_done`-equivalent settlement to the keyed run and cached
+transcript before recording the turn as ended. The slots row and terminal
+`chat_done` carry the slot's monotonic `_turn_generation` as `turn` together
+with the process-local `chunk_generation()` as `turn_gen`. A slot-detail history
+reply carries the pair when its `running` value describes a numbered turn or an
+ended turn. During the send handler's admission-only reservation, `running` is
+true before a numbered turn exists, so slot detail omits both fields and the
+dashboard's identity-less compatibility rule trusts `running` without pairing it
+with the preceding turn. The dashboard remembers the newest ended pair per slot,
+ignores a late duplicate `_done`, and refuses to let a stale history reply
+restore `running: true` for an ended turn. A slot switch whose read a later
+switch superseded applies nothing, so its page cannot finalize the turn that
+followed it. The one `chat_done` sent mid-turn, the
+deferred `/compact` acknowledgement, omits the pair (`ends_turn=False`), because
+the same turn keeps streaming after it. So a turn writer clears `slot.task` only
+after the turn's last content frame is out, hands off to a successor (queued turn
+or synthesis) without a `push_slots_update()` observing the gap, and lets
+nothing but the terminal `chat_done` follow the idle push. `_finish_queue_cycle`
+in `chat_runner.py` is the ordinary terminal step (content, `done`, clear, push,
+one `chat_done`), pinned by `test_finish_queue_cycle_terminal_order.py`.
+
 ## Dashboard app launch intents
 
 The App SDK's `slotKey` selects an existing dashboard slot through ordinary

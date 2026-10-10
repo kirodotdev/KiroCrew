@@ -147,6 +147,8 @@ export async function walkWindowBackTo(key: string, page: SlotDetailPage, held: 
     ...page,
     total: newestEdge.total,
     running: status.running,
+    turn: status.turn,
+    turn_gen: status.turn_gen,
     stopping: status.stopping,
     queue: status.queue,
     context: status.context ?? page.context,

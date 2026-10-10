@@ -17,6 +17,7 @@ import { normalizeRunSessionKey } from '../../apps/workflows/runModel'
 import { dashboardAutomationSlotKey } from '../../monitoring/automation'
 import { i18nT } from '../../i18n/t'
 import { attendArrival } from './attention'
+import { takeIdleRowRefresh } from './idleRowRefresh'
 import { refreshPullRequestsAfterTurn, refreshSessionControlStatusesAfterTurn } from './serverState'
 import type { FrameData } from './frames'
 
@@ -137,7 +138,9 @@ export function useTurnCompletion({ dispatch, queryClient, reconnectingRef }: Tu
       if (data.slot) {
         dispatch(setSlotStatusDetail({ slot: data.slot, kind: 'idle', ts: Date.now() }))
       }
-      if (data.slot) dispatch(refreshSlot(data.slot))
+      // The idle `slots` row that ended this same turn already dispatched this
+      // refresh (`useSlotListSync`); any other `_done` refreshes.
+      if (data.slot && !takeIdleRowRefresh(data.slot, data)) dispatch(refreshSlot(data.slot))
       if (data.slot) {
         const isActive = data.slot === store.getState().chat.activeSlot
         refreshPullRequestsAfterTurn(

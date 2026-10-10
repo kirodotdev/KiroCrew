@@ -130,7 +130,6 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("chat_handlers.py", "_switch_target_busy"),
                 # The agent route's transaction; the in-turn /agent command shares it.
                 ("chat_handlers.py", "switch_slot_agent"),
-                ("chat_api/slot_detail.py", "api_chat_slot_detail"),
                 ("chat_handlers.py", "api_chat_slot_interrupt"),
                 ("chat_handlers.py", "api_chat_slot_model"),
                 ("chat_handlers.py", "api_chat_slot_note"),
@@ -195,6 +194,7 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
         **{
             site: both
             for site in {
+                ("chat_api/slot_detail.py", "api_chat_slot_detail"),
                 ("chat_handlers.py", "api_chat"),
                 ("chat_regenerate.py", "_destructive_history_busy"),
                 ("chat_regenerate.py", "api_chat_slot_edit_resend"),

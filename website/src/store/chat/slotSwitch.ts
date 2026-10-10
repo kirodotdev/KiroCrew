@@ -16,10 +16,16 @@ import { recentErrors, recordError, redactSecrets, type ErrorReport } from '../.
 import { chatSlotDetailPath } from '../../api/chatSlotPaths'
 import type { ChatState } from './state'
 import { fetchSlotDetail, isUnsafeKey, safeKey } from './wire'
-import { deduplicateByMid, floorForGen, olderHeadAbovePage, raiseChunkSeq, sameTranscript, serverRowCount, snapshotChunkGen, snapshotChunkSeq, tailNotInPage } from './transcript'
+import { deduplicateByMid, finalizePageStreaming, floorForGen, olderHeadAbovePage, raiseChunkSeq, sameTranscript, serverRowCount, snapshotChunkGen, snapshotChunkSeq, tailNotInPage } from './transcript'
 import { abortActiveOlderFetch, pagingCursorAfterKeptHead, slotCoverageShortfall, slotSwitchFetchLimit } from './paging'
 import { mergePreservedThinking, reinsertThinkingOrphans, type ThinkingAnchor } from './thinking'
-import { bumpRunEpoch, enterActiveSlot, pushHistory } from './runState'
+import {
+  bumpRunEpoch,
+  enterActiveSlot,
+  historyReportsRunning,
+  pushHistory,
+  recordEndedTurn,
+} from './runState'
 import { parkActiveTranscript, retainServerTotal, seedContextUsage, setPagingCursor, writeSlotPage } from './slotCache'
 import { hydrateQueuedBubbles } from './queue'
 import { loadSlotActivity } from './activity'
@@ -58,6 +64,18 @@ export type SwitchSlotArg = string | { key: string; keepTargetOnMissing?: boolea
  *  `meta.arg` entirely (see the fulfilled reducer's requestId note), and the
  *  reducers' pre-existing tolerance of that must survive this indirection. */
 const switchSlotKey = (arg: SwitchSlotArg): string => typeof arg === 'object' && arg !== null ? arg.key : arg
+
+/** Whether a switchSlot settlement belongs to a request a later switch
+ *  superseded. The live claim cannot answer this once the later switch has
+ *  settled and nulled it, and the thunk never aborts an earlier read of the
+ *  same slot: that read can land after the newer one, carrying a page captured
+ *  before everything the pane now shows. `slotSwitchLatestRequestId` survives
+ *  settlement for exactly this. A hand-rolled dispatch without a requestId is
+ *  never superseded. */
+const supersededSwitch = (state: ChatState, requestId: string | undefined): boolean => {
+  const latest = state.slotSwitchLatestRequestId
+  return typeof requestId === 'string' && typeof latest === 'string' && requestId !== latest
+}
 
 /** The structured report behind a localized switch failure, so the pane notice's
  *  "ask the agent" hand-off carries the request and the real error, not just the
@@ -413,6 +431,7 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
       // -- including a same-key switch, where the key alone still looks valid.
       state.slotCursorKey = null
       state.slotSwitchRequestId = action.meta?.requestId ?? null
+      state.slotSwitchLatestRequestId = state.slotSwitchRequestId
       state.slotSwitchTarget = target
       // Save current slot's activity
       if (state.activeSlot) {
@@ -486,12 +505,29 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
       state._switchLiveFrom = state.messages.length
     })
     .addCase(switchSlot.fulfilled, (state, action) => {
+      // A later switch owns the pane: its own fulfilment, or the cache its
+      // `pending` restored, already set the view this older page predates.
+      // Applied, a page from a turn this tab has seen end finalizes the live
+      // turn that followed it. The claim below is never this request's: it is
+      // null or the newest request's.
+      if (supersededSwitch(state, action.meta?.requestId)) return
       // Before the guards below, so an early return still ends this claim. Keyed
       // on requestId, which a hand-rolled dispatch may omit, so read it safely.
       if (state.slotSwitchRequestId !== null && state.slotSwitchRequestId === action.meta?.requestId) { state.slotSwitchRequestId = null; state.slotSwitchTarget = null; state.slotSwitchOrigin = null }
-      const { key, messages, running, hasMore, queue, nextBefore } = action.payload
+      const { key, messages: fetchedMessages, hasMore, queue, nextBefore } = action.payload
       if (isUnsafeKey(key)) return
       if (state.activeSlot !== key) return  // user switched away during fetch
+      const reportedRunning = action.payload.running
+      const running = historyReportsRunning(state, key, reportedRunning, action.payload)
+      const endedTurnHistory = reportedRunning && !running
+      // A page captured before this turn ended, copied so the writes below
+      // never land in the action. Its rows keep their roles through the merge,
+      // which drops the page's streaming rows wherever it re-attaches a newer
+      // local reply; the ones it keeps are finalized after it.
+      const messages = endedTurnHistory
+        ? fetchedMessages.map(message => ({ ...message }))
+        : fetchedMessages
+      if (!reportedRunning) recordEndedTurn(state, key, action.payload)
       // A payload carrying `comparableTotal` came from the coverage walk: the
       // carried count is the first bounded read's settled one, and only that
       // may become the baseline.
@@ -584,6 +620,11 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
       } else {
         next = liveSends.length ? [...preserved, ...liveSends] : preserved
       }
+      // None of the ended turn's live segments may stay the append target for
+      // the next turn. Finalized after the merge, not before it: a fetched
+      // partial finalized first reads as a reply, passes the streaming filter
+      // above beside the newer local reply, and the reply renders twice.
+      if (endedTurnHistory) next = finalizePageStreaming(next, preserved)
       /* switchSlot fetches a BOUNDED page (OLDER_PAGE_LIMIT), and `pending`
        * restored this slot's cached transcript into `state.messages`, so
        * assigning the page wholesale collapsed a window the reader had paged in
@@ -613,10 +654,13 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
       // it, so a live chunk racing this snapshot is dropped, not re-appended.
       // Seqs are the slot's and never restart, so a snapshot from an earlier
       // turn can only sit at or below the live floor (raise, never lower). A
-      // snapshot of a slot that is NOT running says no stream is in flight:
-      // the floor is cleared, so a gateway restart (which does restart the
-      // counter) cannot leave a stale floor over the next turn's chunks.
-      if (running) {
+      // page this tab knows was captured before its turn ended seeds it too:
+      // the floor survives a turn end, as `_done` leaves it, so a redelivered
+      // chunk of the ended turn cannot reopen its reply. A snapshot of a slot
+      // that is NOT running says no stream is in flight: the floor is
+      // cleared, so a gateway restart (which does restart the counter) cannot
+      // leave a stale floor over the next turn's chunks.
+      if (reportedRunning) {
         const snapGen = snapshotChunkGen(messages)
         state.lastChunkSeq = raiseChunkSeq(floorForGen(state.lastChunkSeq, state.lastChunkGen, snapGen), snapshotChunkSeq(messages))
         if (snapGen !== undefined) state.lastChunkGen = snapGen
@@ -675,6 +719,10 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
       seedContextUsage(state, key, action.payload.context)
     })
     .addCase(switchSlot.rejected, (state, action) => {
+      // As in `fulfilled`: a later switch owns the pane, so an older read of
+      // the same slot failing after it must not empty the transcript and run
+      // state that switch put on screen (the transient branch below).
+      if (supersededSwitch(state, action.meta?.requestId)) return
       // Only the CURRENT claim may unwind: a stale rejection (a newer switch
       // already took the requestId) must not fight the switch in flight.
       const target = switchSlotKey(action.meta.arg)

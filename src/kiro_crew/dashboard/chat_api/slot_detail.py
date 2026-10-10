@@ -31,6 +31,7 @@ if TYPE_CHECKING:
         _redact_meta_for_role,
         _slots_serialization_note,
         carry_provenance,
+        chunk_generation,
         deny_app_slot_access,
         effective_session_key,
         history_corpus_unreadable,
@@ -1144,7 +1145,15 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
     # same snapshot discipline the flush-thread save path relies on.
     key = slot.key
     workspace = slot.workspace
+    turn_running = slot.turn_running
     running = slot.running
+    # Admission-only running has no numbered turn yet. Omitting the pair keeps
+    # this response from naming the preceding turn as the one currently running.
+    turn_identity: dict[str, object] = (
+        {}
+        if running and not turn_running
+        else {"turn": slot._turn_generation, "turn_gen": chunk_generation()}
+    )
     stopping = slot._stopping
     display_title = slot.display_title
     # Shallow copies, so the off-loop render below reads a frozen entry while
@@ -1180,6 +1189,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
                 # configuration.
                 "title": _redact_for_display(display_title),
                 "running": running,
+                **turn_identity,
                 "stopping": stopping,
                 "messages": prepared,
                 "queue": [queue_entry_view(q) for q in queue_snapshot],

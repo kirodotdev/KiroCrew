@@ -8,6 +8,13 @@ import type { ChatState } from './state'
 import { safeKey } from './wire'
 import { MCP_APP_KEY_SEP, evictMcpApps } from './mcpApps'
 import { clearFiledFolderSuggestions } from './composerCards'
+import {
+  recordEndedTurn,
+  settleEndedActiveTurn,
+  settleEndedBackgroundTurn,
+  turnAlreadyEnded,
+  wireTurnIdentity,
+} from './runState'
 
 /** Chat state keyed by a slot.
  *
@@ -25,6 +32,7 @@ const slotKeyedMaps = (state: ChatState) => [
   state.slotMessages, state.slotActivity, state.slotRun, state.slotHydrated,
   state.slotSide, state.slotSideClosed, state.slotStatusDetail,
   state.slotContextPct, state.slotContextTokens, state.stopPressedAt,
+  state.endedTurn,
   state.followups, state.folderSuggestions, state.restoredQuestionNotices,
   state.pendingQuestions, state.subagentQueued, state.subagentQueuedReason,
   state.automations,
@@ -124,6 +132,18 @@ export function addSlotListCases(builder: ActionReducerMapBuilder<ChatState>): v
       if (action.payload.length === 0 && !seenSnapshot) return
       reconcileSlotResidue(state, action.payload)
       clearFiledFolderSuggestions(state, action.payload)
+      // Settle before recording this frame: a pending local send is released
+      // only when the row is newer than what the tab knew before this frame.
+      settleEndedActiveTurn(state, action.payload)
+      for (const row of action.payload) {
+        if (row.running === false) {
+          const identity = wireTurnIdentity(row)
+          if (identity && !turnAlreadyEnded(state, row.key, identity)) {
+            settleEndedBackgroundTurn(state, row.key)
+          }
+          recordEndedTurn(state, row.key, row)
+        }
+      }
     })
     /** A `slot_patch` frame stands in for the full list after a metadata edit
      *  or a close, so it drives the same cleanup the list would, limited to

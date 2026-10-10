@@ -5,7 +5,7 @@
  * links, the send wire, and the composer autocomplete read.
  */
 
-import type { ChatSlot } from '../../types'
+import type { ChatSlot, ChatSlotDetailResponse } from '../../types'
 import type { SessionSummary } from '../../types/sessionSummary'
 import type { DynamicDashboardCard } from '../../types/dynamicDashboard'
 import { getStoredConsent } from '../../utils/themeConsent'
@@ -91,8 +91,8 @@ export function createChatEndpoints({ post, put, del, patch, j, jfetch: fetch, s
     unlinkSourceLink: (slot: string, identity: string, expect: string): Promise<{ ok?: boolean; dismissed?: boolean; source_links_total?: number; error?: string; code?: string }> =>
       del('/api/chat/slots/' + encodeURIComponent(slot) + '/source-links/' + encodeURIComponent(identity)
         + '?expect=' + encodeURIComponent(expect)).then(j),
-    chatSlotDetail: (slot: string, limit?: number, before?: number, signal?: AbortSignal) => {
-      if (isLookPreviewFrame()) return Promise.resolve(lookPreviewSlotDetail())
+    chatSlotDetail: (slot: string, limit?: number, before?: number, signal?: AbortSignal): Promise<ChatSlotDetailResponse> => {
+      if (isLookPreviewFrame()) return Promise.resolve({ key: slot, ...lookPreviewSlotDetail() })
       const p = new URLSearchParams()
       if (limit) p.set('limit', String(limit))
       if (before !== undefined) p.set('before', String(before))

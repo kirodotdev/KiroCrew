@@ -83,7 +83,7 @@ const FUNCTIONS = [
   'selectSlotSubagentsActive', 'selectSlotToolLog', 'selectSubagentActivityCount', 'selectTrailingSendUnconfirmed',
   'selectSlotTurnFromWake', 'selectTurnInterrupted', 'shouldResolveAskOnSend', 'slotCoverageShortfall',
   'slotSwitchFetchLimit', 'snapshotChunkGen', 'snapshotChunkSeq', 'switchSlotNoticeCopy',
-  'transcriptTsMs',
+  'transcriptTsMs', 'wireTurnIdentity',
 ]
 
 const CONSTANTS: Record<string, unknown> = {
@@ -105,7 +105,7 @@ const CONSTANTS: Record<string, unknown> = {
 const INITIAL_STATE = {
   activeSlot: null, messages: [], slotRunning: false, slotStopping: false, slotState: 'idle',
   slotStatusDetail: {}, slotHasMore: false, slotOldestIndex: 0, slotCursorKey: null,
-  slotSwitchRequestId: null, slotSwitchTarget: null, slotSwitchOrigin: null, switchSlotGone: null,
+  slotSwitchRequestId: null, slotSwitchTarget: null, slotSwitchLatestRequestId: null, slotSwitchOrigin: null, switchSlotGone: null,
   loadingOlder: false, slotOlderError: false, lastChunkSeq: undefined, lastChunkGen: undefined,
   _wsChunkedDuringFetch: false, liveFrameSeq: 0, refreshAppliedSeq: {}, _redeliveredFramesDropped: 0, history: [], historyHasMore: false,
   historyOffset: 0, unresumableResume: null, lastResumeRequestId: null, undeletableHistory: null,
@@ -119,7 +119,7 @@ const INITIAL_STATE = {
   slotRun: {}, slotHydrated: {}, slotLoading: false, slotSide: {}, slotSideClosed: {},
   slotHistory: [], slotsSnapshotSeen: false, pendingQuestions: {}, questionRequestsInFlight: {}, questionsSettled: {}, restoredQuestionNotices: {}, followups: {},
   folderSuggestions: {}, stopPressedAt: {}, runEpoch: {}, activeRunEpochAtEntry: 0,
-  pendingTurnSlot: null,
+  endedTurn: {}, pendingTurnSlot: null,
   closeRefused: null,
 }
 

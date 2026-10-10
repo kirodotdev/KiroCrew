@@ -184,6 +184,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     _remove_queued_by_id,
     _resettle_restricted_key,
     _sync_dashboard_slots,
+    chunk_generation,
     drained_to_thread,
     effective_session_key,
     history_corpus_unreadable,
