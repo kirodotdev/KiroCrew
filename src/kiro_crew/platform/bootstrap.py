@@ -282,3 +282,58 @@ def bootstrap_context(cfg: "KiroCrewConfig") -> PlatformContext:
         logger.warning("register_publish_providers failed; continuing", exc_info=True)
 
     return ctx
+
+
+#: The notice a host on a too-old kiro-cli gets when KAS is configured. Logged at
+#: WARNING, and the same reason rides on the KAS row of the dashboard's backend
+#: panel through ``acp_backends.host_unservable_reason``.
+KAS_CLI_FLOOR_NOTICE = (
+    "KAS is selected, but {reason}. Kiro Crew is using kiro-cli instead. "
+    "Update kiro-cli and restart Kiro Crew to use KAS."
+)
+
+
+def apply_kas_cli_floor(cfg: "KiroCrewConfig") -> str | None:
+    """Fall back to kiro-cli when KAS is configured but this kiro-cli cannot serve it.
+
+    The same ``acp --help`` probe ``kirocrew doctor`` reports from, turned into a
+    runtime floor. When the probe RAN and the engine is missing, KAS is marked
+    unservable on this host, which drops it from the one selectable registry every
+    later config load reads; ``cfg``'s own already-resolved field is re-resolved
+    through the same gate. Returns the notice it logged, or ``None`` when nothing
+    changed.
+
+    Probes only when KAS is what this install would run — the main or member
+    backend — and still selectable. An unknown verdict (no pinned kiro-cli, a
+    failed spawn) leaves KAS selected: the floor never acts on a fact it could not
+    establish.
+
+    Called by the gateway alone, after :func:`bootstrap_context`, so it reads the
+    policy-narrowed set. Not part of ``bootstrap_context`` itself: that runs in
+    every ``kirocrew`` process (each MCP server, app server and script cron), and
+    the KAS sessions this floor protects are spawned only by the gateway. Keeping
+    it out also leaves ``kirocrew doctor`` reading the configured backend, so its
+    KAS block still prints the engine diagnosis. Blocking: run it off the loop.
+    """
+    from kiro_crew.acp_backends import (
+        ACP_BACKEND_KAS,
+        mark_backend_unservable,
+        resolve_selected_backend,
+        selectable_backends,
+    )
+
+    agent = cfg.agent
+    if ACP_BACKEND_KAS not in (agent.acp_backend, agent.member_acp_backend):
+        return None
+    if ACP_BACKEND_KAS not in selectable_backends():
+        return None
+    from kiro_crew.agent_sdk import kas_engine_unsupported_reason
+
+    reason = kas_engine_unsupported_reason()
+    if reason is None:
+        return None
+    mark_backend_unservable(ACP_BACKEND_KAS, reason)
+    agent.acp_backend = resolve_selected_backend(agent.acp_backend)
+    notice = KAS_CLI_FLOOR_NOTICE.format(reason=reason)
+    logger.warning(notice)
+    return notice

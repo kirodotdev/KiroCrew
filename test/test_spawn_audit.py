@@ -1227,7 +1227,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # Crew mints no KAS token anywhere; the relay resolves tokens
         # from kiro-cli's own store (see ``acp/kas_transport.py``), so the former
         # ``chat _ get-kas-token`` spawn is gone rather than moved.
-        "cli_doctor.py::_kas_relay_help",
+        "kiro_cli.py::kas_relay_help",
         # ``<kiro-cli> whoami`` sign-in probe for the declaration-driven auth row:
         # fixed argv (the binary name is a module constant and the subcommand is a
         # literal), 10s-capped, no shell, no agent-influenced argument. It reads only

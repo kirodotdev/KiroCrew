@@ -163,6 +163,7 @@ from kiro_crew.kiro_cli import (
     PATH_ONLY_INSTALL_NOTE,
     SPEC_PERMISSIONS_MIN_VERSION,
     installed_kiro_cli_version,
+    kas_relay_help,
     mcp_governance_may_apply,
     resolve_kiro_cli,
     spec_permissions_supported,
@@ -1515,30 +1516,11 @@ _KAS_ENGINE_FLAG_NAME = KAS_RELAY_ENGINE_FLAG.lstrip("-")
 def _kas_relay_help(binary: str) -> str | None:
     """``acp --help`` text for this kiro-cli, or ``None`` when the probe FAILED.
 
-    Read from help output because there is no machine-readable capability surface
-    for the engine selector. ``None`` means only one thing — the probe could not
-    run (spawn error, timeout) — so the caller reports genuinely-unknown as
-    unknown. Help text that RAN and simply lacks the engine selector is returned
-    as-is, not as ``None``: a kiro-cli too old to offer ``--agent-engine`` cannot
-    serve KAS at all, and reporting that as "unknown" would let a broken
-    configuration pass the readiness check and fail later at spawn instead.
-
-    Local binary, argv list, no shell, no credential involved.
+    The probe is :func:`kiro_cli.kas_relay_help`, shared with the runtime floor
+    (``agent_sdk.kas_engine_unsupported_reason``) so the doctor and the gate can
+    never read the help text differently.
     """
-    try:
-        proc = subprocess.run(  # noqa: S603 - argv list, no shell, local binary
-            [binary, "acp", "--help"],
-            capture_output=True,
-            timeout=15,
-            check=False,
-            # Pinned UTF-8 rather than bare text=True: help output is decoded
-            # here, and a platform-locale decode could mangle the flag name this
-            # probe searches for and report a supported kiro-cli as unreadable.
-            **UTF8_TEXT,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return f"{proc.stdout}\n{proc.stderr}"
+    return kas_relay_help(binary)
 
 
 def _doctor_kas(issues: list[str]) -> None:

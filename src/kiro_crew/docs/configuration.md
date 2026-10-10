@@ -147,6 +147,13 @@ gateway for access tokens and the encrypted refresh token stays in Kiro Crew;
 otherwise `--auth-method cli` uses kiro-cli's existing login. A sign-in or
 sign-out takes effect on the next KAS process.
 
+When the gateway starts with KAS as the selected main or member backend, it runs the
+same `kiro-cli acp --help` check `kirocrew doctor` reports. If that kiro-cli has no
+`--agent-engine` flag, or does not offer engine `v3`, Kiro Crew logs a warning and
+runs kiro-cli instead; the dashboard's KAS row lists `kiro-cli acp --agent-engine
+v3` as missing. `config.json` keeps `kas`, so updating kiro-cli and restarting
+returns to KAS. A check that cannot run leaves KAS selected.
+
 Harness capabilities differ: agent-spec projection, MCP transport, model
 selection, permission routing, resume, compaction, and subagent continuation are
 not inferred from the harness name. See [Agent Spec Field

@@ -602,6 +602,12 @@ GOVERNANCE_FLOOR_BACKEND: str = ACP_BACKEND_KIRO
 _baseline: Set[str] = set(BASELINE_SELECTABLE_BACKENDS)
 _selectable: Set[str] = set(BASELINE_SELECTABLE_BACKENDS)
 
+# Backends THIS HOST cannot serve, keyed to the reason, e.g. KAS on a kiro-cli whose
+# ``acp`` subcommand cannot select the KAS engine. A third input beside the two sets
+# above: it is a fact about the machine, not the build or the policy, so every policy
+# recompute subtracts it again rather than restoring what the host cannot run.
+_host_unservable: dict[str, str] = {}
+
 
 def register_selectable_backend(backend: str) -> None:
     """Make *backend* selectable in ``agent.acp_backend``.
@@ -698,13 +704,33 @@ def apply_selectable_denials(denied: Set[str]) -> FrozenSet[str]:
     the install with no startable harness, a state the dashboard cannot repair
     because the trust-root policy is the one file it may not write.
     """
-    keep = {b for b in _baseline if b not in denied}
+    keep = {b for b in _baseline if b not in denied and b not in _host_unservable}
     if GOVERNANCE_FLOOR_BACKEND in _baseline:
         keep.add(GOVERNANCE_FLOOR_BACKEND)
-    removed = frozenset(_baseline - keep)
+    # Only what *denied* removed: a host mark is reported by whoever placed it, so
+    # a policy recompute never logs the host's removal as its own.
+    removed = frozenset(b for b in _baseline - keep if b in denied)
     _selectable.clear()
     _selectable.update(keep)
     return removed
+
+
+def mark_backend_unservable(backend: str, reason: str) -> None:
+    """Record that this host cannot serve *backend*, and drop it from the selectable set.
+
+    Survives every later :func:`apply_selectable_denials` recompute, so a policy
+    refresh cannot put back a harness the machine cannot start. The floor is never
+    marked: it is what keeps the install startable.
+    """
+    if backend == GOVERNANCE_FLOOR_BACKEND:
+        return
+    _host_unservable[backend] = reason
+    _selectable.discard(backend)
+
+
+def host_unservable_reason(backend: str) -> str | None:
+    """Why this host cannot serve *backend*, or ``None`` when nothing was recorded."""
+    return _host_unservable.get(backend)
 
 
 def selectable_backend_values() -> list[str]:
@@ -748,6 +774,10 @@ def resolve_selected_backend(value: object) -> str:
     selectable = selectable_backends()
     if isinstance(value, str) and value in selectable:
         return value
+    # A host mark was announced once by whoever placed it; repeating it on every
+    # config load would bury that notice under copies of a vaguer one.
+    if isinstance(value, str) and value in _host_unservable:
+        return ACP_BACKEND_KIRO
     if value not in (None, ACP_BACKEND_KIRO):
         logger.warning(
             "Ignoring agent.acp_backend %r (not selectable in this build); using "

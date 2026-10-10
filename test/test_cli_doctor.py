@@ -19,7 +19,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from conftest import make_dir_link, requires_symlinks
-from kiro_crew import cli_doctor, cron, extras
+from kiro_crew import cli_doctor, cron, extras, kiro_cli
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_PI
 
 
@@ -1880,7 +1880,7 @@ class TestDoctorKas:
             stdout = "Usage: kiro-cli acp [OPTIONS]"
             stderr = ""
 
-        monkeypatch.setattr(cli_doctor.subprocess, "run", lambda *a, **k: _Proc())
+        monkeypatch.setattr(kiro_cli.subprocess, "run", lambda *a, **k: _Proc())
         got = cli_doctor._kas_relay_help("/x/kiro-cli")
         assert got is not None
         assert "--agent-engine" not in got
@@ -1889,7 +1889,7 @@ class TestDoctorKas:
         def _boom(*_a, **_k):
             raise OSError("no such binary")
 
-        monkeypatch.setattr(cli_doctor.subprocess, "run", _boom)
+        monkeypatch.setattr(kiro_cli.subprocess, "run", _boom)
         assert cli_doctor._kas_relay_help("/x/kiro-cli") is None
 
     def test_no_credential_probe_is_performed(self, monkeypatch, capsys) -> None:

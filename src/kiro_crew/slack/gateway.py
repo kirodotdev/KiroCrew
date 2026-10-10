@@ -317,6 +317,7 @@ from kiro_crew.monitoring.models import (
 )
 from kiro_crew.notifications.bus import MONITOR_CHANNEL
 from kiro_crew.platform import boot_platform
+from kiro_crew.platform.bootstrap import apply_kas_cli_floor
 from kiro_crew.platform.context import (  # noqa: F401
     PlatformCompositionError,
     current_context,
@@ -14444,6 +14445,20 @@ async def run_gateway(
     # Standalone composes the all-defaults context (identical to today); a
     # non-standalone profile that cannot compose its companion fails closed.
     boot_platform(cfg)
+
+    # ── KAS kiro-cli floor ──
+    # Awaited before any service can start a session: a configured KAS on a
+    # kiro-cli that cannot select the KAS engine falls back to kiro-cli here,
+    # with the notice in the log. Off the loop, since it spawns ``acp --help``.
+    # Skipped in test_mode so the offline E2E gate never spawns the developer's
+    # real kiro-cli. Best-effort: a failed check leaves the backend as configured.
+    if not test_mode:
+        try:
+            await asyncio.to_thread(apply_kas_cli_floor, cfg)
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "KAS kiro-cli floor check failed; continuing", exc_info=True
+            )
 
     # ── Aggregate cgroup ceiling for all agent scopes ──
     # The per-spawn scope wrapper (sandbox.cgroup_scope_argv) bounds ONE spawn

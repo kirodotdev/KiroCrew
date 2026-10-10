@@ -54,6 +54,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_KNOWN,
     ACP_BACKENDS_SELF_SERVED_ACP,
     POLICY_ID_BY_BACKEND,
+    host_unservable_reason,
     launch_for,
 )
 from kiro_crew.agent_sdk.drivers import acp as acp_driver
@@ -79,6 +80,10 @@ UNKNOWN = "unknown"
 # drift -- and a rename that missed one copy leaves the sweep unable to recognise a
 # process Crew spawns, which spares an orphan and then drops its tracking entry.
 COMPONENT_KIRO_CLI = ACP_BACKEND_PROCESS_NAMES[ACP_BACKEND_KIRO]
+#: What a kiro-cli too old for KAS lacks: its ``acp`` relay's KAS engine selector.
+#: Spelled here because this package may not import ``kiro_crew.acp``; a test pins
+#: it to ``acp.kas_transport``'s flag and engine constants.
+COMPONENT_KAS_ENGINE = f"{COMPONENT_KIRO_CLI} acp --agent-engine v3"
 #: The ACP adapter Crew launches for the Claude backend.
 COMPONENT_CLAUDE_ACP_ADAPTER = ACP_BACKEND_PROCESS_NAMES[ACP_BACKEND_CLAUDE]
 #: The Claude CLI handed to that adapter as ``CLAUDE_CODE_EXECUTABLE``. A
@@ -196,6 +201,16 @@ def _probe_kas() -> BackendInstallState:
     resolves the binary once.
     """
     kiro = probe_backend(ACP_BACKEND_KIRO)
+    # The one way KAS differs from kiro here: the boot-time floor found the shared
+    # binary too old to select the KAS engine. The panel prints the component, so
+    # it names what the update must bring rather than a bare "kiro-cli".
+    if kiro.installed == INSTALLED and host_unservable_reason(ACP_BACKEND_KAS):
+        return BackendInstallState(
+            ACP_BACKEND_KAS,
+            _policy_id(ACP_BACKEND_KAS),
+            MISSING,
+            (COMPONENT_KAS_ENGINE,),
+        )
     return BackendInstallState(
         ACP_BACKEND_KAS,
         _policy_id(ACP_BACKEND_KAS),
@@ -548,6 +563,7 @@ __all__ = [
     "CACHE_TTL_SECONDS",
     "COMPONENT_CLAUDE_ACP_ADAPTER",
     "COMPONENT_CLAUDE_CODE_CLI",
+    "COMPONENT_KAS_ENGINE",
     "COMPONENT_KIRO_CLI",
     "INSTALLED",
     "MISSING",
