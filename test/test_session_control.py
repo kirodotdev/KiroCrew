@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import itertools
 import json
 import threading
 from pathlib import Path
@@ -1909,7 +1910,12 @@ def _owed_completion(slot, text: str = "[Subagent completion event] a1 finished"
 
 
 class _SettlingManager:
-    """The slice of ``SubagentManager`` a hard stop settles discarded deliveries through.
+    """The slice of ``SubagentManager`` a hard stop reaches.
+
+    The stop settles discarded deliveries through ``settle_queued_delivery``, and
+    the slot-list push each press makes reads ``published_queued_depths`` and
+    ``running_agents_for`` to build every row. This manager has no children, so
+    both reads answer empty.
 
     ``during`` runs inside the settle's suspension: the window in which the real
     manager waits on the child's teardown gate and writes its tombstones on a thread.
@@ -1925,7 +1931,30 @@ class _SettlingManager:
         if self._during is not None:
             self._during()
 
+    def published_queued_depths(self) -> dict[str, int]:
+        return {}
 
+    def running_agents_for(self, parent_key: str) -> list[dict]:
+        return []
+
+
+@pytest.fixture
+def _every_slots_push_broadcasts(monkeypatch):
+    """Put every read of the slots coalescing clock a full second after the last.
+
+    Each Stop press pushes the slot list. Whether that push serializes the rows
+    at once or folds into a trailing timer depends on how long it has been since
+    the push the slot's creation made, so on a fast host the press is coalesced
+    and on a loaded runner it serializes. This clock makes it serialize on every
+    run, so the rows are built from ``state.subagents`` whatever the host speed.
+    """
+    from kiro_crew.dashboard import state as state_mod
+
+    ticks = itertools.count(1000.0, 1.0)
+    monkeypatch.setattr(state_mod, "_slots_broadcast_clock", lambda: next(ticks))
+
+
+@pytest.mark.usefixtures("_every_slots_push_broadcasts")
 def test_a_send_that_lands_while_a_hard_stop_settles_stays_queued(tmp_path, monkeypatch):
     """The hard kill discards what was queued when it was pressed and settles the
     sub-agent deliveries those entries owed. That settle can suspend, and a send
@@ -1962,6 +1991,7 @@ def test_a_send_that_lands_while_a_hard_stop_settles_stays_queued(tmp_path, monk
     ], f"the send acknowledged during the hard stop was discarded: queue = {queued}"
 
 
+@pytest.mark.usefixtures("_every_slots_push_broadcasts")
 def test_a_hard_stop_still_discards_and_settles_what_was_queued_before_it(tmp_path, monkeypatch):
     """Control: the first press keeps the queue, and the hard kill clears what was
     queued before it and settles the sub-agent delivery the cleared entry owed."""
