@@ -87,6 +87,9 @@ const nav = params.get('nav') === '1'
 // member slot's stream state, which is what the pane's composer reads to
 // decide its busy affordance. Documents the steer-only composer.
 const busy = params.get('busy') === '1'
+// ?subagents=1 — radar's turn runs on the server with sub-agents out, but no
+// live frame has reached this tab yet: the stream state still reads idle.
+const subagents = params.get('subagents') === '1'
 document.documentElement.setAttribute('data-theme', theme === 'light' ? 'kiro-light' : 'kiro-dark')
 // ThemeProvider reads its cache from storage; without these it would resolve
 // its own default and repaint over the ?theme= the frame asked for.
@@ -109,6 +112,7 @@ store.dispatch(
       title: 'Radar',
       messages: 4,
       running: true,
+      ...(subagents ? { subagents_running: true } : {}),
       mode: 'member',
       agent: 'radar',
     },

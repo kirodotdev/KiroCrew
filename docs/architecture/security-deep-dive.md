@@ -211,10 +211,11 @@ operator's credential tooling for the subset who want the fence, silently, on
 upgrade. The tier is the operator's to tighten (`agent.sandbox="strict"`), and
 this document names what the default leaves open so that choice is informed.
 
-`SSH_AUTH_SOCK` is scrubbed whenever a Kiro Crew sandbox tier is active, so
-ssh-agent forwarding is unavailable inside a confined spawn. Operators who depend
-on passphrase-protected keys or hardware tokens use key files directly or leave
-`agent.sandbox` at `off`.
+`SSH_AUTH_SOCK` is kept for an agent spawn whose tier leaves `~/.ssh` readable
+(`off`, `standard`, `cc`) and whose harness mask does not hide it, so the
+agent can use the operator's ssh-agent there, including a forwarded one. Under
+`strict`, or a harness mask over `~/.ssh`, it is scrubbed unless the operator
+records consent in the keystone leaf `ssh_auth_sock_consent.json`.
 
 ## Layer 1: Filesystem gate (`security/` package + `hooks.py`)
 

@@ -354,6 +354,7 @@ class TestScope:
             "website/src/i18n/locales/en-XA.json",
             "src/kiro_crew/data/tips_catalog.json",
             "src/kiro_crew/docs/settings-registry.generated.json",
+            "src/kiro_crew/docs/ui-index.generated.json",
         ):
             assert gate.in_scope(path), path
             assert not gate.enforced(path), path
@@ -365,6 +366,7 @@ class TestScope:
             "website/src/i18n/glossary.json",
             "src/kiro_crew/docs/skills.md",
             "website/src/pages/settings/NotificationsPanel.tsx",
+            "website/src/uiLocations/descriptors.ts",
         ):
             assert gate.enforced(path), path
 

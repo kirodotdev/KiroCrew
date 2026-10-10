@@ -140,6 +140,7 @@ from kiro_crew.instances.registry import (
     MAX_VIA_HOPS,
     SSM_TRANSPORT_METHODS,
     Instance,
+    InstanceDisabledError,
     InstancesRegistry,
     ancestor_ids,
     descendant_ids,
@@ -3403,6 +3404,12 @@ class SshTunnelManager:
         ``removeWarm`` then drops) or sees it gone and stands down; it can never
         re-open a tunnel the user just closed, which a probe-then-connect from
         the browser could.
+
+        A disabled crew raises :class:`InstanceDisabledError` and spawns nothing,
+        and so does a chained crew with a disabled crew anywhere up its chain.
+        The check reads the record under the same lock the disabling write is
+        made under (see :meth:`reconfigure`), so a connect racing a disable either
+        finishes first and is torn down by it, or starts after and is refused.
         """
         if rebuild and only_if_connected:
             raise ValueError("rebuild and only_if_connected are mutually exclusive")
@@ -3434,6 +3441,20 @@ class SshTunnelManager:
                     local_port=inst.local_port,
                     remote_port=inst.remote_port,
                 )
+            if inst.disabled:
+                raise InstanceDisabledError(f"crew {instance_id!r} is disabled")
+            if inst.via_instance_id:
+                # A chained crew's forward dials its parent's host, so a disabled
+                # crew anywhere up the chain keeps this one closed as well.
+                rows = await asyncio.to_thread(self._registry.list)
+                by_id = {row.id: row for row in rows}
+                off = [
+                    a for a in ancestor_ids(rows, instance_id) if a in by_id and by_id[a].disabled
+                ]
+                if off:
+                    raise InstanceDisabledError(
+                        f"crew {off[0]!r}, which {instance_id!r} rides, is disabled"
+                    )
             if rebuild and existing is not None:
                 logger.info(
                     "Rebuilding tunnel for %s on request (was %s on 127.0.0.1:%s)",

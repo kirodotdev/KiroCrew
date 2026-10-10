@@ -88,8 +88,7 @@ async function stills(browser, theme) {
   const row = page.locator('#main-content li button', { hasText: CREW }).first()
   await row.waitFor({ state: 'visible', timeout: 20000 })
   await row.click()
-  const titleRow = page.getByTestId('member-title-row')
-  await titleRow.waitFor({ state: 'visible', timeout: 10000 })
+  await page.getByTestId('member-identity-pill').waitFor({ state: 'visible', timeout: 10000 })
   const pill = page.getByTestId('member-identity-pill')
   check(`[${theme}] members header pill is the entry, described "${EDIT_MEMBER}"`,
     (await pill.evaluate(el => el.tagName)) === 'BUTTON' && (await pill.getAttribute('title')) === EDIT_MEMBER)

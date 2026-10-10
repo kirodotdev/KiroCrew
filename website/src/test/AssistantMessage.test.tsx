@@ -618,7 +618,26 @@ describe('AssistantMessage', () => {
   it('renders the Steered ack chip live during streaming (not gated on turn end)', () => {
     render(<AssistantMessage content={'Working on it [STEERING steer-abc123: switching to the job id]'} isStreaming={true} slotRunning={true} />)
     expect(screen.getByText('Steered')).toBeInTheDocument()
-    expect(screen.getByText(/switching to the job id/)).toBeInTheDocument()
+  })
+
+  it('keeps the steer\'s note folded behind the chip until the reader opens it', () => {
+    render(<AssistantMessage content={'Done. [STEERING steer-abc123: this steer is the only request of the turn, so I treat it as the user request]'} isStreaming={false} slotRunning={false} />)
+    expect(screen.getByText('Steered')).toBeInTheDocument()
+    // Not shown by default: it can be the model's own reasoning.
+    expect(screen.queryByText(/only request of the turn/)).not.toBeInTheDocument()
+    const toggle = screen.getByRole('button', { name: /Steered/ })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('never loses a steer\'s outcome: opening the chip shows it, and closing folds it again', () => {
+    render(<AssistantMessage content={'Here is the report. [STEERING steer-abc123: Stopped at phase 4 as requested]'} isStreaming={false} slotRunning={false} />)
+    expect(screen.queryByText('Stopped at phase 4 as requested')).not.toBeInTheDocument()
+    const toggle = screen.getByRole('button', { name: /Steered/ })
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('Stopped at phase 4 as requested')).toBeInTheDocument()
+    fireEvent.click(toggle)
+    expect(screen.queryByText('Stopped at phase 4 as requested')).not.toBeInTheDocument()
   })
 
   it('strips the raw [STEERING] marker from the streamed prose', () => {

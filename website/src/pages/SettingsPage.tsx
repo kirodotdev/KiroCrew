@@ -45,6 +45,7 @@ const AgentRunSettings = lazy(() =>
 import { i18nT } from '../i18n/t'
 import { usePreviewFlag } from '../hooks/usePreviewFlag'
 import { PREVIEW_WEBHOOKS } from '../utils/previewFlags'
+import { GuideTrustRootRegion } from '../guide/trustRoot'
 // Group headers double as the grouping KEY (SidePanelLayout starts a new header
 // whenever this string changes), so they are resolved inside `buildTabs()` —
 // which runs per render — rather than at module load. Translating them at module
@@ -273,13 +274,13 @@ export default function SettingsPage() {
         {tab === 'skills' && <SkillsPanel />}
         {tab === 'channels' && <ChannelsPanel basePath={SETTINGS_BASE_PATH} />}
         {tab === 'browser' && <BrowserPanel />}
-        {tab === 'computer-use' && <ComputerUsePanel />}
+        {tab === 'computer-use' && <GuideTrustRootRegion><ComputerUsePanel /></GuideTrustRootRegion>}
         {tab === 'webhooks' && <WebhooksPanel />}
         {tab === 'instances' && <RemoteCrewPanel />}
         {tab === 'privacy' && <PrivacyPanel />}
-        {tab === 'security' && <SecurityPanel basePath={SETTINGS_BASE_PATH} />}
+        {tab === 'security' && <GuideTrustRootRegion><SecurityPanel basePath={SETTINGS_BASE_PATH} /></GuideTrustRootRegion>}
         {tab === 'connections' && <ConnectionsPanel />}
-        {tab === 'secrets' && <SecretsPanel />}
+        {tab === 'secrets' && <GuideTrustRootRegion><SecretsPanel /></GuideTrustRootRegion>}
         {tab === 'developer' && <DeveloperPanel />}
         {tab === 'releases' && <ReleasesPanel />}
         {tab === 'about' && <AboutPanel />}

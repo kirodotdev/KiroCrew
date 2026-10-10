@@ -329,13 +329,50 @@ def resolve_own_identity(
         if from_token:
             return OwnIdentity(session_key=from_token, source=SOURCE_TOKEN)
         env_key = os.environ.get("KIROCREW_SESSION_KEY", "")
-        if env_key:
+        # Rung 3 is PROCESS-keyed: the var is stamped once with the session the
+        # runtime was spawned for, and every MCP child of that runtime inherits
+        # it. On a pid the mapping records as serving several sessions it names
+        # one tenant and cannot say which is calling, which is the same ground
+        # rung 4 refuses such a pid on. Fall through to it rather than answer
+        # with a co-tenant's key.
+        if env_key and not host_pid_is_shared():
             return OwnIdentity(session_key=env_key, source=SOURCE_ENV)
         if skip_pid_mapping:
             return OwnIdentity(source=SOURCE_UNRESOLVED)
         return _identity_from_pid_mapping()
     except Exception:
         return OwnIdentity(failed=True)
+
+
+def host_pid_is_shared(host_pid: str = "") -> bool:
+    """True only on POSITIVE evidence that a runtime serves several sessions.
+
+    The ONE answer both identity resolvers use -- this module's ladder and
+    ``mcp_core``'s strict resolver -- so they cannot drift on how many sessions a
+    pid serves, nor on which mapping read decides it. *host_pid* defaults to this
+    process's own ``KIROCREW_HOST_PID``, which is what the ladder wants; the
+    strict resolver passes the pid it already read.
+
+    Reads the same mapping rung 4 reads, through the same hardened reader, so the
+    two rungs cannot disagree about how many sessions a pid serves. Absence is
+    not evidence: a missing or malformed mapping answers False and leaves the env
+    var as authoritative as it was, so the single-session topology that var was
+    written for is untouched.
+
+    Never raises. It is consulted from inside the ladder's own guard, but the
+    promise belongs here too: a rung that can raise would turn a resolvable
+    session into a failed identity.
+    """
+    pid = host_pid or os.environ.get("KIROCREW_HOST_PID", "")
+    if not pid.isdigit():
+        return False
+    try:
+        from kiro_crew.config.paths import config_dir
+        from kiro_crew.session_pid_sig import read_session_pid_mapping
+
+        return read_session_pid_mapping(pid, config_dir()).shared
+    except Exception:
+        return False
 
 
 def _identity_from_pid_mapping() -> OwnIdentity:

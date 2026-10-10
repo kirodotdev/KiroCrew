@@ -60,7 +60,7 @@ import {
   shortenEcsTarget,
   usesSsmTransport,
 } from '../../utils/remoteCrew'
-import { Card, Btn, Badge, IconButton } from '../../components/ui'
+import { Card, Btn, Badge, IconButton, Toggle } from '../../components/ui'
 import { SettingsToggle } from '../../components/settings'
 import {
   DropdownMenu,
@@ -92,7 +92,9 @@ import { copyToClipboard } from '../../utils/clipboard'
 import { useScrollEdges } from '../../hooks/useScrollEdges'
 import { useAppDispatch, useAppSelector } from '../../store'
 import { removeWarm, setCrewEditForm } from '../../store/instancesSlice'
+import { setCrewEnabled } from '../../lib/crewEnabled'
 import { i18nT } from '../../i18n/t'
+import { guideCaution } from '../../guide/trustRoot'
 import { AddInstanceForm, StatusBadge } from './InstancesPanel'
 import {
   EditInstanceForm,
@@ -830,6 +832,9 @@ function SettingUpRow({ job, onCancel, cancelling }: { job: LaunchJob; onCancel:
 
 /** One switchable crew — a cloud-launched instance (Stop / Delete by tag) or a
  *  hand-added machine (Remove). */
+/** The one line that says what a crew's on/off switch does; every switch points at it. */
+const CREW_SWITCH_HINT_ID = 'remote-crew-switch-hint'
+
 function CrewRow({
   inst,
   cloudTag,
@@ -839,6 +844,7 @@ function CrewRow({
   confirmRemove,
   onConnect,
   onDisconnect,
+  onSetEnabled,
   onDiagnose,
   onRemove,
   onStop,
@@ -870,6 +876,7 @@ function CrewRow({
   confirmRemove: boolean
   onConnect: (id: string) => void
   onDisconnect: (id: string) => void
+  onSetEnabled: (id: string, enabled: boolean) => void
   onDiagnose: (id: string) => void
   onRemove: (id: string) => void
   onStop: (tag: string, coords: CloudCoords) => void
@@ -979,7 +986,15 @@ function CrewRow({
               : `${usesSsmTransport(inst) && inst.aws_region ? ` (${inst.aws_region})` : ''} ${i18nT('pages.settings.instancesPanel.port_2')} ${inst.remote_port}`}
           </div>
           <div className="mt-1 flex items-center gap-1.5 flex-wrap">
-            <StatusBadge status={inst.status} />
+            {!inst.disabled && <StatusBadge status={inst.status} />}
+            <span className="inline-flex items-center gap-1.5 text-[12px] text-muted">
+              <Toggle checked={!inst.disabled} onChange={on => onSetEnabled(inst.id, on)}
+                disabled={!!busy || deleting} describedBy={CREW_SWITCH_HINT_ID}
+                label={i18nT('pages.settings.remoteCrewPanel.crew_enabled_named', { name: inst.name })} />
+              {inst.disabled
+                ? i18nT('pages.settings.remoteCrewPanel.crew_disabled')
+                : i18nT('pages.settings.remoteCrewPanel.crew_enabled')}
+            </span>
             {awaitingSignin && (
               <Badge variant="warn" title={i18nT('pages.settings.remoteCrewPanel.needs_sign_in_hint')}>
                 <KeyRound className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.needs_sign_in')}
@@ -1014,7 +1029,7 @@ function CrewRow({
           <Btn onClick={() => onDisconnect(inst.id)} disabled={!!busy || deleting}>
             <Unplug className="lucide-inline" /> {i18nT('pages.settings.instancesPanel.disconnect')}
           </Btn>
-        ) : (
+        ) : inst.disabled ? null : (
           <Btn primary onClick={() => onConnect(inst.id)} disabled={!!busy || deleting}>
             <Plug className="lucide-inline" /> {busy === `connect:${inst.id}` ? i18nT('pages.settings.instancesPanel.connecting') : i18nT('pages.settings.instancesPanel.connect')}
           </Btn>
@@ -1046,7 +1061,7 @@ function CrewRow({
           </Btn>
         ) : isCloud && confirmDelete ? (
           <>
-            <Btn danger onClick={() => onDelete(cloudTag, coordsOf(inst))} disabled={!!busy} aria-label={i18nT('pages.settings.remoteCrewPanel.confirm_delete_of', { name: inst.name })}>
+            <Btn danger onClick={() => onDelete(cloudTag, coordsOf(inst))} disabled={!!busy} aria-label={i18nT('pages.settings.remoteCrewPanel.confirm_delete_of', { name: inst.name })} {...guideCaution}>
               {/* Names its target on screen, not only to assistive tech: this click
                   terminates an EC2 instance, and "Confirm delete" beside two other
                   rows does not say WHICH. */}
@@ -1878,6 +1893,15 @@ export function RemoteCrewPanel() {
     onError: (e, id) => setActionErr(i18nT('pages.settings.instancesPanel.disconnect_failed', { id, error: errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error')) })),
     onSettled: reloadInstances,
   })
+  const crewToggleMutation = useMutation({
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) => setCrewEnabled(dispatch, id, enabled),
+    onMutate: () => setActionErr(null),
+    onError: (e, { id }) => setActionErr(i18nT('pages.settings.remoteCrewPanel.crew_toggle_failed', {
+      name: instancesQuery.data?.instances?.find(i => i.id === id)?.name || id,
+      error: errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error')),
+    })),
+    onSettled: reloadInstances,
+  })
   const removeMutation = useMutation({
     mutationFn: async (id: string) => { await api.disconnectInstance(id).catch(() => {}); await api.removeInstance(id) },
     onMutate: () => setActionErr(null),
@@ -2045,7 +2069,7 @@ export function RemoteCrewPanel() {
         ? `stop:${stopMutation.variables?.tag}`
         : startMutation.isPending
           ? `start:${startMutation.variables?.tag}`
-          : disconnectMutation.isPending || removeMutation.isPending || deleteMutation.isPending
+          : disconnectMutation.isPending || removeMutation.isPending || deleteMutation.isPending || crewToggleMutation.isPending
             ? 'busy'
             : ''
 
@@ -2282,6 +2306,9 @@ export function RemoteCrewPanel() {
                 <Btn onClick={reloadInstances} aria-label={i18nT('pages.settings.instancesPanel.refresh')}><RefreshCw className="lucide-inline" /></Btn>
               </div>
             </div>
+            <p id={CREW_SWITCH_HINT_ID} className="text-[12px] text-muted mb-1">
+              {i18nT('pages.settings.remoteCrewPanel.crew_switch_hint')}
+            </p>
             {needsRestart && (
               <div role="status" className="flex items-start gap-2 px-3 py-2 mb-3 text-[13px] rounded-md bg-warn/10 text-warn border border-warn/30">
                 <AlertTriangle size={14} className="lucide-inline mt-0.5 shrink-0" />
@@ -2337,6 +2364,7 @@ export function RemoteCrewPanel() {
                     confirmRemove={confirmRemoveId === inst.id}
                     onConnect={id => connectMutation.mutate(id)}
                     onDisconnect={id => disconnectMutation.mutate(id)}
+                    onSetEnabled={(id, enabled) => crewToggleMutation.mutate({ id, enabled })}
                     onDiagnose={id => diagnoseMutation.mutate(id)}
                     onRemove={id => removeMutation.mutate(id)}
                     onStop={(tag, coords) => stopMutation.mutate({ tag, coords })}

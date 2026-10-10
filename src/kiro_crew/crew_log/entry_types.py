@@ -547,6 +547,24 @@ _PARENT_EDGE_FIELDS: tuple[Field, ...] = (
 OBJECT_PRODUCER_PROBE = "probe"
 OBJECT_PRODUCERS: tuple[str, ...] = (OBJECT_PRODUCER_PROBE,)
 
+#: What a guide can END as, closed for the same reason.
+GUIDE_FINISHED_STATUSES: tuple[str, ...] = ("completed", "cancelled", "expired")
+#: Why a guide ended, when that is more than its status says. Closed.
+GUIDE_FINISHED_REASONS: tuple[str, ...] = ("saved_without_guide",)
+
+
+def _conversation_row(what: str) -> Field:
+    return Field(
+        "mid",
+        JSON_STRING,
+        note=(
+            f"Id of the transcript row the {what} is drawn at. The row and this entry are "
+            "the same fact in the two records; the id joins them. Absent when the "
+            "conversation had no live window to write the row into."
+        ),
+    )
+
+
 #: The conductor work board's vocabularies live in :mod:`kiro_crew.work_vocab`, a
 #: pure-data leaf outside this package, so the type declared below, the store and
 #: the tool schemas clamp to ONE set without the boot path loading this module.
@@ -2245,6 +2263,54 @@ _SESSION_TYPES: tuple[EntryType, ...] = (
             "that was prevented. Best-effort like the publish entry -- the refusal is "
             "already on its way back to the caller, so a log that is off costs the "
             "mistake book this row and nothing else."
+        ),
+    ),
+    # -- Guides ------------------------------------------------------------ #
+    EntryType(
+        "guide/offered",
+        "The agent offered a guide, at this point in the conversation.",
+        (
+            Field("slot", JSON_STRING, required=True, note="The slot whose chat shows the offer."),
+            Field(
+                "guide_id", JSON_STRING, required=True, note="The guide's id in the guide store."
+            ),
+            Field(
+                "actions",
+                JSON_ARRAY,
+                required=True,
+                item_type=JSON_STRING,
+                note="The registered action ids, in order. Never their parameters.",
+            ),
+            Field("turn", JSON_INT, note="The turn that offered it, when one was live."),
+            _conversation_row("offer"),
+        ),
+    ),
+    EntryType(
+        "guide/started",
+        "The person started an offered guide.",
+        (Field("guide_id", JSON_STRING, required=True, note="The guide's id."),),
+        note="Written the first time a tab claims the guide; a re-claim after a lapse is not.",
+    ),
+    EntryType(
+        "guide/finished",
+        "A guide ended.",
+        (
+            Field("guide_id", JSON_STRING, required=True, note="The guide's id."),
+            Field(
+                "status",
+                JSON_STRING,
+                required=True,
+                enum=GUIDE_FINISHED_STATUSES,
+                enum_closed=True,
+                note="How it ended.",
+            ),
+            Field(
+                "reason",
+                JSON_STRING,
+                enum=GUIDE_FINISHED_REASONS,
+                enum_closed=True,
+                note="Why, when the status alone misleads: a cancelled guide whose save went through.",
+            ),
         ),
     ),
 )

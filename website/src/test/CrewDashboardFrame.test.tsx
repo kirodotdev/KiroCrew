@@ -5,7 +5,7 @@
  * the frame carries the same `allow-scripts`-only sandbox as the drawer.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 const DOC_URL = "/sandbox-doc/panel123/1700000000.mac";
@@ -22,6 +22,16 @@ vi.mock("../lib/widgetSrcdoc", () => ({
 
 const mintSpy = vi.fn();
 const panelSpy = vi.fn();
+// The face is the real `CrewAvatar`'s concern (own tests); here only the
+// identity it is handed matters, so it is a marker carrying its props.
+const avatarSpy = vi.fn();
+vi.mock("../components/CrewAvatar", () => ({
+  default: (props: { seed: string; avatar?: unknown; size?: number }) => {
+    avatarSpy(props);
+    return <div data-testid="crew-avatar-stub" />;
+  },
+}));
+
 vi.mock("../api/client", () => ({
   api: {
     sandboxDocUrl: (html: string) => mintSpy(html),
@@ -35,7 +45,7 @@ import {
   CREW_WEBVIEW_SANDBOX,
 } from "../pages/members/CrewWebview";
 
-function mount(props: { displayName?: string } = {}) {
+function mount(props: { displayName?: string; avatar?: unknown; onAct?: (text: string) => void } = {}) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
   });
@@ -70,25 +80,51 @@ describe("CrewDashboardFrame", () => {
     expect(screen.queryByTestId("crew-webview-age")).toBeNull();
   });
 
-  it("says nothing is published yet and points at the chat, with no set-up control, minting nothing", async () => {
+  it("the empty state is the crewmate speaking for itself, with its own face, minting nothing", async () => {
     panelSpy.mockResolvedValue({ panel: null, html: null });
-    mount();
-    expect(await screen.findByTestId("crew-webview-empty")).toHaveTextContent(
-      "Radar has not published a dashboard yet. Ask it in this chat",
-    );
+    avatarSpy.mockReset();
+    const avatar = { kind: "ghost", traits: { eyes: "canon" } };
+    mount({ displayName: "Radar Ops", avatar });
+    const empty = await screen.findByTestId("crew-webview-empty");
+    expect(empty).toHaveTextContent("I haven't published a dashboard yet.");
+    expect(empty).toHaveTextContent("Tell me in the chat what you want on it.");
+    // The region is named after the crewmate, so assistive tech hears who "I" is.
+    expect(empty).toHaveAttribute("aria-label", expect.stringContaining("Radar Ops"));
+    // The face is the roster's: the exact member as seed, the record's avatar verbatim.
+    expect(avatarSpy).toHaveBeenCalledWith(expect.objectContaining({ seed: "Radar", avatar }));
+    // No set-up control: nothing in the crew editor makes a crewmate publish.
     expect(screen.queryByTestId("crew-webview-setup")).toBeNull();
-    expect(screen.queryByRole("button")).toBeNull();
     expect(mintSpy).not.toHaveBeenCalled();
+    // The read stays keyed on the exact member, not the display name.
+    expect(panelSpy).toHaveBeenCalledWith("radar", "Radar");
   });
 
-  it("names the crewmate by its display name in the empty state, while the read stays keyed on the exact member", async () => {
+  it("withholds the prompts when there is no chat box to put them in", async () => {
     panelSpy.mockResolvedValue({ panel: null, html: null });
-    mount({ displayName: "Radar Ops" });
-    expect(await screen.findByTestId("crew-webview-empty")).toHaveTextContent(
-      "Radar Ops has not published a dashboard yet.",
-    );
-    expect(screen.getByTestId("crew-webview-empty")).not.toHaveTextContent(/^Radar has/);
-    expect(panelSpy).toHaveBeenCalledWith("radar", "Radar");
+    mount();
+    await screen.findByTestId("crew-webview-empty");
+    expect(screen.queryByTestId("crew-webview-empty-prompts")).toBeNull();
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  it("offers three prompts that land in the chat box through onAct, and publish nothing", async () => {
+    panelSpy.mockResolvedValue({ panel: null, html: null });
+    const onAct = vi.fn();
+    mount({ onAct });
+    await screen.findByTestId("crew-webview-empty-prompts");
+    const prompts = screen.getAllByTestId("crew-webview-empty-prompt");
+    expect(prompts).toHaveLength(3);
+    expect(prompts[0]).toHaveTextContent("Publish a dashboard");
+    fireEvent.click(prompts[0]);
+    expect(onAct).toHaveBeenCalledTimes(1);
+    // The exact sentence shown is what lands: the person sends it unchanged.
+    expect(onAct).toHaveBeenCalledWith(prompts[0].textContent);
+    expect(mintSpy).not.toHaveBeenCalled();
+    // Each prompt is described by the lead line, the one statement that clicking
+    // does not act -- so a screen reader hears the caveat with the prompt's name.
+    const leadId = prompts[0].getAttribute("aria-describedby");
+    expect(leadId).toBeTruthy();
+    expect(document.getElementById(leadId!)).toHaveTextContent("for you to edit and send");
   });
 
   it("shows the failure band with a retry when the mint fails, and no agent hand-off", async () => {

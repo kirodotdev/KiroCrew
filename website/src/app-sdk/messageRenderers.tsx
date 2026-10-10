@@ -662,7 +662,9 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
     // Reasoning roles derive from the shared classification (see
     // pages/chat/groupDisplayItems.ts) so this default cannot drift from the
     // surfaces that DO draw them; the lifecycle roles are local to this entry.
-    roles: [...REASONING_ROLES, 'system', 'done', 'queued'],
+    // `card` is a guide offer: drawn only by a host that
+    // has the card stores (pages/chat/transcriptRenderers), never as a bubble.
+    roles: [...REASONING_ROLES, 'system', 'done', 'queued', 'card'],
     render: () => null,
   },
   {

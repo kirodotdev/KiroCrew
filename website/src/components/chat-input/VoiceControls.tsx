@@ -5,6 +5,7 @@ import { Btn } from '../ui'
 import type { useTouchPushToTalk } from '../../hooks/useTouchPushToTalk'
 import type { ComposerVoiceInputProps } from '../../chat-core/composer/Composer'
 import { i18nT } from '../../i18n/t'
+import { uiLocation } from '../../uiLocations/uiLocation'
 
 /* The composer's voice controls: the capture status (hold-to-talk cancel
    cue, dictation panel or status bar), the hold target, and the mic. State
@@ -222,6 +223,7 @@ export function MicButton({ voiceHoldMode, voiceRecording, micIsModeSwitch, tran
       disabled={disabled || optimizing || (micIsModeSwitch ? false : micBlocked)}
       aria-label={micLabel}
       title={micLabel}
+      {...uiLocation('composer.voice')}
     >
       {!micIsModeSwitch && transcribeInFlight ? <Loader2 size={18} className="animate-spin" /> : !micIsModeSwitch && micHeldElsewhere ? <MicOff size={18} /> : voiceHoldMode ? <><Keyboard size={18} /><span className="leading-none">{i18nT('components.chatInput.type_label')}</span></> : <Mic size={18} />}
     </button>

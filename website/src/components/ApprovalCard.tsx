@@ -9,7 +9,8 @@ import { baseCommandLabel } from '../utils/trustPatterns'
 import { haptic } from '../lib/haptic'
 
 import { i18nT } from '../i18n/t'
-export default function ApprovalCard({ title, toolInput, showButtons, showTrust = true, hasCommand = true, baseCommand, baseDerivable, trustAllLabelKey, trustCommandLabelKey, trustBaseLabelKey, trustedLabelKeys, labelValues, onApprove }: {
+import { guideTrustRoot, GuideTrustRootProvider } from '../guide/trustRoot'
+type ApprovalCardProps = {
   title: string; toolInput: string; showButtons: boolean; showTrust?: boolean
   /** False when the approval has no tool command behind it (for example, an
       agent-role channel approval): forwarded to TrustDropdown so command-
@@ -42,7 +43,14 @@ export default function ApprovalCard({ title, toolInput, showButtons, showTrust 
    *  below (rejection restores the buttons). No `void` arm, so a fire-and-forget
    *  handler — the shape behind #5524 — cannot compile here. */
   onApprove: (decision: string, pattern?: string) => Promise<unknown>
-}) {
+}
+
+/** An approval prompt is the agent's own ceiling: the card and what it portals (its trust menu) are a trust-root region. */
+export default function ApprovalCard(props: ApprovalCardProps) {
+  return <GuideTrustRootProvider><ApprovalCardBody {...props} /></GuideTrustRootProvider>
+}
+
+function ApprovalCardBody({ title, toolInput, showButtons, showTrust = true, hasCommand = true, baseCommand, baseDerivable, trustAllLabelKey, trustCommandLabelKey, trustBaseLabelKey, trustedLabelKeys, labelValues, onApprove }: ApprovalCardProps) {
   const [decided, setDecided] = useState<string | null>(null)
   // null = no failure. `terminal` marks a refusal that retrying can never
   // clear; `message` is the server's own refusal text ('' = a response-less
@@ -112,7 +120,7 @@ export default function ApprovalCard({ title, toolInput, showButtons, showTrust 
   const btnClass = 'px-2.5 py-1 rounded-md border border-border bg-transparent text-muted text-[13px] cursor-pointer font-body hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all'
 
   return (
-    <div className={`bg-card border border-border border-l-[3px] ${borderColor} rounded-md px-3.5 py-2.5 text-sm animate-scale-in`}>
+    <div className={`bg-card border border-border border-l-[3px] ${borderColor} rounded-md px-3.5 py-2.5 text-sm animate-scale-in`} {...guideTrustRoot}>
       {toolInput
         ? <><strong>{i18nT('components.approvalCard.tool_approval_requested')}</strong></>
         : <>{showButtons ? <><Package className="lucide-inline" /> {i18nT('components.approvalCard.running')} </> : <><Wrench className="lucide-inline" /> </>}<strong>{displayTitle}</strong>{showButtons ? ' wants to run' : ''}</>

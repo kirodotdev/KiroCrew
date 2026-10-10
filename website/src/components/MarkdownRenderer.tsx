@@ -96,6 +96,7 @@ import { ALLOWED_TAGS, VERBATIM_CONTENT_TAGS, rehypeSanitize, remarkVerbatimUnkn
 import { rehypeMarkFencedCode, rehypeSourcepos, rehypeStableRootKeys, rehypeUnwrapBlocks, remarkSoftBreaks } from './markdown/treeTransforms'
 import { GLOW_TAIL_CHARS, REVEAL_IDLE_SETTLE_MS, rehypeStreamingCaret, rehypeStreamingGlow, rehypeStreamingReveal } from './markdown/streamingEffects'
 import { closeCjkAutolinkBoundaries, encodeRefusedLinkDestinations } from './markdown/linkBoundaryRepair'
+import { guideUntrusted } from '../guide/guideMarkers'
 
 export { artifactSlugFromHref, soleLinkInParagraph, unfurlableHref } from './markdown/linkTargets'
 export { isPathCandidate, splitLineRef } from './markdown/pathReferences'
@@ -1192,6 +1193,7 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
     // root; `data-tip-flow` is the InstantTip flow container (one rendered
     // message, so a chip's bubble opens off the words it reports on) — two
     // attributes on the one per-message root, each owned by its feature.
+    // `data-guide-untrusted`: authored content is never a guide target.
     // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions
     <div
       ref={rootRef}
@@ -1199,6 +1201,8 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
       onClick={handleClick}
       data-image-scope=""
       data-tip-flow=""
+      // Authored content: nothing in it is a control a guide points at.
+      {...guideUntrusted}
     >
       {/* PathProbeCtx: suppress path stat probes while the message is still
           streaming, so partial paths ('/Users' en route to '/Users/me/x.ts')

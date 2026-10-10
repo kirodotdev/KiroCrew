@@ -1419,6 +1419,30 @@ def _slot_closed(state: DashboardState, key: str) -> bool:
     return ledger_wake.worker_closed(state, key)
 
 
+def worker_holds_open_item(slot_key: str) -> bool:
+    """Whether *slot_key* is a worker bound to an OPEN item that names it back. BLOCKING.
+
+    For the slot-retention paths (the open-tab restore budget and the idle
+    sweep), which must not leave a worker without its tab: the wake gate reads a
+    worker with no slot as closed. The key is the slot's own name, resolved by
+    the server, never by a caller. Both spellings are asked, because a binding
+    is filed under the ledger's folded key. Any read that fails answers True: an
+    unknown binding must not cost a worker its tab.
+    """
+    try:
+        for candidate in dict.fromkeys((slot_key, session_ledger.ledger_key(slot_key))):
+            binding = work_ledger.read_binding(candidate, strict=True)
+            if binding is None:
+                continue
+            item = work_ledger.read_work_item(*binding, strict=True)
+            if item is not None and not item.is_terminal and item.worker_session_key == candidate:
+                return True
+    except Exception:  # noqa: BLE001 - unreadable binding means keep the tab
+        logger.debug("work-ledger binding read failed for %s", slot_key, exc_info=True)
+        return True
+    return False
+
+
 def _find_slot(state: DashboardState, key: str):
     if not key:
         return None

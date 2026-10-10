@@ -15,6 +15,8 @@ import {
 } from '../monitoring/automation'
 import { fmtDateTimeNumeric, fmtNumber, fmtUnit, type FormatUnit } from '../i18n/format'
 import { Badge, Btn, IconButton, Input, SendBtn } from './ui'
+import { uiLocation } from '../uiLocations/uiLocation'
+import { useGuidePredicate } from '../guide/guidePredicates'
 import { PopoverContent } from './ui/popover'
 import AutoNudgePopover, { type AutoNudgeLoop } from './AutoNudgePopover'
 import { i18nT } from '../i18n/t'
@@ -370,16 +372,11 @@ export default function SessionAutomationPopover({
   const legacyCycle = legacyLoop?.maxCycles
     ? `${legacyLoop.cycleCount}/${legacyLoop.maxCycles}`
     : String(legacyLoop?.cycleCount ?? 0)
-  const triggerLabel = legacyLoop?.active
-    ? i18nT(
-      interrupted
-        ? 'components.autoNudgePopover.goal_interrupted_cycle'
-        : 'components.autoNudgePopover.goal_active_cycle',
-      { cycle: legacyCycle },
-    )
-    : monitor
-      ? i18nT('components.sessionAutomationPopover.monitor_status', { status: statusLabel })
-      : i18nT('components.autoNudgePopover.set_a_goal')
+  // The goal panel offers Pause while a loop runs; the monitor panel offers
+  // Stop monitor until the monitor finishes. A guide to either stops before
+  // opening the panel when there is nothing to stop.
+  useGuidePredicate('goal_loop_running', !!legacyLoop?.active)
+  useGuidePredicate('monitor_running', !!monitor && !terminal)
   const busy = mutation.isPending && mutation.variables?.editorKey === editorKey
   const draft = editor.draft
   const hasDirtyFields = Object.keys(editor.dirty).length > 0
@@ -544,7 +541,13 @@ export default function SessionAutomationPopover({
       interrupted={interrupted}
       trigger={(
         <IconButton
-          aria-label={triggerLabel}
+          // Inline, not a variable: the index reads this label's catalog keys.
+          aria-label={legacyLoop?.active
+            ? i18nT(interrupted ? 'components.autoNudgePopover.goal_interrupted_cycle' : 'components.autoNudgePopover.goal_active_cycle', { cycle: legacyCycle })
+            : monitor
+              ? i18nT('components.sessionAutomationPopover.monitor_status', { status: statusLabel })
+              : i18nT('components.autoNudgePopover.set_a_goal')}
+          {...uiLocation('composer.automation')}
           variant={monitor?.active || legacyLoop?.active ? 'active' : 'default'}
           /* IconButton is a plain block button, so without a flex row the
              inline glyph sits on the text baseline of this 32px box rather
@@ -939,7 +942,7 @@ export default function SessionAutomationPopover({
             </>
           ) : (
             <>
-              <Btn type="button" danger disabled={busy} onClick={() => setConfirmStop(true)}><Square className="lucide-inline" aria-hidden /> {i18nT('components.sessionAutomationPopover.stop_monitor')}</Btn>
+              <Btn type="button" danger disabled={busy} onClick={() => setConfirmStop(true)} {...uiLocation('composer.automation.stop-monitor')}><Square className="lucide-inline" aria-hidden /> {i18nT('components.sessionAutomationPopover.stop_monitor')}</Btn>
               <SendBtn
                 type="button"
                 disabled={busy || !monitor.actionable || !hasDirtyFields || sessionModeUnsupported}

@@ -1,5 +1,6 @@
 import { Fragment, type ReactNode } from 'react'
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from '../../components/ui/context-menu'
+import { isTouchDevice } from '../../utils/isTouchDevice'
 
 export interface MessageMenuItem {
   id: string
@@ -11,21 +12,27 @@ export interface MessageMenuItem {
 }
 
 /**
- * Right-click / long-press menu on a message bubble.
+ * Right-click menu on a message bubble.
  *
  * The bubble is the trigger, so the gesture works on the whole message: no
- * hover row to find, no text to select first. Radix supplies the coarse-pointer
- * form (a ~700 ms press) and the keyboard form (Shift+F10 / the Menu key on a
- * focused bubble). Capability by omission: a host that offers no items renders
- * the children bare, so surfaces without the actions keep their bubbles exactly
- * as they were.
+ * hover row to find, no text to select first. Radix supplies the keyboard form
+ * (Shift+F10 / the Menu key on a focused bubble). Capability by omission: a
+ * host that offers no items renders the children bare, so surfaces without the
+ * actions keep their bubbles exactly as they were.
+ *
+ * A touch device renders the children bare too. Radix's touch form is a 700 ms
+ * press, and the OS's own long-press-to-select fires first on the same bubble:
+ * the menu then opens over the fresh selection, moves focus and collapses it,
+ * and the trigger's `-webkit-touch-callout: none` removes iOS's own
+ * Copy / Look Up callout as well. On touch the message's text belongs to the
+ * platform's selection; the action row below the bubble carries the actions.
  *
  * Deliberately does NOT own any action: the host lists the same handlers its
  * action row already has (quote, copy, copy link, pin, edit), so the two entry
  * points can never disagree about what a message can do.
  */
 export default function MessageContextMenu({ items, children, onOpenChange }: { items: MessageMenuItem[]; children: ReactNode; onOpenChange?: (open: boolean) => void }) {
-  if (!items.length) return <>{children}</>
+  if (!items.length || isTouchDevice()) return <>{children}</>
   return (
     <ContextMenu onOpenChange={onOpenChange}>
       <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>

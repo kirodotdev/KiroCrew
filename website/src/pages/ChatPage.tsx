@@ -324,6 +324,9 @@ import { closeCrewWindow, crewWindowShown, useCrewWindow } from './chat/crew-win
 
 
 import { i18nT } from '../i18n/t'
+import { uiLocation } from '../uiLocations/uiLocation'
+import { GuideRevealScope, useGuideRevealScope } from '../guide/GuideRevealScope'
+import { useGuidePredicate, useGuideSelection } from '../guide/guidePredicates'
 import { fmtDateFields } from '../i18n/format'
 import { fmtMessageTime, fmtMessageTimeFull } from './chat/messageTime'
 import { fetchDashboardConfig } from '../api/dashboardConfigQuery'
@@ -538,6 +541,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   )
   const filteredSlotsRef = useRef(filteredSlots)
   filteredSlotsRef.current = filteredSlots
+  // Live guide predicates the sessions sidebar toggle needs to be drawn (see
+  // `guide/guidePredicates.ts`): a guide step through it shows a blocker
+  // instead of pointing when either is unmet.
+  useGuidePredicate('has_open_sessions', filteredSlots.length > 0)
+  useGuidePredicate('full_dashboard', embedMode !== 'chat' && embedMode !== 'sessions')
   const unreadSlots = useAppSelector(s => s.dashboard.unreadSlots)
   // Unified view: unread keys for all chat-like slots.
   const surfaceUnreadSlots = useMemo(
@@ -565,6 +573,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const unresumableResume = useAppSelector(s => s.chat.unresumableResume)
   const undeletableHistory = useAppSelector(s => s.chat.undeletableHistory)
   const activeSlot = useAppSelector(s => s.chat.activeSlot)
+  // The session picker's selection fact for a guide's "choose the session"
+  // step: whether one is open here, whether any is listed, and which one by
+  // its key, so a choice made there stays bound to that session. The key
+  // stays in this tab: only the selection's state is reported.
+  const sessionPicked = !!activeSlot && filteredSlots.some(s => s.key === activeSlot)
+  useGuideSelection('session_open', {
+    selected: sessionPicked,
+    available: filteredSlots.length > 0,
+    identity: sessionPicked ? activeSlot ?? undefined : undefined,
+  })
   // The store this page is rendered under (not the module singleton): the
   // opener reads live state after an await, and it must be the same store
   // its dispatches went to. Also read by the MCP-app openers below, so it is
@@ -805,6 +823,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // arrays here re-rendered this whole component per chunk for data it never
   // read.
   const activityOpen = useAppSelector(s => s.chat.activityOpen)
+  // The chat side panel's scope owner (`chat.side-panel`): a guide's step
+  // through its opener completes the moment it reads open.
+  useGuideRevealScope('chat.side-panel', activityOpen)
   const slotHasMore = useAppSelector(s => s.chat.slotHasMore)
   const slotOldestIndex = useAppSelector(s => s.chat.slotOldestIndex)
   const cursorIsForActiveSlot = useAppSelector(s => s.chat.slotCursorKey === s.chat.activeSlot)
@@ -5219,7 +5240,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
    * held before it (page-layout.md, "The title belongs to the content column").
    */
   const topbarSessionsToggle = (
-    <button className="mc-touch-hit p-2 rounded-md text-text hover:text-text-strong hover:bg-bg-hover cursor-pointer bg-transparent border-none shrink-0" onClick={() => mobileSessions ? closeSidebar() : openSidebar()} aria-label={i18nT('pages.chatPage.toggle_sessions')} aria-expanded={mobileSessions} data-testid="mobile-topbar-sessions-toggle">
+    <button className="mc-touch-hit p-2 rounded-md text-text hover:text-text-strong hover:bg-bg-hover cursor-pointer bg-transparent border-none shrink-0" onClick={() => mobileSessions ? closeSidebar() : openSidebar()} aria-label={i18nT('pages.chatPage.toggle_sessions')} aria-expanded={mobileSessions} data-testid="mobile-topbar-sessions-toggle" {...uiLocation('chat.mobile-sessions-toggle')}>
       {mobileSessions ? <PanelLeftLight size={18} /> : <PanelLeftSolid size={18} />}
     </button>
   )
@@ -5422,10 +5443,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           hands that flyout's rect to the drawer so the panel grows out of it. */}
       {!isMobile && embedMode !== 'chat' && embedMode !== 'sessions' && filteredSlots.length > 0 && (
         <button
-          ref={flyoutTriggerRef}
           type="button"
           onClick={() => expandSidebar(flyout.open)}
           {...flyout.triggerProps}
+          {...uiLocation('chat.sessions-sidebar-toggle', flyoutTriggerRef)}
           aria-haspopup={flyoutEligible ? 'menu' : undefined}
           aria-expanded={flyoutEligible ? flyout.open : undefined}
           // Geometry mirrored by TOGGLE_RECT (chat/SessionFlyout) — every
@@ -5487,6 +5508,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           />
         </div>
       ) : (
+      // The sessions sidebar's collapse owner (desktop) and the phone's
+      // sessions drawer owner: a guide's reveal step completes the moment
+      // this says open. Outside the drawer, so "closed" is said while the
+      // drawer's contents are unmounted.
+      <GuideRevealScope id={isMobile ? 'chat.sessions-drawer' : 'chat.sessions-sidebar'} open={sidebarOpen}>
       <OverlayDrawer open={isMobile ? drawerMounted : sidebarOpen} width={isMobile ? Math.max(0, winW - DRAWER_UNCOVERED_PX) : effectiveSidebarWidth} dragging={sidebarDragging} slideX={isMobile ? drawerX : undefined} slideRef={drawerPanelRef}
         // Mobile only: the same visible-band inset the scrim above carries, so the
         // two surfaces move together. Margins rather than restated edges is what
@@ -5559,6 +5585,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         ) : sessionsPane
         })()}
       </OverlayDrawer>
+      </GuideRevealScope>
       )}
       <MobileTopBar
         topbarSlot={topbarSlot}
@@ -5739,6 +5766,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             <Btn
               primary
               disabled={newSlotMutation.isPending}
+              {...uiLocation('chat.start-new-chat')}
               onClick={() => {
                 if (newSlotFailed) {
                   // Re-arm before state updates can let auto-selection run.
@@ -5871,6 +5899,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   onClick={toggleAct}
                   title={i18nT('pages.chatPage.open_activity_panel')}
                   aria-label={i18nT('pages.chatPage.open_activity_panel')}
+                  {...uiLocation('chat.side-panel-open')}
                 >
                   <SidePanelGlyph size={15} />
                 </Clickable>

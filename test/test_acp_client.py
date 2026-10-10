@@ -10358,9 +10358,11 @@ class TestResolveKiroBinEnvOverride:
         # path is runtime-owned, so only its presence and shape are pinned here.
         extra_private = wrap_kwargs.pop("extra_private_dirs")
         assert isinstance(extra_private, (list, tuple))
+        # The default tier leaves ~/.ssh readable, so the ssh-agent socket is kept.
         assert wrap_kwargs == {
             "strip_python_env": True,
             "is_kiro_cli": True,
+            **({} if sys.platform == "win32" else {"forward_ssh_auth_sock": True}),
         }
         voice_guard.assert_called_once_with(client._work_dir)
         spawn_call = mock_exec.await_args
@@ -12154,11 +12156,17 @@ class TestSpawnEnvScrub:
             "SLACK_BOT_TOKEN",
             "KIROCREW_OWNER_ID",
             "AWS_SECRET_ACCESS_KEY",
-            "SSH_AUTH_SOCK",
             "PYTHONPATH",
             "PYTHONHOME",
         ):
             assert key not in env, f"{key} leaked into ACP child env"
+        # The default tier leaves ~/.ssh readable, so the agent socket is kept:
+        # git-over-SSH works while every other credential above stays scrubbed.
+        if sys.platform == "win32":
+            # Windows has no SSH_AUTH_SOCK (a named-pipe agent): never forwarded.
+            assert "SSH_AUTH_SOCK" not in env, "SSH_AUTH_SOCK leaked into ACP child env"
+        else:
+            assert env.get("SSH_AUTH_SOCK") == "/tmp/fake-agent.sock"
         assert env.get("KIROCREW_UNRELATED_KEEPME") == "keep-this-value"
         assert env.get("AWS_ACCESS_KEY_ID") == "FAKE-akid"
         assert env.get("KIROCREW_RUNTIME_PYTHON") == sys.executable

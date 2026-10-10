@@ -8839,47 +8839,109 @@ def _unsandboxed_exec_key_declared() -> bool:
         return False
 
 
-def _forward_ssh_auth_sock() -> bool:
-    """Whether the operator has explicitly opted into keeping SSH_AUTH_SOCK in
-    the agent subprocess environment.
+#: Tiers whose sandbox leaves ``~/.ssh`` readable to the agent child. On these
+#: the forward is the default: a child that can already open the private key
+#: files gains nothing new from the agent socket except reach to keys that never
+#: sit in a readable file (a passphrase, a hardware token, an external agent).
+#: Spelled as an ALLOW set so an unknown or newly added tier falls to the consent
+#: path rather than forwarding by omission.
+_SSH_VISIBLE_TIERS = frozenset({"off", "standard", "cc"})
 
-    When False (default), SSH_AUTH_SOCK is scrubbed like every other entry in
-    ``_SENSITIVE_ENV_PREFIXES`` - today's behaviour, unchanged. When True, the
-    single ``SSH_AUTH_SOCK`` key is kept so git commit signing and git-over-SSH
-    inside the sandbox can reach the operator's ssh-agent. The socket grants USE
-    of the agent's keys, not possession; the private key material is never
-    forwarded, and under the strict tier ~/.ssh stays hidden/read-denied.
 
-    Consent lives on the KEYSTONE leaf ``ssh_auth_sock_consent.json``, NOT in the
-    agent-readable ``config.json``. Keeping the socket forwarded grants USE of the
-    operator's keys for the whole session, which is an authorization, not a
-    preference: an agent-writable enable could be flipped by a prompt-injected
-    shell, and the next subagent spawn -- which re-reads this per spawn -- would
-    then authenticate as the operator. The OS sandbox mounts the keystone
-    read-only for the agent's shell and ``is_sensitive_path`` fences the file
-    tools, so the consent cannot be flipped from inside the sandbox. This mirrors
-    ``computer_use.json`` and the other credential-class consents.
+def _ssh_dir_masked(hidden_dirs: tuple[str, ...] | list[str]) -> bool:
+    """Whether any entry of *hidden_dirs* masks ``~/.ssh`` or anything inside it.
 
-    Fail-closed: any failure to read consent returns False, so the socket is
-    scrubbed unless the operator positively enabled forwarding. Read lazily to
-    avoid an import cycle with the config loader.
+    An entry that is ``~/.ssh`` itself, one of its ancestors (a mask over the
+    whole home), or a leaf inside it all count: each means the child cannot read
+    every key file, so the socket would reach further than the files do.
+    """
+    ssh_dir = os.path.abspath(os.path.join(os.path.expanduser("~"), ".ssh"))
+    for raw in hidden_dirs:
+        hidden = os.path.abspath(os.path.expanduser(str(raw)))
+        if hidden == ssh_dir:
+            return True
+        if ssh_dir.startswith(hidden.rstrip(os.sep) + os.sep):
+            return True
+        if hidden.startswith(ssh_dir + os.sep):
+            return True
+    return False
+
+
+def _tier_lists_ssh(tier: str) -> bool:
+    """Whether *tier*'s own hidden-dir list names ``.ssh`` or something inside it.
+
+    Read from the same source the confinement plan reads: ``cc`` from the active
+    PlatformContext (a companion may extend it), ``standard`` from the module list,
+    ``off`` hides nothing.
+    """
+    if tier == "off":
+        return False
+    entries = _STANDARD_DIRS if tier == "standard" else _sandbox_policy().cc_dirs()
+    for entry in entries:
+        head = str(entry).replace("\\", "/").strip("/").split("/", 1)[0]
+        if head in (".ssh", "", "~"):
+            return True
+    return False
+
+
+def _forward_ssh_auth_sock(mode: str, hidden_dirs: tuple[str, ...] | list[str]) -> bool:
+    """Whether this agent spawn keeps ``SSH_AUTH_SOCK`` in its environment.
+
+    The socket grants USE of the operator's ssh-agent keys, not possession. Two
+    routes keep it:
+
+    * By default, when the spawn's sandbox leaves ``~/.ssh`` readable: the
+      effective tier (after the governed ``sandbox.min_level`` clamp, the same
+      one :func:`wrap_argv` applies) is in :data:`_SSH_VISIBLE_TIERS`, that
+      tier's own hidden-dir list (``cc`` is a PlatformContext extension
+      point) does not name ``.ssh``, AND no
+      entry of *hidden_dirs* -- the per-harness credential mask an enforced
+      host adds -- covers ``~/.ssh``. Scrubbing the socket there would block
+      git-over-SSH while the key files themselves stay open to the child, and
+      the ``standard`` tier keeps them visible precisely so git-over-SSH works.
+    * Otherwise (``strict``, or a harness whose mask hides ``~/.ssh``), only
+      with the operator's recorded consent on the KEYSTONE leaf
+      ``ssh_auth_sock_consent.json``. There the socket would reach keys the
+      sandbox hides, so it stays an authorization the agent cannot grant
+      itself: the OS sandbox mounts the keystone read-only for the agent's
+      shell and ``is_sensitive_path`` fences the file tools.
+
+    Fail-closed: any failure to resolve the tier or read consent returns False,
+    so the socket is scrubbed. Read lazily to avoid an import cycle with the
+    config loader.
 
     Windows has no ``SSH_AUTH_SOCK`` (Win32 OpenSSH's agent is a named pipe, not
-    a Unix-domain socket), so the forward is a no-op there regardless of consent:
-    an opt-in default-off feature must simply not be offered on a platform where
-    the concept it forwards does not exist. This mirrors ``_resolve_ssh_auth_sock``
-    returning early on Windows.
+    a Unix-domain socket), so the forward is a no-op there on every route. This
+    mirrors ``_resolve_ssh_auth_sock`` returning early on Windows.
     """
     if platform_compat.IS_WINDOWS:
         return False
     try:
-        from kiro_crew import (
-            ssh_auth_sock_consent,  # circular import: sandbox is a low-level dep of config.loader
-        )
-
-        return ssh_auth_sock_consent.is_granted()
+        return _forward_for_effective_tier(effective_sandbox_mode(mode), hidden_dirs)
     except Exception:
         return False
+
+
+def _forward_for_effective_tier(effective: str, hidden_dirs: tuple[str, ...] | list[str]) -> bool:
+    """The forward verdict for an ALREADY-CLAMPED tier; reads no governance floor.
+
+    :func:`wrap_argv` calls this with the tier it is about to apply, so a floor
+    raised between the launch tail's resolution and the wrap's own floor read
+    can only take the forward away, never leave it on a tier that hides
+    ``~/.ssh``. Raises on a consent read error; callers fail closed.
+    """
+    tier = _SANDBOX_MODE_ALIASES.get(effective, effective)
+    if (
+        tier in _SSH_VISIBLE_TIERS
+        and not _tier_lists_ssh(tier)
+        and not _ssh_dir_masked(hidden_dirs)
+    ):
+        return True
+    from kiro_crew import (
+        ssh_auth_sock_consent,  # circular import: sandbox is a low-level dep of config.loader
+    )
+
+    return ssh_auth_sock_consent.is_granted()
 
 
 def unsandboxed_exec_permitted_by() -> str:
@@ -10192,6 +10254,14 @@ def wrap_argv(
     # the carve-out condition can never disagree about the same host.
     governance_floor = _governance_sandbox_floor()
     mode = _clamp_sandbox_mode_to_floor(mode, governance_floor)
+    # The caller resolved the SSH forward against its own floor read. Re-judge
+    # it against the tier this wrap applies, so a floor raised in between can
+    # only drop the socket. Never turns a False into True.
+    if forward_ssh_auth_sock:
+        try:
+            forward_ssh_auth_sock = _forward_for_effective_tier(mode, extra_hidden_dirs)
+        except Exception:
+            forward_ssh_auth_sock = False
 
     if mode == "off":
         # Fix #2: verify kiro-cli delegation before honoring "off". The

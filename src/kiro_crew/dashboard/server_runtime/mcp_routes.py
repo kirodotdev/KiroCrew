@@ -219,12 +219,29 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get(
         "/api/members/{slug}/dashboard", _deferred("member_dashboard", "api_member_dashboard")
     )
-    # The platform guide server (``kirocrew-guide``). The agent half is MCP-only
-    # and sits under the strict "/api/guide/agent" prefix. Deferred: most
-    # requests never load the module. The paths are duplicated from
-    # ``guide.register_guide_routes``, and a test pins the two together.
+    # UI guides (``kirocrew-guide``). The agent half is MCP-only and sits under
+    # the strict "/api/guide/agent" prefix; the browser half is cookie-authed and
+    # owner-only, deliberately OFF that prefix. Deferred like the panel: the server
+    # is opt-in, so most gateways never load the module. The paths are duplicated
+    # from ``guide.register_guide_routes``, and a test pins the two together.
     for _method, _path, _name in (
+        ("GET", "/api/guide/agent/actions", "api_guide_agent_actions"),
+        ("POST", "/api/guide/agent/start", "api_guide_agent_start"),
+        ("GET", "/api/guide/agent/status", "api_guide_agent_status"),
+        ("POST", "/api/guide/agent/cancel", "api_guide_agent_cancel"),
         ("POST", "/api/guide/agent/rename", "api_guide_agent_rename_self"),
+        ("POST", "/api/guide/agent/observe", "api_guide_agent_observe"),
+        ("GET", "/api/guide/agent/language", "api_guide_agent_language"),
+        ("GET", "/api/guide/pending", "api_guide_pending"),
+        ("POST", "/api/guide/claim", "api_guide_claim"),
+        ("POST", "/api/guide/progress", "api_guide_progress"),
+        ("POST", "/api/guide/heartbeat", "api_guide_heartbeat"),
+        ("POST", "/api/guide/cancel", "api_guide_cancel"),
+        ("POST", "/api/guide/dismiss", "api_guide_dismiss"),
+        ("POST", "/api/guide/replay", "api_guide_replay"),
+        ("POST", "/api/guide/refuse", "api_guide_refuse"),
+        ("POST", "/api/guide/replan", "api_guide_replan"),
+        ("POST", "/api/guide/observe", "api_guide_observe"),
     ):
         app.router.add_route(_method, _path, _deferred("guide", _name))
     app.router.add_get("/api/crons", handlers.api_crons)

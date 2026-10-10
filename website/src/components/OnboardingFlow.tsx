@@ -6,6 +6,10 @@ import { ArrowRight, Check, Monitor, Sun, Moon } from 'lucide-react'
 import { useTheme, type ModePreference, type ColorTheme } from '../hooks/useTheme'
 import { GhostWithArm } from '../assets/onboarding/GhostIcons'
 import { Btn, SendBtn } from './ui'
+import { SettingsToggle } from './settings'
+import { useLiquidGlass } from '../hooks/useLiquidGlass'
+import { LIQUID_GLASS_STORAGE_KEY, liquidGlassSeeded, markLiquidGlassSeeded } from '../utils/liquidGlass'
+import { LookPreview } from './LookPreview'
 import ErrorNotice from './ErrorNotice'
 import OnboardingChapterShell, { OnboardingShellContext } from './OnboardingChapterShell'
 import { api } from '../api/client'
@@ -124,6 +128,63 @@ const RING_SHADOW = '0 20px 50px rgba(0,0,0,.42), 0 0 0 4px var(--accent-subtle)
 // 20% opacity tint of the active theme accent — used for selected states.
 const ACCENT_20 = 'color-mix(in srgb, var(--accent) 20%, transparent)'
 
+
+/**
+ * The same Translucent panels switch as Settings -> Display -> View
+ * (`useLiquidGlass`, browser-local `mc-liquid-glass`): the glass/solid choice
+ * is part of "the look", so it is offered where the mode and the theme are,
+ * and flipping it re-skins the app (and the preview beside it) live.
+ *
+ * Its own component, mounted only while step 1 is on screen, for two reasons
+ * that both come from `OnboardingFlow` staying mounted for the whole life of
+ * the dashboard (`shell/boot/firstRun.tsx` keeps it so `/onboarding` can
+ * reopen it): `useLiquidGlass` reads the store once at mount, so a hook living
+ * in the always-mounted parent would show a stale state on a reopen after the
+ * user changed the setting in Settings; and the fresh-install seed below must
+ * run only when the first-run step actually opens, never on every dashboard
+ * boot. `anchor={false}`: a copy of the Settings row, so a deep link to the
+ * setting still lands on the panel's row.
+ */
+function TranslucentPanelsRow({ seedOnForFreshInstall }: {
+  /** True on the first-run tour (`initialOpen`), false on a `/onboarding`
+   *  reopen. Off is stored as the ABSENT key (`utils/liquidGlass.ts`), so an
+   *  absent key alone cannot tell a fresh install from a user who turned the
+   *  glass off: only the first-run step may read it as "never chosen", and
+   *  only ONCE per browser -- `LIQUID_GLASS_SEEDED_KEY` records that the
+   *  default was offered, so a user who turns it off and then comes Back from
+   *  step 2 or reloads before finishing the tour finds it still off. */
+  seedOnForFreshInstall: boolean
+}) {
+  const { liquidGlass, setLiquidGlass } = useLiquidGlass()
+  useEffect(() => {
+    if (!seedOnForFreshInstall || liquidGlassSeeded()) return
+    // A user who finished onboarding on a build before the marker existed has
+    // no marker and may have the glass off (absent key); a `/onboarding` replay
+    // routes through the import chapter and re-opens this step with
+    // `initialOpen`, which alone cannot tell them from a fresh install. Their
+    // onboarded flag can.
+    let onboarded = false
+    try { onboarded = localStorage.getItem('mc-onboarded') !== null } catch { /* blocked store */ }
+    if (onboarded) return
+    markLiquidGlassSeeded()
+    let absent = false
+    try { absent = localStorage.getItem(LIQUID_GLASS_STORAGE_KEY) === null } catch { /* blocked store: leave as is */ }
+    if (absent) setLiquidGlass(true)
+  }, [seedOnForFreshInstall, setLiquidGlass])
+  return (
+    <div className="mt-2.5 rounded-[10px] border border-border px-3">
+      <SettingsToggle
+        anchor={false}
+        label={i18nT('pages.settings.displayPanel.translucent_panels')}
+        // One sentence: the Settings row's full description runs five lines
+        // beside the preview, and the preview carries the rest here.
+        description={i18nT('components.onboardingFlow.translucent_panels_short_desc')}
+        checked={liquidGlass}
+        onChange={setLiquidGlass}
+      />
+    </div>
+  )
+}
 
 export default function OnboardingFlow({
   initialOpen,
@@ -516,12 +577,19 @@ export default function OnboardingFlow({
         dialogRef={dialogRef}
         footer={<SendBtn type="button" onClick={next}>{i18nT('components.onboardingFlow.continue')}</SendBtn>}
       >
+        {/* The product itself, scaled down, as the live preview of every pick
+            (mode, Translucent panels, color theme), beside the two switches it
+            answers first. Laid out so the whole step -- preview, controls,
+            footer -- fits the 760px panel without scrolling. */}
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
+        <LookPreview className="w-full shrink-0 sm:w-[52%]" />
+        <div className="min-w-0 flex-1">
         <div className="flex gap-1 border border-border rounded-[10px] p-1" style={{ background: 'var(--panel-strong)' }}>
           {(['system', 'light', 'dark'] as ModePreference[]).map(m => (
             <button
               key={m}
               onClick={() => setModePref(m)}
-              className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-[7px] text-[13px] cursor-pointer border-none transition-colors ${
+              className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-[7px] text-[13px] cursor-pointer border-none transition-colors ${
                 modePref === m ? 'font-medium' : 'bg-transparent text-muted hover:text-text'
               }`}
               style={modePref === m ? { background: ACCENT_20, color: 'var(--accent)' } : undefined}
@@ -532,16 +600,26 @@ export default function OnboardingFlow({
           ))}
         </div>
 
-        <div className="mt-5 text-[11px] uppercase tracking-wide text-muted mb-1.5">
+        {/* The same Translucent panels switch as Settings -> Display -> View
+            (`useLiquidGlass`, browser-local `mc-liquid-glass`): the glass/solid
+            choice is part of "the look", so it is offered where the mode and
+            the theme are, and flipping it re-skins the app live the way those
+            chips do. `anchor={false}`: this is a copy of the Settings row, so a
+            deep link to the setting lands on the panel's row, not here. */}
+        <TranslucentPanelsRow seedOnForFreshInstall={initialOpen} />
+        </div>
+        </div>
+
+        <div className="mt-3 text-[11px] uppercase tracking-wide text-muted mb-1.5">
           {i18nT('components.onboardingFlow.color_theme')}
         </div>
-        <div className="grid grid-cols-3 gap-2" role="group" aria-label={i18nT('components.onboardingFlow.color_theme')}>
+        <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-4" role="group" aria-label={i18nT('components.onboardingFlow.color_theme')}>
           {allThemes.map(t => (
             <button
               key={t.value}
               onClick={() => setColorTheme(t.value as ColorTheme)}
               aria-pressed={colorTheme === t.value}
-              className={`flex min-w-0 items-center justify-center gap-1.5 truncate rounded-lg border px-3 py-2.5 text-[13px] cursor-pointer transition-colors ${
+              className={`flex min-w-0 items-center justify-center gap-1.5 truncate rounded-lg border px-2 py-1.5 text-[13px] cursor-pointer transition-colors ${
                 colorTheme === t.value
                   ? 'border-accent font-medium'
                   : 'border-border bg-transparent text-text hover:text-text-strong'

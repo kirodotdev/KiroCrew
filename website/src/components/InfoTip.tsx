@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { Info } from 'lucide-react'
 
 import { i18nT } from '../i18n/t'
+import { useGuideTrustRootAttrs } from '../guide/trustRoot'
 
 /**
  * Small info glyph that reveals a help tip.
@@ -46,6 +47,7 @@ export default function InfoTip({ text, placement = 'auto' }: {
   text: string
   placement?: 'auto' | 'top'
 }) {
+  const trustRoot = useGuideTrustRootAttrs()
   const [pinned, setPinned] = useState(false)
   const [hovered, setHovered] = useState(false)
   const [focused, setFocused] = useState(false)
@@ -286,6 +288,7 @@ export default function InfoTip({ text, placement = 'auto' }: {
           ref={tipRef}
           id={tipId}
           role="tooltip"
+          {...trustRoot}
           onClick={(e) => e.stopPropagation()}
           onPointerDown={() => setPinned(true)}
           /* The bubble is part of the hover target, pinned or not: entering it

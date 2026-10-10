@@ -77,6 +77,8 @@ export interface InstanceView {
   via_remote_port?: number
   via_remote_id?: string
   was_connected: boolean
+  /** The owner turned this crew off: no tunnel is opened for it until enabled. */
+  disabled?: boolean
   status: InstanceTunnelStatus
 }
 
@@ -104,6 +106,8 @@ export interface AddInstanceBody {
   via_remote_port?: number
   via_remote_id?: string
   id?: string
+  /** PATCH only. True tears the tunnel down and blocks reconnects. */
+  disabled?: boolean
 }
 
 /**

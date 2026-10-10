@@ -2336,7 +2336,14 @@ message to the dashboard slot instead (`_handle_resumed_busy` →
   arm on a user roster it was never checked against), on the queue entry directly — `queue_for_next_turn`'s singular
   `channel_recipient` parameter writes that one key beside the containment
   stamp, which nothing passed there can reach — and, for a steer, through the
-  admission dict the requeue copies. When the drain's re-validation drops the entry
+  admission dict the requeue copies. A turn that dies and is requeued verbatim by the
+  runner's recovery (`chat_runner._queue_recovery`) keeps both drop-notice addresses
+  (this one and the dashboard sender stamp), read only off the row the drain handed
+  that turn, never off a transcript row found by scanning, and only when the requeued text equals
+  that row's text (runner context prepended to the turn makes it someone else's words).
+  A merged row keeps an address only
+  when every entry it merges carries that same address, since the notice quotes the whole row.
+  When the drain's re-validation drops the entry
   (`chat_runner._drop_stale_admissions`), `notify_channel_recipient_dropped`
   schedules a notice into that conversation — the DM was told "queued" and reads
   neither the target's transcript nor the SEL — through the same cross-surface

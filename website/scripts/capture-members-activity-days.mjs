@@ -48,7 +48,7 @@ async function openMember(page) {
   const row = page.locator('#main-content li button', { hasText: MEMBER }).first()
   await row.waitFor({ state: 'visible', timeout: 20000 })
   await row.click()
-  await page.getByTestId('member-title-row').waitFor({ state: 'visible', timeout: 10000 })
+  await page.getByTestId('member-identity-pill').waitFor({ state: 'visible', timeout: 10000 })
   const drawer = page.getByTestId('member-crew-summary')
   if (!(await drawer.isVisible().catch(() => false))) await page.getByTestId('member-panel-toggle').click()
   await drawer.waitFor({ state: 'visible', timeout: 10000 })

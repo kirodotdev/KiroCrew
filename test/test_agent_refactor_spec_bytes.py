@@ -35,7 +35,7 @@ from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
 
 #: One path segment under a normalized root, with the separator run before it: a
 #: Windows spec spells ``<TMP>\\bin\\kirocrew`` where POSIX spells ``<TMP>/bin/kirocrew``.
-_UNDER_ROOT = re.compile(r"(<TMP>|<HOME>)((?:\\+[^\\\"\s]+)+)")
+_UNDER_ROOT = re.compile(r"(<TMP>|<HOME>|<PKG>)((?:\\+[^\\\"\s]+)+)")
 _SEPARATORS = re.compile(r"\\+")
 
 
@@ -136,14 +136,22 @@ class _Rig:
         A root is spelled as-is, JSON-escaped once (inside a spec file) or twice
         (inside a JSON value an event records). A path under a root then keeps the
         host's separator, so it is folded to ``/``: the goldens are the same bytes
-        on every platform.
+        on every platform. ``<PKG>`` is the installed ``kiro_crew`` package, which
+        the assistant prompt names as the packaged docs index: it is wherever this
+        checkout lives, so it is labelled like the scratch roots.
         """
-        roots = {
-            str(self.tmp): "<TMP>",
-            str(self.tmp.resolve()): "<TMP>",
-            str(self.home): "<HOME>",
-            str(self.home.resolve()): "<HOME>",
+        package = Path(agent.__file__).resolve().parent
+        bases = {
+            self.tmp: "<TMP>",
+            self.tmp.resolve(): "<TMP>",
+            self.home: "<HOME>",
+            self.home.resolve(): "<HOME>",
+            package: "<PKG>",
         }
+        # A spec may also write a root forward-slashed (``Path.as_posix()``, as a
+        # ``skill://`` resource does), which on Windows differs from ``str()``.
+        roots = {str(p): label for p, label in bases.items()}
+        roots.update({p.as_posix(): label for p, label in bases.items()})
         spellings: dict[str, str] = {}
         for root, label in roots.items():
             once = json.dumps(root)[1:-1]
@@ -414,15 +422,15 @@ GOLDEN: dict[str, dict[str, Any]] = {
             "kirocrew-pipeline-conductor.json": "9aa87b292612bc6ab53a62a5b0885ff56857eb1c3e3b7a34ae1a7c57942d4287",
             "kirocrew-research.json": "95db2f43ca38f7033495b8bd79d989fda7bb6147bc79ee0dc3b954b961fe0f94",
             "kirocrew-security-conductor.json": "c34378da19d5b5bddd8509347237821b4c71260db425c2a5397af913b5b7033c",
-            "kirocrew-worker.json": "c2ea62542bc5fa5f861cd280893bcc125cf30a4e2a619c9d319b5dc69e855e76",
-            "kirocrew.json": "57eb02f38a59adae838ce3c1a71a6fd899a7a1961b5b4c43676ffcdefbc78ef2",
+            "kirocrew-worker.json": "c1cc54cbbca9b171bbaaab82cef51e889f7be834dca5849630fc9bc6fac7b22f",
+            "kirocrew.json": "6a600a7aa7c715414f6cb4ac4ff8b07d8d669f9f7c6253e1fbd17f89db3d6391",
             "kirocrew.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         },
         "state": "d704db8fc2311b53ecec035ace4d3145224e00ab26bbedeb0a2e6977a7c16aac",
         "unrefreshed": [],
     },
     "customized": {
-        "events": "ccb4dcb92db9fdca56b77127e98ba2b0218bcf8d4d93c79e529851c5178d454a",
+        "events": "55fda060a57a374b0424366016f8e2657d12bfd600b13a1ec322c1c689466b28",
         "files": {
             "kirocrew-conductor.json": "6c3eb74f2be73dc62530be47600d77fec73ffae327aa9f044390d1c5c1d22abd",
             "kirocrew-dashboard-author.json": "cbe7acbded8bd0255c466d21fd8e990014452f9b3cd4afb9b74d5ee6354b3366",
@@ -435,8 +443,8 @@ GOLDEN: dict[str, dict[str, Any]] = {
             "kirocrew-pipeline-conductor.json": "9aa87b292612bc6ab53a62a5b0885ff56857eb1c3e3b7a34ae1a7c57942d4287",
             "kirocrew-research.json": "95db2f43ca38f7033495b8bd79d989fda7bb6147bc79ee0dc3b954b961fe0f94",
             "kirocrew-security-conductor.json": "c34378da19d5b5bddd8509347237821b4c71260db425c2a5397af913b5b7033c",
-            "kirocrew-worker.json": "0a7048f96f22eeb8a52de6512ea414947e3baebeaa41aa070fe534579c553860",
-            "kirocrew.json": "93687935b0eb4553f37adc8430b0f1b033705b70c7083a00ebe48e57ee22a10f",
+            "kirocrew-worker.json": "ceebb48bbabdabaf6864ca19cc60685b253e349cfe268d797c734daf37166c8b",
+            "kirocrew.json": "35177a42e7e52b62e39a56371d5ad562c02e8381f331229a9bccfcc62ab8d22b",
             "kirocrew.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         },
         "state": "939d5770910a05fc49ac6fff3da064f2ff08347839f39e1eadebc5fa964eb6b5",
@@ -456,8 +464,8 @@ GOLDEN: dict[str, dict[str, Any]] = {
             "kirocrew-pipeline-conductor.json": "259a08a152e0ead5017ec9e9ab3fee2c862fde14c64a45b13f2f4119562ded86",
             "kirocrew-research.json": "7f8cdc2b1236723558fcf2a72e285a516cc57295b5a4d333c60f2abff52cd7e9",
             "kirocrew-security-conductor.json": "bf89752990cd1655f9b4ec5487d7c98c131e5667ef79a388217f32f370a0ab51",
-            "kirocrew-worker.json": "ec67cd1e44465ad0768ba140895085dbf4cd7e85d7e8b952a0a4b2e8aa4b16e4",
-            "kirocrew.json": "047c17cebfa9f25e47bb586070994e322ccb5ddadbec4d8c05a9faddb1df65a9",
+            "kirocrew-worker.json": "8626eaec4dac0a2fc73ed13e0365f718ba835c54b64ce4492dfe9d1527ccfd19",
+            "kirocrew.json": "a748ffbecb747e0f2c2b7b762c9a498126f2bf33d391f59070573bf7c38096cf",
             "kirocrew.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
             "my-crew.json": "415fa49bfa7d99e56c2008b03c827521c966f764d08e00851373879eb20a8a64",
             "orphan-crew.json": "30c576d8c4eb514bdbb5139402df6588504cc92cfef8b580ec2e16bc98f74056",
@@ -479,15 +487,15 @@ GOLDEN: dict[str, dict[str, Any]] = {
             "kirocrew-pipeline-conductor.json": "259a08a152e0ead5017ec9e9ab3fee2c862fde14c64a45b13f2f4119562ded86",
             "kirocrew-research.json": "73ebc574c2e06451ecf999e408277952084e0ace9c14dbb05d92279441c9e461",
             "kirocrew-security-conductor.json": "bf89752990cd1655f9b4ec5487d7c98c131e5667ef79a388217f32f370a0ab51",
-            "kirocrew-worker.json": "669b576905b5296bfdecb7a59322cd4c0d9c71b228f907124f2a9d5adf7a4122",
-            "kirocrew.json": "19b897550374bd00cade8940f9abdcf3fa79992f7c6b5649cbe9979441bdfca0",
+            "kirocrew-worker.json": "676c1c10f58bd45ccf8eb48b300cff8a3f1b277d5bc7c3418fd7c8f149becf21",
+            "kirocrew.json": "87dffbb35bbbcc387f098bdafd6e8797227e19f9d755d747e50afd7a67624a72",
             "kirocrew.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         },
         "state": "d704db8fc2311b53ecec035ace4d3145224e00ab26bbedeb0a2e6977a7c16aac",
         "unrefreshed": [],
     },
     "governed": {
-        "events": "f18e3508ac26841a9b85f2a9fcbabf7eba23c9d135231f80ba3601ea21addd9c",
+        "events": "8530949d03dd2d1a09efb56e0a8cc5505cd108d39810b5ca7617038723f6a978",
         "files": {
             "kirocrew-conductor.json": "d4a3f1ad69ebdcf1f8896c0d1bc2e6ffe92b338d4f191da76824cc64e3d4947d",
             "kirocrew-dashboard-author.json": "cbe7acbded8bd0255c466d21fd8e990014452f9b3cd4afb9b74d5ee6354b3366",
@@ -500,8 +508,8 @@ GOLDEN: dict[str, dict[str, Any]] = {
             "kirocrew-pipeline-conductor.json": "9aa87b292612bc6ab53a62a5b0885ff56857eb1c3e3b7a34ae1a7c57942d4287",
             "kirocrew-research.json": "ad8e9fd513c46576706a7e1e20f457edc7cc12269253f0b1c49e70822ad2c35c",
             "kirocrew-security-conductor.json": "c34378da19d5b5bddd8509347237821b4c71260db425c2a5397af913b5b7033c",
-            "kirocrew-worker.json": "1db24e8ae4feeb80786feca414350f23c864c62521b10c7179125c9fe4f72a26",
-            "kirocrew.json": "9e84f7fdcb9901bee42b842caeb67bc89211a47e49d27713cabe3ebbe26d043b",
+            "kirocrew-worker.json": "828870bf4f67b0c40c06315078f8072c8a7e3a82a5faff52eb8abd283d28d2a7",
+            "kirocrew.json": "9ed1357ec13c936a3e94a4281a7d679e5dbfb9c41515cb19eb2e1f40b2093e72",
             "kirocrew.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         },
         "state": "939d5770910a05fc49ac6fff3da064f2ff08347839f39e1eadebc5fa964eb6b5",
@@ -521,8 +529,8 @@ GOLDEN: dict[str, dict[str, Any]] = {
             "kirocrew-pipeline-conductor.json": "8f993db1e97034c09237e656f2469c97bcf5dfb86faa94d039f385b9dc4f0ab8",
             "kirocrew-research.json": "bfa2bd9e571af9040c35d0ff1394d5248e504b8ff6888274f8c3b9071ce03e89",
             "kirocrew-security-conductor.json": "45567a2b9cc93fd50bc75bca810eaefc8088802ce3095b852615f5dd17d448d2",
-            "kirocrew-worker.json": "e5930ab1b19a811d7044ab41c1cb1e0073d2143ebc993a4ddfff2712d1b57641",
-            "kirocrew.json": "080669fe63f7bac92688c1fad714a43aaa8dd6e653bcc89fc4ce64c0636bd3db",
+            "kirocrew-worker.json": "845c08c523d2c18e8b2fb497ba2094f3424efce460ed2ad7c217feb755718c83",
+            "kirocrew.json": "8d941b898a594406cfe134a4e903bbb23418caf43489653a80922667e0c57a72",
             "kirocrew.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         },
         "state": "d704db8fc2311b53ecec035ace4d3145224e00ab26bbedeb0a2e6977a7c16aac",
@@ -542,8 +550,8 @@ GOLDEN: dict[str, dict[str, Any]] = {
             "kirocrew-pipeline-conductor.json": "15b7e86caacf64e851bf4d00b97df22f52d47dfc2fe5ea3718695cca763b805d",
             "kirocrew-research.json": "76f1490c68081e1b3bc5454f6b6b1a2e7c833b84d19c401652ec03639d5d3d01",
             "kirocrew-security-conductor.json": "28a7df9a998ded3541af9f2f3f7ebd265cba8485be5a2c32d44d213012b82e5a",
-            "kirocrew-worker.json": "cbe77244dfd295a1383d57449c66ec21016aaa2515017d933e11c5610410ad56",
-            "kirocrew.json": "2b7f05bb5fc71105cd498cefdf0121e916046ed25691f33cacd66d3f97d5472d",
+            "kirocrew-worker.json": "775bb09a00f895ca24286dd73b4b9ca7ff066f63eb2ba6efe9c213e5e92fffe7",
+            "kirocrew.json": "6772085ff729965cbff9b6ae0ad6b18ea983b89fab219eab3ef427613b2d4cd1",
             "kirocrew.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         },
         "state": "d704db8fc2311b53ecec035ace4d3145224e00ab26bbedeb0a2e6977a7c16aac",
@@ -563,8 +571,8 @@ GOLDEN: dict[str, dict[str, Any]] = {
             "kirocrew-pipeline-conductor.json": "d14e919951362329ef1d5960a402b30037ee5d95dfe5db604da5a4c047b21fbc",
             "kirocrew-research.json": "6347bfc693d07431fec38ad367d8fef920f9a1831d1d2bc083de293b2b3f7899",
             "kirocrew-security-conductor.json": "fb87477b31545ea61cdad0ec04e3d5de4924e5abbce3609b53e2f77cb79c40d2",
-            "kirocrew-worker.json": "f9774e7a257465d0f8a338276fe25abb65567076901317d4cbc01afe0ebf5665",
-            "kirocrew.json": "d0d2ece9be5ccc18371147af7aec39a253ad7a9db3377f929686f00610ec695f",
+            "kirocrew-worker.json": "eb2af92cfbdd2c7e07f7ff2919367fe0628b095751229dd7d66f88a30a7088b7",
+            "kirocrew.json": "e631972a9b994ea6e6b76dd7f253895380b8f42e1d3cb91b5545a763f85179ea",
             "kirocrew.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         },
         "state": "d704db8fc2311b53ecec035ace4d3145224e00ab26bbedeb0a2e6977a7c16aac",

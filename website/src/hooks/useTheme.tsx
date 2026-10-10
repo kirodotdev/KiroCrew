@@ -9,6 +9,7 @@ import {
 } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
+import { isLookPreviewFrame } from '../utils/lookPreview'
 // Leaf modules, deliberately not `../api/client`: that module is mocked with a
 // bare factory across most of the test corpus, and the replay path below must
 // not depend on exports those mocks never define.
@@ -1230,6 +1231,26 @@ function useThemeState(): ThemeContextValue {
     }
     window.addEventListener(SYNC_EVENT, handler)
     return () => window.removeEventListener(SYNC_EVENT, handler)
+  }, [])
+
+  // The look-preview frame (utils/lookPreview.ts) mirrors the parent document's
+  // picks: the parent writes `mc-theme` / `mc-color-theme` as the user chooses,
+  // and `storage` delivers each write here. Only in that frame -- an ordinary
+  // tab keeps the gateway as its source of truth.
+  useEffect(() => {
+    if (!isLookPreviewFrame()) return
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'mc-theme' || e.key === null) {
+        const m = (localStorage.getItem('mc-theme') as ModePreference) || 'system'
+        setMode(m)
+        setResolved(resolveMode(m))
+      }
+      if (e.key === 'mc-color-theme' || e.key === null) {
+        setColorThemeState((localStorage.getItem('mc-color-theme') as ColorTheme) || DEFAULT_COLOR_THEME)
+      }
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
   }, [])
 
   useEffect(() => {

@@ -2464,6 +2464,47 @@ jobs:
           export I18N_BASE_REF
           npm run i18n:check
 
+      - name: Check the find_ui location index is fresh
+        # The packaged index the guide server's find_ui reads is generated from
+        # the dashboard source (surfaces, Settings tabs, the settings extraction,
+        # registered uiLocation() markers and the 12 catalogs). A stale index
+        # answers "where is X?" with a path the dashboard no longer draws, and
+        # nothing else notices. Regenerates in memory and byte-compares; writes
+        # nothing. `npm run build` runs the same check, so a release cannot ship
+        # an index that disagrees with its own bundle.
+        working-directory: website
+        run: npm run gen:ui -- --check
+
+      # The Python goldens that run the REAL generator (test_find_ui_auto.py's
+      # `built` fixture: `gen-ui-index.mjs --out --auto-out` into a scratch dir)
+      # skip wherever node or website/node_modules is missing, which is every
+      # backend lane. This job has both, so they run here; the env var turns
+      # their skip into a failure, so a broken toolchain cannot pass green.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          # No uv.lock in this repo; key the cache on the dependency files.
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      - name: Run the find_ui goldens that need the real generator
+        env:
+          KIROCREW_UI_GENERATOR_REQUIRED: "1"
+        run: |
+          uv pip install --system -e . --group dev
+          # Same as backend-test (#7296): the `python` matcher annotates any
+          # traceback in the log, including one printed inside a warning, and
+          # never matches a pytest failure.
+          echo "::remove-matcher owner=python::"
+          python -m pytest -q -rs --no-cov \
+            test/test_find_ui_auto.py::test_the_generated_auto_tier_is_well_formed \
+            test/test_find_ui_auto.py::test_a_generated_shell_only_control_is_on_every_page
+
       - name: Check the color utilities this change touches name real tokens
         # A Tailwind utility naming a token the theme never declared is not an
         # error anywhere: the class is simply not emitted, the element renders

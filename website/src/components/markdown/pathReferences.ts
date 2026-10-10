@@ -30,7 +30,8 @@ import type { PathActions } from './contexts'
  * and is not a shell control operator, on both shapes, since the two describe one
  * filesystem convention and an asymmetry is only a later bug report.
  *
- * IN: letters, marks, digits, `_ . @ ~ - space` and `' ! # % = + , ( ) [ ] { }`.
+ * IN: letters, marks, digits, emoji (pictographs, flag letters, ZWJ),
+ * `_ . @ ~ - space` and `' ! # % = + , ( ) [ ] { }`.
  * A closing bracket may also END a path, so `App (old)` and `data [2026]`
  * classify as directories.
  *
@@ -54,7 +55,7 @@ import type { PathActions } from './contexts'
  * Shape alone is NOT sufficient to linkify — see `isPathCandidate`.
  */
 const PATH_SHAPE_RE =
-  /^~?(?:\.{0,2}[/\\])?[\p{L}\p{M}\p{N}_.@~'!#%=+,()[\]{}/\\ -]*[/\\][\p{L}\p{M}\p{N}_.@~'!#%=+,()[\]{}: -]*[\p{L}\p{M}\p{N}_.)\]}]$/u
+  /^~?(?:\.{0,2}[/\\])?[\p{L}\p{M}\p{N}\p{Extended_Pictographic}\p{Regional_Indicator}\u200D_.@~'!#%=+,()[\]{}/\\ -]*[/\\][\p{L}\p{M}\p{N}\p{Extended_Pictographic}\p{Regional_Indicator}\u200D_.@~'!#%=+,()[\]{}: -]*[\p{L}\p{M}\p{N}\p{Extended_Pictographic}\p{Regional_Indicator}\u200D_.)\]}]$/u
 
 /**
  * Character-level shape of a DRIVE-rooted Windows path (`C:\x`, `c:/x`), whose
@@ -66,7 +67,7 @@ const PATH_SHAPE_RE =
  * `C:\Program Files (x86)\app.txt` and `C:\Users\O'Neil\notes.md` resolve.
  */
 const WIN_DRIVE_PATH_SHAPE_RE =
-  /^[A-Za-z]:[/\\](?:[\p{L}\p{M}\p{N}_.@~'!#%=+,()[\]{} -]+[/\\])*[\p{L}\p{M}\p{N}_.@~'!#%=+,()[\]{} -]*$/u
+  /^[A-Za-z]:[/\\](?:[\p{L}\p{M}\p{N}\p{Extended_Pictographic}\p{Regional_Indicator}\u200D_.@~'!#%=+,()[\]{} -]+[/\\])*[\p{L}\p{M}\p{N}\p{Extended_Pictographic}\p{Regional_Indicator}\u200D_.@~'!#%=+,()[\]{} -]*$/u
 
 /**
  * A UNC prefix in EITHER spelling — `\\host\share\…` or `//host/share/…` —

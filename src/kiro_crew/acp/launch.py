@@ -812,7 +812,7 @@ class LaunchTools:
     platform_compat: ModuleType
     agent_scratch: ModuleType
     apply_pod_bundle_spawn: Callable[..., tuple[list[str], bool]]
-    forward_ssh_auth_sock: Callable[[], bool]
+    forward_ssh_auth_sock: Callable[[str, tuple[str, ...]], bool]
     wrap_argv_async: Callable[..., Awaitable[tuple[list[str], str | None]]]
     wrap_argv: Callable[..., Any]
     wrapped_by_crew_sandbox: Callable[[Sequence[str]], bool]
@@ -948,12 +948,17 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
         )
     if host._shared_scratch is not None:
         scratch_window = (*scratch_window, str(host._shared_scratch))
-    # Resolve the SSH_AUTH_SOCK forward opt-in OFF the event loop (the config
-    # load may stat/read config) ONCE, then pass the resolved boolean into both
-    # the sandbox wrap below and the parent-side scrub further down, so neither
-    # reads config synchronously on the loop. Scoped to this agent spawn:
-    # generic launchers default the flag off and keep scrubbing the socket.
-    forward_ssh_auth_sock = await asyncio.to_thread(tools.forward_ssh_auth_sock)
+    # Resolve the SSH_AUTH_SOCK forward OFF the event loop (the governance
+    # floor and the consent leaf are filesystem reads) ONCE, then pass the
+    # resolved boolean into both the sandbox wrap below and the parent-side
+    # scrub further down, so neither reads config synchronously on the loop.
+    # The tier and this spawn's credential mask decide whether ~/.ssh is
+    # readable to the child, which is what makes the forward a default rather
+    # than a consent. Scoped to this agent spawn: generic launchers default the
+    # flag off and keep scrubbing the socket.
+    forward_ssh_auth_sock = await asyncio.to_thread(
+        tools.forward_ssh_auth_sock, request.sandbox_mode, tuple(request.extra_hidden_dirs)
+    )
     argv, host._sandbox_cleanup = await tools.wrap_argv_async(
         argv,
         mode=request.sandbox_mode,

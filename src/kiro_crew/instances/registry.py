@@ -174,6 +174,10 @@ class InstanceNotFoundError(InstancesError):
     """Raised when an operation targets an unknown instance id."""
 
 
+class InstanceDisabledError(InstancesError):
+    """The crew is disabled, so no tunnel may be opened for it."""
+
+
 class InvalidInstanceError(InstancesError):
     """Raised when an instance record fails validation."""
 
@@ -316,6 +320,10 @@ class Instance:
     # command line rebuilt from today's settings. A record without it (written
     # before the field existed) keeps the rebuilt-argv check.
     forwarder_argv_sig: str = ""
+    # The owner turned this crew off. A disabled crew keeps its record and its
+    # ``was_connected`` intent, but no tunnel is opened for it -- not by a click,
+    # not by auto-connect, not by the startup revive -- until it is enabled again.
+    disabled: bool = False
 
     def validate(self) -> None:
         """Raise :class:`InvalidInstanceError` if any field is malformed."""
@@ -508,6 +516,7 @@ class Instance:
             "forwarder_start": self.forwarder_start,
             "forwarder_sig": self.forwarder_sig,
             "forwarder_argv_sig": self.forwarder_argv_sig,
+            "disabled": self.disabled,
         }
 
     @classmethod
@@ -568,6 +577,9 @@ class Instance:
             forwarder_start=str(data.get("forwarder_start", "") or ""),
             forwarder_sig=str(data.get("forwarder_sig", "") or ""),
             forwarder_argv_sig=str(data.get("forwarder_argv_sig", "") or ""),
+            # A record written before this field existed has no key: enabled.
+            # `is True`: a hand-edited "false" string must not switch a crew off.
+            disabled=data.get("disabled", False) is True,
         )
 
 
@@ -952,7 +964,7 @@ class InstancesRegistry:
         ``aws_profile``, ``aws_region``, ``was_connected``, ``forwarder_pid``,
         ``forwarder_start``, ``forwarder_sig``, ``forwarder_argv_sig``,
         ``via_instance_id``,
-        ``via_remote_port``.
+        ``via_remote_port``, ``disabled``.
         The ``id`` is
         immutable. ``mark_last_active=True`` additionally records the instance
         as the auto-revive target in the SAME read-modify-write, so callers that
@@ -982,6 +994,7 @@ class InstancesRegistry:
             # its children ride has to be re-pointed without re-adding them.
             "via_instance_id",
             "via_remote_port",
+            "disabled",
         }
         unknown = set(changes) - allowed
         if unknown:

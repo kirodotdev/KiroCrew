@@ -1,5 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { useGuideTrustRootAttrs } from '../guide/trustRoot'
 
 /**
  * The shared instant-tooltip spelling for the follow-up chips and ChatInput's
@@ -462,6 +463,7 @@ export function InstantTip({ tip, tipId, className = '', children }: {
   className?: string
   children: React.ReactNode
 }) {
+  const trustRoot = useGuideTrustRootAttrs()
   const ref = useRef<HTMLDivElement | null>(null)
   // Where the bubble ended up once its size is known; null while `tip`'s own
   // position stands.
@@ -512,6 +514,7 @@ export function InstantTip({ tip, tipId, className = '', children }: {
       id={tipId}
       role="tooltip"
       data-placement={placement}
+      {...trustRoot}
       className={`fixed z-[9999] ${edge}rounded-lg border border-border-strong bg-bg-elevated px-2.5 py-1.5 text-[11px] leading-snug shadow-lg pointer-events-none ${className}`}
       style={{ top: fit?.top ?? tip.top, left: fit?.left ?? tip.left }}
     >

@@ -16,7 +16,12 @@ from kiro_crew.code_fingerprint import code_fingerprint
 from kiro_crew.mcp_gateway.admission import Admission
 from kiro_crew.mcp_gateway.daemon import logger
 from kiro_crew.mcp_gateway.daemon.audit import _audit_caller_claimed, _audit_stand_down
-from kiro_crew.mcp_gateway.daemon.identity import _CONN_INDEX, _bind_token, _caller_from_register
+from kiro_crew.mcp_gateway.daemon.identity import (
+    _CONN_INDEX,
+    _bind_token,
+    _caller_from_register,
+    _pid_live_tenants,
+)
 from kiro_crew.mcp_gateway.daemon.launch import resolvable_target_stems
 from kiro_crew.mcp_gateway.daemon.wire import _write_json_line
 from kiro_crew.mcp_gateway.pool import BackendPool
@@ -190,6 +195,13 @@ async def _apply_claim(
     raw_token = frame.get("pid_start_id")
     claim_token = raw_token if isinstance(raw_token, str) else None
     _bind_token(session_token, updated_caller, pid, claim_token)
+    # Does this runtime host more than one ACP session RIGHT NOW? The claiming
+    # session is unioned in because its own stubs may not have registered yet --
+    # a claim is pushed before they launch -- so the live index alone would miss
+    # it. Two or more means the process tree names a RUNTIME and not a session,
+    # which is what the two branches below consult it for.
+    live_tenants = _pid_live_tenants(pid, session_token) | {updated_caller.session_key}
+    shared_pid = len(live_tenants) >= 2
     conns = _CONN_INDEX.get(pid, set())
     if not conns:
         # Usually the normal ordering: a session's claim is pushed before its
@@ -226,6 +238,10 @@ async def _apply_claim(
     # Pass 1: retarget every eligible connection SYNCHRONOUSLY (no awaits)
     # before any eviction runs — see the wrong-principal note below.
     retargeted: list[tuple[Any, str]] = []
+    # Connections whose identity this claim CLEARED. They are not retargeted, so
+    # they take no ``updated`` count and no allowed audit, but they owe the same
+    # subscription eviction a retarget owes.
+    cleared: list[Any] = []
     # Snapshot: the eviction below AWAITS, and a connection disconnecting
     # during that await mutates the live ``conns`` set mid-iteration —
     # aborting the claim with no ack and leaving the remaining stubs stale.
@@ -234,6 +250,54 @@ async def _apply_claim(
             # This connection belongs to a different session on the same
             # runtime — the ``spawn_run`` subagent case. Not a skip worth
             # auditing as denied: nothing was attempted against it.
+            continue
+        if session_token and not conn.stub_session_token and shared_pid:
+            # A tokened claim meeting a TOKENLESS connection on a runtime serving
+            # several sessions. The connection names no session, so the only thing
+            # linking it to this claim is the PID — and the PID is shared, so that
+            # link cannot tell whether the connection is this claim's session or a
+            # co-tenant's. Retargeting it would hand one session's tools to
+            # another: its work_brief / work_report would read and write the
+            # claiming session's ledger.
+            #
+            # Leaving the identity in place is not the answer either: whatever it
+            # holds is an EARLIER guess by this same PID, so a stub belonging to
+            # the second tenant would go on answering as the first. That stops the
+            # misattribution moving without stopping it. So the identity is
+            # CLEARED, which is the same fail-closed state the register path gives
+            # a token it cannot resolve: the stub's calls carry no caller, strict
+            # tools refuse with a diagnosis, and a claim carrying ITS token repairs
+            # it through the branch above.
+            skipped += 1
+            old_unattributable = conn.caller.session_key if conn.caller is not None else ""
+            conn.caller = None
+            # A verdict, not an absence: it is what stops the stub-initiated
+            # recaller from filling the key-less state this clearing creates.
+            conn.identity_refused = True
+            if old_unattributable:
+                # The identity is gone but its SUBSCRIPTIONS are not. They were
+                # granted while this connection answered as the old session, and
+                # resource-update URIs can carry tokens or presigned params, so
+                # leaving them would keep delivering that session's updates to a
+                # connection the gateway just declared unattributable. Evicted in
+                # pass 2 with the retargeted ones, because eviction awaits and
+                # every caller reassignment must land before the first await.
+                cleared.append(conn)
+            reason = (
+                f"pid {pid} serves {len(live_tenants)} live sessions "
+                f"and stub {conn.stub_uuid} carries no session token — refusing to "
+                f"attribute it on PID alone (claim named "
+                f"{updated_caller.session_key}); its identity is cleared until a "
+                f"claim carrying its own token names it"
+            )
+            logger.warning("claim cleared a stub it cannot attribute: %s", reason)
+            _audit_caller_claimed(
+                old_unattributable,
+                updated_caller.session_key,
+                conn.pool_label,
+                "denied",
+                reason,
+            )
             continue
         recorded_token = conn.pid_start_ids.get(pid)
         if claim_token is not None and recorded_token is not None and claim_token != recorded_token:
@@ -265,6 +329,23 @@ async def _apply_claim(
         conn.caller = updated_caller
         retargeted.append((conn, old_key))
     # Pass 2: all connections now carry the new owner; run the evictions.
+    #
+    # The cleared ones first, and for the same reason the retargeted ones are
+    # evicted at all: a subscription granted under an identity must not outlive
+    # it. Here the identity went away rather than moving to a new owner, so
+    # there is no new session to misdeliver to -- but the OLD session's update
+    # URIs would still reach a connection that answers as nobody.
+    for conn in cleared:
+        if pool is None:
+            break
+        for backend in pool.backends_hosting_stub(conn.stub_uuid):
+            try:
+                await backend.evict_stub_subscriptions(conn.stub_uuid)
+            except Exception:
+                logger.exception(
+                    "claim: subscription eviction failed for cleared stub %s",
+                    conn.stub_uuid,
+                )
     for conn, old_key in retargeted:
         if pool is not None:
             # The stub changed OWNER: its resource subscriptions belong to
@@ -284,13 +365,32 @@ async def _apply_claim(
                     )
         updated += 1
         _audit_caller_claimed(old_key, updated_caller.session_key, conn.pool_label, "allowed")
-        logger.info(
-            "stub %s claim → session_key=%s type=%s (was %s)",
-            conn.stub_uuid,
-            updated_caller.session_key,
-            updated_caller.session_type,
-            old_key or "<none>",
-        )
+        # Every connection reaching pass 2 carries an identity DIFFERENT from the
+        # claim's (an equal one is skipped above as an idempotent re-claim). On a
+        # single-session runtime that is the warm-pool rekey this path exists for,
+        # and it is routine. On a runtime hosting several sessions it means one
+        # session's live identity was replaced by another's, which is worth an
+        # operator's attention: the displaced session's tools now answer as the
+        # claiming session until a claim naming its own token repairs it.
+        if old_key and shared_pid:
+            logger.warning(
+                "stub %s claim replaced a live identity on a shared runtime: "
+                "session_key=%s type=%s (was %s); pid=%d hosts %d claimed sessions",
+                conn.stub_uuid,
+                updated_caller.session_key,
+                updated_caller.session_type,
+                old_key,
+                pid,
+                len(live_tenants),
+            )
+        else:
+            logger.info(
+                "stub %s claim → session_key=%s type=%s (was %s)",
+                conn.stub_uuid,
+                updated_caller.session_key,
+                updated_caller.session_type,
+                old_key or "<none>",
+            )
     return {"type": "claimed", "updated": updated, "connections": len(conns), "skipped": skipped}
 
 

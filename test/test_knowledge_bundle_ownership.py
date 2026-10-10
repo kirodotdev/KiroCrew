@@ -1929,6 +1929,44 @@ class TestIdentityColumnsMustBeText:
         assert result["items_imported"] == 1
         assert result["ownership_rows_imported"] == 0
 
+    def test_a_state_row_naming_an_undeclared_source_is_named_in_the_account(
+        self, exporter, importer
+    ):
+        """A text source id the bundle never declares resolves to no source here, so
+        the row is skipped and its items arrive unowned. The account names the row,
+        as every other unowned-arrival path does, and the import still succeeds."""
+        _, item = _owned_doc(exporter)
+        bundle = exporter.export_all()
+        bundle["agent_item_state"][0]["source_id"] = "undeclared-source"
+
+        result = importer.import_bundle(bundle)
+
+        assert result["items_imported"] == 1
+        assert result["ownership_rows_imported"] == 0
+        named = [
+            w for w in result["withheld"] if w.get("reason") == "ownership_row_source_undeclared"
+        ]
+        assert named == [
+            {
+                "reason": "ownership_row_source_undeclared",
+                "table": "agent_item_state",
+                "source_id": "undeclared-source",
+                "key": "doc",
+                "items": item,
+            }
+        ]
+
+    def test_a_state_row_source_id_that_is_not_text_adds_no_account_entry(self, exporter, importer):
+        _owned_doc(exporter)
+        bundle = exporter.export_all()
+        bundle["agent_item_state"][0]["source_id"] = []
+
+        result = importer.import_bundle(bundle)
+
+        assert not [
+            w for w in result["withheld"] if w.get("reason") == "ownership_row_source_undeclared"
+        ]
+
 
 class TestMembershipIdentifiersMustBeText:
     """Every one of these is tested against a `set[str]` of withheld items. Set

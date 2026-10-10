@@ -7167,6 +7167,7 @@
         "qr_session_until_restart": true,
         "qr_session_persist_across_restart": false,
         "restore_window_minutes": 30,
+        "idle_slot_sweep_days": 7,
         "surface_channel_sessions": true,
         "bot_name": "",
         "avatar": "",
@@ -7464,6 +7465,21 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 30,
+      "requiresRestart": true
+    },
+    {
+      "path": "dashboard.idle_slot_sweep_days",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Archive Idle Sessions After Days",
+      "help": "When 450 or more sessions are open, archive sessions idle for this many days to history, hourly, and post a notification. Pinned sessions, app sessions, the open session, sessions with a running turn, a pending approval or sub-agents, crew worker sessions and sessions an auto-nudge loop drives are kept. 0 = never.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 7,
       "requiresRestart": true
     },
     {

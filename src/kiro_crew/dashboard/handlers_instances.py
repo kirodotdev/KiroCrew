@@ -66,6 +66,7 @@ from kiro_crew.instances.registry import (
     MAX_CHAINED_PER_PARENT,
     MAX_VIA_HOPS,
     DuplicateInstanceError,
+    InstanceDisabledError,
     InstanceNotFoundError,
     InstancesError,
     InstancesRegistry,
@@ -542,6 +543,8 @@ _PATCH_FIELD_TYPES: dict[str, type] = {
     # crew's parent is chosen when it is added, and letting a PATCH re-parent one
     # would move a crew onto a hop whose depth was never checked.
     "via_remote_port": int,
+    # The owner's per-crew off switch. Turning it on tears the tunnel down.
+    "disabled": bool,
 }
 
 
@@ -555,6 +558,8 @@ def _wrong_typed_field(changes: dict) -> str | None:
             return f"invalid {key}: expected a number"
         if expected is str and not isinstance(value, str):
             return f"invalid {key}: expected a string"
+        if expected is bool and not isinstance(value, bool):
+            return f"invalid {key}: expected true or false"
     return None
 
 
@@ -675,9 +680,12 @@ async def api_instances_update(request: web.Request) -> web.Response:
             status=400,
         )
 
+    # Disabling is a teardown too, and it takes the same locked path: the
+    # tunnel closes and the flag lands in one critical section, so a connect
+    # racing it is either torn down here or reads the flag and is refused.
     transport_changed = any(
         k in transport_keys and v != getattr(current, k) for k, v in changes.items()
-    )
+    ) or (changes.get("disabled") is True and not current.disabled)
     # Validate the PROPOSED record before touching the tunnel. The registry
     # validates too, but that happens after the teardown — so a rejected edit
     # would answer 400 having already disconnected a healthy crew, punishing the
@@ -965,6 +973,17 @@ async def api_instances_connect(request: web.Request) -> web.Response:
     except KeyError:
         _audit("connect", "denied", request_id=instance_id, error="not found")
         return web.json_response({"error": "not found", "code": "instance_not_found"}, status=404)
+    except InstanceDisabledError:
+        _audit("connect", "denied", request_id=instance_id, error="disabled")
+        return web.json_response(
+            {
+                "instance_id": instance_id,
+                "state": "disconnected",
+                "error": "this crew is disabled; enable it to connect",
+                "code": "instance_disabled",
+            },
+            status=409,
+        )
     if rebuild:
         _audit("connect", "rebuild", request_id=instance_id)
     body = status.to_dict()

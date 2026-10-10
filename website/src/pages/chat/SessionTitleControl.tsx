@@ -12,6 +12,7 @@ import { sseSlotTitle } from '../../store/dashboardSlice'
 import { api } from '../../api/client'
 import { errMessage } from '../../utils/thunkError'
 import { i18nT } from '../../i18n/t'
+import { uiLocation } from '../../uiLocations/uiLocation'
 
 /**
  * SessionTitleControl — the session title as ONE editable control: the
@@ -408,7 +409,7 @@ export default function SessionTitleControl({
           list of split-view panes reads as titles, not as N identical verbs.
           The memory-mode text follows, so the glyph's meaning survives the
           label and a click on the glyph still opens the editor. */}
-      <Clickable className="group/title flex min-w-0 items-center gap-1" ref={titleTriggerRef} aria-label={triggerLabel} onClick={(e) => {
+      <Clickable className="group/title flex min-w-0 items-center gap-1" aria-label={triggerLabel} {...uiLocation('chat.session-title', titleTriggerRef)} onClick={(e) => {
         // An auto-repeat keydown from the Enter still held since the commit is
         // not a request to rename again (Clickable passes the keyboard event
         // through; a pointer click has no `repeat`).

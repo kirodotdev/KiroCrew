@@ -11,6 +11,8 @@ import type { ComposerControl } from '../composerControl'
 import { usePressActivation } from '../../hooks/usePressActivation'
 import type { ChatInputProps } from './props'
 import type { useAutoCompactThreshold } from './autoCompact'
+import { uiLocation } from '../../uiLocations/uiLocation'
+import { useGuidePredicate } from '../../guide/guidePredicates'
 
 /* The context shelf under the composer: its measured width (which collapses
    the chips to icons) and the controls that stand on it -- app session
@@ -218,6 +220,7 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
       onClick={() => setCtxPopoverOpen(o => !o)}
       title={contextTip(contextPct)}
       aria-label={i18nT('components.chatInput.context_usage')}
+      {...uiLocation('composer.context-usage')}
     >
       <ContextBar pct={contextPct} width={40} height={3} />
       {showAnyReadout && <span className="text-[11px] ml-1.5 tabular-nums whitespace-nowrap" style={{ color: pctColor }}>{readout}</span>}
@@ -327,6 +330,8 @@ export function ModelChip({ modelName, modelIsJevRouted, modelIsInheritedDefault
   const effortShown = effortIsDefault
     ? i18nT('components.reasoningEffortDropdown.default_with_level', { level: effortLabel(reasoningEffort || '') })
     : effortLabel(reasoningEffort || '')
+  // The chip is disabled while a response runs: a guide to it says so.
+  useGuidePredicate('no_response_running', !isRunning)
   const effortSuffix = hasEffort
     ? ` · ${i18nT('components.reasoningEffortDropdown.reasoning_effort')}: ${effortShown}`
     : ''
@@ -360,6 +365,7 @@ export function ModelChip({ modelName, modelIsJevRouted, modelIsInheritedDefault
     onClick={press.onClick}
     disabled={isRunning}
     data-testid="composer-model-chip"
+    {...uiLocation('chat.model-picker')}
     // Inherited default: mirror the agent chip -- ` · default` marker on
     // the label, and the explanation on hover (title) AND keyboard
     // focus / screen readers (aria-label), because a bare served id

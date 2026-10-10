@@ -21,6 +21,7 @@ import { useProvider } from '../providers'
 import { providerUsageQuery } from '../api/providerUsageQuery'
 
 import { i18nT } from '../i18n/t'
+import { uiLocation } from '../uiLocations/uiLocation'
 import { fmtDuration } from '../i18n/format'
 
 // The record editor and recovery tools are needed only inside this drill-in.
@@ -164,7 +165,7 @@ function MemorySummaryCard({ onOpen }: { onOpen: () => void }) {
     <Card>
       <CardTitle>
         <Brain className="lucide-inline" /> {i18nT('pages.overviewPage.memory')}
-        <button onClick={onOpen} className="ml-auto inline-flex items-center gap-1 text-[12px] font-medium text-accent bg-transparent border-none cursor-pointer hover:underline">
+        <button onClick={onOpen} className="ml-auto inline-flex items-center gap-1 text-[12px] font-medium text-accent bg-transparent border-none cursor-pointer hover:underline" {...uiLocation('overview.memory-details')}>
           {i18nT('pages.overviewPage.view_details')} <ArrowRight size={12} />
         </button>
       </CardTitle>

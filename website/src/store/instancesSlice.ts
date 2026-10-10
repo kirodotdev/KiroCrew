@@ -77,6 +77,14 @@ export interface HostModel {
    *  embedded header must inset its RIGHT side clear of the native caption
    *  buttons (the transparent titleBarOverlay's min/max/close cluster). */
   winInset: boolean
+  /** The host window's live, zoom-aware caption reserve (e.g. `178px`), read
+   *  from the `--mc-win-caption-reserve` the main process sets on the HOST
+   *  <html>. The pane is a separate document, so it never inherits that value,
+   *  yet it is painted at the host's page zoom: without it the pane header keeps
+   *  the static 142px default, which paints narrower than the caption buttons
+   *  below 100% zoom. Absent when the host has none to relay (an older host, a
+   *  non-Windows host, or before the main process has pushed it). */
+  winCaptionReserve?: string
   /** The parent window's focus mode, relayed so the pane hides its own chrome to
    *  match instead of landing fully-framed inside a focused window. `null` means
    *  the host SENT NO OPINION — an older host whose model predates the field —

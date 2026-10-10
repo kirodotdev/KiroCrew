@@ -37,6 +37,12 @@
     "@kirocrew-cron/cron_remove",
     "@kirocrew-cron/cron_remove_all",
     "@kirocrew-core",
+    "@kirocrew-guide/find_ui",
+    "@kirocrew-guide/search_docs",
+    "@kirocrew-guide/guide_list_actions",
+    "@kirocrew-guide/guide_start",
+    "@kirocrew-guide/guide_status",
+    "@kirocrew-guide/guide_cancel",
     "@kirocrew-guide/rename_self"
   ],
   "resources": [

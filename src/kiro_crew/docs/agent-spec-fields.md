@@ -737,17 +737,20 @@ back.)
 
 
 `kirocrew.json`, and every spec derived from it (the worker, every crewmate
-built from it), mounts Crew's platform server `kirocrew-guide`, which today
-carries one tool, `rename_self`: a crewmate takes the name its user just gave
-it. The conductor specs and the background agents (knowledge, research,
-heartbeat) keep their own narrower server sets without it. Its entry carries no
-`autoApprove`; the tools in `agent._GUIDE_AUTO_GRANTS` are added to
-`allowedTools` as exact names, subject to the same governance ceiling as every
-grant. A spec from before the server was a platform capability gains the ref
-and those grants once (`guide_platform_granted.json` marks it), and keeps
-whatever you do with them afterwards. Its tools work only for a turn the user
+built from it), mounts Crew's platform guide server `kirocrew-guide` (where-is
+and how-to answers through `find_ui` and `search_docs`, dashboard guides, and
+a crewmate's own `rename_self`). The conductor specs and the background agents (knowledge,
+research, heartbeat) keep their own narrower server sets without it. Its entry carries no `autoApprove`; exactly the seven tools in
+`agent._GUIDE_AUTO_GRANTS` are added to `allowedTools` as exact names, subject to
+the same governance ceiling as every grant: the reads, `guide_start` (it only
+offers a card the user must press), `guide_cancel` (which stops this
+conversation's guide and undoes nothing saved) and `rename_self`.
+A spec from before the server was a platform capability gains the ref and those
+grants once (`guide_platform_granted.json` marks it), and keeps whatever you do
+with them afterwards. Its guide tools work only for a turn the user
 sent from the dashboard and refuse with one line anywhere else, a message from
-Slack or another channel included.
+Slack or another channel included; `find_ui` and `search_docs` still answer
+there.
 
 `rebuild_agent_config` creates the first crewmate (`mate`, shown as
 Mate) once, bound to the same template a crewmate you create gets, with its
@@ -758,6 +761,7 @@ rename, rebind and delete. The first-crewmate creation lives in
 `src/kiro_crew/agent_materialization/first_crewmate.py`. The one-time guide grant
 lives in `src/kiro_crew/agent_materialization/guide_platform.py`; the grant tuple stays in
 `src/kiro_crew/agent.py`.
+
 
 What you may safely hand-edit: a spec you authored yourself; a conductor spec's
 `allowedTools`; and in any other owned or app-generated field, nothing — change
