@@ -164,8 +164,9 @@ class Answer:
 
 Outcome = Literal["approved", "auto_approved", "refused", "rejected", "floor_refused", "bailed"]
 
-#: The limits a run abandons a request at (:func:`bail`); each is a refusal rung.
-BailReason = Literal["turn_limit", "child_escalation_limit"]
+#: Why a run abandons a request (:func:`bail`): one of its limits, or a stop in
+#: progress; each is a refusal rung.
+BailReason = Literal["turn_limit", "child_escalation_limit", "stopped"]
 
 
 @dataclass(frozen=True)
@@ -427,7 +428,8 @@ async def settle(ask: Ask, policy: Policy) -> Settled:
 
 
 async def bail(ask: Ask, policy: Policy, why: BailReason) -> Settled:
-    """Answer *ask* for a run that abandons it at a limit (*why* names the limit).
+    """Answer *ask* for a run that abandons it: at a limit, or because the run is
+    being stopped (*why* names which).
 
     Audited and rejected bare: the run's turn ends here, so there is no continuing
     turn for a deny notice to correct.
@@ -756,6 +758,7 @@ _SUBAGENT_REFUSALS: Mapping[str, tuple[str, str]] = MappingProxyType(
         "headless": ("", "no_policy_deny_default"),
         "turn_limit": ("turn_limit", ""),
         "child_escalation_limit": ("child_escalation_limit", ""),
+        "stopped": ("stopped", ""),
     }
 )
 

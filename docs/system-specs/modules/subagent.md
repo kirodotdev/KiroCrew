@@ -1463,7 +1463,10 @@ after the wire answered for an approval (an approval the transport floor turns
 into a rejection is audited as `rejected_transport_floor`). A HOST refusal (the
 spec hooks, a hook deny, the fail-closed child answer, deny by default) steers
 the in-band deny notice before the reject; an approver's no, and the reject that
-precedes a `turn_limit` / `child_escalation_limit` bail, stay bare. A refusal row
+precedes a `turn_limit` / `child_escalation_limit` / `stopped` bail, stay bare. A
+run that is being stopped (`_reap_started`, `user_stopped` or `reaped`) bails
+every request as `stopped` before the ladder runs, so no grant or person can
+approve a tool after a Stop. A refusal row
 the audit cannot write is logged and the request is still answered; an approver
 that raises outside the fidelity gate, or a cancelled wait, leaves the request to
 the run's teardown. An approved

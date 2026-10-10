@@ -477,9 +477,9 @@ Per site:
   absent (`child_low_fidelity`, no approver attached) — `surface_policy`.
 - the approvers' no (the per-subagent factory, the gateway fallback, the
   child-request approver) send no notice: the person's verdict is the truth.
-  The rejects that precede a `turn_limit` / `child_escalation_limit` bail send
-  none either: the run ends there, so no continuing turn exists for a notice to
-  correct.
+  The rejects that precede a `turn_limit` / `child_escalation_limit` / `stopped`
+  bail send none either: the run ends there, so no continuing turn exists for a
+  notice to correct.
 
 `test_eval_subagent_deny_notice.py` enumerates every `reject_tool(` in the two
 eval modules with its verdict and drives each of their denies; through a real

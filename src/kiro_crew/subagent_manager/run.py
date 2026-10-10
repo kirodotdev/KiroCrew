@@ -3106,6 +3106,23 @@ class RunEventCoordinator(ManagerComponent):
                 # wall-clock reaper fires. Generous multiple of the parent's
                 # limit: legitimate crews fan many small child tool calls.
                 _ask = tool_permission.Ask(event, _wire, session_key)
+                # A run that is being stopped bails every request as ``stopped``
+                # before any grant or person is consulted: audited, and rejected
+                # bare on the wire. The stop cancels this task only after its
+                # session teardown, and the approval wait turns that cancel into
+                # a denial; when the teardown and its kill both fail, the stream
+                # keeps going, and a request read here would otherwise be settled
+                # for a run the user stopped.
+                if info._reap_started or info.user_stopped or info.reaped:
+                    logger.warning(
+                        "Subagent %s: rejecting a tool request, a stop is in progress",
+                        info.id,
+                    )
+                    try:
+                        await tool_permission.bail(_ask, _policy, "stopped")
+                    except Exception:
+                        logger.exception("failed to reject a request after a stop")
+                    continue
                 if not event.sub_session_id:
                     turns += 1
                     info.turns = turns
