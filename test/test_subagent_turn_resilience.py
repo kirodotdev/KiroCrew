@@ -1111,6 +1111,12 @@ async def test_continuation_context_overflow_before_activity_is_terminal():
     await asyncio.to_thread(sp.write_run_agent, "original-run", "")
     sessions = _mock_sessions(lambda _msg: None)
     mgr = _manager(sessions)
+    # A spawn approver is always configured in production (the gateway's
+    # approval surface). It matters here: a continuation of a conversation
+    # whose founder has no readable record resolves to the contested marker,
+    # and a contested root admits through the interactive prompt alone -- the
+    # hook's blanket spawn grant does not cover it.
+    mgr._on_spawn_approval = AsyncMock(return_value=True)
     attempts = 0
     schedule_recovery = MagicMock()
     mgr._schedule_cancel_recovery = schedule_recovery

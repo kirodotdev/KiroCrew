@@ -7418,6 +7418,7 @@ class DashboardState:
         tool_purpose: str = "",
         slot: str = "",
         is_background: bool = False,
+        contested: bool = False,
     ) -> bool:
         """Request interactive approval and deny on timeout or cancellation."""
         return await _approvals_for(self).request(
@@ -7431,6 +7432,7 @@ class DashboardState:
             is_background=is_background,
             redact_url=redact_exfiltration_urls,
             redact_secret=redact_credentials,
+            contested=contested,
         )
 
     def pending_coordinator_approvals(self, slot_key: str) -> list[dict]:
@@ -9392,6 +9394,14 @@ class DashboardState:
 
         under_construction = getattr(self, "_slots_under_construction", None) or ()
         queued_by_slot = _published_queued_by_slot(subs)
+        # The tab's whole tree, not only its own wave: nested runs' cards and
+        # frames are slotted to the root tab, so the badge must stay lit while
+        # a grandchild still runs after the coordinator that spawned it ended.
+        # Resolved ONCE per push (every live run's root, one walk each), then
+        # tested per tab -- not a rooted listing per tab, which would resolve
+        # every run once per tab and build a summary list for a boolean.
+        live_roots = subs.live_root_session_keys() if subs else set()
+
         for s in self._slots.values():
             if s.key in under_construction:
                 continue
@@ -9401,9 +9411,11 @@ class DashboardState:
                 include_check_status=include_check_status,
                 dashboard_user=dashboard_user,
             )
-            d["subagents_running"] = bool(
-                subs and subs.running_agents_for(effective_session_key(s))
-            )
+            # Compared on the slot's EFFECTIVE session key: a channel-born slot's
+            # turns run on the channel's own session (``slack:<ts>``), which is
+            # the root its runs are stamped with, so ``dashboard:<key>`` would
+            # never match it and its tab would never light.
+            d["subagents_running"] = effective_session_key(s) in live_roots
             d["subagents_queued"] = queued_by_slot.get(s.key, 0)
             out.append(d)
         # The slot-key/session-key correspondence the lineage join needs, read the same

@@ -277,6 +277,7 @@ from kiro_crew.subagent import (  # noqa: F401
     SUCCESSOR_UNKNOWN,
     effort_applied_note,
     effort_drop_reason,
+    is_contested_root,
     parent_spawn_allowlists,
 )
 from kiro_crew.subagent_manager.admission.types import (  # noqa: F401

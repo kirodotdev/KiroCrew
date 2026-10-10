@@ -26,7 +26,9 @@ if TYPE_CHECKING:
         SubagentInfo,
         _context_groups_field,
         asyncio,
+        contested_spawn_note,
         create_agent_folder,
+        is_contested_root,
         logger,
         parent_spawn_policy,
         sel,
@@ -441,6 +443,20 @@ class _PumpMixin(ManagerComponent):
             # from shadowing the fresh read. ``params`` itself stays whole: it
             # is the row's identity for the stop path below.
             spawn_params = {k: v for k, v in params.items() if k != "_parent_spawn_policy"}
+            # A refilled continuation re-resolves its conversation root at
+            # re-entry (``_window_entry`` strips the stamp its row was written
+            # under). The gate compares against the founder's record but reads
+            # nothing itself, so the founder's durable root is read here, off
+            # the loop, the way ``spawn_async`` reads it for a first entry: it
+            # is the only carrier of a contest written while the row waited on
+            # disk, and the in-memory record that contested the conversation
+            # may be gone while the founder's is still retained with its
+            # founding root.
+            conversation_for_root = str(spawn_params.get("conversation_key") or "")
+            if conversation_for_root and spawn_params.get("_durable_conversation_root") is None:
+                spawn_params["_durable_conversation_root"] = await asyncio.to_thread(
+                    self._manager._durable_conversation_root, conversation_for_root
+                )
             # The drain's agent re-validation, off the loop for the same reason.
             agent_check = await self._manager._check_agent_off_loop(
                 str(params.get("agent") or ""),
@@ -623,7 +639,12 @@ class _PumpMixin(ManagerComponent):
             # record under this id. Only a still-proceeding claim that really
             # registered may consume the reservation; terminal report identity
             # is not a registered start. A retained claim keeps the reservation.
-            registered = claim_will_register and point.agent_id in self._manager._agents
+            # A refusal at the gate's commit point ALSO registers a terminal
+            # record under this id (so the caller's next status read finds the
+            # failure, not a 404): that is a record of a run that never
+            # started, so it must not read as a registered start either.
+            started_rec = self._manager._agents.get(point.agent_id)
+            registered = claim_will_register and started_rec is not None and not started_rec.done
             if not registered and not claim_retained:
                 self.release_reservation(point.agent_id)
             if registered:
@@ -634,7 +655,8 @@ class _PumpMixin(ManagerComponent):
                 # a retry armed), and this request is the one that follows the
                 # row out of the claimable states; asked twice, the burst
                 # coalesces it into at most one more read.
-                started = self._manager._agents[point.agent_id]
+                started = started_rec
+                assert started is not None
                 self._manager._emit_queue_depth(started.parent_session_key, started.batch_id)
         assert not isinstance(result, ClaimPoint)
         return result
@@ -846,7 +868,24 @@ class _PumpMixin(ManagerComponent):
         # it, keeps that id across the second round-trip too).
         if dispatch is None:
             try:
-                drained = self._manager.spawn(**params, _from_queue=True)
+                # A refilled continuation re-resolves its conversation root at
+                # re-entry (``_window_entry`` strips the stamp its row was
+                # written under) from the founder's durable record, which the
+                # gate does not read itself. The coroutine pump reads it off the
+                # loop before its re-entry (``_dispatch_async_impl``); this
+                # inline pump runs without a loop, so it reads it here, inline,
+                # the way it re-validates the agent inline -- handing the gate
+                # nothing would fail the founding chat's own continuation closed.
+                conversation_for_root = str(params.get("conversation_key") or "")
+                spawn_params = params
+                if conversation_for_root and params.get("_durable_conversation_root") is None:
+                    # A copy: ``params`` itself is the row's identity for the
+                    # dispatching mark released below.
+                    spawn_params = dict(params)
+                    spawn_params["_durable_conversation_root"] = (
+                        self._manager._durable_conversation_root(conversation_for_root)
+                    )
+                drained = self._manager.spawn(**spawn_params, _from_queue=True)
             finally:
                 # Same one-attempt lifetime as the coroutine pump: a ``spawn``
                 # that raises must not leave the row excluded from refill.
@@ -966,7 +1005,12 @@ class _PumpMixin(ManagerComponent):
 
                 task_safe, _ = redact_exfiltration_urls(info.task)
                 task_safe, _ = redact_credentials(task_safe)
-                task_preview: str = task_safe[:80]
+                # One line: the gateway's spawn approver reads the description's
+                # first line as the prompt's title and the rest as its purpose,
+                # so a task with a newline in its first 80 characters would
+                # otherwise cut its own title short and push the tail (and, for
+                # a contested run, the state and remedy below it) into the body.
+                task_preview: str = " ".join(task_safe[:80].split())
                 # Mark the pre-execution spawn gate as a human-wait so the reaper
                 # does not misreport it. This is the SAME lifecycle the mid-run TOOL
                 # approvals use in run.py: set before the await, cleared in a
@@ -990,14 +1034,39 @@ class _PumpMixin(ManagerComponent):
                     request_id,
                     info.parent_session_key or "<unowned>",
                 )
+                # The prompt is raised under the chat at the ROOT of the spawn
+                # tree, not the literal parent: a nested run's parent is a
+                # ``subagent:<id>`` that owns no channel and no tab, and a Trust
+                # press must write the key the gate reads back
+                # (``root_approval_policy``), or the grant lands on a key nothing
+                # consults and the tree keeps prompting. Equal to the parent for
+                # a depth-one run; ``""`` for an unowned one; the contested
+                # marker for a run in a contested conversation, whose card's tab
+                # must not approve it (``trust_root_for``).
+                root_session_key: str = self._manager.trust_root_for(info)
+                description: str = f"spawn_run({task_preview})"
+                if is_contested_root(root_session_key):
+                    # A conversation with no single owning chat resolves to a
+                    # marker no tab shows, so this prompt reaches only the global
+                    # approvals feed, where an unlabeled prompt with no chat
+                    # provenance reads as a routing bug and the remedy is not
+                    # otherwise discoverable. The first line stays the ask -- the
+                    # title every sibling card shows -- and the second is the
+                    # body: the state and the remedy, whose words (and why they
+                    # are shaped for that card) live beside
+                    # ``CONTESTED_PROMPT_STATE``; the run loop leads the run's
+                    # tool prompts with the same state.
+                    description = f"{description}\n{contested_spawn_note()}"
                 # Before the await, so a fold read while the prompt is still open
                 # shows it as pending -- which is the whole point of recording it.
+                # The fold keeps the ask alone: the contested note is the card's
+                # body, not the request's reason.
                 _log_origin = self._record_crew_log_spawn_approval_requested(
                     info, approval_id=request_id, reason=f"spawn_run({task_preview})"
                 )
                 try:
                     approved: bool = await self._manager._on_spawn_approval(
-                        request_id, f"spawn_run({task_preview})", info.parent_session_key
+                        request_id, description, root_session_key
                     )
                 finally:
                     info._awaiting_approval = False
@@ -1426,6 +1495,7 @@ class _PumpMixin(ManagerComponent):
                 execution_context=info.execution_context,
                 memory_mode=info.memory_mode,
                 app=info.app,
+                conversation_root=info.conversation_root_session_key,
             )
         except Exception:
             logger.warning(

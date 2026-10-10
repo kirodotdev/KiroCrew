@@ -107,6 +107,7 @@ if TYPE_CHECKING:
         fire_tool_hooks,
         hook_gate_kwargs,
         invalidate_stale_kas_session,
+        is_contested_root,
         is_registered_agent_name,
         is_runtime_death,
         join_failures,
@@ -205,12 +206,22 @@ class _ApprovalPrompt:
     pending row nothing ever closes.
     """
 
-    def __init__(self, run: RunEventCoordinator, info: SubagentInfo) -> None:
+    def __init__(
+        self, run: RunEventCoordinator, info: SubagentInfo, root_session_key: str = ""
+    ) -> None:
         self._run = run
         self._info = info
+        self._root_session_key = root_session_key
 
     def opened(self, ask: Ask) -> tuple[str, tuple[str, int]]:
         info = self._info
+        # Labelled before the request is recorded, so the fold reads the same
+        # contested state the human is shown (a no-op under any other root).
+        from kiro_crew.subagent import (  # circular import: the facade imports this module
+            _label_contested_prompt,
+        )
+
+        _label_contested_prompt(ask.event, self._root_session_key)
         info._awaiting_approval = True
         approval_id = self._run._crew_log_approval_id(info, ask.request_id)
         origin = self._run._record_crew_log_tool_approval_requested(
@@ -311,9 +322,15 @@ class RunEventCoordinator(ManagerComponent):
         return info.max_turns or self._manager._default_turn_limit or _TURN_LIMIT
 
     async def _write_state_off_loop_impl(
-        self, info: SubagentInfo, what: str, **fields: object
+        self, info: SubagentInfo, what: str, record_id: str = "", /, **fields: object
     ) -> bool:
         """Merge *fields* into this run's ``state.json``, off the event loop.
+
+        ``record_id`` names another run's record to merge into instead -- the
+        one use is a contested continuation writing the contest onto the
+        FOUNDER's record (the contest write in :meth:`_run_inner_impl`), so it
+        survives a restart. The drain below then holds THAT run's conversation,
+        which is the conversation being written about.
 
         Every ``state.json`` writer inside a run goes off the loop and is
         drained through :meth:`_drain_state_writer_impl`, entering here or, for
@@ -348,6 +365,10 @@ class RunEventCoordinator(ManagerComponent):
         deadline because on Python 3.10 a second outer cancel can finalize the run
         mid-drain.
 
+        ``durable=True`` among *fields* is ``update_state``'s own switch, not a
+        state field: a live-only record's durable file is written too, for
+        provenance a restart must read back.
+
         Returns ``update_state``'s own report: True when the merge was written,
         False when it was SKIPPED because the state was unreadable — a caller
         with a durability contract (the pre-spawn provenance write)
@@ -355,8 +376,12 @@ class RunEventCoordinator(ManagerComponent):
         so such a retry loop ends on cancellation instead of adding a second
         writer for the same fields.
         """
-        writer = asyncio.ensure_future(asyncio.to_thread(update_state, info.id, **fields))
-        return await self._drain_state_writer_impl(info, what, writer)
+        record_id = record_id or info.id
+        durable = bool(fields.pop("durable", False))
+        writer = asyncio.ensure_future(
+            asyncio.to_thread(update_state, record_id, durable=durable, **fields)
+        )
+        return await self._drain_state_writer_impl(info, what, writer, record_id=record_id)
 
     async def _write_finished_result_off_loop_impl(
         self, info: SubagentInfo, text: str | None, *, hold_conversation: bool = False
@@ -418,6 +443,7 @@ class RunEventCoordinator(ManagerComponent):
         writer: "asyncio.Future[Any]",
         *,
         bound: float | None = None,
+        record_id: str = "",
     ) -> bool:
         """Await a state-writing worker, drained and bounded on cancellation.
 
@@ -426,8 +452,13 @@ class RunEventCoordinator(ManagerComponent):
         :meth:`_write_finished_result_off_loop_impl`, the one caller that
         passes *bound*: a limit on the UNCANCELLED wait too, past which the
         worker is left to finish detached and False is returned. The
-        manager's ``_drain_state_writer`` forwards here unchanged.
+        manager's ``_drain_state_writer`` forwards here unchanged. *record_id*
+        names the record *writer* is writing when it is not this run's own
+        (the contest write onto the founder's record): the hold taken for a
+        detached worker is keyed on it, since that is the conversation the
+        write can roll back.
         """
+        record_id = record_id or info.id
         try:
             if bound is None:
                 return bool(await asyncio.shield(writer))
@@ -442,10 +473,10 @@ class RunEventCoordinator(ManagerComponent):
                 info.id,
                 bound,
             )
-            self._hold_for_detached_writer_impl(info, what, writer)
+            self._hold_for_detached_writer_impl(info, what, writer, record_id=record_id)
             return False
         except asyncio.CancelledError:
-            self._hold_for_detached_writer_impl(info, what, writer)
+            self._hold_for_detached_writer_impl(info, what, writer, record_id=record_id)
             # Latch for _run's recovery gate: on Python 3.10, wait_for's
             # _cancel_and_wait awaits a bare future that a SECOND outer cancel
             # can interrupt, delivering _run's CancelledError handler while this
@@ -465,7 +496,7 @@ class RunEventCoordinator(ManagerComponent):
                             "abandoning worker (its stale whole-file rewrite may roll "
                             "back a recovery run's state)",
                             what,
-                            info.id,
+                            record_id,
                             _STATE_DRAIN_TIMEOUT,
                         )
                         # The abandoned worker is a live stale writer whose
@@ -492,9 +523,18 @@ class RunEventCoordinator(ManagerComponent):
             raise
 
     def _hold_for_detached_writer_impl(
-        self, info: SubagentInfo, what: str, writer: "asyncio.Future[Any]"
+        self,
+        info: SubagentInfo,
+        what: str,
+        writer: "asyncio.Future[Any]",
+        *,
+        record_id: str = "",
     ) -> None:
-        """Hold this run's conversation until *writer* has landed.
+        """Hold the written record's conversation until *writer* has landed.
+
+        The record is this run's own unless *record_id* names another (the
+        contest write onto the founder's record), whose conversation is then
+        the one the hold protects.
 
         Taken for a worker no one awaits any more, and up front for the final
         result write of a run that is already ``done``. The hold counts
@@ -514,7 +554,8 @@ class RunEventCoordinator(ManagerComponent):
         # worker does -- milliseconds on a healthy FS. Recorded on the
         # MANAGER, not on `info`: `evict_completed_agents` prunes completed
         # runs out of `_agents`, and an eviction must not release the hold.
-        held = self._manager._abandoned_state_writers.setdefault(info.id, set())
+        record_id = record_id or info.id
+        held = self._manager._abandoned_state_writers.setdefault(record_id, set())
         if writer in held:
             return
         held.add(writer)
@@ -522,7 +563,7 @@ class RunEventCoordinator(ManagerComponent):
         def _settled(
             fut: "asyncio.Future[Any]",
             _mgr: Any = self._manager,
-            _aid: str = info.id,
+            _aid: str = record_id,
             _what: str = what,
         ) -> None:
             # The worker has landed (drained or abandoned). The conversation
@@ -642,6 +683,23 @@ class RunEventCoordinator(ManagerComponent):
 
     def running_agents_for_impl(self, parent_key: str) -> list[dict]:
         """Return summary dicts for agents belonging to *parent_key*."""
+        return self._running_summaries(
+            lambda a: a.parent_session_key == parent_key,
+        )
+
+    def running_agents_rooted_at_impl(self, root_key: str) -> list[dict]:
+        """Return summary dicts for every live agent in the tree rooted at *root_key*.
+
+        The per-slot list the dashboard shows for a tab: the tab's depth-one runs
+        AND every run nested beneath them, which is the set the per-run frames
+        are slotted to. ``running_agents_for`` is the parent's own wave (the
+        orchestration question) and stays parent-keyed.
+        """
+        return self._running_summaries(
+            lambda a: self._manager.root_session_key_for(a) == root_key,
+        )
+
+    def _running_summaries(self, keep: "Callable[[SubagentInfo], bool]") -> list[dict]:
         from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
         def _r(s: str) -> str:
@@ -661,7 +719,7 @@ class RunEventCoordinator(ManagerComponent):
                 "startedAt": a.started,
             }
             for a in self._manager._agents.values()
-            if not a.done and a.parent_session_key == parent_key
+            if not a.done and keep(a)
         ]
 
     def get_impl(self, agent_id: str) -> SubagentInfo | None:
@@ -1883,6 +1941,7 @@ class RunEventCoordinator(ManagerComponent):
         consult: Callable[[LLMEvent], object],
         sel: Callable[[], Any],
         log: _logging.Logger,
+        root_session_key: str = "",
     ) -> Policy:
         """The subagent surface's permission ladder for one run and its current agent.
 
@@ -1899,6 +1958,12 @@ class RunEventCoordinator(ManagerComponent):
         request still answered. *sel* and *log* are the facade's own bindings, so
         its audit and log seams see every row and line.
 
+        *root_session_key* is the run's trust root (``trust_root_for``): the
+        person is asked under THAT key, not the literal parent -- the approver
+        resolves the tab (and its trust) from it, and a ``subagent:<id>`` parent
+        names no tab -- and a prompt raised under a contested root is labelled
+        with the state its spawn prompt named.
+
         The facade's deny reasons are imported inside the body on purpose. This
         method does NOT end in ``_impl``, so it keeps this module's own globals.
         """
@@ -1909,7 +1974,7 @@ class RunEventCoordinator(ManagerComponent):
 
         manager = self._manager
         rows = SubagentRows(info.id)
-        prompt = _ApprovalPrompt(self, info)
+        prompt = _ApprovalPrompt(self, info, root_session_key)
 
         # Each approver is asked only while its responder reports it attached.
         def _factory_approver() -> Callable[[LLMEvent], Awaitable[object]]:
@@ -1921,7 +1986,8 @@ class RunEventCoordinator(ManagerComponent):
 
         def _ask_parent(event: LLMEvent) -> Awaitable[object]:
             approve = cast("ToolApprovalCallback", manager._on_tool_approval)
-            return approve(event, info.parent_session_key)
+            # The root chat's key, not the literal parent (see above).
+            return approve(event, root_session_key or info.parent_session_key)
 
         def _ask_for_child(event: LLMEvent) -> Awaitable[object]:
             if manager._on_tool_approval_factory:
@@ -2087,7 +2153,60 @@ class RunEventCoordinator(ManagerComponent):
             await _await_owned(publication)
         finally:
             info._state_drain_active = False
-        parent_policy = self._manager._sessions.get_approval_policy(info.parent_session_key)
+        # Read from the ROOT of this run's spawn tree (stamped at admission): a
+        # nested run's parent key is ``subagent:<id>``, which the shared-runtime
+        # path never registers in the session store, so a direct read would drop
+        # the chat's trust at depth two -- and the parent record itself may be
+        # gone by now. A continuation of a CONTESTED conversation resolves to the
+        # conversation's marker instead of the chat that continued it: the turn
+        # it runs was authored under another chat's key, so the continuing chat's
+        # trust does not approve what it asks for. The liveness probe further
+        # down still reads the literal parent key on purpose: it asks whether
+        # THIS run's parent is alive.
+        root_session_key = self._manager.trust_root_for(info)
+        if info.conversation_key and is_contested_root(info.conversation_root_session_key):
+            # Write the contest onto the FOUNDER's durable record before this
+            # turn runs anything, so a continuation admitted after a restart
+            # (when no in-memory record of the conversation remains) reads the
+            # contest back instead of the founding root alone. The write is the
+            # only durable carrier of the contest, so it is a precondition of
+            # running: ``update_state`` reports False when the founder's record
+            # could not be read (missing, corrupt), and a turn allowed to run on
+            # that skip would leave a restart restoring the founding root and
+            # its trust. Retried once for a transient read, then refused.
+            # ``durable=True`` because the founder may be LIVE-ONLY here: a
+            # continuation in incognito or temporary mode tightens the founder's
+            # record into memory, where a plain merge would report success
+            # without touching the founder's ``state.json`` -- and a restart
+            # would read the founding root back from that untouched file.
+            founder_id = info.conversation_key[len("subagent:") :]
+            persisted = False
+            for _attempt in range(2):
+                persisted = await self._manager._write_state_off_loop(
+                    info,
+                    "conversation contest",
+                    founder_id,
+                    durable=True,
+                    conversation_root=info.conversation_root_session_key,
+                )
+                if persisted:
+                    break
+            if not persisted:
+                raise ValueError(
+                    "memory_unavailable: could not persist the conversation contest "
+                    f"on {info.conversation_key}; refusing to run a contested "
+                    "continuation whose contest would not survive a restart"
+                )
+            # The retained founder record, if any, carries the contest too, so
+            # the in-memory view agrees with the durable one once this run's own
+            # record is evicted: a later same-root continuation compares against
+            # the founder's stamp first. The founder is not live (a continuation
+            # is admitted only while no run of the conversation is), so its own
+            # trust root changing to the marker governs nothing that still runs.
+            founder = self._manager._agents.get(founder_id)
+            if founder is not None:
+                founder.conversation_root_session_key = info.conversation_root_session_key
+        parent_policy = self._manager.root_approval_policy(root_session_key)
         # Explicit approval_mode from spawn caller (e.g. Mochi bg agent)
         if not parent_policy and info.approval_mode == "auto":
             parent_policy = "auto"
@@ -2731,6 +2850,7 @@ class RunEventCoordinator(ManagerComponent):
                 consult=_consult_gate,
                 sel=lambda: sel(),
                 log=logger,
+                root_session_key=root_session_key,
             )
 
         _wire = tool_permission.AcpWire(client)

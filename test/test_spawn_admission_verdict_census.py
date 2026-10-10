@@ -149,6 +149,12 @@ _REFUSAL_TEXTS = frozenset(
         "<owner_err>",  # an app spawn of another app's agent
         "<err>",  # an agent name that does not resolve
         "spawn rejected: no approval mechanism configured",
+        # The commit-point re-check of a continuation's conversation: a rival
+        # run (live or queued) holds it. A policy refusal, never a capacity
+        # one -- the prelude's own ``conversation_busy`` says the same thing
+        # earlier (test_subagent_nested_trust.py).
+        "conversation_busy: run {} is in flight on this conversation — use spawn_steer to "
+        "inject into it, or wait for its completion event",
         # The pressure hold's terminal: ended, never started, past its bound. The
         # caller was already told the start was queued (test below).
         "<MEMORY_PRESSURE_NEVER_STARTED>",

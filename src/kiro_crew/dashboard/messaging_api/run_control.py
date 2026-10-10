@@ -40,6 +40,7 @@ if TYPE_CHECKING:
         dashboard_slot_key,
         effective_session_key,
         internal_memory_scope,
+        is_contested_root,
         logger,
         read_state,
         record_panel_dismissal_outcome,
@@ -543,6 +544,28 @@ async def _retry_failed_run(state: "DashboardState", agent_id: str, old: Any) ->
         app=execution.app,
         _memory_mode=execution.memory_mode,
         _execution_context=execution.to_record(),
+        # Same trust as the run it replaces. The gate resolves a fresh spawn's
+        # root by walking parent links, and between the failure and the retry
+        # the parent conversation can have been evicted and continued from
+        # ANOTHER chat -- a trusted one -- which would then be the root a
+        # re-walk finds, and the retry (and every tool call under it) would
+        # auto-approve on trust the failed run never had. The stamp taken at
+        # the original's admission is what it actually ran under; the retry
+        # founds its own conversation from that root, as the original did.
+        _root_session_key=old.root_session_key,
+        # And the same conversation trust. A failed CONTESTED continuation has a
+        # routing root (the chat that continued it, where its card lives) that is
+        # not its trust root: its turn was authored under another chat's key, so
+        # its requests resolve to the contested marker. The retry runs that same
+        # turn's task, so it carries the marker too; founding a fresh
+        # conversation at the routing root would hand the retry (and its tools)
+        # the auto-approval the marker exists to deny. Any other stamp is
+        # re-derived by the gate from the root, as for a fresh spawn.
+        _conversation_root_session_key=(
+            old.conversation_root_session_key
+            if is_contested_root(old.conversation_root_session_key)
+            else ""
+        ),
     )
     try:
         info = await start

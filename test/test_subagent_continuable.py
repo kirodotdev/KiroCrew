@@ -90,9 +90,15 @@ def _mock_ctx_builder() -> MagicMock:
 
 
 def _manager(sessions: MagicMock | None = None) -> SubagentManager:
+    # A spawn approver is always configured in production (the gateway's
+    # approval surface). It matters here: a continuation of a conversation
+    # whose founder has no readable record resolves to the contested marker,
+    # and a contested root admits through the interactive prompt alone -- the
+    # hook's blanket spawn grant above does not cover it.
     return SubagentManager(
         sessions=sessions or _mock_sessions(),
         ctx_builder=_mock_ctx_builder(),
+        on_spawn_approval=AsyncMock(return_value=True),
     )
 
 
@@ -528,7 +534,9 @@ class TestContinuationAgentInheritance:
                 await asyncio.wait_for(manager._tasks[followup.id], timeout=10)
                 assert not followup.error
                 call = sessions.get_or_create.call_args
-                assert call.args[0] == f"subagent:{target.id}"
+                assert (
+                    call.args[0] == f"subagent:{original.id}"
+                )  # a chained continue keys on the founder
                 assert call.kwargs["agent"] == (override or original_agent or None)
                 state = await asyncio.to_thread(sp.read_state, followup.id)
                 assert state is not None and state["agent"] == (override or original_agent)
@@ -1113,7 +1121,11 @@ def continuation_runtime(tmp_path, monkeypatch):
     def new_manager():
         sessions = session.SessionManager(KiroCrewConfig.load(), provider_factory=factory)
         managers.append(sessions)
-        manager = SubagentManager(sessions=sessions, ctx_builder=_mock_ctx_builder())
+        manager = SubagentManager(
+            sessions=sessions,
+            ctx_builder=_mock_ctx_builder(),
+            on_spawn_approval=AsyncMock(return_value=True),
+        )
         manager._ctx_builder.conversation_log = history
         manager._spawn_stagger_secs = 0
         return sessions, manager
@@ -1603,7 +1615,7 @@ class TestContinuationTemplateNamespace:
                     if restart:
                         await asyncio.wait_for(sessions.close_all(drain_timeout=0), timeout=10)
                         sessions, manager = world.new_manager()
-                    key = f"subagent:{target.id}"
+                    key = f"subagent:{original.id}"  # a chained continue keys on the founder
                     followup = manager.continue_conversation(
                         target.id,
                         "member follow-up",

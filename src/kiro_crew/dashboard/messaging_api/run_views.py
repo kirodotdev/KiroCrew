@@ -311,6 +311,15 @@ async def api_spawn_list(request: web.Request) -> web.Response:
             "task": _redact(info.task),
             "done": info.done,
             "parent": info.parent_session_key,
+            # The tab the run's WS frames are slotted to -- the chat at the ROOT
+            # of its spawn tree, named with the same mapping the gateway applies
+            # -- so the dashboard compares slot to slot. A nested run's
+            # ``parent`` is a ``subagent:<id>`` no tab shows, so a reconcile
+            # keyed on ``parent`` would evict the nested card the frames just
+            # painted; and a raw key compared to ``dashboard:<slot>`` misses
+            # every cron- and channel-born tab, whose slot is not a prefix strip
+            # of its key, so the reconcile would fail a live card as untracked.
+            "slot": subagent_event_slot(state.subagents.root_session_key_for(info)),
             "agent": info.agent or info.crew,
             "started": info.started,
         }

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
@@ -485,5 +485,52 @@ describe('SubagentProgressBar — expand renders no empty body', () => {
   it('still renders the rows body when there is a running agent to show', () => {
     renderBar(makeStore(['a1']))
     expect(screen.getAllByTestId('subagent-row')).toHaveLength(1)
+  })
+})
+
+describe('SubagentProgressBar — 30s reconcile against /api/spawn', () => {
+  // The backend names the tab each run's frames carry (`slot`) with its own
+  // mapping, so the chip compares slot to slot: a nested run (parent
+  // `subagent:<id>`) and a channel-born tab (key `slack:…`, slot not a prefix
+  // strip of the key) both stay. Only an older backend without `slot` falls
+  // back to comparing the parent key to `dashboard:<slot>`.
+  // Fake timers are installed before the render on purpose: the component arms
+  // its 30s interval on mount, and these tests await nothing on real timers.
+  // They come off in afterEach, which runs whether or not the test threw -- a
+  // trailing useRealTimers() inside the test is skipped by a failed assertion or
+  // a timed-out tick, and every later test in the file would inherit the clock.
+  beforeEach(() => { vi.useFakeTimers(); vi.mocked(api.spawnList).mockReset() })
+  afterEach(() => { vi.useRealTimers() })
+
+  async function tick() { await act(async () => { await vi.advanceTimersByTimeAsync(30_000) }) }
+
+  it('keeps a nested run and a channel-rooted run whose slot matches, evicts one whose slot does not', async () => {
+    vi.mocked(api.spawnList).mockResolvedValue({ agents: [
+      { id: 'nested', done: false, parent: 'subagent:coord', slot: SLOT },
+      { id: 'channel', done: false, parent: 'slack:C1:171', slot: SLOT },
+      { id: 'elsewhere', done: false, parent: 'dashboard:other', slot: 'other' },
+    ] })
+    const store = makeStore(['nested', 'channel', 'elsewhere'])
+    renderBar(store)
+    await tick()
+    const subs = store.getState().chat.subagents
+    const live = new Set(Object.values(subs).filter(a => a.status === 'running').map(a => a.id))
+    expect(live.has('nested')).toBe(true)
+    expect(live.has('channel')).toBe(true)
+    expect(live.has('elsewhere')).toBe(false)
+  })
+
+  it('falls back to the parent key when a backend that predates slot sends none', async () => {
+    vi.mocked(api.spawnList).mockResolvedValue({ agents: [
+      { id: 'legacy', done: false, parent: `dashboard:${SLOT}` },
+      { id: 'other', done: false, parent: 'dashboard:other' },
+    ] })
+    const store = makeStore(['legacy', 'other'])
+    renderBar(store)
+    await tick()
+    const subs = store.getState().chat.subagents
+    const live = new Set(Object.values(subs).filter(a => a.status === 'running').map(a => a.id))
+    expect(live.has('legacy')).toBe(true)
+    expect(live.has('other')).toBe(false)
   })
 })

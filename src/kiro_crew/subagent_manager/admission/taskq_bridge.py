@@ -2178,6 +2178,7 @@ class _TaskqBridgeMixin(ManagerComponent):
     @staticmethod
     def _window_entry(rec: "_taskq.TaskRecord") -> dict[str, Any]:
         from kiro_crew import taskq as _taskq
+        from kiro_crew.subagent import is_contested_root
 
         params = dict(rec.params)
         params["_preassigned_id"] = rec.id
@@ -2206,6 +2207,31 @@ class _TaskqBridgeMixin(ManagerComponent):
         # grants and which no start path reads.
         params.pop("_agent_prevalidated", None)
         params.pop("approval_mode", None)
+        # The conversation root is stripped for the same reason, in the other
+        # direction: a store-only row is not in ``_queue``, so it does not hold
+        # its conversation busy, and a continuation from another chat admitted
+        # while it waited on disk writes a contest onto the founder's record
+        # (``_run_inner_impl``). A stamp taken before that contest would replay
+        # the founding chat's trust into a run the contest exists to deny. The
+        # refilled row re-resolves at re-entry -- the pump reads the founder's
+        # durable record off-loop and hands it to the gate, which fails closed
+        # to a contested root when handed nothing -- so the answer can only
+        # tighten: a contest, once written, is read back by every resolution.
+        # A CONTESTED stamp is the one value kept: it is a refusal, not a grant,
+        # and a row that carries one may name no conversation to re-resolve
+        # from -- the dashboard retry of a failed contested continuation founds
+        # a fresh conversation at the continuing chat's root and passes the
+        # marker as its only tie to the contest. Stripped, that row would
+        # re-resolve to the continuing chat's own trust and auto-approve the
+        # turn the marker exists to deny; kept, it can only tighten.
+        stamp = params.pop("_conversation_root_session_key", None)
+        if isinstance(stamp, str) and is_contested_root(stamp):
+            params["_conversation_root_session_key"] = stamp
+        # A row written before roots were stamped at admission carries no
+        # ``_root_session_key``. It needs none here: every window entry
+        # re-enters through ``spawn(..., _from_queue=True)``, where the gate
+        # resolves an unstamped ``subagent:`` caller to a contested root rather
+        # than re-walking a tree the restart may have left to another chat.
         return params
 
     def _evict_for_lanes(self, count: int, lanes: "Mapping[str, str] | None" = None) -> int:
