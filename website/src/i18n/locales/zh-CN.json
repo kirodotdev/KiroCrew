@@ -11018,7 +11018,8 @@
         "redirecting_the_running_turn_not_yet_confirmed": "正在重定向正在运行的这一轮——尚未确认。",
         "turn_ended_before_this_applied_runs_as_its_own_message": "这一轮在此生效前已结束，此消息作为独立消息运行。",
         "quote_message": "引用消息",
-        "more_actions": "更多操作"
+        "more_actions": "更多操作",
+        "edit_replaces_below": "发送会替换下方的回复"
       },
       "workflowCompletionCard": {
         "hide_result": "隐藏结果",
@@ -11411,10 +11412,8 @@
         "close": "关闭团队聊天",
         "load_failed": "无法从 {{name}} 加载此会话。",
         "empty": "还没有消息。",
-        "rewind": "回退到这里",
         "interrupted": "轮次已中断",
         "continue": "继续",
-        "regenerate": "重新生成",
         "action_failed": "{{name}} 拒绝了该操作。请重试，或打开该团队自己的控制台。",
         "offline": "{{name}} 未连接。重新连接后才能发送。",
         "rewinding": "正在回退：发送后将替换从这条消息开始的对话。",

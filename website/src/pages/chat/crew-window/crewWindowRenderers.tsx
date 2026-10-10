@@ -8,16 +8,18 @@
  *    row draws as the generic tool line instead;
  *  - a sent file plays from the hub's own outbox by file name, which would be a
  *    different file (or none), so it draws as a labelled name only.
- *  The user row is the shared one plus the peer's rewind. The reply row is
- *  the peer's plain text: the shared reply's verdict thumbs and file chips
- *  would write or open this hub's own records. Code is copy-only for every
- *  row through the window's `ReadOnlyCodeCtx`. */
-import type { ReactNode } from 'react'
-import { Btn } from '../../../components/ui'
+ *  The user and reply rows are the local chat's own bubbles, hover action bar
+ *  included: Edit & Resend rewinds on the peer, Regenerate regenerates there,
+ *  Quote stages the message for the next send.
+ *  The window strips each peer row's decision record and file changes first:
+ *  the shared reply's verdict thumbs and file chips would write or open this
+ *  hub's own records. Code is copy-only for
+ *  every row through the window's `ReadOnlyCodeCtx`. */
 import { i18nT } from '../../../i18n/t'
-import { defaultMessageRenderers, type MessageRenderer } from '../../../app-sdk/messageRenderers'
-import MarkdownRenderer from '../../../components/MarkdownRenderer'
-import { isHiddenInvisibleAssistantRow } from '../../../utils/invisibleText'
+import { formatTs, quoteMessageFor, renderAssistantBubble, type MessageRenderer } from '../../../app-sdk/messageRenderers'
+import UserMessage from '../UserMessage'
+import { renderUserContent } from '../ChatPageMessageContent'
+import { fmtMessageTimeFull } from '../messageTime'
 import { createTranscriptRenderers } from '../transcriptRenderers'
 import type { ChatMessage } from '../../../types'
 
@@ -35,8 +37,6 @@ export const PEER_SAFE_ROWS: ReadonlySet<string> = new Set([
   'nudge', 'recovery_inject', 'system_notice', 'workflow_completion', 'error',
 ])
 
-const defaultUser = defaultMessageRenderers.find(r => r.id === 'user')!
-
 function peerFileName(m: ChatMessage): string {
   try {
     const name = (JSON.parse(m.content) as { filename?: unknown }).filename
@@ -52,28 +52,36 @@ export function createCrewWindowRenderers(o: {
   name: string
   key: string
   canRewind: (m: ChatMessage) => boolean
-  onRewind: (m: ChatMessage) => void
-  rewindDisabled: boolean
+  /** Edit & Resend on a user row: rewind the peer's session to `ts`. */
+  /** `false`: not taken now (the peer is busy); the bubble keeps its editor open. */
+  onRewind: (ts: string, content: string) => boolean
+  /** The reply that offers Regenerate (the newest, on an idle turn), or null. */
+  regenerateRow: ChatMessage | null
+  onRegenerate: () => void
 }): readonly MessageRenderer[] {
   const shared = createTranscriptRenderers({ slot: crewWindowSlot(o.instanceId, o.key) })
   return [
     {
       id: 'user',
       roles: ['user'],
-      render: (m, ctx) => defaultUser.render(m, {
-        ...ctx,
-        wrapper: (children: ReactNode, isUser?: boolean) => ctx.wrapper(
-          <>
-            {children}
-            {o.canRewind(m) && (
-              <Btn disabled={o.rewindDisabled} onClick={() => { if (!o.rewindDisabled) o.onRewind(m) }}>
-                {i18nT('pages.chat.crewWindow.rewind')}
-              </Btn>
-            )}
-          </>,
-          isUser,
-        ),
-      }),
+      // The local chat's bubble and hover row (Quote, Copy, More). No copy
+      // link or pin: each names a session or record on THIS machine.
+      render: (m, ctx) => ctx.wrapper(
+        <UserMessage
+          content={m.content}
+          meta={m.meta}
+          timestamp={formatTs(m.ts)}
+          timestampTitle={fmtMessageTimeFull(m.ts)}
+          renderContent={(c, mt) => renderUserContent({ content: c, meta: mt })}
+          canEdit={o.canRewind(m)}
+          slotRunning={ctx.running}
+          messageIndex={ctx.index}
+          messageTs={m.ts || ''}
+          onEditResend={(_i, ts, content) => o.onRewind(ts, content)}
+          onQuoteMessage={quoteMessageFor(m, ctx, 'user')}
+        />,
+        true,
+      ),
     },
     {
       id: 'file',
@@ -87,13 +95,16 @@ export function createCrewWindowRenderers(o: {
     },
     ...shared.filter(r => PEER_SAFE_ROWS.has(r.id)),
     // After the shared rows: their assistant-role refinements (system notice,
-    // workflow completion) must win over this plain reply row.
+    // workflow completion) must win over this reply row.
     {
       id: 'assistant',
       roles: ['assistant', 'streaming'],
-      render: (m, ctx) => (isHiddenInvisibleAssistantRow(m)
-        ? null
-        : ctx.row(<div data-testid="crew-window-assistant"><MarkdownRenderer content={m.content || ''} streaming={m.role === 'streaming'} softBreaks /></div>)),
+      render: (m, ctx) => {
+        const bubble = renderAssistantBubble(m, ctx, undefined, {
+          onRegenerate: m === o.regenerateRow ? o.onRegenerate : undefined,
+        })
+        return bubble === null ? null : ctx.wrapper(<div data-testid="crew-window-assistant">{bubble}</div>)
+      },
     },
   ]
 }

@@ -33,10 +33,15 @@ import { errMessage } from '../../../utils/thunkError'
 import type { ChatMessage } from '../../../types'
 import { closeCrewWindow, coverSiblings, markCrewWindowShown, readCrewDraft, subscribeCrewDraft, writeCrewDraft, type CrewWindowTarget } from './crewWindowStore'
 import { createCrewWindowRenderers, crewWindowSlot } from './crewWindowRenderers'
+import { useCrewWindowModelPicker, type PeerModelFields } from './crewWindowModelPicker'
 import { mergeRecoveredDraft } from '../../../utils/chatDrafts'
+import { isHiddenInvisibleAssistantRow } from '../../../utils/invisibleText'
+import { isSystemNoticeRow } from '../CompactionCard'
+import { useMessageQuote } from '../../../chat-core/composer/useMessageQuote'
+import type { MessageQuote } from '../../../chat-core/composer/messageQuote'
 
 interface PeerApproval { origin?: string; request_id?: string; request_mid?: string }
-interface PeerSlot { key?: string; title?: string; running?: boolean; interrupted?: boolean; pending_approval_info?: PeerApproval | null }
+interface PeerSlot extends PeerModelFields { key?: string; title?: string; running?: boolean; interrupted?: boolean; agent?: string; pending_approval_info?: PeerApproval | null }
 interface PeerDetail { title?: string; running?: boolean; messages?: ChatMessage[] }
 
 /** How long a burst of peer frames waits before one transcript re-read. */
@@ -44,6 +49,24 @@ const REFETCH_THROTTLE_MS = 300
 /** How often an unmatched (or unreachable) crew's version is re-read. */
 const CAPS_RETRY_MS = 5000
 const NO_MESSAGES: ChatMessage[] = []
+
+/** Whether the hub redacted part of this text (its proxy marker). */
+function hasRedaction(text?: string): boolean {
+  return !!text?.includes('[REDACTED')
+}
+
+/** A peer row without the records that act on THIS gateway: the decision
+ *  strip's verdict thumbs (on a reply, a steered user row, a compaction
+ *  notice) write its decision records, and file-change chips open its
+ *  files. So no peer row may draw either. */
+function withoutHubRecords(m: ChatMessage): ChatMessage {
+  const meta = m.meta
+  if (m.decisions_strip === undefined && meta?.decisions_strip === undefined && meta?.file_changes === undefined && meta?.file_changes_omitted_files === undefined) return m
+  const { decisions_strip: _row, ...rest } = m
+  if (!meta) return rest
+  const { decisions_strip: _strip, file_changes: _files, file_changes_omitted_files: _omitted, ...kept } = meta
+  return { ...rest, meta: kept }
+}
 
 export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { target: CrewWindowTarget; onClose?: () => void }) {
   const { instanceId, key } = target
@@ -128,13 +151,30 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
     setDraftState(value)
   }, [target])
   const [rewindTs, setRewindTs] = useState<string | null>(null)
+  // Quote, as in the local chat: a staged whole message rides the next send
+  // as its block plus `meta.quote`. Text only, so it works on the peer.
+  const messageQuote = useMessageQuote({ slot: crewWindowSlot(instanceId, key) })
   // A rewind's edit is held beside the draft, never in it, so the session's
   // own unsent text survives a close or a rejected rewind untouched.
   const [rewindText, setRewindText] = useState('')
+  // The held rewind edit as of now: the latest render's, or one staged since
+  // in the same tick. Read when a refusal lands or another edit arrives.
+  const heldRewind = useRef({ ts: rewindTs, text: rewindText })
+  heldRewind.current = { ts: rewindTs, text: rewindText }
+  /** Fold text into the session's ordinary draft (persisted), beside what is there. */
+  const recoverIntoDraft = useCallback((text: string) => {
+    const next = mergeRecoveredDraft(readCrewDraft(target), text)
+    writeCrewDraft(target, next)
+    setDraftState(next)
+  }, [target])
   // A failed send from an earlier mount of this session writes the store;
   // follow it so the reopened composer shows the recovered text.
   useEffect(() => subscribeCrewDraft(target, setDraftState), [target])
   useEffect(() => markCrewWindowShown(onClose), [onClose])
+  // Whether this window is still on screen: a refusal that lands after it
+  // closed has no quote stage to restore into.
+  const mounted = useRef(true)
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
   // The dock's height, so the transcript's last row clears the glass.
   const dockRef = useRef<HTMLDivElement>(null)
   const [dockH, setDockH] = useState(0)
@@ -150,36 +190,46 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
     void queryClient.invalidateQueries({ queryKey: detailKeyQ })
   }, [queryClient, slotKeyQ, detailKeyQ])
   const action = useMutation({
-    mutationFn: ({ path, body }: { path: string; body?: object; message?: string; rewindTs?: string | null }) =>
+    mutationFn: ({ path, body }: { path: string; body?: object; message?: string; rewindTs?: string | null; typed?: string; quote?: MessageQuote | null }) =>
       api.crewPeerPost(instanceId, path, body),
     onSettled: settle,
     // Mutation-level, not per-call: it still runs when the window closed or
     // switched while the send was in flight, so the text is never lost.
     onError: (_err, vars) => {
       if (!vars.message) return
-      if (vars.rewindTs) {
-        // Back into the rewind edit; the draft was never touched.
+      // Back into the rewind edit (ts and text together), unless a newer
+      // rewind edit is already held: then the refused text joins the ordinary
+      // draft, so neither edit is lost and no ts is paired with another
+      // row's text.
+      // Only an open window can hold the rewind; after close the edit goes
+      // to the saved draft below instead of into unmounted state.
+      if (vars.rewindTs && mounted.current && !heldRewind.current.ts) {
+        heldRewind.current = { ts: vars.rewindTs, text: vars.message }
+        setRewindTs(vars.rewindTs)
         setRewindText(vars.message)
-        setRewindTs(cur => cur ?? vars.rewindTs ?? null)
         return
       }
-      const next = mergeRecoveredDraft(readCrewDraft(target), vars.message)
-      writeCrewDraft(target, next)
-      setDraftState(next)
+      // A refused quoted send puts the quote back on the stage (or, when a
+      // newer one is staged, its block into the draft), never a raw block alone.
+      const text = vars.quote ? messageQuote.recoverInto(vars.typed ?? '', vars.quote, mounted.current) : vars.message
+      if (text.trim()) recoverIntoDraft(text)
     },
   })
   const send = () => {
-    const message = (rewindTs ? rewindText : draft).trim()
-    if (!message || action.isPending || !connected) return
+    const typed = (rewindTs ? rewindText : draft).trim()
+    if ((!typed && (rewindTs || !messageQuote.pendingQuote)) || action.isPending || !connected) return
+    // A held rewind waits for an idle peer: mid-turn the peer refuses it.
+    if (rewindTs && running) return
+    const { quote, text: message } = rewindTs ? { quote: null, text: typed } : messageQuote.consume(typed)
     const req = rewindTs
       ? { path: slotPath + '/rewind', body: { ts: rewindTs, content: message } }
-      : { path: 'api/chat?ws=1', body: { message, slot: key } }
+      : { path: 'api/chat?ws=1', body: { message, slot: key, ...(quote ? { meta: { quote } } : {}) } }
     // Cleared at dispatch so text typed while the send is in flight is never
     // wiped by its success; a failure restores it only into an empty box.
     if (rewindTs) setRewindText('')
     else setDraft('')
     setRewindTs(null)
-    action.mutate({ ...req, message, rewindTs })
+    action.mutate({ ...req, message, rewindTs, typed, quote })
   }
 
   const running = slotQ.data?.running ?? detailQ.data?.running ?? false
@@ -192,7 +242,7 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
   // row's own `meta.mid` rides in the id it hands back, and only the row the
   // peer reports pending (same id AND same mid) is answered, with that mid. A
   // stale card for a reused id makes no peer call.
-  const messages = useMemo(() => (detailQ.data?.messages ?? NO_MESSAGES).map(m => {
+  const messages = useMemo(() => (detailQ.data?.messages ?? NO_MESSAGES).map(withoutHubRecords).map(m => {
     const aid = m.meta?.approval_id
     if (m.role !== 'permission' || typeof aid !== 'string') return m
     const mid = typeof m.meta?.mid === 'string' ? m.meta.mid : ''
@@ -209,22 +259,56 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
       action: decision, request_id: id, request_mid: mid, origin: 'native',
     }).finally(settle)
   }, [nativeApproval, instanceId, slotPath, settle, name])
-  const lastTurn = [...messages].reverse().find(m => m.role === 'user' || m.role === 'assistant')
+  // The newest turn row the transcript draws as a bubble: a system notice
+  // (compaction, reload) and a say-nothing reply are not one.
+  const lastTurn = [...messages].reverse().find(m => m.role === 'user' || (m.role === 'assistant' && !isSystemNoticeRow(m) && !isHiddenInvisibleAssistantRow(m)))
   const title = slotQ.data?.title || detailQ.data?.title || key
   const loadError = detailQ.error ?? slotQ.error ?? instancesQ.error ?? capsQ.error
   const versionMismatch = capsQ.data && !capsQ.data.version_match ? capsQ.data : null
-  const rewindPending = action.isPending
+  const actionPending = action.isPending
+  const mutate = action.mutate
+  // Regenerate sits on the newest reply's own hover row, as in the local chat.
+  // Read at submit time, not render time: a row's editor can outlive the
+  // render whose closure it holds (the list keeps finished rows).
+  const rewindGate = useRef({ connected, running, actionPending })
+  rewindGate.current = { connected, running, actionPending }
+  const regenerateRow = !running && !slotQ.data?.interrupted && connected && !actionPending && lastTurn?.role === 'assistant' ? lastTurn : null
   const renderers = useMemo(() => createCrewWindowRenderers({
     instanceId,
     key,
     name,
     // A rewind replaces the conversation from that row on, so none is offered
-    // mid-turn, and none on a row the hub redacted (its text is not the
-    // peer's, so resending it would rewrite the session with the redaction).
-    canRewind: m => !running && !!m.ts && !m.content?.includes('[REDACTED'),
-    onRewind: m => { setRewindTs(m.ts || null); setRewindText(m.content || '') },
-    rewindDisabled: rewindPending,
-  }), [instanceId, key, name, running, rewindPending])
+    // mid-turn or while another action is in flight, and none on a row the
+    // hub redacted (its text is not the peer's, so resending it would rewrite
+    // the session with the redaction).
+    // The editor also restores the row's pastes, which the proxy redacts too.
+    canRewind: m => connected && !running && !actionPending && !!m.ts && !hasRedaction(m.content) && !hasRedaction(JSON.stringify(m.meta?.pastes ?? null)),
+    // Edit & Resend posts the rewind at once; a refusal lands the edit in the
+    // composer's rewind mode (see `onError`), so Send retries it. An earlier
+    // refused rewind is cleared first, as `send()` does, so a second refusal
+    // never pairs that row's ts with this row's text. Gated like `send()`: an
+    // editor opened while idle can be submitted after a turn started.
+    onRewind: (ts, content) => {
+      const message = content.trim()
+      if (!message) return true
+      const gate = rewindGate.current
+      // Busy: refuse, and the bubble keeps its editor open with the text.
+      if (!gate.connected || gate.running || gate.actionPending) return false
+      // A refused edit this one replaces is kept in the ordinary draft.
+      const held = heldRewind.current
+      if (held.ts && held.text.trim()) recoverIntoDraft(held.text)
+      heldRewind.current = { ts: null, text: '' }
+      setRewindTs(null)
+      setRewindText('')
+      mutate({ path: slotPath + '/rewind', body: { ts, content: message }, message, rewindTs: ts })
+      return true
+    },
+    regenerateRow,
+    onRegenerate: () => mutate({ path: slotPath + '/regenerate' }),
+  }), [instanceId, key, name, running, actionPending, connected, slotPath, mutate, regenerateRow, recoverIntoDraft])
+  const picker = useCrewWindowModelPicker({
+    instanceId, slotKey: crewWindowSlot(instanceId, key), slotPath, slot: slotQ.data, caps: capsQ.data, enabled: versionOk, onWritten: settle,
+  })
   const rootRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const root = rootRef.current
@@ -262,7 +346,7 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
         {/* Every code fence here is the peer's: copy only, never Edit or Run
             in THIS machine's terminal. */}
         <ReadOnlyCodeCtx.Provider value={true}>
-          <ChatMessageList messages={messages} running={running} renderers={renderers} onApprove={approve} />
+          <ChatMessageList messages={messages} running={running} renderers={renderers} onApprove={approve} onQuoteMessage={messageQuote.quoteMessage} />
         </ReadOnlyCodeCtx.Provider>
         <ChatFooter running={running && !approval?.request_id} stopping={false} state="" lastRole={messages[messages.length - 1]?.role ?? ''} />
         <div className="px-4 flex flex-col gap-3">
@@ -276,20 +360,20 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
               <Btn disabled={!connected || action.isPending} onClick={() => action.mutate({ path: slotPath + '/continue' })}>{i18nT('pages.chat.crewWindow.continue')}</Btn>
             </div>
           )}
-          {!running && !slotQ.data?.interrupted && lastTurn?.role === 'assistant' && (
-            <div>
-              <Btn disabled={!connected || action.isPending} onClick={() => action.mutate({ path: slotPath + '/regenerate' })}>{i18nT('pages.chat.crewWindow.regenerate')}</Btn>
-            </div>
-          )}
         </div>
       </div>
       {/* Glass pins its own root to position: relative, so a plain box places
           the dock; the transcript above pays for it with padding. */}
       <div ref={dockRef} className="absolute left-0 right-0 bottom-0">
       <Glass thickness="thin" radius={0} className="border-t border-border py-3 flex flex-col gap-2">
-        <div className="px-4 flex flex-col gap-2">
+        {/* The composer's own column, so a notice about a pick sits over the box and chip it is about. */}
+        <div className="px-4 mx-auto w-full flex flex-col gap-2" style={{ maxWidth: 'var(--mc-input-width, 900px)' }}>
           {/* No hand-off: the composer below may hold an unsent draft. */}
           {action.error && <ErrorNotice title={i18nT('pages.chat.crewWindow.action_failed', { name })} message={errMessage(action.error)} onDismiss={() => action.reset()} />}
+          {/* No hand-off: the composer below may hold an unsent draft. */}
+          {!!picker.error && <ErrorNotice title={i18nT('pages.chat.crewWindow.action_failed', { name })} message={errMessage(picker.error)} onDismiss={picker.clearError} />}
+          {/* No hand-off: same draft. The capability read retries in place. */}
+          {picker.effortCapsFailed && <ErrorNotice variant="inline" message={i18nT('pages.chatPage.effort_options_unavailable')} />}
           {!connected && <div className="text-muted">{i18nT('pages.chat.crewWindow.offline', { name })}</div>}
           {rewindTs && (
             <div className="flex items-center gap-2 text-muted">
@@ -319,11 +403,18 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
             typedCommandMenus={false}
             slotApprovalChrome={false}
             promptOptimizer={false}
+            // Model + effort write the PEER's slot. Attach, the agent picker
+            // and the approval-mode picker are not passed, so the composer
+            // does not draw them: each writes THIS gateway's state.
+            {...picker.chipProps}
+            pendingQuote={rewindTs ? null : messageQuote.pendingQuote}
+            onRemoveQuote={messageQuote.clearQuote}
           />
         </SlotProvider>
         </fieldset>
       </Glass>
       </div>
+      {picker.portal}
       </div>
     </div>
   )

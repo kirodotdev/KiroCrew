@@ -11344,7 +11344,8 @@
         "redirecting_the_running_turn_not_yet_confirmed": "Réorientation du tour en cours — pas encore confirmé.",
         "turn_ended_before_this_applied_runs_as_its_own_message": "Le tour s'est terminé avant que ceci ne s'applique — s'exécute comme un message distinct.",
         "quote_message": "Citer le message",
-        "more_actions": "Plus d'actions"
+        "more_actions": "Plus d'actions",
+        "edit_replaces_below": "L'envoi remplace les réponses ci-dessous"
       },
       "workflowCompletionCard": {
         "hide_result": "Masquer le résultat",
@@ -11741,10 +11742,8 @@
         "close": "Fermer le chat de l’équipage",
         "load_failed": "Impossible de charger cette session depuis {{name}}.",
         "empty": "Aucun message pour l’instant.",
-        "rewind": "Revenir à ce point",
         "interrupted": "Tour interrompu",
         "continue": "Continuer",
-        "regenerate": "Régénérer",
         "action_failed": "{{name}} a refusé cette action. Réessaie, ou ouvre le tableau de bord de l’équipage.",
         "offline": "{{name}} n’est pas connecté. Reconnecte-le pour envoyer.",
         "rewinding": "Retour en arrière : l’envoi remplace la conversation à partir de ce message.",

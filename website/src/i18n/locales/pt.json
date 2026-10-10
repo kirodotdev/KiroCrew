@@ -11344,7 +11344,8 @@
         "redirecting_the_running_turn_not_yet_confirmed": "Redirecionando o turno em andamento — ainda não confirmado.",
         "turn_ended_before_this_applied_runs_as_its_own_message": "O turno terminou antes de isto ser aplicado — é executado como uma mensagem separada.",
         "quote_message": "Citar mensagem",
-        "more_actions": "Mais ações"
+        "more_actions": "Mais ações",
+        "edit_replaces_below": "Enviar substitui as respostas abaixo"
       },
       "workflowCompletionCard": {
         "hide_result": "Ocultar resultado",
@@ -11741,10 +11742,8 @@
         "close": "Fechar chat da equipe",
         "load_failed": "Não foi possível carregar esta sessão de {{name}}.",
         "empty": "Ainda não há mensagens.",
-        "rewind": "Voltar até aqui",
         "interrupted": "Turno interrompido",
         "continue": "Continuar",
-        "regenerate": "Gerar novamente",
         "action_failed": "{{name}} recusou essa ação. Tente novamente ou abra o painel da própria equipe.",
         "offline": "{{name}} não está conectado. Reconecte-o para enviar.",
         "rewinding": "Voltando: o envio substitui a conversa a partir desta mensagem.",
