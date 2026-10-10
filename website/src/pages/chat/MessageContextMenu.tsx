@@ -12,6 +12,9 @@ export interface MessageMenuItem {
   onSelect: () => void
   /** Draw a separator ABOVE this item. */
   separatorBefore?: boolean
+  /** One muted line under the label, for an item whose label alone does not
+   *  say what it is for. */
+  hint?: string
 }
 
 interface LinkTarget { href: string; text: string }
@@ -25,6 +28,13 @@ function linkAt(event: SyntheticEvent<HTMLElement>): LinkTarget | null {
   const anchor = target.closest('a[href]')
   if (!(anchor instanceof HTMLAnchorElement) || !event.currentTarget.contains(anchor)) return null
   return { href: anchor.href, text: (anchor.textContent ?? '').trim() }
+}
+
+/** Whether the page's selection is non-empty text inside `root`. */
+function selectionInside(root: HTMLElement): boolean {
+  const selection = typeof window.getSelection === 'function' ? window.getSelection() : null
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0 || !selection.toString().trim()) return false
+  return root.contains(selection.getRangeAt(0).commonAncestorContainer)
 }
 
 /**
@@ -53,15 +63,25 @@ function linkAt(event: SyntheticEvent<HTMLElement>): LinkTarget | null {
  * is read on pointerdown as well as contextmenu, so it is known before Radix
  * opens the menu. A touch device gets no menu, so its native long-press keeps
  * the platform's own link actions.
+ *
+ * `yieldToSelection`: a right-click on a bubble holding a text selection gets
+ * the browser's own menu instead, so Copy, Search and the rest act on what
+ * was selected rather than on the whole message. Read on pointerdown, before
+ * a platform's right-click word selection can change it.
  */
-export default function MessageContextMenu({ items, children, onOpenChange, onCopyFailed }: { items: MessageMenuItem[]; children: ReactNode; onOpenChange?: (open: boolean) => void; onCopyFailed?: () => void }) {
+export default function MessageContextMenu({ items, children, onOpenChange, onCopyFailed, yieldToSelection = false }: { items: MessageMenuItem[]; children: ReactNode; onOpenChange?: (open: boolean) => void; onCopyFailed?: () => void; yieldToSelection?: boolean }) {
   const [link, setLink] = useState<LinkTarget | null>(null)
+  const [selectionHeld, setSelectionHeld] = useState(false)
   if (!items.length || isTouchDevice()) return <>{children}</>
   // Functional and identity-preserving, so a pointerdown that does not change
   // the link under it does not re-render the bubble.
   const track = (event: SyntheticEvent<HTMLElement>) => {
     const next = linkAt(event)
     setLink(prev => (prev?.href === next?.href && prev?.text === next?.text ? prev : next))
+  }
+  const trackPointer = (event: SyntheticEvent<HTMLElement>) => {
+    track(event)
+    if (yieldToSelection) setSelectionHeld(selectionInside(event.currentTarget))
   }
   const copy = (text: string) => {
     copyToClipboard(text).then(ok => { if (!ok) onCopyFailed?.() }, () => onCopyFailed?.())
@@ -75,7 +95,7 @@ export default function MessageContextMenu({ items, children, onOpenChange, onCo
     : items
   return (
     <ContextMenu onOpenChange={onOpenChange}>
-      <ContextMenuTrigger asChild onContextMenu={track} onPointerDown={track}>{children}</ContextMenuTrigger>
+      <ContextMenuTrigger asChild disabled={yieldToSelection && selectionHeld} onContextMenu={track} onPointerDown={trackPointer}>{children}</ContextMenuTrigger>
       <ContextMenuContent className="min-w-[220px]" data-testid="message-context-menu">
         {all.map(item => (
           <Fragment key={item.id}>
@@ -85,7 +105,9 @@ export default function MessageContextMenu({ items, children, onOpenChange, onCo
                   its own classes (shadcn/no-restyle). */}
               <span className="flex items-center gap-2 [@media(hover:none)]:min-h-7">
                 <span className="shrink-0 inline-flex text-muted">{item.icon}</span>
-                <span>{item.label}</span>
+                {item.hint
+                  ? <span className="flex flex-col gap-0.5"><span>{item.label}</span><span className="text-[11px] leading-4 text-muted">{item.hint}</span></span>
+                  : <span>{item.label}</span>}
               </span>
             </ContextMenuItem>
           </Fragment>

@@ -74,7 +74,8 @@ for (const theme of ['dark', 'light']) {
     await kiro.locator('[data-testid="message-bubble"]').click({ button: 'right', position: { x: 140, y: 30 } })
     await page.waitForSelector('[data-testid="message-context-menu"]'); await page.waitForTimeout(200)
     const items = await page.getByRole('menuitem').allInnerTexts()
-    check(`[${theme}/menu] Quote first, then Copy text / Copy link / Pin / Raw`, JSON.stringify(items) === JSON.stringify(['Quote message', 'Copy text', 'Copy link to message', 'Pin message', 'Show raw markdown']))
+    // First line only: the copy items carry a hint line under their label.
+    check(`[${theme}/menu] Quote first, then both copy formats / Copy link / Pin / Raw`, JSON.stringify(items.map(t => t.split('\n')[0])) === JSON.stringify(['Quote message', 'Copy as Markdown', 'Copy as rich text', 'Copy link to message', 'Pin message', 'Show raw markdown']))
     await shot(page, `${theme}-2-menu.png`)
     // Selecting Quote stages the card in the composer.
     await page.getByTestId('message-context-quote').click()
@@ -141,7 +142,7 @@ for (const theme of ['dark', 'light']) {
     const kiro = page.locator('[data-role="assistant"]').first()
     await kiro.hover({ position: { x: 120, y: 30 } }); await page.waitForTimeout(600)
     await kiro.getByTestId('assistant-more-actions').click(); await page.waitForTimeout(700)
-    check(`[${theme}/reply-more] Quote, Copy link, Pin, Raw`, JSON.stringify(await page.getByRole('menuitem').allInnerTexts()) === JSON.stringify(['Quote message', 'Copy link to message', 'Pin message', 'Show raw markdown']))
+    check(`[${theme}/reply-more] Quote, Copy as rich text, Copy link, Pin, Raw`, JSON.stringify((await page.getByRole('menuitem').allInnerTexts()).map(t => t.split('\n')[0])) === JSON.stringify(['Quote message', 'Copy as rich text', 'Copy link to message', 'Pin message', 'Show raw markdown']))
     await shot(page, `${theme}-11-reply-more.png`)
     check(`[${theme}/more] no page errors`, errors.length === 0); await ctx.close()
   }
@@ -228,7 +229,7 @@ for (const theme of ['dark', 'light']) {
     await row.getByTestId('assistant-more-actions').click(); await page.waitForTimeout(700)
     check(`[${theme}/crewmate] footer visible while More is open`, parseFloat(await row.getByTestId('assistant-more-actions').evaluate(b => getComputedStyle(b.closest('div')).opacity)) === 1)
     check(`[${theme}/crewmate] More: Quote first`, (await page.getByRole('menuitem').first().innerText()).includes('Quote message'))
-    check(`[${theme}/crewmate] More = bubble menu minus the row's Copy`, JSON.stringify(await page.getByRole('menuitem').allInnerTexts()) === JSON.stringify(bubbleItems.filter(i => i !== 'Copy text')))
+    check(`[${theme}/crewmate] More = bubble menu minus the row's Copy`, JSON.stringify(await page.getByRole('menuitem').allInnerTexts()) === JSON.stringify(bubbleItems.filter(i => !i.startsWith('Copy as Markdown'))))
     await shot(page, `${theme}-8-crewmate-more.png`)
     await page.getByTestId('quote-message-menu-item').click()
     await page.waitForSelector('[data-testid="quote-card-composer"]')

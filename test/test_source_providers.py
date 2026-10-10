@@ -9810,16 +9810,16 @@ class TestAdfToMarkdown:
         re-derive the escape set and only then update this test. It is the shared
         contract Design Review asked for, in the one place that can fail.
         """
-        renderer = (
-            pathlib.Path(__file__).resolve().parents[1]
-            / "website"
-            / "src"
-            / "components"
-            / "MarkdownRenderer.tsx"
-        )
+        components = pathlib.Path(__file__).resolve().parents[1] / "website" / "src" / "components"
+        renderer = components / "MarkdownRenderer.tsx"
         if not renderer.is_file():
             pytest.skip("frontend renderer is not part of this checkout")
-        imported = set(re.findall(r"from '((?:remark|rehype)-[a-z0-9-]+)'", renderer.read_text()))
+        # The renderer's leading parse plugins live in a shared list it spreads
+        # in (the rich-text copy uses the same list), so the stack is the union.
+        sources = [renderer, components / "markdown" / "remarkBase.ts"]
+        imported = set()
+        for path in sources:
+            imported |= set(re.findall(r"from '((?:remark|rehype)-[a-z0-9-]+)'", path.read_text()))
         assert imported == {
             "remark-parse",
             "remark-gfm",

@@ -123,6 +123,29 @@ export async function copyImageToClipboard(png: Promise<Blob>): Promise<boolean>
   }
 }
 
+/** Copy rich text: `html` as `text/html` for editors that paste formatting
+ *  (Outlook, Word, Docs), with `plain` as the `text/plain` fallback for
+ *  everything else. Same contract as `copyToClipboard`: resolves `true` only
+ *  once both flavours are on the clipboard, never rejects.
+ *
+ *  The async `write()` needs `ClipboardItem` and a secure context. Where it is
+ *  missing or refused, the `execCommand` fallback carries both flavours in its
+ *  `copy` event, so a plain-HTTP gateway still pastes formatted. */
+export async function copyRichToClipboard(html: string, plain: string): Promise<boolean> {
+  if (navigator.clipboard?.write && typeof ClipboardItem !== 'undefined') {
+    try {
+      await navigator.clipboard.write([new ClipboardItem({
+        'text/html': new Blob([html], { type: 'text/html' }),
+        'text/plain': new Blob([plain], { type: 'text/plain' }),
+      })])
+      return true
+    } catch {
+      // Refused permission or an unsupported flavour: try the fallback.
+    }
+  }
+  return execCommandCopy(plain, html)
+}
+
 /** `execCommand('copy')` fallback for the two cases the async Clipboard API
  *  cannot serve: a non-secure context (a plain-HTTP LAN or remote gateway,
  *  where `navigator.clipboard` does not exist at all) and a browser that
@@ -146,7 +169,7 @@ export async function copyImageToClipboard(png: Promise<Blob>): Promise<boolean>
  *  sized 1x1 at the viewport origin rather than left unsized, so no engine can
  *  lay it out large enough to flash. Returns whether the copy actually
  *  happened — never throws, so a caller may treat `false` as the only failure. */
-function execCommandCopy(text: string): boolean {
+function execCommandCopy(text: string, html?: string): boolean {
   if (typeof document.execCommand !== 'function') return false
   const previouslyFocused = document.activeElement
   const selection = document.getSelection()
@@ -178,6 +201,7 @@ function execCommandCopy(text: string): boolean {
   const onCopy = (e: ClipboardEvent) => {
     if (!e.clipboardData) return
     e.clipboardData.setData('text/plain', text)
+    if (html !== undefined) e.clipboardData.setData('text/html', html)
     e.preventDefault()
   }
   document.addEventListener('copy', onCopy, true)
