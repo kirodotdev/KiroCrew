@@ -946,18 +946,16 @@ describe('crew avatar builder', () => {
     fireEvent.click(within(sheet).getByTestId('header-avatar-button'))
     const builder = await screen.findByRole('dialog', { name: 'Customize avatar' })
 
-    // The builder opens on the Icon pane for a crew with no override; this test
-    // exercises the ghost tier, so select Ghost face first (as a user would).
-    fireEvent.click(within(builder).getByRole('radio', { name: 'Ghost face' }))
-    // Pre-filled with the name-derived face; pick a different eye option.
-    fireEvent.click(within(builder).getByTestId('avatar-opt-wink'))
+    // The builder opens on the Icon pane (the primary creation tier). Pick a
+    // pose; Apply stages the draft and the editor's own Save persists it.
+    fireEvent.click(within(builder).getByTestId('avatar-icon-pose-pose-3'))
     fireEvent.click(within(builder).getByTestId('avatar-builder-save'))
 
     // Apply only stages the draft; the editor's own Save persists it.
     fireEvent.click(within(sheet).getByRole('button', { name: 'Save changes' }))
     await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalled())
     const body = mockApi.updateKirocrewAgent.mock.calls[0][1]
-    expect(body.avatar).toEqual({ kind: 'ghost', traits: { ...seededTraits('oncall'), eyes: 'wink' } })
+    expect(body.avatar).toMatchObject({ kind: 'icon', pose: 'pose-3' })
   })
 
   it('reset + Apply clears the override in the update payload', async () => {
@@ -966,13 +964,12 @@ describe('crew avatar builder', () => {
     fireEvent.click(within(sheet).getByTestId('header-avatar-button'))
     const builder = await screen.findByRole('dialog', { name: 'Customize avatar' })
 
-    fireEvent.click(within(builder).getByRole('radio', { name: 'Ghost face' }))
-    fireEvent.click(within(builder).getByTestId('avatar-opt-wink'))
+    fireEvent.click(within(builder).getByTestId('avatar-icon-pose-pose-3'))
     fireEvent.click(within(builder).getByTestId('avatar-builder-reset'))
     fireEvent.click(within(builder).getByTestId('avatar-builder-save'))
 
     // Nothing pending: the draft round-tripped back to "no override", so Save
-    // stays disabled — the dirty check compares normalized traits, not clicks.
+    // stays disabled — the dirty check compares the normalized avatar, not clicks.
     expect(within(sheet).getByRole('button', { name: 'Save changes' })).toBeDisabled()
   })
 
@@ -1161,17 +1158,13 @@ describe('crew editor — appearance pack round-trip', () => {
 
     fireEvent.click(within(sheet).getByTestId('header-avatar-button'))
     const builder = await screen.findByRole('dialog', { name: 'Customize avatar' })
-    fireEvent.click(within(builder).getByRole('radio', { name: 'Ghost face' }))
-    fireEvent.click(within(builder).getByTestId('avatar-opt-wink'))
+    fireEvent.click(within(builder).getByTestId('avatar-icon-pose-pose-3'))
     fireEvent.click(within(builder).getByTestId('avatar-builder-save'))
     fireEvent.click(within(sheet).getByRole('button', { name: 'Save changes' }))
 
     await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalled())
     const body = mockApi.updateKirocrewAgent.mock.calls[0][1]
-    expect(body.avatar).toEqual({
-      kind: 'ghost',
-      traits: { ...seededTraits('oncall'), eyes: 'wink' },
-    })
+    expect(body.avatar).toMatchObject({ kind: 'icon', pose: 'pose-3' })
   })
 })
 
@@ -1467,8 +1460,8 @@ describe('crew avatar — uploaded picture', () => {
     // No picture chosen and none saved: Apply must not stage an empty image
     // override.
     expect(within(builder).getByTestId('avatar-builder-save')).toBeDisabled()
-    // The ghost pane's draft survives the round-trip through the picture tab.
-    fireEvent.click(within(builder).getByRole('radio', { name: 'Ghost face' }))
-    expect(within(builder).getByTestId('avatar-builder-preview')).toBeInTheDocument()
+    // The icon pane's draft survives the round-trip through the picture tab.
+    fireEvent.click(within(builder).getByRole('radio', { name: 'Icon' }))
+    expect(within(builder).getByTestId('avatar-icon-pane')).toBeInTheDocument()
   })
 })

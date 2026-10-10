@@ -2,9 +2,9 @@
  * CrewAvatarBuilder — the Library tier.
  *
  * `CrewAvatarLibraryTab.test.tsx` covers the pane's own listing, import and
- * delete. This file covers the seam: the fourth tab exists, picking a pack in it
- * is what Apply commits, the reaction layer rides along with a pack the way it
- * does with a picture, and the reset link puts the crew back to its own face.
+ * delete. This file covers the seam: the Library tab exists, picking a pack in
+ * it is what Apply commits, and the reset link puts the crew back to its own
+ * name-derived face.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
@@ -98,7 +98,7 @@ beforeEach(() => {
 })
 
 describe('avatar builder — Library tier', () => {
-  it('offers Library as a fourth tab and reads the library when it opens', async () => {
+  it('offers the Library tab and reads the library when it opens', async () => {
     mount()
     expect(mockApi.appearances.list).not.toHaveBeenCalled()
 
@@ -132,10 +132,8 @@ describe('avatar builder — Library tier', () => {
   })
 
   it('offers no Reactions tab on a pack, and carries a legacy sound out of the record', async () => {
-    // A pack ships its own per-state art AND its own audio, so a preset on the
-    // crew record would be a second, competing answer to the same question.
-    // There is nothing to author here, and a tab that renders only a note
-    // saying so is a promise the tier cannot keep.
+    // A pack ships its own per-state art AND its own audio, and the ghost
+    // reaction authoring is gone entirely, so there is nothing to author here.
     const stored = { kind: 'pack', id: 'aurora', sounds: { done: 'chime' } }
     const { onSave } = mount(stored as Parameters<typeof mount>[0])
     await screen.findByTestId('avatar-library-pane')
@@ -144,45 +142,6 @@ describe('avatar builder — Library tier', () => {
 
     apply()
     expect(saved(onSave)).toEqual({ kind: 'pack', id: 'aurora' })
-  })
-
-  it('offers the Reactions tab only while the ghost is the selected tier', async () => {
-    mount({ kind: 'image', v: 3 })
-    expect(screen.queryByRole('radio', { name: 'Reactions' })).toBeNull()
-    gotoTier('Ghost face')
-    expect(screen.getByRole('radio', { name: 'Reactions' })).toBeInTheDocument()
-    gotoTier('Reactions')
-    // The hint covers all THREE rows it renders: it promised two moments while a
-    // Working row was on screen, and a first-run reader guessed at that row. It
-    // also says the working cue fires when work STARTS -- "while it works" read
-    // as a sound that runs for the whole turn, where it plays once on the edge.
-    expect(
-      screen.getByText(
-        'Pick a motion and a sound for when a turn finishes or fails, and the sound it makes when work starts.',
-      ),
-    ).toBeInTheDocument()
-  })
-
-  it('explains on both served tiers why the Reactions tab is not theirs', async () => {
-    // The tab is simply absent there, and an absence with no word said reads as
-    // something missing rather than as something decided — a first-run reader
-    // could not tell which. The line goes where they are looking.
-    // "a pack from the Library", not "a pack": a cold reader could not place the
-    // bare word ("I don't know what a pack is… that's a guess").
-    // "…so there is no Reactions tab here": a cold reader understood the concept
-    // and still asked why the tab was gone, so the line names the tab.
-    const NOTE =
-      'Reactions belong to the ghost face, so there is no Reactions tab here. A picture stays still and silent; a pack from the Library plays its own art and sound.'
-    const { unmount } = mount({ kind: 'pack', id: 'aurora' })
-    await screen.findByTestId('avatar-library-pane')
-    expect(screen.getByTestId('avatar-reactions-absent-pack')).toHaveTextContent(NOTE)
-    unmount()
-
-    mount({ kind: 'image', v: 3 })
-    expect(screen.getByTestId('avatar-reactions-absent-picture')).toHaveTextContent(NOTE)
-    // The ghost tier has the tab, so it needs no such line.
-    gotoTier('Ghost face')
-    expect(screen.queryByTestId('avatar-reactions-absent-picture')).toBeNull()
   })
 
   it('reset puts the crew back on its own face, pack included', async () => {
@@ -195,13 +154,13 @@ describe('avatar builder — Library tier', () => {
     expect(saved(onSave)).toBeNull()
   })
 
-  it('switching tiers keeps each tier\u2019s draft, so a pack pick survives a look at Ghost face', async () => {
+  it('switching tiers keeps each tier\u2019s draft, so a pack pick survives a look at Icon', async () => {
     const { onSave } = mount()
     gotoTier('Library')
     fireEvent.click(await screen.findByTestId('avatar-pack-select-aurora'))
 
-    gotoTier('Ghost face')
-    await waitFor(() => expect(screen.getByTestId('avatar-builder-preview')).toBeInTheDocument())
+    gotoTier('Icon')
+    await waitFor(() => expect(screen.getByTestId('avatar-icon-pane')).toBeInTheDocument())
     gotoTier('Library')
     await screen.findByTestId('avatar-library-pane')
 
@@ -209,17 +168,16 @@ describe('avatar builder — Library tier', () => {
     expect(saved(onSave)).toEqual({ kind: 'pack', id: 'aurora' })
   })
 
-  it('a ghost pick wins once the ghost tier is the selected one', async () => {
+  it('an icon pick wins once the Icon tier is the selected one', async () => {
     // The tier decides what Apply commits; a pack id held from an earlier click
-    // must not leak into a face the user then chose.
+    // must not leak into a pose the user then chose.
     const { onSave } = mount()
     gotoTier('Library')
     fireEvent.click(await screen.findByTestId('avatar-pack-select-aurora'))
-    gotoTier('Ghost face')
-    fireEvent.click(await screen.findByTestId('avatar-opt-wink'))
+    gotoTier('Icon')
+    fireEvent.click(screen.getByTestId('avatar-icon-pose-pose-2'))
     apply()
 
-    const result = saved(onSave)
-    expect(result?.kind).toBe('ghost')
+    expect(saved(onSave)).toMatchObject({ kind: 'icon', pose: 'pose-2' })
   })
 })
