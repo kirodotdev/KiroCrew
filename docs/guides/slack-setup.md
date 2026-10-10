@@ -43,7 +43,12 @@ This prints a one-click URL that opens Slack's "Create New App" page with all sc
 ```
 🔗 Click to create your Slack app:
 https://api.slack.com/apps?new_app=1&manifest_yaml=...
+
+   Slash command: /kirocrew-<alias> — the gateway answers it once slack.command matches:
+   kirocrew config set slack.command kirocrew-<alias>
 ```
+
+The app's slash command is `/kirocrew-<alias>` (lowercase, cut to Slack's 32-character limit), so people with different aliases in one Enterprise Grid org register different commands. Two aliases that differ only in case, or only after their first 22 characters, still collide; pass `--alias` to pick another. Run the printed `kirocrew config set slack.command` line so the gateway answers it; `kirocrew setup --slack` keeps offering `kirocrew` (or your configured command) as its default.
 
 ### Step 2. Create the App from the Link
 
@@ -442,7 +447,7 @@ message being forwarded to the linked session.
 
 ### Slash Commands
 
-The slash command name is configurable via `slack.command` in config (default: `kirocrew`).
+The slash command name is configurable via `slack.command` in config (default: `kirocrew`). It must match the command in your Slack app: `kirocrew manifest` registers `/kirocrew-<alias>` and prints the matching `kirocrew config set slack.command` line.
 
 | Command | Purpose |
 |---------|---------|

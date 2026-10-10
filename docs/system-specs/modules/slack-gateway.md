@@ -350,6 +350,8 @@ separately configured Slack MCP/search integration's `xoxp-...` token. The
 gateway constructs every Slack client with `SLACK_BOT_TOKEN`; it does not read
 or store the user token.
 
+The manifest's one slash command is `/{{COMMAND}}`, rendered by `slack_manifest.slash_command(alias)` as `kirocrew-<alias>` (lowercase, cut to Slack's 32-character limit), because Slack resolves command names across a whole Enterprise Grid org and two installs registering the same `/kirocrew` collide. The dashboard's default alias `kirocrew` keeps `/kirocrew`. The gateway answers only `/{slack.command}`, so `kirocrew manifest` prints the matching `kirocrew config set slack.command kirocrew-<alias>` line; the setup wizard's default stays `kirocrew` (or the configured command), because it cannot know which alias the app was created with.
+
 ### `run_gateway(cfg: KiroCrewConfig, *, no_dashboard=False, no_crons=False, no_tunnel=False, no_open=False, port_override=None, json_ready=False, approval_mode=None, test_mode=False) -> None`
 
 The keyword arguments mirror the `gateway` flags; [cli](cli.md) owns the flag table.

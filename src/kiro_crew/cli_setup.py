@@ -87,16 +87,24 @@ def _manifest(alias: str | None = None, output: str | None = None, url: bool = F
     except FileNotFoundError:
         print("❌ Cannot find slack-manifest.yaml", file=sys.stderr)
         sys.exit(1)
+    command = slack_manifest.slash_command(alias)
+    hint = (
+        f"   Slash command: /{command} — the gateway answers it once slack.command matches:\n"
+        f"   kirocrew config set slack.command {command}\n"
+    )
     if url:
         print("\n🔗 Click to create your Slack app:\n")
         print(f"{slack_manifest.deep_link(alias)}\n")
+        print(hint)
     elif output:
         out = Path(output)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(rendered, encoding="utf-8")
         print(f"✅ Manifest written to {output} (name: KiroCrew-{alias})")
+        print(hint)
     else:
         print(rendered)
+        print(hint, file=sys.stderr)
 
 
 def _fix_shell_profiles() -> None:
@@ -1061,7 +1069,10 @@ def _setup_slash_command() -> None:
     # way the validated loader degrades a mistyped field.
     current = coerce_config_field(slack_section or {}, "command", str, "kirocrew")
     # EOF keeps the current value (same reasoning as the workspace step).
-    raw = _input_or_skip(f"  Slash command name [{current}]: ") or ""
+    prompt = (
+        f"  Slash command name (must match your Slack app, e.g. kirocrew-<alias>) [{current}]: "
+    )
+    raw = _input_or_skip(prompt) or ""
     if raw:
         raw = raw.lstrip("/").strip()
     if not raw:
