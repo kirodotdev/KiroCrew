@@ -58,6 +58,7 @@ from kiro_crew import (
     agent_scratch,
     autonudge_selfarm,
     beacon,
+    conductor_patrol,
     dep_sync,
     name_grant,
     platform_compat,
@@ -7701,14 +7702,36 @@ class GatewayOrchestrator:
         (``autonudge_selfarm``, unreachable by agent file tools) must name this
         loop on this slot. A forged boolean in the store has no trust entry and
         refuses. The record read is file IO, so it is offloaded.
+
+        The gateway's own default conductor patrol is the one other loop such a
+        slot admits, under a triple rule: ``default_patrol is True`` on the
+        loaded record AND the record still carries the patrol's CONTENT -- the
+        fixed ``PATROL_MESSAGE`` and this slot's own ``work-ledger`` watch
+        (``conductor_patrol.is_patrol_loop``, the stored-row twin of the
+        arm-time ``is_gateway_patrol``) -- AND the authorizer's gateway-patrol
+        trust entry naming this loop on this slot (``is_recorded_gateway_patrol``).
+        The content check is what the trust entry cannot do: it names an id and
+        a slot, while the text lives in the agent-writable store, so a
+        ``message`` rewritten under the patrol's own id would otherwise be
+        delivered into a crew/member thread on the patrol's admission. The two
+        entry kinds never vouch for each other, so a patrol bit forged beside a
+        self-arm entry, or the reverse, refuses.
         """
         if str(getattr(slot, "mode", "")) not in {"crew", "member"}:
             return True
-        if getattr(loop, "self_armed", False) is not True:
-            return False
-        return bool(
-            await asyncio.to_thread(autonudge_selfarm.is_recorded_self_arm, loop.id, loop.slot_key)
-        )
+        if getattr(loop, "self_armed", False) is True:
+            return bool(
+                await asyncio.to_thread(
+                    autonudge_selfarm.is_recorded_self_arm, loop.id, loop.slot_key
+                )
+            )
+        if conductor_patrol.is_patrol_loop(loop):
+            return bool(
+                await asyncio.to_thread(
+                    autonudge_selfarm.is_recorded_gateway_patrol, loop.id, loop.slot_key
+                )
+            )
+        return False
 
     @staticmethod
     async def _audit_fire_refused(loop: NudgeLoop, slot: Any) -> None:
@@ -7732,6 +7755,11 @@ class GatewayOrchestrator:
                     metadata={
                         "loop_id": loop.id,
                         "self_armed_bit": getattr(loop, "self_armed", False) is True,
+                        "default_patrol_bit": getattr(loop, "default_patrol", False) is True,
+                        # Bit set but content not the patrol's: the row was
+                        # rewritten in the store (the case the content pin
+                        # refuses). Bit set and content intact: no trust entry.
+                        "default_patrol_content": conductor_patrol.is_patrol_loop(loop),
                     },
                 )
             )

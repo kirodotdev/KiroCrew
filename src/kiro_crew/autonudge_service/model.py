@@ -624,12 +624,17 @@ class NudgeLoop:
     # decodes to 0, and a first fire simply captures 0.
     config_generation: int = 0
     # The gateway's default conductor patrol (``conductor_patrol.ensure_patrol``,
-    # armed when a conductor binds a worker and holds no loop). The one thing it
-    # changes: a create-only arm of a loop that is NOT a default patrol -- the
+    # armed when a conductor binds a worker and holds no loop). Two things it
+    # changes. A create-only arm of a loop that is NOT a default patrol -- the
     # conductor's own ``monitor_start`` -- displaces an ACTIVE default patrol
     # instead of answering 409, so the agent's explicit arm always wins over the
-    # gateway's fallback. Persisted so the rule survives a restart. Only an
-    # explicit boolean True counts; anything else decodes to False.
+    # gateway's fallback. And on a crew/member slot it is the fire-time twin of
+    # ``self_armed``: the wake is admitted only when this bit is True AND the
+    # keystone-gated gateway-patrol trust entry names the loop
+    # (``autonudge_selfarm.is_recorded_gateway_patrol``), so a bit forged into
+    # this agent-writable store has no entry and refuses. Persisted so both rules
+    # survive a restart. Only an explicit boolean True counts; anything else
+    # decodes to False.
     default_patrol: bool = False
 
 

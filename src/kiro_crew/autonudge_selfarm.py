@@ -22,17 +22,30 @@ a crew/member wake only when BOTH hold: ``loop.self_armed is True`` on the
 record it loaded AND ``is_recorded_self_arm(loop.id, loop.slot_key)`` here. A
 forged bit with no trust entry refuses; a stale trust entry with no bit refuses.
 
-One flat JSON object ``{loop_id: {"slot_key": ..., "armed_ts": ...}}``. An entry
-is written by exactly one path (the authorizer admitting a self-arm) and REVOKED
-by exactly one path: its loop leaving the store (``AutoNudgeService.remove_sync``
-calls :func:`forget_self_arm` on remove and on replacement), so a removed loop's
-id cannot keep its authorization and the file cannot grow past the loops that
-were armed and not yet removed. A write never prunes against a caller-supplied
-view of the store -- see :func:`record_self_arm` for the race that would open.
-Every read-modify-write runs under an exclusive file lock so two concurrent
-self-arms cannot drop each other's entries. Every reader is TOTAL: a
-missing, unreadable or malformed file reads as "not recorded", which is the
-refusing answer.
+The same file carries a SECOND entry kind, written for the one loop the gateway
+itself arms on a crew/member slot: the default conductor patrol
+(``conductor_patrol.ensure_patrol``, admitted by the authorizer only with its
+fixed ``PATROL_MESSAGE`` and ``work-ledger`` watch). Its fire-time guard is the
+twin of the self-arm one -- ``loop.default_patrol is True`` on the loaded record
+AND :func:`is_recorded_gateway_patrol` here -- so a ``default_patrol`` bit forged
+into the store has no entry and refuses. The two kinds never vouch for each
+other: :func:`is_recorded_self_arm` reads ``False`` for a patrol entry, which is
+what keeps the wake-reset gate closed to the patrol (a bind-time default is not
+the slot's own arm), and :func:`is_recorded_gateway_patrol` reads ``False`` for a
+self-arm entry.
+
+One flat JSON object ``{loop_id: {"slot_key": ..., "armed_ts": ..., "kind": ...}}``
+(an entry with no ``kind`` is a self-arm written before the field existed). An
+entry is written by exactly one path (the authorizer admitting a self-arm or the
+gateway patrol) and REVOKED by exactly one path: its loop leaving the store
+(``AutoNudgeService.remove_sync`` calls :func:`forget_self_arm` on remove and on
+replacement), so a removed loop's id cannot keep its authorization and the file
+cannot grow past the loops that were armed and not yet removed. A write never
+prunes against a caller-supplied view of the store -- see :func:`record_self_arm`
+for the race that would open. Every read-modify-write runs under an exclusive
+file lock so two concurrent self-arms cannot drop each other's entries. Every
+reader is TOTAL: a missing, unreadable or malformed file reads as "not recorded",
+which is the refusing answer.
 
 Blocking file IO throughout -- async callers offload via ``asyncio.to_thread``.
 """
@@ -58,6 +71,11 @@ WAKE_RESET_AGENTS: frozenset[str] = frozenset({"kirocrew-conductor", "kirocrew-l
 
 SELF_ARM_RECORD_NAME = "autonudge-self-armed.json"
 _LOCK_NAME = SELF_ARM_RECORD_NAME + ".lock"
+
+#: The two entry kinds. An entry with no ``kind`` predates the field and is a
+#: self-arm; every entry written since names its kind explicitly.
+SELF_ARM_KIND = "self"
+GATEWAY_PATROL_KIND = "gateway_patrol"
 
 
 @contextlib.contextmanager
@@ -119,6 +137,18 @@ def _write_record(entries: dict[str, dict[str, Any]]) -> None:
     )
 
 
+def _record_entry(loop_id: str, slot_key: str, kind: str) -> None:
+    """Upsert one ``kind``-tagged entry; the two public writers differ only in the tag."""
+    with _record_lock():
+        entries = _read_record()
+        entries[str(loop_id)] = {
+            "slot_key": str(slot_key),
+            "armed_ts": time.time(),
+            "kind": kind,
+        }
+        _write_record(entries)
+
+
 def record_self_arm(loop_id: str, slot_key: str) -> None:
     """Record that *loop_id* on *slot_key* was armed by that session's own turn.
 
@@ -137,14 +167,23 @@ def record_self_arm(loop_id: str, slot_key: str) -> None:
     self-armed loop that cannot be recorded would never be allowed to fire, so
     it must not be reported as armed.
     """
-    with _record_lock():
-        entries = _read_record()
-        entries[str(loop_id)] = {"slot_key": str(slot_key), "armed_ts": time.time()}
-        _write_record(entries)
+    _record_entry(loop_id, slot_key, SELF_ARM_KIND)
+
+
+def record_gateway_patrol(loop_id: str, slot_key: str) -> None:
+    """Record that *loop_id* on *slot_key* is the gateway's own default patrol.
+
+    Written by the authorizer alone, when it admits ``conductor_patrol``'s arm on
+    a crew/member slot. Same upsert, lock, revocation and fail-closed contract
+    as :func:`record_self_arm`; only the ``kind`` differs, and that difference is
+    what keeps a patrol entry from vouching a self-arm (the wake-reset gate) and
+    a self-arm entry from vouching a patrol.
+    """
+    _record_entry(loop_id, slot_key, GATEWAY_PATROL_KIND)
 
 
 def forget_self_arm(loop_id: str) -> None:
-    """Drop *loop_id* from the record. Best-effort; never raises."""
+    """Drop *loop_id* from the record, whichever kind it is. Best-effort; never raises."""
     try:
         with _record_lock():
             entries = _read_record()
@@ -155,12 +194,32 @@ def forget_self_arm(loop_id: str) -> None:
         logger.warning("could not revoke self-arm record for %s", loop_id, exc_info=True)
 
 
+def _recorded_kind(loop_id: str, slot_key: str) -> str | None:
+    """The kind of the entry vouching *loop_id* on *slot_key*, or ``None``.
+
+    Total: any failure to read is ``None`` (refuse). Both the id AND the slot
+    must match, so a forged loop that reuses a recorded id on a different slot
+    does not inherit the authorization. An entry with no ``kind`` is a
+    self-arm written before the field existed.
+    """
+    entry = _read_record().get(str(loop_id))
+    if entry is None or entry.get("slot_key") != str(slot_key):
+        return None
+    kind = entry.get("kind", SELF_ARM_KIND)
+    return kind if isinstance(kind, str) else None
+
+
 def is_recorded_self_arm(loop_id: str, slot_key: str) -> bool:
     """Whether the trust record vouches that *loop_id* self-armed on *slot_key*.
 
-    Total: any failure to read is ``False`` (refuse). Both the id AND the slot
-    must match, so a forged loop that reuses a recorded id on a different slot
-    does not inherit the authorization.
+    A gateway-patrol entry answers ``False`` here: the default patrol is not the
+    slot's own arm, so it must not unlock what a self-arm unlocks (the conductor
+    wake-reset gate reads this predicate).
     """
-    entry = _read_record().get(str(loop_id))
-    return entry is not None and entry.get("slot_key") == str(slot_key)
+    return _recorded_kind(loop_id, slot_key) == SELF_ARM_KIND
+
+
+def is_recorded_gateway_patrol(loop_id: str, slot_key: str) -> bool:
+    """Whether the trust record vouches that *loop_id* on *slot_key* is the
+    gateway-armed default patrol. A self-arm entry answers ``False``."""
+    return _recorded_kind(loop_id, slot_key) == GATEWAY_PATROL_KIND

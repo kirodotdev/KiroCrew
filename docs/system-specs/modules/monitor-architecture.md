@@ -132,15 +132,41 @@ A conductor does not have to remember that arm. When `work_ledger_record`
 "work-ledger"`, gated, every 600 seconds, 300 cycles and 86400 seconds, which
 pass the goal-conductor skill's `patrol_budget.py check`. It goes through the
 same chokepoint as an agent's own `monitor_start`
-(`autonudge_authz.authorize_and_add_nudge`), create-only, as an OUTSIDE arm with
-no `initiator_slot_key`: the bind route knows the calling session but not the
+(`autonudge_authz.authorize_and_add_nudge`), create-only, with no
+`initiator_slot_key`: the bind route knows the calling session but not the
 turn, so it cannot tell the session's own turn from a cron injection or a
-sub-agent sharing the slot. A crew/member conductor therefore refuses it. Any
+sub-agent sharing the slot, and it never claims a self-arm. A crew/member
+conductor admits the arm anyway, as the one loop on such a slot that is the
+gateway's rather than a caller's: the authorizer admits `default_patrol` only
+together with the fixed `PATROL_MESSAGE` text and the `work-ledger` watch
+(`is_gateway_patrol`, pinned on content rather than on who called), audits it
+under its own `gateway_patrol` outcome, and writes the gateway-patrol trust
+entry the fire-time guard then requires beside the `default_patrol` bit AND
+the patrol's content on the stored row itself (`conductor_patrol.is_patrol_loop`:
+the fixed text, this slot's own `work-ledger` watch, and the shape it was armed
+in: gated, no banner, no `wake_instructions` on the monitor; the stored-row twin
+of `is_gateway_patrol`), because the loop store is agent-writable and the entry
+names only an id and a slot -- a `message`, a banner or a structured action line
+rewritten under the patrol's own id is refused at fire time like any other
+outside text (the
+twin of the self-arm bit-plus-record rule; the two entry kinds never vouch for
+each other, so the patrol's wake still cannot `reset_conversation`). On such a
+slot the patrol's `message`, `watch` and `banner` are therefore fixed through
+`monitor_update` too: `authorize_and_update_nudge` refuses the edit (409) and
+names the bounds as what stays tunable and the conductor's own
+`monitor_start` as the arm that replaces the patrol, instead of committing a
+row the guard would refuse at every fire. Without
+that admission every member-mode conductor's bind would meet a 409 and the
+safety net would be inert for the conductor shape that is the norm (a member's
+own thread). `default_patrol=`
+is passed by `conductor_patrol` alone, pinned by a tree-scanning test like
+`initiator_slot_key`. Any
 existing record -- active, approval-held, or stopped by a person -- is left
 alone, so a bind never stacks a second loop or revives a person's stop. The one
 re-arm is the gateway's own default patrol stopped by the system (its budget or
 cap ran out, the `_stopped_row_is_replaceable` allowlist): a new bind is new work,
-so it is replaced by a fresh default. A refusal is logged at WARNING and the bind
+so it is replaced by a fresh default. A refusal (an incognito or temporary slot,
+an unwritable audit) is logged at WARNING and the bind
 still succeeds; the bind reply carries `patrol: armed | existing | refused |
 unsupported`, plus a `patrol_note` telling the conductor to arm its own
 `monitor_start` in the same turn whenever no `work-ledger` watch is active after

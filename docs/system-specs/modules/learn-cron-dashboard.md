@@ -4923,6 +4923,70 @@ consumer passes the SESSION'S binding (also on the structured-update path,
 never the loop's own key echoed back), and only on the two admitted producers. Incognito and temporary
 slots cannot host any persisted automation loop; admission rechecks both the
 slot identity and these mode boundaries immediately before arming.
+**The gateway's default conductor patrol is the one admitted arm that is NOT a
+self-arm.** `conductor_patrol.ensure_patrol` arms it from the `work_ledger_record
+action=bind` route, which knows the calling session but not the turn, so it
+passes no `initiator_slot_key` and never claims self-arm provenance. The refusal
+above exists so no OUTSIDER'S instruction reaches a member's thread through a
+loop, and the patrol carries none: the authorizer admits `default_patrol` on a
+crew/member slot only together with the fixed `PATROL_MESSAGE` text, byte for
+byte, and the `work-ledger` watch (`is_gateway_patrol` -- pinned on CONTENT,
+not on who called, so a caller that sets the flag with any other text, or a
+structured monitor, is refused as an outside arm), audits it under its own
+`gateway_patrol` outcome, holds the slot's mode unchanged between authorization
+and commit as a self-arm does, and writes a gateway-patrol trust entry (the same
+`autonudge-self-armed.json` file, entry `kind: gateway_patrol`) BEFORE `svc.add`
+under a reserved id, failing closed (503 "gateway patrol record unavailable")
+exactly as the self-arm write does. The fire-time guard then applies a triple
+rule: `default_patrol is True` on the loaded record, AND the record still
+carries the patrol's CONTENT -- `conductor_patrol.is_patrol_loop`: the fixed
+`PATROL_MESSAGE` text (compared stripped, as at arm time), a monitor that is
+this slot's own `work-ledger` watch (`kind` the watch name, `target` the slot
+key), and the shape `ensure_patrol` arms it in: `gate` True (ungated, a
+persisted claim is dispatched as a structured envelope), the monitor's
+`wake_instructions` empty (that envelope's action line) and `banner` empty (an
+interrupted wake restores the banner as the instruction) -- AND
+`is_recorded_gateway_patrol(loop.id, loop.slot_key)`. The content
+check comes first and is what the entry cannot do: the entry names an id and a
+slot, while `message` lives in the agent-writable `autonudge.json`, so a row
+whose text was rewritten under the patrol's own id, slot and flag is refused
+before the record is read, and the `monitor_fire` / `denied` audit carries
+`default_patrol_content: false` beside `default_patrol_bit: true` (a forged bit
+with intact content reads `true`/`true`: no entry). A `default_patrol` bit
+forged into the store has no entry and refuses. The two entry
+kinds never vouch for each other -- `is_recorded_self_arm` reads `False` for a
+patrol entry and `is_recorded_gateway_patrol` reads `False` for a self-arm
+entry -- which is what keeps `_refuse_unvouched_wake_reset` closed to the
+patrol's wake (a bind-time default is not the slot's own arm) and keeps a
+forged bit of either kind from borrowing the other's record. The `self_armed`
+bit stays False on the patrol row. Revocation is shared: `remove_sync` drops
+the entry whatever its kind. Because the fire-time guard pins the stored
+content, the update chokepoint (`authorize_and_update_nudge`, handed the state
+by both live callers: the session-directive consumer and the goal popover's
+PATCH route) refuses a `message` or `watch` edit, or a non-empty `banner`, on a
+`default_patrol` row whose slot is in crew/member mode -- 409, text
+`patrol_content_fixed_refusal`, naming `idle_secs`, `max_cycles` and
+`max_runtime_secs` as the fields that stay tunable and
+`monitor_start` as the arm that replaces the patrol -- rather than committing
+a row the guard would refuse at every fire. Re-submitting the pinned values,
+or clearing the banner, is a no-op; an ordinary slot has no fire-time pin and
+keeps the edit; a caller passing no state skips this rule alone. The pin reads the CURRENT
+constant, so an edit to `PATROL_MESSAGE` changes what every crew/member patrol
+already stored must say: a row armed under the old text is refused at its next
+fire (`monitor_fire` / `denied`, `default_patrol_content: false`) and at every
+fire after it. Its budget does not rescue it while the ledger holds open items
+(`_extend_for_open_ledger` raises a spent bound up to the seven-day runaway
+ceiling), so re-arming is a deliberate act: the conductor's own `monitor_start`
+replaces it at once, or `autonudge_stop` (or a person's stop in the goal
+popover) ends it and the conductor's next bind arms a fresh default under the
+new text. There is no in-place migration of stored rows;
+`test_conductor_patrol.py` pins the text's sha256 so the edit is made knowing
+this, and a change that edits the text says what it does for patrols already
+armed. `default_patrol=` has the same ratchet
+`initiator_slot_key=` has: a test scans `src/kiro_crew` and fails when any
+module other than `conductor_patrol.py` supplies it. Without this admission
+every member-mode conductor's bind would meet the 409 and the patrol would
+never arm on the conductor shape that is the norm (member DM threads).
 
 **Refusal visibility.** The MCP tool answers "requested" over its own pipe
 before the directive consumer runs, and gateway-off the consumer's outcome can
