@@ -1,10 +1,11 @@
 """The agents-directory revision and the memo pinned to it, shared by the two
 ``spec_by_declared_name`` callers.
 
-:func:`kiro_crew.agent_discovery.agents_dir_revision` is a stat-only fingerprint
-strong enough to pin a read answer to: it answers ``None`` whenever entry
-metadata could miss a rewrite (a symlinked spec, a fresh edit inside the racy
-window, a directory past the entry cap, a platform whose ``ctime`` is creation
+:func:`kiro_crew.agent_discovery.agents_dir_revision` is a fingerprint strong
+enough to pin a read answer to: entry metadata, plus a digest of the bytes of
+any entry too young for its metadata to be trusted. It answers ``None`` whenever
+freshness cannot be proven (a symlinked spec, a young entry it cannot hash, a
+bulk write past the digest budget, a platform whose ``ctime`` is creation
 time). :class:`kiro_crew.agent_discovery.AgentsDirMemo` holds the store and hit
 rules once, so the tool-policy read and the KAS projection cannot drift apart.
 
@@ -85,30 +86,87 @@ def test_the_revision_sees_content_and_permission_changes(tmp_path: Path) -> Non
         after_mode = agent_discovery.agents_dir_revision(tmp_path)
         assert after_mode is not None
         assert after_mode != after_content
-        assert after_mode[1][0][6] != after_content[1][0][6]
+        assert after_mode[0][0][6] != after_content[0][0][6]
 
 
-def test_a_fresh_spec_is_not_memoized_until_the_racy_window_expires(
+_NO_INODE_ON_WINDOWS = pytest.mark.skipif(
+    os.name == "nt",
+    reason="the revision is off on Windows, and DirEntry.stat carries no inode there",
+)
+
+
+def _everything_young(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Widen the racy window past every timestamp, so every entry is young."""
+    monkeypatch.setattr(agent_discovery, "_AGENTS_DIR_RACY_WINDOW_NS", 10**18)
+
+
+@_NO_INODE_ON_WINDOWS
+def test_a_fresh_spec_is_pinned_on_its_bytes_until_the_window_expires(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(agent_discovery, "_AGENTS_DIR_RACY_WINDOW_NS", 2_000_000_000)
     _write_spec(tmp_path / f"{AGENT}.json", {"managedToolPolicy": {}})
     observed_at = time.time_ns()
 
-    assert agent_discovery.agents_dir_revision(tmp_path) is None
+    fresh = agent_discovery.agents_dir_revision(tmp_path)
+    assert fresh is not None, "one fresh spec must not withdraw the pin"
+    assert len(fresh[0][0][8]) == 32, "a young entry is pinned on a digest of its bytes"
+    assert agent_discovery.agents_dir_revision(tmp_path) == fresh
 
     monkeypatch.setattr(agent_discovery.time, "time_ns", lambda: observed_at + 3_000_000_000)
-    assert agent_discovery.agents_dir_revision(tmp_path) is not None
+    aged = agent_discovery.agents_dir_revision(tmp_path)
+    assert aged is not None
+    assert aged[0][0][8] == b"", "an entry older than the window is pinned on metadata alone"
 
 
-def test_a_directory_past_the_entry_cap_is_not_memoized(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+@_NO_INODE_ON_WINDOWS
+def test_a_same_tick_rewrite_of_a_young_spec_moves_the_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(agent_discovery, "_AGENTS_DIR_REVISION_MAX_ENTRIES", 2)
-    monkeypatch.setattr(agent_discovery, "_AGENTS_DIR_REVISION_OVERFLOW_WARNED", set())
+    """A same-size rewrite inside one timestamp tick leaves every metadata field
+    as it was; the entry's stat is frozen here to stand for that tick. The
+    bytes moved, so the revision must, and the memo must serve the new answer."""
+    _everything_young(monkeypatch)
+    spec = tmp_path / f"{AGENT}.json"
+    _write_spec(spec, {"name": AGENT, "tools": ["aaaa"]})
+    frozen = spec.stat()
+    entry = MagicMock()
+    entry.name = spec.name
+    entry.is_symlink.return_value = False
+    entry.stat.side_effect = lambda **kwargs: frozen
+    intercept = _serve_fake_entries(monkeypatch, tmp_path, [entry])
+    memo: agent_discovery.AgentsDirMemo[list[str]] = agent_discovery.AgentsDirMemo()
+
+    def compute() -> list[str]:
+        return json.loads(spec.read_text(encoding="utf-8"))["tools"]
+
+    intercept["active"] = True
+    try:
+        before = agent_discovery.agents_dir_revision(tmp_path)
+        assert memo.get(tmp_path, AGENT, compute) == ["aaaa"]
+        _write_spec(spec, {"name": AGENT, "tools": ["bbbb"]})
+        after = agent_discovery.agents_dir_revision(tmp_path)
+        served = memo.get(tmp_path, AGENT, compute)
+    finally:
+        intercept["active"] = False
+
+    assert before is not None and after is not None
+    assert before != after
+    assert served == ["bbbb"], "the memo served the bytes the rewrite replaced"
+
+
+@_NO_INODE_ON_WINDOWS
+def test_a_continuously_written_directory_still_answers_from_the_memo(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every entry young, as in a directory being written all the time: the
+    memo still answers between writes, a write beside the specs leaves it
+    pinned, and an edit or a newly written agent is seen at once."""
+    _everything_young(monkeypatch)
     _write_spec(tmp_path / f"{AGENT}.json", {"name": AGENT})
-    _write_spec(tmp_path / "other-a.json", {"name": "other-a"})
-    _write_spec(tmp_path / "other-b.json", {"name": "other-b"})
+    other = tmp_path / "other.json"
+    _write_spec(other, {"name": "other"})
     memo: agent_discovery.AgentsDirMemo[int] = agent_discovery.AgentsDirMemo()
     calls = 0
 
@@ -117,17 +175,83 @@ def test_a_directory_past_the_entry_cap_is_not_memoized(
         calls += 1
         return calls
 
-    with caplog.at_level("WARNING", logger=agent_discovery.__name__):
-        assert agent_discovery.agents_dir_revision(tmp_path) is None
-        assert memo.get(tmp_path, AGENT, compute) == 1
-        assert memo.get(tmp_path, AGENT, compute) == 2
-        assert agent_discovery.agents_dir_revision(tmp_path) is None
+    assert memo.get(tmp_path, AGENT, compute) == 1
+    assert memo.get(tmp_path, AGENT, compute) == 1, "a young directory was read uncached"
 
-    warnings = [record for record in caplog.records if "agents-dir memo disabled" in record.message]
-    assert len(warnings) == 1
-    assert "3 spec entries exceed 2" in warnings[0].message
-    # Nothing was stored: a further call computes again.
-    assert memo.get(tmp_path, AGENT, compute) == 3
+    (tmp_path / "notes.txt").write_text("x", encoding="utf-8")
+    assert memo.get(tmp_path, AGENT, compute) == 1, "a stray file withdrew the pin"
+
+    _write_spec(other, {"name": "other", "description": "edited"})
+    assert memo.get(tmp_path, AGENT, compute) == 2
+
+    _write_spec(tmp_path / "newcomer.json", {"name": "newcomer"})
+    assert memo.get(tmp_path, AGENT, compute) == 3, "a newly written agent was hidden"
+
+
+@_NO_INODE_ON_WINDOWS
+def test_a_bulk_write_past_the_digest_budget_is_not_memoized(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _everything_young(monkeypatch)
+    monkeypatch.setattr(agent_discovery, "_AGENTS_DIR_RACY_MAX_DIGESTS", 2)
+    _write_spec(tmp_path / "a.json", {"name": "a"})
+    _write_spec(tmp_path / "b.json", {"name": "b"})
+    assert agent_discovery.agents_dir_revision(tmp_path) is not None
+
+    _write_spec(tmp_path / "c.json", {"name": "c"})
+    assert agent_discovery.agents_dir_revision(tmp_path) is None
+
+    monkeypatch.setattr(agent_discovery, "_AGENTS_DIR_RACY_MAX_DIGESTS", 64)
+    monkeypatch.setattr(agent_discovery, "_AGENTS_DIR_RACY_MAX_DIGEST_BYTES", 20)
+    assert agent_discovery.agents_dir_revision(tmp_path) is None
+
+
+@_NO_INODE_ON_WINDOWS
+def test_a_young_entry_that_cannot_be_hashed_gives_no_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _everything_young(monkeypatch)
+    _write_spec(tmp_path / f"{AGENT}.json", {"name": AGENT})
+    (tmp_path / "odd.json").mkdir()
+
+    assert agent_discovery.agents_dir_revision(tmp_path) is None
+
+
+@_NO_INODE_ON_WINDOWS
+def test_the_revision_sees_a_hard_link_appear(tmp_path: Path) -> None:
+    """The hardened reader refuses a spec with a second link, so the link count
+    is part of what an answer depends on."""
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    spec = agents / f"{AGENT}.json"
+    _write_spec(spec, {"name": AGENT})
+    before = agent_discovery.agents_dir_revision(agents)
+
+    os.link(spec, tmp_path / "elsewhere")
+    after = agent_discovery.agents_dir_revision(agents)
+
+    assert before is not None and after is not None
+    assert (before[0][0][7], after[0][0][7]) == (1, 2)
+
+
+def test_a_directory_of_thousands_of_specs_is_memoized(tmp_path: Path) -> None:
+    """The walk is one ``stat`` per spec and the read it saves is one parse per
+    spec, so a large directory is exactly where the memo pays."""
+    for i in range(4100):
+        _write_spec(tmp_path / f"agent-{i:04d}.json", {"name": f"agent-{i}"})
+    memo: agent_discovery.AgentsDirMemo[int] = agent_discovery.AgentsDirMemo()
+    calls = 0
+
+    def compute() -> int:
+        nonlocal calls
+        calls += 1
+        return calls
+
+    assert agent_discovery.agents_dir_revision(tmp_path) is not None
+    assert memo.get(tmp_path, AGENT, compute) == 1
+    assert memo.get(tmp_path, AGENT, compute) == 1, "a large directory was read uncached"
+    pin = memo._answers[str(tmp_path)][0]
+    assert isinstance(pin, bytes) and len(pin) == 32, "the memo retained the listing itself"
 
 
 def test_the_revision_is_unavailable_when_the_platform_cannot_prove_freshness(
@@ -241,12 +365,12 @@ def test_the_revision_ignores_files_the_spec_scans_ignore(tmp_path: Path) -> Non
     _write_spec(tmp_path / f"{AGENT}.json", {"managedToolPolicy": {}})
     before = agent_discovery.agents_dir_revision(tmp_path)
     (tmp_path / "notes.txt").write_text("x", encoding="utf-8")
-    # The directory's own mtime moved, so the revision does; but the stray
-    # file itself is not an entry of it.
+    # The directory's own mtime moved, but no scan reads the stray file, so
+    # neither the entries nor the revision do.
     after = agent_discovery.agents_dir_revision(tmp_path)
     assert before is not None and after is not None
-    assert [e[0] for e in after[1]] == [f"{AGENT}.json"]
-    assert [e[0] for e in before[1]] == [f"{AGENT}.json"]
+    assert after == before
+    assert [e[0] for e in after[0]] == [f"{AGENT}.json"]
 
 
 def test_the_catalog_signature_stays_on_where_the_revision_refuses(

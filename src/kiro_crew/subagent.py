@@ -745,9 +745,10 @@ def parent_spawn_allowlists(parent_template: str) -> tuple[tuple[str, ...], ...]
 
 
 #: The gate's answers, one set per agents directory, each pinned to the
-#: directory's stat-only :func:`kiro_crew.agent_discovery.agents_dir_revision`
-#: (entry names, mtime AND ctime, size, inode, mode, the in-process spec
-#: generation, and nothing younger than the racy window). The catalog snapshot
+#: directory's :func:`kiro_crew.agent_discovery.agents_dir_revision`
+#: (entry names, mtime AND ctime, size, inode, mode, link count, the in-process
+#: spec generation, and a digest of the bytes of anything younger than the racy
+#: window). The catalog snapshot
 #: (``parsed_agent_specs``) revalidates on names and mtime alone, so a rewrite
 #: that keeps the mtime -- ``cp -p``, ``rsync -t``, a restore -- would serve a
 #: PERMISSIVE allowlist for ever after the operator tightened it; a security

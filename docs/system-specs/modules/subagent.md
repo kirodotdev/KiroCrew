@@ -1195,8 +1195,9 @@ declaration itself (`subagent._vet_parent_available_agents`, called from
   specs declaring the name are both applied, tightest-wins). Read with one
   fresh walk through the hardened reader (`_scan_parent_spawn_allowlists`),
   memoized per directory in an `AgentsDirMemo` pinned to
-  `agents_dir_revision` (names, mtime AND ctime, size, inode, mode, the
-  in-process spec generation, nothing younger than the racy window) — a
+  `agents_dir_revision` (names, mtime AND ctime, size, inode, mode, link
+  count, the in-process spec generation, and a SHA-256 of the bytes of any
+  entry younger than the racy window) — a
   blocking read, so it never runs on the gateway loop: the
   event-loop entry points resolve `subagent.parent_spawn_policy` (parent
   template + declaration) through `asyncio.to_thread` and hand it to
