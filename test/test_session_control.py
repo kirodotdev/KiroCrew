@@ -1913,6 +1913,10 @@ class _SettlingManager:
 
     ``during`` runs inside the settle's suspension: the window in which the real
     manager waits on the child's teardown gate and writes its tombstones on a thread.
+
+    A stop pushes a slots update, and a push whose coalescing window is open
+    serializes every slot, which reads the manager's running and queued sub-agents.
+    This double answers those reads with "none", as an idle manager does.
     """
 
     def __init__(self, during=None) -> None:
@@ -1925,7 +1929,28 @@ class _SettlingManager:
         if self._during is not None:
             self._during()
 
+    def running_agents_for(self, parent_key: str) -> list[dict]:
+        return []
 
+    def published_queued_depths(self) -> dict[str, int]:
+        return {}
+
+
+@pytest.fixture
+def _slots_window_always_open(monkeypatch):
+    """Make every ``push_slots_update`` broadcast at once instead of coalescing.
+
+    The coalescing window is measured on ``_slots_broadcast_clock``. A clock that
+    jumps a minute on every read puts each push past the window, so a push always
+    serializes the slot list rather than depending on how long the test took.
+    """
+    import itertools
+
+    ticks = itertools.count(1000.0, 60.0)
+    monkeypatch.setattr("kiro_crew.dashboard.state._slots_broadcast_clock", lambda: next(ticks))
+
+
+@pytest.mark.usefixtures("_slots_window_always_open")
 def test_a_send_that_lands_while_a_hard_stop_settles_stays_queued(tmp_path, monkeypatch):
     """The hard kill discards what was queued when it was pressed and settles the
     sub-agent deliveries those entries owed. That settle can suspend, and a send
@@ -1962,6 +1987,7 @@ def test_a_send_that_lands_while_a_hard_stop_settles_stays_queued(tmp_path, monk
     ], f"the send acknowledged during the hard stop was discarded: queue = {queued}"
 
 
+@pytest.mark.usefixtures("_slots_window_always_open")
 def test_a_hard_stop_still_discards_and_settles_what_was_queued_before_it(tmp_path, monkeypatch):
     """Control: the first press keeps the queue, and the hard kill clears what was
     queued before it and settles the sub-agent delivery the cleared entry owed."""
