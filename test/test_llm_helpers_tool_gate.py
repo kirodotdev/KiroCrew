@@ -944,7 +944,7 @@ async def test_read_only_policy_approves_a_host_known_read_tool(tool, kind):
     host-stamped identity, no MCP server, provenance verified. The kind may
     agree or be absent — it is not what proves the call. `read` is the name
     kiro-cli stamps for the same built-in; it reaches the allowlist through
-    `_HOST_READ_ONLY_BUILTIN_ALIASES`."""
+    `_HOST_BUILTIN_TOOL_ALIASES`."""
     provider = await _run_read_only(
         _read_only_event(tool_kind=kind, tool_name=tool, mcp_identity_trusted=True)
     )
@@ -953,23 +953,37 @@ async def test_read_only_policy_approves_a_host_known_read_tool(tool, kind):
 
 
 @pytest.mark.asyncio
-async def test_read_only_policy_denies_an_aliased_read_the_rule_names_canonically():
-    """The deny tiers run before the proof. `auto_deny_tools=["fs_read"]`
-    against kiro-cli's `read` stamp: the alias the proof resolves is also a
-    deny target, so the rule wins and READ_ONLY rejects instead of approving
-    the call the operator refused."""
+@pytest.mark.parametrize(
+    ("stamp", "rule", "kind", "policy"),
+    [
+        ("read", "fs_read", "read", ToolApprovalPolicy.READ_ONLY),
+        ("write", "fs_write", "edit", ToolApprovalPolicy.HOOK_BASED),
+        ("shell", "execute_bash", "execute", ToolApprovalPolicy.HOOK_BASED),
+    ],
+    ids=["read+READ_ONLY", "write+HOOK_BASED", "shell+HOOK_BASED"],
+)
+async def test_an_aliased_stamp_is_denied_by_the_rule_that_names_it_canonically(
+    stamp, rule, kind, policy
+):
+    """`auto_deny_tools` is written in the spec spelling and kiro-cli stamps the
+    short name. The deny tiers run before any approval, so the rule's security
+    deny is what the caller sees -- not READ_ONLY's proof approving `read`, and
+    not the default approval HOOK_BASED gives `write` or `shell` on a caller with
+    no approver."""
     from kiro_crew.hooks import HookManager, HooksConfig
 
-    provider = _ScriptedProvider(
-        _permission_script(_read_only_event(tool_name="read", mcp_identity_trusted=True))
-    )
+    event = _read_only_event(tool_name=stamp, tool_kind=kind, mcp_identity_trusted=True)
+    provider = _ScriptedProvider(_permission_script(event))
+    seen: list[tuple[str, bool, bool]] = []
     await stream_and_collect(
         provider,  # type: ignore[arg-type]
         "q",
-        approval_policy=ToolApprovalPolicy.READ_ONLY,
-        hooks=HookManager(HooksConfig(auto_deny_tools=["fs_read"])),
+        approval_policy=policy,
+        hooks=HookManager(HooksConfig(auto_deny_tools=[rule])),
         retry_transient=False,
+        on_tool_gate=lambda t, a, b: seen.append((t, a, b)),
     )
+    assert seen == [(event.title, False, True)]
     assert provider.rejected == ["r1"]
     assert provider.approved == []
 

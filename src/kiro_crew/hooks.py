@@ -165,6 +165,7 @@ from kiro_crew.hook_runtime.tool_identity import (  # noqa: F401
     _builtin_app_for_agent,
     _context_matches,
     _has_global_inline_flags,
+    _host_builtin_alias,
     _is_declared_builtin_mcp_server,
     _is_first_party_app,
     _is_host_read_only_builtin,
@@ -1123,19 +1124,18 @@ _HOST_READ_ONLY_BUILTIN_TOOLS: frozenset[str] = frozenset(
     {"fs_read", "glob", "grep", "web_fetch", "web_search"}
 )
 
-# kiro-cli's own spellings of the names above. It stamps its file-read built-in
-# ``read``; ``fs_read`` is the alias a spec may still use, and the spelling the
-# allowlist and ``BUILTIN_TOOL_SCOPES`` carry. ``_is_host_read_only_builtin``
-# resolves the stamped name through this table before the membership test, so
-# a value here must be an allowlist name (never a new proof of its own). Only
-# the read-only aliases are spelled here, because the table that owns the
-# mapping (``acp.kas_permissions.KIRO_TOOL_ALIASES``) lives under ``acp`` and
-# the agent-SDK boundary keeps application code off that layer;
-# ``test_host_read_only_aliases_agree_with_kiro_tool_aliases``
-# (``test/test_hooks.py``) joins the two, so a ``write`` or ``shell`` alias
-# cannot join by mistake and a renamed one breaks there rather than silently
-# refusing every file read on a surface with no approver.
-_HOST_READ_ONLY_BUILTIN_ALIASES: Mapping[str, str] = {"read": "fs_read"}
+# kiro-cli stamps three built-ins under a short ``_meta.kiro.toolName`` where a
+# rule, ``BUILTIN_TOOL_SCOPES`` and the allowlist above carry the spec spelling.
+# ``_host_builtin_alias`` resolves a stamp through this table for the deny rules,
+# governance and the read-only proof alike, so a value is only ever a name those
+# already judge. A copy of ``acp.kas_permissions.KIRO_TOOL_ALIASES``, which the
+# agent-SDK boundary keeps application code from importing;
+# ``test_host_builtin_aliases_are_kiro_tool_aliases`` pins the two equal.
+_HOST_BUILTIN_TOOL_ALIASES: Mapping[str, str] = {
+    "shell": "execute_bash",
+    "read": "fs_read",
+    "write": "fs_write",
+}
 
 
 # Semantic kinds known to mutate/execute. DOCUMENTATION ONLY — the gate does not

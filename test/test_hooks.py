@@ -1879,40 +1879,48 @@ class TestClassifierOnlyHostTrustedProof:
     def test_kiro_cli_short_read_name_is_proven_read_only(self):
         # kiro-cli stamps its file-read built-in as ``read``; ``fs_read`` is the
         # alias a spec may still use. The allowlist carries the spec spelling, so
-        # the stamped name must resolve through _HOST_READ_ONLY_BUILTIN_ALIASES
+        # the stamped name must resolve through _HOST_BUILTIN_TOOL_ALIASES
         # before the membership test, or a READ_ONLY surface refuses every file
         # read.
-        from kiro_crew.hooks import _HOST_READ_ONLY_BUILTIN_ALIASES, _is_host_read_only_builtin
+        from kiro_crew.hooks import _HOST_BUILTIN_TOOL_ALIASES, _is_host_read_only_builtin
 
-        assert _HOST_READ_ONLY_BUILTIN_ALIASES["read"] == "fs_read"
+        assert _HOST_BUILTIN_TOOL_ALIASES["read"] == "fs_read"
         assert _is_host_read_only_builtin("read", "", mcp_identity_trusted=True) is True
 
-    def test_host_read_only_aliases_agree_with_kiro_tool_aliases(self):
-        # The alias table is spelled on the hooks side because the agent-SDK
-        # boundary keeps application code off ``acp``, where the owning table
-        # lives. A test may read both, so this is the join: every alias of an
-        # allowlisted name is here with the same target, and no alias of a
-        # writing one (``write``, ``shell``) leaked in.
+    def test_host_builtin_aliases_are_kiro_tool_aliases(self):
+        # The hooks side keeps a copy because the agent-SDK boundary keeps
+        # application code off ``acp``, where the owning table lives. A test may
+        # read both: the copy is the owner's table, entry for entry, and every
+        # spelling it resolves to is a governed built-in.
         from kiro_crew.acp.kas_permissions import KIRO_TOOL_ALIASES
-        from kiro_crew.hooks import _HOST_READ_ONLY_BUILTIN_ALIASES, _HOST_READ_ONLY_BUILTIN_TOOLS
+        from kiro_crew.hooks import _HOST_BUILTIN_TOOL_ALIASES
+        from kiro_crew.platform.governance import BUILTIN_TOOL_SCOPES
 
-        for alias, target in KIRO_TOOL_ALIASES.items():
-            if target in _HOST_READ_ONLY_BUILTIN_TOOLS:
-                assert _HOST_READ_ONLY_BUILTIN_ALIASES.get(alias) == target, alias
-            else:
-                assert alias not in _HOST_READ_ONLY_BUILTIN_ALIASES, alias
-        for alias, target in _HOST_READ_ONLY_BUILTIN_ALIASES.items():
-            assert KIRO_TOOL_ALIASES.get(alias) == target, alias
-            assert target in _HOST_READ_ONLY_BUILTIN_TOOLS, alias
-            assert alias not in _HOST_READ_ONLY_BUILTIN_TOOLS, alias
+        assert dict(_HOST_BUILTIN_TOOL_ALIASES) == KIRO_TOOL_ALIASES
+        assert set(_HOST_BUILTIN_TOOL_ALIASES.values()) <= set(BUILTIN_TOOL_SCOPES)
 
     def test_kiro_cli_short_write_and_shell_names_are_not_read_only_proofs(self):
-        # The alias step widens nothing: the other two short names have no entry,
-        # are tested under their own spelling, and the allowlist does not hold it.
-        from kiro_crew.hooks import _is_host_read_only_builtin
+        # The alias step widens nothing: ``write`` and ``shell`` resolve to names
+        # the allowlist does not hold, so the proof refuses them resolved or not.
+        from kiro_crew.hooks import (
+            _HOST_READ_ONLY_BUILTIN_TOOLS,
+            _host_builtin_alias,
+            _is_host_read_only_builtin,
+        )
 
         for name in ("write", "shell"):
+            assert _host_builtin_alias(name, "") not in _HOST_READ_ONLY_BUILTIN_TOOLS, name
             assert _is_host_read_only_builtin(name, "", mcp_identity_trusted=True) is False, name
+
+    def test_host_builtin_alias_is_for_host_stamps_only(self):
+        # A server's own tool called ``read`` is not the host's file reader, and
+        # a stamp with no alias resolves to nothing rather than to itself.
+        from kiro_crew.hooks import _host_builtin_alias
+
+        assert _host_builtin_alias("read", "") == "fs_read"
+        assert _host_builtin_alias("read", "docs") == ""
+        assert _host_builtin_alias("fs_read", "") == ""
+        assert _host_builtin_alias("", "") == ""
 
     def test_short_read_name_still_needs_trusted_identity_and_no_server(self):
         from kiro_crew.hooks import _is_host_read_only_builtin
@@ -2291,67 +2299,78 @@ class TestBuiltinToolIdentityGoverned:
         assert "Update the changelog" in seen
         assert "fs_write" in seen
 
-    def test_deny_floor_matches_the_allowlist_spelling_of_an_aliased_stamp(self):
-        # deny=["fs_read"] and kiro-cli's ``read`` stamp. The read-only proof
-        # resolves ``read`` to ``fs_read``, so the rule written in that spelling
-        # must reach the call too, on every surface: under ``classifier_only``
-        # (READ_ONLY) the proof would otherwise approve what the rule denies.
-        cfg = HooksConfig(auto_deny_tools=["fs_read"])
+    _ALIASED_STAMPS = [
+        ("read", "fs_read", "read"),
+        ("write", "fs_write", "edit"),
+        ("shell", "execute_bash", "execute"),
+    ]
+
+    @pytest.mark.parametrize(("stamp", "rule", "kind"), _ALIASED_STAMPS)
+    def test_deny_floor_matches_the_spec_spelling_of_an_aliased_stamp(self, stamp, rule, kind):
+        # ``auto_deny_tools`` is written in the spec spelling (``fs_write``) and
+        # kiro-cli stamps the short name (``write``): the rule must reach the
+        # call on every surface, or the operator's deny is inert against the
+        # default backend. Under ``classifier_only`` (READ_ONLY) the proof would
+        # otherwise approve the one stamp it resolves.
+        cfg = HooksConfig(auto_deny_tools=[rule])
         mgr = HookManager(cfg)
         for classifier_only in (False, True):
             r = mgr.on_tool_call(
-                "Read the changelog",
-                mcp_tool_name="read",
+                "Update the changelog",
+                mcp_tool_name=stamp,
                 mcp_identity_trusted=True,
-                tool_kind="read",
+                tool_kind=kind,
                 classifier_only=classifier_only,
             )
             assert r.action == TOOL_DENY, classifier_only
         # The stamped spelling still binds on its own.
-        r = HookManager(HooksConfig(auto_deny_tools=["read"])).on_tool_call(
-            "Read the changelog", mcp_tool_name="read", mcp_identity_trusted=True, tool_kind="read"
+        r = HookManager(HooksConfig(auto_deny_tools=[stamp])).on_tool_call(
+            "Update the changelog", mcp_tool_name=stamp, mcp_identity_trusted=True, tool_kind=kind
         )
         assert r.action == TOOL_DENY
-        # A server's own tool called ``read`` is not the host's file reader: the
-        # ``fs_read`` rule does not reach it, as the proof does not admit it.
+        # A server's own tool under the same short name is not the host's
+        # built-in: the spec-spelling rule does not reach it.
         r = mgr.on_tool_call(
-            "Read the changelog",
+            "Update the changelog",
             mcp_server_name="docs",
-            mcp_tool_name="read",
+            mcp_tool_name=stamp,
             mcp_identity_trusted=True,
-            tool_kind="read",
+            tool_kind=kind,
         )
         assert r.action != TOOL_DENY
 
-    def test_governance_is_asked_the_allowlist_spelling_of_an_aliased_stamp(self, monkeypatch):
-        # Same on the governance plane: a ``tools`` rule naming ``fs_read`` denies
-        # a trusted ``read`` stamp. Title, stamped name and resolved name travel
-        # in the one query; a name with no alias adds nothing, and a server's own
-        # ``read`` is asked under its canonical reference, never as ``fs_read``.
-        seen = TestCanonicalMcpIdentityGoverned._deny_canonical(monkeypatch, "fs_read")
+    @pytest.mark.parametrize(("stamp", "rule", "kind"), _ALIASED_STAMPS)
+    def test_governance_is_asked_the_spec_spelling_of_an_aliased_stamp(
+        self, monkeypatch, stamp, rule, kind
+    ):
+        # Same on the governance plane: a ``tools`` rule naming the spec spelling
+        # denies the short stamp. Title, stamped name and resolved name travel in
+        # the one query; a name with no alias adds nothing, and a server's own
+        # tool is asked under its canonical reference, never as the built-in.
+        seen = TestCanonicalMcpIdentityGoverned._deny_canonical(monkeypatch, rule)
         mgr = HookManager()
         r = mgr.on_tool_call(
-            "Read the changelog",
-            mcp_tool_name="read",
+            "Update the changelog",
+            mcp_tool_name=stamp,
             mcp_identity_trusted=True,
-            tool_kind="read",
+            tool_kind=kind,
             classifier_only=True,
         )
         assert r.action == TOOL_DENY
-        assert seen == ["Read the changelog", "read", "fs_read"]
+        assert seen == ["Update the changelog", stamp, rule]
         seen = TestCanonicalMcpIdentityGoverned._deny_canonical(monkeypatch, "never-matches")
         HookManager().on_tool_call("Search", mcp_tool_name="grep", tool_kind="search")
         assert seen == ["Search", "grep"]
-        seen = TestCanonicalMcpIdentityGoverned._deny_canonical(monkeypatch, "fs_read")
+        seen = TestCanonicalMcpIdentityGoverned._deny_canonical(monkeypatch, rule)
         r = HookManager().on_tool_call(
-            "Read the changelog",
+            "Update the changelog",
             mcp_server_name="docs",
-            mcp_tool_name="read",
+            mcp_tool_name=stamp,
             mcp_identity_trusted=True,
-            tool_kind="read",
+            tool_kind=kind,
         )
         assert r.action != TOOL_DENY
-        assert "fs_read" not in seen
+        assert rule not in seen
 
     def test_identity_equal_to_the_title_is_not_asked_twice(self, monkeypatch):
         # A backend whose title already IS the tool name must not cost a second

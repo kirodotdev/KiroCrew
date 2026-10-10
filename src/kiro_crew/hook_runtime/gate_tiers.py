@@ -23,7 +23,6 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from kiro_crew.hooks import (
         _GATE_TIER_KINDS,
-        _HOST_READ_ONLY_BUILTIN_ALIASES,
         _READ_ONLY_TOOL_KINDS,
         GateRule,
         GateTier,
@@ -35,6 +34,7 @@ if TYPE_CHECKING:
         _builtin_app_for_agent,
         _cu_read_only_auto_approve,
         _governance_denial,
+        _host_builtin_alias,
         _is_declared_builtin_mcp_server,
         _is_first_party_app,
         _is_host_read_only_builtin,
@@ -277,13 +277,7 @@ class GateFacts:
                 targets.append(self.canonical_mcp_name)
             if call.mcp_tool and call.mcp_tool not in targets:
                 targets.append(call.mcp_tool)
-            # kiro-cli stamps ``read`` where a rule is written ``fs_read``; the
-            # read-only proof resolves that alias, so a rule must reach it too.
-            # Built-ins only: a server's own tool called ``read`` is not the
-            # host's file reader, and the proof excludes it the same way.
-            alias = (
-                "" if call.mcp_server else _HOST_READ_ONLY_BUILTIN_ALIASES.get(call.mcp_tool, "")
-            )
+            alias = _host_builtin_alias(call.mcp_tool, call.mcp_server)
             if alias and alias not in targets:
                 targets.append(alias)
             if call.command:
@@ -660,12 +654,9 @@ def _tier_governance(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
     deny on any identity denies the call.
     """
     call = facts.call
-    # The trusted name and, where kiro-cli stamped an alias (``read``) on a
-    # built-in, the spelling a rule is written in (``fs_read``) -- the same
-    # spelling the read-only proof resolves it to. A server's own ``read`` is
-    # not the host's file reader and gets no alias. Both in the one query;
-    # neither repeats the title.
-    alias = "" if call.mcp_server else _HOST_READ_ONLY_BUILTIN_ALIASES.get(call.mcp_tool, "")
+    # The trusted name and, for an aliased built-in stamp, the spec spelling a
+    # rule is written in; both in the one query, neither repeating the title.
+    alias = _host_builtin_alias(call.mcp_tool, call.mcp_server)
     extra_titles = tuple(name for name in (call.mcp_tool, alias) if name and name != call.title)
     gov_reason = _governance_denial(
         facts.ctx,
