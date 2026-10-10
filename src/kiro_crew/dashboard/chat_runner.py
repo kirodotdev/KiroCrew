@@ -473,10 +473,13 @@ from kiro_crew.llm_helpers import (  # noqa: F401
     FallbackState,
     PromptBusyExhaustedError,
     _billing_stats,
+    acp_error_is_connection_failure,
     acp_error_is_session_not_found,
     acp_error_is_transient,
     advance_fallback_candidate,
     configured_fallback_chain,
+    connection_recovery_open,
+    connection_retry_delay,
     fallback_rewound_transient_budget,
     first_advertised_fallback,
     pick_epoch_host,
@@ -18095,7 +18098,10 @@ async def _run_chat(
         elif (
             not _turn_emitted
             and acp_error_is_transient(exc)
-            and slot._transient_5xx_retries < TRANSIENT_RETRIES
+            and (
+                slot._transient_5xx_retries < TRANSIENT_RETRIES
+                or connection_recovery_open(exc, slot._transient_ladder_started)
+            )
         ):
             # Transient backend 5xx (InternalServerError / DispatchFailure /
             # ConnectionReset, JSON-RPC -32603): the kiro-cli process is ALIVE —
@@ -18112,19 +18118,33 @@ async def _run_chat(
             # session — unless CONSECUTIVE cycles exhaust this way, in which
             # case the else escalates to a session destroy (poisoned
             # persisted conversation; see the escalation block there).
+            #
+            # A connection failure (the network path dropped, no provider
+            # answer) may run past TRANSIENT_RETRIES while the recovery window
+            # opened at the ladder's first retry is still open, on a backoff
+            # capped at CONNECTION_RETRY_MAX_DELAY, so a short outage resumes
+            # the turn instead of ending it. Past the window it falls through to
+            # the same branches as an exhausted provider-error ladder.
+            if slot._transient_5xx_retries == 0:
+                slot._transient_ladder_started = time.monotonic()
             slot._transient_5xx_retries += 1
+            _in_recovery_window = slot._transient_5xx_retries > TRANSIENT_RETRIES
+            _base_delay = (
+                connection_retry_delay(slot._transient_5xx_retries)
+                if acp_error_is_connection_failure(exc)
+                else transient_retry_delay(slot._transient_5xx_retries)
+            )
             # Local curve, floored by the dependency coordinator's shared
             # cooldown for this provider scope (one schedule per scope, RFC
             # §4.4); a typed throttle is reported to the adaptive controller.
-            _delay = _shared_dependency_delay(
-                exc, transient_retry_delay(slot._transient_5xx_retries), slot_key=slot.key
-            )
+            _delay = _shared_dependency_delay(exc, _base_delay, slot_key=slot.key)
             logger.info(
-                "Transient backend 5xx in slot %s (attempt %d/%d) — re-prompting "
+                "Transient backend error in slot %s (attempt %d/%d%s) — re-prompting "
                 "live session in %.1fs: %s",
                 slot.key,
                 slot._transient_5xx_retries,
                 TRANSIENT_RETRIES,
+                ", connection recovery window" if _in_recovery_window else "",
                 _delay,
                 _msg[:80],
             )
@@ -18142,15 +18162,33 @@ async def _run_chat(
                 # re-offering a choice that re-runs itself); the post-backoff
                 # re-read below is the one path that can leave it standing for a
                 # retry that never happened, and it corrects the row in place.
-                slot.append(
-                    "error",
-                    TRANSIENT_RETRYING_TEXT,
-                    "msg msg-err",
-                    meta={
-                        "kind": TRANSIENT_RETRY_KIND,
-                        TRANSIENT_NOTICE_META_KEY: TRANSIENT_NOTICE_RETRYING,
-                    },
-                )
+                # Inside the recovery window one standing notice covers the
+                # outage: a retrying row is not repeated when only the replays
+                # of this same message have been appended since it.
+                _tail: dict = {}
+                for _row in reversed(slot.messages):
+                    if (
+                        _row.get("role") == "inject"
+                        and (_row.get("meta") or {}).get("injectKind") == "user_replay"
+                    ):
+                        continue
+                    _tail = _row
+                    break
+                if not (
+                    _in_recovery_window
+                    and _tail.get("role") == "error"
+                    and (_tail.get("meta") or {}).get(TRANSIENT_NOTICE_META_KEY)
+                    == TRANSIENT_NOTICE_RETRYING
+                ):
+                    slot.append(
+                        "error",
+                        TRANSIENT_RETRYING_TEXT,
+                        "msg msg-err",
+                        meta={
+                            "kind": TRANSIENT_RETRY_KIND,
+                            TRANSIENT_NOTICE_META_KEY: TRANSIENT_NOTICE_RETRYING,
+                        },
+                    )
                 await _recovery_delay(_delay)
                 # Re-read the STOP signals after the multi-second backoff: the
                 # guard above ran before the wait, and a Stop pressed during it

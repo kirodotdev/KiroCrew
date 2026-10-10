@@ -22306,6 +22306,153 @@ class TestRunChatTransientRetry:
         # full ladder again, not inherit an exhausted counter.
         assert slot._transient_5xx_retries == 0
 
+    @staticmethod
+    def _connection_drop():
+        """A network-path drop raised through the real ACP raise path."""
+        from kiro_crew.acp.client import AcpError
+        from kiro_crew.acp.transport_errors import _raise_acp_error
+
+        try:
+            _raise_acp_error(
+                {
+                    "code": -32603,
+                    "message": "Internal error",
+                    "data": "dispatch failure: io error: connection reset by peer",
+                }
+            )
+        except AcpError as exc:
+            assert exc.connection_failure is True
+            return exc
+        raise AssertionError("_raise_acp_error did not raise")
+
+    @pytest.mark.asyncio
+    async def test_connection_drop_shorter_than_window_recovers(self, tmp_path, monkeypatch):
+        """A network drop that outlasts the fixed TRANSIENT_RETRIES count but
+        ends inside the recovery window resumes the turn on the SAME session,
+        with one standing retry notice rather than one per extra attempt."""
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.dashboard.chat_utils import (
+            TRANSIENT_NOTICE_META_KEY,
+            TRANSIENT_NOTICE_RETRYING,
+        )
+        from kiro_crew.llm_helpers import TRANSIENT_RETRIES
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        drop_attempts = TRANSIENT_RETRIES + 3
+        call_count = 0
+
+        async def _stream(msg):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= drop_attempts:
+                raise self._connection_drop()
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="back-online")
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        state = self._make_state(tmp_path, monkeypatch)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner._agent_fallback_chain", lambda: ())
+        client = self._client(_stream)
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+
+        sleeps: list[float] = []
+
+        async def _fake_sleep(secs, *a, **k):
+            sleeps.append(secs)
+
+        with patch("asyncio.sleep", side_effect=_fake_sleep):
+            await _run_chat(state, slot, "hello")
+            await self._drain_bg(state)
+
+        assert call_count == drop_attempts + 1
+        assert any("back-online" in t for t in self._assistant_texts(slot))
+        assert not any(t.startswith("❌") for t in self._err_texts(slot))
+        state.sessions.reset.assert_not_awaited()
+        retrying = [
+            m
+            for m in slot.messages
+            if (m.get("meta") or {}).get(TRANSIENT_NOTICE_META_KEY) == TRANSIENT_NOTICE_RETRYING
+        ]
+        assert len(retrying) == TRANSIENT_RETRIES
+        # The landed turn hands the whole ladder back.
+        assert slot._transient_5xx_retries == 0
+
+    @pytest.mark.asyncio
+    async def test_connection_drop_longer_than_window_fails_clearly(self, tmp_path, monkeypatch):
+        """A drop that outlasts the recovery window ends in the same clean,
+        resumable ❌ as an exhausted provider-error ladder. Elapsed time is
+        simulated by moving the ladder's start stamp back on every attempt."""
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.llm_helpers import CONNECTION_RECOVERY_WINDOW_SECS, TRANSIENT_RETRIES
+
+        step = CONNECTION_RECOVERY_WINDOW_SECS / 5
+        call_count = 0
+        slot_ref: dict = {}
+
+        async def _stream(msg):
+            nonlocal call_count
+            call_count += 1
+            slot = slot_ref["slot"]
+            if slot._transient_ladder_started:
+                slot._transient_ladder_started -= step
+            raise self._connection_drop()
+            yield  # pragma: no cover
+
+        state = self._make_state(tmp_path, monkeypatch)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner._agent_fallback_chain", lambda: ())
+        client = self._client(_stream)
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+        slot_ref["slot"] = slot
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await _run_chat(state, slot, "hello")
+            await self._drain_bg(state)
+
+        # Attempt N sees N-1 steps elapsed; the window closes at five steps,
+        # so the sixth attempt is the last, two beyond the fixed count.
+        assert call_count == 6
+        assert call_count > TRANSIENT_RETRIES + 1
+        # The terminal row names the network as the cause, not a retry notice.
+        errs = self._err_texts(slot)
+        assert errs and "Could not reach the model backend" in errs[-1]
+        state.sessions.reset.assert_not_awaited()
+        assert slot._transient_5xx_retries == 0
+
+    @pytest.mark.asyncio
+    async def test_provider_5xx_keeps_fixed_budget_inside_window(self, tmp_path, monkeypatch):
+        """A provider 5xx answer is not a network drop: it keeps the fixed
+        TRANSIENT_RETRIES count even while the recovery window is open."""
+        from kiro_crew.acp.client import AcpError
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.llm_helpers import TRANSIENT_RETRIES
+
+        call_count = 0
+
+        async def _stream(msg):
+            nonlocal call_count
+            call_count += 1
+            exc = AcpError(self._TRANSIENT, transient=True)
+            exc.connection_failure = False
+            raise exc
+            yield  # pragma: no cover
+
+        state = self._make_state(tmp_path, monkeypatch)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner._agent_fallback_chain", lambda: ())
+        client = self._client(_stream)
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await _run_chat(state, slot, "hello")
+            await self._drain_bg(state)
+
+        assert call_count == TRANSIENT_RETRIES + 1
+        assert any(t.startswith("❌") for t in self._err_texts(slot))
+
     @pytest.mark.asyncio
     async def test_transient_budget_refreshed_after_terminal_error(self, tmp_path, monkeypatch):
         """Regression: a cycle that EXHAUSTS the transient budget and surfaces

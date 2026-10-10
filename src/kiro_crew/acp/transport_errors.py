@@ -268,6 +268,13 @@ class AcpError(Exception):
         # current attachment from an unsupported image retained in native
         # history. Set only from the raw provider data field.
         self.image_format_unsupported: bool = False
+        # Whether a TRANSIENT failure is the network path to the provider
+        # (dispatch failure, connection reset or refused, DNS, TLS, connect
+        # timeout) rather than a provider answer such as a 5xx or a throttle.
+        # Decided from the raw frame by :func:`_raise_acp_error`, because the
+        # formatter rewrites a dispatch failure into the generic 5xx prose.
+        # ``None`` means unclassified: readers fall back to the message text.
+        self.connection_failure: bool | None = None
 
 
 class AcpTimeoutError(AcpError):
@@ -631,6 +638,14 @@ _RE_CONNECTION = re.compile(
     r"|\bsocket hang ?up\b"
     r"|\bfetch failed\b"
     r"|\bconnection (?:refused|reset|closed|error|timed ?out)\b",
+    re.IGNORECASE,
+)
+# Connector-level failures that never produced a provider answer. Separate from
+# _RE_CONNECTION because a dispatch failure and a named connection reset sit in
+# the 5xx family for formatting, yet they say the network path dropped, not that
+# the provider answered with an error.
+_RE_CONNECTOR_FAILURE = re.compile(
+    rf"\b(?:dispatch{_5XX_SEP}failure|connection{_5XX_SEP}reset(?:{_5XX_SEP}error)?)\b",
     re.IGNORECASE,
 )
 # Genuine retry hint only. "response stream" is deliberately NOT matched here,
@@ -1315,6 +1330,32 @@ def classify_provider_error(haystack: str, *, data: str | None = None) -> Provid
     return ProviderErrorClass(PROVIDER_ERROR_UNKNOWN, False)
 
 
+def is_connection_failure_text(haystack: str) -> bool:
+    """True when *haystack* says the network path to the provider dropped.
+
+    A connection refusal, reset, timeout, socket hang-up or connector dispatch
+    failure means no provider answer arrived at all, so waiting for the network
+    to come back is the remedy. Any sign that the provider DID answer outranks
+    the connection wording: a throttle, an HTTP 5xx status, a usage limit, an
+    auth or session-expiry rejection, or a model-availability answer each keeps
+    its own retry policy, so a frame carrying both wordings is never treated as
+    a network drop.
+    """
+    text = haystack or ""
+    if not (_RE_CONNECTION.search(text) or _RE_CONNECTOR_FAILURE.search(text)):
+        return False
+    return not (
+        _RE_USAGE_LIMIT.search(text)
+        or _RE_MODEL_UNAVAILABLE.search(text)
+        or _RE_MODEL_TEMP_UNAVAILABLE.search(text)
+        or _RE_THROTTLE_NAMED.search(text)
+        or _RE_THROTTLE_GENERIC.search(text)
+        or _RE_5XX_STATUS.search(text)
+        or _RE_AUTH.search(text)
+        or _is_session_expired(text)
+    )
+
+
 def _auto_remedy(available_models: Sequence[str] | None) -> str:
     """The "set agent.model to 'auto'" remediation step, or nothing when the
     partition does not serve ``auto``.
@@ -1760,6 +1801,10 @@ def _raise_acp_error(
     if _PROMPT_BUSY_RE.search(raw_data):
         raise AcpPromptBusy(formatted)
     err = AcpError(formatted, transient=_is_transient_raw_error(error, available_models))
+    # Tag a network-path drop so the interactive retry ladder can wait out a
+    # short outage instead of spending the fixed provider-error budget. Only a
+    # transient verdict qualifies, so a terminal frame never becomes waitable.
+    err.connection_failure = bool(err.transient) and is_connection_failure_text(raw_data)
     # Tag deterministic STRUCTURAL rejections so self-driving callers can
     # stop resending identical context. Keep the classifier data-scoped: a phrase
     # echoed only in JSON-RPC ``message`` cannot stamp an unrelated error. Four

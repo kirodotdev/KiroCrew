@@ -245,6 +245,24 @@ alternation. The kiro-cli mid-stream envelope ("Encountered an error in the
 response stream: …") is deliberately NOT a hint — matching it would make the
 branch a catch-all that discards the real cause.
 
+A **network-path drop** is the one transient class that waits by time rather
+than by count. `AcpError.connection_failure` is set from the raw frame when the
+verdict is transient and the frame carries connection wording (`_RE_CONNECTION`,
+or a connector dispatch failure or named connection reset) with no sign that the
+provider answered: a throttle, an HTTP 5xx status, a usage limit, an auth or
+session-expiry rejection, or a model-availability answer each outranks it
+(`is_connection_failure_text`). The formatter folds a dispatch failure into the
+generic 5xx prose, which is why the verdict travels as a tag instead of being
+read back from the message. On an interactive dashboard turn
+(`chat_runner`'s pre-stream transient branch) a connection failure keeps
+re-prompting the same live session past `TRANSIENT_RETRIES` until
+`CONNECTION_RECOVERY_WINDOW_SECS` (300 s) have passed since the ladder's first
+retry, on the same backoff curve capped at `CONNECTION_RETRY_MAX_DELAY` (30 s),
+and shows one standing "Connection unstable — retrying…" notice for the extra
+attempts rather than one per attempt. Stop, a landed turn and an exhausted
+window end it exactly as they end the fixed ladder. Provider answers keep the
+fixed count: a provider that answers with errors is not helped by a longer wait.
+
 ### Provider failures a harness writes as text
 
 codex-acp reports a turn's terminal provider error to a client without JetBrains

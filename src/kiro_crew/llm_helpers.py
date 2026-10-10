@@ -184,6 +184,28 @@ _TRANSIENT_MARKERS = (
     "could not reach the model backend",
 )
 
+# The members of _TRANSIENT_MARKERS that name the network path rather than a
+# provider answer. Read only for an error raised without the structured
+# ``connection_failure`` verdict, and only when no other transient marker is
+# present, so a frame that also carries a provider answer keeps the fixed count.
+_CONNECTION_MARKERS = (
+    "connection reset",
+    "connectionreset",
+    "dispatch failure",
+    "dispatchfailure",
+    "econnrefused",
+    "econnreset",
+    "econnaborted",
+    "etimedout",
+    "epipe",
+    "ehostunreach",
+    "eai_again",
+    "socket hang up",
+    "fetch failed",
+    "could not reach the model backend",
+)
+_PROVIDER_ANSWER_MARKERS = tuple(m for m in _TRANSIENT_MARKERS if m not in _CONNECTION_MARKERS)
+
 
 def _is_transient_acp_error(msg: str) -> bool:
     """True iff an AcpError message looks like a retryable transient backend
@@ -339,6 +361,66 @@ def transient_retry_delay(attempt: int) -> float:
     backs off on the identical curve and co-located peers don't retry in
     lockstep (see ``_JITTER_RNG``)."""
     base = _TRANSIENT_DELAY * (2 ** (attempt - 1))
+    return base + _JITTER_RNG.random() * 0.25 * base
+
+
+# ── Network-drop recovery window (interactive turns) ──
+#
+# A dropped network path (Wi-Fi off and on, a VPN reconnect, a laptop waking up)
+# usually lasts tens of seconds to a couple of minutes, longer than the ~14s the
+# fixed TRANSIENT_RETRIES ladder backs off for. A connection failure therefore
+# keeps re-prompting past that count until CONNECTION_RECOVERY_WINDOW_SECS have
+# passed since the ladder's first retry, with the backoff capped at
+# CONNECTION_RETRY_MAX_DELAY so the turn resumes soon after the network does.
+# Provider answers (5xx, throttle, capacity) keep the fixed count unchanged: a
+# provider that is answering with errors is not helped by waiting longer.
+CONNECTION_RECOVERY_WINDOW_SECS = 300.0
+CONNECTION_RETRY_MAX_DELAY = 30.0
+
+
+def acp_error_is_connection_failure(exc: BaseException) -> bool:
+    """True when *exc* is a transient failure of the network path itself.
+
+    Prefers the structured ``AcpError.connection_failure`` verdict taken from
+    the raw frame at raise time, and falls back to the message text for an
+    exception raised without it. Never true for an error the transient
+    classifier rejects, so a terminal error cannot enter the recovery window.
+    """
+    if not acp_error_is_transient(exc):
+        return False
+    flag = getattr(exc, "connection_failure", None)
+    if isinstance(flag, bool):
+        return flag
+    low = str(exc).lower()
+    return any(m in low for m in _CONNECTION_MARKERS) and not any(
+        m in low for m in _PROVIDER_ANSWER_MARKERS
+    )
+
+
+def connection_recovery_open(
+    exc: BaseException, ladder_started_at: float, *, now: float | None = None
+) -> bool:
+    """True while a connection failure may keep retrying past TRANSIENT_RETRIES.
+
+    *ladder_started_at* is the ``time.monotonic()`` reading taken when the
+    current retry ladder made its first retry; ``0.0`` (no ladder) is never
+    open. The window is measured from that first retry, so one outage gets one
+    window however many attempts it takes.
+    """
+    if ladder_started_at <= 0.0 or not acp_error_is_connection_failure(exc):
+        return False
+    current = time.monotonic() if now is None else now
+    return (current - ladder_started_at) < CONNECTION_RECOVERY_WINDOW_SECS
+
+
+def connection_retry_delay(attempt: int) -> float:
+    """Backoff delay (seconds) for the *attempt*-th retry of a connection failure.
+
+    The same curve as :func:`transient_retry_delay`, capped at
+    :data:`CONNECTION_RETRY_MAX_DELAY` (plus the same proportional jitter) so a
+    long outage is probed every half minute rather than at a doubling interval.
+    """
+    base = min(_TRANSIENT_DELAY * (2 ** (min(attempt, 32) - 1)), CONNECTION_RETRY_MAX_DELAY)
     return base + _JITTER_RNG.random() * 0.25 * base
 
 
