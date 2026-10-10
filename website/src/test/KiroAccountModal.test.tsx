@@ -6,6 +6,7 @@ import KiroAccountModal, { type KiroAccountUsage } from '../components/KiroAccou
 import { api } from '../api/client'
 import type { KiroCreditUsage } from '../api/client'
 import type { KiroUsageState } from '../api/kiroUsage'
+import { parseKiroUsagePayload } from '../api/kiroUsage'
 import { installSoftNavigate, __resetNavSeamForTests } from '../utils/errorReport'
 import { renderWithProviders } from './helpers'
 
@@ -234,7 +235,7 @@ describe('KiroAccountModal', () => {
       <KiroAccountModal
         open
         onClose={vi.fn()}
-        usage={{ ...BASE_USAGE, email: undefined, account: undefined }}
+        usage={{ ...BASE_USAGE, email: undefined, account: undefined, accountType: undefined }}
       />,
     )
 
@@ -276,6 +277,51 @@ describe('KiroAccountModal', () => {
     )
 
     expect(await screen.findByText('Signed in with Social login')).toBeInTheDocument()
+  })
+
+  // An external identity provider sign-in: whoami answers
+  // {"accountType":"ExternalIdP","email":""}, so the published reading carries
+  // an account type and no name. The pill renders, and the unavailable notice
+  // does not replace it.
+  it('shows the provider of an account that reports a type and no name', async () => {
+    const usage = parseKiroUsagePayload({
+      usage: {
+        credits_used: 2480.1,
+        credits_plan: 10000,
+        credits_overage: 0,
+        source: 'text',
+        account_type: 'ExternalIdP',
+      },
+    })
+    renderWithProviders(<KiroAccountModal open onClose={vi.fn()} usage={usage} />)
+
+    expect(await screen.findByText('Signed in through your organization')).toBeInTheDocument()
+    expect(screen.queryByText('Account details unavailable')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Show email' })).not.toBeInTheDocument()
+    expect(screen.getByText(/Remaining credit balance/)).toBeInTheDocument()
+  })
+
+  // The gateway cannot tie a reading to this sign-in (nothing names the user,
+  // only the provider): it reports who is signed in and no balance. That holds
+  // until the sign-in changes, so the modal says so from the first view and
+  // offers no Refresh, which would only answer the same.
+  it('shows the account and the sign-in-type notice with no Refresh', async () => {
+    const usage = parseKiroUsagePayload({
+      usage: { available: false, reason: 'account_unproven', account_type: 'ExternalIdP' },
+    })
+    // The state carries the account type and nothing else: the gateway
+    // publishes it only when no field names the user.
+    expect(usage).toEqual({ accountOnly: true, accountType: 'ExternalIdP' })
+    renderWithProviders(<KiroAccountModal open onClose={vi.fn()} usage={usage} />)
+
+    expect(await screen.findByText('Signed in through your organization')).toBeInTheDocument()
+    expect(screen.queryByText('Account details unavailable')).not.toBeInTheDocument()
+    expect(screen.getByText('Balance isn’t available for organization sign-ins yet.')).toBeInTheDocument()
+    expect(screen.queryByText('Could not read your balance.')).not.toBeInTheDocument()
+    expect(screen.queryByText('No balance reading is available for this account yet.')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Remaining credit balance/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Refresh/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
   it('renders independent identity and usage failure states', async () => {
@@ -438,6 +484,19 @@ describe('KiroAccountModal refresh', () => {
   // renders its own ErrorNotice, which would shadow the refresh's notice.
   beforeEach(() => {
     refreshMock.mockReset()
+  })
+
+  // A refresh out of a failed read that comes back account_unproven adds no
+  // outcome notice of its own: the state it lands in carries its notice.
+  it('adds no outcome notice when a refresh returns account_unproven', async () => {
+    const payload = { available: false, reason: 'account_unproven', account_type: 'ExternalIdP' }
+    refreshMock.mockResolvedValue({ usage: payload })
+    renderWithProviders(<KiroAccountModal open onClose={vi.fn()} usage="failed" />)
+    const dialog = await screen.findByRole('dialog', { name: 'Kiro Account' })
+    fireEvent.click(within(dialog).getByRole('button', REFRESH))
+    await waitFor(() => expect(refreshMock).toHaveBeenCalledTimes(1))
+    expect(await within(dialog).findByRole('button', REFRESH)).toBeEnabled()
+    expect(within(dialog).getAllByRole('alert')).toHaveLength(1)
   })
 
   it('reports an unreadable gateway config through ErrorNotice and retries the config read', async () => {

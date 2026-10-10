@@ -624,6 +624,37 @@ def _whoami_agreement(before: dict[str, object], after: dict[str, object]) -> st
     return _WHOAMI_SAME if proven else _WHOAMI_UNPROVEN
 
 
+#: Unavailable-marker ``reason`` for a sign-in whose whoami names its provider
+#: and no user (see :func:`_account_type_only`).
+_REASON_ACCOUNT_UNPROVEN = "account_unproven"
+
+
+def _account_type_only(identity: dict[str, object]) -> bool:
+    """True when an external identity provider whoami names no user.
+
+    The external identity provider shape: ``{"accountType":"ExternalIdP",
+    "email":""}``. A type names a provider, not a user, and nothing kiro-cli
+    prints or stores for that sign-in is evidenced to name the user: the stored
+    credential's stable claims (``client_id``, ``scopes``) belong to the IdP
+    registration every user of it shares. No reading from either source can
+    therefore be tied to the user (:func:`_whoami_agreement` never returns
+    ``same`` for two such snapshots), so the refresh shows the account and
+    reports the balance unavailable without reading one.
+
+    Only ExternalIdP. Any other type reporting only itself (a lapsed Builder ID
+    or Identity Center sign-in, a future type) takes the ordinary path, which
+    also refuses an unproven reading and keeps its ``signin_required`` remedy.
+    """
+    account_type = identity.get("account_type")
+    return (
+        isinstance(account_type, str)
+        # Normalized like the API-key check: kiro-cli and its token store
+        # spell the type ``ExternalIdP`` and ``ExternalIdp``.
+        and re.sub(r"[^a-z0-9]", "", account_type.lower()) == "externalidp"
+        and all(identity.get(key) is None for key in ("email", "start_url", "_profile_arn"))
+    )
+
+
 def _text_scrape_regresses_api_value(
     prev: object, new: dict[str, object], identity: dict[str, object]
 ) -> bool:
@@ -973,6 +1004,11 @@ async def _fetch_usage_bg() -> str | None:
     detected. Every failure path judges what it keeps against the whoami
     adjacent to that decision, never the top-of-refresh one.
 
+    A top-of-refresh whoami that reports the ExternalIdP account type and
+    nothing naming a user (:func:`_account_type_only`) ends the refresh
+    before either read: no reading could be tied to the user, so the cache
+    names the account with ``reason: account_unproven`` and no balance.
+
     Returns ``_SKIPPED_SCRAPE_PARKED`` when the API yielded no plan AND the
     scrape is parked -- skipped for being parked already, OR attempted in this
     very refresh and parked by that attempt's failure (the third miss). It is
@@ -1064,6 +1100,24 @@ async def _fetch_usage_bg() -> str | None:
         ):
             _publish_usage({"available": False, "reason": "api_key_auth"})
             logger.info("Kiro usage: not available under API key auth; skipping fetch")
+            return None
+        # The ExternalIdP type and nothing that names the user: no reading could
+        # be tied to this user, so neither the API read nor the `/usage` scrape
+        # is spent on one (see _account_type_only). Like API-key auth, the state
+        # holds until the sign-in changes. The identity fields shown are this
+        # whoami's own; no earlier reading is kept.
+        if _account_type_only(identity):
+            _publish_usage(
+                {
+                    **{k: _redact_strings(v) for k, v in identity.items() if not k.startswith("_")},
+                    "available": False,
+                    "reason": _REASON_ACCOUNT_UNPROVEN,
+                }
+            )
+            logger.info(
+                "Kiro usage: the sign-in names a provider and no user; showing the "
+                "account without a balance"
+            )
             return None
         raw_arn = identity.get("_profile_arn")
         expected_arn = raw_arn if isinstance(raw_arn, str) and raw_arn else None

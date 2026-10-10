@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Coins, Loader2 } from 'lucide-react'
 import { api } from '../../api/client'
-import { parseKiroUsagePayload, type KiroUsageState } from '../../api/kiroUsage'
+import { isAccountOnly, parseKiroUsagePayload, type KiroUsageState } from '../../api/kiroUsage'
 import { isKiroBackend, type AcpBackendConfig } from '../../api/acpBackend'
 import type { KiroAccountUsage } from '../../components/KiroAccountModal'
 import { fmtCompact } from '../../i18n/format'
@@ -118,7 +118,13 @@ export function kiroUsageSegment({ kiroUsageState, kiroCreditSurface, setKiroUsa
     node = (<button key="usage" className={`${seg} text-muted opacity-60`} onClick={() => setKiroUsageOpen(true)} title={i18nT('app.kiro_credit_usage_config_unreadable')} aria-label={i18nT('app.kiro_credit_usage_config_unreadable')}><Coins size={12} /> <span className="font-mono text-[11px] tabular-nums">—</span></button>)
   }
   if (kiroUsageState !== 'none' && kiroUsageState !== 'config-unreadable') {
-    if (kiroUsageState === 'failed') {
+    if (isAccountOnly(kiroUsageState)) {
+      // Signed in with no balance tied to the user (an external identity
+      // provider sign-in). Permanent for that sign-in like 'api-key', so the
+      // same terminal dash with a label that says why. It only arises with
+      // kiro-cli, so it never hides with the non-Kiro `none` case.
+      node = (<button key="usage" className={`${seg} text-muted opacity-60`} onClick={() => setKiroUsageOpen(true)} title={i18nT('app.kiro_credit_usage_sign_in_type')} aria-label={i18nT('app.kiro_credit_usage_sign_in_type')}><Coins size={12} /> <span className="font-mono text-[11px] tabular-nums">—</span></button>)
+    } else if (kiroUsageState === 'failed') {
       // Failed with nothing cached to fall back on. A dash says that;
       // a spinner would claim a fetch is still in flight. A failure
       // that arrives while a prior value is held keeps that value —
