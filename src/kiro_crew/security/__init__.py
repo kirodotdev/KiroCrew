@@ -1443,6 +1443,10 @@ def is_denied(
         ("self-protection-file-delivery", _argv._is_self_file_delivery),
         ("self-protection-gateway-restart", _argv._is_self_gateway_restart),
         ("self-protection-cloud", _argv._is_self_cloud_destructive),
+        (
+            "self-protection-skills-authority-retire",
+            _argv._is_self_skills_authority_retire,
+        ),
     ):
         if predicate(lower):
             _emit_deny_event(tool_name, rule_id, lower)
@@ -2638,6 +2642,7 @@ _EXPORTS: dict[str, str] = {
     "_is_self_module_flag": "argv_floor",
     "_is_self_module_invocation": "argv_floor",
     "_is_self_restart": "argv_floor",
+    "_is_self_skills_authority_retire": "argv_floor",
     "_is_self_update": "argv_floor",
     "_is_ssh_to_self": "argv_floor",
     "_kill_prefix_keeps_anchor": "argv_floor",
@@ -3221,6 +3226,7 @@ if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
         _is_self_module_flag,
         _is_self_module_invocation,
         _is_self_restart,
+        _is_self_skills_authority_retire,
         _is_self_update,
         _is_ssh_to_self,
         _kill_prefix_keeps_anchor,

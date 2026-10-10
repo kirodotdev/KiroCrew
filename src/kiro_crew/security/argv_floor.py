@@ -1203,6 +1203,11 @@ def _is_self_cloud_destructive(text_lower: str) -> bool:
     return _matches_self_subcommand(text_lower, ("cloud", _SELF_CLOUD_DESTRUCTIVE_VERBS))
 
 
+def _is_self_skills_authority_retire(text_lower: str) -> bool:
+    """``kirocrew skills authority-retire`` behind interposed shell dressing."""
+    return _matches_self_subcommand(text_lower, ("skills", "authority-retire"))
+
+
 _DEV_MODE_CONFIRM_FLAG = "--confirm-out-of-install-root"
 
 

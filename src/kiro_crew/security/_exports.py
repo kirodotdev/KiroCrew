@@ -372,6 +372,7 @@ EXPORTED_NAMES: tuple[str, ...] = (
     "_is_self_module_invocation",
     "_is_self_program",
     "_is_self_restart",
+    "_is_self_skills_authority_retire",
     "_is_self_update",
     "_is_shell_command_flag",
     "_is_shell_variable_reference",
