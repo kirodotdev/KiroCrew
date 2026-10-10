@@ -82,6 +82,76 @@ class TestLessonStore:
         assert len(store.load_all()) == 3
 
 
+_RULE_A = '{"ts": "t", "rule": "Run the linter first", "category": "tool"}'
+_RULE_B = '{"ts": "t", "rule": "Write tests first", "category": "tool"}'
+
+
+class TestUnreadableRows:
+    """A row that does not read as a lesson costs only itself, and is reported."""
+
+    def _store_with(self, tmp_path: Path, *bad_lines: str) -> LessonStore:
+        (tmp_path / "lessons.jsonl").write_text(
+            "\n".join([_RULE_A, *bad_lines, _RULE_B]) + "\n", encoding="utf-8"
+        )
+        return LessonStore(base_dir=tmp_path)
+
+    @pytest.mark.parametrize("bad_line", ["null", "[]", '"Use tabs"', "5"])
+    def test_a_row_that_is_not_an_object_is_skipped_and_counted(
+        self, tmp_path: Path, bad_line: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level("WARNING", logger="kiro_crew.learn")
+        store = self._store_with(tmp_path, bad_line)
+        assert [le.rule for le in store.load_all()] == ["Run the linter first", "Write tests first"]
+        context = store.get_context()
+        assert "Run the linter first" in context and "Write tests first" in context
+        assert "Skipped 1 of 3 rows" in caplog.text
+
+    @pytest.mark.parametrize("rule", ["5", "null", '["a"]'])
+    def test_a_row_whose_rule_is_not_text_does_not_block_writes(
+        self, tmp_path: Path, rule: str
+    ) -> None:
+        store = self._store_with(tmp_path, '{"ts": "t", "rule": %s, "category": "tool"}' % rule)
+        assert store.save(_make_lesson("Pin tool versions")) == "inserted"
+        assert store.remove("Run the linter first") is True
+        assert [le.rule for le in store.load_all()] == ["Write tests first", "Pin tool versions"]
+
+    def test_the_next_write_drops_the_skipped_rows_and_the_warning_says_so(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # The cron store's per-entry rule: a skipped record is dropped by the first
+        # write that follows, and the load warning, which names it, is the window
+        # to recover it.
+        caplog.set_level("WARNING", logger="kiro_crew.learn")
+        bad = [
+            '"Always use tabs"',
+            '{"ts": "t", "rule": 5, "category": "tool"}',
+            '{"ts": "t", "rule": "half a row',
+        ]
+        store = self._store_with(tmp_path, *bad)
+        assert store.save(_make_lesson("Pin tool versions")) == "inserted"
+        assert "Skipped 3 of 5 rows" in caplog.text and "(lines 2, 3, 4)" in caplog.text
+        assert "the next save removes them" in caplog.text
+        lines = store.path.read_text(encoding="utf-8").splitlines()
+        assert [line for line in lines if line in bad] == []
+        assert [le.rule for le in store.load_all()] == [
+            "Run the linter first",
+            "Write tests first",
+            "Pin tool versions",
+        ]
+
+    def test_the_migration_reader_skips_the_same_rows(self, tmp_path: Path) -> None:
+        from kiro_crew.vector_memory_runtime import migration
+
+        store = self._store_with(tmp_path, "null", '{"ts": "t", "rule": 5, "category": "tool"}')
+        rows = list(migration.legacy_lessons(store.path))
+        assert [row if row is migration.SKIP else row[0] for row in rows] == [
+            "Run the linter first",
+            migration.SKIP,
+            migration.SKIP,
+            "Write tests first",
+        ]
+
+
 class TestLessonStoreSecurity:
     """Tests for sensitive path rejection and SEL audit in LessonStore."""
 

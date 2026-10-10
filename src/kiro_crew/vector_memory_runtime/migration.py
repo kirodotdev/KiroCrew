@@ -30,7 +30,9 @@ SKIP = None
 def legacy_lessons(path: Path) -> Iterator[tuple[Any, Any, Any, Any, str | None] | None]:
     """``(rule, category, negative, repo_scope, applies)`` per ``lessons.jsonl`` line.
 
-    Yields :data:`SKIP` for a line that does not decode, and for one whose
+    Yields :data:`SKIP` for a line that does not decode, for one that is not an
+    object or whose ``rule`` is not text (the same rows ``LessonStore.load_all``
+    skips; either would raise here and abort the whole migration), and for one whose
     ``repo_scope`` is PRESENT but unusable: an absent scope means global, but a
     present unusable one means the row wanted a scope and cannot say which, and
     passing it to ``write_lesson`` would normalise it to None and inject the
@@ -51,6 +53,9 @@ def legacy_lessons(path: Path) -> Iterator[tuple[Any, Any, Any, Any, str | None]
             continue
         try:
             data = json.loads(line)
+            if not isinstance(data, dict) or not isinstance(data.get("rule", ""), str):
+                yield SKIP
+                continue
             rule = data.get("rule", "")
             negative = data.get("negative")
             raw_scope = data.get("repo_scope")
