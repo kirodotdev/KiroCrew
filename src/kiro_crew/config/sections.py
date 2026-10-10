@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import math
 import re as _re
+import unicodedata as _unicodedata
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -121,6 +122,10 @@ from kiro_crew.stt.limits import DEFAULT_SILENCE_MS as _STT_DEFAULT_SILENCE_MS
 from kiro_crew.stt.models import CATALOG as _STT_CATALOG
 from kiro_crew.stt.models import DEFAULT_MODEL as _STT_DEFAULT_MODEL
 from kiro_crew.stt.models import resolve as _resolve_stt_model
+
+# Stdlib-only leaf: the one table of code points that render as nothing, shared
+# with the terminal and scanner paths so the bot-name filter does not keep a copy.
+from kiro_crew.terminal_safe import _is_invisible
 
 logger = logging.getLogger("kiro_crew.config.loader")
 
@@ -838,7 +843,40 @@ def _safe_avatar(value: object) -> dict:
 
 
 _BOT_NAME_MAX = 50
-_BOT_NAME_RE = _re.compile(r"[^a-zA-Z0-9 _\-.]")
+
+#: Unicode general categories a bot name is made of: letters, the marks that
+#: attach to them, and digits, in any script. This is the character policy of
+#: the artifact tag rule (``artifact_store.rules.normalize_tag``), applied as a
+#: filter that drops instead of a validator that refuses: a name is a display
+#: label, never a file name or a key. Nonspacing and spacing marks (``Mn``,
+#: ``Mc``) are the combining characters NFC leaves standing beside their base
+#: (Devanagari vowel signs, Thai tone marks, Arabic harakat); without them whole
+#: scripts could not be written. Letter numbers (``Nl``: IDEOGRAPHIC NUMBER
+#: ZERO, the Roman numerals) are admitted with the decimal digits, as the tag
+#: rule admits them. Enclosing marks (``Me``: the keycap that turns ``1`` into an
+#: emoji, the enclosing circle) are not admitted, as the tag rule refuses them:
+#: they are symbols by another route. Neither are other numbers (``No``: VULGAR
+#: FRACTION ONE HALF, SUPERSCRIPT TWO, CIRCLED DIGIT ONE), which are symbols
+#: drawn from a digit. Everything else is dropped: punctuation other than the
+#: separators below, symbols and emoji (which the tag rule refuses too), and
+#: every control (``Cc``), format (``Cf``: the zero-width characters and the
+#: bidi controls), line and paragraph separator, surrogate, private-use and
+#: unassigned code point, plus the letters and marks that render as nothing
+#: (``terminal_safe._is_invisible``: the variation selectors, the Hangul
+#: fillers), which the category test alone would keep as an invisible residue.
+#: The tag rule's helper is not imported: it lives in ``artifact_store.rules``,
+#: which reaches ``kiro_crew.deploy`` and through it this package, so the
+#: category test is written here against the stdlib. Three tag rules are not
+#: applied, each for the reason a filter differs from a validator or a chip
+#: differs from a prompt: a compatibility form (full-width letters) is kept as
+#: typed because a drop cannot name the plain spelling the rule asks for; a name
+#: may open with a separator; and a run of combining marks is not bounded, since
+#: the bound guards a chip's drawn width and nothing draws this name, which is
+#: only substituted into the prompt.
+_BOT_NAME_CATEGORIES = frozenset({"Lu", "Ll", "Lt", "Lm", "Lo", "Mn", "Mc", "Nd", "Nl"})
+
+#: The ASCII separators a name may carry.
+_BOT_NAME_SEPARATORS = frozenset(" _-.")
 
 # Default endpoint for the anonymous usage beacon (see kiro_crew/beacon.py).
 # Lives here with the other config defaults so beacon.py adds no import edge
@@ -846,13 +884,63 @@ _BOT_NAME_RE = _re.compile(r"[^a-zA-Z0-9 _\-.]")
 _DEFAULT_BEACON_ENDPOINT = "https://d175o3ylxqum0e.cloudfront.net"
 
 
+def _bot_name_char(ch: str) -> str:
+    """The character ``ch`` contributes to a bot name: itself, a space, or nothing.
+
+    A brace is nothing: the ``{bot_name}`` placeholder must not recurse. The
+    category test already drops it as punctuation; naming it here keeps that
+    rule visible beside the one it protects.
+    """
+    if ch in _BOT_NAME_SEPARATORS:
+        return ch
+    if ch in "{}" or _is_invisible(ch):
+        return ""
+    category = _unicodedata.category(ch)
+    if category in _BOT_NAME_CATEGORIES:
+        return ch
+    # A space separator that is not the ASCII space (NO-BREAK SPACE, the
+    # IDEOGRAPHIC SPACE a Japanese keyboard types between words) keeps the words
+    # it separated apart instead of joining them. NFKC maps these to the plain
+    # space; the name is NFC-normalized, so the one mapping is made here.
+    if category == "Zs":
+        return " "
+    return ""
+
+
 def _sanitize_bot_name(raw: str) -> str:
-    """Sanitize bot_name: strip markdown, braces, limit length."""
+    """Sanitize bot_name: NFC-normalize, cap the length, drop braces and non-name characters.
+
+    A name keeps the letters, combining marks and digits of any script
+    (``_BOT_NAME_CATEGORIES``) plus the ASCII space, ``_``, ``-`` and ``.``, and
+    is stored in its NFC spelling so ``Jos\u00e9`` typed with a precomposed or a
+    combining accent loads as one string. Everything else is dropped: braces
+    (the ``{bot_name}`` placeholder must not recurse), markdown and other
+    punctuation, symbols and emoji, and every control, format, invisible,
+    surrogate and private-use character. A space run that a removal leaves
+    behind folds to one space and a leading or trailing one is stripped; a double
+    space the user typed is kept. The cap is :data:`_BOT_NAME_MAX` code points of
+    the NFC form, applied before the filter.
+    """
     if not isinstance(raw, str):
         return ""
-    name = raw.strip()[:_BOT_NAME_MAX]
-    name = name.replace("{", "").replace("}", "")
-    return _BOT_NAME_RE.sub("", name)
+    name = _unicodedata.normalize("NFC", raw).strip()[:_BOT_NAME_MAX]
+    kept: list[str] = []
+    removed_since_last_kept = False
+    for ch in name:
+        out = _bot_name_char(ch)
+        if not out:
+            removed_since_last_kept = True
+            continue
+        if out == " " and removed_since_last_kept and kept and kept[-1] == " ":
+            # The removal left two spaces touching: the name keeps one.
+            continue
+        kept.append(out)
+        removed_since_last_kept = False
+    # A removal can leave a base letter and a combining mark adjacent that the
+    # input kept apart (``e`` + ZERO WIDTH SPACE + COMBINING ACUTE ACCENT), and
+    # NFC composes such a pair, so the stored spelling is normalized again on
+    # the way out. Composition only shortens, so the cap still holds.
+    return _unicodedata.normalize("NFC", "".join(kept).strip())
 
 
 def _archive_retention_days(session_data: dict) -> int:

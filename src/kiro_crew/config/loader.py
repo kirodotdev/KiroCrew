@@ -183,7 +183,6 @@ from kiro_crew.config.section_builders import (  # noqa: F401
 )
 from kiro_crew.config.sections import (  # noqa: F401
     _BOT_NAME_MAX,
-    _BOT_NAME_RE,
     _COLOR_HEX_RE,
     _CONNECT_TIMEOUT_CEILING,
     _DEFAULT_BEACON_ENDPOINT,
