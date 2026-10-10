@@ -2347,6 +2347,10 @@ async def _safe_ws_send(ws: web.WebSocketResponse, msg: str, state: DashboardSta
         if not state._ws_client_allowed(ws, "log", {}):
             state._ws_log_subscribers.discard(ws)
             return
+        # The hub's stalled-tab limit applies here too, because this stream
+        # bypasses its fan-out: a tab over the limit is dropped and aborted.
+        if state._drop_if_stalled(ws) is True:
+            return
         await ws.send_str(msg)
     except Exception:
         state._ws_log_subscribers.discard(ws)

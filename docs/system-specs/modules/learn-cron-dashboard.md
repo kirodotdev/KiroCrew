@@ -1348,6 +1348,16 @@ Modular aiohttp package at `127.0.0.1:5476` (configurable). Split into:
   `DashboardState`) types its payload as `WsPayload` (`Mapping[str, Any]`), so
   mypy rejects a coroutine handed over by an unawaited async payload builder,
   which `json.dumps` cannot serialize.
+  A tab that stays connected but stops reading is dropped: before each send, a
+  tab whose unsent bytes are over `WS_MAX_BUFFERED_BYTES` (4 MiB) and have not
+  shrunk for `WS_STALL_SECONDS` (5 s) is unregistered, and so is a tab past
+  `WS_HARD_MAX_BUFFERED_BYTES` (16 MiB), at once. A shrink, or a buffer at or
+  under the limit, restarts the window. An awaited owner send in
+  `deliver_ws_owners` that does not finish within `WS_OWNER_SEND_TIMEOUT_S`
+  (3 s) drops its tab the same way. Both abort
+  the transport, never `close()` it, so the buffer is freed and the sends waiting
+  on it end. A dropped tab is not counted by `deliver_ws_owners` or
+  `send_ws_slot_patch`.
 
 `_ChatSlot` and `DashboardState` are the stable compatibility facades and the
 canonical owners of their mutable containers, with one exception: `_ChatSlot.replays`

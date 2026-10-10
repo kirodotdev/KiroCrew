@@ -19,6 +19,40 @@ SLOT_PATCH_CAPABILITY = "slot_patch"
 #: carries it; every other socket keeps receiving the full ``slots`` list.
 SLOT_PATCH_WS_FLAG = "_slot_patch"
 
+#: Unsent bytes above which the hub checks whether a tab still reads. A fan-out
+#: send writes its whole frame into the transport before it waits on drain, and
+#: each send is its own task, so a burst can take a tab that still reads past
+#: this. A tab that stays connected but stops reading passes it after about 70
+#: frames of 64 KiB.
+WS_MAX_BUFFERED_BYTES = 4 * 1024 * 1024
+
+#: Seconds a tab may stay over ``WS_MAX_BUFFERED_BYTES`` with its buffer not
+#: shrinking before the hub drops it. A tab that reads drains between sends; one
+#: that stopped reading never does. Dropping it makes the dashboard reconnect and
+#: resync from a fresh snapshot.
+WS_STALL_SECONDS = 5.0
+
+#: Unsent bytes past which a tab is dropped at once, whatever its window, so the
+#: memory one tab can hold stays bounded.
+WS_HARD_MAX_BUFFERED_BYTES = 4 * WS_MAX_BUFFERED_BYTES
+
+#: Key on a tab's ``WebSocketResponse``: (when its window started, its buffer size
+#: at the last check), kept while the buffer is over ``WS_MAX_BUFFERED_BYTES``.
+_OVER_LIMIT_KEY = "_ws_over_limit"
+
+#: Seconds one awaited owner send (``deliver_ws_owners``) may take. A send waits
+#: only for its tab's buffer to drain, which never happens for a tab that stopped
+#: reading.
+WS_OWNER_SEND_TIMEOUT_S = 3.0
+
+
+def _write_buffer_size(ws: web.WebSocketResponse) -> int | None:
+    """Bytes the tab's transport still holds, or None when that is unknown."""
+    transport = getattr(getattr(ws, "_req", None), "transport", None)
+    size_of = getattr(transport, "get_write_buffer_size", None)
+    size = size_of() if callable(size_of) else None
+    return size if isinstance(size, int) else None
+
 
 class WebSocketHubOwner(Protocol):
     """The mutable facade-owned state the hub operates on.
@@ -98,13 +132,16 @@ class WebSocketHub:
         except RuntimeError:
             return None
 
-    def _spawn_ws_send(self, ws: web.WebSocketResponse, msg: str) -> None:
+    def _spawn_ws_send(self, ws: web.WebSocketResponse, msg: str) -> bool:
         """Fire-and-forget a WS send while retaining a strong task reference.
 
         A fan-out may originate on a worker thread. In that case the send hops to
         the dashboard serving loop and creates its coroutine there. Only a
         synchronous refusal from ``send_str`` escapes; scheduling failures are a
         process condition and must not unregister an otherwise healthy peer.
+
+        Returns False when the send was refused: the tab was dropped as stalled,
+        or no loop can run the send. A counting fan-out must not count it.
         """
         loop = self._running_loop_provider()
         if loop is None:
@@ -113,7 +150,7 @@ class WebSocketHub:
                 try:
                     spawn = self._owner_method("_spawn_ws_send", self._spawn_ws_send)
                     target.call_soon_threadsafe(spawn, ws, msg)
-                    return
+                    return True
                 except RuntimeError:
                     self._log.debug("WS send: serving loop is shutting down")
             # Still call send_str so a synchronous peer refusal reaches the
@@ -124,15 +161,68 @@ class WebSocketHub:
             if callable(close):
                 close()
             self._log.debug("WS send dropped: no serving loop to run it on")
-            return
+            return False
 
         # Resolve the provider on-loop as well. DashboardState's provider latches
         # this loop only when startup has not already bound an authoritative one.
         self._serving_loop_provider()
+        if self._drop_if_stalled(ws):
+            return False
         task = asyncio.ensure_future(ws.send_str(msg))
         self._owner._background_tasks.add(task)
         done = self._owner_method("_on_ws_send_done", self._on_ws_send_done)
         task.add_done_callback(done)
+        return True
+
+    def _drop_if_stalled(self, ws: web.WebSocketResponse) -> bool:
+        """Drop a tab that stopped reading.
+
+        Runs on the serving loop, before a send. A tab that stays connected but
+        stops reading keeps every frame in its transport's write buffer, and that
+        buffer never shrinks. A tab that reads can pass ``WS_MAX_BUFFERED_BYTES``
+        after a burst, but its buffer shrinks as it reads. So a tab is dropped
+        when its buffer is over the limit and has not shrunk for
+        ``WS_STALL_SECONDS``, and at once when it passes
+        ``WS_HARD_MAX_BUFFERED_BYTES``. A shrink, or a buffer at or under the
+        limit, restarts the window.
+        """
+        size = _write_buffer_size(ws)
+        if size is None:
+            return False
+        if size <= WS_MAX_BUFFERED_BYTES:
+            ws.pop(_OVER_LIMIT_KEY, None)
+            return False
+        now = time.monotonic()
+        mark = ws.get(_OVER_LIMIT_KEY)
+        if size <= WS_HARD_MAX_BUFFERED_BYTES:
+            if not isinstance(mark, tuple) or size < mark[1]:
+                ws[_OVER_LIMIT_KEY] = (now, size)
+                return False
+            ws[_OVER_LIMIT_KEY] = (mark[0], size)
+            if now - mark[0] < WS_STALL_SECONDS:
+                return False
+        self._log.warning(
+            "WS client stopped reading: %d bytes buffered (limit %d, hard limit %d); dropping it",
+            size,
+            WS_MAX_BUFFERED_BYTES,
+            WS_HARD_MAX_BUFFERED_BYTES,
+        )
+        self._drop_ws(ws)
+        return True
+
+    def _drop_ws(self, ws: web.WebSocketResponse) -> None:
+        """Unregister a tab and abort its connection.
+
+        ``abort()`` discards the bytes buffered for the peer and fires
+        ``connection_lost``, which ends every send waiting on the buffer to
+        drain. A ``close()`` would wait for a peer that is not reading.
+        """
+        remove = self._owner_method("_remove_ws", self._remove_ws)
+        remove(ws)
+        transport = getattr(getattr(ws, "_req", None), "transport", None)
+        abort = getattr(transport, "abort", None)
+        if callable(abort):
+            abort()
 
     def _on_ws_send_done(self, task: asyncio.Task[Any]) -> None:
         """Release a completed send task and surface asynchronous failures."""
@@ -393,10 +483,11 @@ class WebSocketHub:
     def send_ws_slot_patch(self, msg: str) -> int:
         """Send a pre-serialized ``slot_patch`` frame to patch-capable sockets.
 
-        Returns how many sockets it was handed to. Only dashboard-user sockets
-        are ever flagged (see ``api_ws``), so no scope gate applies here: the
-        frame carries fields of the dashboard-user slot projection, which those
-        sockets already receive in full.
+        Returns how many sockets it was handed to; a send ``_spawn_ws_send``
+        refused (a tab dropped as stalled, no loop to run it on) is not counted.
+        Only dashboard-user sockets are ever flagged (see ``api_ws``), so no
+        scope gate applies here: the frame carries fields of the dashboard-user
+        slot projection, which those sockets already receive in full.
         """
         dead: list[web.WebSocketResponse] = []
         sent = 0
@@ -409,8 +500,10 @@ class WebSocketHub:
             if not ws.get(SLOT_PATCH_WS_FLAG, False):
                 continue
             try:
-                spawn(ws, msg)
-                sent += 1
+                # Only an explicit False is a refusal; a replacement seam that
+                # returns None has handed the frame off.
+                if spawn(ws, msg) is not False:
+                    sent += 1
             except Exception:
                 dead.append(ws)
         for ws in dead:
@@ -426,19 +519,35 @@ class WebSocketHub:
         send_all(msg_type, data, msg)
 
     async def deliver_ws_owners(self, msg_type: str, data: WsPayload) -> int:
-        """Await owner-only sends and return the number that completed."""
-        targets = [ws for ws in list(self._owner._owner_ws_clients) if not ws.closed]
+        """Await owner-only sends and return the number that completed.
+
+        Each send has its own ``WS_OWNER_SEND_TIMEOUT_S``: a tab that stays
+        connected but stopped reading never completes a send that waits for its
+        buffer to drain. Such a tab counts as not delivered and is dropped, so
+        the call returns for every other tab.
+        """
+        targets = [
+            ws
+            for ws in list(self._owner._owner_ws_clients)
+            if not ws.closed and not self._drop_if_stalled(ws)
+        ]
         if not targets:
             return 0
         msg = json.dumps({"type": msg_type, "data": data})
         results = await asyncio.gather(
-            *(ws.send_str(msg) for ws in targets),
+            *(asyncio.wait_for(ws.send_str(msg), WS_OWNER_SEND_TIMEOUT_S) for ws in targets),
             return_exceptions=True,
         )
         delivered = 0
         remove = self._owner_method("_remove_ws", self._remove_ws)
         for ws, result in zip(targets, results):
-            if isinstance(result, BaseException):
+            if isinstance(result, TimeoutError):
+                self._log.warning(
+                    "Owner WS send did not complete in %.1f s; dropping the client",
+                    WS_OWNER_SEND_TIMEOUT_S,
+                )
+                self._drop_ws(ws)
+            elif isinstance(result, BaseException):
                 self._log.debug("Owner WS send failed (client likely disconnected): %s", result)
                 remove(ws)
             else:
