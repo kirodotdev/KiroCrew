@@ -2572,7 +2572,9 @@ flip could resume a stale session persisted under the other namespace),
 `memory.embedding_dim`, `memory.embed_model_path`, `memory.embed_model_id`,
 `knowledge.extraction_effort`, most of `mcp_gateway.*` (every field except
 `enabled`, `apps_enabled` and `resolve_once_refresh_hours`),
-`mcp.extra_path_dirs`, `mcp.honour_auto_approve`, `instances.enabled`,
+`mcp.extra_path_dirs`, `mcp.honour_auto_approve`, `hooks.confirm_tools` (the gate
+follows it live, but the static grants it withholds are written when the agent
+spec is rebuilt), `instances.enabled`,
 `instances.tunnel_base_port`, `slack.command`, `whatsapp.db_path`, `dashboard.url`,
 `dashboard.tailscale.*` except `keep_awake`, `dashboard.restore_sessions`,
 `dashboard.restore_window_minutes`, `dashboard.idle_slot_sweep_days`,

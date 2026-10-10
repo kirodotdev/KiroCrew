@@ -859,11 +859,12 @@ def _operator_confirms(facts: GateFacts, grant_targets: tuple[str, ...]) -> bool
 
     Matched against every spelling the grant could be keyed on -- the grant
     targets, the title, the normalized name and, for an MCP call, the bare
-    ``@server`` -- because this can only withhold a grant, never give one.
+    ``@server`` -- because this can only withhold a grant, never give one. A
+    list the load could not read (``confirm_tools_unknown``) names every call.
     """
     patterns = facts.config.confirm_tools
     if not patterns:
-        return False
+        return bool(getattr(facts.config, "confirm_tools_unknown", False))
     call = facts.call
     targets = [*grant_targets, call.title, facts.normalized]
     if call.mcp_server:

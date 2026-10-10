@@ -4764,25 +4764,101 @@ def strip_ungoverned_auto_approve(
     return out
 
 
-def _confirm_tool_patterns() -> tuple[str, ...]:
+def _confirm_tool_patterns() -> tuple[str, ...] | None:
     """The operator's ``hooks.confirm_tools`` patterns from ``config.json``.
 
-    An unreadable config yields no patterns, which is the behaviour of an
-    operator who never set the key: the list only ever withholds a grant, so
-    reading nothing cannot widen one.
+    ``()`` means no pattern is set. ``None`` means the operator may have set
+    patterns this read cannot see; the static writers then withhold every MCP
+    grant and the gate withholds every operator grant.
+
+    A load can stand in defaults for settings it could not read: the read
+    raised, a file did not parse (whole-config degradation, an unreadable base
+    file), or a ``hooks`` section is not an object. Those defaults cannot show
+    the list is empty, and they cannot show it is set either, so the files on
+    disk decide (:func:`_config_files_state`). A file that does not read as
+    written NOW makes the list unknown only when some config file names the
+    key; without the key every grant stays as it is with the key unset. The
+    loader keeps a degradation flagged for the life of the process, so once
+    every file reads as written again the flag is stale and the loaded values
+    are used.
     """
+    loaded = True
     try:
         from kiro_crew.config import live
         from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
 
-        hooks = (live.snapshot() or KiroCrewConfig.load()).hooks
-        raw = hooks.get("confirm_tools") if isinstance(hooks, dict) else None
+        cfg = live.snapshot() or KiroCrewConfig.load()
+        degraded: frozenset[str] = getattr(cfg, "degraded_sections", frozenset())
+        hooks = cfg.hooks
+        stood_in = (
+            DEGRADED_WHOLE_CONFIG in degraded
+            or "hooks" in degraded
+            or bool(getattr(cfg, "_base_unreadable", False))
+            or not isinstance(hooks, (dict, type(None)))
+        )
     except Exception:  # noqa: BLE001 — a config read must not break a writer
-        logger.debug("hooks.confirm_tools unreadable; no confirm patterns", exc_info=True)
+        logger.warning("config read failed; judging hooks.confirm_tools from the files")
+        logger.debug("hooks.confirm_tools read failed", exc_info=True)
+        hooks, stood_in, loaded = None, True, False
+    if stood_in:
+        torn, names_key = _config_files_state()
+        if torn or not loaded:
+            return None if names_key else ()
+    if not isinstance(hooks, dict):
         return ()
+    raw = hooks.get("confirm_tools")
     if not isinstance(raw, list):
         return ()
     return tuple(p for p in raw if isinstance(p, str))
+
+
+def _config_files_state() -> tuple[bool, bool]:
+    """``(torn, names_key)`` for the config files on disk now.
+
+    *torn*: a present ``config.json`` / ``config.local.json`` cannot be read,
+    does not parse as a JSON object, or holds a ``hooks`` value that is not an
+    object -- the cases where a load stands in defaults. *names_key*: some file
+    names the ``confirm_tools`` key, or cannot be read at all (bytes that cannot
+    be read cannot show the key unset). Only an operator who wrote the key can
+    have asked for a confirmation, so a torn file without it (a trailing comma)
+    keeps every grant, Crew's own ``@kirocrew-*`` included.
+    """
+    try:
+        from kiro_crew.config.loader import config_local_path, config_path, read_config_text
+
+        paths = (config_path(), config_local_path())
+    except Exception:  # noqa: BLE001 — a config read must not break a writer
+        logger.debug("config paths unavailable", exc_info=True)
+        return True, True
+    torn = names_key = False
+    for path in paths:
+        try:
+            if not path.exists():
+                continue
+            text = read_config_text(path)
+        except Exception:  # noqa: BLE001 — bytes that cannot be read cannot show the key unset
+            logger.debug("config file unreadable: %s", path, exc_info=True)
+            return True, True
+        names_key = names_key or "confirm_tools" in text
+        try:
+            data = json.loads(text)
+        except ValueError:
+            torn = True
+            continue
+        if not isinstance(data, dict) or not isinstance(data.get("hooks", {}), dict):
+            torn = True
+    return torn, names_key
+
+
+def confirm_tools_unknown() -> bool:
+    """Whether the operator may have set ``hooks.confirm_tools`` patterns no read can see.
+
+    The gate's own ``HooksConfig`` is built from the same degraded load, which can
+    keep a base file's ``auto_approve_tools`` while dropping a torn overlay's
+    ``confirm_tools``; this flag is how it learns to withhold those grants too.
+    """
+    return _confirm_tool_patterns() is None
 
 
 def server_requires_confirmation(server: str, patterns: Sequence[str]) -> bool:
@@ -4819,11 +4895,35 @@ def server_requires_confirmation(server: str, patterns: Sequence[str]) -> bool:
 
 
 def _operator_requires_confirmation(ref: str) -> bool:
-    """Whether ``hooks.confirm_tools`` names the MCP server ``ref`` grants."""
-    if not ref.startswith("@"):
+    """Whether ``hooks.confirm_tools`` names, or may name, the MCP server ``ref`` grants.
+
+    A list the operator may have set but that cannot be read now counts as
+    naming every server, so the grant is withheld and the gate settles each call
+    (see :func:`_confirm_tool_patterns`).
+
+    A grant ref is itself a pattern: ``*`` or ``@*`` covers every MCP call, and
+    ``@ser*`` covers every server whose name starts ``ser``. Such a ref is
+    withheld whenever any confirm pattern is listed, since the servers it covers
+    are not known here. A ref without a wildcard in its server segment is judged
+    for that one server. A ref whose literal prefix cannot begin with ``@`` (a
+    builtin such as ``fs_*``) covers no MCP call.
+    """
+    if not isinstance(ref, str):
         return False
-    server = ref[1:].partition("/")[0]
-    return bool(server) and server_requires_confirmation(server, _confirm_tool_patterns())
+    cut = min((i for i, ch in enumerate(ref) if ch in "*?["), default=-1)
+    literal = ref if cut < 0 else ref[:cut]
+    if not literal.startswith("@") and literal != "":
+        return False
+    server, sep, _ = literal[1:].partition("/")
+    names_one_server = literal.startswith("@") and bool(server) and (sep or cut < 0)
+    if not names_one_server and cut < 0:
+        return False
+    patterns = _confirm_tool_patterns()
+    if patterns is None:
+        return True
+    if not names_one_server:
+        return bool(patterns)
+    return server_requires_confirmation(server, patterns)
 
 
 def may_skip_gate_now(ref: str) -> bool:

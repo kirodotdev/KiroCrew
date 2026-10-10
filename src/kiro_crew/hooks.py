@@ -682,6 +682,11 @@ class HooksConfig:
     #: ``auto_approve_tools`` grant. Empty by default: nothing changes unless the
     #: operator lists something.
     confirm_tools: list[str] = field(default_factory=list)
+    #: Set when ``confirm_tools`` is empty only because the load could not read a
+    #: config file that names the key (``governance.confirm_tools_unknown``). The
+    #: gate then withholds every ``auto_approve_tools`` grant, since the patterns
+    #: it would have checked are not known. Derived state, never serialized.
+    confirm_tools_unknown: bool = field(default=False, compare=False)
     auto_replies: list[AutoReplyHook] = field(default_factory=list)
     transforms: list[TransformHook] = field(default_factory=list)
     context_rules: list[ContextRule] = field(default_factory=list)

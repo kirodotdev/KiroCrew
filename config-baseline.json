@@ -8613,6 +8613,21 @@
       "defaultValue": {}
     },
     {
+      "path": "hooks.confirm_tools",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Confirm tools",
+      "help": "Tool patterns, in the auto_approve_tools spelling (@server, @server/tool*, Running: @server/*, *), that always ask before running. A matching MCP server stays mounted but loses its blanket auto-approve grant, and a match outranks an auto_approve_tools grant at the gate. The gate follows a change at once; a grant already in the agent spec is withdrawn at the next restart, when the spec is rebuilt.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": null,
+      "requiresRestart": true
+    },
+    {
       "path": "slack_channels",
       "kind": "core",
       "type": "object",

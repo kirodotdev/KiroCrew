@@ -3802,7 +3802,33 @@ class KiroCrewConfig:
     )
     hooks: dict = field(
         default_factory=dict,
-        metadata=_meta("Hooks", "Script hook definitions keyed by hook ID."),
+        metadata=_meta(
+            "Hooks",
+            "Script hook definitions keyed by hook ID.",
+            # Declared so the schema can carry the restart mark: the gate follows
+            # a change at once, but the static grants it withholds are written
+            # when the agent spec is rebuilt, so a saved change reports that a
+            # restart is needed instead of claiming it applied. The field stays a
+            # plain dict, so every other hooks key still round-trips untouched.
+            properties={
+                "confirm_tools": {
+                    "type": "array",
+                    "x-meta": {
+                        "label": "Confirm tools",
+                        "help": (
+                            "Tool patterns, in the auto_approve_tools spelling "
+                            "(@server, @server/tool*, Running: @server/*, *), that always "
+                            "ask before running. A matching MCP server stays mounted but "
+                            "loses its blanket auto-approve grant, and a match outranks an "
+                            "auto_approve_tools grant at the gate. The gate follows a change "
+                            "at once; a grant already in the agent spec is withdrawn at the "
+                            "next restart, when the spec is rebuilt."
+                        ),
+                        "restart": True,
+                    },
+                },
+            },
+        ),
     )
     slack_channels: dict[str, ChannelConfig] = field(
         default_factory=dict,
