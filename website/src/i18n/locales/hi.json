@@ -8639,7 +8639,8 @@
       "trust_all_tools": "इस सत्र के लिए सभी टूल पर भरोसा करें",
       "trust_all_tools_channel": "इस चैनल के सभी टूल पर भरोसा करें — रीस्टार्ट के बाद भी बना रहता है",
       "trust_this_command": "«<mono>{{cmd}}</mono>» पर भरोसा करें",
-      "trust_this_command_channel": "«<mono>{{cmd}}</mono>» पर @{{role}} के लिए भरोसा करो — {{productName}} के रीस्टार्ट तक"
+      "trust_this_command_channel": "«<mono>{{cmd}}</mono>» पर @{{role}} के लिए भरोसा करो — {{productName}} के रीस्टार्ट तक",
+      "trust_tool_any_arguments": "इस सत्र में किसी भी इनपुट के साथ <mono>{{base}}</mono> पर भरोसा करो"
     },
     "tunnelStatus": {
       "connected": "कनेक्टेड",

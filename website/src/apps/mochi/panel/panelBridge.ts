@@ -423,7 +423,12 @@ export function permissionApprovalFromFrame(
     if (purpose !== undefined) req.purpose = purpose
   }
   if (typeof m.full_command === 'string' && m.full_command) req.fullCommand = m.full_command
-  if (typeof m.base_command === 'string' && m.base_command) req.baseCommand = m.base_command
+  // A card carrying `trust_base_key` offers the dashboard's per-tool MCP tier,
+  // whose `base_command` is a tool label rather than a binary. The pet has no
+  // label for that tier, so it does not offer it.
+  if (typeof m.base_command === 'string' && m.base_command && !m.trust_base_key) {
+    req.baseCommand = m.base_command
+  }
   // Proof is server-authored on the pending card. Scope strings are display
   // values and their absence must never make the pet fall back to broad Trust.
   if (m.trust_grantable === '1') req.trustGrantable = true

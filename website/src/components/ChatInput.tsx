@@ -801,12 +801,13 @@ function ChatInput({
                           Trust + Reject and forbids a fourth), and a read-only
                           scopeless card can offer reads and session trust at
                           once. */}
-                      {approvalTrustGrantable && (approvalTrustCommandGrantable || approvalTrustAllGrantable || approvalIsReadOnly) && (
+                      {approvalTrustGrantable && (approvalTrustCommandGrantable || approvalTrustBaseGrantable || approvalTrustAllGrantable || approvalIsReadOnly) && (
                         <TrustDropdown
                             fullCommand={approvalFullCommand}
                             baseCommand={approvalBaseCommand}
                             isShell={approvalIsShell && approvalTrustBaseGrantable}
                             hasCommand={approvalTrustCommandGrantable}
+                            toolScope={!approvalIsShell && approvalTrustBaseGrantable}
                             trustReadsLabelKey={approvalIsReadOnly ? 'components.chatInput.trust_reads' : undefined}
                             showTrustAll={approvalTrustAllGrantable || approvalTrustCommandGrantable}
                             disabled={approvalSubmitting}

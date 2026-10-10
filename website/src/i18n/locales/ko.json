@@ -8515,7 +8515,8 @@
       "trust_all_tools": "이 세션의 모든 도구 신뢰",
       "trust_all_tools_channel": "이 채널의 모든 도구 신뢰 — 재시작 후에도 유지",
       "trust_this_command": "‘<mono>{{cmd}}</mono>’ 신뢰",
-      "trust_this_command_channel": "‘<mono>{{cmd}}</mono>’ 명령을 @{{role}}에 대해 신뢰 — {{productName}} 재시작 전까지"
+      "trust_this_command_channel": "‘<mono>{{cmd}}</mono>’ 명령을 @{{role}}에 대해 신뢰 — {{productName}} 재시작 전까지",
+      "trust_tool_any_arguments": "이 세션 동안 모든 입력으로 <mono>{{base}}</mono> 신뢰"
     },
     "tunnelStatus": {
       "connected": "연결됨",

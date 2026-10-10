@@ -79,6 +79,67 @@ def canonical_non_shell_trust_key(mcp_server_name: str, tool_name: str) -> str:
     return f"mcp-trust:v1:{server}:{tool}"
 
 
+def canonical_non_shell_any_args_trust_key(mcp_server_name: str, tool_name: str) -> str:
+    """Return the durable-trust key for one MCP tool called with ANY arguments.
+
+    This is the non-shell analogue of a shell base grant ("trust all ``git``
+    commands"): it names the server/tool identity and nothing the agent
+    authors.  It is deliberately a DIFFERENT key from
+    :func:`canonical_non_shell_trust_key`, so a grant the user gave on an
+    argument-free card keeps covering argument-free calls only and is never
+    silently widened to every argument the tool accepts.
+    """
+    if not mcp_server_name or not tool_name:
+        return ""
+    server = _trust_identity_component(mcp_server_name)
+    tool = _trust_identity_component(tool_name)
+    return f"mcp-trust-any:v1:{server}:{tool}"
+
+
+#: Prefix shared by every internal non-shell trust key.  Shell grants and
+#: non-shell grants live in one pattern store, so a shell grant whose command
+#: (or base binary) spells such a key would authorize that MCP tool.
+#: :func:`shell_grant_names_reserved_key` keeps that namespace out of every
+#: shell grant.
+RESERVED_TRUST_KEY_PREFIX = "mcp-trust"
+
+
+def shell_grant_names_reserved_key(command: str) -> bool:
+    """Return True when a shell grant over ``command`` could match an MCP key.
+
+    The matcher compares case-insensitively, so the test lowercases first.  It
+    covers the exact command and every segment's first token, the two strings
+    an exact or base shell grant stores as a literal.
+    """
+    lowered = command.lower()
+    if lowered.lstrip().startswith(RESERVED_TRUST_KEY_PREFIX):
+        return True
+    split = split_command_segments(command, split_re=_GRANT_SPLIT_RE, mask_escaped=True)
+    if split is None:
+        return False
+    _normalized, segments = split
+    for segment in segments:
+        parts = segment.strip().split(None, 1)
+        if parts and parts[0].lower().startswith(RESERVED_TRUST_KEY_PREFIX):
+            return True
+    return False
+
+
+def approval_tool_scope_key(
+    *, is_shell: bool, tool_name: str = "", mcp_server_name: str = ""
+) -> str:
+    """Return the any-arguments key a per-tool trust click may bind, or ``""``.
+
+    Grantable for a non-shell call whose ACP-cached server/tool identity is
+    complete, whatever its arguments, because the grant is keyed on that
+    identity alone.  A shell call never qualifies: its base tier is derived
+    from the command bytes by :func:`extract_base_command`.
+    """
+    if is_shell:
+        return ""
+    return canonical_non_shell_any_args_trust_key(mcp_server_name, tool_name)
+
+
 def approval_command(
     tool_input: str,
     *,

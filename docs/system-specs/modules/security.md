@@ -3020,7 +3020,7 @@ When the dashboard presents a tool approval prompt, users can now choose from th
 | Action | Scope | What it trusts |
 |--------|-------|---------------|
 | `trust_command` | Session-scoped | Exact command/tool (e.g., `ls /tmp`) |
-| `trust_base` | Session-scoped | Base command glob (e.g., `ls *` — trusts `ls` with any arguments) |
+| `trust_base` | Session-scoped | Base command glob (e.g., `ls *` — trusts `ls` with any arguments); for a non-shell call, the server/tool identity with any arguments (below) |
 | `yolo` | Global | All tools across all slots (existing behavior, now time-limited) |
 
 Trust patterns are stored per-slot as session-scoped fnmatch globs
@@ -3040,6 +3040,30 @@ one. A missing server/tool identity or a pre-upgrade pending card without the
 internal key fails closed for durable trust while ordinary Allow once and Reject
 remain available. Existing broad `*` trust retains its established semantics;
 legacy ambiguous exact MCP display patterns do not match the new internal keys.
+
+**Per-tool tier for non-shell calls.** A non-shell call has no command
+bytes to derive a base from, so the `trust_base` action carries a different
+scope there: "trust this `mcp__<server>__<tool>` with any arguments for this
+session". The pending card stores `trust_base_key` =
+`trust_patterns.canonical_non_shell_any_args_trust_key(server, tool)`, the
+`mcp-trust-any:v1:<hex>:<hex>` form, beside the display `base_command`; the
+endpoint checks the client's pattern against `base_consent_pattern(display)` and
+then stores only the escaped internal key. It is keyed on the same cached ACP
+identity as the argument-free key and on nothing the agent authors, so it is
+offered and matched whether or not the call carries arguments. The two keys
+differ by prefix, so neither grant covers the other: an argument-free grant
+still never matches an argument-bearing call, and the per-tool grant is a
+separate, explicitly labelled consent. As with every scoped tier, the tier is
+not offered, and an existing grant is not matched, for a transport-redacted
+call or a call with an incomplete identity; an identity containing `,` is not
+offered because the client shapes base consents by splitting on it. A
+per-server tier and a tier keyed on MCP `readOnlyHint` are deliberately absent:
+the first is an open owner decision on whole-server grant scope, and the hint
+is server-authored metadata, not a property the client verified. Because shell
+and non-shell grants share one pattern store, a shell card whose exact command
+or any segment's base binary starts with `mcp-trust` (case-insensitive) offers
+no command-scoped tier (`trust_patterns.shell_grant_names_reserved_key`): a
+shell grant spelling an internal key would otherwise authorize that MCP tool.
 
 The `pattern` submitted by the dashboard is a consent proof, not authority: it
 must equal the server-derived field on the still-pending approval. Missing,

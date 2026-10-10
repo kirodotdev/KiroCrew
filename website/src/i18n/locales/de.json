@@ -8639,7 +8639,8 @@
       "trust_all_tools": "Allen Werkzeugen in dieser Sitzung vertrauen",
       "trust_all_tools_channel": "Allen Werkzeugen in diesem Kanal vertrauen — bleibt nach Neustarts bestehen",
       "trust_this_command": "„<mono>{{cmd}}</mono>“ vertrauen",
-      "trust_this_command_channel": "„<mono>{{cmd}}</mono>“ für @{{role}} vertrauen — bis {{productName}} neu startet"
+      "trust_this_command_channel": "„<mono>{{cmd}}</mono>“ für @{{role}} vertrauen — bis {{productName}} neu startet",
+      "trust_tool_any_arguments": "<mono>{{base}}</mono> mit beliebiger Eingabe in dieser Sitzung vertrauen"
     },
     "tunnelStatus": {
       "connected": "Verbunden",

@@ -49,12 +49,19 @@ interface TrustDropdownProps {
       name the actual grant. Both keys take `cmd` / `base` plus `labelValues`. */
   trustCommandLabelKey?: string
   trustBaseLabelKey?: string
+  /** True when the server offered the per-TOOL tier for a non-shell call
+      (`trust_base_grantable` on a card that is not shell): trust this
+      `mcp__server__tool` with any arguments for the session. Rendered in the
+      base tier's slot with its own label, because "all … commands" would
+      misname a tool, and independently of `hasCommand`, since a call that
+      carries arguments has no exact-command tier. */
+  toolScope?: boolean
   /** Extra interpolation values for the tier labels (e.g. `role`). */
   labelValues?: Record<string, string>
   onAction: (action: string, pattern?: string) => void
 }
 
-export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCommand = true, disabled, className, trustAllLabelKey, trustReadsLabelKey, showTrustAll = true, showTrustBase = true, trustCommandLabelKey, trustBaseLabelKey, labelValues, onAction }: TrustDropdownProps) {
+export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCommand = true, disabled, className, trustAllLabelKey, trustReadsLabelKey, showTrustAll = true, showTrustBase = true, trustCommandLabelKey, trustBaseLabelKey, toolScope = false, labelValues, onAction }: TrustDropdownProps) {
   const [open, setOpen] = useState(false)
 
   // Pattern shaping lives in utils/trustPatterns so every surface that offers
@@ -62,7 +69,9 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCo
   const basePattern = trustBasePattern(baseCommand)
   const baseLabel = baseCommandLabel(baseCommand)
   const commandKey = trustCommandLabelKey ?? 'components.trustDropdown.trust_this_command'
-  const baseKey = trustBaseLabelKey ?? 'components.trustDropdown.trust_all_base'
+  const baseKey = toolScope
+    ? 'components.trustDropdown.trust_tool_any_arguments'
+    : trustBaseLabelKey ?? 'components.trustDropdown.trust_all_base'
 
   // One list, built once, so the count below and the items rendered can never
   // disagree. The command label is interpolated INTO a whole sentence rather
@@ -126,7 +135,7 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCo
       plain: i18nT(commandKey, { cmd: fullCommand, ...labelValues }),
     })
   }
-  if (hasCommand && isShell && showTrustBase) {
+  if ((hasCommand && isShell && showTrustBase) || toolScope) {
     tiers.push({
       action: 'trust_base',
       fire: () => onAction('trust_base', basePattern),

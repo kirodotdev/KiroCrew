@@ -8763,7 +8763,8 @@
       "trust_all_tools": "Considera attendibili tutti gli strumenti di questa sessione",
       "trust_all_tools_channel": "Considera attendibili tutti gli strumenti di questo canale — persiste dopo il riavvio",
       "trust_this_command": "Fidati di «<mono>{{cmd}}</mono>»",
-      "trust_this_command_channel": "Fidati di «<mono>{{cmd}}</mono>» per @{{role}} — fino al riavvio di {{productName}}"
+      "trust_this_command_channel": "Fidati di «<mono>{{cmd}}</mono>» per @{{role}} — fino al riavvio di {{productName}}",
+      "trust_tool_any_arguments": "Fidati di <mono>{{base}}</mono> con qualsiasi input per questa sessione"
     },
     "tunnelStatus": {
       "connected": "Connesso",

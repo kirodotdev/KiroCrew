@@ -9885,13 +9885,20 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
             pattern = body.get("pattern", "")
             base = _get_pattern_from_pending(owner, request_id, "base_command")
             grantable = _get_pattern_from_pending(owner, request_id, "trust_base_grantable")
+            # Set only on a non-shell card: the server-derived per-tool key.
+            # The display ``base`` is then the tool's
+            # ``mcp__server__tool`` label, never authority.
+            tool_key = _get_pattern_from_pending(owner, request_id, "trust_base_key")
             if not isinstance(pattern, str) or not pattern:
                 return _deny_trust_pattern(name, request_id, original_action, "pattern_required")
             if grantable != "1" or not base:
                 return _deny_trust_pattern(name, request_id, original_action, "pattern_underivable")
             if pattern != base_consent_pattern(base):
                 return _deny_trust_pattern(name, request_id, original_action, "approval_superseded")
-            owner._trusted_patterns.update(base_trust_patterns(base))
+            if tool_key:
+                owner._trusted_patterns.add(exact_trust_pattern(tool_key))
+            else:
+                owner._trusted_patterns.update(base_trust_patterns(base))
         action = "approved"
     # YOLO: auto-approve all tools globally (all slots)
     elif action == "yolo":

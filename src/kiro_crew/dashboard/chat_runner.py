@@ -608,11 +608,16 @@ from kiro_crew.trust_patterns import (  # noqa: F401 -- compatibility re-export
     _mask_quoted_separators,
     approval_command,
     approval_display_command,
+    approval_tool_scope_key,
+    canonical_non_shell_tool,
 )
 from kiro_crew.trust_patterns import extract_base_command as _extract_base_command
 from kiro_crew.trust_patterns import extract_bash_command as _extract_bash_command
 from kiro_crew.trust_patterns import extract_full_command as _extract_full_command
 from kiro_crew.trust_patterns import matches_trusted_pattern as _matches_trusted_pattern
+from kiro_crew.trust_patterns import (  # noqa: F401 -- compatibility re-export
+    shell_grant_names_reserved_key,
+)
 from kiro_crew.trust_patterns import (  # noqa: F401 -- compatibility re-export
     split_command_segments as _split_command_segments,
 )
@@ -14020,6 +14025,20 @@ async def _run_chat(
                         if _tp_command
                         else None
                     )
+                    if not matched:
+                        # A per-tool grant ("trust <server>/<tool> with any
+                        # arguments") is keyed on the same cached identity and
+                        # on nothing the agent authors, so it matches whether
+                        # or not this call carries arguments. Its key is
+                        # distinct from the argument-free one above, so neither
+                        # grant can stand in for the other.
+                        _tp_tool_key = approval_tool_scope_key(
+                            is_shell=event.is_shell,
+                            tool_name=event.tool_name,
+                            mcp_server_name=event.mcp_server_name,
+                        )
+                        if _tp_tool_key:
+                            matched = _matches_trusted_pattern(_tp_tool_key, slot._trusted_patterns)
                     if matched and event.is_shell and _tp_command:
                         # The user granted a PROGRAM NAME. Do not honour it when
                         # that name no longer identifies the program it appears
@@ -14450,6 +14469,10 @@ async def _run_chat(
                     and bool(_trust_key)
                     and not event.tool_input_redacted
                     and _safe_full == _full
+                    # Shell and MCP grants share one pattern store, so a shell
+                    # command spelling an internal MCP key must never become a
+                    # grant: it would authorize that tool.
+                    and not (event.is_shell and shell_grant_names_reserved_key(_trust_key))
                 )
                 if _command_grantable:
                     perm_meta["full_command"] = _safe_full
@@ -14482,6 +14505,35 @@ async def _run_chat(
                 _safe_base, _ = redact_credentials(_safe_base)
                 if _command_grantable and _base and _safe_base == _base:
                     perm_meta["base_command"] = _safe_base
+                    perm_meta["trust_base_grantable"] = "1"
+                # Per-tool tier for a non-shell call: "trust this server/tool
+                # with any arguments for this session". It names the
+                # cached server/tool identity and none of the call's argument
+                # bytes, so the arguments may be present, and it is offered
+                # whether or not they are. A transport-redacted call stays
+                # allow-once here as for every scoped tier, because the matcher
+                # above skips redacted calls and a grant it could never honour
+                # must not be offered.
+                _tool_key = approval_tool_scope_key(
+                    is_shell=event.is_shell,
+                    tool_name=event.tool_name,
+                    mcp_server_name=event.mcp_server_name,
+                )
+                _tool_display = canonical_non_shell_tool(event.mcp_server_name, event.tool_name)
+                _safe_tool_display, _ = redact_exfiltration_urls(_tool_display)
+                _safe_tool_display, _ = redact_credentials(_safe_tool_display)
+                if (
+                    _tool_key
+                    and _tool_display
+                    and not event.tool_input_redacted
+                    and _safe_tool_display == _tool_display
+                    # The client shapes a base consent by splitting on ``,``
+                    # (utils/trustPatterns), so a comma in the identity would
+                    # make the consent string describe two scopes.
+                    and "," not in _tool_display
+                ):
+                    perm_meta["base_command"] = _tool_display
+                    perm_meta["trust_base_key"] = _tool_key
                     perm_meta["trust_base_grantable"] = "1"
                 # A decline known before the row exists is born into the row. Spec:
                 # docs/system-specs/modules/app-notifications.md, "Sound events" (permission row).

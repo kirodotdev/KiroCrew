@@ -8763,7 +8763,8 @@
       "trust_all_tools": "Confiar en todas las herramientas de esta sesión",
       "trust_all_tools_channel": "Confiar en todas las herramientas de este canal — persiste tras reiniciar",
       "trust_this_command": "Confiar en «<mono>{{cmd}}</mono>»",
-      "trust_this_command_channel": "Confiar en «<mono>{{cmd}}</mono>» para @{{role}} — hasta que {{productName}} se reinicie"
+      "trust_this_command_channel": "Confiar en «<mono>{{cmd}}</mono>» para @{{role}} — hasta que {{productName}} se reinicie",
+      "trust_tool_any_arguments": "Confiar en <mono>{{base}}</mono> con cualquier entrada en esta sesión"
     },
     "tunnelStatus": {
       "connected": "Conectado",

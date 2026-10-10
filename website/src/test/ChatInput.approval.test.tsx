@@ -372,6 +372,33 @@ describe('ChatInput approval flow', () => {
     expect(buttons.some(b => /Trust all .+ commands/.test(b.textContent || ''))).toBe(false)
   })
 
+  it('offers the per-tool tier for an MCP call that carries arguments', async () => {
+    // Shape the gateway writes for an argument-bearing MCP call: no exact
+    // tier (trust_command_grantable absent), the per-tool tier proven.
+    const state = stateWithApproval()
+    const msg = state.chat!.messages[1]
+    const meta = msg.meta!
+    msg.content = 'Fetching the issue'
+    meta.tool_title = 'Fetching the issue'
+    meta.tool_input = '{"owner":"o","repo":"r","issue_number":1}'
+    meta.is_shell = ''
+    meta.is_read_only = ''
+    delete meta.full_command
+    delete meta.trust_command_grantable
+    meta.base_command = 'mcp__github__get_issue'
+    const store = createTestStore(state)
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByText('Trust'))
+    const texts = screen.getAllByRole('menuitem').map(b => b.textContent)
+    expect(texts).toEqual(['Trust mcp__github__get_issue with any input for this session', 'Trust all tools for this session'])
+    fireEvent.click(screen.getByText(/with any input for this session/))
+    await waitFor(() => {
+      expect(api.approveChatSlot).toHaveBeenCalledWith(
+        'slot-1', 'trust_base', { request_id: 'ap-123', pattern: 'mcp__github__get_issue *' }
+      )
+    })
+  })
+
   it('keeps the session tier when the server cannot prove a command scope', () => {
     // A redacted or uncanonicalizable command withholds the tiers that NAME
     // that command. The session grant names none, so it stays: the whole menu

@@ -8763,7 +8763,8 @@
       "trust_all_tools": "Approuver tous les outils pour cette session",
       "trust_all_tools_channel": "Approuver tous les outils de ce canal — persiste après redémarrage",
       "trust_this_command": "Faire confiance à « <mono>{{cmd}}</mono> »",
-      "trust_this_command_channel": "Faire confiance à « <mono>{{cmd}}</mono> » pour @{{role}} — jusqu’au redémarrage de {{productName}}"
+      "trust_this_command_channel": "Faire confiance à « <mono>{{cmd}}</mono> » pour @{{role}} — jusqu’au redémarrage de {{productName}}",
+      "trust_tool_any_arguments": "Faire confiance à <mono>{{base}}</mono> avec toute entrée pour cette session"
     },
     "tunnelStatus": {
       "connected": "Connecté",

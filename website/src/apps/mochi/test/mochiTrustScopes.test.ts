@@ -115,6 +115,21 @@ describe('permissionApprovalFromFrame carries the scope fields', () => {
     expect(req?.trustGrantable).toBe(true)
   })
 
+  it('drops the dashboard-only per-tool MCP tier, which the pet has no label for', () => {
+    const req = permissionApprovalFromFrame(
+      frame({
+        request_id: 'r1',
+        tool_title: 'Fetching the issue',
+        base_command: 'mcp__github__get_issue',
+        trust_base_key: 'mcp-trust-any:v1:676974687562:6765745f6973737565',
+        trust_base_grantable: '1',
+        trust_grantable: '1',
+      }),
+    )
+    expect(req?.baseCommand).toBeUndefined()
+    expect(req?.trustGrantable).toBe(true)
+  })
+
   it('leaves trust unavailable when the gateway sent no grant proof', () => {
     const req = permissionApprovalFromFrame(frame({ request_id: 'r1', tool_title: 'T' }))
     expect(req?.fullCommand).toBeUndefined()

@@ -181,6 +181,34 @@ describe('TrustDropdown', () => {
     })
   })
 
+  // An MCP call that carries arguments has no exact-command tier, but
+  // the server can still offer "trust this tool with any input for this session".
+  describe('per-tool tier for an argument-bearing MCP call', () => {
+    const tool = 'mcp__github__get_issue'
+
+    it('offers the tool tier with its own label beside session trust', () => {
+      render(<TrustDropdown fullCommand="" baseCommand={tool} isShell={false} hasCommand={false} toolScope className={btnClass} onAction={() => {}} />)
+      fireEvent.click(screen.getByText('Trust'))
+      const texts = screen.getAllByRole('menuitem').map(b => b.textContent)
+      expect(texts).toEqual([`Trust ${tool} with any input for this session`, 'Trust all tools for this session'])
+      // Never the shell wording, which would call a tool a family of commands.
+      expect(texts.some(t => t?.includes('commands'))).toBe(false)
+    })
+
+    it('emits trust_base with the gateway consent pattern', () => {
+      const onAction = vi.fn()
+      render(<TrustDropdown fullCommand="" baseCommand={tool} isShell={false} hasCommand={false} toolScope className={btnClass} onAction={onAction} />)
+      fireEvent.click(screen.getByText('Trust'))
+      fireEvent.click(screen.getByText(/with any input for this session/))
+      expect(onAction).toHaveBeenCalledWith('trust_base', `${tool} *`)
+    })
+
+    it('stays hidden without the server proof', () => {
+      render(<TrustDropdown fullCommand="" baseCommand={tool} isShell={false} hasCommand={false} className={btnClass} onAction={() => {}} />)
+      expect(screen.queryByText(/with any input for this session/)).not.toBeInTheDocument()
+    })
+  })
+
   it('disables button when disabled prop is true', () => {
     render(<TrustDropdown fullCommand="ls /tmp" baseCommand="ls" isShell disabled className={btnClass} onAction={() => {}} />)
     expect(screen.getByText('Trust').closest('button')).toBeDisabled()

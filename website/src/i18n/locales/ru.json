@@ -8887,7 +8887,8 @@
       "trust_all_tools": "Доверять всем инструментам в этом сеансе",
       "trust_all_tools_channel": "Доверять всем инструментам в этом канале — сохраняется после перезапуска",
       "trust_this_command": "Доверять «<mono>{{cmd}}</mono>»",
-      "trust_this_command_channel": "Доверять «<mono>{{cmd}}</mono>» для @{{role}} — до перезапуска {{productName}}"
+      "trust_this_command_channel": "Доверять «<mono>{{cmd}}</mono>» для @{{role}} — до перезапуска {{productName}}",
+      "trust_tool_any_arguments": "Доверять <mono>{{base}}</mono> с любыми входными данными в этом сеансе"
     },
     "tunnelStatus": {
       "connected": "Подключено",
