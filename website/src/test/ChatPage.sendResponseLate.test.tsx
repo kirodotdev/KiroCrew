@@ -28,6 +28,7 @@ import chatReducer, { confirmOptimisticSend, selectTurnInterrupted, sseChatMessa
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import { i18nT } from '../i18n/t'
+import { addStashEntry, loadPromptStash, makeStashEntry, withPromptStashLock } from '../utils/promptStash'
 
 vi.mock('react-virtuoso', () => ({
   Virtuoso: ({ data, itemContent }: { data?: unknown[]; itemContent: (index: number, item: unknown) => ReactNode }) => (
@@ -288,5 +289,57 @@ describe('the footer running indicator while the trailing send is unconfirmed', 
     await waitFor(() => expect(thinking()).toBeInTheDocument())
     expect(screen.queryByTestId('send-pending')).toBeNull()
     expect(messages().some(m => m.role === 'notice' || m.role === 'error')).toBe(false)
+  })
+})
+
+/* A draft restored from the prompt stash keeps its stash entry until the
+ * server confirms the send. `send()` counts a `response-late` plain send as
+ * delivered (the bubble stays pending rather than restoring), but that is a
+ * guess, and the stash entry is the draft's only durable copy: if the late
+ * POST never landed, a reload would otherwise lose the prompt. */
+describe('a restored stash draft sent from the main chat', { timeout: 20_000 }, () => {
+  const STASHED = 'restored draft'
+  const flushStash = () => act(async () => { await withPromptStashLock(() => undefined) })
+
+  async function restoreAndSend({ confirmed = false } = {}) {
+    expect(addStashEntry('slot-a', makeStashEntry(STASHED, []))).toBe(true)
+    const store = makeStore()
+    sendChat.mockImplementation(async () => {
+      if (confirmed) return { ok: true, json: () => Promise.resolve({ ok: true, mid: 'm-ok' }) }
+      throw new DOMException('aborted', 'AbortError')
+    })
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const view = await act(async () => render(
+      <QueryClientProvider client={qc}>
+        <Provider store={store}>
+          <ThemeProvider>
+            <MemoryRouter><ChatPage /></MemoryRouter>
+          </ThemeProvider>
+        </Provider>
+      </QueryClientProvider>,
+    ))
+    const input = await waitFor(() => screen.getByLabelText('Message input') as HTMLTextAreaElement)
+    fireEvent.keyDown(input, { key: 's', ctrlKey: true })
+    await waitFor(() => expect(input.value).toBe(STASHED))
+    await act(async () => {
+      fireEvent.keyDown(input, { key: 'Enter' })
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(sendChat).toHaveBeenCalled())
+    await act(async () => { for (let i = 0; i < 8; i++) await Promise.resolve() })
+    await flushStash()
+    return view
+  }
+
+  it('keeps the entry when the send hits the deadline unconfirmed, across a reload', async () => {
+    const view = await restoreAndSend()
+    view.unmount()
+    await flushStash()
+    expect(loadPromptStash('slot-a').map(e => e.text)).toEqual([STASHED])
+  })
+
+  it('removes the entry once the server confirms the send', async () => {
+    await restoreAndSend({ confirmed: true })
+    await waitFor(() => expect(loadPromptStash('slot-a')).toEqual([]))
   })
 })

@@ -13,7 +13,7 @@
   "website/src/components/AgentSkillsEditor.tsx": 2,
   "website/src/components/ApprovalModePicker.tsx": 6,
   "website/src/components/AutoNudgePopover.tsx": 2,
-  "website/src/components/ChatInput.tsx": 5,
+  "website/src/components/ChatInput.tsx": 1,
   "website/src/components/CronFolderHeader.tsx": 10,
   "website/src/components/FeaturePreviewIntroDialog.tsx": 3,
   "website/src/components/InstanceTabBar.tsx": 6,

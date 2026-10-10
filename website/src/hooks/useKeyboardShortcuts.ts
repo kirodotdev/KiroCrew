@@ -283,6 +283,7 @@ export const SHORTCUT_LABEL_KEY: Record<string, string> = {
   // Reused: the ChatInput control this chord fires.
   'optimize-prompt': 'components.chatInput.optimize_prompt',
   'edit-last-message': 'hooks.useKeyboardShortcuts.edit_last_message',
+  'stash-prompt': 'components.promptStash.shortcut_label',
   'agent-monitor': 'hooks.useKeyboardShortcuts.open_agent_monitor',
   'stop-speaking': 'hooks.useKeyboardShortcuts.stop_speaking',
   'notification-prev': 'hooks.useKeyboardShortcuts.previous_notification',

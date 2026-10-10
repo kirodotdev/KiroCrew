@@ -394,6 +394,8 @@ describe('composer collapse', () => {
     openOverflow()
     const item = screen.getByTitle('Sketch')
     expect(item).toHaveAttribute('data-disabled')
+    expect(item.querySelector('.lucide-inline')).toHaveClass('group-data-[disabled]:opacity-40')
+    expect(item.querySelector('.text-text')).toHaveClass('group-data-[disabled]:opacity-40')
     // ... and the collapse stays reachable, because disabling the whole trigger
     // mid-upload would take the collapse away with it.
     expect(screen.getByTestId('composer-collapse-row')).toBeInTheDocument()

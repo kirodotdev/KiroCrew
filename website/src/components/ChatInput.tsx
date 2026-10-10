@@ -31,10 +31,12 @@ import { useTerminalCommand } from '../hooks/useTerminalCommand'
 import { expandAll as expandPasteTokens } from '../utils/pasteTokens'
 import { Btn } from './ui'
 import { useImeGuard } from '../hooks/useImeGuard'
+import type { PasteBlock } from '../utils/pasteTokens'
+import { usePromptStash } from '../hooks/usePromptStash'
 import PasteHighlightLayer, { INPUT_TYPO } from './PasteHighlightLayer'
 import PasteHoverLayer from './PasteHoverLayer'
 import FollowUpBar from './FollowUpBar'
-import { platformShortcut } from '../utils/platform'
+import { platformShortcut, isMac as isMacPlatformForStash } from '../utils/platform'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { useComposerDraftText, useComposerPasteSlice, useComposerVoiceSlice, type ComposerVoiceInputProps } from '../chat-core/composer/Composer'
 import { useComposerTreeDrop } from './composerTreeDrop'
@@ -59,6 +61,8 @@ import { HoldToTalkBar, MicButton, VoiceCaptureStatus } from './chat-input/Voice
 import { AgentChip, ContextUsageControl, ModelChip, SessionControlChips, useContextPopover, useShelfMeasure } from './chat-input/ContextShelf'
 import { useAutoCompactThreshold } from './chat-input/autoCompact'
 import { AttachMenu, usePlusMenu } from './chat-input/attach'
+import PromptStashStatusLine from './PromptStashStatusLine'
+import { DROPDOWN_ROW, PromptStashMenuItems } from './PromptStashBadge'
 import { BusySendControls, CompactingIndicator, useComposerSend } from './chat-input/busySend'
 import { CollapsedComposerBar, collapseMenuRowElement, useComposerCollapse } from './chat-input/collapse'
 import { useGuideRevealScope } from '../guide/GuideRevealScope'
@@ -218,6 +222,7 @@ function ChatInput({
   typedCommandMenus = true,
   slotApprovalChrome = true,
   promptOptimizer = true,
+  promptStash: promptStashEnabled = true,
   collapsible = false,
   connected = true,
   onOptimizeResult,
@@ -394,9 +399,25 @@ function ChatInput({
     el.click()
     setPlusOpen(false)
   }
+  // The composer send goes through the prompt stash's `trackSend` so a
+  // restored draft's entry is kept until the host confirms delivery. The hook
+  // is created further down (it needs the undo history), hence the ref.
+  const promptStashTrackSendRef = useRef<((send: () => void | Promise<boolean>) => void) | null>(null)
+  const onSendTracked = useCallback(() => {
+    const track = promptStashTrackSendRef.current
+    if (track) track(onSend)
+    else void onSend()
+  }, [onSend])
+  // A composer steer consumes the draft like a send. A follow-up chip's steer
+  // carries its own `text` and leaves the composer alone, so it is not tracked.
+  const onSteerTracked = useMemo(() => onSteer && ((opts?: { auto?: boolean; text?: string }) => {
+    const track = promptStashTrackSendRef.current
+    if (track && !opts?.text) track(() => onSteer(opts))
+    else void onSteer(opts)
+  }), [onSteer])
   const { effectiveBusyMode, setBusySendMode, steerOnly, overLimitPending, fireComposer: fireAgentComposer, stopWithTap, sendFollowUp } = useComposerSend({
-    slotId, busyMode, isRunning, stopState, canSteer, onSteer, jevAutoAvailable, disabled, holdSend, voiceTranscribing, value, pasteBlocks, contextWindowTokens,
-    pendingFilesCount: pendingFiles.length, pendingSessionsCount: pendingSessions.length, hasQuote: !!pendingQuote, onSend, onStop, onFollowUpSend,
+    slotId, busyMode, isRunning, stopState, canSteer, onSteer: onSteerTracked, jevAutoAvailable, disabled, holdSend, voiceTranscribing, value, pasteBlocks, contextWindowTokens,
+    pendingFilesCount: pendingFiles.length, pendingSessionsCount: pendingSessions.length, hasQuote: !!pendingQuote, onSend: onSendTracked, onStop, onFollowUpSend,
   })
   // All terminal draft sends enter here before agent routing or prompt-length
   // confirmation. A terminal draft never queues or steers.
@@ -516,7 +537,7 @@ function ChatInput({
     promptHistory.endBrowsing()
   }, [slotId, closePickers, promptHistory])
 
-  const { handleUndoKey, stepUndoHistory, appendBoundary, endUndoBurst, removeFileEndingUndoBurst, removeDirEndingUndoBurst } = useUndoHistory({
+  const { handleUndoKey, stepUndoHistory, appendBoundary, endUndoBurst, removeFileEndingUndoBurst, removeDirEndingUndoBurst, reseed: reseedUndoHistory } = useUndoHistory({
     value, pasteBlocks, autoFocusKey, composerControl, pasteBlocksRef, valueFromUserRef, optimizingRef, onChange, onPasteBlocksChange, onRemoveFile, onRemoveDir, inputRef, ime,
   })
   const listContinuation = useTextareaListContinuation(pasteBlocksRef, ime, endUndoBurst)
@@ -529,6 +550,37 @@ function ChatInput({
     slotId, chatStore, valueRef, pasteBlocks, onChange, onOptimizeResult, lexicalComposer, lexicalLoadFailed, composerControl, inputRef,
     valueFromUserRef, optimizingRef, appendUndoBoundary: appendBoundary, terminalCommands,
   })
+  // From the platform, not the `isMac` prop: only one host passes that prop,
+  // and the chord label must be right in split panes and the side chat too.
+  const promptStashChord = isMacPlatformForStash ? '⌘S' : 'Ctrl+S'
+  // The stash's composer writes (clear on stash, restore, swap) are programmatic
+  // replacements of text whose only other copy is the stash entry just written
+  // or deleted, so they reseed the undo history instead of recording a step.
+  // Both composers use this host history: Lexical routes UNDO_COMMAND to it
+  // through `onHistoryStep`, so the reseed must run for Lexical too.
+  const reseedPromptStashUndo = useCallback((text: string, blocks: PasteBlock[]) => {
+    reseedUndoHistory(text, blocks)
+  }, [reseedUndoHistory])
+  const promptStash = usePromptStash({
+    slotKey: promptStashEnabled ? slotId : null, value, blocks: pasteBlocks, onChange, onBlocksChange: onPasteBlocksChange,
+    onReseed: reseedPromptStashUndo,
+    inert: disabled || optimizing, chordLabel: promptStashChord,
+    // Attachments are not stashed (follow-up under #14766); any pending makes
+    // both actions refuse rather than restore text over files or leave them behind.
+    // Folder references are `@dir/` tokens in the text, so they travel with it.
+    attachmentCount: pendingFiles.length + pendingSessions.length,
+    // The same signal that swaps the "+" drop-up for the touch overflow below:
+    // where the stash rows live in that menu, the copy points at the menu and
+    // not at a chord a touch keyboard cannot press.
+    // Copy follows the input method: a keyboard user in a narrow window
+    // still has the chord, even though the rows mount in the overflow.
+    touch: isTouchDevice(),
+  })
+  promptStashTrackSendRef.current = promptStash.trackSend
+  // The stash rows need a pointer/touch host wherever there is a session to
+  // stash for. On touch that host is the overflow behind `composer-more-trigger`,
+  // which this flag mounts (see the bottom icon row).
+  const stashTouchHost = promptStashEnabled && !!slotId
   // A file-tree row dropped here goes to the host's "Add to chat" handler;
   // OS file and text drags fall through to the host's handlers.
   const treeDrop = useComposerTreeDrop({
@@ -1020,7 +1072,8 @@ function ChatInput({
             className="mb-1 px-1"
           />
         )}
-        <div className={`relative ${showDictation || voiceHoldMode ? 'sr-only' : ''} ${manualHeight !== null ? 'flex-1 min-h-0 flex flex-col' : ''}`}>
+        {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions -- keydown bubbling from the composer inside (textarea or Lexical); the wrapper itself takes no focus */}
+        <div onKeyDown={promptStashEnabled ? promptStash.onKeyDown : undefined} className={`relative ${showDictation || voiceHoldMode ? 'sr-only' : ''} ${manualHeight !== null ? 'flex-1 min-h-0 flex flex-col' : ''}`}>
         {/* The staged quote sits inside the text area, above the caret: the
             quoted message is the first thing the reply says, so it is drawn
             where the reply is written rather than in the strips above (those
@@ -1128,11 +1181,50 @@ function ChatInput({
 
         <PromptLengthNotice value={value} blocks={pasteBlocks} contextWindowTokens={contextWindowTokens} confirmPending={overLimitPending} />
 
+        {promptStashEnabled && (
+          <>
+            {/* Always mounted before the first action: loading visible stash UI
+                must never delay or lose its screen-reader announcement. The inner
+                span is keyed by the announcement sequence so a refusal repeated
+                word for word (a second chord press at the cap) still replaces the
+                text node, which is what makes the region speak it again. */}
+            <span className="sr-only" aria-live="polite" aria-atomic="true" data-testid="prompt-stash-status">
+              <span key={promptStash.announcementKey} data-testid="prompt-stash-status-text">{promptStash.announcement}</span>
+            </span>
+            {(promptStash.error || promptStash.notice || promptStash.count > 0) && (
+              <PromptStashStatusLine
+                error={promptStash.error}
+                notice={promptStash.notice}
+                noticeTone={promptStash.noticeTone}
+                count={promptStash.count}
+                full={promptStash.full}
+                chordLabel={promptStashChord}
+                touch={isTouchDevice()}
+                reclaimCount={promptStash.reclaimCount}
+                onClearOtherSessions={promptStash.clearOtherSessions}
+              />
+            )}
+          </>
+        )}
+
         {/* Bottom icon row */}
         <div className={`flex items-center justify-between px-2.5 pb-2 pt-0.5${terminal.active ? ' flex-wrap gap-y-1' : ''}`}>
           <div className="flex items-center gap-0.5 min-w-0">
-            <AttachMenu plus={plus} onUploadFiles={onUploadFiles} uploading={uploading} onCancelUpload={onCancelUpload} directFilePicker={directFilePicker} collapsible={collapsible} fileInputId={fileInputId} openPicker={openPicker} isMac={isMac} isMobile={isMobile} onScreenshot={onScreenshot} collapseMenuRow={collapseMenuRow} typedCommandMenus={typedCommandMenus && !terminal.active} onFileSelect={terminal.active ? undefined : onFileSelect} />
-            {directFilePicker && collapsible && (
+            <AttachMenu plus={plus} onUploadFiles={onUploadFiles} uploading={uploading} onCancelUpload={onCancelUpload} directFilePicker={directFilePicker} collapsible={collapsible} fileInputId={fileInputId} openPicker={openPicker} isMac={isMac} isMobile={isMobile} onScreenshot={onScreenshot} collapseMenuRow={collapseMenuRow} typedCommandMenus={typedCommandMenus && !terminal.active} onFileSelect={terminal.active ? undefined : onFileSelect}
+              stashTouchHost={stashTouchHost}
+              stashMenuRows={promptStashEnabled && slotId ? (
+                /* Prompt stash actions live in this menu, not the bottom action row:
+                   that row already holds its buttons (max-two-buttons-per-row). */
+                <PromptStashMenuItems stash={promptStash} chordLabel={promptStashChord} onPicked={() => plus.setPlusOpen(false)} />
+              ) : null}
+            />
+            {/* The prompt stash is a second reason for the touch overflow: with a
+                session (`stashTouchHost`) the stash and restore rows need a touch
+                host too -- a touch keyboard has no Cmd/Ctrl and the "+" menu never
+                mounts here -- so the overflow renders for them even when the
+                composer is not collapsible and even without `onUploadFiles` (the
+                side chat opts out of the stash, so it keeps its own layout). */}
+            {directFilePicker && (collapsible || stashTouchHost) && (
               /* The repo's own overflow mechanism, not a second spelling of it.
                  `max-two-buttons-per-row` names the two files to copy for exactly
                  this shape, and `DetailOverflowMenu.tsx` already answers the same
@@ -1165,6 +1257,7 @@ function ChatInput({
                        request finishes first clear the in-flight state for both.
                        Disabling the item while uploading prevents that. */
                     <DropdownMenuItem
+                      asChild
                       disabled={uploading}
                       /* Deferred one macrotask, which is this repo's established
                          remedy for opening a dialog from a menu item (see
@@ -1177,20 +1270,37 @@ function ChatInput({
                          blur/focus recursion. Past the close commit there is only
                          one trap. */
                       onSelect={() => { setTimeout(() => setSketchOpen(true), 0) }}
-                      title={i18nT('components.chatInput.sketch')}
-                      className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg cursor-pointer text-left"
                     >
-                      <PenLine size={14} className="w-4 shrink-0 text-muted lucide-inline" />
-                      <div className="min-w-0">
-                        <div className="text-[12px] font-medium text-text">{i18nT('components.chatInput.sketch')}</div>
-                        <div className="text-[11px] text-muted leading-snug">{i18nT('components.chatInput.sketch_desc')}</div>
-                      </div>
+                      <button
+                        type="button"
+                        title={i18nT('components.chatInput.sketch')}
+                        className={DROPDOWN_ROW}
+                      >
+                        <PenLine size={14} className="w-4 shrink-0 text-muted lucide-inline group-data-[disabled]:opacity-40" />
+                        <div className="min-w-0">
+                          <div className="text-[12px] font-medium text-text group-data-[disabled]:opacity-40">{i18nT('components.chatInput.sketch')}</div>
+                          <div className="text-[11px] text-muted leading-snug">{i18nT('components.chatInput.sketch_desc')}</div>
+                        </div>
+                      </button>
                     </DropdownMenuItem>
                   )}
                   {collapseMenuRow && (
                     <DropdownMenuItem asChild>
                       {collapseMenuRow}
                     </DropdownMenuItem>
+                  )}
+                  {/* Same rows as the "+" menu's, in this menu's own item
+                      component; Radix closes the menu on select, so no
+                      onPicked work is needed here. */}
+                  {stashTouchHost && (
+                    <PromptStashMenuItems
+                      host="dropdown"
+                      touch
+                      divider={!!onUploadFiles || !!collapseMenuRow}
+                      stash={promptStash}
+                      chordLabel={promptStashChord}
+                      onPicked={() => {}}
+                    />
                   )}
                 </DropdownMenuContent>
               </DropdownMenu>

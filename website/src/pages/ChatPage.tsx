@@ -1922,7 +1922,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // intercepted locally, transport error, refused). UI reactions all stay
   // inside send(); the verdict exists for callers that persist state only on
   // delivery (ArtifactPanel's submit-to-chat batch marks comments sent on it).
-  const send = useCallback(async (optionText?: string, targetSlot?: string, steerNow?: boolean | 'auto', isolated = false): Promise<boolean> => {
+  // `reportConfirmed` is the stricter verdict: it is called with true only when
+  // the server provably holds the message (a `dispatched` or `queued` receipt,
+  // or a correlated echo), never for a `response-late` or `unknown` receipt the
+  // boolean above counts as delivered. The composer's prompt stash deletes a
+  // restored draft's only durable copy on it, so a guess must not reach it.
+  const send = useCallback(async (optionText?: string, targetSlot?: string, steerNow?: boolean | 'auto', isolated = false, reportConfirmed?: (confirmed: boolean) => void): Promise<boolean> => {
     // Defense-in-depth: ChatInput already gates Send/Optimize buttons and
     // the keyboard Enter shortcut on `connected`, but a future caller (a
     // programmatic dispatch from a hotkey, a follow-up option click, an
@@ -2454,7 +2459,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       }
     }
     if (receipt.status === 'transport-error') {
-      if (slot && selectSendConfirmed(store.getState(), slot, sendId)) return true
+      if (slot && selectSendConfirmed(store.getState(), slot, sendId)) { reportConfirmed?.(true); return true }
       // Cause-stating and naming the restore ("...and try again"), the shared
       // core copy the other surfaces use, instead of a bare "Connection error".
       failLocalTurn({ role: 'error', content: i18nT('pages.chatPage.send_failed_connection'), cls: '' })
@@ -2467,7 +2472,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       // `optimistic` flag. A correlated echo is stronger evidence than the
       // missing response -- a channel-linked slot can deliver one -- and then
       // there is nothing to warn about.
-      if (slot && selectSendConfirmed(store.getState(), slot, sendId)) return true
+      if (slot && selectSendConfirmed(store.getState(), slot, sendId)) { reportConfirmed?.(true); return true }
       // An unconfirmed STEER is not counted as delivered: the steer receipt
       // policy hands its text back (applySteerReceipt), so a caller that
       // persists on this verdict (a comment batch) keeps its payload.
@@ -2569,6 +2574,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // not parse) may have started a turn, so it counts as delivered for the
     // same reason the composer above does not restore on it — a retry it
     // invited could duplicate a delivered turn.
+    reportConfirmed?.(receipt.status === 'dispatched' || receipt.status === 'queued'
+      || (!!slot && selectSendConfirmed(store.getState(), slot, sendId)))
     return receipt.status !== 'refused'
     // `send` is deliberately kept stable: it reads volatile values (agent,
     // model, project, mode, colorTheme, activeSlot) through refs so it does not
@@ -2607,6 +2614,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // comment batch as sent only when this resolves true.
     return send(message, target ?? undefined, steerFlag)
   }, [connected, tabsCtl.activeTab, activeSlot, dispatch, send, jevAutoConsented])
+
+  // The composer's send verdict for the prompt stash: true only when the
+  // server confirmed it holds the message. A `response-late` or `unknown`
+  // receipt resolves false, so a restored draft keeps its stash entry.
+  const composerSend = useCallback(async (): Promise<boolean> => {
+    let confirmed = false
+    const delivered = await send(undefined, undefined, undefined, false, (ok) => { confirmed = ok })
+    return delivered && confirmed
+  }, [send])
 
   // The armed auto-send (?autoSend=1, a signed token, an app launch) and a
   // widget action's prefill.
@@ -6368,7 +6384,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               // (typing, paste, undo, picker inserts), never for a parent-driven
               // seed -- so it is the signal that arms the prefill hint's expiry.
               onChange={composerUserEdit}
-              onSend={() => send()}
+              onSend={composerSend}
               terminalCommands={activeSlot && !currentSlot ? 'pending' : currentSlot?.executor === 'remote' ? 'remote' : 'local'}
               canSteer={composerBusy}
               onSteer={steer}

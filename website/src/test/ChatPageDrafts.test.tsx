@@ -21,6 +21,8 @@ import {
   __resetNavSeamForTests,
 } from '../utils/errorReport'
 import { PREFILL_STORAGE_KEY, writePrefill } from '../utils/navIntent'
+import { DRAFTS_KEY } from '../utils/chatDrafts'
+import { addStashEntry, loadPromptStash, makeStashEntry } from '../utils/promptStash'
 
 vi.mock('react-virtuoso', () => ({
   Virtuoso: ({ data, itemContent }: { data?: unknown[]; itemContent: (index: number, item: unknown) => ReactNode }) => (
@@ -864,6 +866,33 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
       return s
     })
     expect(saved['new-slot']).toBeUndefined()
+  })
+
+  it('keeps the restored stash entry when the normal debounced draft save hits quota', async () => {
+    const restoredText = 'safe restored draft'
+    expect(addStashEntry('slot-a', makeStashEntry(restoredText, []))).toBe(true)
+
+    const store = makeStore('slot-a', [{ key: 'slot-a' }])
+    await renderAndWaitForInput(store)
+    const originalSetItem = Storage.prototype.setItem
+    let failedDraftWrites = 0
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (key: string, value: string) {
+      if (key === DRAFTS_KEY && value.includes(restoredText)) {
+        failedDraftWrites += 1
+        throw new DOMException('quota', 'QuotaExceededError')
+      }
+      return originalSetItem.call(this, key, value)
+    })
+
+    const input = screen.getByLabelText('Message input')
+    await act(async () => {
+      fireEvent.keyDown(input, { key: 's', ctrlKey: true })
+      await Promise.resolve()
+    })
+
+    expect(input).toHaveValue(restoredText)
+    await waitFor(() => expect(failedDraftWrites).toBeGreaterThan(0))
+    expect(loadPromptStash('slot-a').map(entry => entry.text)).toEqual([restoredText])
   })
 
   it('restores draft to localStorage on connection error', async () => {

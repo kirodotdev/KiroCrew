@@ -304,5 +304,18 @@ export function useUndoHistory({ value, pasteBlocks, autoFocusKey, composerContr
 
   const endUndoBurst = useCallback(() => { undoLastEditRef.current = 0 }, [])
 
-  return { handleUndoKey, stepUndoHistory, appendBoundary, endUndoBurst, removeFileEndingUndoBurst, removeDirEndingUndoBurst }
+  /** Replace the history with one exact snapshot. For programmatic replacements
+   *  whose only other copy was just deleted (a prompt-stash restore): recording
+   *  them as an undo step would let Ctrl+Z strand the restored text in the redo
+   *  branch. Takes blocks too, because a restored paste can share the current
+   *  token text while carrying different content, so the value-keyed effect
+   *  above does not run. */
+  const reseed = useCallback((text: string, blocks: PasteBlock[]) => {
+    undoHistoryRef.current = [{ value: text, selStart: text.length, selEnd: text.length, blocks }]
+    undoPointerRef.current = 0
+    undoLastEditRef.current = 0
+    slotSettlingRef.current = false
+  }, [])
+
+  return { handleUndoKey, stepUndoHistory, appendBoundary, endUndoBurst, removeFileEndingUndoBurst, removeDirEndingUndoBurst, reseed }
 }

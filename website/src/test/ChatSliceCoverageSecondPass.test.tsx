@@ -71,6 +71,7 @@ import { ASK_ANSWERED_HEADER, ASK_QUESTION_SERVER, MAX_TOOL_RESULT_CHARS } from 
 import type { ChatMessage, ChatSlot } from '../types'
 import type { RootState } from '../store'
 import { __resetErrorJournalForTests, recordError } from '../utils/errorReport'
+import { addStashEntry, loadPromptStash, makeStashEntry } from '../utils/promptStash'
 
 const apiMock = vi.hoisted(() => ({
   chatSlotDetail: vi.fn(),
@@ -1606,13 +1607,74 @@ describe('chatSlice thunks', () => {
 
   it('removes a deleted session from the history list', async () => {
     apiMock.sessions.mockResolvedValue({ sessions: [{ key: 'h1' }, { key: 'h2' }], has_more: false })
-    apiMock.deleteSession.mockResolvedValue({})
+    apiMock.deleteSession.mockResolvedValue({ ok: true })
     const store = makeStore()
     await store.dispatch(fetchHistory(false))
     expect(chat(store).history).toHaveLength(2)
     await store.dispatch(deleteHistorySession('h1'))
     expect(apiMock.deleteSession).toHaveBeenCalledWith('h1')
     expect(chat(store).history.map(h => h.key)).toEqual(['h2'])
+  })
+
+  it('clears the deleted dashboard history session stash, leaving its neighbors', async () => {
+    expect(addStashEntry('chat-1', makeStashEntry('deleted draft', []))).toBe(true)
+    expect(addStashEntry('chat-10', makeStashEntry('neighbor draft', []))).toBe(true)
+    apiMock.deleteSession.mockResolvedValue({ ok: true })
+    const store = makeStore()
+
+    await store.dispatch(deleteHistorySession('dashboard_chat-1'))
+    expect(loadPromptStash('chat-1')).toEqual([])
+    expect(loadPromptStash('chat-10').map(entry => entry.text)).toEqual(['neighbor draft'])
+  })
+
+  // Deleting a stacked alias removes only that transcript; the canonical
+  // transcript and its slot can survive, so their drafts must too.
+  it('keeps the stash when a stacked alias key is deleted', async () => {
+    expect(addStashEntry('chat-3-300', makeStashEntry('surviving draft', []))).toBe(true)
+    apiMock.deleteSession.mockResolvedValue({ ok: true })
+    const store = makeStore()
+
+    await store.dispatch(deleteHistorySession('dashboard_dashboard_chat-3-300'))
+
+    expect(apiMock.deleteSession).toHaveBeenCalledWith('dashboard_dashboard_chat-3-300')
+    expect(loadPromptStash('chat-3-300').map(entry => entry.text)).toEqual(['surviving draft'])
+  })
+
+  // A search result can name a session that is also a live slot. The gateway
+  // removes that slot as part of a confirmed history delete, so its stash must
+  // be cleared too; a recreated session may immediately use the same key.
+  it('clears the stash when the confirmed history delete also removes a live slot', async () => {
+    expect(addStashEntry('chat-live', makeStashEntry('live draft', []))).toBe(true)
+    apiMock.deleteSession.mockResolvedValue({ ok: true })
+    const store = makeStore()
+    store.dispatch(addSlotOptimistic(slotRow('chat-live', { mode: 'dashboard', surface: 'dashboard' })))
+
+    await store.dispatch(deleteHistorySession('dashboard_chat-live'))
+
+    expect(apiMock.deleteSession).toHaveBeenCalledWith('dashboard_chat-live')
+    expect(loadPromptStash('chat-live')).toEqual([])
+    expect(addStashEntry('chat-live', makeStashEntry('new session draft', []))).toBe(true)
+    expect(loadPromptStash('chat-live').map(entry => entry.text)).toEqual(['new session draft'])
+  })
+
+  it('keeps the stash but preserves base row removal when a 200 response says ok false', async () => {
+    const key = 'dashboard_chat-held'
+    const slot = 'chat-held'
+    apiMock.sessions.mockResolvedValue({
+      sessions: [{ key, title: 'Held transcript' }, { key: 'h2' }],
+      has_more: false,
+    })
+    apiMock.deleteSession.mockResolvedValue({ ok: false })
+    expect(addStashEntry(slot, makeStashEntry('keep this draft', []))).toBe(true)
+    const store = makeStore()
+    await store.dispatch(fetchHistory(false))
+
+    const action = await store.dispatch(deleteHistorySession(key))
+
+    expect(action.meta.requestStatus).toBe('fulfilled')
+    expect(chat(store).history.map(row => row.key)).toEqual(['h2'])
+    expect(chat(store).undeletableHistory).toBeNull()
+    expect(loadPromptStash(slot).map(entry => entry.text)).toEqual(['keep this draft'])
   })
 
   // A refused delete: the gateway answers 409 with a machine-readable `code`
@@ -1627,11 +1689,13 @@ describe('chatSlice thunks', () => {
       status: 409,
       body: JSON.stringify({ ok: false, error: 'owned by nobody', code: 'cron_ownership_unknown' }),
     }))
+    expect(addStashEntry('h1', makeStashEntry('keep refused draft', []))).toBe(true)
     const store = makeStore()
     await store.dispatch(fetchHistory(false))
     await store.dispatch(deleteHistorySession('h1'))
     expect(chat(store).history.map(h => h.key)).toEqual(['h1', 'h2'])
     expect(chat(store).undeletableHistory).toEqual({ key: 'h1', title: 'Nightly digest', code: 'cron_ownership_unknown' })
+    expect(loadPromptStash('h1').map(entry => entry.text)).toEqual(['keep refused draft'])
     store.dispatch(clearUndeletableHistory())
     expect(chat(store).undeletableHistory).toBeNull()
   })
@@ -1675,7 +1739,7 @@ describe('chatSlice thunks', () => {
     await store.dispatch(fetchHistory(false))
     await store.dispatch(deleteHistorySession('h1'))
     expect(chat(store).undeletableHistory).toEqual({ key: 'h1', title: '', code: '' })
-    apiMock.deleteSession.mockResolvedValueOnce({})
+    apiMock.deleteSession.mockResolvedValueOnce({ ok: true })
     await store.dispatch(deleteHistorySession('h1'))
     expect(chat(store).undeletableHistory).toBeNull()
     expect(chat(store).history).toEqual([])

@@ -218,6 +218,9 @@ export const SHORTCUT_REGISTRY: readonly ShortcutEntry[] = [
   // fallback), not the global handler; listed for the reference so the
   // shortcuts modal advertises it alongside the other composer bindings.
   { id: 'edit-last-message', group: 'actions', dispatch: 'code', defaults: both({ key: 'ArrowUp', mod: true }) },
+  // Dispatched by ChatInput's composer (usePromptStash), not the global handler;
+  // listed for the reference. Claimed only while the composer has focus.
+  { id: 'stash-prompt', group: 'actions', dispatch: 'code', defaults: both({ key: 's', mod: true }) },
   // Literal Ctrl on every platform — see isAgentMonitorChord for why this one
   // does NOT follow the ⌘-on-Mac convention (`ctrl`, not `mod`, on both).
   { id: 'agent-monitor', group: 'actions', dispatch: 'code', defaults: both({ key: 'g', ctrl: true }) },

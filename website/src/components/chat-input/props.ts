@@ -29,7 +29,11 @@ export interface ChatInputProps {
    *  text over through its store so the host does not re-render per keystroke. */
   value?: string
   onChange: (v: string) => void
-  onSend: () => void
+  /** Send the composer. A host that can tell returns a promise of whether the
+   *  server confirmed delivery: a draft restored from the prompt stash keeps
+   *  its stash entry until that resolves `true`, so a host returning nothing
+   *  keeps the entry (safe default). */
+  onSend: () => void | Promise<boolean>
   /** Keep identified sessions pending until their local/remote metadata is available. */
   terminalCommands?: 'local' | 'remote' | 'pending'
   /** Rendered inside the composer's own width wrapper, directly above the
@@ -59,8 +63,11 @@ export interface ChatInputProps {
    *
    * `text` is a follow-up chip's own text: steer exactly that, leaving the
    * composer draft and its staging untouched (the rule an option send follows).
-   * A host that renders follow-up chips while busy must honour it. */
-  onSteer?: (opts?: { auto?: boolean; text?: string }) => void
+   * A host that renders follow-up chips while busy must honour it.
+   *
+   * Like `onSend`, a composer steer may return a promise of confirmed delivery
+   * for the prompt stash; returning nothing keeps a restored entry. */
+  onSteer?: (opts?: { auto?: boolean; text?: string }) => void | Promise<boolean>
   /** Whether the host may offer `Auto (Jev)` in the split button's mode picker:
    * the gateway reports the Decisions seam as permitted by governance AND
    * consented to. Defaults to false, so a surface that never asks cannot offer a
@@ -425,6 +432,12 @@ export interface ChatInputProps {
    * switch silently discards the draft it produced.
    */
   promptOptimizer?: boolean
+  /**
+   * Persisted prompt stash. Defaults on for ordinary on-record composers.
+   * Off-record composers whose drafts intentionally live only in memory must
+   * opt out so their text cannot cross that persistence boundary.
+   */
+  promptStash?: boolean
   /**
    * The user-driven collapse: the "put the message box away while I read" entry
    * point, the bar that replaces it, and the persisted preference.

@@ -177,14 +177,22 @@ export type AutomationRecord = LegacyGoalLoop | StructuredMonitor
 
 type JsonObject = Record<string, unknown>
 
+/** Remove the dashboard prefixes from a session key: one `dashboard:` (the live
+ * transport form), then any stacked `dashboard_` (the persisted-file form, which
+ * repeated normalization can stack). `deleteHistorySession` uses it to find a
+ * deleted session's prompt stash. */
+export function stripDashboardSessionPrefixes(key: string): string {
+  let folded = key
+  if (folded.startsWith('dashboard:')) folded = folded.slice('dashboard:'.length)
+  while (folded.startsWith('dashboard_')) folded = folded.slice('dashboard_'.length)
+  return folded
+}
+
 /** Match the backend's persisted dashboard-slot filename fold. Channel session
  * keys use transport punctuation (`slack:<ts>`) while dashboard slots use the
  * corresponding safe stem (`slack_<ts>`). */
 export function dashboardAutomationSlotKey(key: string): string {
-  let folded = key
-  if (folded.startsWith('dashboard:')) folded = folded.slice('dashboard:'.length)
-  while (folded.startsWith('dashboard_')) folded = folded.slice('dashboard_'.length)
-  return folded.replace(/[^a-zA-Z0-9_.-]/g, '_')
+  return stripDashboardSessionPrefixes(key).replace(/[^a-zA-Z0-9_.-]/g, '_')
 }
 
 function object(value: unknown): JsonObject | null {

@@ -13,6 +13,8 @@ import { isChatPageSurface } from '../../utils/channelOrigin'
 import { mergePreservedPastes } from '../../utils/pasteTokens'
 import { findReport, parseErrorCode } from '../../utils/errorReport'
 import type { HistoryDeleteRefusal } from '../../utils/historyDeleteRefusal'
+import { removePromptStashKeys, snapshotPromptStash } from '../../utils/promptStash'
+import { stripDashboardSessionPrefixes } from '../../monitoring/automation'
 import type { ChatState } from './state'
 import { filterMessages, safeKey } from './wire'
 import { enterActiveSlot, pushHistory } from './runState'
@@ -195,6 +197,15 @@ export const forkSlot = createAsyncThunk(
   },
 )
 
+/** The slot whose prompt stash a history delete of `key` owns, or null when
+ *  the key is a stacked alias whose ownership cannot be read from its name. */
+function stashOwnerSlot(key: string): string | null {
+  let slot = key
+  if (slot.startsWith('dashboard:')) slot = slot.slice('dashboard:'.length)
+  else if (slot.startsWith('dashboard_')) slot = slot.slice('dashboard_'.length)
+  return slot && stripDashboardSessionPrefixes(slot) === slot ? slot : null
+}
+
 /** Delete a history row. A refusal REJECTS WITH A VALUE rather than throwing:
  *  `api.deleteSession` throws an `ApiError` on any non-2xx, and the thunk
  *  boundary's `miniSerializeError` keeps string fields only, so a rethrow
@@ -210,8 +221,17 @@ export const deleteHistorySession = createAsyncThunk<
 >(
   'chat/deleteHistorySession',
   async (key, { getState, rejectWithValue }) => {
+    // Only a key that names one slot unambiguously owns its stash. A stacked
+    // alias (`dashboard_dashboard_<slot>`) is a separate transcript the gateway
+    // can delete while the canonical one and its slot survive, so its stash is
+    // kept; "Clear other sessions" can still reclaim it.
+    const slot = stashOwnerSlot(key)
+    // Listed before the DELETE: only the deleted session's own entries are
+    // cleared, never one stashed while the request was in flight.
+    const stashKeys = slot ? await snapshotPromptStash(slot) : []
     try {
-      await api.deleteSession(key)
+      const response = await api.deleteSession(key) as { ok?: unknown }
+      if (response?.ok === true) await removePromptStashKeys(stashKeys)
       return key
     } catch (e) {
       // Duck-typed on `body`, not `instanceof ApiError`, so a mocked transport
