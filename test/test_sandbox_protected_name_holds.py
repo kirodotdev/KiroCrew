@@ -333,7 +333,12 @@ class TestLeafOnlyPopulationIsRecorded:
     #: tier lists hold ``.vault`` only at the two ``$HOME``-joined spellings,
     #: so the resolved ``config_dir()`` spelling is a third, leaf-only name,
     #: the same hold ``kas`` gets there.
-    EXPECTED: dict[str, int] = {"standard": 269, "cc": 276, "strict": 277}
+    #:
+    #: ``models`` holds downloaded weights and the speech decoder, sealed read-only
+    #: so a sandboxed shell cannot swap the bytes between a loader's digest check
+    #: and its reopen. A data-home root leaf, three entries per tier, held by its
+    #: own name for the same reason as the root leaves above.
+    EXPECTED: dict[str, int] = {"standard": 272, "cc": 279, "strict": 280}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:
