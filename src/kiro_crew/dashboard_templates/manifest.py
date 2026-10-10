@@ -4,7 +4,7 @@ A template is a directory with two files:
 
 ``manifest.json``
     ``id``, ``version`` (positive int), ``title``, ``description``, ``source``
-    (``builtin`` | ``user`` | ``shared``) and ``fields``: field name -> field spec.
+    (one of :data:`SOURCES`) and ``fields``: field name -> field spec.
 ``template.html``
     A body fragment. Each value sits on an element carrying
     ``data-dashboard-field="<name>"``; scripts may read the same values from
@@ -70,7 +70,17 @@ __all__ = [
 #: the loader instead of being collected as one more refusal.
 FIELD_TYPES: Final[frozenset[str]] = frozenset({"number", "string", "boolean", "array", "object"})
 FOLD_NAMES: Final[frozenset[str]] = frozenset(SESSION_FOLD_NAMES) | frozenset(SLOT_PROJECTION_NAMES)
-SOURCES: Final[frozenset[str]] = frozenset({"builtin", "user", "shared"})
+#: Where a manifest came from. ``package`` is the one value that names no template
+#: directory at all: it marks a manifest SYNTHESIZED from an agent-composed dashboard
+#: package (:func:`kiro_crew.dashboard_package.read_package_model`), which exists only
+#: in memory and only so a write can be checked against field names and types.
+#:
+#: Its own value rather than a borrowed ``user``, because two consumers read this word
+#: and would be answering about the wrong thing: ``instance.RENDERABLE_SOURCES`` gates
+#: whether a page may EXECUTE, and the catalogue's scan checks a directory's declared
+#: source against where the directory actually sits. A package has no directory and
+#: carries no page, so it must be distinguishable from a template a person wrote.
+SOURCES: Final[frozenset[str]] = frozenset({"builtin", "user", "shared", "package"})
 #: ``\Z``, never ``$``: Python's ``$`` also matches just before a TRAILING NEWLINE, so
 #: ``"report\n"`` satisfies a ``$``-anchored id. That id becomes a user-template
 #: directory name and a registry key, so it would sit beside ``report`` looking

@@ -31,7 +31,7 @@ from typing import Any, Final, cast
 
 from aiohttp import web
 
-from kiro_crew import agent_panel, dashboard_agentic
+from kiro_crew import agent_panel, dashboard_agentic, dashboard_package
 from kiro_crew import members as members_mod
 from kiro_crew import pipeline_board_contract
 from kiro_crew.config.loader import KiroCrewConfig
@@ -1696,11 +1696,33 @@ async def api_dashboard_write(request: web.Request) -> web.Response:
 
     field = str(args.get("field") or "")
     value = args.get("value")
-    instance = await asyncio.to_thread(read_instance, slug, crew_name)
+    # THE MODEL COMES FROM THE PACKAGE, through the one reader that knows where a
+    # package lives. The check is against the Model this crewmate is actually running
+    # rather than a builtin manifest a caller names -- which is the whole of the v3
+    # change on this route, and why nothing else here reaches a template store.
+    #
+    # NO ARTIFACT SLUG IS PASSED. This route is keyed by the MEMBER, and `slug` here is
+    # the member's own slug, not the package artifact's; handing it over as one would
+    # name a package that does not exist. The reader resolves the artifact from the
+    # member's binding, which is why its first argument is optional.
+    try:
+        package = await asyncio.to_thread(dashboard_package.read_package_model, slug)
+    except dashboard_package.PackageReadError as exc:
+        # NOT a refusal. A read that failed says nothing about the write, so there is
+        # no lesson to record and no field to blame.
+        logger.warning("dashboard package for %s is unreadable", slug, exc_info=True)
+        return web.json_response({"error": str(exc), "code": "package_unreadable"}, status=503)
     mistakes = await asyncio.to_thread(_mistake_book, slot) if slot else {}
     owner_key = agent_panel.crew_key(crew_name)
     try:
-        entry = dashboard_agentic.check_write(instance, field, value, mistakes)
+        # The package's own state first, because every later question presumes a Model:
+        # "is this a declared field" cannot be asked of a package that is absent,
+        # broken, or another member's. Raised rather than returned so all four refusals
+        # leave by one path and are recorded once, below.
+        unusable = dashboard_agentic.package_refusal(package.state, package.state_reason, field)
+        if unusable is not None:
+            raise unusable
+        entry = dashboard_agentic.check_write(package.model, field, value, mistakes)
     except dashboard_agentic.WriteRefused as refused:
         # RECORDED BEFORE THE RESPONSE. The refusal is already decided, so this
         # append costs the caller nothing it was going to get, and it is the only

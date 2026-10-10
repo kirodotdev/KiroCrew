@@ -2384,16 +2384,31 @@ async def test_a_value_of_the_wrong_declared_type_is_refused(vetted, monkeypatch
         assert (await resp.json())["code"] == "wrong_type"
 
 
-async def test_a_write_is_still_refused_when_no_manifest_parses(vetted, monkeypatch):
-    """``no_instance`` survives for the state it actually describes.
+@pytest.mark.parametrize(
+    ("state", "code"),
+    [
+        ("error", "package_model_invalid"),
+        ("empty", "no_instance"),
+    ],
+)
+async def test_a_write_is_refused_for_every_package_state_that_has_no_model(
+    vetted, monkeypatch, state, code
+):
+    """A refusal survives for each state that actually describes one, with its own code.
 
-    ERROR is the state in which the stored manifest does not parse, so there is
-    nothing to validate a field name against. Keeping this case is what stops the
-    default fallback above from being read as "writes are never refused".
+    The route's Model now comes from the PACKAGE, through
+    ``dashboard_package.read_package_model``, so this drives that reader rather than
+    the retired template seam. Three states and three codes, because the remedy
+    differs: create a package, or have a human repair it. Keeping these cases is what stops the default fallback above from being
+    read as "writes are never refused".
     """
-    import kiro_crew.dashboard.handlers.agent_panel as panel
+    from kiro_crew import dashboard_package
 
-    monkeypatch.setattr(panel, "read_instance", lambda slug, member: None)
+    monkeypatch.setattr(
+        dashboard_package,
+        "read_package_model",
+        lambda member: dashboard_package.PackageRead(None, state, "stubbed"),
+    )
     async with _client() as c:
         resp = await c.post(
             WRITE_PATH,
@@ -2401,7 +2416,52 @@ async def test_a_write_is_still_refused_when_no_manifest_parses(vetted, monkeypa
             headers={"X-Session-Key": "dashboard:chat-1"},
         )
         assert resp.status == 400, await resp.text()
-        assert (await resp.json())["code"] == "no_instance"
+        assert (await resp.json())["code"] == code
+
+
+async def test_the_write_route_asks_for_a_package_by_member_and_not_by_slug(vetted, monkeypatch):
+    """This route is keyed by the MEMBER and holds no artifact slug.
+
+    Its own ``slug`` is the member's, so handing that over as the package's would name
+    an artifact that does not exist. The route hands over the MEMBER and the reader
+    resolves the artifact from that member's binding, which is why the reader takes no
+    slug at all.
+    """
+    from kiro_crew import dashboard_package
+
+    seen = []
+
+    def _read(member):
+        seen.append(member)
+        return dashboard_package.PackageRead(None, "empty", "stubbed")
+
+    monkeypatch.setattr(dashboard_package, "read_package_model", _read)
+    async with _client() as c:
+        await c.post(
+            WRITE_PATH,
+            json={"field": "for_you", "value": []},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+    assert seen == [SLUG], f"the route asked for {seen}"
+
+
+async def test_a_package_the_route_cannot_read_is_a_503_and_not_a_refusal(vetted, monkeypatch):
+    """A read that FAILED says nothing about the write, so there is no lesson to
+    record and no field to blame -- and a 400 would teach the agent a wrong one."""
+    from kiro_crew import dashboard_package
+
+    def _boom(member):
+        raise dashboard_package.PackageReadError("package unreadable")
+
+    monkeypatch.setattr(dashboard_package, "read_package_model", _boom)
+    async with _client() as c:
+        resp = await c.post(
+            WRITE_PATH,
+            json={"field": "for_you", "value": []},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 503, await resp.text()
+        assert (await resp.json())["code"] == "package_unreadable"
 
 
 async def test_a_refusal_is_recorded_so_the_next_cycle_is_cheaper(vetted, monkeypatch):

@@ -989,6 +989,552 @@ class TestTheInstanceSeam:
         assert fields == {"manifest", "instance_version"}
 
 
+class TestThePackageSeam:
+    """``dashboard_write``'s Model comes from the current PACKAGE, through one function.
+
+    ``read_package_model`` is the whole seam to the package line: when the
+    ``kind="dashboard"`` artifact lands, only its body changes. These cases pin what
+    every caller depends on and the body does not get to move -- the four states, the
+    refusal each maps to, and that a content problem is a state while only a failed
+    read raises.
+    """
+
+    def store(self, monkeypatch: pytest.MonkeyPatch, **over: Any) -> None:
+        """Stand the template instance store in, the way the seam cases above do."""
+        base = {
+            "slug": "atlas",
+            "instance_version": 4,
+            "state": "live",
+            "state_reason": "copied from 'demo' version 2",
+            "manifest": dict(MANIFEST_RAW),
+        }
+        base.update(over)
+        record = SimpleNamespace(**base)
+
+        class _Err(Exception):
+            pass
+
+        fake = SimpleNamespace(
+            read=lambda slug: record,
+            default_instance=lambda slug: None,
+            InstanceError=_Err,
+            STATE_LIVE="live",
+            STATE_STALE="stale",
+            STATE_EMPTY="empty",
+            STATE_ERROR="error",
+        )
+        monkeypatch.setitem(sys.modules, "kiro_crew.dashboard_templates.instance", fake)
+        import kiro_crew.dashboard_templates as _templates_pkg
+
+        monkeypatch.setattr(_templates_pkg, "instance", fake, raising=False)
+        # FORCE the template path. These cases are about the instance store's own
+        # resolution, so the package path is stubbed to the one state that falls
+        # through to it rather than left to whatever the fixture's artifacts hold.
+        from kiro_crew import dashboard_package
+
+        monkeypatch.setattr(
+            dashboard_package,
+            "_from_package",
+            lambda _member: dashboard_package.PackageRead(
+                None, dashboard_package.STATE_EMPTY, "no package in this fixture"
+            ),
+        )
+
+    def read(self, slug: Any = "atlas") -> Any:
+        from kiro_crew import dashboard_package
+
+        return dashboard_package.read_package_model("atlas")
+
+    def test_a_live_package_hands_back_a_model_a_write_can_be_checked_against(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import dashboard_package
+
+        self.store(monkeypatch)
+        got = self.read()
+        assert got.state == dashboard_package.STATE_LIVE
+        assert got.model is not None
+        assert set(got.model.manifest.fields) == set(MANIFEST_RAW["fields"])
+        # The PACKAGE's version, which is the number each written entry is stamped
+        # with -- not the template version beside it.
+        assert got.model.instance_version == 4
+
+    def test_a_write_that_satisfies_the_packages_model_is_accepted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """End to end through the seam: the Model the reader returned is the Model the
+        value is checked against, and the accepted entry carries that Model's own
+        declared type and version rather than anything the caller said."""
+        self.store(monkeypatch)
+        got = self.read()
+        assert dashboard_agentic.package_refusal(got.state, got.state_reason, "open_items") is None
+        written = dashboard_agentic.check_write(got.model, "open_items", 12)
+        assert written["field"] == "open_items"
+        assert written["type"] == "number"
+        assert written["value"] == {"v": 12}
+        assert written["instance_version"] == 4
+
+    def test_a_write_that_violates_the_packages_model_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two ways to violate it, and both are refused by the Model rather than by a
+        builtin manifest: a field the Model does not declare, and a value of the wrong
+        declared type for a field it does."""
+        self.store(monkeypatch)
+        model = self.read().model
+        with pytest.raises(dashboard_agentic.WriteRefused) as unknown:
+            dashboard_agentic.check_write(model, "credits_total", 1)
+        assert unknown.value.code == "unknown_field"
+        # The refusal names the Model's own writable fields, so it cannot advise a
+        # field the package does not have.
+        assert "open_items" in str(unknown.value)
+        with pytest.raises(dashboard_agentic.WriteRefused) as wrong:
+            dashboard_agentic.check_write(model, "open_items", "twelve")
+        assert wrong.value.code == "wrong_type"
+
+    def test_a_value_over_the_size_cap_is_refused_by_the_package_write_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The SAME cap as before the move off templates. One field's value has no
+        natural width once its declared type is ``array`` or ``object``, so without
+        this one field could fill the log line and take the others down with it."""
+        self.store(
+            monkeypatch,
+            manifest={
+                **MANIFEST_RAW,
+                "fields": {"risk_note": {"type": "string", "source": {"agentic": True}}},
+            },
+        )
+        model = self.read().model
+        over = "x" * (entry_types.DASHBOARD_VALUE_BYTES + 1)
+        with pytest.raises(dashboard_agentic.WriteRefused) as refused:
+            dashboard_agentic.check_write(model, "risk_note", over)
+        assert refused.value.code == "value_too_large"
+        assert str(entry_types.DASHBOARD_VALUE_BYTES) in str(refused.value)
+
+    def test_what_lands_through_the_package_path_is_redacted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An agentic value is drawn on a page as the agent wrote it, so a credential
+        in one would be displayed verbatim. The scrub runs on the way in, and it walks
+        into a nested value rather than only a top-level string."""
+        self.store(
+            monkeypatch,
+            manifest={
+                **MANIFEST_RAW,
+                "fields": {"rows": {"type": "array", "source": {"agentic": True}}},
+            },
+        )
+        model = self.read().model
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        written = dashboard_agentic.check_write(model, "rows", [{"key": secret}])
+        landed = json.dumps(written["value"])
+        assert secret not in landed, "a credential reached the stored value unscrubbed"
+
+    @pytest.mark.parametrize(
+        ("state", "code"),
+        [
+            ("empty", "no_instance"),
+            ("error", "package_model_invalid"),
+        ],
+    )
+    def test_each_non_live_state_refuses_with_its_own_code_and_a_remedy(
+        self, state: str, code: str
+    ) -> None:
+        """Three states, three different instructions. Folding them into one would tell
+        an agent reaching another member's package to create one, which is the wrong
+        action on every cycle forever."""
+        refused = dashboard_agentic.package_refusal(state, "because reasons", "open_items")
+        assert refused is not None
+        assert refused.code == code
+        assert refused.field == "open_items"
+        # The reader's own sentence AND a remedy, because an agent handed only what the
+        # reader found retries the same write forever.
+        assert "because reasons" in str(refused)
+        assert len(str(refused)) > len("because reasons")
+
+    def test_every_state_the_reader_can_answer_with_has_a_refusal_beside_it(self) -> None:
+        """The two halves live in different modules on purpose -- the Model type travels
+        one way, so a type import back would close a cycle -- and the vocabulary is
+        therefore shared as strings. This is the pin that stops them drifting: a state
+        added with no row would reach an agent as a bare "no package"."""
+        from kiro_crew import dashboard_package
+
+        non_live = set(dashboard_package.PACKAGE_STATES) - {dashboard_package.STATE_LIVE}
+        assert non_live == set(dashboard_agentic.PACKAGE_REFUSALS)
+        assert dashboard_package.STATE_LIVE not in dashboard_agentic.PACKAGE_REFUSALS
+
+    def test_an_unrecognised_state_refuses_rather_than_being_read_as_live(self) -> None:
+        """Reporting it live would check the write against a ``None`` Model; reporting
+        it as "no package" would tell the agent to create one it may already have."""
+        refused = dashboard_agentic.package_refusal("something-new", "", "open_items")
+        assert refused is not None and refused.code == "package_unreadable"
+
+    def test_a_model_that_does_not_parse_is_a_state_and_not_a_raise(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every refusal is recorded to the mistake book BEFORE the response, which is
+        the only reason the next cycle is cheaper. A raise would escape that recording
+        and become a 500: the agent learns nothing."""
+        from kiro_crew import dashboard_package
+
+        self.store(monkeypatch, manifest={"id": "", "fields": {}})
+        got = self.read()
+        assert got.state == dashboard_package.STATE_ERROR
+        assert got.model is None
+        assert got.state_reason
+
+    @pytest.mark.parametrize("stored", ["error", "something-this-reader-never-heard-of"])
+    def test_a_package_the_store_cannot_interpret_is_error_and_not_empty(
+        self, monkeypatch: pytest.MonkeyPatch, stored: str
+    ) -> None:
+        """Both are a package that IS there and cannot be read as a Model.
+
+        Answering ``empty`` for either would tell the agent to create a package it
+        already has, which is the wrong instruction on every cycle forever -- and the
+        unrecognised state matters as much as the named one, because it is what a
+        store shipping a fifth state looks like to this reader.
+        """
+        from kiro_crew import dashboard_package
+
+        self.store(monkeypatch, state=stored)
+        got = self.read()
+        assert got.state == dashboard_package.STATE_ERROR
+        assert got.model is None
+        assert got.state_reason, "a non-live state with no sentence leaves nothing to show"
+
+    def test_a_store_read_that_fails_raises_because_it_is_not_about_content(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The one thing that is not a state: nothing is known about the Model either
+        way, so there is no lesson to record and no field to blame."""
+        from kiro_crew import dashboard_package
+
+        self.store(monkeypatch)
+        import kiro_crew.dashboard_templates as _templates_pkg
+
+        fake = _templates_pkg.instance
+
+        def _boom(slug: str) -> Any:
+            raise fake.InstanceError("record unreadable")
+
+        monkeypatch.setattr(fake, "read", _boom)
+        with pytest.raises(dashboard_package.PackageReadError):
+            self.read()
+
+    def test_no_package_and_no_default_answers_empty_rather_than_raising(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import dashboard_package
+
+        self.store(monkeypatch, state="empty")
+        got = self.read()
+        assert got.state == dashboard_package.STATE_EMPTY
+        assert got.model is None
+
+    def test_a_stale_copy_still_yields_a_model_because_its_own_fields_parse(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``stale`` is not one of this reader's states: a package has no registry
+        behind it to move past. The stub maps it to ``live`` because the stored copy is
+        complete and is the one the page is drawn from, so refusing would stop a
+        crewmate writing its own fields for a reason unrelated to the write."""
+        from kiro_crew import dashboard_package
+
+        self.store(monkeypatch, state="stale")
+        got = self.read()
+        assert got.state == dashboard_package.STATE_LIVE
+        assert got.model is not None
+        assert dashboard_package.STATE_LIVE in dashboard_package.PACKAGE_STATES
+        assert "stale" not in dashboard_package.PACKAGE_STATES
+
+
+#: A canonical package Model as the write gate hands one over: field name -> the
+#: type's own canonical keys, each carrying the ``source`` the package line made
+#: required. One fold field and one agentic field, because the split between them is
+#: what the translation has to preserve.
+PACKAGE_FIELDS: dict[str, Any] = {
+    "open_prs": {
+        "type": "number",
+        "source": {"fold": "work", "path": "conductor.entries"},
+    },
+    "lane": {
+        "type": "enum",
+        "choices": ["green", "red"],
+        "source": {"agentic": True},
+    },
+    "headline": {"type": "text", "source": {"agentic": True}},
+    "seen_at": {"type": "timestamp", "source": {"agentic": True}},
+    "blocked": {"type": "bool", "source": {"agentic": True}},
+}
+
+
+class TestTheRealPackagePath:
+    """The reader against a real ``kind="dashboard"`` artifact and the write gate.
+
+    The gate (``artifact_store.dashboard_package``) is the package line's and arrives on
+    its own branch, so it is stood in here the way the template store is stood in above.
+    What these cases pin is this module's own half: the binding resolution, the
+    ``forbidden`` rule, and the Model -> ``TemplateManifest`` translation.
+    """
+
+    def gate(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        bound_to: str = "crewmate:atlas",
+        fields: dict[str, Any] | None = None,
+        content: str = "{}",
+        version: int = 3,
+        resolved: str | None = "dash-atlas",
+        get_raises: Exception | None = None,
+        parse_raises: Exception | None = None,
+        no_template: bool = False,
+    ) -> None:
+        from kiro_crew import artifacts
+
+        if no_template:
+            # A crewmate with NEITHER a package nor a template page, which is the only
+            # population whose composite answer is ``empty``: the instance store stands
+            # behind the package path for that one state, so a case about the package
+            # path's own ``empty`` has to take the template out of the way to see it.
+            from kiro_crew import dashboard_templates
+
+            monkeypatch.setattr(
+                dashboard_templates,
+                "instance",
+                SimpleNamespace(
+                    STATE_EMPTY="empty",
+                    STATE_LIVE="live",
+                    STATE_STALE="stale",
+                    read=lambda _slug: SimpleNamespace(state="empty", state_reason=""),
+                    default_instance=lambda _slug: None,
+                ),
+                raising=False,
+            )
+
+        # The shape a parsed package really has, because the reader now takes the field
+        # table off it directly rather than through a projection of it.
+        package = {
+            "bound_to": bound_to,
+            "model": {"types": dict(PACKAGE_FIELDS if fields is None else fields)},
+        }
+
+        def _parse(_content: str) -> Any:
+            if parse_raises is not None:
+                raise parse_raises
+            return package
+
+        gate = SimpleNamespace(
+            parse_package=_parse,
+            resolve_bound_slug=lambda bound, **_kw: resolved,
+        )
+        monkeypatch.setitem(sys.modules, "kiro_crew.artifact_store.dashboard_package", gate)
+
+        def _get(slug: str, **_kw: Any) -> Any:
+            if get_raises is not None:
+                raise get_raises
+            return SimpleNamespace(slug=slug, content=content, version=version)
+
+        monkeypatch.setattr(
+            artifacts, "get_default_store", lambda: SimpleNamespace(get=_get), raising=False
+        )
+
+    def read(self, slug: Any = None, member: str = "atlas") -> Any:
+        from kiro_crew import dashboard_package
+
+        return dashboard_package.read_package_model(member)
+
+    def test_the_binding_resolves_the_slug_when_the_caller_has_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import dashboard_package
+
+        self.gate(monkeypatch)
+        got = self.read()
+        assert got.state == dashboard_package.STATE_LIVE
+        assert got.model is not None
+        # The PACKAGE's artifact version, which is the number a write is stamped with.
+        assert got.model.instance_version == 3
+        assert got.model.manifest.id == "dash-atlas"
+
+    def test_nothing_bound_is_empty_and_not_an_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """v3 ships no default page, so nothing is stored until the agent composes a
+        layout. That is the ordinary first state of every crewmate."""
+        from kiro_crew import dashboard_package
+
+        self.gate(monkeypatch, resolved=None, no_template=True)
+        got = self.read()
+        assert got.state == dashboard_package.STATE_EMPTY
+        assert got.model is None
+
+    def test_nothing_bound_falls_through_to_the_template_page_a_crewmate_has(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A crewmate on a builtin template page has no ``kind="dashboard"`` artifact.
+
+        Answering it ``empty`` would refuse every write it makes and tell it to compose
+        a layout it is not using, so the instance store stands behind the package path
+        for this one state. The package Model wins wherever a package exists; this is
+        the case where none does.
+        """
+        from kiro_crew import dashboard_package
+
+        self.gate(monkeypatch, resolved=None)
+        got = self.read()
+        assert got.state == dashboard_package.STATE_LIVE
+        assert got.model is not None
+
+    def test_a_package_whose_content_will_not_parse_is_an_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """What the binding scan cannot report. It SKIPS a package it cannot parse
+        because it answers "which slug" and has no way to say why, so only a read of a
+        named slug can tell corrupt from absent."""
+        from kiro_crew import dashboard_package
+
+        self.gate(monkeypatch, parse_raises=ValueError("model.types[0]: bad type"))
+        got = self.read(slug="dash-atlas")
+        assert got.state == dashboard_package.STATE_ERROR
+        assert "bad type" in got.state_reason
+
+    def test_a_slug_that_holds_nothing_is_empty_and_not_an_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import artifacts, dashboard_package
+
+        self.gate(monkeypatch, get_raises=artifacts.ArtifactNotFoundError("gone"), no_template=True)
+        assert self.read(slug="dash-gone").state == dashboard_package.STATE_EMPTY
+
+    def test_a_failed_read_raises_rather_than_reporting_a_state(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import dashboard_package
+
+        self.gate(monkeypatch, get_raises=OSError("disk gone"))
+        with pytest.raises(dashboard_package.PackageReadError):
+            self.read(slug="dash-atlas")
+
+    # -- the translation ---------------------------------------------------- #
+
+    def test_a_fold_field_stays_fold_backed_and_is_not_writable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The source key the package line made required is what this turns on. Without
+        it the only available guess is ``agentic: true``, which would make every field
+        on every page agent-writable and erase the fold-backed half of the dashboard."""
+        self.gate(monkeypatch)
+        manifest = self.read().model.manifest
+        spec = manifest.fields["open_prs"]
+        assert spec.agentic is False
+        assert (spec.fold, spec.path) == ("work", "conductor.entries")
+        assert "open_prs" not in dashboard_agentic.agentic_fields(manifest)
+        with pytest.raises(dashboard_agentic.WriteRefused) as refused:
+            dashboard_agentic.check_write(self.read().model, "open_prs", 4)
+        assert refused.value.code == "field_not_agentic"
+
+    @pytest.mark.parametrize(
+        ("field", "manifest_type"),
+        [
+            ("open_prs", "number"),
+            ("headline", "string"),
+            ("blocked", "boolean"),
+            ("seen_at", "string"),
+            ("lane", "string"),
+        ],
+    )
+    def test_each_package_type_is_checked_as_its_manifest_type(
+        self, monkeypatch: pytest.MonkeyPatch, field: str, manifest_type: str
+    ) -> None:
+        self.gate(monkeypatch)
+        assert self.read().model.manifest.fields[field].type == manifest_type
+
+    def test_an_enums_choices_become_the_fields_shape(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``enum`` and ``timestamp`` both collapse to ``string``, so the choices are
+        the only thing that keeps a value outside the set refusable."""
+        self.gate(monkeypatch)
+        model = self.read().model
+        assert model.manifest.fields["lane"].shape is not None
+        assert model.manifest.fields["lane"].shape.enum == ("green", "red")
+        assert dashboard_agentic.check_write(model, "lane", "green")["value"] == {"v": "green"}
+        with pytest.raises(dashboard_agentic.WriteRefused) as refused:
+            dashboard_agentic.check_write(model, "lane", "purple")
+        assert refused.value.code == "wrong_shape"
+
+    def test_a_fold_field_declares_no_shape(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The manifest refuses a shape on a fold field: the fold writes that value, so
+        a shape there would promise something no write path checks."""
+        self.gate(monkeypatch)
+        assert self.read().model.manifest.fields["open_prs"].shape is None
+
+    def test_the_synthesized_manifest_does_not_claim_to_be_a_template(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``source`` gets its own fourth value rather than borrowing ``user``, so the
+        render gate and the catalogue scan can still tell a package from a template a
+        person wrote. ``id`` is the slug, because there is no template to name and the
+        string is read aloud to the agent in two refusal sentences."""
+        from kiro_crew import dashboard_package
+        from kiro_crew.dashboard_templates import manifest as manifest_mod
+
+        self.gate(monkeypatch)
+        manifest = self.read().model.manifest
+        assert manifest.source == dashboard_package.PACKAGE_MANIFEST_SOURCE == "package"
+        assert manifest.source in manifest_mod.SOURCES
+        assert manifest.id == "dash-atlas"
+
+    def test_a_package_source_is_not_renderable(self) -> None:
+        """A package is agent-composed, and the set that decides whether a page may
+        EXECUTE admits only provenance a person here has looked at. v3's View carries
+        no script, but making a package-sourced manifest adoptable as a running page is
+        the display line's to earn with the minted wrapper -- nothing on the write path
+        reads this set, so widening it here would buy nothing and open that path."""
+        from kiro_crew import dashboard_package
+        from kiro_crew.dashboard_templates import catalog
+        from kiro_crew.dashboard_templates import instance as instance_store
+
+        assert dashboard_package.PACKAGE_MANIFEST_SOURCE not in instance_store.RENDERABLE_SOURCES
+        assert instance_store.RENDERABLE_SOURCES == frozenset({catalog.BUILTIN_SOURCE})
+
+    def test_a_type_this_build_cannot_map_is_an_error_not_a_crash(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A package the gate validated and this reader cannot express: a disagreement
+        between two readers, so a state with a sentence rather than a raise."""
+        from kiro_crew import dashboard_package
+
+        self.gate(
+            monkeypatch,
+            fields={"when": {"type": "duration", "source": {"agentic": True}}},
+        )
+        got = self.read()
+        assert got.state == dashboard_package.STATE_ERROR
+        assert "duration" in got.state_reason
+
+    def test_every_package_data_type_has_a_manifest_type(self) -> None:
+        """The drift pin on the mapping, for as long as the mapping is the only spelling.
+
+        ``timestamp`` and ``enum`` both collapse to ``string``, so the package catalogue
+        does not carry this information and the table here is a SECOND place it is
+        written down. The package line has offered ``manifest_type`` / ``manifest_shape``
+        on its ``FieldType``, which supersedes the table; until then this is what names
+        a type added upstream with no row here.
+
+        SKIPPED while the gate is on the package line's branch, because there is no
+        catalogue to compare against -- and a skip that says so is honest where a
+        frozen copy of the five names would be a third spelling.
+        """
+        from kiro_crew import dashboard_package
+
+        gate = pytest.importorskip(
+            "kiro_crew.artifact_store.dashboard_package",
+            reason="the package write gate is not on this branch yet",
+        )
+        assert set(gate.data_type_catalog()) == set(dashboard_package._PACKAGE_TYPE_TO_MANIFEST)
+
+
 def test_a_written_value_reaches_a_page_that_declares_an_agentic_array():
     """End of the loop the write path exists to close, across the whole chain.
 

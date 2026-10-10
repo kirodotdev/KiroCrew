@@ -129,6 +129,63 @@ class Instance:
     instance_version: int
 
 
+#: Every non-live package state, and the refusal an agent is told for it.
+#:
+#: Keyed by the STATE STRING, which is what lets this table live here rather than in
+#: :mod:`kiro_crew.dashboard_package`: the Model type travels from this module to that
+#: one, so a type import back would close a cycle. The two halves are pinned against
+#: each other by ``test_dashboard_package`` -- a state added there with no row here
+#: would reach an agent as a bare "no package", which is the wrong instruction for two
+#: of the three.
+#:
+#: ``no_instance`` is kept as the code for an absent package rather than renamed, so a
+#: mistake book already grouping refusals under it goes on grouping them: the group key
+#: is ``(code, field)`` and a new code would strand every lesson a crewmate has learnt.
+PACKAGE_REFUSALS: Final[dict[str, str]] = {
+    "empty": "no_instance",
+    "error": "package_model_invalid",
+}
+
+#: What each refusal tells the agent to DO, which is the half a bare state cannot
+#: supply. One sentence per state, and they differ in the action rather than in tone:
+#: create one, tell a human, stop reaching for it.
+_PACKAGE_REMEDIES: Final[dict[str, str]] = {
+    "empty": (
+        "this crewmate has no dashboard package yet, so it has no field to write: "
+        "create one with a Model that declares this field, then write it"
+    ),
+    "error": (
+        "this crewmate's dashboard package has a Model that does not load, so there is "
+        "nothing to check a write against -- ask the human to repair or replace the "
+        "package"
+    ),
+}
+
+
+def package_refusal(state: str, state_reason: str, field: str) -> WriteRefused | None:
+    """The refusal for a non-live package state, or ``None`` when the state is live.
+
+    ONE mapping, called by the write path immediately after the reader. The state's own
+    sentence is quoted after the remedy rather than instead of it, because the two
+    answer different questions: ``state_reason`` says what the reader found and the
+    remedy says what to do about it, and an agent handed only the first retries the
+    same write forever.
+
+    An UNKNOWN state refuses as well, and refuses honestly. Reporting an unrecognised
+    state as live would check the write against a ``None`` Model; reporting it as
+    "no package" would tell the agent to create one it may well already have.
+    """
+    if state == "live":
+        return None
+    code = PACKAGE_REFUSALS.get(state, "package_unreadable")
+    remedy = _PACKAGE_REMEDIES.get(
+        state,
+        f"this gateway does not understand what state {state!r} its dashboard package "
+        "is in, so it will not check a write against it -- ask the human",
+    )
+    return WriteRefused(code, field, f"{remedy}. {state_reason}".strip())
+
+
 def agentic_fields(manifest: TemplateManifest) -> dict[str, FieldSpec]:
     """The fields the crewmate may write, by name."""
     return {name: spec for name, spec in manifest.fields.items() if spec.agentic}
