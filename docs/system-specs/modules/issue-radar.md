@@ -1049,6 +1049,112 @@ the parent RUN and needs its id.
   cache is regenerate-only by design — it renders the last explicitly generated
   proposal until the user presses "Recommend labels" again.
 
+## Pipeline and Graph tabs by forge
+
+The Pipeline tab (`pipeline_routes.py`, mounted under `/api/apps/issue-radar/pipeline/`)
+is a READ-ONLY fold over the files the triage jobs write: an audit log, one dispatch-queue
+shard per repository, and the issue cache. It was github.com-only because those files
+were keyed on `owner/repo` alone, so a same-slug GitLab project would have been shown
+the GitHub repository's events, titles and credit costs under its own heading. The
+fix is a **forge split** (`pipeline_fold.Forge`), not a stamp on every event:
+
+- **Files are namespaced by forge.** Public GitHub keeps its original names
+  (`gh-autofix-audit.jsonl`, `gh-autofix-dispatch-queue.<slug>.jsonl`, the legacy issue
+  cache root), so nothing on disk moves. Every other forge reads
+  `autofix-audit.<provider>.<host>.jsonl`, `autofix-dispatch-queue.<provider>.<host>.<slug>.jsonl`
+  and the issue cache under `store.provider_subpath(provider, host)`. In the file
+  name a host's `:` is written as `_`, never `-`: `-` is a legal hostname character,
+  so `gitlab.example:8443` and `gitlab.example-8443` would otherwise share files. A GitLab
+  repository can therefore never be served another forge's, or another host's, rows.
+- **The GitLab queue slug is injective** (`_forge_repo_slug`): `/` -> `__`, a literal
+  `_` -> `_u`, anything else outside `[A-Za-z0-9-]` -> `_` plus two hex digits (so
+  `.` -> `_2e`). The dot is escaped because the filename is `<tag>.<slug>` and the tag
+  carries the host's own dots: `gitlab.example` + `team.prod/widget` and
+  `gitlab.example.team` + `prod/widget` would otherwise be one file. The GitHub slug
+  (`_repo_slug`) is left byte-identical because it is the GitHub jobs' on-disk
+  contract, and it is unambiguous there (a GitHub owner cannot contain `_` and there
+  are exactly two segments); nested GitLab group paths CAN carry `_` in any segment,
+  which is why `gitlab/proj/sub` and `gitlab__proj/sub` needed distinct files.
+- **These names are the writer contract, version 1.** An operator's job that appends
+  GitLab events or queue rows must produce exactly `audit_log_path(forge=...)` /
+  `queue_path(repo=..., forge=...)`; `test_issue_radar_pipeline_forge.py`
+  (`test_the_writer_contract_names_are_pinned`) pins the literal names. Once a job has
+  written them, a rename is a migration, not a refactor.
+- **Served forges:** public GitHub (no `provider`, or `github` with no host or a GitHub
+  host) and GitLab with an explicit `host`. Azure DevOps, GitHub Enterprise and a GitLab
+  request with no host are refused with `repo_provider_unsupported`. A GitLab host is
+  then put through the GitLab client's OWN rule, `gitlab_transport.resolve_host` over
+  `gitlab_client.allowed_hosts()` (`_servable_host`, off the event loop), BEFORE the
+  connected-repo gate and before any file is opened. There is no second host grammar
+  in the pipeline: gitlab.com always passes and never appears in
+  `dashboard.gitlab_hosts` (the coercer drops it), and any other host that passes was
+  already held to the coercer's label-and-port grammar, so it is safe as a filename
+  segment and an issue-cache directory. Removing a host from the allowlist therefore
+  takes effect on the Pipeline tab at once, exactly as on `glab` calls, and a de-listed
+  host answers `repo_provider_unsupported`. The client's unsupported-forge notice
+  (`GlobalPipelineView`) is one `ErrorNotice` with the agent hand-off on for every
+  refused forge: the value comes from a rejected request, which is what
+  `errors-use-error-notice` governs, and the page holds no draft input. What varies is
+  the hint under the shared headline, chosen from the connected record's `provider` and
+  `host`, which the host handed down: a GitLab repository with a host gets the one step
+  that clears the refusal, naming that host (`forge_unsupported_gitlab_hint`, "Add
+  {{host}} to dashboard.gitlab_hosts …"); Azure DevOps, GitHub Enterprise and a GitLab
+  ref with no host get the reason and no config step (`forge_unsupported_other_hint`:
+  the pipeline's scheduled jobs do not run against that host, so there is no data),
+  because a fix sentence pointing at a setting that cannot help is worse than none.
+  The refusal body carries no forge; the client's own identity is what decides the
+  hint. Authorization is
+  unchanged: the connected-repo gate matches provider + host + owner + repo. GitLab
+  `owner` and `repo` are matched by anchored
+  regexes built from the transport's own segment grammar (`gitlab_transport.SEGMENT_RE`
+  character class and length, `MAX_NAMESPACE_SEGMENTS` depth), minus `.` and `..`, so a
+  project the client could connect (a segment starting with `_` or `.`, longer than a
+  GitHub name) is never refused here, no segment is empty, and nothing walks the cache
+  tree.
+- **No writer ships here.** Kiro Crew ships no triage jobs for any forge; an operator's
+  own job appends events in the fold's schema to the forge's audit file and the tab
+  renders them. The crew "Item lanes" view (`crew_routes.py`) is still GitHub-only
+  and is out of this split's scope.
+
+The Graph tab's `/deps` (`http_routes/deps.py`) dispatches on provider: GitHub keeps
+`github_client.fetch_dependency_edges` (native + inferred edges); GitLab uses
+`gitlab_queries.fetch_dependency_edges`, which reads `/projects/:id/issues/:iid/links`
+through `gitlab_client.list_issue_links` for every open issue (`relates_to` ignored,
+only `blocks` / `is_blocked_by` become edges, all `source="native"`), under a
+`ThreadPoolExecutor(_LINKS_WORKERS)` with a `_MAX_LINKS_CALLS` cap. Three rules keep
+that graph honest:
+
+- **One issue's failed `/links` call degrades that issue** (DEBUG log, no edges), but a
+  `ProviderSetupError` -- no `glab`, or no session for the host -- propagates, cancels
+  the pool's remaining work and reaches the route as `deps_fetch_failed` 502, because
+  every call would fail the same way and swallowing it would persist a complete-looking
+  empty graph as fresh for the cache TTL. The previous cache stays intact. The same
+  holds when MOST fetched issues fail for any reason (strictly more than
+  `_LINKS_FAILURE_RATIO` of the calls: host unreachable, de-listed, a 403 on the whole
+  project, rate limiting that set in partway): the fetcher raises `ProviderCliError`
+  with one WARNING instead of returning the survivors, so a host-wide outage never
+  overwrites the last good graph with a nearly empty one. A minority of failures still
+  returns the partial graph. Zero open issues is still an empty graph, not a failure.
+- **A link row is kept only when `references.relative` is `#<iid>`**, GitLab's form for
+  an issue in the project the request was made in. A cross-project link, or a row with
+  no references, is dropped rather than assumed local.
+- **The cap's overflow is counted and logged once per fetch** at WARNING (`N past
+  _MAX_LINKS_CALLS carry no edges`), so a truncated graph is distinguishable from a
+  complete one.
+- **Retention is bounded independently by `_MAX_DEPS_NODES`, `_MAX_DEPS_EDGES`, and
+  `_MAX_LINKS_PER_ISSUE`**; rows past a bound are dropped, the overflow counts are
+  logged once at WARNING (`serving the partial graph`), and the partial graph is
+  served, the same shape the GitHub fetcher takes at `DEPS_GRAPHQL_MAX_PAGES`. A
+  bound never turns into a refusal: a project past a cap gets the same partial graph
+  on every load, including its first, rather than a 502 no later load can clear.
+
+`blocks` / `is_blocked_by` link types exist only on GitLab Premium and Ultimate. On a Free
+or CE instance every `/links` row is `relates_to`, so the Graph tab is legitimately empty
+and that is indistinguishable from "no links" on the server side.
+
+Azure and any unknown provider are answered an empty graph by `/deps` without a rebuild;
+nothing is written to their cache.
+
 ## Background Watcher
 
 An in-process asyncio loop (`watch.py`) polls opted-in repos every 60s for new

@@ -15,7 +15,12 @@ from functools import partial
 
 from aiohttp import web
 
-from kiro_crew.apps.builtins.issue_radar.backend import github_client, provider, store
+from kiro_crew.apps.builtins.issue_radar.backend import (
+    github_client,
+    gitlab_queries,
+    provider,
+    store,
+)
 
 logger = logging.getLogger("kirocrew.app.issue-radar")
 
@@ -125,11 +130,14 @@ async def _rebuild_deps(app: web.Application, key: provider.RepoKey) -> dict:
     normalized stored shape ``{"edges", "nodes", ...}``.
 
     The single build path shared by the synchronous route (cold cache /
-    ``refresh=1``) and the background revalidation. Reads the open issues (the
-    graph's scope) plus the open pulls (node hints) from the caches the app
-    already keeps, syncs the native + inferred edges via
-    ``github_client.fetch_dependency_edges``, writes the deps cache, and re-reads
-    it so the caller gets the normalized/deduped shape a later cache hit would.
+    ``refresh=1``) and the background revalidation. Dispatches on
+    ``key.provider``:
+
+    * **GitHub** — ``github_client.fetch_dependency_edges``, unchanged.
+    * **GitLab** — ``gitlab_queries.fetch_dependency_edges``; no inferred edges.
+
+    Any other provider never reaches here: ``_handle_deps`` answers it an empty
+    graph without a rebuild, and nothing is written to its cache.
 
     Holds the repo's rebuild mutex across fetch AND write, so a slow rebuild can
     never land on top of a newer one and re-stamp older edges as fresh.
@@ -153,15 +161,33 @@ async def _rebuild_deps(app: web.Application, key: provider.RepoKey) -> dict:
         # Under-claiming age is the safe direction: this rebuild can only lose
         # a CAS race it might have won, never persist stale data as fresh.
         fetch_started = time.time()
-        try:
-            issues = await routes._load_open_issues_for_reco(key)
-        except routes.GhCliError as exc:
-            raise _DepsScopeUnavailable(str(exc)) from exc
-        pulls = await routes._st(key, store.read_pulls_cache, owner, repo, state="open") or []
-        hints = _deps_node_hints(key, issues, pulls)
-        edges, nodes = await asyncio.to_thread(
-            partial(github_client.fetch_dependency_edges, owner, repo, issues, hints)
-        )
+        if key.provider == provider.GITLAB:
+            try:
+                issues = await routes._load_open_issues_for_reco(key)
+            except routes.GhCliError as exc:
+                raise _DepsScopeUnavailable(str(exc)) from exc
+            pkw = provider.call_kwargs(key)
+            edges, nodes = await asyncio.to_thread(
+                partial(
+                    gitlab_queries.fetch_dependency_edges,
+                    owner,
+                    repo,
+                    issues,
+                    host=pkw.get("host", key.host),
+                )
+            )
+        else:
+            # GitHub: the only other provider ``_handle_deps`` lets reach this
+            # function (it answers an empty graph for anything else before calling).
+            try:
+                issues = await routes._load_open_issues_for_reco(key)
+            except routes.GhCliError as exc:
+                raise _DepsScopeUnavailable(str(exc)) from exc
+            pulls = await routes._st(key, store.read_pulls_cache, owner, repo, state="open") or []
+            hints = _deps_node_hints(key, issues, pulls)
+            edges, nodes = await asyncio.to_thread(
+                partial(github_client.fetch_dependency_edges, owner, repo, issues, hints)
+            )
         await routes._st(
             key,
             store.write_deps_cache,
@@ -258,10 +284,9 @@ async def _handle_deps(request: web.Request) -> web.Response:
     a signal today; staleness stays an internal scheduling decision rather than
     part of the contract.
 
-    Dependency edges are a GitHub-native feature (the ``dependencies`` API);
-    non-GitHub providers answer an empty graph rather than an error, so the M1
-    frontend can call ``/deps`` uniformly and simply render nothing for a GitLab
-    project (cross-provider parity is out of scope for M1).
+    GitHub and GitLab are served (``_rebuild_deps`` dispatches on provider). Azure
+    DevOps and any unknown provider answer an empty graph rather than an error, so
+    the frontend can call ``/deps`` uniformly and render nothing for them.
     """
     from .. import routes  # circular import: backend.routes imports this module
 
@@ -282,9 +307,9 @@ async def _handle_deps(request: web.Request) -> web.Response:
             status=404,
         )
 
-    # GitHub-native only in M1. A non-GitHub key returns an empty graph so the
+    # Azure DevOps and any unknown provider: an empty graph, never a rebuild, so the
     # client renders an empty dependency surface instead of an error.
-    if key.provider != provider.GITHUB:
+    if key.provider not in (provider.GITHUB, provider.GITLAB):
         return web.json_response(
             {
                 **routes._identity(key),

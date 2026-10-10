@@ -2978,8 +2978,9 @@
           "retry": "TENTAR DE NOVO"
         },
         "pipelineDashboard": {
-          "github_only": "O pipeline de triagem funciona apenas com repositórios do GitHub",
-          "github_only_hint": "Suas tarefas agendadas leem e escrevem somente no GitHub, portanto este painel não tem dados de pipeline para este repositório."
+          "forge_unsupported": "O pipeline de triagem não está disponível para este repositório",
+          "forge_unsupported_gitlab_hint": "Adicione {{host}} a dashboard.gitlab_hosts em ~/.kiro/crew/config.json para ver este pipeline.",
+          "forge_unsupported_other_hint": "Os jobs agendados do pipeline não rodam contra o host deste repositório, então não há dados de pipeline para mostrar."
         }
       },
       "welcomeCarousel": {

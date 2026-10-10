@@ -34,7 +34,7 @@ vi.mock('../api', async (importOriginal) => {
 })
 
 import GlobalPipelineView from './GlobalPipelineView'
-import type { ItemSession, OverviewResponse, OverviewStep, StepItem } from '../api'
+import type { ItemSession, OverviewResponse, OverviewStep, RepoRef, StepItem } from '../api'
 
 // ── fixtures ──────────────────────────────────────────────────────────────────
 
@@ -148,7 +148,16 @@ function session(over: Partial<ItemSession> = {}): ItemSession {
   }
 }
 
-function renderView() {
+/** The backend's refusal of a forge the pipeline has no data for: a 400 carrying
+ * `repo_provider_unsupported`, the code `isUnsupportedForge` recognises. */
+function refusedForge(): Error {
+  return Object.assign(new Error('request failed with status 400'), {
+    status: 400,
+    code: 'repo_provider_unsupported',
+  })
+}
+
+function renderView(repo: RepoRef = { owner: 'acme', repo: 'widget' }) {
   // Retries off, so a rejection surfaces as isError on the first attempt instead
   // of after react-query's default backoff.
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
@@ -159,7 +168,7 @@ function renderView() {
     <Provider store={store}>
       <MemoryRouter>
         <QueryClientProvider client={qc}>
-          <GlobalPipelineView repo={{ owner: "acme", repo: "widget" }} />
+          <GlobalPipelineView repo={repo} />
         </QueryClientProvider>
       </MemoryRouter>
     </Provider>,
@@ -195,11 +204,7 @@ describe('GlobalPipelineView — L0', () => {
     // standing fact about the repository. The refusal is told apart by the backend's
     // own code, so the rule about which forges qualify lives in one place and this
     // view only recognises the answer.
-    const refused = Object.assign(new Error('request failed with status 400'), {
-      status: 400,
-      code: 'repo_provider_unsupported',
-    })
-    overview.mockRejectedValue(refused)
+    overview.mockRejectedValue(refusedForge())
     renderView()
 
     expect(await screen.findByTestId('atp-unsupported-forge')).toBeTruthy()
@@ -209,6 +214,51 @@ describe('GlobalPipelineView — L0', () => {
     // And not the empty state either, which would claim the pipeline has no activity
     // when the truth is that this board cannot read this repository at all.
     expect(screen.queryByTestId('atp-no-pipeline')).toBeNull()
+  })
+
+  it('names the one step that clears a refused GitLab host, with the host filled in', async () => {
+    // A GitLab project is refused only when its host is missing from
+    // `dashboard.gitlab_hosts`, which the operator can fix, so this register carries
+    // the fix sentence naming the actual host, and the agent hand-off.
+    overview.mockRejectedValue(refusedForge())
+    renderView({ owner: 'group', repo: 'widget', provider: 'gitlab', host: 'gitlab.example.com' })
+
+    const notice = await screen.findByTestId('atp-unsupported-forge')
+    expect(notice.getAttribute('role')).toBe('alert')
+    expect(notice.textContent).toContain("The triage pipeline isn't available for this repository")
+    expect(notice.textContent).toContain('Add gitlab.example.com to dashboard.gitlab_hosts')
+    // The hint names the host, never a pronoun standing in for it.
+    expect(notice.textContent).not.toMatch(/\bits\b/)
+    expect(screen.getByText('Ask the agent')).toBeTruthy()
+  })
+
+  it('gives a permanently unsupported forge the reason as an error with the hand-off, and no fix step', async () => {
+    // The value comes from a rejected request, so it is an error whatever the forge
+    // (`errors-use-error-notice`), and the hand-off is on because nothing here can be
+    // lost. Azure DevOps and GitHub Enterprise have nothing the reader can change, so
+    // the GitLab fix sentence would send them to a config that cannot help; what they
+    // get instead is the reason the pipeline has no data.
+    overview.mockRejectedValue(refusedForge())
+    renderView({ owner: 'org', repo: 'project', provider: 'azure', host: 'dev.azure.com' })
+
+    const notice = await screen.findByTestId('atp-unsupported-forge')
+    expect(notice.getAttribute('role')).toBe('alert')
+    expect(notice.textContent).toContain("The triage pipeline isn't available for this repository")
+    expect(notice.textContent).toContain("scheduled jobs don't run against this repository's host")
+    expect(notice.textContent).not.toContain('gitlab_hosts')
+    expect(screen.getByText('Ask the agent')).toBeTruthy()
+    expect(screen.queryByText('Retry')).toBeNull()
+  })
+
+  it('gives a GitLab ref with no host the reason, not a fix sentence naming a host it lacks', async () => {
+    // The backend refuses a host-less GitLab request for that very omission, so there
+    // is no host to list and the GitLab fix sentence would be a lie.
+    overview.mockRejectedValue(refusedForge())
+    renderView({ owner: 'group', repo: 'widget', provider: 'gitlab' })
+
+    const notice = await screen.findByTestId('atp-unsupported-forge')
+    expect(notice.textContent).toContain("scheduled jobs don't run against this repository's host")
+    expect(notice.textContent).not.toContain('gitlab_hosts')
   })
 
   it('renders a FAILURE with a retry when the overview fails, never an empty state', async () => {

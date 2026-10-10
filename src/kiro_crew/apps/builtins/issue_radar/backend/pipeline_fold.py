@@ -519,6 +519,10 @@ MAPPED_EVENTS: frozenset[str] = frozenset(
 
 AUDIT_LOG_NAME = "gh-autofix-audit.jsonl"
 
+#: Audit-log filename stem for every forge other than public GitHub: the event schema
+#: is the same, only the forge differs, so the forge tag follows the stem.
+AUDIT_STEM = "autofix-audit"
+
 #: The queue is ONE FILE PER REPOSITORY; the trail above is not. The scheduled
 #: jobs that write them made that split deliberately: history cannot be
 #: re-sharded retroactively and its readers scan it as one file, so the trail
@@ -549,6 +553,52 @@ def _repo_slug(repo: str) -> str:
         "".join(ch if ch in _SLUG_SAFE else "-" for ch in (repo or "").replace("/", "__"))
         or "unknown"
     )
+
+
+#: The characters a forge-scoped slug copies through unchanged. ``_`` is NOT in it:
+#: it is the escape leader below, so every underscore in the output is one. ``.`` is
+#: NOT in it either: the filename joins ``<forge tag>.<slug>`` with a dot, and the tag
+#: carries the host's own dots, so a dot inside the slug would move that boundary.
+#: ``gitlab.example`` + ``team.prod/widget`` and ``gitlab.example.team`` + ``prod/widget``
+#: would otherwise spell the same file, and one project would read the other's queue.
+_FORGE_SLUG_PLAIN = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-")
+
+
+def _forge_repo_slug(repo: str) -> str:
+    """One filesystem-safe path segment for a repository on a non-GitHub forge.
+
+    INJECTIVE, where :func:`_repo_slug` is not. That one maps ``/`` to ``__`` and
+    copies ``_`` through, which is unambiguous for GitHub (an owner cannot contain
+    ``_`` and there are exactly two segments) but not for GitLab, whose nested group
+    paths can carry ``_`` in any segment: ``gitlab/proj/sub`` and ``gitlab__proj/sub``
+    would name the SAME queue shard, and one project would read the other's slots,
+    titles and credit costs -- the misattribution the forge split exists to remove.
+
+    So every ``_`` in the output is an escape leader, and what follows it is
+    prefix-free: ``__`` is ``/``, ``_u`` is a literal ``_``, and ``_`` plus two hex
+    digits is any other character outside :data:`_FORGE_SLUG_PLAIN` (``u`` is not a
+    hex digit, and neither is ``_``). Left-to-right decoding is therefore
+    deterministic, which is what makes two different repositories unable to share a
+    filename. ``.`` is escaped too (``_2e``), so the slug never contains the dot that
+    separates it from the forge tag in the filename. ``_repo_slug`` itself is left
+    alone because its output is the GitHub writers' contract: those files already
+    exist on disk under that name.
+
+    This grammar is the WRITER CONTRACT for every other forge: a job that appends to
+    a GitLab queue shard must produce exactly the name :func:`queue_path` does, and
+    ``test_issue_radar_pipeline_forge.py`` pins the literal names it has to match.
+    """
+    out: list[str] = []
+    for ch in repo or "":
+        if ch in _FORGE_SLUG_PLAIN:
+            out.append(ch)
+        elif ch == "/":
+            out.append("__")
+        elif ch == "_":
+            out.append("_u")
+        else:
+            out.extend(f"_{byte:02x}" for byte in ch.encode("utf-8"))
+    return "".join(out) or "unknown"
 
 
 def _event_repo(record: dict[str, Any]) -> str:
@@ -594,11 +644,54 @@ def _admits(event_repo: str, wanted: str) -> bool:
     return event_repo == wanted
 
 
-def audit_log_path(root: Path | None = None) -> Path:
-    return (root if root is not None else _workspace()) / AUDIT_LOG_NAME
+@dataclass(frozen=True)
+class Forge:
+    """Which forge a repository lives on: the namespace its pipeline files live in.
+
+    ``owner/repo`` alone is not an identity once a second forge exists -- a GitLab
+    project and a GitHub repository can share a slug -- so the files the pipeline's
+    jobs write are split BY FORGE instead of stamping a forge onto every event. A
+    GitLab repository therefore reads its own audit log, queue shards and issue cache
+    and can never be shown another forge's rows, titles or credit costs.
+
+    The default is public GitHub, whose files keep their original names so nothing
+    already on disk moves.
+    """
+
+    provider: str = "github"
+    host: str = "github.com"
+
+    @property
+    def is_github(self) -> bool:
+        return self.provider == "github" and self.host == "github.com"
+
+    @property
+    def tag(self) -> str:
+        """One filesystem-safe filename segment for this forge; ``""`` for GitHub.
+
+        ``:`` (the host's port separator) is written as ``_``, which a validated host
+        name cannot contain; writing it as ``-`` would make ``gitlab.example:8443``
+        and the legal host ``gitlab.example-8443`` share a filename.
+        """
+        if self.is_github:
+            return ""
+        return "".join(
+            "_" if ch == ":" else (ch if ch in _SLUG_SAFE else "-")
+            for ch in f"{self.provider}.{self.host}".lower()
+        )
 
 
-def queue_path(*, repo: str, root: Path | None = None) -> Path:
+GITHUB = Forge()
+
+
+def audit_log_path(root: Path | None = None, *, forge: Forge = GITHUB) -> Path:
+    base = root if root is not None else _workspace()
+    if forge.is_github:
+        return base / AUDIT_LOG_NAME
+    return base / f"{AUDIT_STEM}.{forge.tag}.jsonl"
+
+
+def queue_path(*, repo: str, root: Path | None = None, forge: Forge = GITHUB) -> Path:
     """The dispatch-queue shard for one repository.
 
     KEYWORD-ONLY on purpose. The signature grew a leading parameter, and a
@@ -614,7 +707,9 @@ def queue_path(*, repo: str, root: Path | None = None) -> Path:
     this function cannot answer, so it fails loudly instead.
     """
     base = root if root is not None else _workspace()
-    return base / f"{QUEUE_STEM}.{_repo_slug(repo)}.jsonl"
+    if forge.is_github:
+        return base / f"{QUEUE_STEM}.{_repo_slug(repo)}.jsonl"
+    return base / f"autofix-dispatch-queue.{forge.tag}.{_forge_repo_slug(repo)}.jsonl"
 
 
 def legacy_queue_path(root: Path | None = None) -> Path:
@@ -746,6 +841,7 @@ def fold_pipeline(
     root: Path | None = None,
     recent_hours: int = DEFAULT_RECENT_HOURS,
     now: float | None = None,
+    forge: Forge = GITHUB,
 ) -> PipelineFold:
     """Fold the event trail into per-step throughput, optionally for one repository.
 
@@ -792,7 +888,9 @@ def fold_pipeline(
     clock = time.time() if now is None else now
     cutoff = clock - recent_hours * 3600
 
-    text = _read_text_bounded(audit_log_path(root), MAX_LOG_BYTES, "The pipeline event log")
+    text = _read_text_bounded(
+        audit_log_path(root, forge=forge), MAX_LOG_BYTES, "The pipeline event log"
+    )
 
     counts = {s.key: StepCounts(s.key, s.label, s.session_bearing) for s in STEPS}
     result = PipelineFold(recent_hours=recent_hours)
@@ -960,7 +1058,9 @@ class ItemRow:
         }
 
 
-def _read_queue(*, repo: str, root: Path | None = None) -> dict[int, dict[str, Any]]:
+def _read_queue(
+    *, repo: str, root: Path | None = None, forge: Forge = GITHUB
+) -> dict[int, dict[str, Any]]:
     """Read one repository's dispatch-queue shard into ``{issue: entry}``.
 
     Keyed on the issue number alone, which is only correct BECAUSE the queue is
@@ -987,8 +1087,10 @@ def _read_queue(*, repo: str, root: Path | None = None) -> dict[int, dict[str, A
     out from under a running dispatcher would corrupt the queue it was trying to
     rescue. This module also promises to write nothing at all.
     """
-    shard = queue_path(repo=repo, root=root)
-    if not shard.exists() and legacy_queue_path(root).exists():
+    shard = queue_path(repo=repo, root=root, forge=forge)
+    # The pre-sharding name only ever existed for GitHub, so another forge has no
+    # legacy queue to be mistaken for an absent one.
+    if forge.is_github and not shard.exists() and legacy_queue_path(root).exists():
         raise QueueMigrationPending(
             "The dispatch queue has not been sharded per repository yet; "
             "run the pipeline installer to migrate it"
@@ -1005,7 +1107,7 @@ def _read_queue(*, repo: str, root: Path | None = None) -> dict[int, dict[str, A
     return out
 
 
-def _issue_cache_dir(owner: str, repo: str) -> Path:
+def _issue_cache_dir(owner: str, repo: str, forge: Forge = GITHUB) -> Path:
     """Locate the issue cache WITHOUT creating anything.
 
     Both obvious helpers create as a side effect: Issue Radar's ``repo_data_dir``
@@ -1017,10 +1119,20 @@ def _issue_cache_dir(owner: str, repo: str) -> Path:
     ``app_dir`` is pure path composition, which is why the ``data`` segment is
     restated here rather than borrowed from a helper that would materialise it.
     """
-    return app_dir(issue_radar_store.APP_NAME) / "data" / "repos" / owner / repo
+    data = app_dir(issue_radar_store.APP_NAME) / "data"
+    # Another forge's cache lives in its own provider subtree, exactly where Issue
+    # Radar's store puts it (`provider_root`), so a same-slug GitHub repository can
+    # never supply the title shown for a GitLab issue.
+    return (
+        data
+        / issue_radar_store.provider_subpath(forge.provider, forge.host)
+        / "repos"
+        / owner
+        / repo
+    )
 
 
-def _read_issue_cache(number: int, owner: str, repo: str) -> dict[str, Any]:
+def _read_issue_cache(number: int, owner: str, repo: str, forge: Forge = GITHUB) -> dict[str, Any]:
     """Read one cached issue's DETAIL, or {} when absent or unreadable.
 
     The cache file is a wrapper -- ``{owner, repo, number, detail, timeline}`` --
@@ -1035,7 +1147,7 @@ def _read_issue_cache(number: int, owner: str, repo: str) -> dict[str, Any]:
     keeps the row present with the facts we do have instead of dropping a real
     pipeline item because its title is unknown.
     """
-    path = _issue_cache_dir(owner, repo) / f"issue-{number}.json"
+    path = _issue_cache_dir(owner, repo, forge) / f"issue-{number}.json"
     try:
         text = _read_text_bounded(path, MAX_JSON_BYTES, "An issue cache entry")
     except FoldError:
@@ -1107,6 +1219,7 @@ def list_step_items(
     repo: str,
     root: Path | None = None,
     limit: int = MAX_ROWS,
+    forge: Forge = GITHUB,
 ) -> list[ItemRow]:
     """Return the items currently sitting in ``step``, for one repository.
 
@@ -1142,7 +1255,9 @@ def list_step_items(
     # shard, so the two can never disagree about which repository this list is.
     target = f"{owner}/{repo}"
 
-    text = _read_text_bounded(audit_log_path(root), MAX_LOG_BYTES, "The pipeline event log")
+    text = _read_text_bounded(
+        audit_log_path(root, forge=forge), MAX_LOG_BYTES, "The pipeline event log"
+    )
     entered: set[int] = set()
     # Whether each item is currently INSIDE this step, by its LAST transition. Not a
     # set of departures: an item that entered, exited and entered again would stay
@@ -1183,11 +1298,11 @@ def list_step_items(
             inside[number] = False
 
     resident = sorted((n for n, still_in in inside.items() if still_in), reverse=True)[:limit]
-    queue = _read_queue(repo=target, root=root)
+    queue = _read_queue(repo=target, root=root, forge=forge)
     rows: list[ItemRow] = []
     for number in resident:
         entry = queue.get(number, {})
-        cached = _read_issue_cache(number, owner, repo)
+        cached = _read_issue_cache(number, owner, repo, forge)
         last_name, last_ts = latest.get(number, ("", None))
         rows.append(
             ItemRow(
@@ -1346,6 +1461,7 @@ def list_item_sessions(
     repo: str,
     root: Path | None = None,
     shard_limit: int = MAX_USAGE_SHARDS,
+    forge: Forge = GITHUB,
 ) -> list[SessionRow]:
     """Return every session that worked item ``number``, newest first.
 
@@ -1369,7 +1485,7 @@ def list_item_sessions(
     if item is None:
         raise FoldError("item number out of range")
 
-    entry = _read_queue(repo=repo, root=root).get(item, {})
+    entry = _read_queue(repo=repo, root=root, forge=forge).get(item, {})
     current_slot = entry.get("slot")
     current_slot = current_slot if isinstance(current_slot, str) and current_slot else ""
     previous = entry.get("previous_slots")

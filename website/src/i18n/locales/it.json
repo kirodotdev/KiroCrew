@@ -2978,8 +2978,9 @@
           "retry": "RIPROVA"
         },
         "pipelineDashboard": {
-          "github_only": "La pipeline di triage funziona solo con repository GitHub",
-          "github_only_hint": "I suoi processi pianificati leggono e scrivono solo su GitHub, quindi questa bacheca non ha dati di pipeline per questo repository."
+          "forge_unsupported": "La pipeline di triage non è disponibile per questo repository",
+          "forge_unsupported_gitlab_hint": "Aggiungi {{host}} a dashboard.gitlab_hosts in ~/.kiro/crew/config.json per vedere questa pipeline.",
+          "forge_unsupported_other_hint": "I job pianificati della pipeline non vengono eseguiti sull'host di questo repository, quindi non ci sono dati della pipeline da mostrare."
         }
       },
       "welcomeCarousel": {

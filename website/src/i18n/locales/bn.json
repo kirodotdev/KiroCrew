@@ -2920,8 +2920,9 @@
           "retry": "আবার চেষ্টা করুন"
         },
         "pipelineDashboard": {
-          "github_only": "ট্রায়াজ পাইপলাইন কেবল GitHub রিপোজিটরিতে চলে",
-          "github_only_hint": "এর নির্ধারিত কাজগুলি কেবল GitHub পড়ে ও লেখে, তাই এই বোর্ডে এই রিপোজিটরির পাইপলাইন ডেটা নেই।"
+          "forge_unsupported": "এই রিপোজিটরির জন্য ট্রায়াজ পাইপলাইন উপলব্ধ নয়",
+          "forge_unsupported_gitlab_hint": "এই পাইপলাইন দেখতে {{host}}-কে ~/.kiro/crew/config.json-এর dashboard.gitlab_hosts-এ যোগ করো।",
+          "forge_unsupported_other_hint": "পাইপলাইনের নির্ধারিত কাজগুলো এই রিপোজিটরির হোস্টে চলে না, তাই দেখানোর মতো কোনো পাইপলাইন ডেটা নেই।"
         }
       },
       "welcomeCarousel": {

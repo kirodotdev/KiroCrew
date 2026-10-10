@@ -2978,8 +2978,9 @@
           "retry": "REINTENTAR"
         },
         "pipelineDashboard": {
-          "github_only": "El canal de triaje solo funciona con repositorios de GitHub",
-          "github_only_hint": "Sus tareas programadas solo leen y escriben en GitHub, por lo que este panel no tiene datos de canal para este repositorio."
+          "forge_unsupported": "La canalización de triaje no está disponible para este repositorio",
+          "forge_unsupported_gitlab_hint": "Añade {{host}} a dashboard.gitlab_hosts en ~/.kiro/crew/config.json para ver esta canalización.",
+          "forge_unsupported_other_hint": "Los trabajos programados de la canalización no se ejecutan contra el host de este repositorio, así que no hay datos de canalización que mostrar."
         }
       },
       "welcomeCarousel": {

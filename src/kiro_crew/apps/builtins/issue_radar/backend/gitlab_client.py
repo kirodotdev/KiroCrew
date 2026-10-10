@@ -507,6 +507,13 @@ def list_recent_open_issues(
     return [_norm_issue(row) for row in _rows(data)][:capped]
 
 
+def list_issue_links(owner: str, repo: str, iid: int, *, host: str, timeout: float = GL_TIMEOUT_SEC) -> list[dict]:
+    """The issue-link rows GitLab holds for one issue (``blocks`` / ``is_blocked_by`` /
+    ``relates_to``), raw. ``iid`` is an int so it can never carry a path segment."""
+    path = f"projects/{project_path(owner, repo)}/issues/{int(iid)}/links"
+    return _rows(_glab_api(path, host=host, timeout=timeout, paginate=True))
+
+
 def list_repo_labels(owner: str, repo: str, *, host: str = "", timeout: float = GL_TIMEOUT_SEC) -> list[dict]:
     """Every label defined on the project, with its configured colour."""
     path = f"projects/{project_path(owner, repo)}/labels"

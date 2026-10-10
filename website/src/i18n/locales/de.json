@@ -3009,8 +3009,9 @@
           "retry": "ERNEUT VERSUCHEN"
         },
         "pipelineDashboard": {
-          "github_only": "Die Triage-Pipeline läuft nur mit GitHub-Repositorys",
-          "github_only_hint": "Ihre geplanten Jobs lesen und schreiben ausschließlich GitHub, daher hat dieses Board keine Pipeline-Daten für dieses Repository."
+          "forge_unsupported": "Die Triage-Pipeline ist für dieses Repository nicht verfügbar",
+          "forge_unsupported_gitlab_hint": "Füge {{host}} in ~/.kiro/crew/config.json zu dashboard.gitlab_hosts hinzu, um diese Pipeline zu sehen.",
+          "forge_unsupported_other_hint": "Die geplanten Jobs der Pipeline laufen nicht gegen den Host dieses Repositorys, daher gibt es keine Pipeline-Daten zum Anzeigen."
         }
       },
       "welcomeCarousel": {
