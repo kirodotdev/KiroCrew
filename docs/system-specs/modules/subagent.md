@@ -2363,6 +2363,26 @@ per-sub-agent completion note. Dashboard chat only.
   drain) keeps the count. A `held` or `unknown` answer, as for a user message
   drained while a child is still out, leaves the count alone, so that batch
   keeps its synthesis.
+- **Claims, not proof** — the synthesis turn only runs for a batch whose
+  results spanned turns, so the note for a run that cannot have done on-disk
+  work rides on the result itself, in every delivery shape. A completed run that
+  made no tool call (`SubagentInfo.made_no_tool_calls`: no `tool_call` frame and
+  no permission request, the `tool_count`/`turns` pair the replay gates already
+  read as "no side effect happened") wrote no file,
+  ran no command and made no commit, yet it can still narrate one -- the usual
+  shape for a reasoning-only agent (`"tools": []`, such as `kirocrew-lite` or
+  `kirocrew-knowledge`) handed write work. Its lone `[Subagent completion
+  event]` ends with one ``⚠ Agent `<id>` made no tool calls in this run…`` line,
+  a wave digest carries the same line under that member's entry, and
+  `spawn_sub_agents` adds an `unverified` field to its completed record
+  (`constants.NO_TOOL_CALLS_NOTE`; `GET /api/spawn/{id}` reports
+  `made_no_tool_calls` for a completed live run, and a status read without it
+  attaches nothing). The
+  note asks the parent to check reported changes on disk; it does not tell it to
+  redo them. A failed or stopped run gets no note, since its own text already
+  says the output is not a finished result. The dispatch is never refused and
+  its reply carries no note: whether a task needs writes is not decidable from
+  its prose, and the narration arrives in the completion, not the dispatch.
 - **Per-result turns kept** — each completion is still processed in its own turn
   (no raw buffering) to avoid a context-window blowup; the synthesis works over
   the already-condensed per-result turns.

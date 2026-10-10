@@ -3135,6 +3135,19 @@ class SubagentInfo:
     _stop_recovery_used: int = 0
 
     @property
+    def made_no_tool_calls(self) -> bool:
+        """Did this run neither emit a ``tool_call`` frame nor raise a permission request?
+
+        The pair the replay gates already read as "no side effect happened":
+        ``tool_count`` counts ``tool_call`` frames (and approved child
+        escalations) and ``turns`` counts the run's own permission requests, so a
+        backend that surfaces a gated tool only as a permission request still
+        counts as having called a tool. Such a run wrote no file, ran no command
+        and made no commit, whatever its text reports.
+        """
+        return self.tool_count == 0 and self.turns == 0
+
+    @property
     def outcome(self) -> str:
         """Canonical three-way terminal outcome: 'stopped' | 'failed' | 'completed'.
 
