@@ -22,6 +22,13 @@ import subprocess
 from typing import Any, Optional
 
 from kiro_crew.deploy.engine import aws_spawn_env, resolve_aws_bin
+from kiro_crew.platform_compat import (
+    CREATE_NEW_PROCESS_GROUP,
+    IS_WINDOWS,
+    SIGKILL,
+    kill_process_group,
+    kill_process_tree,
+)
 from kiro_crew.sandbox import cgroup_scope_argv, popen_limited, wrap_argv
 
 logger = logging.getLogger(__name__)
@@ -193,6 +200,100 @@ def _build_argv(args: list[str], profile: str, region: str) -> list[str]:
     return cmd
 
 
+# Bound on the post-kill drain. The whole group is SIGKILLed first, so every
+# writer that inherited the pipes (the CLI and any ``credential_process`` helper)
+# is gone and the drain returns at once. The bound covers a descendant that
+# left the group (one that called ``setsid`` itself), so the collecting wait
+# always ends.
+_POST_KILL_DRAIN_SECS = 5
+
+
+def _fallback_kill(proc: "subprocess.Popen[str]") -> None:
+    try:
+        proc.kill()
+    except Exception:  # pragma: no cover - last-resort kill must not raise
+        pass
+
+
+def _stop_process_group(proc: "subprocess.Popen[str]", pgid: Optional[int]) -> None:
+    """SIGKILL a timed-out ``aws`` CLI together with its whole process group.
+
+    POSIX: signal the group id captured while the leader was alive
+    (:func:`kiro_crew.platform_compat.kill_process_group`), only while the leader
+    is unreaped (:func:`_kill_group_while_unreaped`), else the single process
+    through ``Popen.kill``. Windows has no POSIX process
+    groups, so -- as the module's other group kills do
+    (``cloud/ssm.kill_port_forward``) -- walk the child tree with ``taskkill
+    /T /F`` via :func:`kiro_crew.platform_compat.kill_process_tree`.
+    """
+    pid = getattr(proc, "pid", None)
+    if IS_WINDOWS:
+        if pid is not None:
+            try:
+                kill_process_tree(pid)
+                return
+            except (ProcessLookupError, OSError):
+                pass
+        _fallback_kill(proc)
+        return
+    if pgid is not None and _kill_group_while_unreaped(proc, pgid):
+        return
+    # ``Popen.kill`` signals the pid only while the process is unreaped
+    # (``send_signal`` polls first), so the last resort is safe the same way.
+    _fallback_kill(proc)
+
+
+#: Bound on waiting for the ``Popen``'s reap lock. A holder of the lock either
+#: reaps without blocking or blocks in an untimed ``wait()``; past the bound the
+#: group is left alone and the caller's pid-scoped ``Popen.kill`` runs instead.
+_REAP_LOCK_WAIT_SECS = 1.0
+
+
+def _kill_group_while_unreaped(proc: "subprocess.Popen[str]", pgid: int) -> bool:
+    """SIGKILL the group ``pgid`` only while its leader ``proc`` is unreaped.
+
+    The group id is the leader's pid. While the leader is unreaped (running, or
+    exited and not yet waited for) that number stays allocated and names this
+    group. Once anything reaps it, whether this module's drain or another holder
+    of the ``Popen`` (the deploy wizard's interrupt cleanup, through
+    ``proc_sink``), the number is free and can name an unrelated group. ``Popen``
+    reaps only under its ``_waitpid_lock``, so the check and the signal run under
+    that lock, atomic with every reap through ``poll``, ``wait`` or
+    ``communicate``. Returns whether the group was signalled.
+    """
+    lock = getattr(proc, "_waitpid_lock", None)
+    if lock is None or not lock.acquire(timeout=_REAP_LOCK_WAIT_SECS):
+        return False
+    try:
+        if proc.returncode is not None:
+            return False
+        kill_process_group(pgid, SIGKILL)
+        return True
+    except (ProcessLookupError, PermissionError, ValueError, OSError):
+        return False
+    finally:
+        lock.release()
+
+
+def _reap_timed_out_call(proc: "subprocess.Popen[str]", pgid: Optional[int]) -> str:
+    """Reap a timed-out CLI's whole group, then drain its pipes under a bound.
+
+    The CLI's ``credential_process`` helper inherits the piped stdout/stderr, so
+    a drain after signalling only the CLI waits until the helper exits on its
+    own. Signalling the whole group (:func:`_stop_process_group`) stops the
+    helper too, and :data:`_POST_KILL_DRAIN_SECS` bounds the drain.
+    Returns whatever stdout was buffered ("" if the bounded drain gives up).
+    """
+    _stop_process_group(proc, pgid)
+    try:
+        out, _ = proc.communicate(timeout=_POST_KILL_DRAIN_SECS)
+        return out or ""
+    except subprocess.TimeoutExpired:
+        return ""
+    except Exception:  # pragma: no cover - a drain failure must not mask the 124
+        return ""
+
+
 def run_aws(
     args: list[str],
     profile: str = "",
@@ -228,6 +329,15 @@ def run_aws(
     sandboxed, cleanup = wrap_argv(argv, mode="standard")
     sandboxed = cgroup_scope_argv(sandboxed)  # cgroup DoS ceiling
     proc: Optional[subprocess.Popen[str]] = None
+    pgid: Optional[int] = None
+    # Give the CLI its own process group so a timeout can reap the WHOLE group,
+    # not just the CLI. The CLI runs ``credential_process`` as a child that
+    # inherits the piped stdout/stderr; signalling only the CLI leaves that
+    # helper holding the pipe (see :func:`_reap_timed_out_call`). POSIX uses a
+    # new session; Windows has no sessions, so it uses a new process group.
+    group_kwargs: dict[str, Any] = (
+        {"creationflags": CREATE_NEW_PROCESS_GROUP} if IS_WINDOWS else {"start_new_session": True}
+    )
     try:
         try:
             proc = popen_limited(  # noqa: S603 — fixed argv, no shell, sandbox-wrapped
@@ -240,7 +350,18 @@ def run_aws(
                 # AWS_SECRET*/AWS_SESSION* scrub still applies: the wrapped argv
                 # runs it inside the child, on whatever env it is handed.
                 env=aws_spawn_env(argv[0]),
+                **group_kwargs,
             )
+            # Capture the group id WHILE the leader is alive and un-reaped, so a
+            # timeout signals the id verified here rather than resolving one from
+            # a pid the kernel may by then have recycled.
+            if proc is not None and not IS_WINDOWS:
+                _pid = getattr(proc, "pid", None)
+                if _pid is not None:
+                    try:
+                        pgid = os.getpgid(_pid)
+                    except OSError:
+                        pgid = None
             if proc_sink is not None:
                 try:
                     proc_sink(proc)
@@ -262,9 +383,8 @@ def run_aws(
         try:
             out, err = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
-            proc.kill()
-            out, err = proc.communicate()
-            return 124, out or "", f"aws call timed out after {timeout}s: {' '.join(args[:2])}"
+            out = _reap_timed_out_call(proc, pgid)
+            return 124, out, f"aws call timed out after {timeout}s: {' '.join(args[:2])}"
         return proc.returncode or 0, out or "", err or ""
     except KeyboardInterrupt:
         if proc is not None and proc.poll() is None:

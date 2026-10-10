@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import os
+import signal
+import sys
+import threading
 
 import pytest
 
@@ -312,3 +316,165 @@ class TestChokepointHumanActionGuard:
         # A human terminal (no session key) can run a mutation.
         rc, _o, _e = aws.run_aws(["cloudformation", "delete-stack", "--stack-name", "x"])
         assert rc == 0
+
+
+# --------------------------------------------------------------------------- #
+# A timed-out ``aws`` call must reap the CLI's WHOLE process group, so a child
+# the CLI spawned (its ``credential_process`` helper) that inherited the piped
+# stdout/stderr cannot keep the post-timeout drain blocked. The reproducer runs
+# the real ``run_aws`` and the real ``popen_limited`` on a real child; only the
+# argv builder, the sandbox wrappers, the chokepoint guard and the env builder
+# are stubbed, and none of those is part of the wait.
+# --------------------------------------------------------------------------- #
+_HELPER_LINGER_SECS = 25
+_JOIN_BOUND_SECS = 8
+
+
+def _fake_cli_argv(pid_file, *, with_helper, helper_leaves_group=False):
+    """Argv for a python stand-in CLI that outlives a 1s call timeout.
+
+    With ``with_helper`` it forks a child that inherits this process's piped
+    stdout/stderr and lingers -- the shape of ``credential_process`` outliving a
+    killed CLI -- and records that child's pid to ``pid_file`` so the test can
+    reap it by its recorded pid, never by name. With ``helper_leaves_group`` the
+    child calls ``setsid`` first, so no group signal reaches it.
+    """
+    leave_group = "    os.setsid()\n" if helper_leaves_group else ""
+    with_helper_src = (
+        "import os, time\n"
+        "pid = os.fork()\n"
+        "if pid == 0:\n"
+        "{leave_group}"
+        "    time.sleep({linger})\n"
+        "    os._exit(0)\n"
+        "open({pid_file!r}, 'w').write(str(pid))\n"
+        "time.sleep({linger})\n"
+    ).format(leave_group=leave_group, linger=_HELPER_LINGER_SECS, pid_file=str(pid_file))
+    no_helper_src = "import time\ntime.sleep({linger})\n".format(linger=_HELPER_LINGER_SECS)
+    return [sys.executable, "-c", with_helper_src if with_helper else no_helper_src]
+
+
+def _reap_recorded_pid(pid_file):
+    try:
+        pid = int(pid_file.read_text())
+    except (OSError, ValueError):
+        return
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        pass
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group reproducer")
+class TestRunAwsTimeoutReapsHelpers:
+    @pytest.fixture(autouse=True)
+    def _children_run_in_tmp_path(self, tmp_path, _floor_monkeypatch):
+        """Every real child these tests start runs in ``tmp_path``, never in the checkout."""
+        real = aws.popen_limited
+        _floor_monkeypatch.setattr(aws, "popen_limited", functools.partial(real, cwd=tmp_path))
+
+    def _run_in_thread(self, monkeypatch, args, *, timeout):
+        monkeypatch.setattr(aws, "assert_chokepoint_allowed", lambda a: None)
+        monkeypatch.setattr(aws, "_build_argv", lambda a, p, r: list(a))
+        monkeypatch.setattr(aws, "wrap_argv", lambda argv, mode: (argv, ""))
+        monkeypatch.setattr(aws, "cgroup_scope_argv", lambda argv: argv)
+        monkeypatch.setattr(aws, "aws_spawn_env", lambda head: dict(os.environ))
+        captured: dict = {}
+
+        def _call():
+            captured["value"] = aws.run_aws(args, timeout=timeout)
+
+        thread = threading.Thread(target=_call, daemon=True)
+        thread.start()
+        thread.join(_JOIN_BOUND_SECS)
+        return thread, captured
+
+    def test_timed_out_call_returns_while_helper_holds_pipes(self, tmp_path, monkeypatch):
+        # A drain bound longer than the helper's life: only the group signal
+        # can free the call inside the join bound.
+        monkeypatch.setattr(aws, "_POST_KILL_DRAIN_SECS", _HELPER_LINGER_SECS * 2, raising=False)
+        pid_file = tmp_path / "helper.pid"
+        args = _fake_cli_argv(pid_file, with_helper=True)
+        thread, captured = self._run_in_thread(monkeypatch, args, timeout=1)
+        try:
+            assert not thread.is_alive(), (
+                "run_aws stayed blocked past its 1s timeout: the helper that "
+                "inherited the pipes was never reaped"
+            )
+            rc, _out, err = captured["value"]
+            assert rc == 124
+            assert "timed out after 1s" in err
+        finally:
+            _reap_recorded_pid(pid_file)
+            thread.join(_HELPER_LINGER_SECS + 5)
+
+    def test_timed_out_call_returns_when_helper_leaves_the_group(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(aws, "_POST_KILL_DRAIN_SECS", 1, raising=False)
+        pid_file = tmp_path / "helper.pid"
+        args = _fake_cli_argv(pid_file, with_helper=True, helper_leaves_group=True)
+        thread, captured = self._run_in_thread(monkeypatch, args, timeout=1)
+        try:
+            assert not thread.is_alive(), (
+                "run_aws stayed blocked past its 1s timeout and its drain bound: "
+                "a helper outside the group held the pipes"
+            )
+            rc, _out, err = captured["value"]
+            assert rc == 124
+            assert "timed out after 1s" in err
+        finally:
+            _reap_recorded_pid(pid_file)
+            thread.join(_HELPER_LINGER_SECS + 5)
+
+    def test_timed_out_call_with_no_helper_returns_124(self, tmp_path, monkeypatch):
+        pid_file = tmp_path / "helper.pid"
+        args = _fake_cli_argv(pid_file, with_helper=False)
+        thread, captured = self._run_in_thread(monkeypatch, args, timeout=1)
+        try:
+            assert not thread.is_alive()
+            rc, _out, err = captured["value"]
+            assert rc == 124
+            assert "timed out after 1s" in err
+        finally:
+            thread.join(_HELPER_LINGER_SECS + 5)
+
+    def test_call_that_finishes_in_time_is_unchanged(self, monkeypatch):
+        args = [
+            sys.executable,
+            "-c",
+            "import sys; sys.stdout.write('ok'); sys.stderr.write('e')",
+        ]
+        thread, captured = self._run_in_thread(monkeypatch, args, timeout=30)
+        thread.join(_JOIN_BOUND_SECS)
+        assert not thread.is_alive()
+        assert captured["value"] == (0, "ok", "e")
+
+    def test_the_cli_runs_in_tmp_path_not_in_the_checkout(self, tmp_path, monkeypatch):
+        args = [sys.executable, "-c", "import os, sys; sys.stdout.write(os.getcwd())"]
+        thread, captured = self._run_in_thread(monkeypatch, args, timeout=30)
+        assert not thread.is_alive()
+        rc, out, _err = captured["value"]
+        assert rc == 0
+        ran_in = os.path.realpath(out)
+        assert ran_in == os.path.realpath(tmp_path), f"the CLI ran in {out}, not in {tmp_path}"
+
+    def test_a_reaped_leaders_group_number_is_never_signalled(self, tmp_path, monkeypatch):
+        # Another holder of the Popen (the deploy wizard's interrupt cleanup, through
+        # proc_sink) can reap the CLI first. Its pid, which is the group id, is then
+        # free and may name an unrelated group, so the timeout path must not signal it.
+        import subprocess
+
+        signalled: list[tuple[int, int]] = []
+
+        def _record(pgid: int, sig: int) -> bool:
+            signalled.append((pgid, sig))
+            return True
+
+        monkeypatch.setattr(aws, "kill_process_group", _record)
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "pass"], start_new_session=True, cwd=tmp_path
+        )
+        pgid = proc.pid  # start_new_session: the leader's pid is the group id
+        assert proc.wait(timeout=_JOIN_BOUND_SECS) == 0  # reaped by another holder
+
+        assert aws._reap_timed_out_call(proc, pgid) == ""
+        assert signalled == [], f"a reaped leader's group number was signalled: {signalled}"
