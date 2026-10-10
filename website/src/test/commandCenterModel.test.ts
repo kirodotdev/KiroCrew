@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildCommandCenter, questionText, runTitle, scopedSlots, slotKey, type CommandCenterSources } from '../pages/chat/command-center/model'
+import { FAILED_WORKFLOW_BLOCKED_MS, buildCommandCenter, questionText, runTitle, scopedSlots, slotKey, type CommandCenterSources } from '../pages/chat/command-center/model'
 import type { ChatSlot, SubagentActivity } from '../types'
 
 const slot = (key: string, extra: Partial<ChatSlot> = {}): ChatSlot => ({ key, messages: 0, running: false, ...extra })
@@ -29,6 +29,22 @@ describe('command center projection', () => {
     expect(buildCommandCenter({ ...input, root: 'slack:missing' }).nodes).toEqual([])
     expect(buildCommandCenter({ ...input, root: 'slack:1785.12' }).nodes).toEqual([])
   })
+  it('counts a failed workflow as blocked only within the window after it ended', () => {
+    const now = Date.parse('2026-10-09T12:00:00Z')
+    const iso = (ms: number) => new Date(ms).toISOString()
+    const model = buildCommandCenter(sources({ workflows: [
+      { run_id: 'fresh', session_key: 'dashboard:root', status: 'failed', ended_at: iso(now - 60_000) },
+      { run_id: 'old', session_key: 'dashboard:root', status: 'failed', ended_at: iso(now - FAILED_WORKFLOW_BLOCKED_MS - 60_000) },
+      { run_id: 'unknown', session_key: 'dashboard:root', status: 'failed' },
+    ] }), now)
+    const state = (id: string) => model.nodes.find(n => n.ref === id)?.state
+    expect(state('fresh')).toBe('blocked')
+    expect(state('old')).toBe('stopped')
+    // A gateway that does not report an end time keeps the old behaviour.
+    expect(state('unknown')).toBe('blocked')
+    expect(model.blocked).toBe(2)
+  })
+
   it('keeps opaque IDs for routing and gives unnamed runs human-readable labels', () => {
     const model = buildCommandCenter(sources({
       slots: [slot('opaque-session', { title: 'opaque-session' })], root: 'opaque-session',

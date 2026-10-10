@@ -91,7 +91,7 @@ export interface CommandCenterSources {
   root: string | null
   slots: ChatSlot[]
   subagents: Record<string, Record<string, SubagentActivity>>
-  workflows: { run_id: string; name?: string; session_key?: string; status?: string; error?: string | null; last_log?: string }[]
+  workflows: { run_id: string; name?: string; session_key?: string; status?: string; error?: string | null; last_log?: string; ended_at?: string | null }[]
   questions: PendingQuestion[]
   approvals: PendingApproval[]
   work?: { items: WorkItem[]; omitted?: number }
@@ -137,7 +137,18 @@ export function scopedSlots(slots: ChatSlot[], root: string | null): ChatSlot[] 
   return slots.filter(s => keys.has(s.key))
 }
 
-export function buildCommandCenter(source: CommandCenterSources) {
+/** How long a failed workflow counts as blocked. Runs are kept on disk, so
+ *  without a window a failure from weeks ago would hold the tile forever; past
+ *  it the run reads as stopped, and the run history still lists it. */
+export const FAILED_WORKFLOW_BLOCKED_MS = 24 * 60 * 60 * 1000
+
+function failedWorkflowState(endedAt: string | null | undefined, now: number): RunState {
+  const ended = endedAt ? Date.parse(endedAt) : NaN
+  // An unknown end time (an older gateway) keeps today's behaviour: blocked.
+  return Number.isFinite(ended) && now - ended > FAILED_WORKFLOW_BLOCKED_MS ? 'stopped' : 'blocked'
+}
+
+export function buildCommandCenter(source: CommandCenterSources, now = Date.now()) {
   const slots = scopedSlots(source.slots, source.root)
   const keys = new Set(slots.map(s => s.key))
   const attention: AttentionItem[] = []
@@ -222,7 +233,7 @@ export function buildCommandCenter(source: CommandCenterSources) {
     // A paused workflow is resumable, so its label is "waiting" rather than
     // stopped; planning is active work even before execution starts.
     nodes.push({ id: `workflow:${w.run_id}`, kind: 'workflow', ref: w.run_id, slot, title: w.name && w.name !== w.run_id ? w.name : '', ordinal: nodes.length + 1,
-      state: w.status === 'finished' ? 'done' : w.status === 'failed' ? 'blocked' : w.status === 'cancelled' ? 'stopped'
+      state: w.status === 'finished' ? 'done' : w.status === 'failed' ? failedWorkflowState(w.ended_at, now) : w.status === 'cancelled' ? 'stopped'
         : w.status === 'paused' || w.status === 'pausing' ? 'waiting'
           : w.status === 'running' || w.status === 'planning' || w.status === 'planned' ? 'running' : 'idle',
       detail: w.last_log, error: w.error || undefined })

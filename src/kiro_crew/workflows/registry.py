@@ -179,6 +179,9 @@ class RunHandle:
             # the event stream so no extra plumbing is needed.
             "phase": self._current_phase(),
             "last_log": self._last_log(),
+            # When the run reached its terminal state, so a reader can tell a
+            # failure from minutes ago from one weeks old. None while active.
+            "ended_at": self._ended_at(),
         }
         if self._persistence_error and not self.error:
             snap["error_code"] = "workflow_checkpoint_failed"
@@ -234,6 +237,13 @@ class RunHandle:
     def _current_phase(self) -> str:
         """Title of the most recent ``phase_started`` event (live progress)."""
         return self._latest("phase_started", "title")
+
+    def _ended_at(self) -> str | None:
+        """``ts`` of the run's terminal event, or None while it has not ended."""
+        for e in reversed(self.events):
+            if e.type in _TERMINAL_EVENT_TYPES:
+                return e.ts
+        return None
 
     def _last_log(self) -> str:
         """Most recent narrator ``log`` message (live progress)."""

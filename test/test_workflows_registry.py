@@ -186,6 +186,21 @@ async def test_list_is_compact_no_result_payload() -> None:
     assert done_snapshots and done_snapshots[0]["result"] == {"done": True}
 
 
+async def test_list_reports_when_a_run_ended() -> None:
+    """``ended_at`` is the terminal event's ``ts``, so a reader can tell a fresh
+    failure from an old one; a run still going has none."""
+    reg = RunRegistry()
+    runner = WorkflowRunner(agent_fn=_echo, audit=lambda *a, **k: None)
+    rid = await runner.run_background(GOOD, registry=reg, run_id="wf_end1", now=NOW, name="d")
+    snap = await _wait_terminal(reg, rid)
+    terminal = [
+        e for e in reg.status(rid, include_events=True)["events"] if e["type"] == "run_finished"
+    ]
+
+    (row,) = reg.list()
+    assert row["ended_at"] == snap["ended_at"] == terminal[-1]["ts"]
+
+
 async def test_cancel_unknown_run_is_false() -> None:
     reg = RunRegistry()
     assert await reg.cancel("nope") is False
