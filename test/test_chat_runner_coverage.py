@@ -1435,6 +1435,11 @@ class TestFlushSegment:
     def test_pending_variants_are_attached_and_broadcast(self, tmp_path):
         state, slot = _state(tmp_path), _slot()
         slot._pending_variants = [{"content": "older draft", "ts": "1"}, "not-a-dict"]
+        # The real regenerate endpoint pins the replace markers to the dispatch's
+        # own turn generation before _flush_segment runs; only a flush under that
+        # same generation adopts the stashed variants. Arm it so this exercises
+        # the owning-turn path rather than the no-op a mismatched generation takes.
+        slot._regenerate_replacing_generation = slot._turn_generation
 
         chat_runner._flush_segment(state, slot, "newest draft")
 

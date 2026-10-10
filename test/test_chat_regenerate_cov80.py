@@ -123,7 +123,7 @@ async def test_regenerate_skips_a_trailing_system_notice(state) -> None:
     captured: list[list[dict]] = []
 
     async def _capture(*args, **kwargs) -> None:
-        # Runs before the done-callback discards unconsumed variants.
+        # Runs before the turn's finally would drop an unconsumed stash.
         captured.append(list(slot._pending_variants))
 
     with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=_capture):
@@ -138,8 +138,10 @@ async def test_regenerate_skips_a_trailing_system_notice(state) -> None:
     contents = [v.get("content") for v in captured[0]]
     assert "the real reply" in contents
     assert "auto compacted" not in contents
-    # Truncation still lands after the user row, dropping reply AND notice.
-    assert [m["role"] for m in slot.messages] == ["user"]
+    # The inverted flow does NOT truncate up front: the old reply (and the
+    # notice) stay live in the window until the new turn's first segment
+    # replaces them. Nothing was removed before the turn dispatched.
+    assert [m["role"] for m in slot.messages] == ["user", "assistant", "assistant"]
 
 
 @pytest.mark.asyncio
@@ -166,8 +168,8 @@ async def test_regenerate_never_crosses_a_newer_user_turn(state) -> None:
 
 @pytest.mark.asyncio
 async def test_readiness_latch_blocks_before_the_truncation(state) -> None:
-    """Regenerate persists the truncation, so an unverified backend must be
-    rejected BEFORE history is mutated -- a failed turn cannot undo it."""
+    """Regenerate re-runs a turn, so an unverified backend must be rejected
+    BEFORE the turn is dispatched and before any window change."""
     slot = state.get_or_create_slot("s1")
     slot.append("user", "hi")
     slot.append("assistant", "hello v1")
@@ -185,52 +187,37 @@ async def test_readiness_latch_blocks_before_the_truncation(state) -> None:
 
 
 @pytest.mark.asyncio
-async def test_regenerate_survives_a_history_write_failure(state, caplog) -> None:
-    """A failed rewrite must not fail the request, and must leave the
-    rewrite flag set so the flush loop still archives the dropped tail."""
+async def test_regenerate_empty_turn_preserves_the_previous_reply(state) -> None:
+    """A Regenerate whose new turn produces NO reply must leave the
+    previous reply in place — not destroy it. The inverted flow keeps the old
+    reply live in the window (no up-front truncation) and only replaces it in
+    ``_flush_segment`` when a first segment lands, so a turn that ends empty is
+    a pure no-op: the reply the user wanted to improve on survives on the window
+    and the stash is dropped so it cannot leak into a later turn.
+    """
     slot = state.get_or_create_slot("s1")
     slot.append("user", "hi")
-    slot.append("assistant", "hello v1")
-    slot.drain()
-
-    with (
-        patch(
-            "kiro_crew.dashboard.chat_regenerate.save_slot_off_loop",
-            new=AsyncMock(side_effect=OSError("disk full")),
-        ),
-        patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=AsyncMock()),
-    ):
-        with caplog.at_level("WARNING"):
-            async with _client(state) as client:
-                resp = await client.post("/api/chat/slots/s1/regenerate")
-                assert resp.status == 200
-                await asyncio.sleep(0)
-
-    assert "failed to rewrite session history" in caplog.text
-    assert slot._pending_rewrite is True
-
-
-@pytest.mark.asyncio
-async def test_unconsumed_variants_are_discarded_with_a_warning(state, caplog) -> None:
-    """If the flush never picks the stash up, the done-callback clears it rather
-    than leaking it into the next turn."""
-    slot = state.get_or_create_slot("s1")
-    slot.append("user", "hi")
-    slot.append("assistant", "hello v1")
+    slot.append("assistant", "the reply to keep")
     slot.drain()
 
     with patch(
         "kiro_crew.dashboard.chat_regenerate._run_chat", new=AsyncMock()
-    ):  # returns without consuming _pending_variants
-        with caplog.at_level("WARNING"):
-            async with _client(state) as client:
-                resp = await client.post("/api/chat/slots/s1/regenerate")
-                assert resp.status == 200
-                await asyncio.sleep(0)
-                await asyncio.sleep(0)
+    ):  # a turn that produces no segment (never calls _flush_segment)
+        async with _client(state) as client:
+            resp = await client.post("/api/chat/slots/s1/regenerate")
+            assert resp.status == 200
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
 
+    # The previous reply is intact — the behavior this test pins: an empty
+    # regenerate turn preserves the reply the user wanted to keep.
+    assert [m["role"] for m in slot.messages] == ["user", "assistant"]
+    assert slot.messages[-1].get("content") == "the reply to keep"
+    # The stash was dropped so a FUTURE unrelated turn's flush cannot adopt it.
     assert slot._pending_variants == []
-    assert "pending variants not consumed by flush" in caplog.text
+    # The replace markers lapsed too.
+    assert not getattr(slot, "_regenerate_replacing_mids", [])
+    assert not getattr(slot, "_regenerate_replacing_rows", [])
 
 
 @pytest.mark.asyncio
@@ -371,13 +358,13 @@ async def test_switch_variant_survives_a_persist_failure(state, caplog) -> None:
 
 # ── recreate-race slot-identity guard ──
 #
-# Both truncating saves run under slot._lock but dispatch the write to a worker
-# thread; the event loop is free across that one await, and a same-name
-# close-and-recreate is NOT serialized against this lock (the cleanup pops
-# state._slots[name] and get_or_create_slot re-inserts, neither taking the
-# original lock). The rewrite resolves its target file from the slot object it
-# was handed, so an unguarded write lands the truncation on the replacement's
-# transcript. The fix carries the same PAIR edit-resend carries:
+# Edit-resend and switch-variant truncate/persist under slot._lock but dispatch
+# the write to a worker thread; the event loop is free across that one await,
+# and a same-name close-and-recreate is NOT serialized against this lock (the
+# cleanup pops state._slots[name] and get_or_create_slot re-inserts, neither
+# taking the original lock). The rewrite resolves its target file from the slot
+# object it was handed, so an unguarded write lands on the replacement's
+# transcript. The fix carries a PAIR:
 #   * expected_history_key = slot_history_key(slot), captured before the await,
 #     so the save refuses when the routing resolves to a different key -- a
 #     RENAMED replacement;
@@ -387,77 +374,6 @@ async def test_switch_variant_survives_a_persist_failure(state, caplog) -> None:
 # These tests assert the pin reaches the write, and that a same-name swap before
 # the write suppresses it. The disk-side routing refusal itself is covered by
 # _save_slot_to_history's own expected_history_key tests.
-
-
-@pytest.mark.asyncio
-async def test_regenerate_pins_the_truncating_write_to_its_transcript(state) -> None:
-    slot = state.get_or_create_slot("s1", linked_session_key="orig:key")
-    slot.append("user", "hi")
-    slot.append("assistant", "keep-me")
-    slot.drain()
-
-    saved = AsyncMock(return_value=True)
-    with (
-        patch("kiro_crew.dashboard.chat_regenerate.save_slot_off_loop", new=saved),
-        patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=AsyncMock()),
-    ):
-        async with _client(state) as client:
-            resp = await client.post("/api/chat/slots/s1/regenerate")
-            assert resp.status == 200
-            await asyncio.sleep(0)
-
-    # The write carried the slot's own transcript and map key as its
-    # authorization pins.
-    assert saved.await_count == 1
-    assert saved.await_args.kwargs["expected_history_key"] == "orig:key"
-    assert saved.await_args.kwargs["expected_slot_name"] == "s1"
-
-
-@pytest.mark.asyncio
-async def test_regenerate_skips_the_write_when_the_slot_is_recreated(state) -> None:
-    """A same-name recreate that lands INSIDE the executor wait -- after the
-    caller dispatches the write, while the worker thread holds the lock --
-    keeps the history key identical, so only an object-identity recheck at the
-    locked commit boundary catches it. The truncating write must not commit
-    onto the replacement's transcript."""
-    slot = state.get_or_create_slot("s1", linked_session_key="orig:key")
-    slot.append("user", "hi")
-    slot.append("assistant", "keep-me-1")
-    slot.append("user", "again")
-    slot.append("assistant", "keep-me-2")
-    slot.drain()
-    # A replacement bound to the SAME transcript key -- what a recreate that
-    # resumes the same session produces, so the routing check alone waves it
-    # through.
-    replacement = state.get_or_create_slot("s1b", linked_session_key="orig:key")
-
-    real_status = state.conversation_log.get_metadata_status
-
-    def _swap_inside_the_locked_write(key):
-        # get_metadata_status runs inside the save's _locked region, before the
-        # identity recheck -- model the recreate landing in that window.
-        if state._slots.get("s1") is slot:
-            state._slots["s1"] = replacement
-        return real_status(key)
-
-    with (
-        patch.object(
-            state.conversation_log,
-            "get_metadata_status",
-            side_effect=_swap_inside_the_locked_write,
-        ),
-        patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=AsyncMock()) as run,
-    ):
-        async with _client(state) as client:
-            resp = await client.post("/api/chat/slots/s1/regenerate")
-            assert resp.status == 409
-            assert (await resp.json())["code"] == "regenerate_save_refused"
-            await asyncio.sleep(0)
-
-    # The truncation never reached disk for the transcript the replacement holds.
-    assert state.conversation_log.get_metadata("orig:key") == {}
-    # And the turn was not dispatched onto the removed slot.
-    assert run.await_count == 0
 
 
 @pytest.mark.asyncio

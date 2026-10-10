@@ -5,6 +5,7 @@ Covers ``chat_runner._attach_turn_stats``: the helper that mirrors
 message of a completed turn, so the dashboard footer can show the same
 end-of-turn elapsed/credits line kiro-cli prints natively.
 """
+
 import time
 
 import pytest
@@ -126,7 +127,8 @@ class TestAttachTurnStats:
 
         # Turn 1's stats are untouched; the error message got nothing.
         assert slot.messages[0]["meta"]["turn_stats"] == {
-            "elapsed_ms": 5000, "credits": 1.0,
+            "elapsed_ms": 5000,
+            "credits": 1.0,
         }
         assert "turn_stats" not in slot.messages[1].get("meta", {})
 
@@ -156,15 +158,15 @@ class TestAttachTurnStats:
         # Clear handler: empties the list, resets boundary, appends confirmation.
         slot.messages.clear()
         reset_boundary = 0
-        slot.append("assistant", "🗑️ Conversation cleared.", "msg msg-a",
-                    broadcast=False)
+        slot.append("assistant", "🗑️ Conversation cleared.", "msg msg-a", broadcast=False)
 
         # With the stale (pre-clear) boundary the scan slice would be empty;
         # the reset boundary keeps the confirmation in scope.
         assert len(slot.messages[pre_clear_boundary:]) == 0
         _attach_turn_stats(slot, 2500, 0.3, 0.0, turn_boundary=reset_boundary)
         assert slot.messages[-1]["meta"]["turn_stats"] == {
-            "elapsed_ms": 2500, "credits": 0.3,
+            "elapsed_ms": 2500,
+            "credits": 0.3,
         }
 
     def test_preserves_existing_meta(self):
@@ -175,6 +177,56 @@ class TestAttachTurnStats:
         meta = slot.messages[-1]["meta"]
         assert meta["file_changes"] == [{"path": "/tmp/x"}]
         assert meta["turn_stats"]["elapsed_ms"] == 2000
+
+    def test_single_segment_regenerate_keeps_stats_on_new_reply(self):
+        # Regression (GPT 6.1 F1): an inverted single-segment regenerate removes
+        # the old reply row from the window on first content, so the window ends
+        # up SHORTER than the index boundary captured at turn start. A bare
+        # slot.messages[boundary:] slice would then be empty and silently drop
+        # the NEW reply's turn_stats (ttft_ms included). Scoping by the pre-turn
+        # tail row's id (turn_start_mid) survives the removal and lands the stats
+        # on the new reply. This is the common path, not an extreme one.
+        from kiro_crew.dashboard.state import row_mid
+
+        slot = _ChatSlot("test-regen-stats")
+        slot.append("user", "redo this", "msg msg-u", broadcast=False)
+        old_reply = slot.append("assistant", "old answer", "msg msg-a", broadcast=False)
+        # Turn start: boundary = len (= 2), tail id = the OLD reply's mid is NOT
+        # the anchor — the user row is the pre-turn tail only if we capture
+        # before the regenerate dispatch. Model the real regenerate: the user
+        # row is replayed, so the pre-turn tail the runner records is the user
+        # row. Capture it the way _run_chat does.
+        turn_start_mid = row_mid(slot.messages[-2])  # the user row
+        boundary = len(slot.messages)  # == 2, the window-index captured at start
+
+        # First content: the runner appends the new reply, then
+        # replace_regenerate_target removes the old reply row in place.
+        new_reply = slot.append("assistant", "new answer", "msg msg-a", broadcast=False)
+        slot.messages.remove(old_reply)
+        # Window is now [user, new_reply] — length 2, but the new reply sits at
+        # index 1, which the stale boundary slice [2:] would never reach.
+        assert len(slot.messages) == 2
+        assert len(slot.messages[boundary:]) == 0
+
+        attached = _attach_turn_stats(
+            slot,
+            7000,
+            1.5,
+            0.0,
+            turn_boundary=boundary,
+            ttft_ms=321,
+            turn_start_mid=turn_start_mid,
+        )
+        assert attached is True
+        assert slot.messages[-1] is new_reply
+        assert new_reply["content"] == "new answer"
+        assert new_reply["meta"]["turn_stats"] == {
+            "elapsed_ms": 7000,
+            "credits": 1.5,
+            "ttft_ms": 321,
+        }
+        # The user row (and any earlier turn) must not receive the stats.
+        assert "turn_stats" not in slot.messages[0].get("meta", {})
 
 
 class TestTurnStatsTtft:

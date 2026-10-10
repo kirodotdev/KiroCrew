@@ -2068,10 +2068,18 @@ class TestPostAwaitOwnership:
             assert await asyncio.to_thread(log.get_cached_intent_summary, "dashboard:s1") is None
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("route", ["regenerate", "switch-variant"])
+    @pytest.mark.parametrize("route", ["switch-variant"])
     async def test_replacement_after_history_save_cannot_dispatch_or_broadcast(
         self, state, regen_run, monkeypatch, route
     ) -> None:
+        # switch-variant persists the active-variant change through
+        # ``save_slot_off_loop``; a same-name close-and-recreate landing inside
+        # that await must be caught so the handler neither dispatches nor
+        # broadcasts onto the successor. regenerate commits no up-front save
+        # (its window stays live until the new reply supersedes it), so it has
+        # no mid-handler save await for a replacement to slip through — its
+        # ownership safety rests on the entry recheck and is covered by
+        # test_a_slot_replaced_during_the_readiness_await_is_not_acted_on.
         from kiro_crew.dashboard import chat_regenerate
 
         slot = state.get_or_create_slot("s1", app=APP)

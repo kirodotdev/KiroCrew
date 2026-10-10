@@ -16114,7 +16114,9 @@ class TestFolderAssignmentPersistence:
 
 class TestRegenerateAndVariants:
     @pytest.mark.asyncio
-    async def test_regenerate_truncates_and_stashes_variant(self, tmp_path, monkeypatch):
+    async def test_regenerate_stashes_variant_and_keeps_the_old_reply_live(
+        self, tmp_path, monkeypatch
+    ):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("s1")
@@ -16131,7 +16133,9 @@ class TestRegenerateAndVariants:
                 resp = await client.post("/api/chat/slots/s1/regenerate")
                 assert resp.status == 200
                 await asyncio.sleep(0)
-        assert [m["role"] for m in slot.messages] == ["user"]
+        # Inverted flow: the old reply stays LIVE in the window while the new
+        # turn runs (no up-front truncation); only the variant chain is stashed.
+        assert [m["role"] for m in slot.messages] == ["user", "assistant"]
         assert len(captured) == 1
         assert captured[0]["content"] == "hello v1"
 
@@ -16313,8 +16317,13 @@ class TestRegenerateAndVariants:
             assert resp.status == 400
 
     @pytest.mark.asyncio
-    async def test_regenerate_persists_to_disk(self, tmp_path, monkeypatch):
-        """After regenerate, on-disk history should reflect the truncation."""
+    async def test_regenerate_keeps_the_old_reply_on_disk_until_replaced(
+        self, tmp_path, monkeypatch
+    ):
+        """Inverted flow: regenerate does NOT persist a truncation up front, so
+        the previous reply stays on disk while the new turn runs. It is replaced
+        only when the new turn's first segment flushes — a turn that ends empty
+        leaves the on-disk reply intact."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("s1")
@@ -16329,11 +16338,13 @@ class TestRegenerateAndVariants:
             async with TestClient(TestServer(_make_app(state))) as client:
                 resp = await client.post("/api/chat/slots/s1/regenerate")
                 assert resp.status == 200
-        # File should now only contain the user message (assistant truncated)
+                await asyncio.sleep(0)
+        # The empty turn produced no segment, so nothing truncated the on-disk
+        # history: the user message AND its reply both remain.
         key = _history_key_for(slot.key)
         persisted = state.conversation_log.read_messages(key)
         roles = [m.get("role") for m in persisted]
-        assert roles == ["user"]
+        assert roles == ["user", "assistant"]
 
     @pytest.mark.asyncio
     async def test_save_slot_redacts_variants(self, tmp_path, monkeypatch):
@@ -16479,6 +16490,8 @@ class TestRegenerateAndVariants:
             {"content": "old v1", "ts": "t1"},
             {"content": "old v2", "ts": "t2"},
         ]
+        # The regenerate turn that armed the stash is the live turn.
+        slot._regenerate_replacing_generation = slot._turn_generation
         from kiro_crew.dashboard.chat import _flush_segment
 
         _flush_segment(state, slot, "new reply", broadcast=False)
@@ -16488,6 +16501,114 @@ class TestRegenerateAndVariants:
         assert len(last["variants"]) == 3  # old v1, old v2, new reply
         assert last["variant_idx"] == 2
         assert slot._pending_variants == []
+
+    @pytest.mark.asyncio
+    async def test_flush_segment_replaces_the_live_old_reply(self, tmp_path, monkeypatch):
+        """Inverted regenerate: the previous reply stays LIVE in the window while
+        the new turn runs; _flush_segment's first segment removes the marked
+        old-reply rows in place and folds them onto the new reply as variants.
+        The window ends as user -> new reply (old reply gone, kept as a variant)."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "hi")
+        old = slot.append("assistant", "old reply")
+        slot.drain()
+        # What the regenerate endpoint arms: the old reply stays live, marked for
+        # in-place replacement by stable id, with its variant chain stashed.
+        slot._pending_variants = [{"content": "old reply", "ts": old.get("ts", "")}]
+        from kiro_crew.dashboard.state import row_mid
+
+        slot._regenerate_replacing_mids = [row_mid(old)]
+        slot._regenerate_replacing_rows = [old]
+        slot._regenerate_replacing_generation = slot._turn_generation
+        from kiro_crew.dashboard.chat import _flush_segment
+
+        _flush_segment(state, slot, "fresh reply", broadcast=False)
+
+        roles = [m["role"] for m in slot.messages]
+        assert roles == ["user", "assistant"], roles  # old reply removed in place
+        last = slot.messages[-1]
+        assert last["content"] == "fresh reply"
+        # The old reply survives as a variant of the new reply (the goal).
+        assert [v["content"] for v in last["variants"]] == ["old reply", "fresh reply"]
+        assert last["variant_idx"] == 1
+        # Markers and stash consumed; the window is dirty + on the rewrite path.
+        assert slot._pending_variants == []
+        assert slot._regenerate_replacing_mids == []
+        assert slot._regenerate_replacing_rows == []
+        assert slot._pending_rewrite is True
+
+    @pytest.mark.asyncio
+    async def test_local_command_reply_replaces_the_regenerate_target(self, tmp_path, monkeypatch):
+        """A regenerate whose re-sent user message routes to a local (slash)
+        command answers via _append_local_command_reply, NOT _flush_segment. It
+        must still perform the same replace-on-first-content: remove the marked
+        old-reply rows and fold them onto the command reply as variants, so the
+        window never ends up as user -> OLD reply -> NEW command reply."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "/goal show")
+        old = slot.append("assistant", "old goal output")
+        slot.drain()
+        from kiro_crew.dashboard.state import row_mid
+
+        slot._pending_variants = [{"content": "old goal output", "ts": old.get("ts", "")}]
+        slot._regenerate_replacing_mids = [row_mid(old)]
+        slot._regenerate_replacing_rows = [old]
+        slot._regenerate_replacing_generation = slot._turn_generation
+        from kiro_crew.dashboard.chat_turn.file_changes import _append_local_command_reply
+
+        row = _append_local_command_reply(slot, "fresh goal output")
+
+        assert [m["role"] for m in slot.messages] == ["user", "assistant"]
+        assert slot.messages[-1] is row
+        assert row["content"] == "fresh goal output"
+        assert [v["content"] for v in row["variants"]] == ["old goal output", "fresh goal output"]
+        assert slot._pending_variants == []
+        assert slot._regenerate_replacing_rows == []
+
+    @pytest.mark.asyncio
+    async def test_queued_successor_does_not_consume_the_regenerate_target(
+        self, tmp_path, monkeypatch
+    ):
+        """GPT F1: a regenerate that ends empty while a message is queued lets the
+        SUCCESSOR turn dispatch (out of the prior turn's shielded tail) before the
+        regenerate wrapper's finally clears the markers. The successor's reply
+        must NOT consume those markers — grafting the old reply onto an unrelated
+        reply. The owning-generation guard makes the successor's _flush_segment /
+        _append_local_command_reply leave the markers for the finally to clear."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "original question")
+        old = slot.append("assistant", "the reply to keep")
+        slot.drain()
+        from kiro_crew.dashboard.state import row_mid
+
+        # Markers armed by the regenerate turn (generation G).
+        slot._pending_variants = [{"content": "the reply to keep", "ts": old.get("ts", "")}]
+        slot._regenerate_replacing_mids = [row_mid(old)]
+        slot._regenerate_replacing_rows = [old]
+        slot._regenerate_replacing_generation = slot._turn_generation
+        # The empty regenerate turn ends; a queued successor is dispatched, which
+        # bumps the generation past the one the markers were armed under.
+        slot._turn_generation += 1
+        from kiro_crew.dashboard.chat_turn.file_changes import _append_local_command_reply
+
+        row = _append_local_command_reply(slot, "unrelated successor reply")
+
+        # The old reply is NOT removed and the successor reply carries no grafted
+        # variants: the markers belong to a different turn generation.
+        assert [m["content"] for m in slot.messages if m["role"] == "assistant"] == [
+            "the reply to keep",
+            "unrelated successor reply",
+        ]
+        assert "variants" not in row
+        # The markers survive for the regenerate wrapper's finally to clear.
+        assert slot._pending_variants != []
+        assert slot._regenerate_replacing_rows != []
 
     @pytest.mark.asyncio
     async def test_switch_variant_negative_index(self, tmp_path, monkeypatch):

@@ -636,3 +636,75 @@ def _note_reply_row(slot: "_ChatSlot", row: dict[str, Any]) -> None:
         if len(mids) >= _MAX_SLOT_MESSAGES:
             del mids[0]
         mids.append(mid)
+
+
+def replace_regenerate_target(slot: "_ChatSlot", keep_row: dict[str, Any]) -> None:
+    """Remove the marked old-reply rows from the live window, keeping ``keep_row``.
+
+    The single "first content exists" action of an inverted Regenerate: the new
+    reply (``keep_row``, already appended) replaces the previous reply by
+    DELETING the marked old-reply rows in place. Matched by stable id (robust
+    against a mid-turn front-trim or injection shifting positions), with an
+    object-identity fallback for rows that carried no id. ``keep_row`` and any
+    row the turn itself appended are never removed — only the pre-turn rows the
+    marker names. Idempotent and a no-op when no regenerate is pending. Clears
+    the markers so a later unrelated flush cannot re-trigger a removal.
+    """
+    replacing_mids = set(getattr(slot, "_regenerate_replacing_mids", []) or [])
+    replacing_rows = getattr(slot, "_regenerate_replacing_rows", []) or []
+    replacing_row_ids = {id(r) for r in replacing_rows}
+    if replacing_mids or replacing_row_ids:
+        kept: list[dict] = []
+        for m in slot.messages:
+            if m is keep_row:
+                kept.append(m)
+                continue
+            m_mid = row_mid(m)
+            if (m_mid and m_mid in replacing_mids) or id(m) in replacing_row_ids:
+                continue  # drop the old reply row
+            kept.append(m)
+        slot.messages = kept
+    slot._regenerate_replacing_mids = []
+    slot._regenerate_replacing_rows = []
+
+
+def _append_local_command_reply(
+    slot: "_ChatSlot", body: str, cls: str = "msg msg-a"
+) -> dict[str, Any]:
+    """Append a local (slash) command's assistant reply, replacing a regenerate target.
+
+    A local command (``/goal``, ``/workflow``, ``/prompts``, a blocked command,
+    ``/compact``) answers inside ``_run_chat`` with a plain assistant row and
+    returns WITHOUT going through ``_flush_segment`` — the single point where an
+    inverted Regenerate swaps the old reply out for the new one. So a regenerate
+    whose re-sent user message routes to a local command would otherwise leave
+    the old reply live beside the new one (``user → OLD reply → NEW reply``).
+    Routing every local-command append through here applies the same
+    replace-on-first-content as ``_flush_segment``: the fresh row replaces the
+    marked old-reply rows and adopts their variant chain. Returns the row.
+    """
+    row = slot.append("assistant", body, cls)
+    _note_reply_row(slot, row)
+    pending = getattr(slot, "_pending_variants", None)
+    # Only the regenerate turn that armed the markers may consume them. A queued
+    # successor (dispatched out of the prior turn's shielded tail before its
+    # cleanup runs) carries a bumped turn generation, so it leaves the markers
+    # for that turn's finally to clear rather than grafting the old reply here.
+    # Both reads are defensive: a slot that carries no regenerate state at all
+    # (an unarmed generation of -1 can never equal a turn generation of 0) is
+    # simply not an owner, so a lightweight slot without these attributes takes
+    # the no-op path rather than raising.
+    owns = getattr(slot, "_regenerate_replacing_generation", -1) == getattr(
+        slot, "_turn_generation", 0
+    )
+    if pending and owns:
+        replace_regenerate_target(slot, row)
+        variants = [v for v in pending if isinstance(v, dict)]
+        variants.append({"content": body, "ts": row.get("ts", "")})
+        row["variants"] = variants
+        row["variant_idx"] = len(variants) - 1
+        slot._pending_variants = []
+        slot._pending_rewrite = True
+        slot._dirty = True
+        slot.invalidate_source_links()
+    return row

@@ -5,6 +5,8 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, Any, Callable
 
+from kiro_crew.dashboard.state import row_mid
+
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         _ChatSlot,
@@ -62,6 +64,7 @@ def _attach_turn_stats(
     turn_boundary: int = 0,
     model: str = "",
     ttft_ms: int = 0,
+    turn_start_mid: str | None = None,
 ) -> bool:
     """Attach per-turn stats to the last assistant message's meta.
 
@@ -85,23 +88,48 @@ def _attach_turn_stats(
     Zero/empty fields are omitted so the frontend renders only what the
     provider actually reported.
 
-    ``turn_boundary`` is ``len(slot.messages)`` captured at turn start: only
-    messages appended DURING this turn are candidates. Without it, an
-    error/refusal-only turn (which appends no assistant message) would walk
-    back into the PREVIOUS turn's assistant message and overwrite its stats
-    with the failed turn's numbers. No-op when the turn produced no assistant
-    message or when there is nothing to show.
+    ``turn_boundary`` is ``len(slot.messages)`` captured at turn start and
+    ``turn_start_mid`` is the id of the row at the window's tail then: together
+    they scope the attach to rows appended DURING this turn, so an
+    error/refusal-only turn (which appends no assistant message) cannot walk
+    back into the PREVIOUS turn's reply and overwrite its stats. The id is the
+    primary signal because an inverted Regenerate removes the old reply row on
+    first content, shrinking the window below the captured index — the id walks
+    to the right boundary from an identity even when the window index points
+    past the window's end; the index is the fallback for pre-id transcripts
+    (see ``_turn_rows``). No-op when the turn produced no assistant message or
+    when there is nothing to show.
     """
     stats = turn_stats_meta(elapsed_ms, credits, cost_usd, model)
     if stats is None:
         return False
     if ttft_ms > 0:
         stats["ttft_ms"] = int(ttft_ms)
-    boundary = max(0, turn_boundary)
-    for m in reversed(slot.messages[boundary:]):
-        if m.get("role") == "assistant":
-            m.setdefault("meta", {})["turn_stats"] = stats
-            return True
+    # Identify this turn's rows by the pre-turn tail row's id, not the window
+    # index: an inverted Regenerate removes the old reply row from the window on
+    # first content, so the window ends up SHORTER than the index captured at
+    # turn start and a bare ``slot.messages[boundary:]`` slice is empty — it
+    # would miss the new reply (which took the old reply's slot) and silently
+    # drop its ``turn_stats``. Locate the tail row by id, which survives the
+    # removal; the position boundary is the fallback for a transcript whose rows
+    # predate ids. The last assistant row in that slice is this turn's reply.
+    rows = slot.messages
+    if turn_start_mid is not None:
+        if turn_start_mid == "":
+            candidates = rows
+        else:
+            candidates = rows
+            for index in range(len(rows) - 1, -1, -1):
+                if row_mid(rows[index]) == turn_start_mid:
+                    candidates = rows[index + 1 :]
+                    break
+    else:
+        candidates = rows[min(max(0, turn_boundary), len(rows)) :]
+    for m in reversed(candidates):
+        if m.get("role") != "assistant":
+            continue
+        m.setdefault("meta", {})["turn_stats"] = stats
+        return True
     return False
 
 

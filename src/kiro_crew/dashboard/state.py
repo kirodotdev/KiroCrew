@@ -3003,6 +3003,9 @@ class _ChatSlot:
         "_human_seen",
         "_origin",
         "_pending_variants",
+        "_regenerate_replacing_mids",
+        "_regenerate_replacing_rows",
+        "_regenerate_replacing_generation",
         "_lock",
         "forked_from",
         "_fork_lock",
@@ -3952,6 +3955,23 @@ class _ChatSlot:
         self._origin: str = ""
         # Regenerate feature: variants pending attachment to next finalized assistant message
         self._pending_variants: list[dict] = []
+        # Regenerate feature (inverted flow): the previous reply's rows, left
+        # LIVE in the window while the new turn runs, marked for in-place removal
+        # when the new turn produces its first segment. _regenerate_replacing_mids
+        # names them by stable id (robust against a mid-turn window shift);
+        # _regenerate_replacing_rows is the object-identity fallback for rows that
+        # carried no id. Both empty outside a regenerate; cleared by
+        # replace_regenerate_target at the first flush, or by the turn's finally
+        # on an empty turn (the no-op that preserves the old reply).
+        self._regenerate_replacing_mids: list[str] = []
+        self._regenerate_replacing_rows: list[dict] = []
+        # The turn generation that armed the markers above. A replacement only
+        # fires while the owning regenerate turn is still the live turn: a queued
+        # successor dispatched before the owning turn's cleanup runs bumps the
+        # generation, so its flush sees a mismatch and leaves the markers alone
+        # rather than grafting the old reply onto an unrelated reply. -1 means no
+        # regenerate is armed.
+        self._regenerate_replacing_generation: int = -1
         self._lock = asyncio.Lock()
         self.forked_from: str | None = None  # parent slot key if this is a fork
         self._fork_lock: asyncio.Lock = asyncio.Lock()  # serialises concurrent forks on this slot
