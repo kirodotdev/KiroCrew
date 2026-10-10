@@ -11491,6 +11491,7 @@
       "mcp_session_no_report": "이 세션의 보고가 아직 없음",
       "mcp_session_no_tools": "시작되었지만 이 세션은 해당 도구를 하나도 받지 못했습니다. 다른 서버가 같은 도구 이름을 쓰고 있을 수 있습니다. 에이전트 사양의 `toolAliases`로 이름을 바꾸세요.",
       "mcp_session_no_tools_also": "시작되었지만 이 세션은 해당 도구를 하나도 받지 못함(다른 서버가 같은 도구 이름을 쓰고 있을 수 있음, 에이전트 사양의 `toolAliases`로 이름 변경): {{names}}",
+      "mcp_session_restart_to_load": "{{name}}에 자격 증명이 없거나 자격 증명이 거부되었습니다. 자격 증명이 작동하면 새 세션을 시작해 {{name}}을(를) 불러오세요.",
       "mcp_session_source_note": "목록은 이 에이전트의 구성입니다. 각 이름 옆의 상태는 이 세션이 보고한 내용입니다.",
       "mcp_session_started": "이 세션에서 시작됨",
       "message_queued_until_session_ready": "{{error}}. 메시지는 대기열에 있으며 세션이 준비되면 전송됩니다 — 다만 이 탭에만 보관되므로 다른 페이지로 이동하거나 새로 고치면 다시 입력해야 합니다.",

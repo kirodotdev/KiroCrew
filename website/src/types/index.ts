@@ -1003,6 +1003,12 @@ export interface McpSessionReport {
   awaiting_auth: string[]
   /** Server name -> its redacted failure reason, when one was reported. */
   failures: Record<string, string>
+  /**
+   * Failed servers whose reason reads as a credential they did not have when
+   * they started: a new session loads them once the credential exists.
+   * Optional because an older gateway sends no such key.
+   */
+  restart_to_load?: string[]
 }
 
 export interface SessionLink {

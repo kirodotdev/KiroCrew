@@ -103,11 +103,14 @@ from kiro_crew.acp.liveness import (
     consult_offloaded,
     steady_now,
 )
+from kiro_crew.acp.mcp_reattempt import MAX_ATTEMPTS as REATTEMPT_MAX
+from kiro_crew.acp.mcp_reattempt import is_recoverable_auth_failure
 from kiro_crew.acp.mcp_session_report import (
     BUCKET_CAP,
     NAME_CAP,
     KasMcpReadiness,
     McpSessionReport,
+    sanitize_sink_text,
 )
 from kiro_crew.acp.prompt_blocks import build_prompt_blocks, summarize_prompt_structure
 from kiro_crew.acp.types import (
@@ -1320,6 +1323,13 @@ class AcpSessionHandle:
         # ``BUCKET_CAP``; a change is logged once, so a steady overflow does not
         # repeat the warning on every snapshot.
         self._mcp_sign_in_dropped = 0
+        # Servers whose last status entry for this session was ``failed`` with
+        # an error that reads as a missing or refused credential (not an OAuth
+        # authorization failure, which the sign-in above handles), and how many
+        # times each was re-attempted. Both bounded by ``BUCKET_CAP`` names.
+        # See kiro_crew.acp.mcp_reattempt.
+        self._mcp_reattempt_waiting: set[str] = set()
+        self._mcp_reattempt_counts: dict[str, int] = {}
         # What THIS session's MCP servers reported at init — parity with
         # AcpClient._mcp_report. On the shared runtime the frames are staged
         # per sessionId before this handle's queue exists, so the report is
@@ -1997,6 +2007,10 @@ class AcpSessionHandle:
             # and queue a connected status that makes a reset unsafe. The consent link
             # is consumed by this turn's dispatch loop.
             self._offer_mcp_sign_in()
+            # A server that failed for want of a credential is connected again
+            # here, after the sign-in offer: the offer takes the runtime's one
+            # consent-URL slot first, and a re-attempt never needs it.
+            self._reattempt_failed_mcp_servers()
             # Build the request FIRST (for prompts, the slow, cancellable
             # image-encoding part — see prompt()'s _build), then mark the turn
             # active immediately before the write: a child permission frame
@@ -6055,10 +6069,16 @@ class AcpSessionHandle:
             present.add(name)
             if server.get("failedAuthorization") is True:
                 self._mcp_sign_in_needed.add(name)
+                self._mcp_reattempt_waiting.discard(name)
             elif server.get("status") in ("connected", "disabled"):
-                if server.get("status") == "connected" and name in self._mcp_sign_in_needed:
-                    # Only a server that was being signed in to counts as a
-                    # completion; an ordinary connected server yields nothing.
+                tracked = name in self._mcp_sign_in_needed or (
+                    name in self._mcp_reattempt_waiting
+                    and self._mcp_reattempt_counts.get(name, 0) > 0
+                )
+                if server.get("status") == "connected" and tracked:
+                    # Only a server that was being signed in to (or re-attempted)
+                    # counts as a completion; an ordinary connected server yields
+                    # nothing.
                     # A full set refuses the name: between-turn reads never
                     # drain it, so an unbounded add grows with every snapshot.
                     if (
@@ -6069,7 +6089,17 @@ class AcpSessionHandle:
                     else:
                         dropped += 1
                 self._mcp_sign_in_needed.discard(name)
+                self._mcp_reattempt_waiting.discard(name)
+            elif (
+                server.get("status") == "failed"
+                and name not in self._mcp_sign_in_needed
+                and name not in self._mcp_reattempt_waiting
+                and is_recoverable_auth_failure(server.get("errorMessage"))
+            ):
+                self._mcp_reattempt_waiting.add(name)
         self._mcp_sign_in_needed &= present
+        self._mcp_reattempt_waiting &= present
+        self._sync_mcp_reattempting()
         if dropped != self._mcp_sign_in_dropped:
             self._mcp_sign_in_dropped = dropped
             if dropped:
@@ -6112,6 +6142,73 @@ class AcpSessionHandle:
                 self._mcp_sign_in_last_offered = name
                 self._oauth_emitted_servers.discard(name)
                 return
+
+    def _sync_mcp_reattempting(self) -> None:
+        """Tell the MCP report which failed servers this session still re-attempts.
+
+        Only on a host that can reconnect one server; elsewhere the set is
+        empty and every credential failure is named for a new session.
+        """
+        report = getattr(self, "_mcp_report", None)
+        if report is None:
+            return
+        pending: set[str] = set()
+        if self._runtime_reattempts_mcp():
+            pending = {
+                name
+                for name in self._mcp_reattempt_waiting
+                if self._mcp_reattempt_counts.get(name, 0) < REATTEMPT_MAX
+            }
+        report.set_reattempting(pending)
+
+    def _runtime_reattempts_mcp(self) -> bool:
+        """Whether this session's host re-attempts a credential-failed server.
+
+        Asks the runtime's capability rather than whether the method exists:
+        every runtime has ``begin_mcp_reattempt``, and on a host without the
+        reset request it refuses every call, so a server counted as pending
+        there would never be named for a new session.
+        """
+        if getattr(self._runtime, "begin_mcp_reattempt", None) is None:
+            return False
+        return getattr(self._runtime, "reattempts_mcp_servers", False) is True
+
+    def _reattempt_failed_mcp_servers(self) -> None:
+        """Re-attempt servers that failed for want of a credential.
+
+        Called at turn start, beside the sign-in offer: by then the user or
+        the agent may have obtained the credential the server lacked. Each
+        waiting server is re-attempted at most ``REATTEMPT_MAX`` times per
+        session, and at most ``BUCKET_CAP`` distinct servers are ever counted,
+        so the budget holds however many names the engine reports. A healthy
+        session has no waiting server and does no work here. Nothing is sent
+        while an OAuth sign-in holds the runtime's slot or on a host without
+        the reset request; the runtime refuses those, no attempt is spent, and
+        the server waits for the next turn.
+        """
+        if not self._mcp_reattempt_waiting or not self._session_id:
+            return
+        begin = getattr(self._runtime, "begin_mcp_reattempt", None)
+        if begin is None or not self._runtime_reattempts_mcp():
+            return
+        for name in sorted(self._mcp_reattempt_waiting):
+            attempts = self._mcp_reattempt_counts.get(name, 0)
+            if attempts >= REATTEMPT_MAX:
+                continue
+            if attempts == 0 and len(self._mcp_reattempt_counts) >= BUCKET_CAP:
+                continue
+            if not begin(self._session_id, name):
+                continue
+            self._mcp_reattempt_counts[name] = attempts + 1
+            if attempts + 1 >= REATTEMPT_MAX:
+                self._sync_mcp_reattempting()
+            logger.info(
+                "MCP server %s on %s failed for a credential; re-attempt %d of %d",
+                sanitize_sink_text(name, NAME_CAP),
+                self._session_id,
+                attempts + 1,
+                REATTEMPT_MAX,
+            )
 
     def _apply_init_notification(self, msg: JsonRpcMessage, action: str) -> None:
         """Initialization side effects shared by the drain and readiness barrier."""

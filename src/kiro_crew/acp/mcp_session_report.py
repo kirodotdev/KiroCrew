@@ -45,6 +45,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from kiro_crew.acp._dispatch import classify_notification
+from kiro_crew.acp.mcp_reattempt import is_recoverable_auth_failure
 from kiro_crew.acp.types import (
     EVENT_MCP_OAUTH_REQUEST,
     EVENT_MCP_SERVER_INIT_FAILURE,
@@ -505,6 +506,11 @@ class McpSessionReport:
     _failed: list[str] = field(default_factory=list)
     _awaiting_auth: list[str] = field(default_factory=list)
     _failures: dict[str, str] = field(default_factory=dict)
+    #: Failed servers the session still re-attempts on its own (a host that
+    #: takes a per-server reset, within the budget). They are left out of
+    #: :meth:`restart_to_load`: the next turn may bring them up. Set by the
+    #: session handle through :meth:`set_reattempting`.
+    _reattempting: frozenset[str] = frozenset()
     #: True once ``begin_session`` has run. Distinguishes "no session" from "a
     #: session that has reported nothing yet" — see ``payload``. Without it, the
     #: kiro-cli path (whose wire roster is empty by design) reads as no session.
@@ -532,6 +538,11 @@ class McpSessionReport:
         self._failed.clear()
         self._awaiting_auth.clear()
         self._failures.clear()
+        self._reattempting = frozenset()
+
+    def set_reattempting(self, names: set[str] | frozenset[str]) -> None:
+        """Record which failed servers the session still re-attempts itself."""
+        self._reattempting = frozenset(names)
 
     def include_configured(self, names: tuple[str, ...]) -> None:
         """Add active-agent declarations without restarting this session's report."""
@@ -796,6 +807,12 @@ class McpSessionReport:
                 for name in self._failed
             ]
             parts.append("failed to start: " + _joined(described))
+        restart = self.restart_to_load()
+        if restart:
+            parts.append(
+                "missing a credential, or its credential was rejected (once the credential "
+                "works, start a new session to load it): " + _joined(restart)
+            )
         if self._awaiting_auth:
             parts.append("awaiting authorization: " + _joined(list(self._awaiting_auth)))
         if self.unresolved_refs:
@@ -810,6 +827,25 @@ class McpSessionReport:
                 + (f" (+{self.no_tools_omitted} not listed)" if self.no_tools_omitted else "")
             )
         return "; ".join(parts)
+
+    def restart_to_load(self) -> list[str]:
+        """Failed servers whose reason reads as a missing or rejected credential.
+
+        Such a server can work once a credential exists, but an engine
+        initializes a failed server again only when Crew can ask it to (see
+        :mod:`kiro_crew.acp.mcp_reattempt`), and even there only a few times. A
+        new session always initializes it again, so these are the names the
+        user is told to start a new session for, instead of a failure that
+        reads as permanent. A server the session still re-attempts is left out
+        until its budget is spent. Names only: the reason is the server's own
+        output.
+        """
+        return [
+            name
+            for name in self._failed
+            if name not in self._reattempting
+            and is_recoverable_auth_failure(self._failures.get(name))
+        ]
 
     def payload(self) -> dict[str, Any] | None:
         """The serialized report, or ``None`` when no session has begun.
@@ -838,4 +874,5 @@ class McpSessionReport:
             "failed": list(self._failed),
             "awaiting_auth": list(self._awaiting_auth),
             "failures": dict(self._failures),
+            "restart_to_load": self.restart_to_load(),
         }

@@ -76,6 +76,7 @@ class TestBuckets:
             "failed": [],
             "awaiting_auth": [],
             "failures": {},
+            "restart_to_load": [],
         }
 
     def test_failure_records_its_reason(self):
@@ -109,6 +110,7 @@ class TestBuckets:
             "failed": [],
             "awaiting_auth": [],
             "failures": {},
+            "restart_to_load": [],
         }
 
     def test_initialized_then_failure_moves_to_failed(self):
@@ -733,3 +735,33 @@ class TestKasStatusReport:
         report.include_configured(("kirocrew-core", "external"))
         assert report.payload()["configured"] == ["external", "kirocrew-core"]
         assert report.payload()["unresolved_refs"] == ["@missing/tool"]
+
+
+class TestRestartToLoad:
+    def test_a_credential_failure_names_the_server_to_restart_for(self):
+        r = McpSessionReport()
+        r.record_frame(_failed("aws-mcp", "No AWS credentials available"), owned=True)
+        r.record_frame(_failed("slack-mcp", "spawn ENOENT"), owned=True)
+        payload = r.payload()
+        assert payload is not None
+        assert payload["restart_to_load"] == ["aws-mcp"]
+        summary = r.problem_summary(include_reasons=False)
+        assert "once the credential works, start a new session to load it): aws-mcp" in summary
+        assert "No AWS credentials" not in summary
+
+    def test_the_hint_clears_once_the_server_connects(self):
+        r = McpSessionReport()
+        r.record_frame(_failed("aws-mcp", "No AWS credentials available"), owned=True)
+        r.record_frame(_ready("aws-mcp"), owned=True)
+        payload = r.payload()
+        assert payload is not None
+        assert payload["restart_to_load"] == []
+        assert "new session" not in r.problem_summary()
+
+    def test_a_server_still_re_attempted_is_not_named_until_its_budget_is_spent(self):
+        r = McpSessionReport()
+        r.record_frame(_failed("aws-mcp", "No AWS credentials available"), owned=True)
+        r.set_reattempting({"aws-mcp"})
+        assert r.restart_to_load() == []
+        r.set_reattempting(set())
+        assert r.restart_to_load() == ["aws-mcp"]

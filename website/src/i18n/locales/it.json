@@ -11823,6 +11823,7 @@
       "mcp_session_no_report": "Ancora nessun report da questa sessione",
       "mcp_session_no_tools": "Avviato, ma questa sessione non ha ricevuto nessuno dei suoi strumenti. Probabilmente un altro server usa gli stessi nomi di strumento. Rinominali con `toolAliases` nella specifica dell'agente.",
       "mcp_session_no_tools_also": "Avviati, ma questa sessione non ha ricevuto nessuno dei loro strumenti (probabilmente un altro server usa gli stessi nomi; rinominali con `toolAliases` nella specifica dell'agente): {{names}}",
+      "mcp_session_restart_to_load": "A {{name}} manca una credenziale, oppure è stata rifiutata. Quando la credenziale funziona, avvia una nuova sessione per caricare {{name}}.",
       "mcp_session_source_note": "L'elenco è la configurazione di questo agente; lo stato accanto a ogni nome è ciò che questa sessione ha segnalato.",
       "mcp_session_started": "Avviato in questa sessione",
       "message_queued_until_session_ready": "{{error}}. Il tuo messaggio è in coda e verrà inviato quando una sessione sarà pronta — ma è conservato solo in questa scheda, quindi se cambi pagina o ricarichi dovrai digitarlo di nuovo.",

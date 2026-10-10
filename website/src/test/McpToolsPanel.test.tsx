@@ -57,4 +57,49 @@ describe('McpToolsPanel', () => {
     expect(screen.getAllByTitle('Loaded this session').length).toBe(2)
     expect(screen.getByTitle('Disabled')).toBeInTheDocument()
   })
+
+  it('tells the user to start a new session for a server that had no credentials', () => {
+    const report = {
+      configured: [],
+      ready: [],
+      failed: ['aws-mcp', 'slack-mcp'],
+      awaiting_auth: [],
+      failures: { 'aws-mcp': 'No AWS credentials available', 'slack-mcp': 'spawn ENOENT' },
+      restart_to_load: ['aws-mcp'],
+    }
+    render(
+      <McpToolsPanel
+        servers={[{ name: 'aws-mcp', enabled: true }, { name: 'slack-mcp', enabled: true }]}
+        toolsByServer={{}}
+        loaded={new Set()}
+        toolSearchOn={false}
+        loading={false}
+        sessionReport={report}
+      />,
+    )
+    const hints = screen.getAllByText(/start a new session to load/)
+    expect(hints).toHaveLength(1)
+    expect(hints[0].textContent).toContain('aws-mcp')
+  })
+
+  it('shows no restart hint when an older gateway sends no restart list', () => {
+    const report = {
+      configured: [],
+      ready: [],
+      failed: ['aws-mcp'],
+      awaiting_auth: [],
+      failures: { 'aws-mcp': 'No AWS credentials available' },
+    }
+    render(
+      <McpToolsPanel
+        servers={[{ name: 'aws-mcp', enabled: true }]}
+        toolsByServer={{}}
+        loaded={new Set()}
+        toolSearchOn={false}
+        loading={false}
+        sessionReport={report}
+      />,
+    )
+    expect(screen.queryByText(/start a new session to load/)).toBeNull()
+  })
 })
