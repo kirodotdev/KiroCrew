@@ -43,6 +43,14 @@ MUTATING_ROUTES = [
     ("POST", "/api/knowledge/embedding/generate", kh.batch_embed_items),
 ]
 
+# POST routes that change nothing, so the owner gate does not apply. Each one
+# refuses every caller its own gate does not name.
+READ_ONLY_POST_ROUTES = {
+    # Raw bedrock_kb results for the sandboxed MCP server's remote leg: strict
+    # internal (X-Internal-Secret), so no dashboard session reaches it.
+    ("POST", "/api/knowledge/remote-search"),
+}
+
 
 def _caller_middleware(identity: dict, seen: list):
     """Plant one caller class. ``identity`` is copied onto the request as-is,
@@ -85,7 +93,7 @@ def real_store(tmp_path):
 
 
 def test_route_list_covers_every_mutating_registration():
-    """The table above is the full set setup_knowledge_routes registers."""
+    """The two tables above are the full set setup_knowledge_routes registers."""
     app = web.Application()
     app["state"] = MagicMock()
     app["knowledge_pipeline"] = MagicMock()
@@ -96,7 +104,7 @@ def test_route_list_covers_every_mutating_registration():
         if r.method in {"POST", "PUT", "PATCH", "DELETE"}
     }
     listed = {(m, p) for m, p, _ in MUTATING_ROUTES}
-    assert registered == listed
+    assert registered == listed | READ_ONLY_POST_ROUTES
 
 
 @pytest.mark.asyncio

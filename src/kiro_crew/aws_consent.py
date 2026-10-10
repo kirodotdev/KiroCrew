@@ -57,10 +57,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import re
 import shutil
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -81,8 +83,13 @@ SERVICE_TRANSCRIBE = "transcribe"
 #: can be confirmed per account before either capability ships.
 SERVICE_S3 = "s3"
 SERVICE_COST_EXPLORER = "ce"
+#: Bedrock KB retrieval (knowledge sources of type ``bedrock_kb``): each
+#: Retrieve is a paid call billed to whatever account the source's profile
+#: NAME currently resolves to, and knowledge search triggers it with nobody
+#: watching -- the same shape as Polly/Transcribe above, so the same gate.
+SERVICE_BEDROCK_KB = "bedrock-kb"
 GATED_SERVICES: frozenset[str] = frozenset(
-    {SERVICE_POLLY, SERVICE_TRANSCRIBE, SERVICE_S3, SERVICE_COST_EXPLORER}
+    {SERVICE_POLLY, SERVICE_TRANSCRIBE, SERVICE_S3, SERVICE_COST_EXPLORER, SERVICE_BEDROCK_KB}
 )
 
 #: Human-facing service names for the confirmation surfaces and the log lines.
@@ -91,6 +98,7 @@ SERVICE_LABELS: dict[str, str] = {
     SERVICE_TRANSCRIBE: "Amazon Transcribe",
     SERVICE_S3: "Amazon S3 (cloud drive storage)",
     SERVICE_COST_EXPLORER: "AWS Cost Explorer",
+    SERVICE_BEDROCK_KB: "Amazon Bedrock (knowledge base retrieval)",
 }
 
 #: Serialises the read-modify-write of the consent store. Every writer below
@@ -157,7 +165,43 @@ _REGION_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 #: panel renders.
 _PROBE_TTL_SECS = 30.0
 
+#: Ceiling on the entries :data:`_probe_cache` retains. Its key is
+#: request-supplied for ``bedrock-kb`` (the consent GET honours an explicit
+#: profile and region), and the TTL is only read on lookup, so without a count
+#: bound every distinct well-shaped pair would leave one permanent entry in the
+#: long-lived gateway process. :func:`_remember_probe` holds the count here,
+#: evicting the oldest entry first; the cache only saves re-probing across a
+#: burst of panel renders, so an eviction costs one extra STS call.
+_PROBE_CACHE_MAX_ENTRIES = 64
+
+#: The identity probe's subprocess timeout for a caller that sets no budget.
+_PROBE_TIMEOUT_SECS = 15
+
 _probe_cache: dict[tuple[str, str], tuple[float, "Identity"]] = {}
+
+#: Serializes :func:`_remember_probe`. Its callers run on the gateway loop (the
+#: confirmation surfaces) AND on worker threads (each Bedrock search drives the
+#: consent check with ``asyncio.run`` on the search pool), and its sweep walks
+#: the dict, which a concurrent insert would break mid-walk. A read stays one
+#: ``dict.get``, which needs no lock.
+_PROBE_CACHE_LOCK = threading.Lock()
+
+
+def _remember_probe(key: tuple[str, str], now: float, identity: Identity) -> None:
+    """The one write into :data:`_probe_cache`, bounded at the retention point.
+
+    Expired entries go first: the read path checks the TTL only on the entry
+    it looks up, so nothing else would ever leave. Then the count is held at
+    :data:`_PROBE_CACHE_MAX_ENTRIES` by evicting the oldest entries before a
+    new key is inserted; refreshing a key already present never evicts.
+    """
+    with _PROBE_CACHE_LOCK:
+        expired = [k for k, (stamp, _) in _probe_cache.items() if now - stamp >= _PROBE_TTL_SECS]
+        for stale in expired:
+            del _probe_cache[stale]
+        while key not in _probe_cache and len(_probe_cache) >= _PROBE_CACHE_MAX_ENTRIES:
+            del _probe_cache[min(_probe_cache, key=lambda k: _probe_cache[k][0])]
+        _probe_cache[key] = (now, identity)
 
 
 @dataclass(frozen=True)
@@ -170,9 +214,18 @@ class Grant:
     account: str
     arn: str
     granted_at: str
+    # bedrock-kb only. Unique per RECORDING, not per content: two
+    # byte-identical confirmations (same target, same account, same second --
+    # granted_at is second-granular) are still two different authorizations,
+    # and the compare-and-delete revocation that service uses (see
+    # :func:`_revoke_on_drift`) must be able to tell a replacement from the
+    # grant its drift evidence was about. Empty for every other service's
+    # grant, whose revocation stays key-wise and reads nothing here, and on
+    # rows written before the field existed.
+    grant_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data = {
             "service": self.service,
             "profile": self.profile,
             "region": self.region,
@@ -180,6 +233,9 @@ class Grant:
             "arn": self.arn,
             "granted_at": self.granted_at,
         }
+        if self.grant_id:
+            data["grant_id"] = self.grant_id
+        return data
 
 
 @dataclass(frozen=True)
@@ -301,7 +357,11 @@ def read_grant(service: str) -> Grant | None:
     Fails soft to ``None`` (no consent) on a missing, unreadable, or malformed
     file: an authorization record that cannot be read is not an authorization.
     """
-    row = _read_all().get(service)
+    return _grant_from_row(service, _read_all().get(service))
+
+
+def _grant_from_row(service: str, row: Any) -> Grant | None:
+    """:func:`read_grant` over an already-read record (one read per caller)."""
     if not isinstance(row, dict):
         return None
     try:
@@ -312,6 +372,7 @@ def read_grant(service: str) -> Grant | None:
             account=str(row.get("account", "")),
             arn=str(row.get("arn", "")),
             granted_at=str(row.get("granted_at", "")),
+            grant_id=str(row.get("grant_id", "")),
         )
     except (KeyError, TypeError):
         logger.warning("AWS consent record for %r is malformed; treating as absent", service)
@@ -331,6 +392,10 @@ def record_grant(
         account=account,
         arn=arn,
         granted_at=granted_at,
+        # Only the Bedrock grant is revoked by compare-and-delete, so only it
+        # needs an identity per recording; the other services' rows keep the
+        # shape they had before the field existed.
+        grant_id=uuid.uuid4().hex if service == SERVICE_BEDROCK_KB else "",
     )
     with _STORE_LOCK:
         # Inside the lock, before the read: a concurrent writer must not be able
@@ -358,6 +423,80 @@ def revoke(service: str) -> bool:
         _write_all(data)
     audit_decision(service, outcome="revoked")
     return True
+
+
+# CONTRACT: a revocation that acts on evidence read before the lock (drift
+# probes, mismatch checks) goes through _revoke_on_drift with the captured
+# grant. For bedrock-kb that is compare-and-delete: its grant target comes from
+# the add-source form, so the owner can record a replacement grant -- for
+# another target, or a re-confirmation of the same one -- while a probe about
+# the previous grant is still running. Every other service's target comes from
+# live config, and its drift revocation stays the key-wise revoke() it was
+# before bedrock-kb existed.
+def revoke_if_matches(
+    service: str,
+    *,
+    profile: str,
+    region: str,
+    account: str,
+    arn: str,
+    granted_at: str,
+    grant_id: str = "",
+) -> bool:
+    """Compare-and-delete: drop the grant only if it is STILL the one compared.
+
+    Used for ``bedrock-kb``. ``reconcile_drift`` decides to revoke from a grant
+    it read; a grant recorded concurrently (one store key per service) would be
+    deleted by a plain key-wise ``revoke`` even though the drift evidence was
+    about its predecessor. The read-back and the delete here share ONE lock
+    hold, and EVERY persisted field is compared -- ``granted_at`` differs on
+    each re-confirmation, so even a same-target same-account replacement is
+    recognizably a different grant and spared. Returns True when a grant was
+    removed.
+    """
+    with _STORE_LOCK:
+        data = _read_all()
+        row = data.get(service)
+        if not isinstance(row, dict):
+            return False
+        if (
+            str(row.get("profile", "")) != profile
+            or str(row.get("region", "")) != region
+            or str(row.get("account", "")) != account
+            or str(row.get("arn", "")) != arn
+            or str(row.get("granted_at", "")) != granted_at
+            or str(row.get("grant_id", "")) != grant_id
+        ):
+            # A different grant now occupies the key: the drift evidence was
+            # about its predecessor, so it is not ours to delete.
+            return False
+        del data[service]
+        _write_all(data)
+    audit_decision(service, outcome="revoked")
+    return True
+
+
+def _revoke_on_drift(service: str, grant: Grant) -> bool:
+    """Drop ``service``'s grant on drift evidence gathered before this call.
+
+    Compare-and-delete with the captured ``grant`` for ``bedrock-kb`` (see
+    :func:`revoke_if_matches`); the key-wise :func:`revoke` for every other
+    service, whose target comes from live config rather than from a request.
+    ``service`` is the store key the caller read ``grant`` from, never the
+    row's own ``service`` field, so a hand-edited row cannot redirect the
+    revoke to another service's grant. Returns True when a grant was removed.
+    """
+    if service != SERVICE_BEDROCK_KB:
+        return revoke(service)
+    return revoke_if_matches(
+        service,
+        profile=grant.profile,
+        region=grant.region,
+        account=grant.account,
+        arn=grant.arn,
+        granted_at=grant.granted_at,
+        grant_id=grant.grant_id,
+    )
 
 
 def revoke_for_profile(profile: str) -> list[str]:
@@ -397,6 +536,208 @@ def revoke_for_profile(profile: str) -> list[str]:
     for service in revoked:
         audit_decision(service, outcome="revoked")
     return revoked
+
+
+#: Where the gateway records WHICH knowledge-source rows it registered for the
+#: Bedrock KB grant. A ``bedrock_kb`` row in ``knowledge.db`` names the KBs a
+#: search pays to Retrieve from, but that database is agent-writable
+#: in-sandbox (the MCP server ingests into it in-process), so a row alone is
+#: not proof the owner approved that KB set: an agent could clone a row and
+#: point it at any KB the granted profile reaches. This file is not: it sits
+#: in ``sandbox._CREW_READONLY_LEAVES`` and only the gateway writes it, under
+#: the same lock as the grants. The paid enumeration therefore searches only
+#: rows whose ``(id, uri, kb_ids, region, profile)`` match an entry here that
+#: was recorded under the account the CURRENT grant confirms.
+#: Keyed under the service name so the per-service readers above, which key
+#: the file by service, never see it as a grant.
+BEDROCK_SOURCES_KEY = f"{SERVICE_BEDROCK_KB}.sources"
+
+#: The retained ``properties`` keys an attestation pins, in the order the
+#: connector reads them. Any change to one of these on the row -- a wider
+#: ``kb_ids``, a different region or profile -- is a different registration.
+_ATTESTED_PROPERTY_KEYS: tuple[str, ...] = ("kb_ids", "region", "profile")
+
+
+def _attestation_key(source_id: str, uri: str, properties: dict[str, Any]) -> tuple[str, ...]:
+    return (
+        str(source_id),
+        str(uri),
+        *(str(properties.get(k) or "").strip() for k in _ATTESTED_PROPERTY_KEYS),
+    )
+
+
+def _attested_map(data: dict[str, Any]) -> dict[str, Any]:
+    rows = data.get(BEDROCK_SOURCES_KEY)
+    return rows if isinstance(rows, dict) else {}
+
+
+def record_source_attestation(
+    source_id: str,
+    uri: str,
+    properties: dict[str, Any],
+    *,
+    expected_account: str | None = None,
+) -> None:
+    """Attest that the gateway registered ``bedrock_kb`` row ``source_id``.
+
+    Called from the owner-gated, consent-checked ``add_source`` insert with the
+    row's validated ``uri`` and retained properties. Overwrites an entry for the
+    same id (a re-registration IS a new attestation).
+
+    The entry also pins the ACCOUNT the grant confirms at this moment, for the
+    reason :func:`authorize` re-verifies it on every call: a profile name is
+    not an account. Re-pointing the profile and confirming again keeps the
+    same profile and region, so a grant-equality check still passes, and
+    without the account the old registration would authorize paid retrieval
+    of the same KB id in the new account. ``expected_account`` is the account
+    the caller validated the KB under; when given, an attestation for any
+    other account is refused here too, so the pin can never name an account
+    the KB was not probed in, whatever ran between validation and this write.
+    Raises when no grant is readable or the account differs; the caller undoes
+    its insert rather than keep a row nothing attests.
+    """
+    with _STORE_LOCK:
+        _preserve_if_unreadable()
+        data = _read_all()
+        grant = _grant_from_row(SERVICE_BEDROCK_KB, data.get(SERVICE_BEDROCK_KB))
+        if grant is None or not grant.account:
+            raise RuntimeError("no confirmed AWS account to attest the source against")
+        if expected_account is not None and grant.account != expected_account:
+            raise RuntimeError("the confirmed AWS account changed since the source was validated")
+        entry = {
+            "uri": str(uri),
+            "account": grant.account,
+            **{k: str(properties.get(k) or "").strip() for k in _ATTESTED_PROPERTY_KEYS},
+        }
+        rows = dict(_attested_map(data))
+        rows[str(source_id)] = entry
+        data[BEDROCK_SOURCES_KEY] = rows
+        _write_all(data)
+
+
+def has_source_attestation(source_id: str) -> bool:
+    """Whether the sealed store holds an attestation under ``source_id``.
+
+    The delete route asks this BEFORE it reads the row's type: the type is a
+    column in the agent-writable ``knowledge.db``, so a row that was
+    registered can be re-labelled by an agent, and a delete that trusted the
+    label would skip the owner gate and the revoke, leaving the attestation
+    for a row re-minted under the same id and values to inherit. Any account
+    counts (a registration left behind by a re-pointed profile still has to
+    be revoked), and like :func:`revoke_source_attestation` this does not
+    fail soft: a missing store is the ordinary nothing-attested case, an
+    unreadable one raises so the caller refuses before it mutates.
+    """
+    with _STORE_LOCK:
+        try:
+            raw = json.loads(aws_consent_path().read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return False
+    data: dict[str, Any] = raw if isinstance(raw, dict) else {}
+    return str(source_id) in _attested_map(data)
+
+
+def recorded_source_attestations() -> dict[str, dict[str, Any]]:
+    """Every attestation entry by source id, whatever account it was recorded under.
+
+    For the one-target check and the registration limit. A row the gateway
+    registered keeps depending on its target after the grant is revoked or
+    confirmed for another account, so its entry counts here even when
+    :func:`attested_sources` filters it out. A row no entry pins was written
+    straight into the agent-writable database, is never searched, and must not
+    hold a target. Like :func:`has_source_attestation` this does not fail soft:
+    a missing store attests nothing, an unreadable one raises so the check
+    refuses.
+    """
+    with _STORE_LOCK:
+        try:
+            raw = json.loads(aws_consent_path().read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {}
+    data: dict[str, Any] = raw if isinstance(raw, dict) else {}
+    return {str(sid): e for sid, e in _attested_map(data).items() if isinstance(e, dict)}
+
+
+def revoke_source_attestation(source_id: str) -> bool:
+    """Drop the attestation for ``source_id``; True when one was removed.
+
+    Called when the row is deleted. An attestation that outlives its row is
+    never searched (the enumeration starts from the rows), but it holds a
+    registration slot until an add at the limit reclaims it, and a later row
+    minted with the same id and values must not inherit an approval given to
+    the old one.
+
+    Like :func:`revoke_for_profile`, this reader does NOT fail soft: an
+    unreadable store would read as "nothing attested", the caller would go on
+    to delete the row, and the attestation would stay on disk for a row
+    re-minted under the same id and values to inherit -- ``knowledge.db`` is
+    agent-writable, so the id is the writer's to choose. A missing store is
+    the ordinary nothing-attested case; anything else raises so the caller
+    refuses before it mutates.
+    """
+    with _STORE_LOCK:
+        try:
+            raw = json.loads(aws_consent_path().read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return False
+        data: dict[str, Any] = raw if isinstance(raw, dict) else {}
+        rows = dict(_attested_map(data))
+        if str(source_id) not in rows:
+            return False
+        del rows[str(source_id)]
+        data[BEDROCK_SOURCES_KEY] = rows
+        _write_all(data)
+    return True
+
+
+def bedrock_authorization_snapshot() -> tuple[Grant | None, dict[str, dict[str, Any]]]:
+    """The Bedrock grant and its attestations from one complete store version.
+
+    ``atomic_write`` publishes the store by rename, so one :func:`_read_all`
+    observes either the old complete file or the new complete file. Deriving
+    both values from that dictionary prevents a caller from pairing a stale
+    grant read with attestations filtered under its replacement. An unreadable
+    store returns ``(None, {})``, preserving the fail-closed read direction.
+    """
+    data = _read_all()
+    grant = _grant_from_row(SERVICE_BEDROCK_KB, data.get(SERVICE_BEDROCK_KB))
+    if grant is None or not grant.account:
+        return grant, {}
+    attested = {
+        str(sid): entry
+        for sid, entry in _attested_map(data).items()
+        if isinstance(entry, dict) and str(entry.get("account") or "") == grant.account
+    }
+    return grant, attested
+
+
+def attested_sources() -> dict[str, dict[str, Any]]:
+    """The attestation entries by source id, read once per enumeration.
+
+    Only entries recorded under the account the CURRENT grant confirms are
+    returned: a grant confirmed for another account later (the profile was
+    re-pointed) leaves every earlier registration unattested, so its rows are
+    skipped until the owner removes each one and adds it again (a plain re-add
+    dedupes on the row's uri and attests nothing). Fails soft to ``{}`` (nothing
+    attested): a store that cannot be read, or no grant, attests nothing, the
+    same direction :func:`read_grant` fails in.
+    """
+    return bedrock_authorization_snapshot()[1]
+
+
+def source_matches_attestation(
+    attested: dict[str, dict[str, Any]], source_id: str, uri: str, properties: dict[str, Any]
+) -> bool:
+    """True when ``attested`` (from :func:`attested_sources`) pins exactly this row."""
+    entry = attested.get(str(source_id))
+    if not isinstance(entry, dict):
+        return False
+    stored = (
+        str(source_id),
+        str(entry.get("uri") or ""),
+        *(str(entry.get(k) or "").strip() for k in _ATTESTED_PROPERTY_KEYS),
+    )
+    return stored == _attestation_key(source_id, uri, properties)
 
 
 #: Default for :func:`is_granted`'s ``grant`` argument. A sentinel rather than
@@ -440,7 +781,9 @@ def is_granted(
     return True, ""
 
 
-async def authorize(service: str, *, profile: str, region: str) -> tuple[bool, str]:
+async def authorize(
+    service: str, *, profile: str, region: str, probe_timeout: float | None = None
+) -> tuple[bool, str]:
     """The full gate every paid call must pass: local grant AND live account.
 
     Why the account is re-verified rather than trusted from the grant: a profile
@@ -460,6 +803,9 @@ async def authorize(service: str, *, profile: str, region: str) -> tuple[bool, s
     That last case matters because the probe spawns a subprocess and is therefore
     a real suspension point, so the grant is re-asserted immediately before the
     allow rather than trusted from before the await.
+
+    ``probe_timeout`` caps the identity probe's subprocess, in seconds, for a
+    caller running under its own budget. ``None`` keeps the probe's default.
     """
     granted, reason = is_granted(service, profile=profile, region=region)
     if not granted:
@@ -493,7 +839,10 @@ async def authorize(service: str, *, profile: str, region: str) -> tuple[bool, s
     # goes to the account the operator already consented to, so paying it per
     # call costs latency rather than money. The cache stays for the confirmation
     # surfaces, where it only coalesces repeated panel renders.
-    identity = await probe_identity(profile, region, use_cache=False)
+    # Only a budgeted caller adds ``timeout``: every other caller's probe call
+    # keeps its exact arguments and the probe's default timeout.
+    budget: dict[str, float] = {} if probe_timeout is None else {"timeout": probe_timeout}
+    identity = await probe_identity(profile, region, use_cache=False, **budget)
     if not identity.ok or not identity.account:
         # Fail CLOSED. An earlier revision allowed this so a transient STS fault
         # would not stop voice output, but that let a repointed profile bill an
@@ -510,8 +859,13 @@ async def authorize(service: str, *, profile: str, region: str) -> tuple[bool, s
         )
 
     if identity.account != grant.account:
-        # Off the event loop: revoke does file I/O under the store lock.
-        await asyncio.to_thread(revoke, service)
+        # Off the event loop: the revoke does file I/O under the store lock.
+        # bedrock-kb revokes by compare-and-delete with the CAPTURED grant: the
+        # probe is a multi-second suspension point, and a replacement grant
+        # recorded during it (the owner confirming another target) must not be
+        # deleted on evidence about its predecessor. Other services revoke
+        # key-wise, as before.
+        await asyncio.to_thread(_revoke_on_drift, service, grant)
         return False, (
             f"{label} was confirmed for AWS account {grant.account}, but "
             f"{credential_source(profile)} now resolves to account "
@@ -557,7 +911,9 @@ async def authorize(service: str, *, profile: str, region: str) -> tuple[bool, s
     return True, ""
 
 
-async def refuse_and_log(service: str, *, profile: str, region: str) -> bool:
+async def refuse_and_log(
+    service: str, *, profile: str, region: str, probe_timeout: float | None = None
+) -> bool:
     """:func:`authorize` plus the refusal log and audit. True when it may proceed.
 
     A single helper so every gated call site refuses identically -- the reason
@@ -569,7 +925,9 @@ async def refuse_and_log(service: str, *, profile: str, region: str) -> bool:
     awaited on the gateway's event loop, and a refused call must not stall the
     requests behind it.
     """
-    granted, reason = await authorize(service, profile=profile, region=region)
+    granted, reason = await authorize(
+        service, profile=profile, region=region, probe_timeout=probe_timeout
+    )
     if not granted:
         logger.warning("AWS request refused: %s", reason)
         await asyncio.to_thread(audit_decision, service, outcome="denied", detail=reason)
@@ -624,6 +982,22 @@ def audit_decision(service: str, *, outcome: str, detail: str = "") -> None:
         logger.debug("could not write the AWS consent audit event", exc_info=True)
 
 
+def target_is_well_formed(profile: str, region: str) -> bool:
+    """Whether ``profile``/``region`` have the shapes a grant can name.
+
+    The same two patterns :func:`probe_identity` refuses on, so nothing
+    downstream retains a target a grant could never have been confirmed for:
+    a profile name is at most 128 characters of the AWS profile alphabet, a
+    region at most 64 of ``[a-z0-9-]``. Empty values pass here; whether a
+    field may be empty is the caller's rule.
+    """
+    if profile and not _PROFILE_RE.match(profile):
+        return False
+    if region and not _REGION_RE.match(region):
+        return False
+    return True
+
+
 def _inputs_are_safe(profile: str, region: str) -> bool:
     """Whether the profile/region are shaped safely enough to pass to the CLI.
 
@@ -642,7 +1016,9 @@ def _inputs_are_safe(profile: str, region: str) -> bool:
     return True
 
 
-async def probe_identity(profile: str, region: str, *, use_cache: bool = True) -> Identity:
+async def probe_identity(
+    profile: str, region: str, *, use_cache: bool = True, timeout: float | None = None
+) -> Identity:
     """Resolve which account ``profile``+``region`` would actually bill.
 
     ``sts:GetCallerIdentity`` is free and non-mutating, and it is the ONLY AWS
@@ -689,12 +1065,16 @@ async def probe_identity(profile: str, region: str, *, use_cache: bool = True) -
             ),
         )
 
+    # Only a budgeted probe passes ``timeout``, so every other probe keeps the
+    # exact ``_run_aws(args, profile, region)`` call and its default timeout.
+    budget: dict[str, float] = {} if timeout is None else {"timeout": timeout}
     try:
         rc, out, err = await asyncio.to_thread(
             _run_aws,
             ["sts", "get-caller-identity", "--output", "json"],
             profile,
             region,
+            **budget,
         )
     except Exception as exc:
         # ``run_aws`` raises for a refused chokepoint call and for a sandbox that
@@ -702,7 +1082,7 @@ async def probe_identity(profile: str, region: str, *, use_cache: bool = True) -
         # treats as fail-closed.
         logger.info("identity probe could not run: %s", exc)
         identity = Identity(ok=False, detail="The AWS account could not be resolved.")
-        _probe_cache[key] = (now, identity)
+        _remember_probe(key, now, identity)
         return identity
 
     if rc != 0:
@@ -719,7 +1099,10 @@ async def probe_identity(profile: str, region: str, *, use_cache: bool = True) -
         else:
             identity = Identity(ok=True, account=account, arn=arn)
 
-    _probe_cache[key] = (now, identity)
+    # A failure under a caller's shortened timeout says nothing about the
+    # account, so it must not answer the confirmation surfaces for the TTL.
+    if timeout is None or identity.ok:
+        _remember_probe(key, now, identity)
     return identity
 
 
@@ -738,19 +1121,32 @@ def _aws_cli_resolvable() -> bool:
     return shutil.which(resolve_aws_bin()) is not None
 
 
-def _run_aws(args: list[str], profile: str, region: str) -> tuple[int, str, str]:
+def _run_aws(
+    args: list[str], profile: str, region: str, timeout: float | None = None
+) -> tuple[int, str, str]:
     """Thread-side import of the cloud chokepoint.
 
     Imported at call time, not module scope: ``kiro_crew.cloud`` is an optional
     provisioning subsystem, and the voice/STT paths that import THIS module for
     the local gate must not pay for it.
+
+    ``timeout`` is a caller's remaining budget in seconds. ``run_aws`` takes
+    whole seconds, so it rounds up, with a floor of 1 s. ``None`` keeps 15 s.
     """
     from kiro_crew.cloud.aws import run_aws
 
-    return run_aws(args, profile, region, timeout=15)
+    secs = _PROBE_TIMEOUT_SECS if timeout is None else max(1, math.ceil(timeout))
+    return run_aws(args, profile, region, timeout=secs)
 
 
-def reconcile_drift(service: str, identity: Identity) -> bool:
+def reconcile_drift(
+    service: str,
+    identity: Identity,
+    *,
+    probed_profile: str | None = None,
+    probed_region: str | None = None,
+    expected_grant_id: str | None = None,
+) -> bool:
     """Revoke the grant when the live account is not the confirmed one.
 
     Returns True when a grant was revoked. Called from the confirmation
@@ -758,11 +1154,34 @@ def reconcile_drift(service: str, identity: Identity) -> bool:
     where the profile-repointed-at-a-new-account case is caught. A failed probe
     is NOT drift (it proves nothing about the account), so it leaves the grant
     alone.
+
+    ``probed_profile``/``probed_region`` name the target the identity was
+    probed FROM, and ``expected_grant_id`` the grant the caller captured
+    before probing. Both are for ``bedrock-kb``, the one service whose target
+    comes from the request. When given, the comparison only proceeds if the
+    stored grant is for that same target -- checked HERE, against the same
+    read whose grant would be revoked, so a grant recorded concurrently for a
+    different target cannot be judged by another target's identity (a
+    caller-side pre-check reads the grant once and reconcile reads it again;
+    the gap between those two reads is exactly where a concurrent POST
+    landed). The other services' callers pass neither, and their revoke is the
+    key-wise one it was before ``bedrock-kb`` existed.
     """
     if not identity.ok or not identity.account:
         return False
     grant = read_grant(service)
     if grant is None or not grant.account or grant.account == identity.account:
+        return False
+    if expected_grant_id is not None and grant.grant_id != expected_grant_id:
+        # The stored grant is not the one the caller captured before probing:
+        # a replacement (even for the SAME target) was recorded while the
+        # probe ran, and this identity is evidence about its predecessor.
+        return False
+    if probed_profile is not None and (
+        grant.profile != probed_profile or grant.region != probed_region
+    ):
+        # The stored grant is not for the target this identity came from:
+        # the identity proves nothing about it. Not drift.
         return False
     logger.warning(
         "AWS consent for %s revoked: it was confirmed for account %s but %s now resolves to a "
@@ -771,7 +1190,11 @@ def reconcile_drift(service: str, identity: Identity) -> bool:
         grant.account,
         credential_source(grant.profile),
     )
-    return revoke(service)
+    # bedrock-kb: compare-and-delete, only the exact grant this drift evidence
+    # is about. A grant recorded between the read above and this call occupies
+    # the same store key but is a DIFFERENT authorization; key-wise revoke
+    # would delete it on stale evidence. Other services: key-wise, as before.
+    return _revoke_on_drift(service, grant)
 
 
 def _redacted(raw: str) -> str:
