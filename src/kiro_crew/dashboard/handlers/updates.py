@@ -973,15 +973,16 @@ async def _check_git_checkout(proj: str, capability: UpdateCapability) -> None:
         cwd=proj,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
+        start_new_session=platform_compat.IS_POSIX,
+        creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
     )
     try:
         _, fetch_err = await asyncio.wait_for(proc.communicate(), timeout=30)
+    except asyncio.CancelledError:
+        await platform_compat.kill_and_reap(proc)
+        raise
     except asyncio.TimeoutError:
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
-        await proc.communicate()
+        await platform_compat.kill_and_reap(proc)
         logger.warning("git fetch timed out")
         _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_GIT_FETCH_FAILED)
         return
@@ -1001,15 +1002,16 @@ async def _check_git_checkout(proj: str, capability: UpdateCapability) -> None:
         cwd=proj,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
+        start_new_session=platform_compat.IS_POSIX,
+        creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
     )
     try:
         local_out, _ = await asyncio.wait_for(local.communicate(), timeout=10)
+    except asyncio.CancelledError:
+        await platform_compat.kill_and_reap(local)
+        raise
     except asyncio.TimeoutError:
-        try:
-            local.kill()
-        except ProcessLookupError:
-            pass
-        await local.communicate()
+        await platform_compat.kill_and_reap(local)
         _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_GIT_READ_FAILED)
         return
     remote = await asyncio.create_subprocess_exec(
@@ -1019,15 +1021,16 @@ async def _check_git_checkout(proj: str, capability: UpdateCapability) -> None:
         cwd=proj,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
+        start_new_session=platform_compat.IS_POSIX,
+        creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
     )
     try:
         remote_out, _ = await asyncio.wait_for(remote.communicate(), timeout=10)
+    except asyncio.CancelledError:
+        await platform_compat.kill_and_reap(remote)
+        raise
     except asyncio.TimeoutError:
-        try:
-            remote.kill()
-        except ProcessLookupError:
-            pass
-        await remote.communicate()
+        await platform_compat.kill_and_reap(remote)
         _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_GIT_READ_FAILED)
         return
 
@@ -1075,15 +1078,16 @@ async def _check_git_checkout(proj: str, capability: UpdateCapability) -> None:
         cwd=proj,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
+        start_new_session=platform_compat.IS_POSIX,
+        creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
     )
     try:
         show_out, _ = await asyncio.wait_for(show.communicate(), timeout=10)
+    except asyncio.CancelledError:
+        await platform_compat.kill_and_reap(show)
+        raise
     except asyncio.TimeoutError:
-        try:
-            show.kill()
-        except ProcessLookupError:
-            pass
-        await show.communicate()
+        await platform_compat.kill_and_reap(show)
         _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_GIT_READ_FAILED)
         return
     match = re.search(r'__version__\s*=\s*"(.+?)"', show_out.decode(errors="replace"))
@@ -1142,15 +1146,16 @@ async def _check_git_checkout(proj: str, capability: UpdateCapability) -> None:
             cwd=proj,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            start_new_session=platform_compat.IS_POSIX,
+            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
         )
         try:
             diff_out, _ = await asyncio.wait_for(diff.communicate(), timeout=10)
+        except asyncio.CancelledError:
+            await platform_compat.kill_and_reap(diff)
+            raise
         except asyncio.TimeoutError:
-            try:
-                diff.kill()
-            except ProcessLookupError:
-                pass
-            await diff.communicate()
+            await platform_compat.kill_and_reap(diff)
             # The version comparison already succeeded — report the update and
             # simply omit the changelog rather than discarding a good verdict.
             diff_out = b""
@@ -1892,15 +1897,16 @@ async def api_update_apply(request: web.Request) -> web.Response:
         cwd=proj,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
+        start_new_session=platform_compat.IS_POSIX,
+        creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
     )
     try:
         dirty_out, _ = await asyncio.wait_for(dirty.communicate(), timeout=10)
+    except asyncio.CancelledError:
+        await platform_compat.kill_and_reap(dirty)
+        raise
     except asyncio.TimeoutError:
-        try:
-            dirty.kill()
-        except ProcessLookupError:
-            pass
-        await dirty.communicate()
+        await platform_compat.kill_and_reap(dirty)
         return web.json_response(
             {"error": "Timed out checking working tree status"},
             status=500,
@@ -1935,15 +1941,16 @@ async def api_update_apply(request: web.Request) -> web.Response:
         cwd=proj,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
+        start_new_session=platform_compat.IS_POSIX,
+        creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
     )
     try:
         await asyncio.wait_for(fetch.communicate(), timeout=30)
+    except asyncio.CancelledError:
+        await platform_compat.kill_and_reap(fetch)
+        raise
     except asyncio.TimeoutError:
-        try:
-            fetch.kill()
-        except ProcessLookupError:
-            pass
-        await fetch.communicate()
+        await platform_compat.kill_and_reap(fetch)
         return web.json_response(
             {
                 "error": "Timed out refreshing the remote before updating",
@@ -2005,15 +2012,16 @@ async def api_update_apply(request: web.Request) -> web.Response:
         cwd=proj,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
+        start_new_session=platform_compat.IS_POSIX,
+        creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
     )
     try:
         target_out, _ = await asyncio.wait_for(target_proc.communicate(), timeout=10)
+    except asyncio.CancelledError:
+        await platform_compat.kill_and_reap(target_proc)
+        raise
     except asyncio.TimeoutError:
-        try:
-            target_proc.kill()
-        except ProcessLookupError:
-            pass
-        await target_proc.communicate()
+        await platform_compat.kill_and_reap(target_proc)
         return web.json_response(
             {"error": "Timed out resolving the upstream revision", "code": "git_read_failed"},
             status=500,
@@ -2085,18 +2093,22 @@ async def api_update_apply(request: web.Request) -> web.Response:
                 cwd=proj,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                start_new_session=platform_compat.IS_POSIX,
+                creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
             )
             # Only a merge that started can have moved the tree: a spawn that
             # raised wrote nothing.
             tree_moved = True
+            # No cancel arm here, unlike the read-only git calls: a cancelled
+            # apply does not kill git merge --ff-only, because a SIGKILL in
+            # mid-checkout can leave .git/index.lock and a half-moved tree. The
+            # cancel also ends the wait that carries its 60 s timeout, so nothing
+            # stops the merge after that; a bounded TERM-first stop would be a
+            # separate change.
             try:
                 await asyncio.wait_for(pull.communicate(), timeout=60)
             except asyncio.TimeoutError:
-                try:
-                    pull.kill()
-                except ProcessLookupError:
-                    pass
-                await pull.communicate()
+                await platform_compat.kill_and_reap(pull)
                 state.push_update_progress(
                     "error", f"Fast-forward to {target[:12]} timed out (git merge --ff-only)"
                 )
