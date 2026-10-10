@@ -37,6 +37,7 @@ from kiro_crew import (  # noqa: F401
 )
 from kiro_crew.acp.client import (
     AcpAuthRequired,
+    AcpConversationBindingMismatch,
     AcpError,
     AcpProcessDied,
     AcpPromptBusy,
@@ -17846,6 +17847,42 @@ async def _run_chat(
             or "process exited" in _msg
             or "not running" in _msg
         )
+
+        async def _binding_rebuild_allowed() -> bool:
+            """Whether a thinking-binding mismatch may discard and replay once.
+
+            Only an outer turn with no model activity yet: a reply, thought or
+            tool call that already landed could repeat a side effect. The
+            one-shot is shared with the image-history and poisoned-conversation
+            recoveries, so a failed fresh conversation cannot loop. Attached
+            sub-agents still use the native conversation, so a discard waits for
+            them. The probe yields, so every user-intent signal is read again
+            after it; the ledger re-checks them at the drain and consume seams.
+            """
+
+            def _intent_unchanged() -> bool:
+                return (
+                    not _should_suppress_requeue(slot)
+                    and not _stop_pressed()
+                    and not _has_user_queued_followup(slot)
+                    and not getattr(slot, "_pending_steers", None)
+                )
+
+            if (
+                _prompt_depth != 0
+                or _turn_emitted
+                or _turn_thought
+                or _turn_tool_calls
+                or slot._poisoned_reset_used
+                or not _intent_unchanged()
+            ):
+                return False
+            if await subagents_attached_async(
+                state, slot, session_key, "thinking_binding_recovery"
+            ):
+                return False
+            return _intent_unchanged() and effective_session_key(slot) == session_key
+
         if _retry_eligible:
             logger.info(
                 "ACP transient (%s) in slot %s — resetting session",
@@ -18009,6 +18046,54 @@ async def _run_chat(
                 )
             else:
                 slot.append("error", SESSION_NOT_FOUND_GIVE_UP_TEXT, "msg msg-err")
+        elif isinstance(exc, AcpConversationBindingMismatch) and await _binding_rebuild_allowed():
+            # The provider rejected preserved thinking that is bound to another
+            # conversation prefix. Resending the same native conversation repeats
+            # the rejection, so this is the image-history recovery's shape: discard
+            # only the resume SID once, replay the turn from Kiro Crew's transcript
+            # on a fresh conversation, and let the ledger veto the replay on a
+            # later Stop, steer, queued follow-up or rebind. A refused rebuild
+            # falls through to the terminal error below.
+            await _persist_partial_reply("error: thinking binding mismatch")
+            slot._poisoned_reset_used = True
+            needs_conversation_discard = True
+            # Not a transient outage cycle: no retry or fallback bookkeeping may
+            # leak into the rebuilt conversation.
+            slot._prestream_exhausted_cycles = 0
+            slot._transient_5xx_retries = 0
+            slot._infra_retries = 0
+            slot._fallback_candidate_idx = 0
+            slot._fallback_walked = []
+            slot.append(
+                "error",
+                "⟳ Preserved model reasoning no longer matches this conversation — "
+                "rebuilding the model session from this chat and retrying once…",
+                "msg msg-err",
+                meta={"kind": TRANSIENT_RETRY_KIND},
+            )
+            _binding_replay_meta: dict[str, Any] | None = None
+            if _attachment_meta:
+                _binding_replay_meta = {k: list(v) for k, v in _attachment_meta.items()}
+            elif _attachments:
+                _binding_replay_meta = {"files": list(_attachments)}
+            # Snapshot BEFORE the enqueue: the discard in this turn's finally is
+            # awaited, and a Stop landing there must veto the replay.
+            _binding_stop_gen = getattr(slot, "_stop_generation", 0)
+            _binding_session_stop_gen = _session_stop_generation()
+            _binding_qid = _queue_recovery(
+                0,
+                message,
+                kind=SYNTHETIC_RECOVERY_KIND,
+                payload=payload_for_replay(_is_synthetic),
+                extra_meta=_binding_replay_meta,
+            )
+            replays_of(slot).arm(
+                ReplayFamily.THINKING_BINDING,
+                entry_id=_binding_qid or "",
+                session_key=session_key,
+                stop_gen=_binding_stop_gen,
+                session_stop_gen=_binding_session_stop_gen,
+            )
         elif (
             getattr(exc, "image_format_unsupported", False)
             and not _attachments

@@ -21817,6 +21817,245 @@ class TestRunChatTransientRetry:
             for m in slot.messages
         )
 
+    _BINDING_MISMATCH = (
+        "Invalid `signature` in `thinking` block. "
+        "The block is bound to a different conversation."
+    )
+
+    @staticmethod
+    def _binding_failure():
+        from kiro_crew.acp.client import _raise_acp_error
+
+        _raise_acp_error(
+            {
+                "code": -32603,
+                "message": "Prompt failed",
+                "data": TestRunChatTransientRetry._BINDING_MISMATCH,
+            }
+        )
+
+    @pytest.mark.asyncio
+    async def test_thinking_binding_mismatch_rebuilds_once_on_fresh_conversation(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        events: list[str] = []
+
+        async def poisoned_stream(_message):
+            self._binding_failure()
+            yield  # pragma: no cover
+
+        async def fresh_stream(_message):
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="recovered-on-fresh-conversation")
+            yield LLMEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+
+        state = self._make_state(tmp_path, monkeypatch)
+        poisoned = self._client(poisoned_stream)
+        fresh = self._client(fresh_stream)
+        self._wire_sessions(state, poisoned)
+        clients = iter((poisoned, fresh))
+
+        async def get_or_create(*_args, **_kwargs):
+            client = next(clients)
+            events.append("get-poisoned" if client is poisoned else "get-fresh")
+            return client, True, False
+
+        async def discard(*_args, **_kwargs):
+            events.append("discard")
+            return True
+
+        state.sessions.get_or_create = AsyncMock(side_effect=get_or_create)
+        state.sessions.discard_conversation = AsyncMock(side_effect=discard)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+
+        await asyncio.wait_for(_run_chat(state, slot, "follow up"), timeout=10)
+        await self._drain_bg(state)
+
+        # A plain discard, as the image-history recovery does: no durable
+        # replay state and no binding-only session-map argument.
+        assert events == ["get-poisoned", "discard", "get-fresh"]
+        state.sessions.discard_conversation.assert_awaited_once_with("dashboard:s1")
+        state.sessions.reset.assert_not_awaited()
+        assert any(
+            "recovered-on-fresh-conversation" in text for text in self._assistant_texts(slot)
+        )
+        # The replay ran and its ledger record was consumed with it.
+        assert not slot.replays.armed(ReplayFamily.THINKING_BINDING)
+
+    @pytest.mark.asyncio
+    async def test_thinking_binding_mismatch_arms_the_ledger_family(self, tmp_path, monkeypatch):
+        """The queued retry is a ledger family, so the drain and consume seams own
+        its Stop, steer, follow-up and rebind vetoes."""
+        from kiro_crew.dashboard.chat import _run_chat
+
+        async def fail(_message):
+            self._binding_failure()
+            yield  # pragma: no cover
+
+        state = self._make_state(tmp_path, monkeypatch)
+        client = self._client(fail)
+        self._wire_sessions(state, client)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+        from kiro_crew.dashboard import chat_runner
+
+        monkeypatch.setattr(chat_runner, "_start_next_queued_turn", AsyncMock(return_value=False))
+
+        await asyncio.wait_for(_run_chat(state, slot, "follow up"), timeout=10)
+
+        assert len(slot._queue) == 1
+        assert slot.replays.armed(ReplayFamily.THINKING_BINDING)
+        assert slot.replays.entry_id(ReplayFamily.THINKING_BINDING) == slot._queue[0]["id"]
+        assert slot._poisoned_reset_used is True
+
+    @pytest.mark.asyncio
+    async def test_thinking_binding_mismatch_discard_is_one_shot(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.chat import _run_chat
+
+        calls = 0
+
+        async def always_fail(_message):
+            nonlocal calls
+            calls += 1
+            self._binding_failure()
+            yield  # pragma: no cover
+
+        state = self._make_state(tmp_path, monkeypatch)
+        client = self._client(always_fail)
+        self._wire_sessions(state, client)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+
+        await asyncio.wait_for(_run_chat(state, slot, "follow up"), timeout=10)
+        await self._drain_bg(state)
+
+        assert calls == 2
+        state.sessions.discard_conversation.assert_awaited_once()
+        assert slot._poisoned_reset_used is True
+
+    @pytest.mark.asyncio
+    async def test_unrecoverable_binding_mismatch_is_a_terminal_cycle_failure(
+        self, tmp_path, monkeypatch
+    ):
+        """A spent one-shot refuses the rebuild; the mismatch falls through to the
+        terminal error, so a self-wake loop's stand-down bound sees it."""
+        from kiro_crew.dashboard.chat import _run_chat
+
+        async def fail(_message):
+            self._binding_failure()
+            yield  # pragma: no cover
+
+        noted: list[tuple[str, bool]] = []
+
+        async def _note(slot_key, _exc, *, self_wake, **_kwargs):
+            noted.append((slot_key, self_wake))
+
+        from kiro_crew.dashboard import chat_runner
+
+        monkeypatch.setattr(chat_runner, "_note_cycle_failure", _note)
+        state = self._make_state(tmp_path, monkeypatch)
+        client = self._client(fail)
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+        slot._poisoned_reset_used = True
+        slot._prestream_exhausted_cycles = 2
+
+        await asyncio.wait_for(
+            _run_chat(state, slot, "loop cycle", _directive_self_wake=True), timeout=10
+        )
+        await self._drain_bg(state)
+
+        assert noted == [(slot.key, True)]
+        assert slot._queue == []
+        assert slot._prestream_exhausted_cycles == 0
+        state.sessions.discard_conversation.assert_not_awaited()
+        assert not slot.replays.armed(ReplayFamily.THINKING_BINDING)
+        assert any(
+            m.get("role") == "error" and m.get("content", "").startswith("❌")
+            for m in slot.messages
+        )
+
+    @pytest.mark.asyncio
+    async def test_recoverable_binding_mismatch_resets_outage_bookkeeping(
+        self, tmp_path, monkeypatch
+    ):
+        """The recovery clears retry/fallback counters before the discard."""
+        from kiro_crew.dashboard.chat import _run_chat
+
+        async def fail(_message):
+            self._binding_failure()
+            yield  # pragma: no cover
+
+        state = self._make_state(tmp_path, monkeypatch)
+        client = self._client(fail)
+        self._wire_sessions(state, client)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+        slot._prestream_exhausted_cycles = 2
+        slot._transient_5xx_retries = 1
+        slot._infra_retries = 1
+        seen: dict[str, int] = {}
+
+        async def discard_then_stop(*_args, **_kwargs):
+            seen["prestream"] = slot._prestream_exhausted_cycles
+            seen["transient"] = slot._transient_5xx_retries
+            seen["infra"] = slot._infra_retries
+            # Stop the queued retry so only the first mismatch is observed.
+            slot._stop_generation += 1
+            return True
+
+        state.sessions.discard_conversation = AsyncMock(side_effect=discard_then_stop)
+
+        await asyncio.wait_for(_run_chat(state, slot, "follow up"), timeout=10)
+        await self._drain_bg(state)
+
+        assert seen == {"prestream": 0, "transient": 0, "infra": 0}
+
+    @pytest.mark.asyncio
+    async def test_thinking_binding_retry_is_dropped_when_stop_lands_during_discard(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.dashboard.recovery_replays import THINKING_BINDING_CANCELLED_TEXT
+
+        calls = 0
+
+        async def fail(_message):
+            nonlocal calls
+            calls += 1
+            self._binding_failure()
+            yield  # pragma: no cover
+
+        state = self._make_state(tmp_path, monkeypatch)
+        client = self._client(fail)
+        self._wire_sessions(state, client)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+
+        async def discard_then_stop(*_args, **_kwargs):
+            slot._stop_generation += 1
+            return True
+
+        state.sessions.discard_conversation = AsyncMock(side_effect=discard_then_stop)
+
+        await asyncio.wait_for(_run_chat(state, slot, "follow up"), timeout=10)
+        await self._drain_bg(state)
+
+        assert calls == 1
+        assert state.sessions.get_or_create.await_count == 1
+        assert slot._queue == []
+        assert any(m.get("content") == THINKING_BINDING_CANCELLED_TEXT for m in slot.messages)
+        # The ledger refunds the shared one-shot of a replay that never ran.
+        assert slot._poisoned_reset_used is False
+
     @pytest.mark.asyncio
     async def test_transient_pre_token_retries_then_recovers_no_reset(self, tmp_path, monkeypatch):
         """A transient 5xx before any token streams is retried on the SAME live

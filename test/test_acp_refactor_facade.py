@@ -126,6 +126,7 @@ _MOVED: dict[str, dict[str, tuple[str, ...]]] = {
             "PiGateExtensionTampered",
             "AcpModelUnavailable",
             "AcpPromptBusy",
+            "AcpConversationBindingMismatch",
             "_RE_MODEL_UNAVAILABLE",
             "_RE_MODEL_TEMP_UNAVAILABLE",
             "_RE_INVALID_MODEL_ID",

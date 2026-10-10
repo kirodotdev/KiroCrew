@@ -21,6 +21,7 @@ from kiro_crew.dashboard.recovery_replays import (
     IMAGE_RECOVERY_CANCELLED_TEXT,
     POLICIES,
     SESSION_NOT_FOUND_CANCELLED_TEXT,
+    THINKING_BINDING_CANCELLED_TEXT,
     LiveSlot,
     RecoveryReplays,
     ReplayFamily,
@@ -35,6 +36,7 @@ from kiro_crew.dashboard.state import _ChatSlot
 _MA = ReplayFamily.MODEL_ACCESS
 _SNF = ReplayFamily.SESSION_NOT_FOUND
 _IMAGE = ReplayFamily.IMAGE_HISTORY
+_BINDING = ReplayFamily.THINKING_BINDING
 _CF = ReplayFamily.CONTENT_FILTER
 _CONT = ReplayFamily.CONTINUATION
 
@@ -91,14 +93,14 @@ def test_every_family_is_registered_once_in_the_policy_table():
 
 def test_the_registry_order_is_the_drain_order():
     """The drain re-checks families in registry order; the order is the contract."""
-    assert ENTRY_FAMILIES == (_MA, _SNF, _IMAGE, _CF)
+    assert ENTRY_FAMILIES == (_MA, _SNF, _IMAGE, _BINDING, _CF)
 
 
 def test_each_entry_family_is_checked_in_exactly_one_consume_phase():
     before = consumed_in("before_allowances")
     after = consumed_in("after_allowances")
 
-    assert before == (_SNF, _IMAGE)
+    assert before == (_SNF, _IMAGE, _BINDING)
     assert after == (_MA, _CF)
     assert sorted(f.value for f in before + after) == sorted(f.value for f in _ENTRY_MEMBERS)
     assert POLICIES[_CONT].consume_phase is None
@@ -289,6 +291,7 @@ _NOTICES = [
     ),
     (_SNF, ReplayRevocation(rebound=True), SESSION_NOT_FOUND_CANCELLED_TEXT),
     (_IMAGE, ReplayRevocation(superseded=True), IMAGE_RECOVERY_CANCELLED_TEXT),
+    (_BINDING, ReplayRevocation(rebound=True), THINKING_BINDING_CANCELLED_TEXT),
     (
         _CONT,
         ReplayRevocation(superseded=True, rebound=True),
@@ -362,6 +365,7 @@ _DRAIN_REFUNDS = {
     _MA: "_model_access_fallback_used",
     _SNF: "_session_not_found_retry_used",
     _IMAGE: "_poisoned_reset_used",
+    _BINDING: "_poisoned_reset_used",
     _CF: None,
 }
 #: What a turn vetoed at its consume seam leaves re-armed. The lost-session and
@@ -372,6 +376,7 @@ _REFUNDED_AFTER_A_CONSUME_VETO = {
     _MA: set(),
     _SNF: {"_session_not_found_retry_used"},
     _IMAGE: {"_poisoned_reset_used"},
+    _BINDING: {"_poisoned_reset_used"},
     _CF: {"_model_access_fallback_used"},
 }
 _ONE_SHOTS = (
@@ -465,13 +470,13 @@ async def test_the_drain_head_forgets_a_swept_model_access_replay(tmp_path, monk
 
     assert await cr._start_next_queued_turn(state, slot) is False
 
-    assert [f for f in ENTRY_FAMILIES if slot.replays.armed(f)] == [_SNF, _IMAGE, _CF]
+    assert [f for f in ENTRY_FAMILIES if slot.replays.armed(f)] == [_SNF, _IMAGE, _BINDING, _CF]
     assert _refunded(slot) == {"_model_access_fallback_used"}
     assert not any(m.get("role") == "notice" for m in slot.messages)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("family", (_SNF, _IMAGE, _CF))
+@pytest.mark.parametrize("family", (_SNF, _IMAGE, _BINDING, _CF))
 async def test_a_family_step_forgets_a_swept_replay_without_a_refund(tmp_path, monkeypatch, family):
     state = _state(tmp_path, monkeypatch)
     slot = state.get_or_create_slot("s1")

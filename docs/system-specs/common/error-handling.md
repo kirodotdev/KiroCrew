@@ -33,6 +33,11 @@ AcpError (base, acp/transport_errors.py) — carries `transient`, the retry verd
 ├── AcpToolGateUnroutable  — tool calls would bypass the PreToolUse gate;
 │                            non-retryable, wraps acp_tool_gate.ToolGateUnroutable
 ├── PiGateExtensionTampered — a shipped gate extension (Pi or DeepSeek) failed its digest check
+├── AcpConversationBindingMismatch — preserved thinking is bound to a different
+│                            conversation prefix; non-transient, so retrying the
+│                            same native conversation is forbidden and the
+│                            dashboard may perform its bounded discard-and-replay
+│                            recovery
 ├── AcpModelUnavailable    — requested model not entitled; non-retryable
 └── AcpPromptBusy          — a prompt is already in flight on this session
 
@@ -158,6 +163,16 @@ never drift. Notable terminal (non-retryable) classes:
   already resolved suppresses it; the drain and consume seams veto it on a later
   Stop, a queued follow-up or steer, or a rebind (with a cancel notice), refunding
   the one-shot. A second loss on the same turn ends with the give-up text.
+- **Preserved-thinking binding mismatch**: `AcpConversationBindingMismatch`
+  (non-transient) means the stored native conversation carries thinking bound to
+  another conversation prefix. A dashboard outer turn with no reply, thought or
+  tool call yet, no attached sub-agent and no Stop, steer, queued follow-up or
+  rebind discards the native resume SID once and queues ONE
+  `SYNTHETIC_RECOVERY_KIND` replay of the turn, armed as
+  `ReplayFamily.THINKING_BINDING`. The one-shot is the poisoned-conversation one
+  shared with the image-history recovery; the ledger's drain and consume seams
+  veto the replay (refunding it) exactly as they do that family's. A refused
+  rebuild falls through to the terminal error.
 - **Unsupported image history**: Kiro's `IMAGE_FORMAT_UNSUPPORTED` /
   `ImageValidationError` is terminal and structural. The exception also carries
   the narrower `image_format_unsupported` tag. A current attachment is left in
