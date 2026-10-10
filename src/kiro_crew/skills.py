@@ -23,8 +23,8 @@ import difflib
 import errno
 import functools
 import hashlib
-import hmac
 import heapq
+import hmac
 import json
 import logging
 import os

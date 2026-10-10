@@ -118,8 +118,9 @@ describe('SkillsTab', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Find overlapping skills' }))
 
     await waitFor(() => expect(mockApi.skillsAudit).toHaveBeenCalledTimes(1))
-    expect(await screen.findByText(/Overlapping/)).toBeInTheDocument()
-    expect(screen.getByTestId('skills-audit-similarity')).toHaveTextContent('50% similar')
+    // Await an element that only exists once audit results render. /Overlapping/
+    // also matches the modal title, which renders before the results arrive.
+    expect(await screen.findByTestId('skills-audit-similarity')).toHaveTextContent('50% similar')
     expect(screen.getByRole('button', { name: 'deploy-one' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'deploy-two' }))
     await waitFor(() =>
