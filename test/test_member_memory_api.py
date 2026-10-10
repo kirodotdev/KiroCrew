@@ -111,6 +111,24 @@ async def test_internal_spawn_parent_must_match_caller_identity(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("body_extra", [{}, {"parent_session": ""}], ids=["omitted", "empty"])
+async def test_internal_spawn_without_session_or_parent_is_admitted(env, body_extra):
+    """A process holding only the internal secret (a host-side sidecar, the CLI)
+    sends no ``X-Session-Key`` and no parent. ``api_spawn`` defaults the parent
+    to "", which must read as "no claim", not as a claim that fails to match."""
+    from kiro_crew.dashboard.handlers import messaging
+
+    env.state.subagents = SimpleNamespace(
+        spawn=mock.Mock(return_value=SimpleNamespace(id="run-1", done=False))
+    )
+    response = await messaging.api_spawn(
+        request(env, body={"task": "spawn", **body_extra}, internal=True, session="")
+    )
+    assert response.status == 200, response.text
+    env.state.subagents.spawn.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_private_taskrunner_start_forwards_protected_origin(env):
     from kiro_crew.execution_context import read_session_execution
 

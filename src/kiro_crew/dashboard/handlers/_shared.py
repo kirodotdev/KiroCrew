@@ -980,7 +980,13 @@ async def internal_memory_scope(
     if request.get("internal_auth") is not True:
         return None, None
     scope = await member_request_scope(request)
-    if scope.verified and (claimed_session is None or claimed_session == scope.session):
+    # A caller without a session (``scope.session is None``: only the internal
+    # secret, e.g. a host-side sidecar or the CLI) claims nothing when it sends
+    # the "" that ``api_spawn`` defaults a missing ``parent_session`` to. A
+    # caller WITH a session still has to claim exactly its own.
+    if scope.verified and (
+        claimed_session is None or claimed_session == (scope.session or "")
+    ):
         return scope.store or None, None
     await _audit_private_memory_denial(operation, "The execution identity is unavailable.")
     return None, web.json_response(
