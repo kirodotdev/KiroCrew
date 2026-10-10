@@ -25507,6 +25507,7 @@ class TestCloseBroadcastDurability:
 
         async def _save(*args, **kwargs):
             calls.append("save")
+            return True
 
         monkeypatch.setattr(chat_handlers, "save_slot_off_loop", _save)
 

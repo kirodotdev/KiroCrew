@@ -83,6 +83,7 @@ from kiro_crew.dashboard.chat_api.slot_lifecycle import (  # noqa: F401
     _NudgeRetireFailed,
     _pending_guarded_history_writes,
     _release_closed_execution,
+    _restore_original_after_failed_close,
     _restore_slot_nudge_loop,
     _retire_slot_nudge_loop,
     _slot_still_ours,
@@ -123,6 +124,8 @@ from kiro_crew.dashboard.chat_persistence import (  # noqa: F401
     _TRANSIENT_ROLES,
     COLOR_HEX_RE,
     _attach_variants,
+    _await_takeover_ordering_settled,
+    _build_message_entry,
     _coerce_requested_mode,
     _has_validated_effort_marker,
     _load_restore_cfg,
@@ -136,14 +139,18 @@ from kiro_crew.dashboard.chat_persistence import (  # noqa: F401
     _restore_model_fields,
     _restored_agent_name,
     _restored_mode,
+    _transfer_basis_to_worker,
     _validate_autocompact_pct,
+    append_window_rows,
     cap_effort_capability_levels,
+    drop_notes_authorized_elsewhere,
     get_reasoning_effort_ordered,
     get_reasoning_effort_values,
     pin_private_agent_store,
     register_reasoning_effort_values,
     release_prewarmed_session,
     save_slot_off_loop,
+    session_deletion_confirmed,
 )
 from kiro_crew.dashboard.chat_runner import (
     _context_usage_payload,
@@ -245,6 +252,7 @@ from kiro_crew.dashboard.slot_projection import (  # noqa: F401
     stop_declined_armed,
 )
 from kiro_crew.dashboard.slot_queue_repository import warn_if_not_durable
+from kiro_crew.dashboard.slot_registry import SlotRegistry, TakeoverBasis  # noqa: F401
 from kiro_crew.dashboard.slot_retention import (  # noqa: F401
     loop_slot_keys,
     select_idle_slot_keys,
@@ -269,8 +277,10 @@ from kiro_crew.dashboard.system_notices import SESSION_RELOAD_KIND, is_system_no
 from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
 from kiro_crew.history import (  # noqa: F401
     HUMAN_TURN_META_KEY,
+    ConversationLog,
     carry_provenance,
     is_incognito_transcript,
+    transcript_stems,
 )
 from kiro_crew.history_projection import TranscriptRevisionChanged  # noqa: F401
 from kiro_crew.jsonl_util import OversizedRecord, SplitlinesBoundaryRecord  # noqa: F401
@@ -2689,8 +2699,44 @@ def _report_lost_queued_prompts(
         )
 
 
+def _teardown_drain_basis(
+    state: DashboardState, name: str, slot: _ChatSlot, basis: TakeoverBasis | None
+) -> TakeoverBasis | None:
+    """Hand the teardown watch to a drain only where its key names the drain's file.
+
+    The watch is KEY-scoped while every write routes by TRANSCRIPT. An unbound
+    original writes the key's own transcript — exactly the file a same-key
+    takeover resumes — so its drain must lose to a moved watch. A LINKED
+    original (channel-, cron- or workflow-born) writes elsewhere: an unbound
+    same-name replacement taking the key touches nothing that drain writes,
+    and handing it the moved watch would refuse a safe write and leave the
+    popped slot's rows unreachable. The one linked case that still keeps the
+    watch is a published replacement that provably shares the transcript —
+    there the key takeover and the file conflict are the same event. Every
+    comparison here is by transcript STEM, the identity two spellings of one
+    key share, never by the raw strings.
+    """
+    if not set(transcript_stems(slot_history_key(slot))).isdisjoint(
+        transcript_stems(_history_key_for(name))
+    ):
+        return basis
+    if _replacement_shares_transcript(state, name, slot):
+        return basis
+    # A resume can target the linked transcript while still unpublished — its
+    # read pending behind the history lock, invisible to the map check above.
+    # Its takeover note declared the file it is about to hydrate, and a match
+    # with this drain's own write target is exactly the conflict the watch
+    # exists for.
+    if SlotRegistry.takeover_noted_transcript(state, basis, slot_history_key(slot)):
+        return basis
+    return None
+
+
 async def _persist_handover_tail(
-    state: DashboardState, name: str, slot: _ChatSlot
+    state: DashboardState,
+    name: str,
+    slot: _ChatSlot,
+    takeover_basis: TakeoverBasis | None = None,
 ) -> _HandoverDrainResult:
     """Write a handed-over original's still-unsaved rows before its object is dropped.
 
@@ -2816,6 +2862,154 @@ async def _persist_handover_tail(
         if lost:
             _report_lost_queued_prompts(state, name, lost, history_key)
         return _HandoverDrainResult(rows_committed=True, prompts_lost=lost)
+    # ── Append-safe suffix path for a truncation that lost its key ───────
+    # A ``_pending_rewrite`` retry riding this drain makes the whole write
+    # rewrite-shaped, so a takeover that already moved the teardown watch
+    # would refuse it — losing the WINDOW'S NEW ROWS to an arbitration only
+    # the TRUNCATION deserved to lose. The two travel separately: the
+    # truncation lost to the takeover and has no future (the recreate-won
+    # rule the save's own guards apply), while rows appended after the failed
+    # inline rewrite are real conversation and this frame is their last
+    # writer. The full save cannot carry them without also carrying the
+    # truncation (its rebuild supersedes the on-disk rows the truncation
+    # dropped), so this arm persists the window through the history layer's
+    # id-deduped appends instead: each row already on disk is skipped, each
+    # unsaved row lands at the tail, and nothing is rebuilt — the append-safe
+    # suffix write the hand-over owes, atomic under the same per-session lock
+    # the takeover's read serializes behind, and outside the claim contract a
+    # non-truncating write does not need.
+    #
+    # This arm is the loop-side half of a pair. The ORDERING half lives at the
+    # save's commit gate: a takeover that wins mid-save is detected while the
+    # refused save still holds the per-session lock, and the gate lands these
+    # same rows there, ahead of the takeover's queued read — a read that
+    # hydrates first would publish a window without the rows, and its later
+    # truncating rewrite rebuilds the file without collecting foreign appends.
+    # Running here as well is what VERIFIES the rows (the gate's fallback is
+    # best-effort) and covers the takeover that moved the watch before this
+    # drain dispatched at all, where no refused save holds the lock.
+    conv_log = state.conversation_log
+
+    async def _drain_append_safely(log: ConversationLog) -> _HandoverDrainResult:
+        # The rows the full save would write, prepared the way it prepares
+        # them: one snapshot of the window, then the note-authorization filter
+        # -- a note row stamped for a session this slot was later rebound away
+        # from is dropped (and audited as ``note_save_drop``) by every full
+        # save, so it is not on disk, and an append that skipped the filter
+        # would read it as new and land it in the other session's transcript.
+        # Row BUILDING (redaction, attachment persistence, the persisted field
+        # shape) is the full save's own ``_build_message_entry`` below.
+        live_session = effective_session_key(slot)
+        snapshot = drop_notes_authorized_elsewhere(slot, list(slot.messages), live_session)
+
+        def _append_window_if_absent() -> bool:
+            """Append the window; ``False`` (nothing written) when a delete won.
+
+            This arm writes OUTSIDE ``save_slot_off_loop``, so the save's
+            delete-won guard never sees it — and ``append`` recreates a
+            missing transcript with a fresh metadata line, which for a
+            session the user permanently deleted while this teardown was in
+            flight is a silent un-delete with no recovery path. The same
+            witness the save's guard uses runs here, INSIDE the append lock
+            the delete itself serializes behind: a slot that observed its
+            file on disk (``_disk_meta_created_at`` recorded at hydrate and
+            at each committed save, or the legacy observation bit) finding
+            the file missing, or finding a fresh incarnation whose
+            ``created_at`` contradicts the recorded identity, is the delete
+            winning — the rows were disposed of by the user's own action,
+            so nothing is written and nothing is owed. An UNREADABLE
+            metadata line fails closed by raising: the identity cannot be
+            verified, and the error arm below reports the rows rather than
+            silently landing them on a file that may not be this slot's.
+            """
+            path = log._path(history_key)
+            with log.atomic_appends(history_key):
+                known = str(getattr(slot, "_disk_meta_created_at", "") or "")
+                if known or bool(getattr(slot, "_disk_meta_observed", False)):
+                    try:
+                        path.stat()
+                    except FileNotFoundError:
+                        return False
+                    existing_meta, meta_readable = log.get_metadata_status(history_key)
+                    if not meta_readable:
+                        raise OSError(
+                            f"history metadata for {history_key} is transiently "
+                            "unreadable; cannot verify the session's identity "
+                            "before the hand-over append"
+                        )
+                    current = str((existing_meta or {}).get("created_at") or "")
+                    if known and current and current != known:
+                        return False
+                # The rows reach disk through the full save's own preparation
+                # -- header settled first (the slot's privacy mode created or
+                # ratcheted onto the line, confirmed; an unconfirmed contract
+                # raises into the error arm, which reports the rows rather than
+                # landing them), each row built by the save's builder, appended
+                # id-deduped against the live file and the rotation archives.
+                # The same replay the commit gate's own fallback runs.
+                append_window_rows(log, slot, history_key, snapshot, live_session=live_session)
+                return True
+
+        # A shielded executor future, not ``to_thread``: the executor cannot be
+        # interrupted, so a cancellation of this teardown (a gateway shutdown
+        # reaching a close mid-drain) must neither mark the append cancelled
+        # while its thread runs on nor let the caller's ``finally`` retire the
+        # teardown watch under that running worker. The basis transfers to the
+        # future's settlement on cancellation -- the same hand-off
+        # ``save_slot_off_loop`` makes for its own callers -- so the watch
+        # outlives every takeover the append must still observe, and the rows
+        # the popped slot acknowledged keep their writer.
+        append_future = asyncio.get_running_loop().run_in_executor(None, _append_window_if_absent)
+        try:
+            wrote = await asyncio.shield(append_future)
+        except asyncio.CancelledError:
+            _transfer_basis_to_worker(state, takeover_basis, append_future)
+            raise
+        except Exception:
+            await restore_replacement_if_handover_did_not_land(state, name, tightening, history_key)
+            logger.error(
+                "Slot %s: %d unpersisted row(s) could not be appended to %s while "
+                "handing the key to a takeover; they are lost with the original slot",
+                name,
+                unsaved,
+                history_key,
+                exc_info=True,
+            )
+            lost = await _owed_prompts_lost_on_line(state, name, slot, history_key)
+            if lost:
+                _report_lost_queued_prompts(state, name, lost, history_key)
+            return _HandoverDrainResult(rows_committed=False, prompts_lost=lost)
+        if not wrote:
+            # The delete disposed of the transcript — rows, queue and all —
+            # so the hand-over owes nothing and the close is complete. The
+            # same outcome the archive path reports for a delete it observed
+            # before dispatching this drain; this witness covers the delete
+            # that lands after that probe, or on the drain routes that carry
+            # no probe at all. Nothing landed, so the pre-write tightening is
+            # undone exactly as the full save's declined write undoes it.
+            await restore_replacement_if_handover_did_not_land(state, name, tightening, history_key)
+            logger.info(
+                "Slot %s: hand-over append skipped for %s: the session was "
+                "permanently deleted while the teardown was in flight",
+                name,
+                history_key,
+            )
+            return _HandoverDrainResult(rows_committed=True, prompts_lost=0)
+        # Same ratchet as the committed full save below: only a replacement
+        # that writes this transcript follows the appended rows' mode.
+        if _replacement_shares_transcript(state, name, slot):
+            tighten_live_slot_memory_mode(state, name, slot.memory_mode)
+        lost = await _owed_prompts_lost_on_line(state, name, slot, history_key)
+        if lost:
+            _report_lost_queued_prompts(state, name, lost, history_key)
+        return _HandoverDrainResult(rows_committed=True, prompts_lost=lost)
+
+    if (
+        slot._pending_rewrite
+        and conv_log is not None
+        and SlotRegistry.basis_moved(state, takeover_basis)
+    ):
+        return await _drain_append_safely(conv_log)
     try:
         committed = await save_slot_off_loop(
             state,
@@ -2830,6 +3024,10 @@ async def _persist_handover_tail(
             # again. Refusing here would drop exactly the rows this function
             # exists to save.
             issued_by_the_retraction=True,
+            # The teardown's own watch, opened before its pop: a rewrite-shaped
+            # drain (``_pending_rewrite``) must lose to a takeover that began
+            # anywhere in the teardown, not just after this drain dispatched.
+            takeover_basis=takeover_basis,
         )
     except Exception:
         await restore_replacement_if_handover_did_not_land(state, name, tightening, history_key)
@@ -2850,6 +3048,20 @@ async def _persist_handover_tail(
             _report_lost_queued_prompts(state, name, lost, history_key)
         return _HandoverDrainResult(rows_committed=False, prompts_lost=lost)
     if not committed:
+        if (
+            slot._pending_rewrite
+            and conv_log is not None
+            and SlotRegistry.basis_moved(state, takeover_basis)
+        ):
+            # The takeover won DURING the save: the commit gate refused the
+            # rewrite-shaped write while holding the per-session lock — and
+            # already landed the window's unsaved rows append-safely under it,
+            # ahead of the takeover's queued read (chat_persistence's
+            # commit-gate fallback). This arm re-runs the same id-deduped
+            # append, which confirms the rows on disk rather than relanding
+            # them, and covers the fallback's own best-effort failure — so the
+            # result this drain reports is verified, not inherited.
+            return await _drain_append_safely(conv_log)
         await restore_replacement_if_handover_did_not_land(state, name, tightening, history_key)
         # The save declined without writing: the session was permanently deleted
         # while this write awaited the lock, or the slot's routing moved off the

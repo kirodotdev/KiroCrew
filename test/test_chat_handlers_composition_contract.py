@@ -423,7 +423,7 @@ async def test_the_handover_exit_wakes_the_conductor_only_after_a_committed_drai
     conductor is told once the drain committed, and never when the rows were lost."""
     events: list[str] = []
 
-    async def _drain(_state, name, _slot):
+    async def _drain(_state, name, _slot, takeover_basis=None):
         events.append(f"drain:{name}")
         return ch._HandoverDrainResult(rows_committed=committed, prompts_lost=0)
 

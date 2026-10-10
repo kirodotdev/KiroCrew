@@ -432,11 +432,9 @@ def test_the_fence_read_and_the_registration_share_one_synchronous_block() -> No
         for line in lines[start:end]
         if not line.strip().startswith("#") and "await " in line
     ]
-    # The one await in between belongs to the unguarded early return, which a
-    # guarded write never reaches. Any other await is a real suspension point.
-    assert awaits == [
-        "return await save"
-    ], "an await between the fence read and the registration reopens the window"
+    # Every executor save, guarded or not, is awaited AFTER the registration
+    # point, so nothing between the fence read and the registration suspends.
+    assert awaits == [], "an await between the fence read and the registration reopens the window"
 
 
 def test_the_registration_helper_publishes_the_write_then_clears_it() -> None:
@@ -955,7 +953,9 @@ def test_the_periodic_save_carries_its_ownership_key(tmp_path) -> None:
     slot._dirty = True
     DashboardPersistenceCoordinator.flush_slot_now(coordinator, state, slot)
 
-    assert seen == [{"expected_slot_name": NAME}], seen
+    # The periodic pass also hands the save the key's takeover watch; this
+    # direct call opened none, so the pin is the ownership key alone.
+    assert seen == [{"expected_slot_name": NAME, "takeover_basis": None}], seen
 
 
 def test_a_recreate_won_refusal_keeps_the_write_owed() -> None:

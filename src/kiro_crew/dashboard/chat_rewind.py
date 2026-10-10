@@ -29,6 +29,7 @@ from aiohttp import web
 from kiro_crew.dashboard.chat_delivery import queued_text_for_display
 from kiro_crew.dashboard.chat_persistence import (
     _save_slot_to_history,
+    _transfer_basis_to_worker,
     register_guarded_history_write,
 )
 from kiro_crew.dashboard.chat_runner import _run_chat, _start_next_queued_turn
@@ -45,6 +46,7 @@ from kiro_crew.dashboard.slot_ownership import (
     deny_app_slot_access,
     slot_not_found,
 )
+from kiro_crew.dashboard.slot_registry import SlotRegistry
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.sel import sel
 from kiro_crew.session_map import _kiro_sessions_dir
@@ -743,147 +745,183 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
             # worker's real outcome and complete the matching commit (and let
             # the reserved dispatch task run the edited prompt) before
             # propagating the cancellation.
-            if slot.is_closing:
-                # The admission arm above is read once, and this handler
-                # suspends several times between it and here. By now a close can
-                # already have finished waiting for the registry below and be on
-                # its way to popping the name, so dispatching would put a worker
-                # thread on its way to the rename with nothing left to order
-                # against it, and whatever adopts the name next inherits the
-                # truncated transcript.
-                #
-                # Reading the fence HERE is what makes the pair decidable:
-                # nothing suspends between this read and the registration two
-                # lines below, so there are exactly two interleavings -- the
-                # fence is up and this write refuses, or the write is registered
-                # and the close waits for it.
-                #
-                # The native context is already gone at this point, which is the
-                # same destroyed-without-a-commit outcome as the refusals below.
-                logger.warning(
-                    "rewind: refusing the truncating save for %s; the conversation is closing",
-                    slot.key,
-                )
-                _sel_native_destroyed("slot_closing")
-                state.push_slots_update()
-                return web.json_response(
-                    {
-                        "error": "the conversation is closing; the edit was not saved",
-                        "code": "slot_closing",
-                    },
-                    status=409,
-                )
-            # Both axes are pinned INTO the write, because the commit boundary is
-            # the only place either can be decided. ``expected_history_key``
-            # catches a RENAMED replacement; a same-name close-and-recreate
-            # resumes the same transcript and keeps that key identical, so it
-            # slips past. ``expected_slot_name`` carries this slot's map key in,
-            # where ``state._slots[name]`` is re-read inside the transcript lock
-            # with no await before the write: a map holding a different slot
-            # object refuses the save, nothing written. The fence read above is
-            # not a substitute -- it answers whether a retraction has STARTED,
-            # while this answers whether one has already completed and republished
-            # the name. A refusal returns ``False`` and reaches the 503 below with
-            # the prepared state never committed.
-            save_task = asyncio.ensure_future(
-                asyncio.to_thread(
-                    _save_slot_to_history,
-                    state,
-                    slot,
-                    msgs_snapshot,
-                    expected_history_key=expected_history_key,
-                    expected_disk_older_count=pre_await_disk_older_count,
-                    expected_slot_name=name,
-                )
-            )
-            # This is the one truncating write that does not go through
-            # ``save_slot_off_loop``, so it registers itself. Without this the
-            # close's wait sees an empty registry and pops the name while the
-            # rewrite is in flight. The task is shielded below and nothing else
-            # holds it, so it resolves when the worker thread returns.
-            register_guarded_history_write(slot, save_task)
+            # ── Dispatch verify + takeover watch ────────────────────────
+            # The awaits above (nudge retirement, turn cancellation) free the
+            # event loop between this rewind's authorization and its durable
+            # write, so a same-key close-and-recreate can fully land in the
+            # gap — including a resume whose takeover note fires before this
+            # save has any claim or watch to observe it. Its pop IS
+            # observable: the slot not being the live occupant of its key at
+            # dispatch means the key changed hands, and the truncation has no
+            # future — the same recreate-won refusal the commit-boundary
+            # recheck delivers, one hop earlier. The watch opens first, so a
+            # takeover arriving after this verify moves the count past the
+            # basis and the claim is born overtaken; the map recheck inside
+            # the save (``expected_slot_name``) covers replacements published
+            # while the write waits on the lock. The fence read below sits
+            # inside the same scope: nothing suspends between it, the verify
+            # and the registration, so the three decide together.
+            #
+            # A dispatch-verify refusal dispatches nothing and settles
+            # ``saved`` directly: it is a refusal of the save, not a save that
+            # raised, and it reaches the refusal exit below as one.
+            takeover_basis = SlotRegistry.open_takeover_basis(state, name)
             try:
-                saved = await asyncio.shield(save_task)
-            except asyncio.CancelledError:
-                # Bounded re-shield rather than a bare ``await save_task``. This
-                # await is itself a cancellation point, and ``CancelledError`` is
-                # a BaseException that no ``except Exception`` absorbs, so one
-                # further cancel -- a gateway shutdown reaching a handler already
-                # unwinding from a client disconnect -- would cancel the task
-                # while its worker thread runs on to the rename. That matters
-                # twice over: the rewrite's outcome would be lost, AND the done
-                # callback would drop the task from
-                # ``slot._guarded_history_writes``, so a close would drain an
-                # empty registry and retract the name with the thread still
-                # writing. Shielding each attempt keeps the task alive across
-                # those cancellations and the outcome is read off the settled
-                # task rather than awaited, so it cannot be lost to a cancel
-                # landing between the two. A task that never settles stays
-                # pending and stays registered, which is what the close needs.
-                landed = False
-                for _ in range(_SAVE_DRAIN_ATTEMPTS):
-                    if save_task.done():
-                        break
-                    try:
-                        await asyncio.shield(save_task)
-                    except asyncio.CancelledError:
-                        continue
-                    except Exception:
-                        break
-                if save_task.done() and not save_task.cancelled():
-                    save_exc = save_task.exception()
-                    landed = save_exc is None and bool(save_task.result())
-                elif not save_task.done():
+                if slot.is_closing:
+                    # The admission arm above is read once, and this handler
+                    # suspends several times between it and here. By now a close can
+                    # already have finished waiting for the registry below and be on
+                    # its way to popping the name, so dispatching would put a worker
+                    # thread on its way to the rename with nothing left to order
+                    # against it, and whatever adopts the name next inherits the
+                    # truncated transcript.
+                    #
+                    # Reading the fence HERE is what makes the pair decidable:
+                    # nothing suspends between this read and the registration two
+                    # lines below, so there are exactly two interleavings -- the
+                    # fence is up and this write refuses, or the write is registered
+                    # and the close waits for it.
+                    #
+                    # The native context is already gone at this point, which is the
+                    # same destroyed-without-a-commit outcome as the refusals below.
                     logger.warning(
-                        "rewind: the history rewrite for %s did not settle within "
-                        "%d cancellation(s); leaving the live slot untouched",
-                        slot.key,
-                        _SAVE_DRAIN_ATTEMPTS,
-                    )
-                if (
-                    landed
-                    and slot_history_key(slot) == expected_history_key
-                    and (not request_app or state._slots.get(name) is slot)
-                ):
-                    _commit_live_state()
-                    dispatch_commit = True
-                    logger.info(
-                        "rewind: request cancelled after the rewrite landed for %s; "
-                        "committed live state and dispatching the edited prompt",
+                        "rewind: refusing the truncating save for %s; the conversation is closing",
                         slot.key,
                     )
+                    _sel_native_destroyed("slot_closing")
+                    state.push_slots_update()
+                    return web.json_response(
+                        {
+                            "error": "the conversation is closing; the edit was not saved",
+                            "code": "slot_closing",
+                        },
+                        status=409,
+                    )
+                if state._slots.get(name) is not slot:
+                    saved = False
                 else:
-                    # The native context is already gone and nothing was
-                    # committed against it: either the rewrite did not land, or
-                    # it landed on a slot that moved. This is the same
-                    # destroyed-without-a-commit outcome as the 503 paths below,
-                    # and it is the one exit where the client is not even told --
-                    # the cancellation propagates instead of a response, so the
-                    # SEL record is the ONLY place it can be attributed from.
-                    _sel_native_destroyed("request_cancelled")
-                raise
-            except Exception:
-                logger.warning("rewind: failed to persist truncated history", exc_info=True)
-                _sel_native_destroyed("history_save_exception")
-                state.push_slots_update()
-                return web.json_response(
-                    {
-                        "error": "could not save edited conversation; retry the edit",
-                        "code": "rewind_save_failed",
-                    },
-                    status=503,
-                )
+                    # Both axes are pinned INTO the write, because the commit boundary is
+                    # the only place either can be decided. ``expected_history_key``
+                    # catches a RENAMED replacement; a same-name close-and-recreate
+                    # resumes the same transcript and keeps that key identical, so it
+                    # slips past. ``expected_slot_name`` carries this slot's map key in,
+                    # where ``state._slots[name]`` is re-read inside the transcript lock
+                    # with no await before the write: a map holding a different slot
+                    # object refuses the save, nothing written. The fence read above is
+                    # not a substitute -- it answers whether a retraction has STARTED,
+                    # while this answers whether one has already completed and republished
+                    # the name. A refusal returns ``False`` and reaches the 503 below with
+                    # the prepared state never committed.
+                    save_task = asyncio.ensure_future(
+                        asyncio.to_thread(
+                            _save_slot_to_history,
+                            state,
+                            slot,
+                            msgs_snapshot,
+                            expected_history_key=expected_history_key,
+                            expected_disk_older_count=pre_await_disk_older_count,
+                            expected_slot_name=name,
+                            takeover_basis=takeover_basis,
+                        )
+                    )
+                    # This is the one truncating write that does not go through
+                    # ``save_slot_off_loop``, so it registers itself. Without this the
+                    # close's wait sees an empty registry and pops the name while the
+                    # rewrite is in flight. The task is shielded below and nothing else
+                    # holds it, so it resolves when the worker thread returns.
+                    register_guarded_history_write(slot, save_task)
+                    try:
+                        saved = await asyncio.shield(save_task)
+                    except asyncio.CancelledError:
+                        # Bounded re-shield rather than a bare ``await save_task``. This
+                        # await is itself a cancellation point, and ``CancelledError`` is
+                        # a BaseException that no ``except Exception`` absorbs, so one
+                        # further cancel -- a gateway shutdown reaching a handler already
+                        # unwinding from a client disconnect -- would cancel the task
+                        # while its worker thread runs on to the rename. That matters
+                        # twice over: the rewrite's outcome would be lost, AND the done
+                        # callback would drop the task from
+                        # ``slot._guarded_history_writes``, so a close would drain an
+                        # empty registry and retract the name with the thread still
+                        # writing. Shielding each attempt keeps the task alive across
+                        # those cancellations and the outcome is read off the settled
+                        # task rather than awaited, so it cannot be lost to a cancel
+                        # landing between the two. A task that never settles stays
+                        # pending and stays registered, which is what the close needs.
+                        landed = False
+                        for _ in range(_SAVE_DRAIN_ATTEMPTS):
+                            if save_task.done():
+                                break
+                            try:
+                                await asyncio.shield(save_task)
+                            except asyncio.CancelledError:
+                                continue
+                            except Exception:
+                                break
+                        if save_task.done() and not save_task.cancelled():
+                            save_exc = save_task.exception()
+                            landed = save_exc is None and bool(save_task.result())
+                        elif not save_task.done():
+                            logger.warning(
+                                "rewind: the history rewrite for %s did not settle within "
+                                "%d cancellation(s); leaving the live slot untouched",
+                                slot.key,
+                                _SAVE_DRAIN_ATTEMPTS,
+                            )
+                            # The worker runs on under the watch this handler
+                            # opened, and the ``finally`` below is about to close
+                            # it: hand the watch to the task's settlement instead,
+                            # as ``save_slot_off_loop`` does for its own callers,
+                            # so a takeover landing before the worker registers
+                            # its claim is still observed rather than orphaning
+                            # the truncation over the takeover's transcript.
+                            _transfer_basis_to_worker(state, takeover_basis, save_task)
+                        if (
+                            landed
+                            and slot_history_key(slot) == expected_history_key
+                            and (not request_app or state._slots.get(name) is slot)
+                        ):
+                            _commit_live_state()
+                            dispatch_commit = True
+                            logger.info(
+                                "rewind: request cancelled after the rewrite landed for %s; "
+                                "committed live state and dispatching the edited prompt",
+                                slot.key,
+                            )
+                        else:
+                            # The native context is already gone and nothing was
+                            # committed against it: either the rewrite did not land, or
+                            # it landed on a slot that moved. This is the same
+                            # destroyed-without-a-commit outcome as the 503 paths below,
+                            # and it is the one exit where the client is not even told --
+                            # the cancellation propagates instead of a response, so the
+                            # SEL record is the ONLY place it can be attributed from.
+                            _sel_native_destroyed("request_cancelled")
+                        raise
+                    except Exception:
+                        logger.warning("rewind: failed to persist truncated history", exc_info=True)
+                        _sel_native_destroyed("history_save_exception")
+                        state.push_slots_update()
+                        return web.json_response(
+                            {
+                                "error": "could not save edited conversation; retry the edit",
+                                "code": "rewind_save_failed",
+                            },
+                            status=503,
+                        )
+            finally:
+                SlotRegistry.close_takeover_basis(state, takeover_basis)
             if request_app and state._slots.get(name) is not slot:
                 _sel_native_destroyed("commit_target_moved")
                 return slot_not_found()
             if not saved:
                 # The save's own guards refused the write (the session was
-                # permanently deleted, or the slot was rebound to another
-                # transcript, while the write awaited its lock). Nothing was
-                # persisted, so reporting success here would dispatch a turn
-                # from state that exists only in memory.
+                # permanently deleted, the slot was rebound to another
+                # transcript, or a same-name replacement took over the key).
+                # Nothing was persisted, so reporting success here would
+                # dispatch a turn from state that exists only in memory.
                 logger.warning(
-                    "rewind: history save refused for %s (concurrent delete or rebind)",
+                    "rewind: history save refused for %s (concurrent delete, rebind, or recreate)",
                     slot.key,
                 )
                 _sel_native_destroyed("history_save_refused")

@@ -1166,6 +1166,114 @@ no longer destroy older turns.
   set by rewind/regenerate after they truncate the window and cleared only on a
   successful rewrite save, so a failed inline rewrite still gets retried as an
   archive-safe rewrite by the next flush (never silently overwritten).
+- **Rewrite-vs-takeover ordering** (`TruncationClaim`, `slot_registry.py`): a
+  same-name close-and-recreate that resumes the SAME transcript is not
+  serialized against the per-session lock — the cleanup pops
+  `state._slots[name]` and the facade republishes through
+  `SlotRegistry.put_slot` on the event loop while the rewrite commits on a
+  worker thread. Two guards order them. The **recreate-won map recheck**
+  (`expected_slot_name`, supplied by every live-slot truncating caller and
+  by the periodic flush): the save
+  re-reads the live occupant of the slot's map key inside the lock at the
+  commit boundary and refuses (`False`, nothing written) when the map holds a
+  different object — this catches every replacement already PUBLISHED. The
+  **publication-ordering claim** closes the window the recheck cannot see —
+  a takeover that begins after the recheck and reads the file after the
+  replace: every truncating save registers a claim on its map key for the
+  whole write (opened before the lock, so the lock wait is covered), every
+  same-key takeover marks it (`note_same_key_takeover`, called by `put_slot`
+  and at the start of a resume's transcript read, fire-and-forget), and one
+  mutex-guarded transition decides the winner before the rewrite's first
+  mutation — ahead of the dropped-line archive, so a refusal leaves no
+  sidecar recording still-live rows as dropped, and ahead of the file
+  replace, both performed under the per-session lock the save holds
+  throughout.
+  Each takeover note also bumps the count of the key's open takeover watch
+  (`TakeoverBasis`): a dispatcher opens the watch at its last synchronous
+  instant — while it can still vouch the slot is the live occupant
+  (`save_slot_off_loop`, the flush pass, the shutdown pass, the rewind
+  handler's dispatch) — and the claim registration compares the count against
+  the snapshot, so a takeover firing before the claim exists (nothing to
+  mark) leaves the claim born overtaken instead of unobserved.
+  `save_slot_off_loop` opens one for EVERY save its caller did not open one
+  for, not only saves already truncating at dispatch: the worker reads
+  `_pending_rewrite` itself, so an append-shaped dispatch can become a
+  truncating rewrite in the gap (a regenerate whose inline save failed), and
+  only a basis opened before that gap lets the claim observe a takeover that
+  landed in it. A key with no
+  open watch records nothing (no save is in flight to observe it), and the
+  last holder out retires the entry, so the watch table is bounded by
+  in-flight saves rather than by every key the process ever published. The
+  vouch itself is a dispatch-time occupancy verify: guarded callers
+  (`expected_slot_name`) and the flush/shutdown passes re-read the live
+  occupant after opening the watch and refuse or skip when the key already
+  changed hands — the pop is the only observable a takeover leaves once its
+  own takeover note has already fired. The close/cleanup teardowns write
+  POPPED slots by design, so they open one watch before their pop and carry
+  it through every await and every save of the teardown (the archive, the
+  hand-over drains): a resume beginning anywhere in the teardown moves that
+  watch, the archive's rewrite-shaped write is born overtaken, and the close
+  reports the refusal instead of success — the caller holds the basis, and
+  `basis_moved` is what tells a takeover refusal (compensate, hand over,
+  report) from a delete-won one (the delete already disposed of the
+  archive's subject). A hand-over whose drain does not land restores the
+  popped original while the key is still free (the takeover may be an
+  unpublished resume waiting on this very watch), with the same compensation
+  a raised archive save gets, so the tail's only holder is never dropped. A
+  watch retains at most `_MAX_NOTED_TRANSCRIPTS_PER_WATCH` declared read
+  targets — the name is request-controlled — and a takeover note past that
+  bound is refused at admission, recording nothing, with the resume behind
+  it answered by the retryable lock-contention error. A hand-over drain carrying a `_pending_rewrite` retry
+  whose key was taken over does not rebuild at all: only the TRUNCATION lost
+  the arbitration, so the drain persists the window through the history
+  layer's id-deduped appends (`append_if_absent` under `atomic_appends`) —
+  rows already on disk are skipped — judged against the whole durable
+  history, size-rotation archives included (`include_rotated`), so a window
+  reaching past the live file's rotation cut re-lands none of its archived
+  rows — the unsaved tail lands, and the lost truncation drops out instead
+  of dragging the tail down with it. The rows are prepared the way the full
+  save prepares them: the window snapshot is filtered through
+  `drop_notes_authorized_elsewhere` (a note stamped for a session the slot
+  was rebound away from is dropped and audited as `note_save_drop`, as every
+  full save does) and each row is built by `_build_message_entry`. Transcript
+  identity is compared by stem throughout (`transcript_stems`), never by the
+  raw key string: a resume declares the transcript it reads in whatever
+  spelling it was asked for, and a teardown writing the same file under
+  another spelling still sees it. The header
+  is settled under that same lock before the first row
+  (`tighten_line_for_appends`): created with the slot's retained
+  `memory_mode` when absent, tightened to it when present (store cleared,
+  carried execution record folded, every other field kept), and CONFIRMED
+  by a re-read — a header that cannot be read, or still reads looser than the
+  retained mode, refuses the append outright (the drain reports the rows and
+  the close fails; the commit-gate fallback keeps the window owed), because a
+  row under an unverified privacy contract is the breach the mode exists to
+  prevent. Watch
+  ownership survives cancellation: an executor
+  save closes its own basis when it settles, and `save_slot_off_loop`
+  shields the executor future so a cancelled caller can neither retire the
+  watch under a running worker nor silently drop an authorized durable
+  write from the queue.
+  The read side honours the ordering it declares: a resume whose takeover note
+  overtook a save in flight waits, off the loop and bounded by the save's own
+  lock deadline, for that save's claim (and the key's open watch) to retire,
+  because a refused hand-over save lands the popped slot's unsaved tail
+  append-safely under its lock before releasing and the transcript projection
+  serves cached, best-effort-locked reads the lock alone cannot order. The
+  wait fails CLOSED: on expiry the resume refuses with the retryable
+  lock-contention error (`HistoryLockTimeout` on the facade, 503
+  `takeover_ordering_unsettled` at `POST /api/chat/slots/{slot}/resume`)
+  rather than hydrating a window whose missing tail a later rewrite deletes.
+  A claim marked first means the save refuses and the takeover's read —
+  serialized behind the per-session lock — finds the transcript the
+  truncation never touched; a claim that commits first means a later takeover
+  knowingly resumes the post-rewrite transcript. Every interleaving therefore
+  resolves to one of the two sequential histories ("reopen, then the rewrite
+  is refused" / "rewrite, then reopen"), and no schedule lets a replacement
+  adopt a truncated window it did not knowingly resume. The mutex guards
+  in-memory transitions only — it is never held across the file replace, so
+  the event loop never waits on the commit (which on Windows is a bounded
+  retry loop, not a single rename).
 - **Foreign-append merge & id-first dedup** (`_frozen_prefix_and_foreign_appends`):
   a default save captures its `window` snapshot BEFORE taking `_locked`, so a
   cross-process writer (subagent / cron / CLI) can fully append + release the

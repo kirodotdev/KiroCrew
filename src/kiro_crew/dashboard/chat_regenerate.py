@@ -331,6 +331,21 @@ async def api_chat_slot_switch_variant(request: web.Request) -> web.Response:
                 {"error": "corrupt variant entry", "code": "variant_corrupt"}, status=400
             )
         target_dict: dict = target
+        # The switch mutates the LIVE row before its durable write, unlike
+        # rewind, which prepares on a copy. The pre-switch fields are captured
+        # so a refused save can put them back: a refusal leaves this window
+        # unpersisted, and the row must not sit mutated in it — the teardown
+        # drain of a popped slot re-serializes the window onto the transcript
+        # a takeover now holds, which would land the refused variant after the
+        # 409 already reported it withdrawn. Every field ``adopt_variant_text``
+        # touches is captured (``meta`` carries the redaction records that
+        # travel with the text), and ``variant_idx`` may be absent before the
+        # first switch, so absence is restored as absence.
+        _prior_fields = {
+            key: copy.deepcopy(target_dict[key])
+            for key in ("content", "ts", "meta", "variant_idx")
+            if key in target_dict
+        }
         adopt_variant_text(target_dict, chosen)
         slot.invalidate_source_links()
         target_dict["variant_idx"] = idx
@@ -362,13 +377,24 @@ async def api_chat_slot_switch_variant(request: web.Request) -> web.Response:
         if request_app and state._slots.get(name) is not slot:
             return slot_not_found()
         if not committed:
-            # The save's guards refused: the slot was rebound or a same-name
-            # recreate replaced it while the write awaited its lock. The chosen
-            # variant exists only in this popped slot's in-memory window;
-            # broadcasting the switch would announce a state no transcript holds,
-            # so abort without broadcasting.
+            # The save's guards refused: the slot was rebound, or a same-name
+            # takeover won the ordering, while the write awaited its lock. The
+            # chosen variant exists only in this slot's in-memory window, and
+            # that window is not inert — a popped slot's teardown drain
+            # re-serializes it onto the transcript the takeover holds, and a
+            # still-live slot's periodic flush persists it with no guard at
+            # all. Put the pre-switch row back so nothing later writes a
+            # variant this response reports withdrawn, then abort without
+            # broadcasting.
+            for key in ("content", "ts", "meta", "variant_idx"):
+                if key in _prior_fields:
+                    target_dict[key] = _prior_fields[key]
+                else:
+                    target_dict.pop(key, None)
+            slot.invalidate_source_links()
             logger.warning(
-                "switch-variant: history save refused for %s (concurrent delete or recreate)",
+                "switch-variant: history save refused for %s (concurrent delete or recreate); "
+                "restored the pre-switch row",
                 slot.key,
             )
             return web.json_response(
@@ -1064,6 +1090,13 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
                     msgs_snapshot,
                     best_effort=False,
                     expected_history_key=expected_history_key,
+                    # The map-key pin closes both halves of the same-name
+                    # recreate race for this edit: the helper's dispatch verify
+                    # refuses when the key already changed owner during the
+                    # awaits above (a takeover whose note fired before this
+                    # save had a watch to observe it), and the commit-boundary
+                    # recheck plus the takeover watch the helper opens cover
+                    # everything that lands after dispatch.
                     expected_slot_name=name,
                 )
             )

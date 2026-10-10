@@ -37,6 +37,83 @@ logger = logging.getLogger("kiro_crew.dashboard.chat_persistence")
 _FLUSH_SNAPSHOT_RETRIES = 4
 
 
+class HeaderUnconfirmed(OSError):
+    """An append-safe write refused: the header's privacy contract is unverified.
+
+    Raised by the append fallbacks when :func:`tighten_line_for_appends` answers
+    ``None`` -- the header could not be read, or still reads looser than the
+    slot's retained mode -- so the rows are NOT appended. An ``OSError`` because
+    every caller's refusal arm is the one that already handles an unreadable
+    header on the same path: the drain reports the rows and the close fails,
+    the gate keeps the window owed and the drain retries.
+    """
+
+    def __init__(self, history_key: str) -> None:
+        super().__init__(
+            f"the privacy contract of {history_key} could not be confirmed; "
+            "no row is appended under it"
+        )
+
+
+def append_window_rows(
+    conv_log: ConversationLog,
+    slot: _ChatSlot,
+    history_key: str,
+    window: list[dict],
+    *,
+    live_session: str,
+) -> int:
+    """Land *window*'s rows onto *history_key* append-safely; return how many were new.
+
+    The ONE replay the two append-safe fallbacks share -- the hand-over drain of
+    a popped slot whose truncation lost its key, and the commit gate's refusal of
+    that same write -- so the rows reach disk through the full save's own
+    preparation and never through a second pipeline. In order, under the lock
+    the caller already holds: the header is settled first
+    (``tighten_line_for_appends`` -- the slot's retained privacy mode created or
+    ratcheted onto the line, confirmed by re-read; an unconfirmed header raises
+    :class:`HeaderUnconfirmed` and nothing is appended), then each row is built
+    by ``_build_message_entry`` exactly as the full save builds it (transient
+    roles dropped, redaction, inline images persisted under this transcript's
+    ``(dir, stem)``), and appended through ``append_if_absent`` with the built
+    entry travelling whole, judged against the live file AND the rotation
+    archives so a window reaching past the rotation cut re-lands none of its
+    archived rows.
+
+    *window* is the caller's already-filtered snapshot: the note-authorization
+    filter (``drop_notes_authorized_elsewhere``) runs where the full save runs
+    it, before this call, so a note stamped for another session never reaches
+    it. Caller holds ``_locked(history_key)`` (or ``atomic_appends``).
+    """
+    from kiro_crew.dashboard import chat_persistence as cp  # circular import: facade imports owners
+
+    if (
+        cp._metadata_line.tighten_line_for_appends(
+            conv_log, slot, history_key, live_session=live_session
+        )
+        is None
+    ):
+        raise HeaderUnconfirmed(history_key)
+    path = conv_log._path(history_key)
+    attachments = (path.parent, path.stem)
+    appended = 0
+    for m in window:
+        e = cp._build_message_entry(m, attachments=attachments)
+        if e is None:
+            continue
+        if conv_log.append_if_absent(
+            history_key,
+            str(e.get("role", "")),
+            str(e.get("content", "")),
+            cls=str(e.get("cls", "") or ""),
+            mid=cp.row_mid(e),
+            entry=e,
+            include_rotated=True,
+        ):
+            appended += 1
+    return appended
+
+
 def _stable_durable_queue(slot: _ChatSlot) -> tuple[list[dict], int]:
     """One self-consistent read of *slot*'s durable queue value and its count.
 
@@ -270,6 +347,71 @@ def session_was_deleted(state: DashboardState, slot: _ChatSlot) -> bool:
         if known and current != known:
             return True
     return False
+
+
+def session_deletion_confirmed(state: DashboardState, slot: _ChatSlot) -> bool:
+    """True only on DEFINITIVE delete evidence; anything unverifiable is False.
+
+    The mirror of :func:`session_was_deleted`'s fail-closed rule, for callers
+    whose True branch is destructive rather than protective. Fork and the
+    transfer export refuse a COPY on True, so an unverifiable probe (a
+    transient stat or metadata failure) safely answers True there — the copy
+    is retryable. The close/cleanup archive arms DISCARD a popped slot's
+    unsaved tail on True, so the same unverifiable probe must answer False
+    and route them to their restore/retry handling instead: only a missing
+    file, or readable metadata whose ``created_at`` contradicts the identity
+    this slot recorded, is evidence a delete actually happened. The
+    observation gate and the identity rule are :func:`session_was_deleted`'s;
+    only the unverifiable arms flip.
+    """
+    if not state.conversation_log:
+        return False
+    known = str(getattr(slot, "_disk_meta_created_at", "") or "")
+    if not known and not bool(getattr(slot, "_disk_meta_observed", False)):
+        return False
+    path_fn = getattr(state.conversation_log, "_path", None)
+    if path_fn is None:
+        return False
+    try:
+        path_fn(slot_history_key(slot)).stat()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        # Existence unverifiable is NOT deletion evidence for a destructive
+        # caller: answer False so the caller retries rather than discards.
+        return False
+    meta_fn = getattr(state.conversation_log, "get_metadata_status", None)
+    if meta_fn is None:
+        return False
+    try:
+        current_meta, readable = meta_fn(slot_history_key(slot))
+    except Exception:
+        return False
+    if not readable:
+        return False
+    current = str((current_meta or {}).get("created_at") or "")
+    if known and not current:
+        # The delete-between-probes shape: the file answered the stat above,
+        # but its metadata read found no identity — exactly the pair a delete
+        # landing between the two leaves behind. Answering False from it
+        # restores a ghost slot over a genuinely deleted session: the tab
+        # accepts turns whose every save the delete-won guard then refuses,
+        # and a restart loses them all. So ask the filesystem AGAIN: a file
+        # now missing is the definitive delete witness this probe accepts. A
+        # file still present stays ambiguous (a transient read failure, or a
+        # concurrent recreate whose line is mid-write) and keeps the
+        # retryable False — the caller's restore/retry arm is the safe side
+        # for that pair, because the transcript demonstrably exists.
+        try:
+            path_fn(slot_history_key(slot)).stat()
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+        return False
+    # A recorded identity contradicted by a READABLE line is the one
+    # existing-file witness this probe accepts.
+    return bool(known and current and current != known)
 
 
 def register_guarded_history_write(slot: _ChatSlot, save: "asyncio.Future[bool]") -> None:

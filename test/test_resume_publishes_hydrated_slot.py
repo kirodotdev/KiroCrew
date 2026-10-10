@@ -1078,7 +1078,9 @@ def test_background_flush_and_open_slots_skip_an_under_construction_slot(tmp_pat
     state.begin_slot_construction(slot.key)
 
     flushed: list[str] = []
-    monkeypatch.setattr(state, "flush_slot_now", lambda s: flushed.append(s.key))
+    monkeypatch.setattr(
+        state, "flush_slot_now", lambda s, takeover_basis=None: flushed.append(s.key)
+    )
 
     state._flush_dirty_slots()
     assert (

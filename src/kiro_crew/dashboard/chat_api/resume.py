@@ -22,10 +22,12 @@ if TYPE_CHECKING:
         DashboardState,
         ResumeOutcome,
         ResumeRefusal,
+        SlotRegistry,
         _app_claim_refused,
         _app_resume_refusal,
         _app_slot_acquisition_recheck,
         _attach_variants,
+        _await_takeover_ordering_settled,
         _ChatSlot,
         _collapse_wire_rows,
         _has_validated_effort_marker,
@@ -955,6 +957,50 @@ async def resume_slot_from_history(
                 409,
             )
         )
+
+    # Same-key takeover note, BEFORE the transcript read is dispatched. A
+    # truncating rewrite for this key can be mid-flight on a worker thread, and
+    # the read below serializes behind the per-session lock it holds — an
+    # unannounced resume would block through the file replace and then adopt
+    # the truncated window as the tab's live transcript. Marking the claim
+    # first makes the save's commit gate refuse instead (nothing written, the
+    # read finds the transcript the truncation never changed), while a claim
+    # that already committed stays committed and this resume knowingly reads
+    # the post-rewrite transcript. Fire-and-forget: no branch on the outcome.
+    # The transcript this resume is about to read rides along, for teardown
+    # writers whose linked file the map cannot connect to this key.
+    if not SlotRegistry.note_same_key_takeover(state, name, transcript=history_key):
+        # Refused at admission: the key's teardown watch already retains as many
+        # declared transcripts as one teardown admits (a bound on a
+        # request-controlled name), so nothing about this takeover was recorded
+        # and the read must not run. Retryable, like the unsettled ordering
+        # below: the watch retires when the saves holding it settle.
+        return ResumeOutcome(
+            refusal=ResumeRefusal(
+                "a save for this conversation is still settling; retry shortly",
+                "takeover_note_refused",
+                503,
+            )
+        )
+    # The note decides the ordering; this wait makes the read honor it. An
+    # overtaken save is refused at its commit gate but still lands a popped
+    # slot's unsaved rows append-safely under its lock before releasing — the
+    # projection's cached/best-effort-locked reads can otherwise return
+    # pre-append bytes while that save is still inside its region. The claim
+    # retires only after the lock exits, appends included; bounded — and
+    # fail-CLOSED on expiry, because a resume that reads anyway hydrates the
+    # unsettled window whose missing tail a later rewrite silently deletes
+    # (see chat_persistence._await_takeover_ordering_settled). Retryable 503:
+    # the writer holding the ordering settles within its own lock deadline.
+    if SlotRegistry.takeover_ordering_pending(state, name):
+        if not await asyncio.to_thread(_await_takeover_ordering_settled, state, name):
+            return ResumeOutcome(
+                refusal=ResumeRefusal(
+                    "a save for this conversation is still settling; retry shortly",
+                    "takeover_ordering_unsettled",
+                    503,
+                )
+            )
 
     # Read the transcript BEFORE publishing the slot: this await would otherwise
     # expose an empty slot by name, and a concurrent append would land ahead of it.
