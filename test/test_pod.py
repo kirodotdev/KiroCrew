@@ -21,6 +21,7 @@ from unittest.mock import patch
 import pytest
 from tmpdir_helpers import SHORT_TMP_PREFIX, short_tmp_base
 
+from conftest import host_abs
 from kiro_crew import env as env_mod
 from kiro_crew import platform_compat
 from kiro_crew.instances import run_marker
@@ -2173,32 +2174,38 @@ class TestProvisionBuildPaths:
     def test_find_python_takes_the_first_candidate_that_passes_the_probe(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        self._only_candidates(monkeypatch, "/shim/python3.12", "/ok/python3.13", "/later")
+        shim = host_abs("shim", "python3.12")
+        ok = host_abs("ok", "python3.13")
+        self._only_candidates(monkeypatch, shim, ok, host_abs("later"))
         probed: list[str] = []
 
         def probe(c: str) -> str | None:
             probed.append(c)
-            return "exit 127: no such version" if c == "/shim/python3.12" else None
+            return "exit 127: no such version" if c == shim else None
 
         monkeypatch.setattr(prov, "_probe_python", probe)
-        assert prov._find_python() == "/ok/python3.13"
-        assert probed == ["/shim/python3.12", "/ok/python3.13"]
+        assert prov._find_python() == ok
+        assert probed == [shim, ok]
         # The rejection is said, so a failed provision names what was tried.
-        assert "skipping /shim/python3.12: exit 127: no such version" in capsys.readouterr().err
+        assert f"skipping {shim}: exit 127: no such version" in capsys.readouterr().err
 
     def test_find_python_probes_each_path_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        self._only_candidates(monkeypatch, "/a/python3", "/a/python3", "/b/python3")
+        a = host_abs("a", "python3")
+        b = host_abs("b", "python3")
+        self._only_candidates(monkeypatch, a, a, b)
         probed: list[str] = []
         monkeypatch.setattr(prov, "_probe_python", lambda c: probed.append(c) or "no")
         assert prov._find_python() is None
-        assert probed == ["/a/python3", "/b/python3"]
+        assert probed == [a, b]
 
     def test_find_python_is_none_when_every_candidate_fails(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        self._only_candidates(monkeypatch, "/x")
-        monkeypatch.setattr(prov, "_probe_python", lambda c: "broken")
+        self._only_candidates(monkeypatch, host_abs("x"))
+        probed: list[str] = []
+        monkeypatch.setattr(prov, "_probe_python", lambda c: probed.append(c) or "broken")
         assert prov._find_python() is None
+        assert probed == [host_abs("x")]
 
     def test_ensure_venv_failure_names_the_floor_not_one_version(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -2226,8 +2233,41 @@ class TestProvisionBuildPaths:
         monkeypatch.setattr(prov.sys, "_base_executable", "", raising=False)
         monkeypatch.setattr(prov.sys, "executable", "")
         monkeypatch.setattr(prov.Path, "exists", lambda self: False)
+        monkeypatch.setattr(prov.platform_compat, "trusted_system_bin_quiet", lambda name: None)
         monkeypatch.setattr(prov.shutil, "which", lambda exe: None)
         monkeypatch.setattr(prov, "_uv_found_python", lambda: None)
+
+    def test_candidates_take_system_dirs_from_the_platform_lookup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The system bin directories are the platform layer's to know, Windows
+        included, so a versioned name is asked of it before ``PATH``."""
+        self._quiet_host(monkeypatch)
+        asked: list[str] = []
+        monkeypatch.setattr(
+            prov.platform_compat,
+            "trusted_system_bin_quiet",
+            lambda name: asked.append(name) or f"/sys/{name}",
+        )
+        monkeypatch.setattr(prov.shutil, "which", lambda exe: f"/path/{exe}")
+        got = list(prov._python_candidates())
+        own = f"python3.{sys.version_info[1]}"
+        assert asked[0] == own
+        assert got[:2] == [f"/sys/{own}", f"/path/{own}"]
+
+    def test_find_python_skips_a_relative_candidate_without_probing_it(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        relative = os.path.join("bin", "python3.13")
+        ok = host_abs("ok", "python3.13")
+        self._only_candidates(monkeypatch, relative, ok)
+        probed: list[str] = []
+        monkeypatch.setattr(prov, "_probe_python", lambda c: probed.append(c) or None)
+        assert prov._find_python() == ok
+        assert probed == [ok]
+        assert f"skipping {relative}: found through a relative PATH entry" in (
+            capsys.readouterr().err
+        )
 
     def test_candidates_start_with_this_processes_own_interpreter(
         self, monkeypatch: pytest.MonkeyPatch
@@ -2398,9 +2438,31 @@ class TestProbePythonAgainstRealProcesses:
         # raising=False: the same test runs against the name-only lookup it replaced.
         monkeypatch.setattr(prov, "_uv_found_python", lambda: None, raising=False)
         monkeypatch.setattr(prov, "_NAMED_MINORS", (12, 13), raising=False)
-        # The host's own /usr/bin interpreters are not part of this scenario.
+        # The host's own system interpreters are not part of this scenario.
         monkeypatch.setattr(prov.Path, "exists", lambda self: False)
+        monkeypatch.setattr(prov.platform_compat, "trusted_system_bin_quiet", lambda name: None)
         assert prov._find_python() == newer
+
+    def test_a_python_found_through_a_relative_path_entry_is_not_selected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``PATH=bin`` makes ``shutil.which`` answer ``bin/python3.13``. The probe
+        passes from the caller's cwd, and the provision steps then run it from
+        the checkout, where it does not resolve."""
+        bindir = tmp_path / "bin"
+        bindir.mkdir()
+        self._script(bindir / "python3.13", f'exec {sys.executable} "$@"\n')
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("PATH", "bin")
+        monkeypatch.setattr(prov.Path, "home", lambda: tmp_path / "nohome")
+        monkeypatch.setattr(prov.sys, "_base_executable", "", raising=False)
+        monkeypatch.setattr(prov.sys, "executable", "")
+        monkeypatch.setattr(prov, "_uv_found_python", lambda: None, raising=False)
+        monkeypatch.setattr(prov, "_NAMED_MINORS", (13,), raising=False)
+        monkeypatch.setattr(prov.Path, "exists", lambda self: False)
+        monkeypatch.setattr(prov.platform_compat, "trusted_system_bin_quiet", lambda name: None)
+        found = prov._find_python()
+        assert found is None or os.path.isabs(found)
 
 
 class TestProvisionDependencyInstall:

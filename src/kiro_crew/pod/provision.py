@@ -244,8 +244,9 @@ def _python_candidates():
     1. This process's base interpreter -- the gateway's (or the CLI's) own, so a
        pod runs on the Python version its operator already runs.
     2. ``python3.N`` by name, the gateway's minor first, then the floor upward,
-       each in the fixed install locations and on ``PATH``; then ``python3``.
-       On Windows, which ships no versioned names, the ``py`` launcher per minor.
+       each in ``~/.local/bin``, the platform's system bin directories and on
+       ``PATH``; then ``python3``. On Windows, which ships no versioned names,
+       the ``py`` launcher per minor.
     3. ``uv python find`` for the floor.
     """
     base = getattr(sys, "_base_executable", "") or sys.executable
@@ -255,13 +256,12 @@ def _python_candidates():
     minors = [own] + [m for m in _NAMED_MINORS if m != own]
     for minor in minors:
         name = f"python3.{minor}"
-        for c in (
-            Path.home() / ".local" / "bin" / name,
-            Path("/usr/bin") / name,
-            Path("/usr/local/bin") / name,
-        ):
-            if c.exists() and os.access(c, os.X_OK):
-                yield str(c)
+        user_bin = Path.home() / ".local" / "bin" / name
+        if user_bin.exists() and os.access(user_bin, os.X_OK):
+            yield str(user_bin)
+        found = platform_compat.trusted_system_bin_quiet(name)
+        if found:
+            yield found
         found = shutil.which(name)
         if found:
             yield found
@@ -283,9 +283,18 @@ def _find_python() -> str | None:
 
     Every rejection is said, so a failure lists each interpreter that was tried
     and why it was refused, rather than claiming none exists.
+
+    A relative candidate is skipped, not absolutized: ``shutil.which`` returns
+    one when the ``PATH`` entry it matched is relative (``.``, ``bin``), and
+    the provision steps run with ``cwd=<checkout>``, where it does not
+    resolve. A binary found that way is whatever sits in the current
+    directory, the same rule :func:`kiro_crew.env.resolve_uv` applies to uv.
     """
     seen: set[str] = set()
     for candidate in _python_candidates():
+        if not os.path.isabs(candidate):
+            _say(f"[provision] skipping {candidate}: found through a relative PATH entry")
+            continue
         # The literal path, not the resolved one: every version-manager shim
         # resolves to the SAME manager binary, and each one selects a different
         # interpreter by the name it was invoked as.
