@@ -155,6 +155,9 @@ class ProcessSession(Protocol):
     async def _seed_session_settings(self) -> None:
         """Seed the session's own settings file, best-effort."""
 
+    def _install_idle_reader(self) -> None:
+        """Have the session read stdout between turns (idempotent)."""
+
 
 @dataclass(frozen=True)
 class SpawnPlan:

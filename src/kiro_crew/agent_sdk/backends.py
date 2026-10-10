@@ -151,6 +151,9 @@ with no row here.
      - semantic question (``SessionCapabilities.resolves_model_from_advertised_list``)
    * - ``ACP_BACKENDS_SEED_LOCAL_SETTINGS``
      - driver-internal (whether ``settings.local.json`` is re-seeded on switch)
+   * - ``ACP_BACKENDS_AGENT_STARTED_TURNS``
+     - driver-internal (whether ``AcpClient`` reads stdout between turns and hands a
+       turn the agent started on its own to its ``on_agent_turn`` callback)
    * - ``ACP_BACKENDS_KIRO_SLASH_COMMANDS``
      - semantic question (``SessionCapabilities.effort_via_slash_command``), and
        driver-internal everywhere else (whether ``_kiro.dev/commands/execute`` exists)
@@ -1943,6 +1946,16 @@ ACP_BACKENDS_ADVERTISED_MODEL_SELECTION = frozenset(
 # one pinned environment variable, and its model travels as a config option, so a
 # warm-pool claim that switches model leaves nothing anywhere to re-seed.
 ACP_BACKENDS_SEED_LOCAL_SETTINGS = frozenset({ACP_BACKEND_CLAUDE})
+
+# Backends whose AcpClient reads stdout between turns, so a turn the agent starts
+# on its own (a background task finished) is seen when it happens rather than by
+# the next prompt. A member must stream such a turn while no prompt is in flight
+# AND mark where it ends: claude-agent-acp puts ``_meta["_claude/origin"]`` on the
+# cycle's closing ``usage_update``. A harness without that marker would hold its
+# slot until the stale-turn gate or the prompt timeout, so it stays out until its
+# end signal is known.
+# See docs/request-for-change/rfc-agent-started-turns.md.
+ACP_BACKENDS_AGENT_STARTED_TURNS = frozenset({ACP_BACKEND_CLAUDE})
 
 #: Operator lever for the permission mode a seeded session runs under, read by
 #: :func:`resolve_cc_permission_mode`. One name and one resolver, so a per-session
