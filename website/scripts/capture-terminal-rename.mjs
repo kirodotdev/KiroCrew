@@ -41,6 +41,9 @@ async function preparePage(page, theme) {
   // Seed once: reloads must restore the value written by the real rename action.
   await page.addInitScript(({ tabs }) => {
     if (!localStorage.getItem('mc-bottom-terminal')) localStorage.setItem('mc-bottom-terminal', JSON.stringify({ open: true, height: 320, tabs, activeId: tabs[0].id }))
+    // The `open` flag is per window (sessionStorage) since the per-window fix;
+    // the layout's `open` is ignored at load.
+    sessionStorage.setItem('mc-bottom-terminal-open', '1')
   }, { tabs })
   const sockets = []
   const counts = { connections: 0, inputMessages: 0 }

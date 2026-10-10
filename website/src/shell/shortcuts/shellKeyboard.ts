@@ -251,11 +251,10 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
     // swallowed on behalf of a panel the rest of the UI hides.
     //
     // Also unbound in a popout or embedded pane, which render no docked terminal
-    // of their own. `useBottomTerminal`'s state is localStorage-backed AND
-    // cross-window synced (it listens for `storage` on `mc-bottom-terminal`), so
-    // a chord fired in a popout would not be a local no-op — it would open or
-    // close the terminal in the MAIN window, out of sight of the person pressing
-    // the key.
+    // of their own. `useBottomTerminal`'s tab list is localStorage-backed AND
+    // cross-window synced, while its `open` flag is per window and no surface
+    // in a popout reads it: a chord there would flip a flag nothing renders,
+    // and with an empty tab list would mint a shell into the shared list.
     onToggleTerminal: terminalEnabled && !isPopout && !isEmbed
       ? () => { if (terminalPoppedOut) focusTerminalPopout(); else toggleTerminalByChord(activeSlotProject) }
       : undefined,

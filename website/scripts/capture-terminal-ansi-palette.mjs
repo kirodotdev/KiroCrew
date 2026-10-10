@@ -81,6 +81,9 @@ async function stubContext(context, scene) {
       return false
     },
   })
+  // The `open` flag is per window (sessionStorage) since the per-window fix;
+  // the stub's init script clears localStorage only, so no ordering race here.
+  await context.addInitScript(() => sessionStorage.setItem('mc-bottom-terminal-open', '1'))
 
   // AFTER the shared stub, which routes `/api/ws` itself: the terminal socket
   // matches that pattern too, and the LAST matching route registered wins.

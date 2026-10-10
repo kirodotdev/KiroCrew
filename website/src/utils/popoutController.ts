@@ -118,6 +118,13 @@ export interface PopoutControllerOptions {
    * script opener, so close is a spec-level no-op there).
    */
   mainViewUrl: (id: string | null) => string
+  /**
+   * Called in a MAIN window (never the popout, never the sender: the channel
+   * does not self-deliver) when another main window brings `id` back. Lets a
+   * feature whose docked state is per window yield to the window that clicked
+   * Return, so one re-dock happens instead of one per window.
+   */
+  onBringBackObserved?: (id: string) => void
 }
 
 /** The main-window + popout-window API for one feature's popouts. */
@@ -248,6 +255,9 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
         return
       }
       if (msg.t === 'bring-back' && msg.id === selfId) { returnSelfToMain(); return }
+    } else if (msg.t === 'bring-back') {
+      opts.onBringBackObserved?.(msg.id)
+      return
     }
     // Main dashboard role: claim + perform forwarded navigation intents. Only
     // windows that registered a handler participate (popouts/embeds don't).

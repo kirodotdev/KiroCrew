@@ -21,7 +21,7 @@ import { openPopout as openTerminalPopout, isPopoutOpen as isTerminalPopoutOpen,
 import {
   useBottomTerminal, useTerminalHydratePending, addTab, removeTab, hasTab, setActiveTab, setTabsOrder,
   renameTab, capTerminalName,
-  closeBottomTerminal, setBottomTerminalHeight, setBottomTerminalWidth,
+  openBottomTerminal, closeBottomTerminal, setBottomTerminalHeight, setBottomTerminalWidth,
   toggleTerminalPosition, MAX_TERMINALS, MIN_WIDTH, MAX_VH, MAX_VW,
   setTerminalCloseFailed, useTerminalCloseFailed,
   type TermTab,
@@ -554,7 +554,13 @@ export function TerminalDetachedBar() {
         </button>
         <button
           className="h-6 px-2 rounded-md text-[12px] text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer"
-          onClick={() => bringBackTerminalPopout()}
+          onClick={() => {
+            bringBackTerminalPopout()
+            // `open` is per window. "Return" means re-dock HERE, so this window
+            // opens its own panel. Every other main window yields its flag on
+            // the bring-back message (terminalPopout.ts), so one dock comes back.
+            openBottomTerminal()
+          }}
         >
           {i18nT('pages.terminalPopoutFrame.return')}
         </button>

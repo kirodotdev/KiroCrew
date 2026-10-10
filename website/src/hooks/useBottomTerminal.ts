@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react'
-import { safeGetItem, safeRemoveItem, safeSetItem } from '../utils/safeStorage'
+import { safeGetItem, safeGetSessionItem, safeRemoveItem, safeSetItem, safeSetSessionItem } from '../utils/safeStorage'
 import { secureRandomId } from '../utils/secureId'
 import { createTerminalHydrateRuling } from '../utils/terminalHydrateRuling'
 
@@ -16,7 +16,14 @@ import { createTerminalHydrateRuling } from '../utils/terminalHydrateRuling'
  * (backend orphan-reaper window), the same way activity-bar terminal tabs do —
  * once the backend has confirmed which of those PTYs still exist (see the
  * hydrate-time reconciliation below). Tab session ids are persisted; the
- * running shell is not. */
+ * running shell is not.
+ *
+ * The `open` flag is the one field that is NOT shared: it lives in
+ * sessionStorage, so it belongs to this window alone. The tab list is shared
+ * so the popout and the dock agree on which shells exist, but whether the
+ * panel is showing is a per-window choice. Sharing it meant opening the panel
+ * in one tab opened it in every same-origin tab, and the mount in an idle tab
+ * attached to the same PTY and took it over (#7638). */
 
 export interface TermTab {
   /** PTY session id — one live shell per tab. */
@@ -42,6 +49,8 @@ function normalizeTabName(name: unknown): string | undefined {
 export type TerminalPosition = 'bottom' | 'right'
 
 interface BottomTerminalState {
+  /** Whether THIS window shows the panel. Per window (sessionStorage), never
+   *  adopted from another window; see the module note above. */
   open: boolean
   /** Panel height in px (resizable via the top grip, used when position = 'bottom'). */
   height: number
@@ -56,6 +65,15 @@ interface BottomTerminalState {
 }
 
 const STORAGE_KEY = 'mc-bottom-terminal'
+/** sessionStorage key for this window's `open` flag. A per-browsing-context
+ *  store: a reload of this tab restores it, a new tab starts closed. Two
+ *  exceptions follow from the platform, not from this code: a tab opened via
+ *  `window.open` from this one (the terminal popout) and a duplicated tab both
+ *  start with a COPY of this window's sessionStorage. The popout never reads
+ *  the flag, so the copy is inert there; a duplicate of an open window opens
+ *  too, the one residual of #7638 this slice does not remove (RFC #7649,
+ *  "duplicated tabs"). */
+const OPEN_KEY = 'mc-bottom-terminal-open'
 const NAME_KEY_PREFIX = 'mc-terminal-name:'
 /** Dropped writes stay local until a successful rename, a foreign label event,
  *  or removal. Keep the fallback separate so layout writes cannot persist them. */
@@ -163,7 +181,24 @@ export function clampToViewport(dim: number, axis: 'width' | 'height'): number {
   return Math.min(max, Math.max(axis === 'width' ? MIN_WIDTH : MIN_HEIGHT, dim))
 }
 
-function loadPersisted(): BottomTerminalState {
+function loadOpen(): boolean {
+  return safeGetSessionItem(OPEN_KEY) === '1'
+}
+
+function persistOpen(open: boolean): void {
+  if (open) { safeSetSessionItem(OPEN_KEY, '1'); return }
+  try {
+    if (typeof sessionStorage === 'undefined') return
+    sessionStorage.removeItem(OPEN_KEY)
+  } catch { /* locked storage */ }
+}
+
+/** Read the shared layout from localStorage. `open` is this window's flag, not
+ *  part of that layout: at boot it comes from sessionStorage, and on a foreign
+ *  `storage` event the caller passes the current local value so another window
+ *  opening its panel never opens this one. An `open` left in the layout by a
+ *  build that still shared it is ignored. */
+function loadPersisted(open = loadOpen()): BottomTerminalState {
   const base: BottomTerminalState = { open: false, height: DEFAULT_HEIGHT, width: DEFAULT_WIDTH, position: 'bottom', tabs: [], activeId: null }
   if (typeof localStorage === 'undefined') return base
   try {
@@ -177,9 +212,9 @@ function loadPersisted(): BottomTerminalState {
       .slice(0, MAX_TERMINALS)
       .map(withLiveName)
     return {
-      // Only restore "open" when there were tabs to restore — a stale open flag
-      // with no tabs would render an empty panel on boot.
-      open: p.open === true && tabs.length > 0,
+      // Only keep "open" when there are tabs to show — an open flag with no
+      // tabs would render an empty panel.
+      open: open && tabs.length > 0,
       height: typeof p.height === 'number' ? clampHeight(p.height) : DEFAULT_HEIGHT,
       width: typeof p.width === 'number' ? clampWidth(p.width) : DEFAULT_WIDTH,
       position: p.position === 'right' ? 'right' : 'bottom',
@@ -193,6 +228,11 @@ function loadPersisted(): BottomTerminalState {
 
 cleanOrphanNames()
 let state: BottomTerminalState = loadPersisted()
+// A `1` left in sessionStorage beside an empty shared layout (the layout was
+// removed outside `set` and the listener) would reopen this window unasked on
+// a later reload once another window adds tabs. Settle the flag to the state
+// that was actually loaded.
+persistOpen(state.open)
 const listeners = new Set<() => void>()
 
 function emit() { for (const cb of listeners) cb() }
@@ -260,13 +300,18 @@ export function confirmRestoredTabs(payload: unknown): string[] { return ruling.
 /* Cross-window sync: the terminal-popout window and the main dashboard share
  * this persisted store (one tab list, whichever window currently hosts the
  * panel). `storage` fires only in OTHER windows — never the writer — so
- * re-loading here can't loop; state is adopted without re-persisting. */
+ * re-loading here can't loop; state is adopted without re-persisting. The
+ * local `open` flag is kept: another window showing or hiding its panel is
+ * not this window's business. It only drops to false when the adopted tab
+ * list is empty, which is what an open panel with nothing to show would be. */
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', (e) => {
     if (e.storageArea && e.storageArea !== localStorage) return
     if (e.key === null || e.key === STORAGE_KEY) {
       if (e.key === null) volatileNames.clear()
-      state = loadPersisted()
+      const wasOpen = state.open
+      state = loadPersisted(wasOpen)
+      if (state.open !== wasOpen) persistOpen(state.open)
       for (const id of volatileNames.keys()) {
         if (!state.tabs.some(tab => tab.id === id)) volatileNames.delete(id)
       }
@@ -275,7 +320,9 @@ if (typeof window !== 'undefined') {
       // A label event cannot add/drop tabs or change the local layout.
       const id = e.key.slice(NAME_KEY_PREFIX.length)
       volatileNames.delete(id)
-      const stored = loadPersisted()
+      // Only `tabs` is read from this load; the local flag is passed through
+      // so the load does not touch sessionStorage for a value it discards.
+      const stored = loadPersisted(state.open)
       state = { ...state, tabs: state.tabs.map(tab => tab.id === id
         ? { ...tab, name: stored.tabs.find(t => t.id === id)?.name }
         : tab) }
@@ -300,13 +347,17 @@ function set(next: BottomTerminalState) {
   if (next === state) return
   const removed = state.tabs.filter(tab => !next.tabs.some(t => t.id === tab.id)).map(tab => tab.id)
   for (const id of removed) volatileNames.delete(id)
+  const wasOpen = state.open
   state = { ...next, tabs: withLiveNames(next.tabs) }
   emit()
+  if (state.open !== wasOpen) persistOpen(state.open)
   const tabs = state.tabs.map(tab => {
     const local = volatileNames.get(tab.id)
     return local ? withStoredName({ ...tab, name: local.fallback }) : tab
   })
-  try { safeSetItem(STORAGE_KEY, JSON.stringify({ ...state, tabs })) } catch { /* quota / locked storage */ }
+  // The shared layout carries no `open`: that flag is this window's alone.
+  // JSON.stringify drops an undefined field.
+  try { safeSetItem(STORAGE_KEY, JSON.stringify({ ...state, open: undefined, tabs })) } catch { /* quota / locked storage */ }
   cleanRemovedNames(removed)
 }
 
@@ -528,6 +579,7 @@ export function __resetBottomTerminal(): void {
   ruling = newRuling(restoredIds)
   emit()
   setTerminalCloseFailed(false)
+  persistOpen(false)
   if (typeof localStorage !== 'undefined') {
     try { localStorage.removeItem(STORAGE_KEY) } catch { /* ignore */ }
     cleanOrphanNames()
