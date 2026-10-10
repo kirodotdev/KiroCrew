@@ -347,6 +347,10 @@ class RunRegistry:
         # Persist live runs at most every N events (terminal state always flushes),
         # so a long fan-out run doesn't write its file on every single event.
         self._save_every = 5
+        # Runs a load found still ``running`` and failed: the restart ended them
+        # before any terminal transition could notify their chats. Drained once by
+        # :meth:`notify_runs_ended_by_restart`.
+        self._ended_by_restart: list[RunHandle] = []
 
     # --- wiring (set by the gateway at startup) ---
     def set_on_done(self, cb: Optional[OnDoneFn]) -> None:
@@ -502,6 +506,19 @@ class RunRegistry:
                 self._on_done(run_id, handle.snapshot(include_events=False))
             except Exception:  # noqa: BLE001
                 pass
+
+    def notify_runs_ended_by_restart(self) -> None:
+        """Send each run a load failed for the restart its completion notice, once.
+
+        The load runs before the host can deliver a notice, so the host calls this
+        after it publishes the service. The load writes the failed status back, so
+        a later load reads the run as terminal and never collects it again. A run
+        its host reopened since the load is active and is skipped.
+        """
+        handles, self._ended_by_restart = self._ended_by_restart, []
+        for handle in handles:
+            if handle.status not in ACTIVE_STATUSES:
+                self._notify_done(handle.run_id, handle)
 
     def mark_terminal(
         self, run_id: str, status: str, *, result: Any = None, error: Optional[str] = None
@@ -665,6 +682,7 @@ class RunRegistry:
             # survive the writeback.
             if obj.get("status") == STATUS_RUNNING:
                 self._persist(handle)
+                self._ended_by_restart.append(handle)
         self._evict()
         return loaded
 
@@ -700,6 +718,7 @@ class RunRegistry:
                 loaded += 1
                 if obj.get("status") == STATUS_RUNNING:
                     await self.persist_async(handle.run_id)
+                    self._ended_by_restart.append(handle)
             # Same oldest-terminal eviction as the sync API, but await deletion
             # through the per-run write queue instead of doing disk I/O on-loop.
             await self._evict_async()

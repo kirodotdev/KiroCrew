@@ -651,7 +651,11 @@ Two distinct serializations:
   complete run. `from_store_json` demotes a stored `running` run to `failed` with
   `"interrupted: gateway restarted while running"`, because it can never resume in
   a new process and would otherwise wedge the registry as a zombie that eviction
-  refuses to reclaim.
+  refuses to reclaim. The load keeps each run it demotes, and the dashboard
+  startup calls `notify_runs_ended_by_restart` once it publishes the service, so
+  the chat that launched the run gets the failure through the normal completion
+  notice. The load writes the failed status back, so a later boot never
+  notifies the same run again.
 
 Before each model turn, authoring, pooled workers and named sessions publish the
 ordinary strict transport identity for their acquired key. The run itself owns
