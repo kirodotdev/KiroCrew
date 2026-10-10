@@ -1,0 +1,62 @@
+POSITIVE CONTROL (an injected 1600px block must break the limit)
+  scrollHeight with it : 2297  (expect > 800)
+  scrollHeight after   : 800
+  control sees failure : YES
+
+THEME light  (viewport 1280x800)
+  PASS  scrollHeight <= 800            = 800
+  PASS  scrollWidth  <= 1280           = 1280
+  PASS  blocks besides headline <= 5   = 5
+  PASS  headline words <= 10           = 7
+  blocks: block-headline, block-pipeline, block-stages, block-filled, block-waiting, block-freshness
+  headline: "Two offers out. One candidate needs you."
+  computed --accent: #c2622b
+
+THEME dark  (viewport 1280x800)
+  PASS  scrollHeight <= 800            = 800
+  PASS  scrollWidth  <= 1280           = 1280
+  PASS  blocks besides headline <= 5   = 5
+  PASS  headline words <= 10           = 7
+  blocks: block-headline, block-pipeline, block-stages, block-filled, block-waiting, block-freshness
+  headline: "Two offers out. One candidate needs you."
+  computed --accent: #c2622b
+
+{
+  "light": {
+    "scrollHeight": 800,
+    "scrollWidth": 1280,
+    "clientHeight": 800,
+    "clientWidth": 1280,
+    "blockCount": 6,
+    "blockIds": [
+      "block-headline",
+      "block-pipeline",
+      "block-stages",
+      "block-filled",
+      "block-waiting",
+      "block-freshness"
+    ],
+    "headline": "Two offers out. One candidate needs you.",
+    "headlineWords": 7,
+    "accentComputed": "#c2622b"
+  },
+  "dark": {
+    "scrollHeight": 800,
+    "scrollWidth": 1280,
+    "clientHeight": 800,
+    "clientWidth": 1280,
+    "blockCount": 6,
+    "blockIds": [
+      "block-headline",
+      "block-pipeline",
+      "block-stages",
+      "block-filled",
+      "block-waiting",
+      "block-freshness"
+    ],
+    "headline": "Two offers out. One candidate needs you.",
+    "headlineWords": 7,
+    "accentComputed": "#c2622b"
+  }
+}
+ALL PASS
