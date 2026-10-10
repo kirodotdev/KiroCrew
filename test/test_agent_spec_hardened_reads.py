@@ -1129,6 +1129,11 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     ],
     "kiro_crew/mcp_discovery.py": [("mcp_discovery_agent_config", "unknown")],
     "kiro_crew/member_essential_context.py": [
+        # native_spec_prompt_copy: the read of a custom agent's spec taken around
+        # the two moments kiro-cli loads it (process spawn, session/set_mode) to
+        # snapshot the persona a natively-loading harness delivered.
+        # It is a prompt read, so it carries context.py's prompt-read label.
+        ("agent_prompt", "context"),
         ("member_essentials", "context"),
         ("member_essentials", "context"),
     ],

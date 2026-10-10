@@ -66,6 +66,8 @@ from kiro_crew.agent_sdk.backends import (  # noqa: F401 - re-exported for exist
     ACP_BACKENDS_META_IDENTITY,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
+    ACP_BACKENDS_NATIVE_SPEC_PROMPT,
+    ACP_BACKENDS_NATIVE_SPEC_PROMPT_ACROSS_COMPACTION,
     ACP_BACKENDS_NATIVE_TODOS,
     ACP_BACKENDS_OPEN_EXTERNAL_URL,
     ACP_BACKENDS_POD_HOME_REMAP,
@@ -107,6 +109,7 @@ from kiro_crew.agent_sdk.backends import (  # noqa: F401 - re-exported for exist
     routing_for,
     selectable_backend_values,
     selectable_backends,
+    spec_prompt_retention_verified,
 )
 
 # Declared per harness rather than listed as a capability set: whether a
@@ -141,6 +144,8 @@ __all__ = [
     "ACP_BACKENDS_MEMBER_PANEL",
     "ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS",
     "ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION",
+    "ACP_BACKENDS_NATIVE_SPEC_PROMPT",
+    "ACP_BACKENDS_NATIVE_SPEC_PROMPT_ACROSS_COMPACTION",
     "ACP_BACKENDS_NATIVE_TODOS",
     "ACP_BACKENDS_OPEN_EXTERNAL_URL",
     "ACP_BACKENDS_POD_HOME_REMAP",
@@ -195,4 +200,5 @@ __all__ = [
     "routing_for",
     "selectable_backend_values",
     "selectable_backends",
+    "spec_prompt_retention_verified",
 ]

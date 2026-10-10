@@ -579,6 +579,116 @@ def resolve_relative_prompt_path(
         return None
 
 
+def native_prompt_document_key(agent: str) -> str:
+    """The ``native_context_documents`` key holding the persona the harness loaded for *agent*."""
+    return f"template://{agent}#prompt"
+
+
+def native_spec_prompt_shape(prompt: object, spec_path: Path) -> bool:
+    """Whether a spec ``prompt`` is one a harness loading specs natively delivers as-is.
+
+    The one shape that can be shown identical to the harness's own copy: a
+    USER-level spec whose prompt is inline text or an absolute ``file://`` not
+    spelled with ``~``. The managed contract is a stub or pointer the harness
+    reads literally while Crew delivers the resolved contract; a relative
+    ``file://`` is anchored by Crew at the template root where the harnesses
+    anchor it at the spec's own directory; kiro-cli documents no ``~`` expansion
+    for ``prompt`` and drops an unreadable file silently; and a project-level
+    spec is not the one a harness reading only the user level runs. So none of
+    those qualify (kirodotdev/KiroCrew#13305). Nor does an absolute ``file://``
+    whose target a Kiro Crew sandbox on this host may hide
+    (:func:`kiro_crew.sandbox.sandbox_may_hide_path`): Crew reads it from the
+    gateway, outside the sandbox, while a sandboxed harness may be denied it and
+    drop it, so withholding the block against it could leave the session with
+    no persona at all. Shared by the session-start load in ``context.py`` and
+    the activation snapshot in ``acp/runtime.py``, so the two readers cannot
+    drift apart.
+    """
+    from kiro_crew.agent import is_managed_prompt, kiro_agents_dir_path
+    from kiro_crew.sandbox import sandbox_may_hide_path
+
+    if not isinstance(prompt, str) or is_managed_prompt(prompt):
+        return False
+    try:
+        if spec_path.parent != kiro_agents_dir_path():
+            return False
+    except (OSError, ValueError):
+        return False
+    if prompt.startswith("file://"):
+        target = prompt[len("file://") :]
+        if target.startswith("~") or not Path(target).is_absolute():
+            return False
+        return not sandbox_may_hide_path(target)
+    return True
+
+
+def native_spec_prompt_copy(
+    agent: str, *, transport: str | None = None, work_dir: str | Path | None = None
+) -> str | None:
+    """The persona text a harness that loads *agent*'s spec natively delivers, or ``None``.
+
+    Read at session activation so the session handle can snapshot what the
+    harness actually loaded; the prompt builder's dedup then compares against
+    that snapshot rather than against the file as it reads today, so a spec
+    edited mid-session keeps its block. The spec read is the one the harness
+    loads, named by *transport*: the skill-view alias
+    (``kirocrew-skill-view-<digest>``, published into the user agents directory
+    by :mod:`kiro_crew.acp.skill_projection` and the name kiro-cli is given at
+    ``--agent`` and ``session/set_mode``) when a view was prepared for *agent*,
+    otherwise *agent*'s own spec as kiro-cli resolves the plain name from its
+    process cwd, *work_dir*: a ``.kiro/agents`` spec declaring the name in
+    that checkout first, else the user-level spec. A checkout's copy is not one
+    Crew's block can be shown to equal (:func:`native_spec_prompt_shape` admits
+    the user level alone), so when the checkout declares the name nothing is
+    recorded and the block is sent; reading the user level there instead would
+    record text the harness never loaded and withhold the block while it runs
+    the checkout's copy. The
+    alias is a copy of the spec taken when the view was prepared, so after an
+    edit of the source it is the alias, not the source, that says what the
+    harness holds; reading the source there would record the revised text and
+    withhold the block while the harness runs the old copy. The alias is read
+    at its own path, never through the roster (which leaves aliases out), and
+    only an alias-shaped, registry-valid name is accepted there. ``None`` for
+    every shape :func:`native_spec_prompt_shape` rejects (judged on the spec
+    read: an alias carries the authored prompt, a relative ``file://`` made
+    absolute at the spec's own directory and a ``~`` one as written), for an
+    empty prompt and for any read failure: recording nothing costs a repeated
+    block, never the persona.
+    """
+    from kiro_crew.agent import is_registered_agent_name, kiro_agents_dir_path
+    from kiro_crew.agent_discovery import _read_agent_spec
+    from kiro_crew.agent_spec_format import is_native_skill_alias_name
+    from kiro_crew.hooks import FileTooLargeError, safe_read_file
+
+    try:
+        if transport is not None and transport != agent:
+            if not (is_native_skill_alias_name(transport) and is_registered_agent_name(transport)):
+                return None
+            path = kiro_agents_dir_path() / f"{transport}.json"
+        else:
+            # The plain name: kiro-cli resolves it against its process cwd before
+            # the user level, so the read follows the same order. A checkout the
+            # resolver refuses raises a ``ValueError`` and records nothing.
+            source_path = resolve_template_path(
+                agent, str(work_dir) if work_dir is not None else None
+            )
+            if source_path is None:
+                return None
+            path = source_path
+        data = _read_agent_spec(path, operation="agent_prompt", source="context")
+        if data is None:
+            return None
+        prompt = data.get("prompt")
+        if not prompt or not native_spec_prompt_shape(prompt, path):
+            return None
+        if prompt.startswith("file://"):
+            return safe_read_file(prompt[len("file://") :])
+        return prompt
+    except (OSError, ValueError, FileTooLargeError):
+        logger.debug("No native prompt snapshot for agent %r", agent, exc_info=True)
+        return None
+
+
 def _admitted_project_root(project: str | None) -> Path | None:
     """The member's project as the essential readers may open it, or ``None``."""
     if not project:

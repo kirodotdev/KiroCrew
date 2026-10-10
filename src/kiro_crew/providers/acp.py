@@ -61,6 +61,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_KNOWN,
     ACP_BACKENDS_MEMBER_CAPABILITIES,
+    ACP_BACKENDS_NATIVE_SPEC_PROMPT_ACROSS_COMPACTION,
     ACP_BACKENDS_SESSION_SHARING,
     ACP_BACKENDS_TOOL_SEARCH_OVERLAY,
     EVENT_COMPACTION_STATUS,
@@ -71,6 +72,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_END_TURN,
     effort_config_option_id,
     effort_config_option_value,
+    spec_prompt_retention_verified,
 )
 from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND
 from kiro_crew.agent_sdk import host_auth
@@ -2553,6 +2555,21 @@ class AcpProvider(LLMProvider):
         # Kiro ACP manual/fileMatch support depends on version and engine;
         # the fallback keeps those guides reachable without a false capability.
         return self._client.backend == ACP_BACKEND_KAS
+
+    @property
+    def native_spec_prompt_across_compaction(self) -> bool:
+        # Retention through the harness's own compaction is a separate claim,
+        # admitted per backend only on a live transcript (the set's comment
+        # names it), and only from the release that transcript was taken on:
+        # below the floor, and before the handshake reports a version, the
+        # block is sent, a duplicate at worst, where a wrong True drops the
+        # persona for the rest of the session.
+        # Whether the harness loaded the spec's prompt at all is not a property:
+        # the runtime records the loaded copy in native_context_documents only
+        # on a backend in ACP_BACKENDS_NATIVE_SPEC_PROMPT.
+        return self._client.backend in ACP_BACKENDS_NATIVE_SPEC_PROMPT_ACROSS_COMPACTION and (
+            spec_prompt_retention_verified(parse_kiro_cli_version(self.agent_version))
+        )
 
     async def stream(self, message: str, *, allow_image: bool = True) -> AsyncIterator[LLMEvent]:
         # The direct client can respawn in ensure_ready; resolve that BEFORE

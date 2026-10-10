@@ -131,6 +131,23 @@ class LLMProvider(ABC):
         return False
 
     @property
+    def native_spec_prompt_across_compaction(self) -> bool:
+        """Whether the harness keeps a custom agent spec's ``prompt`` through its own compaction.
+
+        Whether the harness delivered the prompt at all is not asked here: the
+        persona it loaded is recorded in :attr:`native_context_documents` by the
+        runtime, and only on a harness that loads a spec itself. Delivering the
+        prompt at session start says nothing about what the harness's
+        summarization keeps, so retention is its own claim. False unless a
+        provider shows otherwise with a live transcript, and then only from the
+        harness release that transcript was taken on: the post-compaction turn
+        withholds its own copy of a persona only on True, so a wrong True drops
+        the persona for the rest of the session, while a False costs one
+        duplicate block.
+        """
+        return False
+
+    @property
     def native_context_documents(self) -> dict[str, str]:
         """Exact documents supplied at native startup, empty without evidence."""
         return {}

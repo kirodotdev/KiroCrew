@@ -394,18 +394,93 @@ template copy inherits the stub verbatim, and the fork heal in
 pointer to the stub. A capability-materialized owned member is the exception:
 `agent_capabilities._maintain_owned` snapshots and restores its `prompt` around
 that heal, so one still carrying the `file://` pointer keeps delivering the
-persona natively — the same double delivery tracked in #13305. The two readers
-that must not deliver the managed contract twice (member essentials and the
-session-start load in `context.py`) recognise the stub and managed file URIs
+persona natively — a double delivery the custom-persona rule below leaves in
+place, because the harness reads that template raw while the injection carries
+it resolved. The two readers that must not deliver the managed contract twice
+(member essentials and the session-start load in `context.py`) recognise the
+stub and managed file URIs
 through `is_managed_prompt`: essentials omit the contract, and the session-start load
 resolves it to the current contract file for ANY spec carrying it — owner template,
 fork or template copy alike — so a fork inheriting the managed contract is
 delivered exactly once, resolved, via the injection. The stub text is frozen
 once shipped: forks carry it verbatim on disk and `is_managed_prompt` matches
 by equality, so a respelled stub would leave every existing fork with the old
-stub text as a custom persona. An agent whose `prompt` names its OWN persona
-file is out of scope: it still receives that persona both natively and through
-the injection.
+stub text as a custom persona.
+
+kiro-cli and KAS deliver a custom agent's OWN `prompt` (inline text or a
+`file://`) themselves (`ACP_BACKENDS_NATIVE_SPEC_PROMPT`). The runtime records
+the copy such a harness loaded, and only on those backends, so the session-start
+load drops Crew's `[AGENT SYSTEM PROMPT]` copy where a recorded copy exists and
+the block would repeat it word for word: a user-level spec whose prompt is
+inline or an absolute `file://`, contains none of Crew's placeholders, and still
+matches the copy the runtime recorded when the harness loaded the agent,
+recorded again when it resumes the session
+(`template://<agent>#prompt` in `native_context_documents`: the KAS wire
+definition, or on kiro-cli the spec kiro-cli itself loads, read immediately
+before each of the two moments kiro-cli reads it, the process spawn and
+`session/set_mode`, through `native_spec_prompt_copy`. That spec is the
+skill-view alias Crew hands kiro-cli at `--agent` and `set_mode` when a view
+was prepared — a copy of the spec taken at preparation, so an edit of the
+source after that point leaves the alias, and the snapshot, on the text kiro-cli
+runs — and otherwise the plain name as kiro-cli resolves it from the runtime's
+work dir, its process cwd: a `.kiro/agents` spec declaring the name in that
+checkout shadows the user-level one there, and such a copy is not one Crew's
+block can be shown to equal, so it records nothing and the block is sent; with
+no checkout spec the user-level spec itself. One read, before the request:
+an edit landing between it and kiro-cli's own read leaves the file different
+from the snapshot, so the block is sent rather than withheld. kiro-cli re-reads
+the spec at `session/set_mode` and not at a plain `session/new`: a live probe on
+kiro-cli 2.28.0, linked from the PR that added this (kirodotdev/KiroCrew#17172,
+Manual verification), rewrote the spec mid-process and was answered with the
+old text at `session/new` and the new text at `session/set_mode`, so the file as
+it reads at session start is never the copy).
+Every other case keeps the block, so on those two harnesses it can still
+arrive beside the harness's own copy:
+
+- a spec edited after the harness loaded it, because the harness may still run
+  the text it loaded, so the block carries the current text;
+- a session with no activation record for the agent, such as a spec the runtime
+  could not read when the harness loaded it, or on kiro-cli an agent that is
+  neither the spawn agent nor one set through `session/set_mode`;
+- a prompt using `{bot_name}`, `{{MAX_SUBAGENTS}}` or `{{WIDGET_BLOCK}}`, because
+  the harness copy keeps the raw token;
+- a relative `file://`, which Crew anchors at the template root while the
+  harnesses anchor it at the spec's own directory;
+- a `file://~/` path, which Crew expands but kiro-cli does not document
+  expanding, and kiro-cli drops an unreadable prompt file silently;
+- a `file://` target that a Kiro Crew sandbox on this host may hide
+  (`sandbox_may_hide_path`: any tier's masked trees, files and `~/.ssh`,
+  through links too), because Crew reads the file from the gateway, outside the
+  sandbox, while the sandboxed harness may be denied it and drop it silently;
+- a project-level spec, because KAS reads only the user level, so its copy may
+  come from a different spec;
+- a turn built with no live provider (the webhook agent endpoint, the
+  auto-improvement crew runner, the Slack heartbeat turn).
+
+On every other harness the block is the only channel and is always sent.
+
+The reinjection after a compaction applies the same rule with one more
+condition: the harness must also have been shown to keep the spec prompt
+through its own compaction (`ACP_BACKENDS_NATIVE_SPEC_PROMPT_ACROSS_COMPACTION`,
+reported by the live provider as `native_spec_prompt_across_compaction`).
+kiro-cli is in that set on a live transcript, taken on kiro-cli 2.28.0 and
+linked from the pull request's Manual verification — a compaction forced through
+the runtime's compact request, the spec prompt still held, no duplicate block,
+the same role answer before and after. That transcript is the whole basis of the
+membership, and its release is a floor, not a list: the provider answers True
+only when the `agentInfo.version` kiro-cli reported at `initialize` is at or
+above `NATIVE_SPEC_PROMPT_ACROSS_COMPACTION_MIN_KIRO_CLI_VERSION` (2.28.0), so a
+release below it, and a handshake with no parsable version, are sent the block
+after a compaction — a duplicate of a prompt the harness may still hold, which
+costs tokens and nothing else. Nothing is maintained per release; a new
+transcript moves the floor in one line.
+KAS is not: nothing in its code or documentation says its summarization keeps
+the spec prompt, and no transcript shows it, so after a compaction a KAS session
+is sent the block exactly once even when the recorded copy still matches, as
+every harness without a native copy is. Session start is unchanged on both. A
+harness joins that set only on such a transcript, because a wrong membership
+drops the persona for the rest of the session, while a wrong omission costs one
+repeated block.
 
 The reader also recognizes an older managed `file://` pointer under a Crew data
 home or installed package. A desktop update or fallback gateway can leave that
@@ -569,7 +644,7 @@ every other mirrored harness.
 |---|---|---|---|
 | `name` | resolves `--agent` | wire `id` | roster only |
 | `description` | roster only | wire field | roster only |
-| `prompt` | read from disk | inlined over the wire | Crew injects it at session start; the built-in agent gets the Kiro Crew persona |
+| `prompt` | read from disk at process spawn and at `session/set_mode`, not at `session/new`; Crew's injected copy is dropped while identical to the copy of the spec kiro-cli is given (its skill-view alias when one was prepared), taken immediately before one of those two reads | inlined over the wire; Crew's injected copy is dropped while identical to the wire copy | Crew injects it at session start; the built-in agent gets the Kiro Crew persona |
 | `model` | honoured, `"auto"` resolvable | not projected | `cc_model` sidecar instead |
 | `tools` | honoured | wire field; absent means NO tools | roster only |
 | `allowedTools` | honoured | translated to `permissions` | not read |

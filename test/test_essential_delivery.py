@@ -854,6 +854,336 @@ async def test_native_launch_and_activation_own_exact_sources(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "shape", ["inline", "absolute-file", "relative-file", "managed-stub", "empty"]
+)
+@pytest.mark.parametrize("backend", [ACP_BACKEND_KIRO, ACP_BACKEND_KAS], ids=["kiro-cli", "kas"])
+async def test_activation_records_the_persona_the_harness_loaded(env, monkeypatch, backend, shape):
+    """kirodotdev/KiroCrew#13305: at ``session/new`` the handle records, under
+    ``template://<agent>#prompt``, the persona the harness actually loaded. KAS
+    records the copy Crew put on the wire (so a relative ``file://`` it anchored
+    at the agents dir is recorded too); kiro-cli loads the user-level spec itself,
+    so the runtime snapshots that spec with the prompt builder's own eligibility:
+    inline text or an absolute ``file://`` verbatim, nothing for a relative
+    ``file://``, the managed stub or an empty prompt. The dedup then compares the
+    block against THIS text, so a spec edited mid-session keeps its block."""
+    from kiro_crew import agent as agent_mod
+    from kiro_crew.acp.runtime import AcpRuntime
+    from kiro_crew.acp.types import METHOD_SESSION_NEW
+    from kiro_crew.config.paths import kiro_agents_dir
+    from kiro_crew.member_essential_context import native_prompt_document_key
+
+    persona = "PERSONA_AT_ACTIVATION_13305"
+    agents = kiro_agents_dir()
+    agents.mkdir(parents=True, exist_ok=True)
+    (agents / "prompts").mkdir(exist_ok=True)
+    (agents / "prompts" / "persona.md").write_text(persona, encoding="utf-8")
+    prompt = {
+        "inline": persona,
+        "absolute-file": f"file://{agents / 'prompts' / 'persona.md'}",
+        "relative-file": "file://prompts/persona.md",
+        "managed-stub": agent_mod._NATIVE_PROMPT_STUB,
+        "empty": "",
+    }[shape]
+    (agents / "persona-template.json").write_text(
+        json.dumps({"name": "persona-template", "prompt": prompt, "tools": ["*"]}),
+        encoding="utf-8",
+    )
+    # Mid-session edits must not reach the snapshot: it is what was LOADED.
+    edited = "PERSONA_EDITED_AFTER_ACTIVATION"
+    rt = AcpRuntime(work_dir=env.project, agent="persona-template", acp_backend=backend)
+    rt._initialized = True
+    rt._expect_mcp_reports = False
+    requests = []
+
+    async def transport(method, params, timeout=None):
+        requests.append((method, params))
+        if method == METHOD_SESSION_NEW:
+            return {
+                "sessionId": "activation-proof",
+                "modes": {
+                    "currentModeId": "persona-template",
+                    "availableModes": [{"id": "persona-template", "name": "Persona"}],
+                },
+            }
+        return {}
+
+    monkeypatch.setattr(rt, "_send_and_await", transport)
+    handle = await rt.create_session(cwd=env.project, agent="persona-template", mcp_servers=[])
+    try:
+        (agents / "persona-template.json").write_text(
+            json.dumps({"name": "persona-template", "prompt": edited, "tools": ["*"]}),
+            encoding="utf-8",
+        )
+        key = native_prompt_document_key("persona-template")
+        recorded = handle.native_context_documents.get(key)
+        target = AcpSessionProvider(handle, rt)
+        assert target.native_context_documents.get(key) == recorded
+        if backend == ACP_BACKEND_KAS:
+            params = next(params for method, params in requests if method == METHOD_SESSION_NEW)
+            wire_prompt = params["_meta"]["kiro"]["customAgents"][0]["prompt"]
+            assert recorded == wire_prompt, "KAS records exactly the copy it was handed"
+            if shape in ("inline", "absolute-file", "relative-file"):
+                assert recorded == persona
+            else:
+                assert recorded is not None and persona not in recorded
+        elif shape in ("inline", "absolute-file"):
+            assert recorded == persona
+            assert list(handle.native_context_documents.values()).count(persona) == 1
+        else:
+            assert recorded is None, f"an ineligible {shape} spec must record no snapshot"
+        assert all(value != edited for value in handle.native_context_documents.values())
+        # The snapshot decides the block: the edited spec differs from it.
+        msg = env.builder.build_message(
+            "hello", True, "dashboard:activation", agent="persona-template", context_provider=target
+        )[0]
+        if shape in ("inline", "absolute-file"):
+            assert f"[AGENT SYSTEM PROMPT]\n{edited}\n[END AGENT SYSTEM PROMPT]" in msg
+            assert persona not in msg
+    finally:
+        rt._session_queues.clear()
+
+
+@pytest.mark.asyncio
+async def test_wire_host_records_only_the_persona_its_payload_carried(env, monkeypatch):
+    """kirodotdev/KiroCrew#13305: a wire-registered host (KAS) holds exactly the
+    definitions its payload carried, so when that payload has no ``prompt`` for
+    the active agent the runtime records nothing under ``template://<agent>#prompt``
+    -- even though the user-level spec on disk has an eligible inline persona.
+    The spec is read only for a host that took its agent at spawn time (kiro-cli,
+    ``kas_agents is None``). With no snapshot the prompt builder keeps the
+    ``[AGENT SYSTEM PROMPT]`` block: it is the only copy this host will see."""
+    from kiro_crew.acp.runtime import AcpRuntime
+    from kiro_crew.acp.types import METHOD_SESSION_NEW
+    from kiro_crew.config.paths import kiro_agents_dir
+    from kiro_crew.member_essential_context import native_prompt_document_key
+
+    persona = "PERSONA_NOT_ON_THE_WIRE_13305"
+    agents = kiro_agents_dir()
+    agents.mkdir(parents=True, exist_ok=True)
+    (agents / "persona-template.json").write_text(
+        json.dumps({"name": "persona-template", "prompt": persona, "tools": ["*"]}),
+        encoding="utf-8",
+    )
+    rt = AcpRuntime(work_dir=env.project, agent="persona-template", acp_backend=ACP_BACKEND_KAS)
+    rt._initialized = True
+    rt._expect_mcp_reports = False
+    real_extras = rt._kas_custom_agents
+
+    async def extras_without_prompt(agent, **kwargs):
+        extras = await real_extras(agent, **kwargs)
+        for definition in extras.custom_agents or ():
+            definition.pop("prompt", None)
+        return extras
+
+    monkeypatch.setattr(rt, "_kas_custom_agents", extras_without_prompt)
+    requests = []
+
+    async def transport(method, params, timeout=None):
+        requests.append((method, params))
+        if method == METHOD_SESSION_NEW:
+            return {
+                "sessionId": "wire-guard-proof",
+                "modes": {
+                    "currentModeId": "persona-template",
+                    "availableModes": [{"id": "persona-template", "name": "Persona"}],
+                },
+            }
+        return {}
+
+    monkeypatch.setattr(rt, "_send_and_await", transport)
+    handle = await rt.create_session(cwd=env.project, agent="persona-template", mcp_servers=[])
+    try:
+        params = next(params for method, params in requests if method == METHOD_SESSION_NEW)
+        definitions = params["_meta"]["kiro"]["customAgents"]
+        assert definitions and all("prompt" not in d for d in definitions), "payload has no prompt"
+        assert native_prompt_document_key("persona-template") not in handle.native_context_documents
+        assert persona not in handle.native_context_documents.values()
+        target = AcpSessionProvider(handle, rt)
+        msg = env.builder.build_message(
+            "hello", True, "dashboard:wire-guard", agent="persona-template", context_provider=target
+        )[0]
+        assert f"[AGENT SYSTEM PROMPT]\n{persona}\n[END AGENT SYSTEM PROMPT]" in msg
+    finally:
+        rt._session_queues.clear()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", [ACP_BACKEND_KIRO, ACP_BACKEND_KAS], ids=["kiro-cli", "kas"])
+async def test_resume_records_the_persona_the_harness_reloaded(env, monkeypatch, backend):
+    """kirodotdev/KiroCrew#13305: ``session/load`` re-reads the spec (kiro-cli) or
+    re-sends the payload (KAS) exactly as ``session/new`` does, so a RESUMED
+    session records the same ``template://<agent>#prompt`` snapshot a cold start
+    does. Without it every resume would send the ``[AGENT SYSTEM PROMPT]`` block
+    again after compaction on both harnesses -- the duplicate this PR removes.
+    The snapshot is still what was LOADED: a spec edited after the resume
+    differs from it, so the edited text is sent as the block."""
+    from kiro_crew.acp.runtime import AcpRuntime
+    from kiro_crew.acp.types import METHOD_SESSION_LOAD
+    from kiro_crew.config.paths import kiro_agents_dir
+    from kiro_crew.member_essential_context import native_prompt_document_key
+
+    persona = "PERSONA_AT_RESUME_13305"
+    edited = "PERSONA_EDITED_AFTER_RESUME"
+    agents = kiro_agents_dir()
+    agents.mkdir(parents=True, exist_ok=True)
+    spec = agents / "persona-template.json"
+    spec.write_text(
+        json.dumps({"name": "persona-template", "prompt": persona, "tools": ["*"]}),
+        encoding="utf-8",
+    )
+    transcript = env.project / "prior-session.jsonl"
+    transcript.write_text("", encoding="utf-8")
+    rt = AcpRuntime(work_dir=env.project, agent="persona-template", acp_backend=backend)
+    rt._initialized = True
+    rt._expect_mcp_reports = False
+    rt._can_load_session = True  # the initialize response advertised loadSession
+    requests = []
+
+    async def transport(method, params, timeout=None):
+        requests.append((method, params))
+        if method == METHOD_SESSION_LOAD:
+            return {
+                "modes": {
+                    "currentModeId": "persona-template",
+                    "availableModes": [{"id": "persona-template", "name": "Persona"}],
+                },
+            }
+        return {}
+
+    monkeypatch.setattr(rt, "_send_and_await", transport)
+    handle = await rt.load_session(
+        str(transcript), "resume-proof", cwd=env.project, agent="persona-template"
+    )
+    try:
+        assert handle.session_id == "resume-proof"
+        key = native_prompt_document_key("persona-template")
+        recorded = handle.native_context_documents.get(key)
+        assert recorded == persona, "a resume must record the reloaded persona"
+        assert list(handle.native_context_documents.values()).count(persona) == 1
+        if backend == ACP_BACKEND_KAS:
+            params = next(params for method, params in requests if method == METHOD_SESSION_LOAD)
+            wire_prompt = params["_meta"]["kiro"]["customAgents"][0]["prompt"]
+            assert recorded == wire_prompt, "KAS records exactly the copy it re-sent on load"
+        target = AcpSessionProvider(handle, rt)
+        # Unchanged spec: the block is withheld on the resumed session too.
+        msg = env.builder.build_message(
+            "hello", True, "dashboard:resume", agent="persona-template", context_provider=target
+        )[0]
+        assert "[AGENT SYSTEM PROMPT]" not in msg
+        assert persona not in msg
+        # Edited after the resume: the spec differs from the snapshot, so the block
+        # returns with the NEW text -- what was loaded is what the dedup trusts.
+        spec.write_text(
+            json.dumps({"name": "persona-template", "prompt": edited, "tools": ["*"]}),
+            encoding="utf-8",
+        )
+        assert handle.native_context_documents.get(key) == persona
+        msg = env.builder.build_message(
+            "hello", True, "dashboard:resume", agent="persona-template", context_provider=target
+        )[0]
+        assert f"[AGENT SYSTEM PROMPT]\n{edited}\n[END AGENT SYSTEM PROMPT]" in msg
+        assert persona not in msg
+    finally:
+        rt._session_queues.clear()
+
+
+@pytest.mark.asyncio
+async def test_create_then_resume_record_the_persona_once_and_retention_follows_the_floor(
+    env, monkeypatch
+):
+    """kirodotdev/KiroCrew#13305, both establishment paths on ONE scripted
+    kiro-cli transport. ``session/new`` and then ``session/load`` each send
+    ``session/set_mode`` after them, and after each the persona kiro-cli loaded
+    is recorded exactly once under ``template://<agent>#prompt`` -- the recorder
+    is the map's one writer and runs after the mode block on both paths, so a
+    resume (which has no spawn copy) still records the pair read around
+    ``set_mode``. The next turn withholds the ``[AGENT SYSTEM PROMPT]`` block
+    while the spec matches the snapshot. The post-compaction turn follows the
+    release floor read off ``agentInfo.version``: withheld at 2.28.0, sent once
+    at 2.27.1, with the record itself unchanged."""
+    from kiro_crew.acp.runtime import AcpRuntime
+    from kiro_crew.acp.types import METHOD_SESSION_LOAD, METHOD_SESSION_NEW, METHOD_SET_MODE
+    from kiro_crew.config.paths import kiro_agents_dir
+    from kiro_crew.member_essential_context import native_prompt_document_key
+
+    persona = "PERSONA_THROUGH_THE_WIRE_13305"
+    agents = kiro_agents_dir()
+    agents.mkdir(parents=True, exist_ok=True)
+    (agents / "persona-template.json").write_text(
+        json.dumps({"name": "persona-template", "prompt": persona, "tools": ["*"]}),
+        encoding="utf-8",
+    )
+    transcript = env.project / "prior-session.jsonl"
+    transcript.write_text("", encoding="utf-8")
+    rt = AcpRuntime(work_dir=env.project, agent="persona-template", acp_backend=ACP_BACKEND_KIRO)
+    rt._initialized = True
+    rt._expect_mcp_reports = False
+    rt._can_load_session = True  # the initialize response advertised loadSession
+    rt._agent_version = "2.28.0"  # what that response reported: the floor release
+    modes = {
+        "currentModeId": "persona-template",
+        "availableModes": [{"id": "persona-template", "name": "Persona"}],
+    }
+    requests: list[str] = []
+
+    async def transport(method, params, timeout=None):
+        requests.append(method)
+        if method == METHOD_SESSION_NEW:
+            return {"sessionId": "wire-session", "modes": modes}
+        if method == METHOD_SESSION_LOAD:
+            return {"modes": modes}
+        return {}
+
+    monkeypatch.setattr(rt, "_send_and_await", transport)
+    key = native_prompt_document_key("persona-template")
+    block = f"[AGENT SYSTEM PROMPT]\n{persona}\n[END AGENT SYSTEM PROMPT]"
+
+    def turn(target, *, compacted=False):
+        return env.builder.build_message(
+            "carry on" if compacted else "hello",
+            not compacted,
+            "dashboard:wire",
+            agent="persona-template",
+            context_provider=target,
+            needs_reinjection=compacted,
+        )[0]
+
+    def recorded_once(handle):
+        assert handle.native_context_documents.get(key) == persona
+        assert list(handle.native_context_documents.values()).count(persona) == 1
+
+    created = await rt.create_session(cwd=env.project, agent="persona-template", mcp_servers=[])
+    try:
+        assert requests.count(METHOD_SET_MODE) == 1
+        assert requests.index(METHOD_SESSION_NEW) < requests.index(METHOD_SET_MODE)
+        recorded_once(created)
+        msg = turn(AcpSessionProvider(created, rt))
+        assert "[AGENT SYSTEM PROMPT]" not in msg and persona not in msg
+        # The process restarts and the same session is resumed over the same wire.
+        rt._session_queues.clear()
+        requests.clear()
+        resumed = await rt.load_session(
+            str(transcript), created.session_id, cwd=env.project, agent="persona-template"
+        )
+        assert requests.count(METHOD_SET_MODE) == 1
+        assert requests.index(METHOD_SESSION_LOAD) < requests.index(METHOD_SET_MODE)
+        recorded_once(resumed)
+        target = AcpSessionProvider(resumed, rt)
+        msg = turn(target)
+        assert "[AGENT SYSTEM PROMPT]" not in msg and persona not in msg
+        assert target.native_spec_prompt_across_compaction is True
+        assert persona not in turn(target, compacted=True)
+        rt._agent_version = "2.27.1"  # below the floor: the duplicate is the safe side
+        assert target.native_spec_prompt_across_compaction is False
+        msg = turn(target, compacted=True)
+        assert msg.count(block) == 1 and msg.count(persona) == 1
+        recorded_once(resumed)
+    finally:
+        rt._session_queues.clear()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     "text,body",
     [
         ("Use #manual", "MANUAL_SECRET"),
@@ -990,3 +1320,39 @@ async def test_provider_receipt_wrap_and_history_invalidation_contract(env, adap
     await send(target, build(env, target, project=str(env.project)))
     await send(target, build(env, target, project=str(env.project)))
     assert [message.count(HEADER) for message in wire.messages] == [1, 0, 0, 1, 0]
+
+
+@pytest.mark.parametrize(
+    "backend",
+    [ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE],
+    ids=["kiro-cli", "kas", "claude"],
+)
+def test_owner_persona_is_untouched_by_the_native_spec_prompt_rule(env, monkeypatch, backend):
+    """kirodotdev/KiroCrew#13305 withholds a NON-owner's [AGENT SYSTEM PROMPT]
+    copy only. An owner's own persona travels in essentials, so even as a
+    user-level inline prompt (the shape the rule withholds for any other agent)
+    the owner's session start is the same whether or not the runtime recorded
+    the copy the harness loaded (``native_context_documents``, the one fact the
+    rule reads)."""
+    from kiro_crew import agent
+    from kiro_crew.member_essential_context import native_prompt_document_key
+
+    persona = "OWNER_PERSONA_13305"
+    (env.project / ".kiro" / "agents" / "writer-template.json").unlink()
+    agent.KIRO_AGENTS_DIR.mkdir(parents=True, exist_ok=True)
+    (agent.KIRO_AGENTS_DIR / "writer-template.json").write_text(
+        json.dumps({"name": "writer-template", "prompt": persona}), encoding="utf-8"
+    )
+    target = provider(env.project, backend)
+    recorded = (
+        {native_prompt_document_key("writer-template"): persona}
+        if backend != ACP_BACKEND_CLAUDE
+        else {}
+    )
+    monkeypatch.setattr(AcpProvider, "native_context_documents", property(lambda self: recorded))
+    reported = build(env, target, fresh=True)
+    monkeypatch.setattr(AcpProvider, "native_context_documents", property(lambda self: {}))
+    silent = build(env, target, fresh=True)
+    assert f"[AGENT SYSTEM PROMPT]\n{persona}" not in reported
+    assert reported.count(persona) == silent.count(persona) == 1
+    assert reported.count("[V2 ESSENTIAL CONTEXT") == silent.count("[V2 ESSENTIAL CONTEXT") == 1

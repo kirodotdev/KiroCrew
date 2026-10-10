@@ -75,6 +75,18 @@ def post_compaction_parts(
     # compaction that drops it leaves the session with no contract.
     # Trusted content (managed contract or the user's own persona),
     # so no marker scrub — the session-start path applies none either.
+    # A custom persona is withheld here only on a harness shown to keep it
+    # through its own compaction (a live transcript admits a backend to that
+    # set; kiro-cli today), read against the copy the harness loaded. Whether
+    # the harness delivered the prompt at all needs no second flag: the runtime
+    # records that copy only on a harness that loads a spec itself, so with no
+    # recorded copy nothing is withheld. Elsewhere the block is re-injected as
+    # for a harness with no native spec prompt: delivering the prompt at
+    # session start says nothing about what the harness's summarization keeps,
+    # and a wrong withhold drops the persona for the rest of the session.
+    _retained = (
+        context_provider is not None and context_provider.native_spec_prompt_across_compaction
+    )
     _agent_prompt = builder._resolve_agent_prompt(
         agent,
         project=project,
@@ -83,6 +95,9 @@ def post_compaction_parts(
         is_cc=is_cc,
         private_owner=private_owner,
         session_start=False,
+        native_prompt_snapshot=(
+            ctx._native_prompt_snapshot(context_provider, agent) if _retained else None
+        ),
     )
     if _agent_prompt:
         parts.append(f"[AGENT SYSTEM PROMPT]\n{_agent_prompt}\n[END AGENT SYSTEM PROMPT]\n\n")

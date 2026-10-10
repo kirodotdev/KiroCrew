@@ -1683,6 +1683,28 @@ def _read_prompt_file(pp: Path) -> str:
             return ""
 
 
+def _native_prompt_snapshot(context_provider: Any, agent: str | None) -> str | None:
+    """The persona the live harness loaded for *agent* at activation, or ``None``.
+
+    Read off the provider's ``native_context_documents`` under
+    ``template://<agent>#prompt``, which the runtime records when the session is
+    activated (from the KAS wire definition, or on kiro-cli from the spec it
+    loads at spawn and ``session/set_mode``). The runtime writes that key only
+    on a harness that loads a spec itself, so a present value is the whole
+    report that the harness delivers the prompt; no separate provider flag is
+    asked. Both the session-start build and the post-compaction reinjection
+    read it live, so a compaction later in the session still compares the block
+    against what was loaded, not against the file as it reads now
+    (kirodotdev/KiroCrew#13305).
+    """
+    if context_provider is None or not agent:
+        return None
+    from kiro_crew.member_essential_context import native_prompt_document_key
+
+    value = context_provider.native_context_documents.get(native_prompt_document_key(agent))
+    return value if isinstance(value, str) else None
+
+
 class ContextBuilder:
     """Builds context for injection into ACP prompts.
 
@@ -2409,15 +2431,34 @@ class ContextBuilder:
 
     @staticmethod
     def _load_agent_prompt(
-        agent: str, project: str | None = None, *, owner_template: str = ""
+        agent: str,
+        project: str | None = None,
+        *,
+        owner_template: str = "",
+        native_copy_out: list[bool] | None = None,
     ) -> str:
-        """Read the resolved execution prompt, excluding an owner source in essentials."""
+        """Read the resolved execution prompt, excluding an owner source in essentials.
+
+        *native_copy_out*, when given, receives one bool: whether the returned text
+        is exactly the copy a harness that loads the agent's spec delivers itself.
+        The shape that qualifies is ``native_spec_prompt_shape``'s (a user-level
+        spec's inline ``prompt`` or absolute, non-``~`` ``file://`` that no sandbox
+        mask may cover), the same rule
+        the activation snapshot in ``acp/runtime.py`` reads by, so the two cannot
+        drift apart. The managed contract replaces the stub or pointer the harness
+        reads; a relative ``file://`` is anchored here at the template root, where
+        the harnesses anchor it at the spec's own directory; and a project-level
+        spec is not the one a harness reading only the user level runs. So none
+        of those can be shown identical (kirodotdev/KiroCrew#13305).
+        """
         from kiro_crew.agent_discovery import _read_agent_spec
         from kiro_crew.member_essential_context import (
+            native_spec_prompt_shape,
             resolve_relative_prompt_path,
             resolve_template_path,
         )
 
+        native_copy = False
         try:
             path = resolve_template_path(agent, project)
             if path is None:
@@ -2440,6 +2481,10 @@ class ContextBuilder:
                 return _read_prompt_file(_prompt_path())
             if agent == owner_template:
                 return ""
+            # The one layer every harness that loads specs natively reads, judged
+            # by the shared shape rule. Guarded on its own: a failure here may
+            # only cost the dedup, never the prompt.
+            native_copy = native_spec_prompt_shape(prompt, path)
             if prompt.startswith("file://"):
                 source = Path(prompt[7:]).expanduser()
                 if not source.is_absolute():
@@ -2455,7 +2500,11 @@ class ContextBuilder:
                 return safe_read_file(str(source))
             return prompt
         except (OSError, ValueError, FileTooLargeError):
+            native_copy = False
             return ""
+        finally:
+            if native_copy_out is not None:
+                native_copy_out.append(native_copy)
 
     def _build_member_section(
         self,
@@ -3063,6 +3112,7 @@ class ContextBuilder:
         is_cc: bool,
         private_owner: bool,
         session_start: bool,
+        native_prompt_snapshot: str | None = None,
     ) -> str:
         """Return the agent contract for the ``[AGENT SYSTEM PROMPT]`` block, or "".
 
@@ -3070,8 +3120,22 @@ class ContextBuilder:
         contract a compacted session gets back is the one it started with. Only
         a session start takes a fresh reading of the delegation cap; the call
         that restores the block reuses the session's own.
+
+        *native_prompt_snapshot* is the copy of a custom spec's own ``prompt``
+        the live harness actually loaded when the agent was activated
+        (``native_context_documents``, see ``_native_prompt_snapshot``). The
+        runtime records it only on a harness that loads a spec itself (kiro-cli,
+        KAS), so its presence is the whole report that the harness delivers the
+        prompt. The block is then withheld only when it would
+        repeat that copy word for word: the loaded text has the harness's own shape
+        (``_load_agent_prompt``), equals the snapshot, and resolving Crew's
+        placeholders leaves it unchanged. A spec edited after activation differs
+        from the snapshot and keeps the block with the current text; no snapshot
+        keeps it too. Anything not shown identical keeps the block, since a wrong
+        guess drops the persona outright (kirodotdev/KiroCrew#13305).
         """
         is_custom = bool(agent) and agent != "kirocrew"
+        native_copy: list[bool] = []
         agent_prompt: str
         if is_cc and not is_custom:
             # CC gets the same Kiro Crew persona prompt as kiro — including
@@ -3090,7 +3154,10 @@ class ContextBuilder:
                 agent_prompt = ""
         elif is_custom:
             agent_prompt = self._load_agent_prompt(
-                agent or "", project, owner_template=(agent or "") if private_owner else ""
+                agent or "",
+                project,
+                owner_template=(agent or "") if private_owner else "",
+                native_copy_out=native_copy,
             )
         else:
             pp = _prompt_path()
@@ -3111,10 +3178,19 @@ class ContextBuilder:
             if self._COMPUTER_USE_TOKEN in agent_prompt
             else None
         )
+        loaded = agent_prompt
         agent_prompt = self._resolve_prompt_templates(
             agent_prompt, session_key or "", cap_figure, computer_use=computer_use
         )
-        return self._substitute_bot_name(agent_prompt)
+        agent_prompt = self._substitute_bot_name(agent_prompt)
+        if (
+            native_copy == [True]
+            and native_prompt_snapshot is not None
+            and loaded == native_prompt_snapshot
+            and agent_prompt == loaded
+        ):
+            return ""
+        return agent_prompt
 
     def build_message(
         self,
@@ -3355,6 +3431,7 @@ class ContextBuilder:
                     is_cc=is_cc,
                     private_owner=bool(_private_owner),
                     session_start=True,
+                    native_prompt_snapshot=_native_prompt_snapshot(context_provider, agent),
                 )
             )
             if agent_prompt:

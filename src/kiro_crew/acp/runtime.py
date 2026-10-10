@@ -141,6 +141,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_MARKDOWN_AGENT_SPECS,
+    ACP_BACKENDS_NATIVE_SPEC_PROMPT,
     ACP_BACKENDS_SERIAL_SESSION_STARTS,
     MCP_ROSTER_COMPLETE_NOTE,
     METHOD_KAS_MCP_RESET_SERVER,
@@ -1152,6 +1153,12 @@ class AcpRuntime:
         # the bracket. ``None`` until a spawn takes it, and ``None`` for every agent
         # that mirrors no other spec.
         self._derived_spec_snapshot: Any = None
+        # ``(agent, persona text)`` kiro-cli loaded at spawn, set by
+        # ``_spawn_admitted`` from the spec named at ``--agent``, read just
+        # before the launch; ``None`` when that copy could not be read.
+        # Declared at class level so a runtime built without ``__init__``
+        # (the projection tests' shape) reads as "never spawned".
+        self._spawn_persona_snapshot = None
 
         # Recycling thresholds — see _is_stale(). Long-lived multiplexed
         # runtimes (e.g. the kirocrew-lite background runtime) have no
@@ -2031,6 +2038,7 @@ class AcpRuntime:
             plan = await self._resolve_spawn_plan()
             self._max_rss_depth = plan.rss_depth
             argv = plan.argv
+            spawn_transport = self._agent
             if self.acp_backend == ACP_BACKEND_KIRO:
                 from kiro_crew.acp.skill_projection import prepare_native_skill_projection
 
@@ -2071,6 +2079,11 @@ class AcpRuntime:
                         argv[agent_position] = self._native_skill_projection.spawn_agent(
                             self._agent
                         )
+                        # The name kiro-cli is given: its skill-view alias when a
+                        # view was prepared, else the authored name. The persona
+                        # read below reads THAT spec, because it is the copy the
+                        # process loads.
+                        spawn_transport = argv[agent_position]
                     except ValueError as exc:
                         # The projection refused this agent's view -- a
                         # ``kirocrew-core`` restriction authored in its spec, a
@@ -2189,6 +2202,16 @@ class AcpRuntime:
             # databases) keeps its own copy under this process's scratch directory.
             _point_private_state_at_scratch(env, plan.private_state_env, self._scratch_dir)
 
+        # The persona kiro-cli is about to load, read from the spec named at
+        # ``--agent`` (its skill-view alias when one was prepared) immediately
+        # before the launch. One read, before: an edit landing between it and
+        # the process's own read leaves the file different from this text, so
+        # the block is sent rather than withheld; an inline alias prompt cannot
+        # change under its name at all. ``None`` (no agent, no native prompt,
+        # unreadable copy) records nothing, which keeps the block.
+        self._spawn_persona_snapshot = await self._to_thread_guarding_sandbox(
+            self._spawn_persona_text, spawn_transport
+        )
         launched = await launch(
             self,
             LaunchRequest(
@@ -2604,6 +2627,11 @@ class AcpRuntime:
     #: How long the failed-start reap waits for SIGKILLed descendants to be
     #: reaped by their new parent before reporting them as survivors.
     _FAILED_START_REAP_WAIT = 1.0
+
+    #: ``(agent, persona text)`` kiro-cli loaded at process spawn, or ``None``
+    #: for a runtime that never spawned, so the persona recorder records
+    #: nothing for it. ``_spawn_admitted`` sets it per spawn.
+    _spawn_persona_snapshot: tuple[str, str] | None = None
 
     async def _kill_failed_start_escapees(self, escapees: dict[int, ChildRecord]) -> None:
         """SIGKILL the recorded descendants of a failed start that are still ours.
@@ -5959,7 +5987,8 @@ class AcpRuntime:
         budget: float,
         payload_snapshot: Any,
         wire_registered: bool,
-    ) -> None:
+        handle: AcpSessionHandle | None = None,
+    ) -> tuple[str, str] | None:
         """Send ``session/set_mode`` for *mode_agent* inside the derived-spec bracket.
 
         ONE body for both session-start paths (create and resume), because the bracket
@@ -5995,6 +6024,19 @@ class AcpRuntime:
         landing after cannot change what was already consumed. Same answer as the
         ``initialize`` bracket -- a session that may have activated an unverified spec
         must not survive.
+
+        With *handle* given, the bracket also returns the persona text the host now
+        holds. kiro-cli reads a spec at process spawn and at ``set_mode``, never at a
+        plain ``session/new``, so the copy it loads HERE is read immediately before
+        the request, from the spec the request names -- the skill-view alias when one
+        is sent, which is the copy prepared for this start rather than the source an
+        edit may since have changed -- and returned as the ``(agent, text)`` pair. The
+        bracket never writes the session's document map itself: the caller hands the
+        pair to the recorder, which is the map's one writer and runs after every
+        other source has been merged, so the one-record-per-document guard sees the
+        launch sources too. ``None`` -- a wire-registered host (its payload was
+        recorded at ``session/new``), a ``None`` handle, or a copy that could not be
+        read -- records nothing, which keeps the block.
         """
         from kiro_crew.agent import (
             DerivedSpecStale,
@@ -6094,6 +6136,7 @@ class AcpRuntime:
             # agent (an older alias, or the authored spec kiro-cli cached) is proven
             # to match the spec on disk, so none is activated in its place. Every other
             # error propagates as before.
+            persona_before_set_mode: tuple[str, str] | None = None
             params = set_mode_params(session_id, mode_agent)
             # Translated from the projection this bracket adopted and sent as
             # fixed wire params -- past the send's own translation, which reads
@@ -6145,6 +6188,20 @@ class AcpRuntime:
                         missed = None
                 if sent_alias is not None:
                     self._refuse_if_view_unverified(mode_agent, used_generation)
+                # Persona snapshot: kiro-cli re-reads the agent spec when it
+                # activates the mode (measured: a plain session/new keeps the
+                # spawn-time copy; set_mode loads the spec as it is now), so the
+                # text it will hold is the spec named in THIS request -- the alias
+                # when one is sent, which is the copy prepared for this start, not
+                # the source an edit may since have changed -- read immediately
+                # before the send; a retry re-reads for the alias it sends. Only a
+                # host that consumes the spec itself is read; a wire-registered
+                # host is recorded from its payload by
+                # _record_native_persona_snapshot.
+                if handle is not None and not wire_registered:
+                    persona_before_set_mode = await asyncio.to_thread(
+                        self._native_persona_text, mode_agent, sent_alias
+                    )
                 try:
                     await self._send_and_await(
                         METHOD_SET_MODE, wire, timeout=budget, **untranslated
@@ -6203,6 +6260,16 @@ class AcpRuntime:
         except DerivedSpecStale as exc:
             await self.terminate_session(session_id)
             raise AcpRuntimeError(str(exc)) from exc
+        # ``None`` on a wire-registered host (the spec travelled in the payload,
+        # so there is no file to read), when no handle was given, and when the
+        # copy could not be read, which keeps the block. The caller hands the
+        # pair to _record_native_persona_snapshot, the map's one writer, where it
+        # wins over the spawn-time copy because kiro-cli now holds THIS text;
+        # writing it here would put a second record under the prompt key ahead
+        # of the launch sources the create path merges after this bracket.
+        if handle is None:
+            return None
+        return persona_before_set_mode
 
     async def _handshake_client_capabilities(self) -> dict[str, Any]:
         """The ``clientCapabilities`` this spawn sends, with the settings channel filled.
@@ -7466,6 +7533,9 @@ class AcpRuntime:
         if refusal:
             await self.terminate_session(session_id)
             raise AcpRuntimeError(refusal)
+        # The persona pair the set_mode bracket read around its request, handed
+        # to the recorder below; None on every branch that sends no set_mode.
+        set_mode_persona: tuple[str, str] | None = None
         if mode_agent and self._mode_available(mode_agent, resp):
             # Measured BEFORE the request goes out, which is the only moment the
             # answer is unambiguous: everything queued right now initialized
@@ -7475,12 +7545,13 @@ class AcpRuntime:
             # then consumed without being recorded, leaving the panel at a false
             # "no report" for the rest of the session.
             staged_before_switch = handle.queued_frame_count()
-            await self._activate_mode_bracketed(
+            set_mode_persona = await self._activate_mode_bracketed(
                 session_id,
                 mode_agent,
                 budget=budget,
                 payload_snapshot=payload_snapshot,
                 wire_registered=kas_agents is not None,
+                handle=handle,
             )
             handle.active_agent = mode_agent
             # Whether set_mode actually SWITCHED modes: the servers that
@@ -7531,13 +7602,14 @@ class AcpRuntime:
         if active_agent == self._agent and str(session_work_dir) == str(self._work_dir):
             handle.native_context_documents.update(self._native_launch_sources)
         handle.native_context_documents.update(projected_sources)
-        # Inline prompt bytes and file resources come from the same activated
-        # wire definition. Conditional and indexed resources remain native.
-        for definition in kas_agents or ():
-            if definition.get("id") == active_agent and isinstance(definition.get("prompt"), str):
-                handle.native_context_documents[f"template://{active_agent}#prompt"] = definition[
-                    "prompt"
-                ]
+        # After the launch and projected sources, on purpose: the helper's
+        # one-record-per-document guard reads what they recorded, and it is the
+        # map's one writer for the persona (the set_mode bracket only returns its
+        # pair), so a member launch that already recorded the persona under its
+        # source path is not given a second record under the prompt key.
+        await self._record_native_persona_snapshot(
+            handle, active_agent, kas_agents, set_mode_persona=set_mode_persona
+        )
 
         # Each session start forks another agent process under the root, and
         # its MCP servers have just reported, so scan again: the spawn snapshot
@@ -8029,6 +8101,9 @@ class AcpRuntime:
         if refusal:
             await self.terminate_session(resume_sid)
             raise AcpRuntimeError(refusal)
+        # As in _finish_create_session: the pair the set_mode bracket read around
+        # its request, for the recorder after the mode block; None otherwise.
+        set_mode_persona: tuple[str, str] | None = None
         if mode_agent and self._mode_available(mode_agent, resp):
             # Measured BEFORE the request goes out, which is the only moment the
             # answer is unambiguous: everything queued right now initialized
@@ -8038,12 +8113,13 @@ class AcpRuntime:
             # then consumed without being recorded, leaving the panel at a false
             # "no report" for the rest of the session.
             staged_before_switch = handle.queued_frame_count()
-            await self._activate_mode_bracketed(
+            set_mode_persona = await self._activate_mode_bracketed(
                 resume_sid,
                 mode_agent,
                 budget=budget,
                 payload_snapshot=payload_snapshot,
                 wire_registered=kas_agents is not None,
+                handle=handle,
             )
             handle.active_agent = mode_agent
             # See create_session: after a real mode switch, registration frames
@@ -8066,6 +8142,19 @@ class AcpRuntime:
                 f"to run the backend default mode {_current or '(unknown)'} in its place. "
                 f"{remedy}"
             )
+
+        # Mirrors _finish_create_session: KAS got its payload re-sent, and on
+        # kiro-cli this runtime read the spec when its process spawned (a fresh
+        # runtime respawns for a resume) and re-read it at the set_mode just
+        # above, so the snapshot the prompt builder's dedup compares against is
+        # recorded for a resume too. The recorder runs AFTER the set_mode bracket
+        # here as on the create path: it is the map's one writer, and it prefers
+        # the pair the bracket read around set_mode over the spawn copy. A resume
+        # records no launch or projected sources, so nothing else has to come
+        # first.
+        await self._record_native_persona_snapshot(
+            handle, active_agent, kas_agents, set_mode_persona=set_mode_persona
+        )
 
         # Drain MCP-init / oauth / config notifications before the first prompt
         # (parity with AcpClient). Transcript-replay frames were already dropped
@@ -8101,6 +8190,115 @@ class AcpRuntime:
         return handle
 
     # ── Internal Helpers ──
+
+    def _native_persona_text(
+        self, agent: str | None, transport: str | None = None
+    ) -> tuple[str, str] | None:
+        """``(agent, persona text)`` kiro-cli holds for *agent*, or ``None``.
+
+        Blocking (reads the spec file): call it through ``asyncio.to_thread``.
+        kiro-cli reads an agent's spec at two moments only -- when its process
+        spawns (the ``--agent`` spec) and at a successful ``session/set_mode``
+        -- and not again at a plain ``session/new``, so a snapshot has to be
+        the text of one of those moments, read immediately before the request
+        that makes kiro-cli read it, not the file as it reads at session time.
+        One read, before: an edit landing between it and kiro-cli's own read
+        leaves the file different from the snapshot, so the block is sent (a
+        repeat), never withheld (a loss). *transport* is the name kiro-cli is
+        given -- the skill-view alias when a view was prepared, else the agent's
+        own name -- and selects the spec read (``native_spec_prompt_copy``):
+        the alias is the copy kiro-cli loads, and for an inline prompt its text
+        cannot change under its name, so there the read has no window at all.
+        A plain name is resolved the way kiro-cli resolves it from this
+        runtime's work dir (its process cwd): a spec declaring the name in that
+        checkout's ``.kiro/agents`` first, else the user-level spec; a checkout
+        copy records nothing, so the block is sent rather than withheld against
+        a user-level text kiro-cli never loaded.
+        ``None`` for a host that takes no native spec prompt, for no agent, and
+        for any shape or read failure -- each of which records nothing, so the
+        block is kept.
+        """
+        if not agent or self.acp_backend not in ACP_BACKENDS_NATIVE_SPEC_PROMPT:
+            return None
+        from kiro_crew.member_essential_context import native_spec_prompt_copy
+
+        text = native_spec_prompt_copy(agent, transport=transport, work_dir=self._work_dir)
+        return None if text is None else (agent, text)
+
+    def _spawn_persona_text(self, transport: str | None = None) -> tuple[str, str] | None:
+        """The spawn agent's persona as kiro-cli will load it under *transport*
+        (the translated ``--agent`` value), read by ``_spawn_admitted`` just
+        before the process starts."""
+        return self._native_persona_text(self._agent, transport)
+
+    async def _record_native_persona_snapshot(
+        self,
+        handle: AcpSessionHandle,
+        active_agent: str,
+        kas_agents: Any,
+        *,
+        set_mode_persona: tuple[str, str] | None = None,
+    ) -> None:
+        """Record the persona text the harness itself delivered for *active_agent*.
+
+        One helper for both establishment paths: ``_finish_create_session`` and
+        ``load_session``. A resume delivers the persona natively exactly as a cold
+        start does: a resumed KAS session gets its wire payload re-sent, and on
+        kiro-cli a resume runs on a runtime that read the spec when its process
+        spawned (a fresh runtime respawns) and re-reads it at ``set_mode`` when
+        the resume path sends one. So a resume needs the same record -- without
+        it, every resumed session had no snapshot and the post-compaction
+        reinjection repeated the block on the very hosts that already carry it
+        (kirodotdev/KiroCrew#13305). This is the map's one writer for the persona
+        on both paths, and it runs after the ``set_mode`` bracket and after every
+        merge (the launch and projected sources on the create path), so the
+        one-record guard below sees everything the map already holds.
+
+        Inline prompt bytes and file resources come from the same activated wire
+        definition, so a KAS host is recorded from its payload. kiro-cli loads the
+        active agent's spec itself -- its skill-view alias when a view was
+        prepared, else the user-level spec -- with no wire copy to record, and it
+        reads that spec at process spawn and at ``set_mode``, never at a plain
+        ``session/new``: so the copies recorded here are read from the spec named
+        at each of those two moments, immediately before it. *set_mode_persona*
+        is the pair the ``set_mode`` bracket read before its request, ``None``
+        when no ``set_mode`` was sent, when the copy could not be read, or on a
+        wire-registered host (its spec travelled in the payload); it is preferred
+        because it is the text kiro-cli holds after the mode change. Otherwise
+        the spawn read (``_spawn_persona_snapshot``) is the copy. Either is used
+        only when it is the active agent's.
+        The file as it reads NOW is never the source -- a persona edited between
+        the spawn and this session would match the file and withhold a block for
+        text kiro-cli does not hold. The prompt builder's dedup then compares a
+        later edit against THIS text rather than the file as it reads then. Only a
+        host with no wire payload (``kas_agents is None``: it took its agent at
+        spawn time) is recorded this way; a wire-registered host holds exactly
+        what its payload carried, so a definition missing from that payload is
+        never filled in from a file. A member launch has already recorded that
+        persona under its source path, and one record per loaded document is the
+        contract of this map, so a text already present is not entered a second
+        time. No snapshot, or one for another agent, records nothing, which keeps
+        the block: a repeat costs a duplicate, a wrong withhold costs the persona.
+        """
+        from kiro_crew.member_essential_context import native_prompt_document_key
+
+        prompt_key = native_prompt_document_key(active_agent)
+        for definition in kas_agents or ():
+            if definition.get("id") == active_agent and isinstance(definition.get("prompt"), str):
+                handle.native_context_documents[prompt_key] = definition["prompt"]
+        spawn_snapshot = self._spawn_persona_snapshot
+        candidate: tuple[str, str] | None = None
+        if set_mode_persona is not None and set_mode_persona[0] == active_agent:
+            candidate = set_mode_persona
+        elif spawn_snapshot is not None and spawn_snapshot[0] == active_agent:
+            candidate = spawn_snapshot
+        if (
+            kas_agents is None
+            and prompt_key not in handle.native_context_documents
+            and candidate is not None
+            and candidate[1] not in handle.native_context_documents.values()
+        ):
+            handle.native_context_documents[prompt_key] = candidate[1]
 
     async def _wait_managed_mcp(
         self,

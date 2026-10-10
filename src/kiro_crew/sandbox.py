@@ -1381,6 +1381,59 @@ def carveout_shadowed_by_foreign_mask(path: str, mode: str = "standard") -> bool
     return False
 
 
+def sandbox_may_hide_path(path: str) -> bool:
+    """Whether a child Kiro Crew's sandbox wraps can be denied a read of *path* on this host.
+
+    For a gateway-side read that stands in for a sandboxed child's own read of the same
+    file. The caller is the native persona snapshot
+    (``member_essential_context.native_spec_prompt_shape``): Crew withholds its block
+    only when the harness loaded the same text, and a harness drops a ``file://`` prompt
+    it cannot read without a word, so a file the gateway reads and the child cannot
+    would leave the session with neither copy.
+
+    Every tier's masks count, not one spawn's. The answer has to hold whatever tier,
+    renderer or delegation the spawn ends up with, which is decided later and in more
+    than one place (see :func:`wrapped_by_crew_sandbox`), and the two errors are not
+    alike: a wrong "visible" costs the persona, a wrong "hidden" one repeated block. The
+    trees are the ones the planner masks, pinned against both renderers by
+    ``test_sandbox_plan``: each tier's directory list under ``$HOME`` and re-anchored
+    under a pod's home, the relocated governance cache and crew-home leaves, the
+    md-notebook directories a planted link degraded, the voice runtime, the single
+    masked files and ``~/.ssh``. A caller's ``extra_hidden_dirs`` are not among them:
+    the harness whose spec prompt is read this way passes none. Both the given and the
+    resolved spelling of *path* are compared with both spellings of each tree, since a
+    mask over a directory also hides a link into it.
+
+    Reads what the mask builders read and changes nothing: the voice runtime is named
+    from the data home and never primed here (priming creates it). Never raises: a host
+    it cannot read reports the path hidden.
+    """
+    try:
+        home = str(Path.home())
+        policy = _sandbox_policy()
+        tier_dirs = tuple(
+            dict.fromkeys([*_STANDARD_DIRS, *policy.cc_dirs(), *policy.strict_dirs()])
+        )
+        trees = [os.path.join(home, rel) for rel in (*tier_dirs, *_CC_FILES, ".ssh")]
+        trees.extend(_pod_os_home_targets(tier_dirs))
+        trees.extend(_relocated_policy_cache_dirs())
+        trees.extend(
+            _relocated_crew_targets((*_CREW_HIDDEN_LEAVES, *_RELOCATED_CREW_HIDDEN_LEAVES))
+        )
+        trees.extend(_md_notebook_degraded_mask_dirs())
+        trees.append(os.path.join(str(config_dir()), _VOICE_RUNTIME_LEAF))
+        spellings = {os.path.abspath(path), os.path.realpath(path)}
+        for tree in dict.fromkeys(trees):
+            for root in {os.path.abspath(tree), os.path.realpath(tree)}:
+                inside = root.rstrip(os.sep) + os.sep
+                if any(s == root or s.startswith(inside) for s in spellings):
+                    return True
+    except Exception:
+        logger.debug("could not tell whether the sandbox hides %s", path, exc_info=True)
+        return True
+    return False
+
+
 #: The subset of ``_CREW_READONLY_LEAVES`` the launcher may CREATE in order to seal.
 #:
 #: ``mount(2)`` cannot target a path that does not exist, so the READONLY seal below

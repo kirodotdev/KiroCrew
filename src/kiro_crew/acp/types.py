@@ -46,6 +46,8 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_MEMBER_PANEL,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
+    ACP_BACKENDS_NATIVE_SPEC_PROMPT,
+    ACP_BACKENDS_NATIVE_SPEC_PROMPT_ACROSS_COMPACTION,
     ACP_BACKENDS_OPEN_EXTERNAL_URL,
     ACP_BACKENDS_POD_HOME_REMAP,
     ACP_BACKENDS_RESUME_WITHOUT_LOAD,
@@ -66,6 +68,7 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     model_registry_namespace,
     overlay_project_scope,
     selectable_backends,
+    spec_prompt_retention_verified,
 )
 
 # Declared per harness rather than listed as a capability set: whether a

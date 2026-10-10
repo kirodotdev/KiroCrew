@@ -709,3 +709,105 @@ def test_the_spawn_plan_logs_each_refusal_under_the_sandbox_logger(
     assert record.getMessage() == (
         "SECURITY: refusing sandbox write carve-out 'relative': not an absolute path"
     )
+
+
+# --------------------------------------------------------------------------- #
+# The gateway-side question: may a sandboxed child be denied this path?
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("layout", ["default", "pod home", "relocated home", "degraded notebook"])
+@pytest.mark.parametrize("backend", [BACKEND_NAMESPACE, BACKEND_SEATBELT])
+@pytest.mark.parametrize("tier", ["standard", "cc", "strict"])
+def test_sandbox_may_hide_path_covers_every_tree_a_plan_masks(
+    live_host: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    layout: str,
+    backend: str,
+    tier: str,
+) -> None:
+    """A gateway read that stands in for a sandboxed child's (the native persona
+    snapshot) must never call visible what a plan on this host denies: each live mask,
+    masked file and ``~/.ssh``, and a file inside each, for every tier, renderer and
+    layout the planner re-anchors."""
+    if layout == "pod home":
+        monkeypatch.setenv("KIROCREW_POD", "1")
+        monkeypatch.setenv("KIROCREW_OS_HOME", str(tmp_path / "pod-home"))
+    elif layout == "relocated home":
+        relocated = tmp_path / "srv" / "crew"
+        relocated.mkdir(parents=True)
+        monkeypatch.setattr(sandbox, "config_dir", lambda: relocated)
+    elif layout == "degraded notebook":
+        degraded = str(live_host / ".kiro" / "crew" / "notebook-state")
+        monkeypatch.setattr(sandbox, "_md_notebook_degraded_mask_dirs", lambda: [degraded])
+    plan = sandbox._spawn_plan(backend, tier)
+    denied = [*plan.sensitive_files, *([plan.ssh_dir] if plan.hide_ssh else [])]
+    assert denied
+    for tree in denied:
+        assert sandbox.sandbox_may_hide_path(tree), tree
+        assert sandbox.sandbox_may_hide_path(os.path.join(tree, "persona.md")), tree
+
+
+def test_sandbox_may_hide_path_leaves_readable_trees_visible(live_host: Path) -> None:
+    """An ordinary file, the kiro agents tree and a crew app's own data are readable in
+    every tier (the agents tree is sealed read-only, not masked)."""
+    for path in (
+        live_host / "notes" / "persona.md",
+        live_host / ".kiro" / "agents" / "prompts" / "persona.md",
+        live_host / ".kiro" / "crew" / "apps" / "demo" / "data" / "persona.md",
+    ):
+        assert not sandbox.sandbox_may_hide_path(str(path)), path
+
+
+def test_sandbox_may_hide_path_resolves_links_on_both_sides(
+    live_host: Path, tmp_path: Path
+) -> None:
+    """A mask over a directory hides it under every name: a visible link into a masked
+    tree, and the real spelling of a masked tree that is itself a link."""
+    secret = live_host / ".gnupg" / "persona.md"
+    secret.parent.mkdir()
+    secret.write_text("persona", encoding="utf-8")
+    link = live_host / "notes" / "persona.md"
+    link.parent.mkdir()
+    link.symlink_to(secret)
+    assert sandbox.sandbox_may_hide_path(str(link))
+    volume = tmp_path / "volume" / "aws"
+    volume.mkdir(parents=True)
+    (live_host / ".aws").symlink_to(volume)
+    assert sandbox.sandbox_may_hide_path(str(volume / "persona.md"))
+
+
+def test_sandbox_may_hide_path_reports_hidden_when_the_host_cannot_be_read(
+    live_host: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Never raises, and an unreadable host answers "hidden": the caller then sends
+    its block, which costs a repeat where the other answer could cost the persona."""
+
+    def _broken() -> object:
+        raise RuntimeError("no platform context")
+
+    monkeypatch.setattr(sandbox, "_sandbox_policy", _broken)
+    assert sandbox.sandbox_may_hide_path(str(live_host / "notes" / "persona.md"))
+
+
+def test_sandbox_may_hide_path_changes_nothing_and_asks_no_ssh(
+    live_host: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """It reads no more than the mask builders: the voice runtime is named from the data
+    home -- here relocated, so no ``$HOME`` entry covers it -- and never primed (priming
+    creates it), and the host ssh is never asked."""
+
+    def _forbidden() -> bool:
+        raise AssertionError("the question needs no ssh probe")
+
+    relocated = tmp_path / "srv" / "crew"
+    relocated.mkdir(parents=True)
+    monkeypatch.setattr(sandbox, "config_dir", lambda: relocated)
+    monkeypatch.setattr(sandbox, "_ssh_supports_accept_new", _forbidden)
+    monkeypatch.setattr(sandbox, "_voice_runtime_paths_cache", None)
+    voice = relocated / "run" / "voice-runtime"
+    assert sandbox.sandbox_may_hide_path(str(voice / "socket"))
+    assert not sandbox.sandbox_may_hide_path(str(live_host / "notes" / "persona.md"))
+    assert sandbox._voice_runtime_paths_cache is None
+    assert not (relocated / "run").exists()

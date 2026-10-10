@@ -2819,3 +2819,33 @@ def test_absent_managed_literal_resource_still_refuses(env):
     _write_template(agents, "writer-template", ["file://memory/never-written.md"])
     with pytest.raises(MemberEssentialContextError, match="managed"):
         documents_for_member("writer-template", str(project))
+
+
+def test_native_envelope_blanks_the_persona_recorded_under_the_prompt_key(env):
+    """kirodotdev/KiroCrew#13305: ``build_message`` hands the session's native
+    documents to the member essentials, whose native envelope blanks a body the
+    harness already holds. The persona a harness loaded itself is recorded under
+    ``template://<agent>#prompt`` (the KAS wire copy, kiro-cli's activation
+    snapshot), not under its source path, so that key is read too: with the
+    persona under it the envelope sent to a native host carries no second copy;
+    another text under it, or nothing recorded, leaves the body in."""
+    from kiro_crew.member_essential_context import native_prompt_document_key
+
+    body = "Bound Soul: preserve the user's voice."
+    key = native_prompt_document_key("writer-template")
+    for native, expected in (
+        ({key: body}, False),
+        ({key: "An older persona kiro-cli loaded before an edit."}, True),
+        ({}, True),
+    ):
+        envelope_out: list[str] = []
+        full = env.builder._build_v2_essentials(
+            env.store,
+            member=env.member,
+            project=str(env.project),
+            native_documents=native,
+            native_envelope_out=envelope_out,
+            execution_template="writer-template",
+        )
+        assert body in full
+        assert envelope_out and (body in envelope_out[0]) is expected

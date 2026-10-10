@@ -156,7 +156,22 @@ prompt; it invalidates the receipt for subsequent delivery. Neither behavior is
 a guarantee that a silent trim recovers on the next turn.
 
 `context_provider_type` reports the actual backend label, independent of the
-installation's `agent.provider` setting. `native_context_documents` defaults to
+installation's `agent.provider` setting. Where the harness itself delivers a
+custom agent spec's own `prompt` (`ACP_BACKENDS_NATIVE_SPEC_PROMPT`: kiro-cli,
+KAS) the ACP runtime records the copy it loaded, and `context.py` then drops its
+`[AGENT SYSTEM PROMPT]` copy when it would repeat, word for word, that recorded
+copy; no provider flag is read, since the record exists only on those backends.
+That copy is recorded on the session handle at
+`session/new`, and again at `session/load` when a session is resumed, under
+`native_context_documents["template://<agent>#prompt"]`: KAS from the activated
+wire definition, kiro-cli from the spec it loads itself at spawn and
+`session/set_mode` (the skill-view alias when one was prepared, else the name as
+resolved from the process cwd; inline text or an absolute `file://`, read once
+off the event loop; nothing is recorded for a shape the dedup would not accept, a
+`file://` target a Kiro Crew sandbox may hide, a checkout spec, or a failed
+read). No record, or a spec
+edited since, keeps the block.
+`native_context_documents` defaults to
 empty. Kiro's launch plan captures admitted selected-template sources after
 materialization and governance checks. Successful activation of that same agent
 in the same cwd transfers source responsibility to the handle. This relies on

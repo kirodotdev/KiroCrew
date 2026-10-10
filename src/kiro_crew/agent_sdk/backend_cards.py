@@ -378,6 +378,20 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "choosing a harness loses nothing; a wrong membership runs every hook twice "
         "or not at all, which is a defect"
     ),
+    "ACP_BACKENDS_NATIVE_SPEC_PROMPT": (
+        "who delivers a custom agent spec's own prompt: the harness, or Crew's "
+        "[AGENT SYSTEM PROMPT] block for a harness that reads no kiro spec. The "
+        "persona arrives either way, so a reader choosing a harness loses nothing; "
+        "a wrong membership sends it twice or not at all, which is a defect"
+    ),
+    "ACP_BACKENDS_NATIVE_SPEC_PROMPT_ACROSS_COMPACTION": (
+        "whether the turn after a compaction may trust the harness to still hold "
+        "that prompt, or must re-send Crew's [AGENT SYSTEM PROMPT] block; trusted "
+        "only from the harness release the live transcript was taken on. The "
+        "persona is in the session either way, so a reader choosing a harness "
+        "loses nothing; a wrong membership drops it for the rest of the session, "
+        "which is a defect"
+    ),
     "ACP_BACKENDS_HARNESS_OWNED_SESSIONS": (
         "whose disk the transcript sits on. Crew holds a non-member's transcript under "
         "its own sessions tree and a reopened chat restores from there, so the "
