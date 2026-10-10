@@ -188,7 +188,9 @@ async def _choose_mode(state, body: dict) -> web.Response:
     app = web.Application()
     app["state"] = state
     req = make_mocked_request("POST", "/api/chat/mode", app=app)
-    req["internal_auth"] = True
+    # Use a dashboard-owner request (no owner configured → "local-app" passes).
+    req["app"] = ""
+    req["user"] = "local-app"
 
     async def _read(_request, **_kw):
         return body, None

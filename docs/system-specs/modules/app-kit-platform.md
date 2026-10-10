@@ -1662,10 +1662,11 @@ slot, cron job or subagent).
   order. `deny_session_approval_caller` runs first, so an app-token caller
   without the `sessionApproval` grant gets the same 403
   `session_approval_not_granted` on both routes, its own slots included. That
-  check exempts an internal-secret caller (`request["internal_auth"]`) on both
-  routes alike, so an app's cron job or subagent acting for the app skips the
-  grant and is bounded only by the ownership step that follows: it still reaches
-  no slot the app does not own. Then the live slots holding an undone
+  check admits an internal-secret caller (`request["internal_auth"]`) on
+  `chat_mode` only when it presents an attested `cron:` key; on `chat_slot_approve`
+  and `approval_resolve` every internal-secret caller is refused 403 like a
+  non-owner. An app's cron job or subagent that does carry an attested `cron:`
+  key and reaches `chat_mode` is bounded by the ownership step that follows. Then the live slots holding an undone
   future under the id are snapshotted, and `chat_handlers._app_may_send_to_slot`
   judges each one. ACP request ids are connection-scoped and recur, so the id must
   name exactly one pending request the app may control: with two or more (two of

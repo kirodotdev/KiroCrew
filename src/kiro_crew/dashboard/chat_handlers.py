@@ -8570,14 +8570,60 @@ def deny_non_dashboard_caller(request: web.Request, operation: str) -> web.Respo
     return None
 
 
+async def _internal_session_approval_refusal(
+    request: web.Request, operation: str
+) -> "web.Response | None":
+    """Deny bare internal-auth callers on the session-approval routes.
+
+    ``X-Internal-Secret`` proves only that the caller runs on this loopback — not
+    who it is.  Any process holding ``.local_secret`` can otherwise reach these
+    routes and set approval mode for every session.
+
+    The one admitted internal path is a cron script presenting its attested
+    ``cron:<id>`` key on ``chat_mode``.  That caller's own ``cron_creator_admission``
+    and ``cron_mode_refusal`` fences apply after this guard, so the cron still only
+    touches sessions it created and only with the two modes its gate allows.
+
+    Every other internal-auth caller — bare secret with no key, any key on
+    ``chat_slot_approve`` or the ``/api/approvals/{id}/{action}`` route, even a
+    verified ``dashboard:`` or ``subagent:`` key — is refused here like a non-owner.
+    Self-approval (setting trust on one's own slot) is the same harm as setting it on
+    any other slot, so it is not an exception.
+    """
+    from kiro_crew.dashboard.handlers._shared import (
+        _owner_denial_response,
+        member_request_scope,
+    )
+
+    scope = await member_request_scope(request)
+    session = scope.session or ""
+    if scope.verified and session.startswith("cron:") and operation == "chat_mode":
+        return None
+    try:
+        sel().log_api_access(
+            caller=session or "internal",
+            operation=operation,
+            outcome="denied",
+            source="internal_auth",
+            error="internal-auth caller is not admitted on session approval",
+        )
+    except Exception:  # pragma: no cover - audit is best-effort
+        logger.debug("SEL audit failed for internal-auth session approval denial", exc_info=True)
+    return _owner_denial_response(request, "forbidden")
+
+
 async def deny_session_approval_caller(request: web.Request, operation: str) -> web.Response | None:
     """Allow the dashboard owner or an app with the live session approval grant.
+
+    Internal-auth callers are handled by :func:`_internal_session_approval_refusal`:
+    only a cron script with its attested key is admitted on ``chat_mode``; every
+    other internal caller is refused like a non-owner.
 
     The grant verdict is this request's one read (:func:`session_grant`), shared
     with the per-slot checkpoint that already ran for a per-slot route.
     """
     if request.get("internal_auth") is True:
-        return None
+        return await _internal_session_approval_refusal(request, operation)
     request_app = str(request.get("app") or "")
     if not request_app:
         return deny_non_dashboard_caller(request, operation)
