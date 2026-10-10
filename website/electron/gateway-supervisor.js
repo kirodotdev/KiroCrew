@@ -165,6 +165,11 @@ function createGatewaySupervisor({
   error,
   logPath,
   predictLocalPort = () => port,
+  // Told every time a stale bundle sends the backend back to the candidate
+  // list. A backend that comes back says nothing about the shell: the same
+  // prune that removed the bundled backend can have removed this app's own
+  // files, and only the caller decides what to do about that.
+  onStaleBundleRespawn = () => {},
   fsMod = defaultFs,
   osMod = defaultOs,
   pathMod = defaultPath,
@@ -1418,6 +1423,8 @@ function createGatewaySupervisor({
         spawnedExecutablePaths = [];
         gatewayStartFailure = null;
         spawnGateway(resolve);
+        try { onStaleBundleRespawn(); }
+        catch (error) { glog(`stale bundle: respawn hook threw: ${error && error.message}`); }
         return true;
       }
       glog(`stale bundle persists after re-resolve (${cause} on bin=${bin}) — starting a fresh copy of the app from ${processObj.execPath}`);
@@ -2629,6 +2636,9 @@ function createGatewaySupervisor({
     syncTunnel: () => tunnelKeeper.start(),
     onInstallDispatched,
     onInstallFailed,
+    // Read-only view of the update handoff, for watchers that must stay quiet
+    // while the updater owns the bundle.
+    isInstallingUpdate: () => installingUpdate,
   });
 }
 

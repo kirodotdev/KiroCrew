@@ -66,6 +66,10 @@ function reopenCrewCompanionAfterUpdate() {
   try { resumeCrewCompanion(); } catch { /* best effort */ }
 }
 const { createGatewaySupervisor } = require("./gateway-supervisor");
+const {
+  createShellBundleWatch,
+  promptRestartForPrunedBundle,
+} = require("./shell-bundle-watch");
 const { createWindowLifecycle } = require("./window-lifecycle");
 const { createIpcRegistrar } = require("./ipc-registrar");
 const { installEarlyBootGuard } = require("./early-boot-guard");
@@ -380,6 +384,22 @@ if (!app.requestSingleInstanceLock()) {
 
 // Factories are created at module load, before any renderer can change settings.
 // In particular, the supervisor snapshots runLocalGateway once for this launch.
+// The shell-bundle watch is declared first because the supervisor reports
+// stale-bundle respawns to it, and it reads the supervisor's update handoff.
+const shellBundleWatch = createShellBundleWatch({
+  // Electron's unpatched fs: the patched one can answer for a deleted app.asar
+  // from its archive cache.
+  fs: require("original-fs"),
+  path,
+  processObj: process,
+  isPackaged: app.isPackaged,
+  isQuitting: () => isQuitting,
+  isUpdating: () => gateway.isInstallingUpdate(),
+  log: glog,
+  onPruned: () => {
+    void promptRestartForPrunedBundle({ dialog, requestQuit, log: glog });
+  },
+});
 const gateway = createGatewaySupervisor({
   app,
   store,
@@ -411,6 +431,8 @@ const gateway = createGatewaySupervisor({
   // process pins the answer into the successor's environment, so the port it
   // watches is the port the successor takes.
   predictLocalPort: () => fallbackLocalPort(store, glog),
+  // The respawned backend can be healthy while this app's own bundle is gone.
+  onStaleBundleRespawn: () => shellBundleWatch.checkNow(),
 });
 
 windows = createWindowLifecycle({
@@ -606,6 +628,9 @@ app.whenReady().then(async () => {
 
   await gateway.start();
   await gateway.connect(mainWindow);
+  // Armed for every launch mode, including a service-managed or adopted
+  // gateway, whose backend never reports a stale bundle to this process.
+  shellBundleWatch.start();
   // The gateway now answers and the dashboard is loading. After an upgrade, drop
   // the old build's cached copies and connect again: a fresh navigation replaces
   // the pending one, where a reload would replay the uncommitted splash.
@@ -647,6 +672,7 @@ app.whenReady().then(async () => {
 
 app.on("before-quit", () => {
   isQuitting = true;
+  shellBundleWatch.stop();
   // Flush the final metrics window before gateway teardown begins.
   try {
     desktopMetricsRecorder?.stop();

@@ -172,6 +172,7 @@ function harness(overrides = {}) {
     },
     logPath: () => "/virtual/logs/gateway-launch.log",
     predictLocalPort: overrides.predictLocalPort,
+    onStaleBundleRespawn: overrides.onStaleBundleRespawn,
     fsMod,
     osMod: { homedir: () => "/virtual/home" },
     pathMod: path.posix,
@@ -225,6 +226,7 @@ test("module has no top-level Electron dependency and its factory accepts fakes"
     "syncTunnel",
     "onInstallDispatched",
     "onInstallFailed",
+    "isInstallingUpdate",
   ]);
 });
 
@@ -739,6 +741,7 @@ function staleBundleHarness({
   // the default; the cases that matter override it with a foreign holder or a
   // probe that cannot run at all.
   ownerExecFile = ownerProbe(OWN_GATEWAY_COMMAND),
+  onStaleBundleRespawn,
 } = {}) {
   const state = {
     pruned: false,
@@ -776,6 +779,7 @@ function staleBundleHarness({
     fsMod,
     httpMod,
     timers,
+    onStaleBundleRespawn,
     ...(ownerExecFile ? { execFileFn: ownerExecFile } : {}),
     mainWindow: {
       isDestroyed: () => false,
@@ -1716,6 +1720,59 @@ test("a pruned bundle re-probes once, then surfaces the failure when the app exe
   assert.strictEqual(state.lockReleases, 0);
   assert.deepStrictEqual(state.exits, [], "a missing app executable must not exit into nothing");
   assert.ok(logs.some((line) => line.includes("cannot relaunch; surfacing the failure instead")));
+});
+
+// A prune that takes the bundled backend usually takes this app's own bundle
+// with it. When the re-probe lands on a working launcher outside the bundle the
+// backend is healthy again, and that must not end the incident for the shell:
+// the caller is told, so it can check the files this process runs from.
+test("a stale-bundle respawn onto a non-bundled launcher tells the caller", async () => {
+  const respawns = [];
+  const { supervisor, spawnCalls, state } = staleBundleHarness({
+    appExecutableGone: true,
+    onStaleBundleRespawn: () => respawns.push(spawnCalls.length),
+  });
+
+  await supervisor.start();
+  assert.strictEqual(spawnCalls[0][0], BUNDLED_BIN);
+  assert.deepStrictEqual(respawns, []);
+
+  state.pruned = true;
+  spawnCalls[0].child.exitCode = 75;
+  spawnCalls[0].child.emit("exit", 75, null);
+
+  assert.strictEqual(spawnCalls.length, 2);
+  assert.strictEqual(spawnCalls[1][0], "kirocrew", "re-resolved to the PATH launcher");
+  assert.deepStrictEqual(respawns, [2], "told once, after the replacement was spawned");
+  assert.deepStrictEqual(state.exits, []);
+});
+
+test("a respawn hook that throws does not undo the respawn", async () => {
+  const { supervisor, spawnCalls, logs, state } = staleBundleHarness({
+    onStaleBundleRespawn: () => { throw new Error("boom"); },
+  });
+
+  await supervisor.start();
+  state.pruned = true;
+  spawnCalls[0].child.emit("exit", 75, null);
+
+  assert.strictEqual(spawnCalls.length, 2);
+  assert.ok(logs.some((line) => line.includes("respawn hook threw: boom")));
+});
+
+test("no stale-bundle respawn means no hook call", async () => {
+  const respawns = [];
+  const { supervisor, spawnCalls } = staleBundleHarness({
+    onStaleBundleRespawn: () => respawns.push(true),
+  });
+
+  await supervisor.start();
+  supervisor.onInstallDispatched();
+  assert.strictEqual(supervisor.isInstallingUpdate(), true);
+  spawnCalls[0].child.emit("exit", 75, null);
+
+  assert.strictEqual(spawnCalls.length, 1);
+  assert.deepStrictEqual(respawns, []);
 });
 
 // The probe and the restart are not atomic: an in-place update can prune the
