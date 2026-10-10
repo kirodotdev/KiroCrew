@@ -1640,6 +1640,53 @@ class TestLinkedSlotSessionKey:
             state.conversation_log.update_metadata.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_rebind_during_reset_restores_the_fallback_walk_it_reset(self, monkeypatch):
+        # An agent switch resets the provider-scoped fallback walk (the pin
+        # itself is kept). This is the one rollback path, and it must bring the
+        # walk back with the agent: a 409 saying nothing changed cannot leave
+        # the slot with a walk cleared for an agent it did not switch to.
+
+        def _boom():
+            raise RuntimeError("config unreadable")
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.KiroCrewConfig.load", _boom)
+        slot = _ChatSlot("test")
+        slot.agent = "old-agent"
+        slot.model = _MODEL_A
+        slot._fallback_candidate_idx = 2
+        slot._fallback_walked = ["fallback-a"]
+        slot._active_fallback_model = "fallback-a"
+        slot._fallback_primary_model = _MODEL_A
+        slot._fallback_slot_model = _MODEL_A
+        slot._fallback_pick_gen = 3
+        state = _mock_state(slot, provider=None)
+        state.conversation_log = MagicMock()
+
+        seen_at_reset: dict[str, list[str]] = {}
+
+        async def _reset_and_rebind(*_a, **_k):
+            seen_at_reset["walk"] = list(slot._fallback_walked)
+            slot.linked_session_key = "cron:job-1"
+            return True
+
+        state.sessions.reset = AsyncMock(side_effect=_reset_and_rebind)
+        async with TestClient(TestServer(as_owner(_make_app(state)))) as client:
+            resp = await client.post("/api/chat/slots/test/agent", json={"agent": "new-agent"})
+            data = await resp.json()
+            assert resp.status == 409
+            assert data["code"] == "session_rebound"
+
+        assert seen_at_reset["walk"] == [], "the commit must reset the walk before the reset"
+        assert slot.agent == "old-agent"
+        assert slot._fallback_candidate_idx == 2
+        assert slot._fallback_walked == ["fallback-a"]
+        assert slot._active_fallback_model == "fallback-a"
+        assert slot._fallback_primary_model == _MODEL_A
+        assert slot._fallback_slot_model == _MODEL_A
+        assert slot._fallback_pick_gen == 3
+        assert slot.model == _MODEL_A, "the pin is kept by design, rollback or not"
+
+    @pytest.mark.asyncio
     async def test_effort_switch_probes_and_resets_the_linked_session(self):
         slot = _ChatSlot("test")
         slot.linked_session_key = "slack:123.456"

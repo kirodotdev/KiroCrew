@@ -4950,6 +4950,23 @@ class _CommitToken(str):
     __slots__ = ()
 
 
+def clear_slot_model_binding(slot: Any) -> None:
+    """Reset the fallback walk; the pin itself is kept.
+
+    The walk belongs to the old agent's provider and cannot resume on its
+    replacement. The stored pin is scoped on read and stays unchanged.
+
+    Use a fresh identity token so rollback restores the prior walk only while
+    this reset still owns it; a later reset must remain distinguishable.
+    """
+    slot._fallback_candidate_idx = 0
+    slot._fallback_walked = []
+    slot._active_fallback_model = _CommitToken("")
+    slot._fallback_primary_model = ""
+    slot._fallback_slot_model = ""
+    slot._fallback_pick_gen = 0
+
+
 # Serializes slot SWITCH transactions that share one session, keyed by
 # ``effective_session_key``. The per-slot locks the switch handlers take
 # (``slot._lock``, ``slot._model_pick_lock``) are created per ``_ChatSlot``,
@@ -5663,6 +5680,27 @@ async def switch_slot_agent(
         slot.agent_kind = _CommitToken(new_agent_kind)
         committed_agent = slot.agent
         committed_agent_kind = slot.agent_kind
+        # The resolved namespace decides, not the request's spelling alone: a
+        # name-only pick can still change member/template (the member lookup
+        # answered by the shared template, or the reverse), which is a rebind
+        # even though the name stood still. Both commits see the resolved kind,
+        # so both the decision and the rollback below are made here.
+        agent_changed = agent_name != prior_agent or (
+            new_agent_kind != "" and prior_agent_kind != "" and new_agent_kind != prior_agent_kind
+        )
+        prior_fallback_candidate_idx = slot._fallback_candidate_idx
+        prior_fallback_walked = slot._fallback_walked
+        prior_active_fallback_model = slot._active_fallback_model
+        prior_fallback_primary_model = slot._fallback_primary_model
+        prior_fallback_slot_model = slot._fallback_slot_model
+        prior_fallback_pick_gen = slot._fallback_pick_gen
+        committed_active_fallback_model: str | None = None
+        if agent_changed:
+            # Fallback recovery is tied to the provider that serves this agent,
+            # so a stale walk must not resume on the replacement session. The
+            # pin is deliberately kept (see clear_slot_model_binding).
+            clear_slot_model_binding(slot)
+            committed_active_fallback_model = slot._active_fallback_model
 
         # Derived fields commit BEFORE the reset too, compare-and-set against
         # the pre-await baseline: a send landing during the reset teardown
@@ -5713,10 +5751,26 @@ async def switch_slot_agent(
             token object, so an identity match proves the field is still
             this commit's; a field this request never committed (the
             write-side CAS lost) has a None token and is never touched.
+
+            ``slot.model`` is NOT part of the commit at all: the pin is kept by
+            design, so a rollback leaves it alone either way. The fallback walk
+            the commit reset is unwound here instead, on the same ownership
+            test — a refused switch that keeps the reset has changed something
+            while reporting failure.
             """
             if slot.agent is committed_agent and slot.agent_kind is committed_agent_kind:
                 slot.agent = prior_agent
                 slot.agent_kind = prior_agent_kind
+                if (
+                    committed_active_fallback_model is not None
+                    and slot._active_fallback_model is committed_active_fallback_model
+                ):
+                    slot._fallback_candidate_idx = prior_fallback_candidate_idx
+                    slot._fallback_walked = prior_fallback_walked
+                    slot._active_fallback_model = prior_active_fallback_model
+                    slot._fallback_primary_model = prior_fallback_primary_model
+                    slot._fallback_slot_model = prior_fallback_slot_model
+                    slot._fallback_pick_gen = prior_fallback_pick_gen
             if committed_workspace is not None and slot.workspace is committed_workspace:
                 slot.workspace = pre_await_workspace
             if committed_project is not None and slot.project is committed_project:
