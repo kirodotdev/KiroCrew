@@ -437,6 +437,27 @@ class TestTransportErrorText:
         assert isinstance(err, AcpPromptBusy)
         assert transport_dispatch._transport_error_text(err) == f"❌ {err}"
 
+    def test_prompt_busy_with_provider_text_keeps_the_generic_reply(self):
+        # Busy named only in ``message``: the formatter's curated busy branch
+        # reads ``data``, so the text is the fallback's provider passthrough.
+        try:
+            _raise_acp_error(
+                {
+                    "code": -32603,
+                    "message": "Prompt already in progress",
+                    "data": "provider raw text <!here> secret-ish",
+                }
+            )
+        except AcpPromptBusy as exc:
+            err = exc
+        else:
+            raise AssertionError("_raise_acp_error did not raise AcpPromptBusy")
+        assert not err.user_worded
+        assert (
+            transport_dispatch._transport_error_text(err)
+            == transport_dispatch._TRANSPORT_ERROR_TEXT
+        )
+
     def test_classified_acp_error_is_redacted_before_posting(self):
         private_path = "/Users/alice/secret/x"
         credential = "AKIAIOSFODNN7EXAMPLE"

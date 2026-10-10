@@ -16,7 +16,7 @@ the import this module replaces.
 
 from __future__ import annotations
 
-from kiro_crew.acp.client import AcpError, AcpProcessDied, AcpPromptBusy, AcpTimeoutError
+from kiro_crew.acp.client import AcpError, AcpProcessDied, AcpTimeoutError
 from kiro_crew.acp.session_handle import NATIVE_CHILD_NOT_RESUMABLE, AcpRequestTimeout
 from kiro_crew.acp.types import (
     EVENT_STRUCTURED_STATUS,
@@ -73,9 +73,11 @@ def is_user_worded_failure(exc: BaseException) -> bool:
 
     True for an ``AcpError`` with ``user_worded`` set (a curated formatter
     branch, or a raise site with fixed recovery wording such as an unavailable
-    model or a signed-out harness) whose ``transient`` verdict is not True, and
-    for ``AcpPromptBusy``, whose text is the formatter's busy wording. A
-    retryable failure keeps a chat surface's generic "try again" reply.
+    model or a signed-out harness) whose ``transient`` verdict is not True. An
+    ``AcpPromptBusy`` follows the same bit: its text is the formatter's busy
+    wording only when that curated branch matched, and the fallback's provider
+    text otherwise. A retryable failure keeps a chat surface's generic "try
+    again" reply.
 
     ``transient`` alone is not the test: it is a retry verdict set on every
     error frame, including the formatter's fallback that passes the provider's
@@ -86,4 +88,4 @@ def is_user_worded_failure(exc: BaseException) -> bool:
     """
     if not isinstance(exc, AcpError) or isinstance(exc, (AcpTimeoutError, AcpProcessDied)):
         return False
-    return (exc.user_worded and exc.transient is not True) or isinstance(exc, AcpPromptBusy)
+    return exc.user_worded and exc.transient is not True

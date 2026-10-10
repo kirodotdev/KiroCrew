@@ -1807,7 +1807,7 @@ def _raise_acp_error(
     if isinstance(error, dict):
         raw_data = f"{error.get('data', '')} {error.get('message', '')}"
     if _PROMPT_BUSY_RE.search(raw_data):
-        raise AcpPromptBusy(formatted)
+        raise AcpPromptBusy(formatted, user_worded=worded)
     err = AcpError(
         formatted,
         transient=_is_transient_raw_error(error, available_models),
