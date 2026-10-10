@@ -1719,8 +1719,11 @@ def _raise_if_unfinished(event: object, text: str) -> None:
     the partial text, and it is not transient: a retry would wait out the same
     stalled backend again.
     """
-    from kiro_crew.acp.client import AcpTimeoutError
-    from kiro_crew.acp.types import STOP_REASON_STALE_RECOVER, STOP_REASON_TIMEOUT
+    from kiro_crew.agent_sdk.drivers.acp_vocab import (
+        STOP_REASON_STALE_RECOVER,
+        STOP_REASON_TIMEOUT,
+        AcpTimeoutError,
+    )
 
     stop_reason = str(getattr(event, "stop_reason", "") or "")
     if stop_reason not in (STOP_REASON_TIMEOUT, STOP_REASON_STALE_RECOVER):
