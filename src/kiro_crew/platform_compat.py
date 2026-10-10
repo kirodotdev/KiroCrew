@@ -6503,7 +6503,9 @@ def process_start_time(pid: int) -> str | None:
     generations on the same host while the PID still names the same process
     object, and unequal once that PID has been recycled onto another. Units
     differ per platform and are deliberately not normalised -- nothing ever
-    compares one host's value against another's, and no caller parses it.
+    compares one host's value against another's. One caller parses the
+    Windows token: ``session_pid._pid_age_seconds`` turns that FILETIME into a
+    process age, so a change to the Windows encoding must change that parser too.
 
     Callers use it as a PID-reuse guard before signalling, so an unreadable
     value must fail SAFE: ``None`` means "identity unconfirmed", which every

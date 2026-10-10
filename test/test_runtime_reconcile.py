@@ -1148,20 +1148,9 @@ def test_process_age_comes_from_the_process_start_not_the_procfs_inode() -> None
     Pinned against the repository's own helper rather than a recomputation of it,
     and against this live process, whose age is genuinely non-zero.
     """
-    from kiro_crew import platform_compat
     from kiro_crew.session_pid import _pid_age_seconds
 
     mine = os.getpid()
-    if platform_compat.IS_WINDOWS:
-        # No procfs and no start clock there, which the helper documents by
-        # returning None. The contract that matters on Windows is the fail-closed
-        # one: an unreadable age is too young to touch, so the age floor withholds
-        # every kill rather than reading each candidate as ancient.
-        assert _pid_age_seconds(mine) is None
-        assert rr.process_age_secs(mine) == 0.0
-        assert rr.process_age_secs(2**31 - 1) == 0.0
-        return
-
     expected = _pid_age_seconds(mine)
     assert expected is not None, "this process's own age must be readable"
     measured = rr.process_age_secs(mine)
@@ -1173,6 +1162,118 @@ def test_process_age_comes_from_the_process_start_not_the_procfs_inode() -> None
 
     # Fail-closed: an unreadable pid is too young to touch, never old enough.
     assert rr.process_age_secs(2**31 - 1) == 0.0
+
+
+class _FrozenClock:
+    """Stand-in for ``session_pid.time`` whose ``time()`` is frozen at *now*."""
+
+    def __init__(self, now: float) -> None:
+        self._now = now
+
+    def time(self) -> float:
+        return self._now
+
+
+def _windows_filetime(unix_instant: float) -> str:
+    """*unix_instant* encoded as ``get_process_start_id`` reports it on Windows."""
+    from kiro_crew.session_pid import (
+        _FILETIME_TICKS_PER_SECOND,
+        _FILETIME_UNIX_EPOCH_OFFSET_SECONDS,
+    )
+
+    return str(
+        int((unix_instant + _FILETIME_UNIX_EPOCH_OFFSET_SECONDS) * _FILETIME_TICKS_PER_SECOND)
+    )
+
+
+def test_windows_age_floor_reads_the_filetime_and_withholds_a_young_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MUTATION TARGET: the reconciler's age floor on Windows.
+
+    ``process_age_secs`` reads the creation FILETIME there. A process younger
+    than :data:`DEFAULT_MIN_AGE_SECS` must still be held by the floor, and an
+    unreadable age must still read as too young to touch.
+    """
+    from kiro_crew import session_pid
+
+    now = 1_700_000_000.0
+    young_pid, old_pid, gone_pid = 4242, 4343, 4444
+    starts = {young_pid: _windows_filetime(now - 60.0), old_pid: _windows_filetime(now - 600.0)}
+    monkeypatch.setattr(session_pid.platform_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(session_pid.platform_compat, "get_process_start_id", starts.get)
+    monkeypatch.setattr(session_pid, "time", _FrozenClock(now))
+
+    young = rr.process_age_secs(young_pid)
+    assert abs(young - 60.0) < 0.01
+    assert young < rr.DEFAULT_MIN_AGE_SECS
+    assert abs(rr.process_age_secs(old_pid) - 600.0) < 0.01
+    assert rr.process_age_secs(gone_pid) == 0.0
+
+    killed: list[int] = []
+    audited: list[tuple[int, str, str]] = []
+    rec = _reconciler(kernel={young_pid}, recorded=set(), age=young, killed=killed, audited=audited)
+    rec.run_once()
+    audited.clear()
+    reading = rec.run_once()
+    assert reading.killed == 0 and killed == []
+    assert ("younger than the age floor",) == _refusals(audited)
+
+
+def test_windows_reconciler_has_no_kill_population_whatever_the_age(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """MUTATION TARGET: what keeps the reconciler's kill arms off Windows.
+
+    A readable Windows age does not arm either kill path. The scheduled arm's
+    population is the agent-slice cgroup, which resolves to nothing off Linux,
+    and the confirmed reclaim refuses off Linux before reading any pid. Both hold
+    even when every candidate reads far older than the age floor.
+    """
+    import sys
+
+    from kiro_crew import sandbox
+    from kiro_crew.session_scope_reap import instance_slice_pids
+
+    assert rr.RECLAIM_PLATFORM is (sys.platform == "linux")
+
+    # A populated agent slice, so the platform is the only thing that empties it.
+    instance = "kirocrew-agents-t0k3n.slice"
+    scope = tmp_path / "kirocrew.slice" / sandbox._CGROUP_AGENTS_SLICE / instance / "a.scope"
+    scope.mkdir(parents=True)
+    (scope / "cgroup.procs").write_text("4242\n", encoding="utf-8")
+    monkeypatch.setattr(sandbox, "_USER_MANAGER_CGROUP_BASE", str(tmp_path))
+    monkeypatch.setattr(sandbox, "_agents_slice_name", lambda: instance)
+    monkeypatch.setattr(os, "getuid", lambda: 0, raising=False)
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert instance_slice_pids() == {4242}
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert instance_slice_pids() == set()
+
+    killed: list[int] = []
+    rec = rr.RuntimeReconciler(
+        slice_pids=instance_slice_pids,
+        recorded_pids=set,
+        is_alive=lambda pid: True,
+        is_ours=lambda pid: True,
+        is_managed=lambda pid: True,
+        authorize=lambda pid, reason: True,
+        identity_of=lambda pid: f"id-{pid}",
+        kill_tree=lambda pid, expected=None: killed.append(pid) or 1,
+        forget=lambda pid: "not-mine",
+        notify_dead=lambda pid: None,
+        age_secs=lambda pid: 10_000.0,
+        untracked_pids=lambda: {4242},
+        confirm_untracked=lambda: {4242},
+        reclaim_platform=False,
+    )
+    rec.run_once()
+    reading = rec.run_once()
+    assert reading.unowned_alive == 0 and reading.killed == 0
+    result = rec.reclaim_untracked()
+    assert result.supported is False and result.killed == ()
+    assert killed == []
 
 
 def test_a_retraction_the_untracker_refused_is_not_counted_as_one() -> None:

@@ -58,6 +58,16 @@ _SESSION_PID_FILE = "kiro_session_pids.txt"
 # cycle; a wrong kill does not.
 SWEEP_SPAWN_GRACE_SECONDS = 120
 
+# Windows ``get_process_start_id`` returns the creation ``FILETIME`` as decimal
+# text in 100-ns units since the FILETIME epoch (1601-01-01 UTC), NOT Unix
+# seconds like the darwin value. Converting to a Unix-epoch age therefore needs
+# both a unit scale (100 ns → s) and an epoch shift (1601 → 1970); the naive
+# ``time.time() - float(start_id)`` the darwin arm uses would be wrong by the
+# epoch offset. 11644473600 is the whole seconds between 1601-01-01 and the Unix
+# epoch; 1e7 is the number of 100-ns ticks per second.
+_FILETIME_TICKS_PER_SECOND = 10_000_000
+_FILETIME_UNIX_EPOCH_OFFSET_SECONDS = 11_644_473_600
+
 
 def _pid_age_seconds(pid: int, proc_root: str = "/proc") -> float | None:
     """Return the process age in seconds, or None if it cannot be determined.
@@ -73,12 +83,27 @@ def _pid_age_seconds(pid: int, proc_root: str = "/proc") -> float | None:
     startup sweep SIGKILL'd a live kiro-cli off a stale dead-gateway entry on
     macOS because the grace window silently did not apply there.
 
-    On Windows: returns None (no grace — sweep behavior unchanged there).
+    On Windows: derived from ``platform_compat.get_process_start_id``, whose
+    value is the process creation ``FILETIME`` (100-ns units since the 1601
+    epoch). It is converted to a Unix-epoch instant before dating it against
+    ``time.time()`` — see ``_FILETIME_UNIX_EPOCH_OFFSET_SECONDS``. Like the
+    macOS path this needs no ``subprocess`` and is safe on the event loop.
+    Without it the spawn grace silently did not apply on Windows, so the orphan
+    sweep could SIGKILL a provider still inside its multi-second spawn window.
 
     The *proc_root* parameter allows injection of a fake /proc tree for testing.
     """
     if platform_compat.IS_WINDOWS:
-        return None
+        start_id = platform_compat.get_process_start_id(pid)
+        if start_id is None:
+            return None
+        try:
+            unix_start = (
+                float(start_id) / _FILETIME_TICKS_PER_SECOND - _FILETIME_UNIX_EPOCH_OFFSET_SECONDS
+            )
+        except ValueError:
+            return None
+        return max(0.0, time.time() - unix_start)
     if sys.platform != "linux":
         start_id = platform_compat.get_process_start_id(pid)
         if start_id is None:
@@ -100,15 +125,12 @@ def _pid_age_seconds(pid: int, proc_root: str = "/proc") -> float | None:
 def _pid_in_spawn_grace(pid: int) -> bool:
     """Return True if the PID is within the spawn grace period and should be skipped.
 
-    - Windows: returns False (no age source — fall through to existing kill
-      behavior so the sweep remains functional there).
-    - POSIX (Linux via /proc, macOS via ``ps -o etime=``) + successful age
-      read: True if age < SWEEP_SPAWN_GRACE_SECONDS.
-    - POSIX + read failure (age is None): True (treat as young — safe
-      direction; dead processes are already pruned by the earlier liveness check).
+    - All platforms (Linux via /proc, macOS via ``get_process_start_id``,
+      Windows via the creation ``FILETIME``) + successful age read: True if
+      age < SWEEP_SPAWN_GRACE_SECONDS.
+    - Age read failure (age is None): True (treat as young — safe direction;
+      dead processes are already pruned by the earlier liveness check).
     """
-    if platform_compat.IS_WINDOWS:
-        return False
     age = _pid_age_seconds(pid)
     if age is None:
         return True  # cannot determine age → treat as young (safe direction)

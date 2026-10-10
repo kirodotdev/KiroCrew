@@ -6247,12 +6247,19 @@ class TestSpawnGraceCrossPlatform:
         monkeypatch.setattr(sp.platform_compat, "get_process_start_id", lambda p: None)
         assert sp._pid_age_seconds(4242) is None
 
-    def test_windows_has_no_grace(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Windows keeps prior behavior (no age source, sweep stays functional)."""
+    def test_windows_young_pid_in_grace(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Windows age comes from the creation FILETIME, so a young PID gets the grace."""
+        import time as _time
+
         import kiro_crew.session_pid as sp
 
         monkeypatch.setattr(sp.platform_compat, "IS_WINDOWS", True)
-        assert sp._pid_in_spawn_grace(4242) is False
+        start = _time.time() - 30.0
+        filetime = int(
+            (start + sp._FILETIME_UNIX_EPOCH_OFFSET_SECONDS) * sp._FILETIME_TICKS_PER_SECOND
+        )
+        monkeypatch.setattr(sp.platform_compat, "get_process_start_id", lambda p: str(filetime))
+        assert sp._pid_in_spawn_grace(4242) is True
 
 
 @pytest.mark.skipif(
