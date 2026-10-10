@@ -10,8 +10,10 @@ again whenever no pass is left to set it.
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
+import os
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,9 +21,13 @@ from typing import Any, Callable, Iterator
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew import agent, agent_state
 from kiro_crew.agent_materialization import fork_refresh
 from kiro_crew.config.loader import KiroCrewConfig
+
+# Captured before any fixture stubs it, so a test can show what the real resolver picks.
+_REAL_AGENT_SPEC_PATH = agent.agent_spec_path
 
 
 class _Boom(Exception):
@@ -37,6 +43,8 @@ def _restore_refresh_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Every test starts settled with no failures, and leaves it that way."""
     monkeypatch.setattr(agent, "_fork_refresh_failed", frozenset())
     monkeypatch.setattr(agent, "_fork_refresh_pending", 0)
+    monkeypatch.setattr(fork_refresh, "_shared_template_held", False)
+    monkeypatch.setattr(agent, "_conductor_spec_held", False)
     fork_refresh._fork_refresh_settled.set()
     yield
     fork_refresh._fork_refresh_settled.set()
@@ -436,6 +444,70 @@ def test_an_owned_spec_bound_to_a_crew_is_left_to_its_own_writer(
     assert owned.read_text(encoding="utf-8") == raw
 
 
+def test_a_second_file_claiming_an_owned_name_is_filtered(
+    shared_template: Path,
+) -> None:
+    """The owned installer rewrites only ``<name>.json``. Another file that declares the
+    owned name is one kiro-cli may load as it, so it is filtered like a shared template
+    while the owned file stays with its own writer."""
+    owned = shared_template.parent / "kirocrew.json"
+    raw = json.dumps({"name": "kirocrew", "allowedTools": ["execute_bash"]})
+    owned.write_text(raw, encoding="utf-8")
+    claimant = shared_template.parent / "pkg-kirocrew.json"
+    claimant.write_text(json.dumps({"name": "kirocrew", "allowedTools": ["execute_bash"]}))
+    agent._refresh_forked_templates_locked(gated_off=frozenset())
+    assert json.loads(claimant.read_text(encoding="utf-8"))["allowedTools"] == []
+    assert owned.read_text(encoding="utf-8") == raw
+    assert fork_refresh._shared_template_held is False
+
+
+def test_a_second_file_claiming_a_fork_name_is_filtered(
+    shared_template: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fork refresh rewrites only the file the resolver picks for the fork. Another
+    file that claims the fork's name is filtered here; the fork's own file is not
+    written a second time."""
+    _forks(monkeypatch, {"crewfork": {"private_to": "crew", "forked_from": "custom"}})
+    _bindings(monkeypatch, {"crew": "crewfork"})
+    fork_spec = shared_template.parent / "crewfork.json"
+    fork_spec.write_text(json.dumps({"name": "crewfork", "allowedTools": ["fs_read"]}))
+    claimant = shared_template.parent / "squat.json"
+    claimant.write_text(json.dumps({"name": "crewfork", "allowedTools": ["execute_bash"]}))
+    real_write = agent._atomic_json_write
+    written: list[str] = []
+
+    def record(path: Path, config: dict[str, Any]) -> None:
+        written.append(path.name)
+        real_write(path, config)
+
+    monkeypatch.setattr(agent, "_atomic_json_write", record)
+    agent._refresh_forked_templates_locked(gated_off=frozenset())
+    assert json.loads(claimant.read_text(encoding="utf-8"))["allowedTools"] == []
+    assert written == ["crewfork.json", "squat.json"]
+    assert agent._fork_refresh_failed == frozenset()
+
+
+def test_every_file_claiming_an_ambiguous_fork_name_is_filtered(
+    shared_template: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two files declare the fork's name, so the fork refresh wrote neither and the fork
+    is refused at the spawn gate; both claimants are still filtered here."""
+    _forks(monkeypatch, {"crewfork": {"private_to": "crew", "forked_from": "custom"}})
+    _bindings(monkeypatch, {"crew": "crewfork"})
+
+    def ambiguous(_name: str) -> Path:
+        raise ValueError("two specs declare crewfork")
+
+    monkeypatch.setattr(agent, "agent_spec_path", ambiguous)
+    paths = [shared_template.parent / n for n in ("a-fork.json", "b-fork.json")]
+    for path in paths:
+        path.write_text(json.dumps({"name": "crewfork", "allowedTools": ["execute_bash"]}))
+    agent._refresh_forked_templates_locked(gated_off=frozenset())
+    for path in paths:
+        assert json.loads(path.read_text(encoding="utf-8"))["allowedTools"] == [], path.name
+    assert agent._fork_refresh_failed == frozenset({"crewfork"})
+
+
 def test_a_markdown_shared_template_is_warned_about_not_blocked(
     shared_template: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -473,3 +545,418 @@ def test_no_forks_and_an_unreadable_config_records_no_failure(
         agent._refresh_forked_templates_locked(gated_off=frozenset())
     assert agent._fork_refresh_failed == frozenset()
     assert "shared template governance skipped" in caplog.text
+
+
+def test_a_shared_template_whose_write_raises_is_held_for_a_retry(
+    shared_template: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shared_template.write_text(json.dumps({"name": "reviewer", "allowedTools": ["execute_bash"]}))
+    monkeypatch.setattr(agent, "_atomic_json_write", _raise)
+    agent._refresh_forked_templates_locked(gated_off=frozenset())
+    assert fork_refresh._shared_template_held is True
+    assert agent._fork_refresh_failed == frozenset()
+
+
+def test_a_shared_template_a_retry_cannot_fix_is_not_held(
+    shared_template: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    md = shared_template.parent / "reviewer.md"
+    md.write_text("---\nname: reviewer\n---\n", encoding="utf-8")
+    monkeypatch.setattr(agent, "agent_spec_path", lambda _name: md)
+    agent._refresh_forked_templates_locked(gated_off=frozenset())
+    assert fork_refresh._shared_template_held is False
+
+
+def test_a_landed_pass_clears_the_hold(
+    shared_template: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(fork_refresh, "_shared_template_held", True)
+    shared_template.write_text(json.dumps({"name": "reviewer", "allowedTools": ["execute_bash"]}))
+    agent._refresh_forked_templates_locked(gated_off=frozenset())
+    assert fork_refresh._shared_template_held is False
+    assert json.loads(shared_template.read_text(encoding="utf-8"))["allowedTools"] == []
+
+
+def test_a_deferred_pass_that_holds_a_shared_template_sets_the_rebuild_hold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _threads(monkeypatch, _InlineThread)
+
+    def holds(*, gated_off: frozenset[str] | None = None) -> None:
+        monkeypatch.setattr(fork_refresh, "_shared_template_held", True)
+
+    monkeypatch.setattr(agent, "_refresh_forked_templates_locked", holds)
+    fork_refresh.refresh_after_rebuild("defer", frozenset())
+    assert agent._conductor_spec_held is True
+
+
+def test_a_capability_refusal_is_warned_about_not_held(
+    shared_template: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from kiro_crew import agent_capabilities
+
+    monkeypatch.setattr(agent_state, "get_capabilities", lambda _name: {"schema_version": 1})
+
+    def refuse(_member: str) -> None:
+        raise agent_capabilities.CapabilityError("materialization_changed")
+
+    monkeypatch.setattr(agent_capabilities, "reconcile_member_capabilities", refuse)
+    with caplog.at_level(logging.WARNING, logger=agent.logger.name):
+        agent._refresh_forked_templates_locked(gated_off=frozenset())
+    assert fork_refresh._shared_template_held is False
+    assert "capability reconcile" in caplog.text
+
+
+def test_an_unresolved_template_beside_an_unreadable_spec_is_held(
+    shared_template: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shared_template.write_text(json.dumps({"name": "reviewer", "allowedTools": ["execute_bash"]}))
+    monkeypatch.setattr(agent, "agent_spec_path", lambda _name: None)
+    from kiro_crew import agent_discovery
+
+    real_read = agent_discovery._read_spec_bytes
+
+    def unreadable(path: Path) -> bytes:
+        if path.name == "reviewer.json":
+            raise OSError(errno.EIO, "input/output error")
+        return real_read(path)
+
+    monkeypatch.setattr(agent_discovery, "_read_spec_bytes", unreadable)
+    agent._refresh_forked_templates_locked(gated_off=frozenset())
+    assert fork_refresh._shared_template_held is True
+
+
+def _unreadable(monkeypatch: pytest.MonkeyPatch, filename: str, exc: OSError) -> None:
+    """Make every read of *filename* in the agents directory raise *exc*."""
+    from kiro_crew import agent_discovery
+
+    real_read = agent_discovery._read_spec_bytes
+
+    def read(path: Path) -> bytes:
+        if path.name == filename:
+            raise exc
+        return real_read(path)
+
+    monkeypatch.setattr(agent_discovery, "_read_spec_bytes", read)
+
+
+@pytest.mark.parametrize("filename", ["unrelated.json", "reviewer.json"])
+def test_a_spec_this_user_may_not_read_never_holds(
+    shared_template: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    filename: str,
+) -> None:
+    """kiro-cli runs as this same user, so a file that refuses this process's read is
+    one it cannot load either. Holding on it would rebuild on every poll for nothing."""
+    (shared_template.parent / filename).write_text(
+        json.dumps({"name": "reviewer", "allowedTools": ["execute_bash"]})
+    )
+    _unreadable(monkeypatch, filename, PermissionError(errno.EACCES, "permission denied"))
+    with caplog.at_level(logging.WARNING, logger=agent.logger.name):
+        for _ in range(3):
+            agent._refresh_forked_templates_locked(gated_off=frozenset())
+            assert fork_refresh._shared_template_held is False
+    assert "permission denied" in caplog.text
+
+
+def _sharing_violation() -> PermissionError:
+    """The error Windows raises while another process holds the file without read sharing."""
+    exc = PermissionError(errno.EACCES, "the process cannot access the file")
+    exc.winerror = 32  # type: ignore[attr-defined]
+    return exc
+
+
+@pytest.mark.parametrize("failing_read", [1, 2], ids=["scan", "locked-re-read"])
+def test_a_windows_sharing_violation_is_held_not_skipped(
+    shared_template: Path, monkeypatch: pytest.MonkeyPatch, failing_read: int
+) -> None:
+    """Windows raises a sharing violation as PermissionError, but it clears when the
+    other handle closes: skipping it would let the memo advance on a template whose
+    denied grant is still on disk, so both the scan and the re-read under the lock
+    hold it."""
+    shared_template.write_text(json.dumps({"name": "reviewer", "allowedTools": ["execute_bash"]}))
+    from kiro_crew import agent_discovery
+
+    real_read = agent_discovery._read_spec_bytes
+    reads: list[str] = []
+
+    def read(path: Path) -> bytes:
+        if path.name == "reviewer.json":
+            reads.append(path.name)
+            if len(reads) == failing_read:
+                raise _sharing_violation()
+        return real_read(path)
+
+    monkeypatch.setattr(agent_discovery, "_read_spec_bytes", read)
+    agent._refresh_forked_templates_locked(gated_off=frozenset())
+    assert fork_refresh._shared_template_held is True
+
+
+def test_a_spec_that_keeps_failing_stays_held_until_its_read_succeeds(
+    shared_template: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Releasing the hold while the read still fails would let the ceiling memo
+    advance with a denied grant possibly still on disk, and nothing would retry it
+    after the failure cleared. So a failure holds on every pass, and only the pass
+    that reads the file clears it."""
+    (shared_template.parent / "unrelated.json").write_text(json.dumps({"name": "unrelated"}))
+    from kiro_crew import agent_discovery
+
+    real_read = agent_discovery._read_spec_bytes
+    _unreadable(monkeypatch, "unrelated.json", OSError(errno.EIO, "input/output error"))
+    for _ in range(6):
+        agent._refresh_forked_templates_locked(gated_off=frozenset())
+        assert fork_refresh._shared_template_held is True
+    monkeypatch.setattr(agent_discovery, "_read_spec_bytes", real_read)
+    agent._refresh_forked_templates_locked(gated_off=frozenset())
+    assert fork_refresh._shared_template_held is False
+
+
+def test_a_stem_match_declaring_another_name_is_filtered_beside_a_declared_match(
+    shared_template: Path,
+) -> None:
+    """The single-file resolver picks the spec that DECLARES the name and leaves the
+    one that only matches by filename, so resolving through it would leave the
+    stem match's denied grant on disk. This pass filters both."""
+    shared_template.write_text(json.dumps({"name": "legacy", "allowedTools": ["execute_bash"]}))
+    declared = shared_template.parent / "renamed.json"
+    declared.write_text(json.dumps({"name": "reviewer", "allowedTools": ["execute_bash"]}))
+    assert _REAL_AGENT_SPEC_PATH("reviewer", agents_dir=shared_template.parent) == declared
+    agent._refresh_forked_templates_locked(gated_off=frozenset())
+    for path in (shared_template, declared):
+        assert json.loads(path.read_text(encoding="utf-8"))["allowedTools"] == [], path.name
+    assert fork_refresh._shared_template_held is False
+
+
+def test_an_unreadable_spec_is_read_once_per_pass_whatever_the_number_of_bindings(
+    shared_template: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    _bindings(monkeypatch, {"a": "reviewer", "b": "second", "c": "third"})
+    (shared_template.parent / "unrelated.json").write_text(json.dumps({"name": "unrelated"}))
+    _unreadable(monkeypatch, "unrelated.json", PermissionError(errno.EACCES, "permission denied"))
+    with caplog.at_level(logging.WARNING, logger=agent.logger.name):
+        agent._refresh_forked_templates_locked(gated_off=frozenset())
+    assert caplog.text.count("permission denied") == 1
+
+
+@requires_symlinks
+def test_the_retry_probe_never_follows_a_link_the_resolver_refuses(
+    shared_template: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    outside = tmp_path_factory.mktemp("outside") / "secret.json"
+    outside.write_text("{}", encoding="utf-8")
+    (shared_template.parent / "linked.json").symlink_to(outside)
+    monkeypatch.setattr(agent, "agent_spec_path", lambda _name: None)
+    from kiro_crew import agent_discovery
+
+    opened: list[str] = []
+    real_read = agent_discovery._read_spec_bytes
+
+    def recording(path: Path) -> bytes:
+        opened.append(path.name)
+        return real_read(path)
+
+    monkeypatch.setattr(agent_discovery, "_read_spec_bytes", recording)
+    agent._refresh_forked_templates_locked(gated_off=frozenset())
+    assert "linked.json" not in opened
+    assert fork_refresh._shared_template_held is False
+
+
+def test_an_unresolved_template_with_every_spec_readable_is_not_held(
+    shared_template: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (shared_template.parent / "other.json").write_text(json.dumps({"name": "other"}))
+    monkeypatch.setattr(agent, "agent_spec_path", lambda _name: None)
+    agent._refresh_forked_templates_locked(gated_off=frozenset())
+    assert fork_refresh._shared_template_held is False
+
+
+def test_a_template_declaring_the_name_under_another_filename_is_filtered(
+    shared_template: Path,
+) -> None:
+    renamed = shared_template.parent / "renamed.json"
+    renamed.write_text(json.dumps({"name": "reviewer", "allowedTools": ["execute_bash"]}))
+    agent._refresh_forked_templates_locked(gated_off=frozenset())
+    assert json.loads(renamed.read_text(encoding="utf-8"))["allowedTools"] == []
+    assert fork_refresh._shared_template_held is False
+
+
+def test_every_spec_declaring_a_contested_name_is_filtered(
+    shared_template: Path,
+) -> None:
+    """Two specs declare the bound name, so which one kiro-cli loads is undefined:
+    both are filtered, and a markdown claimant does not stop the JSON one."""
+    shared_template.write_text(json.dumps({"name": "reviewer", "allowedTools": ["execute_bash"]}))
+    other = shared_template.parent / "z-other.json"
+    other.write_text(json.dumps({"name": "reviewer", "allowedTools": ["execute_bash"]}))
+    (shared_template.parent / "y-other.md").write_text("---\nname: reviewer\n---\n")
+    agent._refresh_forked_templates_locked(gated_off=frozenset())
+    for path in (shared_template, other):
+        assert json.loads(path.read_text(encoding="utf-8"))["allowedTools"] == [], path.name
+    assert fork_refresh._shared_template_held is False
+
+
+def test_a_malformed_spec_at_the_bound_stem_is_not_held(
+    shared_template: Path,
+) -> None:
+    shared_template.write_text("{not json", encoding="utf-8")
+    agent._refresh_forked_templates_locked(gated_off=frozenset())
+    assert shared_template.read_text(encoding="utf-8") == "{not json"
+    assert fork_refresh._shared_template_held is False
+
+
+@pytest.mark.parametrize("unreadable", ["_base_unreadable", "_overlay_unreadable"])
+def test_a_config_load_that_fell_back_to_defaults_holds(
+    shared_template: Path, monkeypatch: pytest.MonkeyPatch, unreadable: str
+) -> None:
+    degraded = SimpleNamespace(agents={}, **{unreadable: True})
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: degraded))
+    agent._refresh_forked_templates_locked(gated_off=frozenset())
+    assert fork_refresh._shared_template_held is True
+
+
+def test_a_config_degradation_seen_earlier_in_the_process_does_not_hold(
+    shared_template: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The whole-config marker in ``degraded_sections`` lasts the process. A later load
+    that read both files whole has every binding, so the hold must follow that load's
+    own read, or one bad save would rebuild on every poll until a restart."""
+    from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
+
+    shared_template.write_text(json.dumps({"name": "reviewer", "allowedTools": ["execute_bash"]}))
+    repaired = SimpleNamespace(
+        agents={"reviewer-crew": SimpleNamespace(kiro_agent="reviewer")},
+        degraded_sections=frozenset({DEGRADED_WHOLE_CONFIG, f"{DEGRADED_WHOLE_CONFIG}config.json"}),
+        _base_unreadable=False,
+        _overlay_unreadable=False,
+    )
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: repaired))
+    agent._refresh_forked_templates_locked(gated_off=frozenset())
+    assert json.loads(shared_template.read_text(encoding="utf-8"))["allowedTools"] == []
+    assert fork_refresh._shared_template_held is False
+
+
+def test_a_directory_listing_that_fails_after_its_stat_is_held(
+    shared_template: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``Path.glob`` swallows a listing error and yields nothing. Read that way, a
+    transient I/O error on the directory looks like an empty one, the memo advances,
+    and the bound template keeps its revoked grants after the directory recovers."""
+    shared_template.write_text(json.dumps({"name": "reviewer", "allowedTools": ["execute_bash"]}))
+    agents_dir = os.fspath(shared_template.parent)
+    real_scandir = os.scandir
+
+    def failing(path: Any = ".") -> Any:
+        if isinstance(path, (str, os.PathLike)) and os.fspath(path) == agents_dir:
+            raise OSError(errno.EIO, "input/output error")
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", failing)
+    agent._refresh_forked_templates_locked(gated_off=frozenset())
+    assert fork_refresh._shared_template_held is True
+
+
+def _hard_link(source: Path, alias: Path) -> None:
+    os.link(source, alias)
+
+
+def test_a_hard_linked_bound_template_is_held_until_the_extra_link_goes(
+    shared_template: Path,
+    tmp_path_factory: pytest.TempPathFactory,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The fenced reader refuses a second hard link for good, while kiro-cli reads the
+    same bytes without that fence. A refusal read as absence would advance the memo,
+    and removing the extra link later would not bring the filter back."""
+    shared_template.write_text(
+        json.dumps({"name": "reviewer", "allowedTools": ["fs_read", "execute_bash"]})
+    )
+    alias = tmp_path_factory.mktemp("elsewhere") / "reviewer-copy.json"
+    _hard_link(shared_template, alias)
+    with caplog.at_level(logging.WARNING, logger=agent.logger.name):
+        agent._refresh_forked_templates_locked(gated_off=frozenset())
+    assert fork_refresh._shared_template_held is True
+    assert json.loads(alias.read_text(encoding="utf-8"))["allowedTools"] == [
+        "fs_read",
+        "execute_bash",
+    ], "nothing is written through the shared inode"
+    assert "hard link" in caplog.text
+
+    alias.unlink()
+    agent._refresh_forked_templates_locked(gated_off=frozenset())
+    assert json.loads(shared_template.read_text(encoding="utf-8"))["allowedTools"] == ["fs_read"]
+    assert fork_refresh._shared_template_held is False
+
+
+def test_a_hard_link_made_between_the_scan_and_the_locked_re_read_is_held(
+    shared_template: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    shared_template.write_text(json.dumps({"name": "reviewer", "allowedTools": ["execute_bash"]}))
+    alias = tmp_path_factory.mktemp("elsewhere") / "alias.json"
+    real_scan = fork_refresh._scan_agent_specs
+
+    def scan_then_link(agents_dir: Path) -> Any:
+        scanned = real_scan(agents_dir)
+        _hard_link(shared_template, alias)
+        return scanned
+
+    monkeypatch.setattr(fork_refresh, "_scan_agent_specs", scan_then_link)
+    agent._refresh_forked_templates_locked(gated_off=frozenset())
+    assert fork_refresh._shared_template_held is True
+
+
+def test_a_hold_set_after_the_baseline_was_seeded_still_rebuilds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[int] = []
+
+    def fake_reporting(**kw: Any) -> tuple[Path, bool]:
+        calls.append(1)
+        kw["_held_out"].append(False)
+        return Path("kirocrew.json"), True
+
+    monkeypatch.setattr(agent, "rebuild_agent_config_reporting", fake_reporting)
+    # The memo the hook compares against: the ceiling plus every governance profile.
+    monkeypatch.setattr(
+        agent, "_projected_ceiling_generation", agent._answer_generation_after_profile_poll()
+    )
+    agent.reproject_for_ceiling_change()
+    assert calls == [], "an unchanged generation with no hold rebuilds nothing"
+    monkeypatch.setattr(agent, "_conductor_spec_held", True)
+    agent.reproject_for_ceiling_change()
+    assert calls == [1], "a hold must not be skipped as an unchanged generation"
+
+
+def test_a_regular_file_the_reader_refuses_is_held_and_a_directory_is_not(
+    shared_template: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A refusal of a regular file is never read as absence: its link count or kernel
+    path changed between the open and the check, and a retry may read it. A directory
+    at a spec name is no spec kiro-cli loads, so the reader's refusal of it holds
+    nothing."""
+    from kiro_crew.agent_discovery import _SpecReadRefused
+
+    (shared_template.parent / "folder.json").mkdir()
+    agent._refresh_forked_templates_locked(gated_off=frozenset())
+    assert fork_refresh._shared_template_held is False
+
+    shared_template.write_text(json.dumps({"name": "reviewer", "allowedTools": ["execute_bash"]}))
+    _unreadable(monkeypatch, "reviewer.json", _SpecReadRefused("refusing to read a file"))
+    agent._refresh_forked_templates_locked(gated_off=frozenset())
+    assert fork_refresh._shared_template_held is True
+
+
+def test_a_directory_at_a_spec_name_holds_nothing_where_the_open_reports_it(
+    shared_template: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows reports a directory from the open (``IsADirectoryError``) rather than
+    from the reader's inode check; it is no more a spec there than on POSIX."""
+    (shared_template.parent / "folder.json").mkdir()
+    _unreadable(monkeypatch, "folder.json", IsADirectoryError(errno.EISDIR, "is a directory"))
+    agent._refresh_forked_templates_locked(gated_off=frozenset())
+    assert fork_refresh._shared_template_held is False

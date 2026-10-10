@@ -1232,6 +1232,56 @@ class TestASpecLeftInPlaceHoldsTheCeilingMemo:
         warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
         assert any("pending" in w and "read or written" in w for w in warnings), warnings
 
+    def test_a_bound_shared_template_whose_write_raises_holds_the_memo(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A crew-bound shared template carries a grant the ceiling now denies, and its
+        rewrite fails. The real rebuild must report the hold and the real hook must leave
+        the memo pending, so the next poll retries; once the write clears, the retry
+        re-filters the template and the hold is gone."""
+        from types import SimpleNamespace
+
+        from kiro_crew.agent_materialization import auto_approve, fork_refresh
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        shared = self._shared_home_rig(monkeypatch, tmp_path)
+        agent.rebuild_agent_config()
+        template = shared / "reviewer.json"
+        template.write_text(
+            json.dumps({"name": "reviewer", "tools": ["*"], "allowedTools": ["web_fetch"]}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(fork_refresh, "_shared_template_held", False)
+        bindings = {"reviewer-crew": SimpleNamespace(kiro_agent="reviewer")}
+        monkeypatch.setattr(
+            KiroCrewConfig, "load", classmethod(lambda cls: SimpleNamespace(agents=bindings))
+        )
+        real_gate = auto_approve._may_auto_approve
+        monkeypatch.setattr(
+            auto_approve, "_may_auto_approve", lambda ref: ref != "web_fetch" and real_gate(ref)
+        )
+        before = template.read_bytes()
+        real_write = agent._atomic_json_write
+
+        def template_write_fails(path: Path, data: Any) -> None:
+            if path.name == "reviewer.json":
+                raise PermissionError(errno.EACCES, "Permission denied", str(path))
+            real_write(path, data)
+
+        with monkeypatch.context() as scoped:
+            scoped.setattr(agent, "_atomic_json_write", template_write_fails)
+            wrote, held = self._report()
+            self._pending_memo(scoped)
+            agent.reproject_for_ceiling_change()
+            pending = agent._projected_ceiling_generation
+
+        assert template.read_bytes() == before
+        assert wrote is True, "kirocrew.json was written; this is not a refusal"
+        assert held == [True], "a shared template left unfiltered must hold the ceiling memo"
+        assert pending is None, "the memo advanced over a template that was never rewritten"
+        assert self._report() == (True, [False])
+        assert json.loads(template.read_text(encoding="utf-8"))["allowedTools"] == []
+
     def test_the_hook_advances_only_when_the_rebuild_wrote_and_held_nothing(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

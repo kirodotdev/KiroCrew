@@ -53,6 +53,7 @@ from kiro_crew.agent_spec_format import (
     is_agent_spec_name,
     is_markdown_spec,
     iter_agent_spec_files,
+    iter_agent_spec_files_strict,
     markdown_head_is_fenceless,
     opens_frontmatter_fence,
     parse_agent_spec_text,
@@ -338,6 +339,30 @@ class TestParser:
             (tmp_path / name).write_text("x", encoding="utf-8")
         assert sorted(p.name for p in iter_agent_spec_files(tmp_path)) == ["Foo.json", "foo.md"]
         assert shadowed_markdown_specs(tmp_path) == []
+
+    def test_the_strict_listing_selects_what_the_glob_does(self, tmp_path: Path) -> None:
+        for name in ("b.md", "a.json", "a.md", "README.txt", "c.json.bak", "UPPER.JSON", ".h.json"):
+            (tmp_path / name).write_text("x", encoding="utf-8")
+        (tmp_path / "dir.json").mkdir()
+        assert iter_agent_spec_files_strict(tmp_path) == iter_agent_spec_files(tmp_path)
+
+    def test_the_strict_listing_raises_where_the_glob_reads_an_empty_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        (tmp_path / "a.json").write_text("x", encoding="utf-8")
+        real_scandir = os.scandir
+
+        def failing(path: Any = ".") -> Any:
+            if isinstance(path, (str, os.PathLike)) and os.fspath(path) == os.fspath(tmp_path):
+                raise OSError(5, "input/output error")
+            return real_scandir(path)
+
+        monkeypatch.setattr(os, "scandir", failing)
+        assert iter_agent_spec_files(tmp_path) == []
+        with pytest.raises(OSError, match="input/output error"):
+            iter_agent_spec_files_strict(tmp_path)
+        with pytest.raises(FileNotFoundError):
+            iter_agent_spec_files_strict(tmp_path / "absent")
 
 
 # ── the roster and its cache ────────────────────────────────────────────────

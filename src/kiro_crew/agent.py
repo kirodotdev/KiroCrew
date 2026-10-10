@@ -3836,8 +3836,12 @@ def reproject_for_profile_change() -> None:
     poll, so the gateway calls this on a short interval in a worker thread (it re-stats
     the profiles directory and MAY BLOCK).
 
-    Nothing to do while the projection memo records the current answer and the last
-    rebuild completed. A rebuild that raised (``_rebuild_incomplete``) may have written
+    Nothing to do while the projection memo records the current answer, the last
+    rebuild completed and no spec is held (``_conductor_spec_held``). A hold can be set
+    after the baseline was seeded (the boot path's deferred template pass), and on a
+    host with no distribution poll this watch and the hourly maintenance wake are its
+    only retries, so a held spec keeps an unchanged answer unprojected here too. A
+    rebuild that raised (``_rebuild_incomplete``) may have written
     grants derived under an older answer before it failed, so the memo is cleared and the
     projection re-run. Otherwise it calls :func:`reproject_for_ceiling_change` once for
     the answer, and again only after :data:`_PROFILE_WATCH_RETRY_S` if the projection
@@ -3851,7 +3855,7 @@ def reproject_for_profile_change() -> None:
             # The last rebuild raised, possibly after writing grants derived under an
             # older answer, so no recorded projection can be trusted until one completes.
             _projected_ceiling_generation = None
-        if generation == _projected_ceiling_generation:
+        if generation == _projected_ceiling_generation and not _conductor_spec_held:
             _profile_watch_generation = None
             return
         now = _watch_clock()
@@ -3863,7 +3867,11 @@ def reproject_for_profile_change() -> None:
             _profile_watch_generation = generation
             _profile_watch_retry_at = now + _PROFILE_WATCH_RAISE_RETRY_S
             raise
-        if generation == _projected_ceiling_generation and not _rebuild_incomplete:
+        if (
+            generation == _projected_ceiling_generation
+            and not _rebuild_incomplete
+            and not _conductor_spec_held
+        ):
             _profile_watch_generation = None
             return
         _profile_watch_generation = generation
@@ -3975,7 +3983,9 @@ def _reproject_holding_the_lock() -> None:
     governance_generation = _answer_generation_after_profile_poll
 
     generation = governance_generation()
-    if _projected_ceiling_generation == generation:
+    if _projected_ceiling_generation == generation and not _conductor_spec_held:
+        # A hold set after the baseline was seeded (the boot path's deferred
+        # template pass) keeps an unchanged generation unprojected.
         return
     held_out: list[bool] = []
     _path, wrote = rebuild_agent_config_reporting(_held_out=held_out)
@@ -4465,6 +4475,12 @@ def rebuild_agent_config(
         sync_aim_packages()
 
         fork_refresh.refresh_after_rebuild(refresh_forks, gated_off)
+        if refresh_forks is True and fork_refresh._shared_template_held:
+            # A crew-bound shared template kept grants the ceiling may now deny
+            # because its rewrite failed. Held like a conductor spec, so the
+            # ceiling memo stays behind and the next poll or wake retries.
+            conductor_held = True
+            _conductor_spec_held = True
 
         # Security: sanitize invalid hook keys in agent configs
         repair_agent_configs()
