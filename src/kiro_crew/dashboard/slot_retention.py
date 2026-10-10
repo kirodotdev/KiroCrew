@@ -6,9 +6,13 @@ from creeping up to that ceiling and staying there:
 
 * the open-tab restore stops building ordinary tabs at :data:`RESTORE_SLOT_BUDGET`
   (newest first), so a restart cannot bring back more tabs than leave room to
-  work; a pinned tab and a tab an armed auto-nudge loop drives are always built;
+  work; a pinned tab, a tab an armed auto-nudge loop drives and a crew worker tab
+  bound to an open work item are always built;
 * :func:`idle_slot_sweep_loop` archives idle tabs through the tab-close path,
   but only while the count is at or above :data:`SWEEP_HIGH_WATER`.
+
+Either path tells the person through one notification that links to History, so
+a tab that left the sidebar is never gone without a word.
 
 The idle selection is :func:`select_idle_slot_keys`, the same one the "Clean up
 sessions" button runs, so the button and the sweep cannot disagree on which tab
@@ -36,11 +40,17 @@ logger = logging.getLogger(__name__)
 #: tabs. Below ``MAX_LIVE_SLOTS`` so a fresh boot leaves room for new chats.
 RESTORE_SLOT_BUDGET = 400
 
-#: The live-slot count at which the idle sweep starts archiving (80% of the cap).
-SWEEP_HIGH_WATER = MAX_LIVE_SLOTS * 4 // 5
+#: The live-slot count at which the idle sweep starts archiving (90% of the cap).
+#: Above :data:`RESTORE_SLOT_BUDGET`, so the first pass after a full restore has
+#: headroom and archives nothing until the count has grown past the budget.
+SWEEP_HIGH_WATER = MAX_LIVE_SLOTS * 9 // 10
 
 #: Seconds between two idle-sweep passes.
 SWEEP_INTERVAL_SECS = 3600.0
+
+#: Where the archive notifications send the person: the chat page with the
+#: History pane open.
+HISTORY_URL = "/chat?history=1"
 
 
 def _bound_keys(pairs: Iterable[tuple[Any, Any]]) -> set[str]:
@@ -104,6 +114,22 @@ def stored_loop_slot_keys() -> set[str] | None:
     )
 
 
+def crew_bound_on_disk(slot_key: str) -> bool:
+    """Whether *slot_key* is a crew worker bound to an OPEN work item. BLOCKING.
+
+    The work-ledger wake gate reads a worker whose slot is gone as closed
+    (``ledger_wake.worker_closed``), so a worker tab left unbuilt or archived
+    would report a live worker as ended. The store is read by the work-ledger
+    handler module, its one dashboard seam
+    (:func:`~kiro_crew.dashboard.handlers.work_ledger.worker_holds_open_item`).
+    """
+    from kiro_crew.dashboard.handlers.work_ledger import (  # circular: handlers -> state
+        worker_holds_open_item,
+    )
+
+    return worker_holds_open_item(slot_key)
+
+
 def _parse_ts(raw: Any) -> float:
     if not isinstance(raw, str) or not raw:
         return 0.0
@@ -128,6 +154,77 @@ def slot_last_activity(slot: "_ChatSlot") -> float:
     return _parse_ts(slot.created_at)
 
 
+#: The longest slot key a foreground report may name (the ``slot_read`` bound).
+_MAX_FOREGROUND_KEY = 512
+
+
+def note_foreground(state: "DashboardState", conn: int, slot_key: object) -> None:
+    """Record the slot connection *conn* shows in the foreground; a blur clears it.
+
+    Fed from an owner socket's ``slot_focused`` frame, which the client sends
+    with ``null`` when its tab is hidden, and cleared when the socket closes.
+    """
+    slots = getattr(state, "_foreground_slots", None)
+    if not isinstance(slots, dict):
+        return
+    if isinstance(slot_key, str) and slot_key and len(slot_key) <= _MAX_FOREGROUND_KEY:
+        slots[conn] = slot_key
+    else:
+        slots.pop(conn, None)
+
+
+def foreground_slot_keys(state: "DashboardState") -> set[str]:
+    """The slots some connected dashboard shows in the foreground."""
+    slots = getattr(state, "_foreground_slots", None)
+    return set(slots.values()) if isinstance(slots, dict) else set()
+
+
+def has_pending_approval(state: "DashboardState", slot: "_ChatSlot") -> bool:
+    """Whether *slot* waits on an approval, its own or a coordinator one routed to it.
+
+    A coordinator approval (a child's gateway approval routed to its parent)
+    writes no transcript row and does not make the parent ``running``, so only
+    ``pending_coordinator_approvals`` shows it. Closing the slot would reject it.
+    A registry that cannot answer counts as pending.
+    """
+    futures = getattr(slot, "_approval_futures", None) or {}
+    if any(not fut.done() for fut in futures.values()):
+        return True
+    pending_for = getattr(state, "pending_coordinator_approvals", None)
+    if not callable(pending_for):
+        return False
+    try:
+        return bool(pending_for(slot.key))
+    except Exception:  # noqa: BLE001 - unknown approvals keep the slot
+        logger.debug("pending-approval probe failed for %s", slot.key, exc_info=True)
+        return True
+
+
+def subagents_attached_now(state: "DashboardState", slot: "_ChatSlot") -> bool:
+    """The in-memory half of the shared attached-sub-agent probe, fail closed.
+
+    Running children and results still being delivered, read without the task
+    store so it can run inside a synchronous re-check. The queued half reads the
+    store and is asked by :func:`sweep_idle_slots` through
+    ``subagents_attached_async`` before that re-check. A probe that raises or
+    answers ``None`` counts as attached.
+    """
+    from kiro_crew.dashboard.chat_utils import (  # circular: chat_utils -> state
+        _attached_verdict,
+        effective_session_key,
+    )
+
+    subs = getattr(state, "subagents", None)
+    if subs is None:
+        return False
+    try:
+        running = subs.running_agents_for(effective_session_key(slot))
+    except Exception:  # noqa: BLE001 - an unanswerable probe keeps the slot
+        logger.debug("sub-agent probe failed for %s", slot.key, exc_info=True)
+        return True
+    return _attached_verdict(running, 0, slot)
+
+
 def select_idle_slot_keys(
     state: "DashboardState",
     *,
@@ -137,15 +234,19 @@ def select_idle_slot_keys(
     active_slot: str = "",
     skip_running: bool = False,
     skip_app_owned: bool = False,
+    skip_busy: bool = False,
 ) -> tuple[list[str], bool]:
     """Pick the live slots idle since before *cutoff*.
 
     Skips pinned slots, slots in *looped* (an armed auto-nudge loop is idle by
     nature between cycles, and archiving its tab ends the loop for good), slots of
     another app when *request_app* is set, slots whose activity is unknown, with
-    *skip_running* slots with a turn in flight, and with *skip_app_owned* every
-    app-owned slot. *active_slot* is never picked; the second return value says
-    whether it would have been.
+    *skip_running* slots with a turn in flight, with *skip_app_owned* every
+    app-owned slot, and with *skip_busy* slots a connected dashboard shows in
+    the foreground, waiting on an approval or with sub-agent work attached
+    (:func:`foreground_slot_keys`, :func:`has_pending_approval`,
+    :func:`subagents_attached_now`). *active_slot* is never picked; the second
+    return value says whether it would have been.
     """
     stale: list[str] = []
     active_is_stale = False
@@ -162,6 +263,12 @@ def select_idle_slot_keys(
         last_activity = slot_last_activity(slot)
         if not last_activity or last_activity >= cutoff:
             continue
+        if skip_busy and (
+            name in foreground_slot_keys(state)
+            or has_pending_approval(state, slot)
+            or subagents_attached_now(state, slot)
+        ):
+            continue
         if name == active_slot:
             active_is_stale = True
             continue
@@ -169,26 +276,69 @@ def select_idle_slot_keys(
     return stale, active_is_stale
 
 
-def _still_idle_check(slot: "_ChatSlot", name: str, cutoff: float) -> Callable[[], None]:
-    """The synchronous re-check ``close_slot`` runs right before it pops *slot*."""
+def _still_idle_check(
+    state: "DashboardState", slot: "_ChatSlot", name: str, cutoff: float
+) -> Callable[[], None]:
+    """The synchronous re-check ``close_slot`` runs right before it pops *slot*.
+
+    It first asks that *name* still holds *slot*: the sweep awaits its probes
+    after reading the slot, and a tab closed and reopened under the same key in
+    that window is a different session the re-check never judged.
+    """
 
     def _check() -> None:
         from kiro_crew.dashboard.chat_handlers import SlotCloseError  # circular
 
         looped = live_loop_slot_keys(include_paused=True)
         if (
-            slot.running
+            state._slots.get(name) is not slot
+            or slot.running
             or slot.pinned
             or slot._app
             or looped is None
             or name in looped
             or slot_last_activity(slot) >= cutoff
+            or name in foreground_slot_keys(state)
+            or has_pending_approval(state, slot)
+            or subagents_attached_now(state, slot)
         ):
             raise SlotCloseError(
                 "the session became active during the idle sweep", code="slot_not_idle"
             )
 
     return _check
+
+
+async def _queued_or_attached(state: "DashboardState", slot: "_ChatSlot") -> bool:
+    """The full shared sub-agent probe, queued children included; fail closed."""
+    from kiro_crew.dashboard.chat_utils import (  # circular: chat_utils -> state
+        effective_session_key,
+        subagents_attached_async,
+    )
+
+    try:
+        return await subagents_attached_async(
+            state, slot, effective_session_key(slot), "idle_slot_sweep"
+        )
+    except Exception:  # noqa: BLE001 - an unanswerable probe keeps the slot
+        logger.debug("sub-agent probe failed for %s", slot.key, exc_info=True)
+        return True
+
+
+def notify_left_in_history(state: "DashboardState", count: int, reason: str) -> None:
+    """Tell the person *count* tabs left the sidebar for History. Never raises."""
+    if count <= 0:
+        return
+    try:
+        state.notify(
+            "agent",
+            "Sessions moved to History",
+            f"{reason} Open History to resume one.",
+            meta={"count": count},
+            url=HISTORY_URL,
+        )
+    except Exception:  # noqa: BLE001 - the log line below is the fallback report
+        logger.warning("Could not publish the History notice for %d tab(s)", count, exc_info=True)
 
 
 async def sweep_idle_slots(
@@ -199,11 +349,14 @@ async def sweep_idle_slots(
     Each slot closes through ``close_slot``, the tab-✕ path, so it is saved to
     history as closed and can be resumed later. App-owned slots are never swept:
     that path tells the owning app the person dismissed the tab, which an idle
-    tab is not. Neither is a slot with any loop, active or paused. The same
-    re-check runs right before ``close_slot`` (whose first step retires the
-    slot's loop) and again right before the pop, so a slot that started a turn,
-    got pinned, gained a loop or saw new activity is kept.
-    Returns the archived keys.
+    tab is not. Neither is a slot with any loop, active or paused, a slot a
+    connected dashboard shows in the foreground, a slot waiting on an approval, a slot with sub-agent work attached (running, queued or still
+    delivering; a probe that cannot answer keeps the slot), or a crew worker tab
+    bound to an open work item. The same re-check runs right before
+    ``close_slot`` (whose first step retires the slot's loop) and again right
+    before the pop, so a slot that started a turn, got pinned, gained a loop, an
+    approval, a child or a viewer, or saw new activity is kept. One notification reports
+    what was archived. Returns the archived keys.
     """
     if idle_days <= 0 or state.live_slot_count() < SWEEP_HIGH_WATER:
         return []
@@ -217,7 +370,12 @@ async def sweep_idle_slots(
         return []
     cutoff = (time.time() if now is None else now) - idle_days * 86400
     stale, _ = select_idle_slot_keys(
-        state, looped=looped, cutoff=cutoff, skip_running=True, skip_app_owned=True
+        state,
+        looped=looped,
+        cutoff=cutoff,
+        skip_running=True,
+        skip_app_owned=True,
+        skip_busy=True,
     )
     from kiro_crew.dashboard import chat_handlers  # circular: chat_handlers -> state
 
@@ -226,7 +384,11 @@ async def sweep_idle_slots(
         slot = state._slots.get(name)
         if slot is None or slot.is_closing:
             continue
-        still_idle = _still_idle_check(slot, name, cutoff)
+        if await asyncio.to_thread(crew_bound_on_disk, name):
+            continue
+        if await _queued_or_attached(state, slot):
+            continue
+        still_idle = _still_idle_check(state, slot, name, cutoff)
         try:
             # Synchronous and immediately before the call: no await may separate
             # this check from close_slot retiring the slot's loop.
@@ -239,6 +401,12 @@ async def sweep_idle_slots(
     if archived:
         logger.info(
             "Idle slot sweep archived %d session(s) idle over %d day(s)", len(archived), idle_days
+        )
+        notify_left_in_history(
+            state,
+            len(archived),
+            f"Archived {len(archived)} session(s) idle over {idle_days} day(s) to History "
+            f"to stay under the {MAX_LIVE_SLOTS}-session limit.",
         )
     return archived
 

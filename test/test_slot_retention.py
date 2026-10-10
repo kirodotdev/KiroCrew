@@ -68,6 +68,18 @@ def _assert_budget_kept(state, log, restored: int) -> None:
     # Left in history, not deleted and not carried as unreadable.
     assert all(log.has_log(_history_key_for(k)) for k in left)
     assert not set(left) & set(state.unrestored_slot_keys)
+    _assert_one_history_notice(state, len(left))
+
+
+def _history_notices(state) -> list[dict]:
+    return [n for n in state._notification_log if n.get("url") == slot_retention.HISTORY_URL]
+
+
+def _assert_one_history_notice(state, count: int) -> None:
+    notes = _history_notices(state)
+    assert len(notes) == 1
+    assert notes[0]["count"] == count
+    assert str(count) in notes[0]["body"]
 
 
 def test_sync_restore_stops_at_the_budget_and_keeps_pinned_and_looped(tmp_path, monkeypatch):
@@ -101,6 +113,7 @@ def test_unreadable_loop_store_applies_no_budget(tmp_path, monkeypatch):
     (tmp_path / "autonudge.json").write_text("{not json")
     state = _make_state(tmp_path / "sessions")
     assert restore_open_slots(state) == 4
+    assert _history_notices(state) == []
 
 
 # ── Idle sweep ──
@@ -154,6 +167,7 @@ async def test_sweep_archives_only_the_idle_slot_above_high_water(tmp_path, monk
         assert kept in state._slots
     meta = state.conversation_log.get_metadata(_history_key_for("idle"))
     assert meta.get("closed") is True
+    _assert_one_history_notice(state, 1)
 
 
 @pytest.mark.asyncio
@@ -165,6 +179,7 @@ async def test_sweep_does_nothing_below_high_water(tmp_path, monkeypatch):
     never_done.cancel()
     assert archived == []
     assert "idle" in state._slots
+    assert _history_notices(state) == []
 
 
 @pytest.mark.asyncio
@@ -290,3 +305,297 @@ def test_remote_only_tab_past_the_budget_keeps_the_reopen_seed(tmp_path, monkeyp
     assert restored == 1
     assert "chat-1-local" in state._slots
     assert "chat-2-remote" in state.unrestored_slot_keys
+
+
+# ── Guards, each pinned on its own ──
+
+_CUTOFF = (_NOW - timedelta(days=7)).timestamp()
+
+
+def _select(state, **kwargs) -> list[str]:
+    picked, _ = slot_retention.select_idle_slot_keys(
+        state, looped={"looped"}, cutoff=_CUTOFF, **kwargs
+    )
+    return picked
+
+
+def _recheck_keeps(state, name: str) -> bool:
+    from kiro_crew.dashboard.chat_handlers import SlotCloseError
+
+    check = slot_retention._still_idle_check(state, state._slots[name], name, _CUTOFF)
+    try:
+        check()
+    except SlotCloseError:
+        return True
+    return False
+
+
+class _FakeSubagents:
+    def __init__(self, running=None, *, raises: bool = False, queued: int = 0) -> None:
+        self._running = running or {}
+        self._raises = raises
+        self._queued = queued
+
+    def running_agents_for(self, session_key: str):
+        if self._raises:
+            raise RuntimeError("registry gone")
+        return self._running.get(session_key, [])
+
+    async def queued_count_for_async(self, session_key: str) -> int:
+        return self._queued
+
+
+def _session_key(state, name: str) -> str:
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+
+    return effective_session_key(state._slots[name])
+
+
+@pytest.mark.asyncio
+async def test_selection_alone_skips_a_running_slot(tmp_path, monkeypatch):
+    state, never_done = _sweep_state(tmp_path, monkeypatch, fill_to=0)
+    assert "running" in _select(state)
+    assert "running" not in _select(state, skip_running=True)
+    never_done.cancel()
+
+
+@pytest.mark.asyncio
+async def test_recheck_alone_keeps_a_running_slot(tmp_path, monkeypatch):
+    state, never_done = _sweep_state(tmp_path, monkeypatch, fill_to=0)
+    assert not _recheck_keeps(state, "idle")
+    assert _recheck_keeps(state, "running")
+    never_done.cancel()
+
+
+@pytest.mark.asyncio
+async def test_no_nudge_service_archives_nothing_before_any_selection(tmp_path, monkeypatch):
+    """The early return alone stops the pass: no selection, no close, no re-check."""
+    state, never_done = _sweep_state(tmp_path, monkeypatch, fill_to=slot_retention.SWEEP_HIGH_WATER)
+    monkeypatch.setattr("kiro_crew.autonudge.get_instance", lambda: None)
+
+    def _no_select(*args, **kwargs):
+        raise AssertionError("the sweep selected with no auto-nudge service")
+
+    monkeypatch.setattr(slot_retention, "select_idle_slot_keys", _no_select)
+    archived = await slot_retention.sweep_idle_slots(state, 7, now=_NOW.timestamp())
+    never_done.cancel()
+    assert archived == []
+
+
+@pytest.mark.asyncio
+async def test_pending_coordinator_approval_keeps_the_slot_in_selection_and_recheck(
+    tmp_path, monkeypatch
+):
+    state, never_done = _sweep_state(tmp_path, monkeypatch, fill_to=0)
+    monkeypatch.setattr(
+        state,
+        "pending_coordinator_approvals",
+        lambda key: [{"slot": key}] if key == "idle" else [],
+    )
+    assert "idle" in _select(state)
+    assert "idle" not in _select(state, skip_busy=True)
+    assert _recheck_keeps(state, "idle")
+    never_done.cancel()
+
+
+@pytest.mark.asyncio
+async def test_own_pending_approval_keeps_the_slot(tmp_path, monkeypatch):
+    state, never_done = _sweep_state(tmp_path, monkeypatch, fill_to=0)
+    waiting = asyncio.get_running_loop().create_future()
+    state._slots["idle"]._approval_futures["a-1"] = waiting
+    assert "idle" not in _select(state, skip_busy=True)
+    assert _recheck_keeps(state, "idle")
+    waiting.cancel()
+    never_done.cancel()
+
+
+@pytest.mark.asyncio
+async def test_unanswerable_approval_registry_keeps_the_slot(tmp_path, monkeypatch):
+    state, never_done = _sweep_state(tmp_path, monkeypatch, fill_to=0)
+
+    def _broken(key):
+        raise RuntimeError("registry gone")
+
+    monkeypatch.setattr(state, "pending_coordinator_approvals", _broken)
+    assert "idle" not in _select(state, skip_busy=True)
+    assert _recheck_keeps(state, "idle")
+    never_done.cancel()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", ["running", "unknown", "raises"])
+async def test_attached_subagents_keep_the_slot_in_selection_and_recheck(
+    tmp_path, monkeypatch, shape
+):
+    """Running children, a None answer and a probe that raises all keep the slot."""
+    state, never_done = _sweep_state(tmp_path, monkeypatch, fill_to=0)
+    key = _session_key(state, "idle")
+    if shape == "running":
+        state.subagents = _FakeSubagents({key: [{"id": "c1"}]})
+    elif shape == "unknown":
+        state.subagents = _FakeSubagents({key: None})
+    else:
+        state.subagents = _FakeSubagents(raises=True)
+    assert "idle" in _select(state)
+    assert "idle" not in _select(state, skip_busy=True)
+    assert _recheck_keeps(state, "idle")
+    never_done.cancel()
+
+
+@pytest.mark.asyncio
+async def test_a_result_still_delivering_keeps_the_slot(tmp_path, monkeypatch):
+    state, never_done = _sweep_state(tmp_path, monkeypatch, fill_to=0)
+    state.subagents = _FakeSubagents()
+    assert "idle" in _select(state, skip_busy=True)
+    state._slots["idle"]._subagent_deliveries_inflight = 1
+    assert "idle" not in _select(state, skip_busy=True)
+    assert _recheck_keeps(state, "idle")
+    never_done.cancel()
+
+
+@pytest.mark.asyncio
+async def test_sweep_keeps_a_slot_with_queued_children(tmp_path, monkeypatch):
+    """The queued half of the probe reads the store, so the sweep asks it before closing."""
+    state, never_done = _sweep_state(tmp_path, monkeypatch, fill_to=slot_retention.SWEEP_HIGH_WATER)
+    state.subagents = _FakeSubagents(queued=1)
+    archived = await slot_retention.sweep_idle_slots(state, 7, now=_NOW.timestamp())
+    never_done.cancel()
+    assert archived == []
+    assert "idle" in state._slots
+
+
+@pytest.mark.asyncio
+async def test_sweep_keeps_the_slot_when_the_full_probe_raises(tmp_path, monkeypatch):
+    state, never_done = _sweep_state(tmp_path, monkeypatch, fill_to=slot_retention.SWEEP_HIGH_WATER)
+    state.subagents = _FakeSubagents()
+
+    async def _broken(*args, **kwargs):
+        raise RuntimeError("store gone")
+
+    monkeypatch.setattr("kiro_crew.dashboard.chat_utils.subagents_attached_async", _broken)
+    archived = await slot_retention.sweep_idle_slots(state, 7, now=_NOW.timestamp())
+    never_done.cancel()
+    assert archived == []
+    assert "idle" in state._slots
+
+
+@pytest.mark.asyncio
+async def test_foreground_slot_is_kept_until_blur_or_disconnect(tmp_path, monkeypatch):
+    state, never_done = _sweep_state(tmp_path, monkeypatch, fill_to=0)
+    slot_retention.note_foreground(state, 1, "idle")
+    assert "idle" not in _select(state, skip_busy=True)
+    assert _recheck_keeps(state, "idle")
+    slot_retention.note_foreground(state, 1, None)
+    assert "idle" in _select(state, skip_busy=True)
+    assert not _recheck_keeps(state, "idle")
+    never_done.cancel()
+
+
+@pytest.mark.asyncio
+async def test_sweep_keeps_a_crew_bound_worker_tab(tmp_path, monkeypatch):
+    state, never_done = _sweep_state(tmp_path, monkeypatch, fill_to=slot_retention.SWEEP_HIGH_WATER)
+    monkeypatch.setattr(slot_retention, "crew_bound_on_disk", lambda key: key == "idle")
+    archived = await slot_retention.sweep_idle_slots(state, 7, now=_NOW.timestamp())
+    never_done.cancel()
+    assert archived == []
+    assert "idle" in state._slots
+
+
+@pytest.mark.parametrize("driver", ["sync", "async"])
+def test_crew_bound_tab_past_the_budget_is_built(tmp_path, monkeypatch, driver):
+    """A worker tab left unbuilt would read as closed to the work-ledger wake gate."""
+    monkeypatch.setattr("kiro_crew.autonudge.get_instance", lambda: None)
+    monkeypatch.setattr("kiro_crew.dashboard.chat_persistence.RESTORE_SLOT_BUDGET", 1)
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.chat_persistence.crew_bound_on_disk",
+        lambda key: key == "chat-2-worker",
+    )
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    seed = _make_state(tmp_path / "sessions")
+    log = seed.conversation_log
+    keys = ["chat-1-new", "chat-2-worker", "chat-3-old"]
+    for i, key in enumerate(keys):
+        log.append(_history_key_for(key), "user", "hello")
+        mtime = 1_700_000_000 - i
+        os.utime(log._path(_history_key_for(key)), (mtime, mtime))
+    (tmp_path / "open_slots.json").write_text(json.dumps({"keys": keys, "ts": 0.0}))
+    state = _make_state(tmp_path / "sessions")
+    if driver == "sync":
+        restored = restore_open_slots(state)
+    else:
+        restored = asyncio.run(restore_open_slots_async(state))
+    assert restored == 2
+    assert {"chat-1-new", "chat-2-worker"} <= set(state._slots)
+    assert "chat-3-old" not in state._slots
+    _assert_one_history_notice(state, 1)
+
+
+def test_crew_bound_reads_an_open_item_bound_to_the_worker(monkeypatch):
+    from kiro_crew import work_ledger
+
+    item = MagicMock(is_terminal=False, worker_session_key="chat-9-w")
+    monkeypatch.setattr(
+        work_ledger,
+        "read_binding",
+        lambda key, strict=False: ("chat-1-c", "it_00000001") if key == "chat-9-w" else None,
+    )
+    monkeypatch.setattr(work_ledger, "read_work_item", lambda *a, **k: item)
+    assert slot_retention.crew_bound_on_disk("chat-9-w")
+    item.is_terminal = True
+    assert not slot_retention.crew_bound_on_disk("chat-9-w")
+    assert not slot_retention.crew_bound_on_disk("chat-8-other")
+
+
+def test_crew_bound_fails_closed_on_an_unreadable_binding(monkeypatch):
+    from kiro_crew import work_ledger
+
+    def _broken(key, strict=False):
+        raise OSError("transient")
+
+    monkeypatch.setattr(work_ledger, "read_binding", _broken)
+    assert slot_retention.crew_bound_on_disk("chat-9-w")
+
+
+def test_sweep_high_water_leaves_headroom_above_the_restore_budget():
+    assert slot_retention.RESTORE_SLOT_BUDGET < slot_retention.SWEEP_HIGH_WATER < MAX_LIVE_SLOTS
+
+
+@pytest.mark.asyncio
+async def test_sweep_keeps_a_replacement_opened_during_the_probe(tmp_path, monkeypatch):
+    """A tab reopened under the same key while the probe awaits is not the slot judged."""
+    from kiro_crew.dashboard import chat_utils
+
+    state, never_done = _sweep_state(tmp_path, monkeypatch, fill_to=slot_retention.SWEEP_HIGH_WATER)
+    replacement = MagicMock()
+
+    async def _swap_then_answer(state_, slot, session_key, operation):
+        if slot.key == "idle":
+            state_._slots["idle"] = replacement
+        return False
+
+    monkeypatch.setattr(chat_utils, "subagents_attached_async", _swap_then_answer)
+    archived = await slot_retention.sweep_idle_slots(state, 7, now=_NOW.timestamp())
+    never_done.cancel()
+    assert archived == []
+    assert state._slots["idle"] is replacement
+
+
+def test_foldered_tab_past_the_budget_is_built_and_not_counted(tmp_path, monkeypatch):
+    """The recent-sessions restore rebuilds a foldered tab, so the budget never skips one."""
+    monkeypatch.setattr("kiro_crew.autonudge.get_instance", lambda: None)
+    monkeypatch.setattr("kiro_crew.dashboard.chat_persistence.RESTORE_SLOT_BUDGET", 1)
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    seed = _make_state(tmp_path / "sessions")
+    log = seed.conversation_log
+    keys = ["chat-1-new", "chat-2-foldered", "chat-3-old"]
+    for i, key in enumerate(keys):
+        log.append(_history_key_for(key), "user", "hello")
+        mtime = 1_700_000_000 - i
+        os.utime(log._path(_history_key_for(key)), (mtime, mtime))
+    log.update_metadata(_history_key_for("chat-2-foldered"), {"folder_id": "f1"})
+    os.utime(log._path(_history_key_for("chat-2-foldered")), (1_699_999_999, 1_699_999_999))
+    (tmp_path / "open_slots.json").write_text(json.dumps({"keys": keys, "ts": 0.0}))
+    state = _make_state(tmp_path / "sessions")
+    assert restore_open_slots(state) == 2
+    assert "chat-2-foldered" in state._slots
+    _assert_one_history_notice(state, 1)

@@ -92,7 +92,9 @@ from kiro_crew.dashboard.slot_queue_repository import (  # noqa: F401
 )
 from kiro_crew.dashboard.slot_retention import (
     RESTORE_SLOT_BUDGET,
+    crew_bound_on_disk,
     live_loop_slot_keys,
+    notify_left_in_history,
     stored_loop_slot_keys,
 )
 from kiro_crew.dashboard.state import (  # noqa: F401
@@ -534,26 +536,40 @@ def _over_restore_budget(state: DashboardState, key: str, looped: set[str] | Non
     return state.live_slot_count() >= RESTORE_SLOT_BUDGET
 
 
-def _pinned_on_disk(conv_log: ConversationLog, key: str) -> bool:
+def _kept_past_budget(conv_log: ConversationLog, key: str) -> bool:
     """Whether slot *key* takes the normal path past the budget. BLOCKING.
 
-    True for a pinned tab, and for one with no readable local metadata: an
-    unreadable read or an absent transcript costs the normal path no transcript
-    read, and that path's own guards decide whether the key stays in the reopen
-    seed (unreadable, or remote-only after a remote authority restore) or goes.
+    True for a pinned tab, for a tab in a folder (the recent-sessions restore
+    and the channel reconciler rebuild every foldered tab whatever its age, so
+    leaving one out here would neither hold the budget nor keep it in History),
+    for a crew worker tab bound to an open work item (the wake gate reads a
+    worker with no slot as closed), and for one with no
+    readable local metadata: an unreadable read or an absent transcript costs
+    the normal path no transcript read, and that path's own guards decide
+    whether the key stays in the reopen seed (unreadable, or remote-only after a
+    remote authority restore) or goes.
     """
     meta, readable = conv_log.get_metadata_status(slot_transcript_key(key))
-    return not readable or not meta or bool(meta.get("pinned"))
+    if not readable or not meta or bool(meta.get("pinned")) or bool(meta.get("folder_id")):
+        return True
+    return crew_bound_on_disk(key)
 
 
-def _log_restore_budget(skipped: int) -> None:
-    if skipped:
-        logger.info(
-            "restore_open_slots: left %d older tab(s) in history; the restore budget "
-            "is %d open sessions",
-            skipped,
-            RESTORE_SLOT_BUDGET,
-        )
+def _report_restore_budget(state: DashboardState, skipped: int) -> None:
+    if not skipped:
+        return
+    logger.info(
+        "restore_open_slots: left %d older tab(s) in history; the restore budget "
+        "is %d open sessions",
+        skipped,
+        RESTORE_SLOT_BUDGET,
+    )
+    notify_left_in_history(
+        state,
+        skipped,
+        f"{skipped} older open tab(s) were left in History at startup to keep "
+        f"{RESTORE_SLOT_BUDGET} sessions open at most.",
+    )
 
 
 def _restore_open_slots_steps(state: DashboardState) -> "Iterator[int]":
@@ -591,11 +607,12 @@ def _restore_open_slots_steps(state: DashboardState) -> "Iterator[int]":
         key = _sanitize_open_slot_key(raw)
         if key is None or key in state._slots:
             continue
-        # Past the budget only a pinned tab is still built. The rest stay in
-        # history, out of the reopen seed: they were not shown to be unreadable.
+        # Past the budget only a pinned or crew-bound tab is still built. The
+        # rest stay in history, out of the reopen seed: they were not shown to be
+        # unreadable.
         if _over_restore_budget(state, key, looped):
             try:
-                pinned = _pinned_on_disk(state.conversation_log, key)
+                pinned = _kept_past_budget(state.conversation_log, key)
             except Exception:
                 logger.debug("restore_open_slots: pin read failed for %s", key, exc_info=True)
                 pinned = True
@@ -653,7 +670,7 @@ def _restore_open_slots_steps(state: DashboardState) -> "Iterator[int]":
         yield restored
     if restored:
         logger.info("Restored %d open tab(s) from open_slots.json", restored)
-    _log_restore_budget(skipped)
+    _report_restore_budget(state, skipped)
 
 
 def _apply_restored_open_slot(
@@ -781,8 +798,9 @@ def restore_open_slots(state: DashboardState) -> int:
     guard, so closing a tab and then restarting still loses the tab.
 
     Tabs are built newest first. Once ``live_slot_count()`` reaches
-    ``RESTORE_SLOT_BUDGET`` only pinned tabs and tabs an armed auto-nudge loop
-    drives are still built; the rest stay in history, unrestored and undeleted.
+    ``RESTORE_SLOT_BUDGET`` only pinned tabs, tabs an armed auto-nudge loop
+    drives and crew worker tabs bound to an open work item are still built; the
+    rest stay in history, unrestored and undeleted, and one notification says so.
 
     Blocking: restores every tab without yielding. Startup on the event loop must
     use :func:`restore_open_slots_async` instead — see the note there.
@@ -862,7 +880,7 @@ async def restore_open_slots_async(state: DashboardState) -> int:
             # Same budget as the inline driver, with the pin read off the loop.
             if _over_restore_budget(state, key, looped):
                 try:
-                    pinned = await asyncio.to_thread(_pinned_on_disk, conv_log, key)
+                    pinned = await asyncio.to_thread(_kept_past_budget, conv_log, key)
                 except Exception:
                     logger.debug("restore_open_slots: pin read failed for %s", key, exc_info=True)
                     pinned = True
@@ -914,7 +932,7 @@ async def restore_open_slots_async(state: DashboardState) -> int:
             await asyncio.sleep(0)
         if restored:
             logger.info("Restored %d open tab(s) from open_slots.json", restored)
-        _log_restore_budget(skipped)
+        _report_restore_budget(state, skipped)
     finally:
         # Always clear, even if a rehydrate raises — a stuck flag would silently
         # disable open-tab persistence for the rest of the process's life.

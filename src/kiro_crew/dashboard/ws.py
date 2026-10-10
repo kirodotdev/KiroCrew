@@ -18,6 +18,7 @@ from kiro_crew import shutdown_event
 from kiro_crew.constants import crew_log_enabled
 from kiro_crew.dashboard.chat_utils import effective_session_key, subagent_event_slot
 from kiro_crew.dashboard.origin import check_origin
+from kiro_crew.dashboard.slot_retention import note_foreground
 from kiro_crew.dashboard.state import (
     PERSISTED_SUBAGENT_REPLAY_KEEP,
     PERSISTED_SUBAGENT_REPLAY_MAX_AGE_SECS,
@@ -1726,6 +1727,8 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                         _focus_task = _handle_slot_focused(
                             state, data.get("slot"), _focus_task, owner=owner_request
                         )
+                        if owner_request:
+                            note_foreground(state, id(ws), data.get("slot"))
                     elif msg_type == "slot_read":
                         _relayed = _handle_slot_read(
                             state,
@@ -1772,6 +1775,7 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
         # A prefetch still debouncing for a closed dashboard serves nobody.
         if _focus_task is not None and not _focus_task.done():
             _focus_task.cancel()
+        note_foreground(state, id(ws), None)
         state.unsubscribe_logs(ws)
         state.unsubscribe_subagents(ws)
         state.unregister_ws(ws)

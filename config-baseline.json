@@ -7476,7 +7476,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Archive Idle Sessions After Days",
-      "help": "When 400 or more sessions are open, archive sessions idle for this many days to history, hourly. Pinned sessions, app sessions, sessions with a running turn and sessions an auto-nudge loop drives are kept. 0 = never.",
+      "help": "When 450 or more sessions are open, archive sessions idle for this many days to history, hourly, and post a notification. Pinned sessions, app sessions, the open session, sessions with a running turn, a pending approval or sub-agents, crew worker sessions and sessions an auto-nudge loop drives are kept. 0 = never.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 7,
