@@ -137,6 +137,7 @@ import { createPortal } from 'react-dom'
 import { useCrewmateThreadsFlag } from '../../hooks/useCrewmateThreadsFlag'
 import { CrewDashboardFrame } from './CrewWebview'
 import CrewDashboardTab from './CrewDashboardTab'
+import { isDashboardPreview, withoutDashboardPreview } from './dashboardPreview'
 import { mergePaneDraft } from '../../utils/chatPaneDrafts'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -2630,6 +2631,32 @@ export default function MembersPage() {
 
   const activeSlug = active?.slug ?? ''
   const activeMemberName = active?.name ?? ''
+  // A PREVIEW LINK -- `?dashboard=preview`, the link `dashboard_preview` hands the
+  // crewmate to show the person -- opens the side panel on the Dashboard tab, where
+  // the staged page is drawn under its preview band. Once per crewmate and strip
+  // bucket: the strip re-buckets when the thread's slot confirms, and that bucket's
+  // stored focus may be another tab; after that, closing the panel or picking
+  // another tab is the person's choice and is not undone while the link is still in
+  // the URL. Switching crewmate writes a fresh `?member=`, which drops the request.
+  const dashboardPreviewLink = isDashboardPreview(searchParams)
+  const focusPanelTab = tabsCtl.setActive
+  const previewOpenedFor = useRef('')
+  useEffect(() => {
+    if (!dashboardPreviewLink) {
+      previewOpenedFor.current = ''
+      return
+    }
+    if (!activeMemberName) return
+    const opened = JSON.stringify([activeMemberName, activeSlot])
+    if (previewOpenedFor.current === opened) return
+    previewOpenedFor.current = opened
+    if (beside) setDockedOpen(true)
+    else setOverlayOpen(true)
+    focusPanelTab(CREW_DASHBOARD_TAB_ID)
+  }, [dashboardPreviewLink, activeMemberName, activeSlot, beside, setDockedOpen, focusPanelTab])
+  const exitDashboardPreview = useCallback(() => {
+    setSearchParams(withoutDashboardPreview(searchParams), { replace: true, state: location.state })
+  }, [searchParams, setSearchParams, location.state])
   // What a schedule created from the Schedules tab must carry in its `agent` field --
   // which is the provider template only for a crewmate whose identity the server will
   // KEEP. `wakesCrew` matches a job on `member_id` when there is one, and otherwise
@@ -4850,7 +4877,10 @@ export default function MembersPage() {
                 ? <p role="status" className="px-4 pt-3 text-sm text-muted">{t('pages.membersPage.opening_thread')}</p>
                 : null}
               {activeSlug && activeMemberName && (
-                dashboardPreview ? (
+                // A preview link is drawn by the dynamic dashboard whatever the
+                // Feature Preview says: the staged page exists only in that form,
+                // and the person was sent here to look at it.
+                dashboardPreview || dashboardPreviewLink ? (
                   // Keyed per crewmate so the tab remounts on a switch instead of
                   // opening the next crewmate on the page held for this one.
                   <CrewDashboardTab
@@ -4860,6 +4890,8 @@ export default function MembersPage() {
                     displayName={crewDisplayName(activeView ?? active)}
                     // A needs-you option lands in this crewmate's chat box; the person sends it.
                     onAct={activeSlot ? (text: string) => mergePaneDraft(activeSlot, text, []) : undefined}
+                    preview={dashboardPreviewLink}
+                    onExitPreview={exitDashboardPreview}
                   />
                 ) : (
                   <CrewDashboardFrame

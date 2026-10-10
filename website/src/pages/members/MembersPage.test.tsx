@@ -173,8 +173,24 @@ vi.mock('../chat/FolderPanel', () => ({ default: () => null }))
 // (CrewDynamicDashboard.test.tsx); here the stub reports the identity the tab
 // passes it, which is all a page case can claim.
 vi.mock('./CrewDynamicDashboard', () => ({
-  default: ({ slug, displayName }: { slug: string; displayName: string }) => (
-    <div data-testid="crew-dashboard-stub" data-slug={slug} data-display-name={displayName} />
+  default: ({ slug, member, displayName, preview, onExitPreview }: {
+    slug: string
+    member: string
+    displayName: string
+    preview?: boolean
+    onExitPreview?: () => void
+  }) => (
+    <div
+      data-testid="crew-dashboard-stub"
+      data-slug={slug}
+      data-member={member}
+      data-display-name={displayName}
+      data-preview={preview ? 'true' : 'false'}
+    >
+      {onExitPreview && (
+        <button type="button" data-testid="crew-dashboard-stub-exit" onClick={onExitPreview}>exit</button>
+      )}
+    </div>
   ),
 }))
 vi.mock('../../components/DiffPanel', () => ({ default: () => null }))
@@ -1341,6 +1357,43 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     // And the dynamic dashboard is NOT mounted, which is the half that makes this
     // a gate rather than two surfaces stacked.
     expect(screen.queryByTestId('crew-dashboard-stub')).toBeNull()
+  })
+
+  describe('a preview link opens the Dashboard tab on the STAGED page', () => {
+    // The link `dashboard_preview` hands a crewmate to show the person:
+    // `instance.preview_url` builds exactly this shape.
+    const PREVIEW_ROUTE = '/members?member=oncall&dashboard=preview'
+
+    it('opens a closed panel on the Dashboard tab and asks the frame for the preview', async () => {
+      localStorage.setItem(PANEL_OPEN_KEY, '0')
+      await renderPage([row({ bound: true, slot_key: 'member-oncall' })], 'kirocrew', { route: PREVIEW_ROUTE })
+      const stub = await screen.findByTestId('crew-dashboard-stub', undefined, PANE_READY)
+      expect(stub).toHaveAttribute('data-preview', 'true')
+      expect(stub).toHaveAttribute('data-member', 'oncall')
+      expect(screen.getByTestId(`side-panel-leading-tab-${CREW_DASHBOARD_TAB_ID}`)).toHaveAttribute('aria-selected', 'true')
+    })
+
+    it('draws the staged page even with the Dynamic Dashboard preview off', async () => {
+      // The staged page exists only as a dynamic dashboard, and the person was sent
+      // here to look at it: the published view would show them something else.
+      localStorage.removeItem(PREVIEW_DASHBOARD)
+      await renderPage([row({ bound: true, slot_key: 'member-oncall' })], 'kirocrew', { route: PREVIEW_ROUTE })
+      const stub = await screen.findByTestId('crew-dashboard-stub', undefined, PANE_READY)
+      expect(stub).toHaveAttribute('data-preview', 'true')
+      expect(api.memberPanel).not.toHaveBeenCalled()
+    })
+
+    it('leaving the preview drops only the request and shows the live page', async () => {
+      await renderPage([row({ bound: true, slot_key: 'member-oncall' })], 'kirocrew', { route: PREVIEW_ROUTE })
+      fireEvent.click(await screen.findByTestId('crew-dashboard-stub-exit', undefined, PANE_READY))
+      await waitFor(() => expect(currentUrl()).toBe('/members?member=oncall'))
+      expect(await screen.findByTestId('crew-dashboard-stub')).toHaveAttribute('data-preview', 'false')
+    })
+
+    it('a plain member link is the live page', async () => {
+      await renderPage([row({ bound: true, slot_key: 'member-oncall' })], 'kirocrew', { route: '/members?member=oncall' })
+      expect(await screen.findByTestId('crew-dashboard-stub', undefined, PANE_READY)).toHaveAttribute('data-preview', 'false')
+    })
   })
 
   it('with the panel closed, the identity pill opens Profile in its own column and leaves one face', async () => {

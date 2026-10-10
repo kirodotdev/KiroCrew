@@ -211,6 +211,31 @@ async def test_a_request_with_no_member_is_refused():
         assert (await resp.json())["code"] == "missing_member"
 
 
+async def test_the_preview_read_serves_the_staged_page_and_links_to_the_tab():
+    """The read the Dashboard tab makes for a preview.
+
+    The tab draws ``rendered_html`` under its preview band and reads ``preview`` to
+    know which page it holds, so both must be on this body.
+    """
+    async with _client() as client:
+        instance.stage_preview(SLUG, template_id="fixture-board")
+        resp = await client.get(_q("", preview="1"))
+        assert resp.status == 200, await resp.text()
+        body = await resp.json()
+    assert body["preview"] is True
+    assert body["template"] == {"id": "fixture-board", "version": 1}
+    assert "rendered_html" in body
+    # Nothing was adopted, so the version a reader caches by has not moved.
+    assert instance.read(SLUG).instance_version == 0
+
+
+async def test_a_preview_read_with_nothing_staged_is_a_404_the_tab_can_name():
+    async with _client() as client:
+        resp = await client.get(_q("", preview="1"))
+        assert resp.status == 404
+        assert (await resp.json())["code"] == "no_preview"
+
+
 # --------------------------------------------------------------------------
 # adopt, edit, rollback
 # --------------------------------------------------------------------------

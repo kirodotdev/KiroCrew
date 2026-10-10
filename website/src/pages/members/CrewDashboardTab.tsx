@@ -15,12 +15,16 @@ const CrewDynamicDashboard = lazy(() => import('./CrewDynamicDashboard'))
  * The tab holds the dashboard alone and offers no view switch. The raw crew-log
  * record is a Developer Mode surface, reached from the chat panel's own Crew log
  * view, so the thread's slot is not part of this tab's input. */
-export default function CrewDashboardTab({ slug, member, displayName, onAct }: {
+export default function CrewDashboardTab({ slug, member, displayName, onAct, preview = false, onExitPreview }: {
   slug: string
   member: string
   displayName: string
   /** Put a reply the page offered into this crewmate's chat box. */
   onAct?: (text: string) => void
+  /** Show the STAGED page under a preview band instead of the live one. */
+  preview?: boolean
+  /** Return the tab to the live page. */
+  onExitPreview?: () => void
 }) {
   const { t } = useTranslation()
   return (
@@ -31,8 +35,18 @@ export default function CrewDashboardTab({ slug, member, displayName, onAct }: {
               different manifest and a different minted document, and the held
               "last good page" must not survive the switch -- one crewmate's
               numbers under another's name is the one thing this surface must
-              never show. */}
-          <CrewDynamicDashboard key={slug} slug={slug} member={member} displayName={displayName || member} onAct={onAct} />
+              never show. Keyed on `preview` for the same reason: the staged page
+              and the live one are two documents, and the held page of one must
+              never be drawn under the other's band. */}
+          <CrewDynamicDashboard
+            key={`${slug}:${preview ? 'preview' : 'live'}`}
+            slug={slug}
+            member={member}
+            displayName={displayName || member}
+            onAct={onAct}
+            preview={preview}
+            onExitPreview={onExitPreview}
+          />
         </Suspense>
       </ErrorBoundary>
     </div>

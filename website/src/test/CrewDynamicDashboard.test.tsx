@@ -9,9 +9,10 @@
  * its case has ended lands a state update on whichever case runs next. The page
  * file mocks this component and pins only the identity it passes in.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { api, type DashboardManifest } from '../api/client'
+import { ApiError } from '../api/apiError'
 import { renderWithProviders } from './helpers'
 import CrewDynamicDashboard, {
   DASHBOARD_FALLBACK_REFETCH_MS,
@@ -97,7 +98,7 @@ describe('CrewDynamicDashboard', () => {
   it('reads the crewmate\'s own instance by slug AND exact member name', async () => {
     const read = vi.spyOn(api, 'memberDashboard').mockResolvedValue(page())
     mount()
-    await waitFor(() => expect(read).toHaveBeenCalledWith('oncall', 'oncall', 'en'))
+    await waitFor(() => expect(read).toHaveBeenCalledWith('oncall', 'oncall', 'en', false))
     expect(await screen.findByTestId('crew-dashboard-frame')).toBeInTheDocument()
   })
 
@@ -106,7 +107,7 @@ describe('CrewDynamicDashboard', () => {
     try {
       const read = vi.spyOn(api, 'memberDashboard').mockResolvedValue(page())
       mount()
-      await waitFor(() => expect(read).toHaveBeenCalledWith('oncall', 'oncall', 'zh-CN'))
+      await waitFor(() => expect(read).toHaveBeenCalledWith('oncall', 'oncall', 'zh-CN', false))
     } finally {
       localStorage.removeItem(LANG_STORAGE_KEY)
     }
@@ -443,5 +444,99 @@ describe('the stored copy is never mounted', () => {
     mount()
     expect(await screen.findByTestId('crew-dashboard-empty')).toBeInTheDocument()
     expect(screen.queryByTestId('crew-dashboard-loading')).toBeNull()
+  })
+})
+
+describe('a preview link: the STAGED page, labelled as one', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    mints.length = 0
+    retries = 0
+    retrySpy.mockClear()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  function mountPreview(onExitPreview?: () => void) {
+    return renderWithProviders(
+      <CrewDynamicDashboard
+        slug="oncall"
+        member="oncall"
+        displayName="On Call"
+        preview
+        onExitPreview={onExitPreview}
+      />,
+    )
+  }
+
+  it('reads the staged page, not the live record', async () => {
+    const read = vi.spyOn(api, 'memberDashboard').mockResolvedValue(page({ preview: true }))
+    mountPreview()
+    await waitFor(() => expect(read).toHaveBeenCalledWith('oncall', 'oncall', 'en', true))
+    expect(read).not.toHaveBeenCalledWith('oncall', 'oncall', 'en', false)
+  })
+
+  it('draws it in the same sandbox under a band naming the crewmate', async () => {
+    vi.spyOn(api, 'memberDashboard').mockResolvedValue(
+      page({ preview: true, rendered_html: '<!doctype html><title>staged</title>' }),
+    )
+    mountPreview()
+    const band = await screen.findByTestId('crew-dashboard-preview-band')
+    expect(band).toHaveAttribute('role', 'status')
+    expect(band).toHaveTextContent('Preview')
+    expect(band).toHaveTextContent("On Call made this draft for you to look at. Your dashboard hasn't changed yet.")
+    const frame = await screen.findByTestId('crew-dashboard-iframe')
+    expect(frame).toHaveAttribute('sandbox', 'allow-scripts')
+    expect(mints[mints.length - 1]).toContain('<title>staged</title>')
+  })
+
+  it('offers the way back to the live page', async () => {
+    vi.spyOn(api, 'memberDashboard').mockResolvedValue(page({ preview: true }))
+    const onExit = vi.fn()
+    mountPreview(onExit)
+    fireEvent.click(await screen.findByTestId('crew-dashboard-preview-exit'))
+    expect(onExit).toHaveBeenCalledTimes(1)
+  })
+
+  it('says so plainly when nothing is staged any more, with no retry', async () => {
+    const read = vi
+      .spyOn(api, 'memberDashboard')
+      .mockRejectedValue(new ApiError(404, 'nothing is staged to preview', '{"code":"no_preview"}'))
+    const onExit = vi.fn()
+    mountPreview(onExit)
+    const none = await screen.findByTestId('crew-dashboard-preview-none')
+    expect(none).toHaveTextContent("There's no draft to show.")
+    expect(none).toHaveTextContent('Ask On Call in the chat for a new one.')
+    expect(screen.queryByTestId('crew-dashboard-error')).toBeNull()
+    expect(screen.queryByTestId('crew-dashboard-error-retry')).toBeNull()
+    expect(read).toHaveBeenCalledTimes(1)
+    fireEvent.click(within(none).getByTestId('crew-dashboard-preview-none-exit'))
+    expect(onExit).toHaveBeenCalledTimes(1)
+  })
+
+  it('any other 404 is a load failure, not a preview that ended', async () => {
+    // `member_not_found` comes off the same route for a crewmate that is gone. It
+    // keeps the client's ladder: one retry, one second later, then the error.
+    vi.useFakeTimers()
+    const read = vi.spyOn(api, 'memberDashboard').mockRejectedValue(
+      new ApiError(404, 'no crew member for this slug', '{"code":"member_not_found"}'),
+    )
+    mountPreview()
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(read).toHaveBeenCalledTimes(1)
+    expect(screen.queryByTestId('crew-dashboard-error')).toBeNull()
+    await act(async () => { await vi.advanceTimersByTimeAsync(2_000) })
+    expect(read).toHaveBeenCalledTimes(2)
+    expect(screen.getByTestId('crew-dashboard-error')).toBeInTheDocument()
+    expect(screen.queryByTestId('crew-dashboard-preview-none')).toBeNull()
+  })
+
+  it('the live page carries no preview band', async () => {
+    vi.spyOn(api, 'memberDashboard').mockResolvedValue(page())
+    mount()
+    await screen.findByTestId('crew-dashboard-iframe')
+    expect(screen.queryByTestId('crew-dashboard-preview-band')).toBeNull()
   })
 })

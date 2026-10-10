@@ -32,6 +32,7 @@ from kiro_crew.crew_log import CrewLog
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.crew_log import projection as crew_log_projection
 from kiro_crew.dashboard.handlers import agent_panel as routes
+from kiro_crew.dashboard_templates.instance import preview_url as instance_preview_url
 
 pytestmark = pytest.mark.asyncio
 
@@ -2768,13 +2769,16 @@ def _page_store(monkeypatch, **over: Any) -> SimpleNamespace:
         "fields": ["credits", "phase"],
         "html_bytes": 120,
         "staged_ms": 1,
-        "preview_url": f"/api/members/{SLUG}/dashboard?preview=1",
     }
     store = SimpleNamespace(
         InstanceRefused=InstanceRefused,
         InstanceError=Exception,
         read=lambda _slug: SimpleNamespace(template_id="fixture-board"),
-        stage_preview=lambda _slug, **_kw: SimpleNamespace(wire=lambda: dict(staged)),
+        # `wire` takes the crew NAME and builds the link from it with the real
+        # builder, so a route that forgets to pass the name fails here.
+        stage_preview=lambda _slug, **_kw: SimpleNamespace(
+            wire=lambda member: {**staged, "preview_url": instance_preview_url(member)}
+        ),
         apply_preview=lambda _slug, **_kw: SimpleNamespace(
             instance_version=5, template_id="fixture-board"
         ),
@@ -2865,7 +2869,10 @@ class TestThePreviewRouteOverHttp:
             assert resp.status == 200, await resp.text()
             body = await resp.json()
         assert body["ok"] is True
-        assert body["preview"]["preview_url"].endswith("preview=1")
+        # The PAGE for this crew by name, never the JSON read: the Members page with
+        # its Dashboard tab on the staged page. A slug-only or `/api/` link is refused
+        # or shows raw JSON.
+        assert body["preview"]["preview_url"] == f"/members?member={CREW}&dashboard=preview"
         assert "html" not in body["preview"], "the staged page itself came back on the wire"
 
     async def test_a_non_string_template_id_is_refused(self, vetted, monkeypatch) -> None:
