@@ -781,6 +781,179 @@ class TestAppCli:
         assert "Toggle the app in the dashboard instead" in err
         local_disable.assert_not_called()
 
+    def test_install_forwards_to_running_gateway_without_local_edits(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source = tmp_path / "demo-app"
+        source.mkdir()
+        monkeypatch.chdir(tmp_path)
+        requests: list[urllib.request.Request] = []
+
+        def _open(
+            request: urllib.request.Request, *, timeout: int, socket_path: Path
+        ) -> _FakeResponse:
+            assert socket_path.name == "dashboard-8123.sock"
+            requests.append(request)
+            if request.full_url.endswith("/api/token/local?ttl=2m"):
+                return _FakeResponse({"token": "dashboard-credential"})
+            return _FakeResponse(
+                {
+                    "ok": True,
+                    "name": "demo",
+                    "message": "Installed demo v1.0.0",
+                    "registration": {
+                        "agents": ["demo-agent"],
+                        "skills": ["demo-skill"],
+                        "crons": [],
+                        "errors": ["skill registration deferred"],
+                    },
+                }
+            )
+
+        with (
+            patch(
+                "kiro_crew.app_lifecycle_client.resolve_client_port_ex", return_value=(8123, True)
+            ),
+            patch("kiro_crew.app_lifecycle_client.read_local_secret", return_value="local-secret"),
+            patch("kiro_crew.app_lifecycle_client.unix_socket_urlopen", side_effect=_open),
+            patch("kiro_crew.cli_commands.install_app") as local_install,
+            patch("kiro_crew.cli_commands.register_app") as local_register,
+        ):
+            # A relative path: the gateway's working directory is not this shell's.
+            cc._handle_app(_ns(app_action="install", source="demo-app"))
+
+        assert len(requests) == 2
+        action = requests[1]
+        assert action.get_method() == "POST"
+        assert "/api/apps/install?" in action.full_url
+        assert json.loads(action.data) == {"source": str(source.resolve())}
+        assert action.get_header("Content-type") == "application/json"
+        local_install.assert_not_called()
+        local_register.assert_not_called()
+        captured = capsys.readouterr()
+        assert "✅ Installed demo v1.0.0" in captured.out
+        assert "Agents: demo-agent" in captured.out
+        assert "Skills: demo-skill" in captured.out
+        assert "Crons:" not in captured.out
+        assert "Run: kirocrew app enable demo" in captured.out
+        assert "session approval" not in captured.out
+        assert "… applying install for" in captured.err
+        assert "⚠️  skill registration deferred" in captured.err
+
+    def test_forwarded_install_pending_consent_names_the_enable_step(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from kiro_crew import app_lifecycle_client
+
+        app_lifecycle_client.print_result(
+            "install",
+            "demo",
+            {
+                "ok": True,
+                "name": "demo",
+                "message": "Installed demo v1.0.0",
+                "notice": "session_approval_reconsent",
+                "registration": {"agents": [], "skills": [], "crons": [], "errors": []},
+            },
+        )
+
+        out = capsys.readouterr().out
+        assert "✅ Installed demo v1.0.0" in out
+        assert "stays off until enabled" in out
+        assert "Run: kirocrew app enable demo" in out
+
+    def test_install_without_reachable_gateway_keeps_file_only_path(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with (
+            patch(
+                "kiro_crew.app_lifecycle_client.resolve_client_port_ex", return_value=(5476, False)
+            ),
+            patch("kiro_crew.app_lifecycle_client.read_local_secret", return_value="local-secret"),
+            patch(
+                "kiro_crew.app_lifecycle_client.unix_socket_urlopen",
+                side_effect=urllib.error.URLError(FileNotFoundError("no socket")),
+            ) as urlopen,
+            patch(
+                "kiro_crew.cli_commands.install_app", return_value=_result(True, name="demo")
+            ) as local_install,
+            patch(
+                "kiro_crew.cli_commands.register_app", return_value=_registration(agents=["a"])
+            ) as local_register,
+        ):
+            cc._handle_app(_ns(app_action="install", source="/pkg"))
+
+        assert urlopen.call_args.kwargs["socket_path"].name == "dashboard-5476.sock"
+        local_install.assert_called_once_with("/pkg")
+        local_register.assert_called_once_with("demo")
+        out = capsys.readouterr().out
+        assert "Agents: a" in out
+        assert "kirocrew app enable demo" in out
+
+    def test_install_missing_local_secret_keeps_file_only_path(self) -> None:
+        with (
+            patch(
+                "kiro_crew.app_lifecycle_client.resolve_client_port_ex", return_value=(8123, True)
+            ),
+            patch("kiro_crew.app_lifecycle_client.read_local_secret", return_value=""),
+            patch("kiro_crew.app_lifecycle_client.unix_socket_urlopen") as urlopen,
+            patch(
+                "kiro_crew.cli_commands.install_app", return_value=_result(True, name="demo")
+            ) as local_install,
+            patch("kiro_crew.cli_commands.register_app", return_value=_registration()),
+        ):
+            cc._handle_app(_ns(app_action="install", source="/pkg"))
+
+        urlopen.assert_not_called()
+        local_install.assert_called_once_with("/pkg")
+
+    def test_install_gateway_route_error_exits_without_file_edit(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        error = _http_error(
+            400, json.dumps({"ok": False, "name": "", "error": "no app.json"}).encode()
+        )
+        with (
+            patch(
+                "kiro_crew.app_lifecycle_client.resolve_client_port_ex", return_value=(8123, True)
+            ),
+            patch("kiro_crew.app_lifecycle_client.read_local_secret", return_value="local-secret"),
+            patch(
+                "kiro_crew.app_lifecycle_client.unix_socket_urlopen",
+                side_effect=[_FakeResponse({"token": "dashboard-credential"}), error],
+            ),
+            patch("kiro_crew.cli_commands.install_app") as local_install,
+            pytest.raises(SystemExit) as exc,
+        ):
+            cc._handle_app(_ns(app_action="install", source="/pkg"))
+
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "gateway refused: no app.json" in err
+        assert "Nothing was installed; the gateway reads the app directory" in err
+        local_install.assert_not_called()
+
+    def test_install_gateway_mint_error_exits_without_file_edit(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        error = _http_error(403, json.dumps({"error": "local credential denied"}).encode())
+        with (
+            patch(
+                "kiro_crew.app_lifecycle_client.resolve_client_port_ex", return_value=(8123, True)
+            ),
+            patch("kiro_crew.app_lifecycle_client.read_local_secret", return_value="local-secret"),
+            patch("kiro_crew.app_lifecycle_client.unix_socket_urlopen", side_effect=error),
+            patch("kiro_crew.cli_commands.install_app") as local_install,
+            pytest.raises(SystemExit) as exc,
+        ):
+            cc._handle_app(_ns(app_action="install", source="/pkg"))
+
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "gateway refused: local credential denied" in err
+        assert "Nothing was installed; the gateway reads the app directory" in err
+        local_install.assert_not_called()
+
     @pytest.mark.parametrize(
         ("failure", "expected"),
         [

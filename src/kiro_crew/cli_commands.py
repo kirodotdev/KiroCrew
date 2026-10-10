@@ -23,6 +23,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -846,21 +847,48 @@ def _run_app_action_through_gateway(
     action: str, app_name: str, *, payload: dict[str, object] | None = None
 ) -> bool:
     """Return true when a live gateway handled an app lifecycle request."""
+    return _apply_through_gateway(
+        action,
+        app_name,
+        lambda: app_lifecycle_client.toggle_app(app_name, action, payload=payload),
+        hint="Toggle the app in the dashboard instead.",
+    )
+
+
+def _install_app_through_gateway(source: str) -> bool:
+    """Return true when a live gateway installed the app directory *source*."""
+    return _apply_through_gateway(
+        "install",
+        source,
+        lambda: app_lifecycle_client.install_app(source),
+        # The dashboard's install calls the same route, so pointing there would not
+        # help; the gateway opens the directory and its app.json as its own user.
+        hint="Nothing was installed; the gateway reads the app directory as its own user.",
+    )
+
+
+def _apply_through_gateway(
+    action: str,
+    subject: str,
+    send: Callable[[], dict[str, object] | None],
+    *,
+    hint: str,
+) -> bool:
+    """Run one gateway lifecycle request and render its outcome for the CLI."""
     try:
-        result = app_lifecycle_client.toggle_app(app_name, action, payload=payload)
+        result = send()
     except app_lifecycle_client.AppGatewayTimeout as exc:
         # The outcome is unknown, not negative: the gateway may still be applying
         # the action, so this is neither a refusal nor an invitation to retry.
         print(f"⏳ {exc}", file=sys.stderr)
         sys.exit(1)
     except app_lifecycle_client.AppGatewayError as exc:
-        print(
-            f"❌ gateway refused: {exc}. Toggle the app in the dashboard instead.",
-            file=sys.stderr,
-        )
+        print(f"❌ gateway refused: {exc}. {hint}", file=sys.stderr)
         sys.exit(1)
     if result is None:
         return False
+    name = result.get("name")
+    app_name = name if action == "install" and isinstance(name, str) and name else subject
     app_lifecycle_client.print_result(action, app_name, result)
     return True
 
@@ -1194,6 +1222,12 @@ def _handle_app(args: argparse.Namespace) -> None:
         return
 
     if action == "install":
+        # Ask a running gateway first, as enable, disable and uninstall do. Only
+        # the gateway can start the new app's backend and publish it to the
+        # dashboard it is serving; installing from files alone leaves a running
+        # gateway unaware of the app until it restarts.
+        if _install_app_through_gateway(args.source):
+            return
         result = install_app(args.source)
         if result.ok:
             print(f"✅ {result.message}")

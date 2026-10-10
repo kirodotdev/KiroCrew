@@ -14,6 +14,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 from kiro_crew.config.loader import read_local_secret
 from kiro_crew.dashboard.urls import dashboard_socket_path
@@ -106,6 +107,34 @@ def toggle_app(
     ``--purge-data`` into a silent data-preserving uninstall. Actions with no flag
     pass ``None`` and send no body at all.
     """
+    encoded_name = urllib.parse.quote(app_name, safe="")
+    return _post_lifecycle_action(
+        f"/api/apps/{encoded_name}/{action}", action, app_name, payload=payload
+    )
+
+
+def install_app(source: str) -> dict[str, object] | None:
+    """Install the app directory *source* through the owner-only dashboard socket.
+
+    Same contract as :func:`toggle_app`: ``None`` means no gateway received the
+    request, so the CLI may install from files alone; any failure after a gateway
+    answers is raised. The gateway resolves ``source`` against its OWN working
+    directory, which is not this shell's, so the path is made absolute here.
+    """
+    resolved = str(Path(source).expanduser().resolve())
+    return _post_lifecycle_action(
+        "/api/apps/install", "install", resolved, payload={"source": resolved}
+    )
+
+
+def _post_lifecycle_action(
+    route: str, action: str, subject: str, *, payload: dict[str, object] | None
+) -> dict[str, object] | None:
+    """POST one app lifecycle request through the dashboard socket.
+
+    *route* is the dashboard path, *action* names the verb in progress and error
+    text, and *subject* names what it acts on (an app name, or a source path).
+    """
     port, _evidence_backed = resolve_client_port_ex(None)
     # This request travels the owner-only Unix SOCKET (unix_socket_urlopen below),
     # not TCP loopback -- the http://127.0.0.1 base is only the nominal URL on the
@@ -141,17 +170,16 @@ def toggle_app(
     if not isinstance(credential, str) or not credential:
         raise AppGatewayError("gateway returned an empty local dashboard credential")
 
-    encoded_name = urllib.parse.quote(app_name, safe="")
     encoded_credential = urllib.parse.quote(credential, safe="")
     body = json.dumps(payload).encode() if payload is not None else None
     request = urllib.request.Request(
-        f"{base}/api/apps/{encoded_name}/{action}?token={encoded_credential}",
+        f"{base}{route}?token={encoded_credential}",
         method="POST",
         data=body,
         headers={"Content-Type": "application/json"} if body is not None else {},
     )
     print(
-        f"… applying {action} for {app_name} through the running gateway "
+        f"… applying {action} for {safe_terminal_line(subject)} through the running gateway "
         f"(may take up to {_ACTION_TIMEOUT_SECS // 60} minutes)",
         file=sys.stderr,
     )
@@ -167,7 +195,7 @@ def toggle_app(
     except Exception as exc:  # noqa: BLE001 — peer bytes must not crash the CLI
         if _deadline_expired(exc):
             raise AppGatewayTimeout(
-                f"the gateway did not finish {action} for {app_name} within "
+                f"the gateway did not finish {action} for {subject} within "
                 f"{_ACTION_TIMEOUT_SECS} s; it may still be applying it. Check "
                 f"`kirocrew app list` or the dashboard before re-running the command, "
                 f"because re-running while it is still in progress applies it twice"
@@ -191,7 +219,11 @@ def toggle_app(
 def print_result(action: str, app_name: str, result: dict[str, object]) -> None:
     """Render a live app lifecycle response through one terminal sanitizer."""
     message = result.get("message")
-    rendered_message = message if isinstance(message, str) else f"{action.title()}d {app_name}"
+    rendered_message = (
+        message
+        if isinstance(message, str)
+        else f"{action.title()}{'d' if action.endswith('e') else 'ed'} {app_name}"
+    )
     print(f"✅ {safe_terminal_line(rendered_message)}")
 
     warnings = result.get("warnings")
@@ -207,6 +239,26 @@ def print_result(action: str, app_name: str, result: dict[str, object]) -> None:
             for error in errors:
                 if isinstance(error, str):
                     print(f"⚠️  {safe_terminal_line(error)}", file=sys.stderr)
+
+    if action == "install":
+        # Same lines the file-only install prints, so both paths read alike.
+        if isinstance(registration, dict):
+            for key, label in (
+                ("agents", "Agents: "),
+                ("skills", "Skills: "),
+                ("crons", "Crons:  "),
+            ):
+                names = registration.get(key)
+                if isinstance(names, list) and names:
+                    joined = ", ".join(str(name) for name in names)
+                    print(f"   {label}{safe_terminal_line(joined)}")
+        if result.get("notice") == "session_approval_reconsent":
+            # The gateway left the app off until its session-approval request is
+            # accepted, so nothing above is running yet.
+            print("   This app asks for session approval, so it stays off until enabled.")
+        # An install records the app as not enabled, wherever it ran.
+        print(f"\n   Run: kirocrew app enable {safe_terminal_line(app_name)}")
+        return
 
     if action != "enable":
         return
