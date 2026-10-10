@@ -974,7 +974,7 @@
       "label": "Chat on a crew",
       "tab": "developer",
       "route": "/settings/developer?highlight=developer.chat-on-a-crew",
-      "description": "Adds “New chat on crew” to the create menu, which starts a session on a remote crew — another machine you have connected under Settings > Remote Crew. Unfinished: the session opens in that crew’s own pane and is not listed in this dashboard’s sessions yet, so to return to it later, switch to that crew’s pane."
+      "description": "Adds “New chat on crew” to the create menu, which starts a session on a remote crew — another machine you have connected under Settings > Remote Crew — and shows each connected crew’s sessions in their own group in the Sessions list. Unfinished."
     },
     {
       "id": "developer.composable-layout",
@@ -1031,13 +1031,6 @@
       "tab": "developer",
       "route": "/settings/developer?highlight=developer.model-for-the-small-model-judge",
       "description": "Only used when the judge above is the small model. Leave it on the judge agent's own model unless you want a cheaper one."
-    },
-    {
-      "id": "developer.remote-crew-sessions",
-      "label": "Remote crew sessions",
-      "tab": "developer",
-      "route": "/settings/developer?highlight=developer.remote-crew-sessions",
-      "description": "Merge a connected remote crew's live sessions into the Sessions list, each marked with its crew's name. A remote crew is another machine you have connected, not your agents. Functional, but not finished."
     },
     {
       "id": "developer.reply-threads-on-crewmate-chat-messages",

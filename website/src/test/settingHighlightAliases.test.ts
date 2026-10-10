@@ -46,13 +46,11 @@ describe('resolveLegacyHighlightId', () => {
     expect(resolveLegacyHighlightId('chat.pin-the-latest-prompt')).toBe('chat.pin-the-latest-turn')
   })
 
-  // The peer-session preview card was relabeled from "Remote instance sessions"
-  // back to "Remote crew sessions" when the remote-crew vocabulary was restored;
-  // registry ids derive from the label, so a bookmark saved against the old id
-  // would silently stop highlighting.
-  it('maps the peer-session preview id to its restored crew form', () => {
-    expect(resolveLegacyHighlightId('developer.remote-instance-sessions'))
-      .toBe('developer.remote-crew-sessions')
+  // The peer-session preview card folded into "Chat on a crew"; a bookmark
+  // saved against either of its ids lands on the one switch.
+  it('maps both peer-session preview ids to the Chat on a crew card', () => {
+    expect(resolveLegacyHighlightId('developer.remote-instance-sessions')).toBe('developer.chat-on-a-crew')
+    expect(resolveLegacyHighlightId('developer.remote-crew-sessions')).toBe('developer.chat-on-a-crew')
   })
 
   // The two About update switches were relabelled by what each one does.
@@ -73,7 +71,7 @@ describe('resolveLegacyHighlightId', () => {
       'voice.aws-profile', 'voice.aws-profile-2', 'voice.aws-region', 'voice.aws-region-2',
       'voice.aws-profile-polly', 'voice.aws-region-polly',
       'chat.pin-the-latest-prompt',
-      'developer.remote-instance-sessions',
+      'developer.remote-instance-sessions', 'developer.remote-crew-sessions',
       'about.auto-update-on-restart', 'about.update-notifications',
     ]) {
       const target = resolveLegacyHighlightId(legacy)

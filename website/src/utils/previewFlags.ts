@@ -98,10 +98,13 @@ export const PREVIEW_CREW = `${PREVIEW_FLAG_PREFIX}crew`
  * Sharing one key would release or hold both at once, which is the same
  * half-ship failure a per-feature flag exists to prevent.
  *
- * Held because the LANDING is unfinished, not the dispatch: the session really is
- * created on the peer, but there is no native remote chat view yet, so it opens
- * by switching to that crew's pane, and the local session list does not show
- * live remote sessions — so the session is hard to return to afterwards.
+ * ONE flag for the whole feature: it also merges each connected crew's live
+ * sessions into the Sessions list, grouped per crew. It used to share that half
+ * with {@link PREVIEW_INSTANCE_SESSIONS}, and a user with one switch on and the
+ * other off could open a chat on a crew and then find no crew group to return
+ * to it from. Read it through `useRemoteCrewChat` and write it through
+ * {@link setRemoteCrewChat}, never as a bare flag, so the retired key keeps
+ * counting.
  *
  * Its toggle lives in Settings > Developer > Feature Previews, alongside every other
  * unreleased surface, and NOT on Settings > Remote Crew where it started: a
@@ -117,12 +120,11 @@ export const PREVIEW_CREW = `${PREVIEW_FLAG_PREFIX}crew`
 export const PREVIEW_REMOTE_CREW_CHAT = `${PREVIEW_FLAG_PREFIX}remote-crew-chat`
 
 /**
- * A connected remote instance's live sessions, merged into the Sessions list.
- *
- * Gates a surface INSIDE `ChatSidebar`, which every dashboard user renders — so
- * unlike a route-level gate, this flag is also what keeps the per-instance slot
- * queries off the wire for anyone who has not opted in. Read it in the sidebar
- * and skip the fetch, rather than fetching and hiding the rows.
+ * RETIRED: the old "Remote crew sessions" switch, folded into
+ * {@link PREVIEW_REMOTE_CREW_CHAT}. Kept only so a device that turned it on
+ * still has the feature on: `useRemoteCrewChat` reads either key as ON,
+ * and {@link setRemoteCrewChat} clears it when the feature is turned off. Never
+ * gate anything on it directly.
  */
 export const PREVIEW_INSTANCE_SESSIONS = `${PREVIEW_FLAG_PREFIX}instance-sessions`
 
@@ -167,6 +169,16 @@ export const PREVIEW_DASHBOARD = `${PREVIEW_FLAG_PREFIX}dashboard`
  */
 export function readPreviewFlag(flag: string): boolean {
   return safeGetItem(flag) === '1'
+}
+
+/**
+ * Turn "Chat on a crew" on or off. Off also clears the retired key, or that key
+ * would keep the feature on behind a switch that reads off.
+ */
+export function setRemoteCrewChat(on: boolean): boolean {
+  if (!setPreviewFlag(PREVIEW_REMOTE_CREW_CHAT, on)) return false
+  if (!on && readPreviewFlag(PREVIEW_INSTANCE_SESSIONS)) return setPreviewFlag(PREVIEW_INSTANCE_SESSIONS, false)
+  return true
 }
 
 /**

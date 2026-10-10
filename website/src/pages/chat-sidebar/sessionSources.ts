@@ -3,8 +3,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useMemo } from 'react'
 import { useAppSelector } from '../../store'
-import { usePreviewFlag } from '../../hooks/usePreviewFlag'
-import { PREVIEW_INSTANCE_SESSIONS } from '../../utils/previewFlags'
+import { useRemoteCrewChat } from '../../hooks/usePreviewFlag'
 import { api } from '../../api/client'
 import { crewGroupsFor, useInstanceSessions } from '../../hooks/useInstanceSessions'
 import { i18nT } from '../../i18n/t'
@@ -31,8 +30,9 @@ export function useSessionSources({ historyFilter, slotTitleDigest, localSlots }
   // Live sessions on remote instances, grouped per crew by the sidebar.
   // The flag is read HERE and passed in, so a user who has not opted in issues no
   // per-instance request at all — this component mounts for every dashboard user,
-  // so gating the render would gate the rows but not the wire.
-  const instanceSessionsEnabled = usePreviewFlag(PREVIEW_INSTANCE_SESSIONS)
+  // so gating the render would gate the rows but not the wire. The SAME switch as
+  // "New chat on crew": a chat started on a crew must have a group to return to.
+  const instanceSessionsEnabled = useRemoteCrewChat()
   const historySearchResults = useDebouncedSessionSearch(
     historyFilter, s => s, slotTitleDigest, hasWarmInstances,
   )

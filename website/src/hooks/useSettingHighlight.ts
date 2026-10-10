@@ -55,10 +55,10 @@ const LEGACY_ID_EXACT: Record<string, string> = {
   // prior ids land on the current one.
   'developer.crew-members-and-crew-mode': SETTINGS_CREW_MEMBERS_PREVIEW_ID,
   'developer.crew-members': SETTINGS_CREW_MEMBERS_PREVIEW_ID,
-  // The peer-session card was relabeled from "Remote instance sessions" back to
-  // "Remote crew sessions" when the remote-crew vocabulary was restored. Same
-  // flag, same card — only the label, and so the derived id, moved.
-  'developer.remote-instance-sessions': 'developer.remote-crew-sessions',
+  // The peer-session card ("Remote instance sessions", then "Remote crew
+  // sessions") folded into "Chat on a crew": one switch now holds both halves.
+  'developer.remote-instance-sessions': 'developer.chat-on-a-crew',
+  'developer.remote-crew-sessions': 'developer.chat-on-a-crew',
   // The two About update switches shared one "Auto-update on restart" label,
   // and the gateway's row was registered under its notify wording; each is now
   // labelled by what it does.

@@ -12727,12 +12727,10 @@
       },
       "featurePreviewsTab": {
         "chat_on_a_crew": "Conversar em um Crew",
-        "chat_on_a_crew_desc": "Adiciona “New chat on crew” ao menu de criação, que inicia uma sessão em uma crew remota, ou seja, outra máquina que você conectou em Configurações > Crew remota. Inacabado: a sessão abre no painel da própria crew e ainda não aparece na lista de sessões deste painel; para voltar a ela depois, mude para o painel dessa crew.",
+        "chat_on_a_crew_desc": "Adiciona “New chat on crew” ao menu de criação, que inicia uma sessão em uma crew remota, ou seja, outra máquina que você conectou em Configurações > Crew remota, e mostra as sessões de cada crew conectada em um grupo próprio na lista de sessões. Inacabado.",
         "inbound_webhook_tokens_registered_contexts_and_r": "Tokens de webhooks de entrada, contextos registrados e histórico de execuções. A API funciona; a página não está concluída.",
         "open_webhooks": "Abrir Webhooks",
         "webhooks": "Webhooks",
-        "remote_instance_sessions": "Sessões da crew remota",
-        "merge_a_connected_remote_instances_live_sessions": "Combina as sessões ativas de uma crew remota conectada na lista de sessões, cada uma com o nome da sua crew. Uma crew remota é outra máquina que você conectou, não os seus agentes. Funcional, mas não finalizado.",
         "intro": {
           "webhooks_summary": "Outro sistema (CI, um bot de revisão, uma pipeline de deploy) pode iniciar seu agente por você enviando uma mensagem com um token de acesso que você cria na página Webhooks.",
           "webhooks_where": "Quando isto estiver ligado, o link “Abrir Webhooks” aparece neste cartão em Configurações; é dali que a nova página Webhooks abre. Ela fica fora da barra lateral até estar pronta. Desligar só esconde a página de novo; os tokens que você criou são mantidos.",

@@ -14,8 +14,8 @@ import type { ChatFolder } from '../../types'
 import type { FolderMutations } from './folders'
 import type { BoardColumnMutations } from './board'
 import { errMessage } from '../../utils/thunkError'
-import { usePreviewFlag } from '../../hooks/usePreviewFlag'
-import { PREVIEW_CREW, PREVIEW_REMOTE_CREW_CHAT } from '../../utils/previewFlags'
+import { usePreviewFlag, useRemoteCrewChat } from '../../hooks/usePreviewFlag'
+import { PREVIEW_CREW } from '../../utils/previewFlags'
 import { settingsPath } from '../../components/settingsPath'
 import { SETTINGS_CREW_MEMBERS_PREVIEW_ID } from '../../hooks/useSettingHighlight'
 import { api } from '../../api/client'
@@ -192,10 +192,10 @@ export function useSessionCreate({ setNewChatError, dispatch, defaultAgent, mode
     navigate(crewPreview ? '/members' : settingsPath({ tab: 'developer', highlight: SETTINGS_CREW_MEMBERS_PREVIEW_ID }))
   }
   // Separate flag, separate feature: this one holds "New chat on crew", which
-  // dispatches a session to another MACHINE. Its toggle is in Settings > Remote
-  // crews rather than Settings > Developer > Feature Previews, because it only means
-  // anything to someone who already has a crew connected.
-  const remoteCrewChatPreview = usePreviewFlag(PREVIEW_REMOTE_CREW_CHAT)
+  // dispatches a session to another MACHINE. The same switch shows the crew
+  // groups in the sidebar (`sessionSources.ts`), so a chat started here has a
+  // group to return to.
+  const remoteCrewChatPreview = useRemoteCrewChat()
   const queryClient = useQueryClient()
   const store = useStore<RootState>()
 

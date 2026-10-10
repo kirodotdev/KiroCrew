@@ -493,7 +493,7 @@ describe('Settings > Developer > Feature Previews', () => {
     // an unexpected button lands in `ingress`, an extra or missing tip
     // changes `tips` -- while saying what each half protects.
     const INFO_TIP = 'More information'
-    const INFO_TIP_COUNT = 4 // one per Feature Previews row carrying a `hint`
+    const INFO_TIP_COUNT = 2 // one per Feature Previews row carrying a `hint`
     const partition = () => {
       const all = ingressButtons()
       return { tips: all.filter(n => n === INFO_TIP).length, ingress: all.filter(n => n !== INFO_TIP) }
@@ -568,24 +568,35 @@ describe('Settings > Developer > Feature Previews', () => {
     expect(await screen.findByRole('switch', { name: /automatic cards for all sessions/i })).toBeTruthy()
   })
 
-  it('carries a remote-crew-sessions card that starts off and writes only its own key', async () => {
-    // The toggle IS this preview's whole affordance — it has no page of its own,
-    // so nothing else on the page would reveal a card that failed to render or
-    // an onChange wired to the wrong constant. Four flags now share one section,
-    // and a shared write would release every unfinished surface at once, so the
+  it('has one Chat on a crew switch for both crew halves, and no second card', async () => {
+    // The crew groups in the sidebar and "New chat on crew" were two switches;
+    // one on and one off let a user open a chat on a crew with no group to
+    // return to. A shared write would release other surfaces too, so the
     // sibling assertions are the point rather than padding.
-    //
-    // `/^remote crew sessions$/i` anchored: the card's description also says
-    // "Sessions list", and the accessible name is the label alone.
     renderTab()
-    const toggle = () => screen.getByRole('switch', { name: /^remote crew sessions$/i })
+    expect(screen.queryByRole('switch', { name: /^remote crew sessions$/i })).toBeNull()
+    const toggle = () => screen.getByRole('switch', { name: /^chat on a crew$/i })
     expect(toggle().getAttribute('aria-checked')).toBe('false')
     await act(async () => { toggle().click() })
-    expect(localStorage.getItem(PREVIEW_INSTANCE_SESSIONS)).toBe('1')
+    expect(localStorage.getItem(PREVIEW_REMOTE_CREW_CHAT)).toBe('1')
     expect(toggle().getAttribute('aria-checked')).toBe('true')
-    for (const other of [PREVIEW_WEBHOOKS, PREVIEW_CREW, PREVIEW_REMOTE_CREW_CHAT]) {
+    for (const other of [PREVIEW_WEBHOOKS, PREVIEW_CREW, PREVIEW_INSTANCE_SESSIONS]) {
       expect(localStorage.getItem(other)).not.toBe('1')
     }
+  })
+
+  it('reads the retired instance-sessions key as on, and clears it when turned off', async () => {
+    // A device that turned the old "Remote crew sessions" switch on keeps the
+    // feature on; turning the one switch off must not leave that key holding
+    // it on behind a switch that reads off.
+    localStorage.setItem(PREVIEW_INSTANCE_SESSIONS, '1')
+    renderTab()
+    const toggle = () => screen.getByRole('switch', { name: /^chat on a crew$/i })
+    expect(toggle().getAttribute('aria-checked')).toBe('true')
+    await act(async () => { toggle().click() })
+    expect(toggle().getAttribute('aria-checked')).toBe('false')
+    expect(localStorage.getItem(PREVIEW_INSTANCE_SESSIONS)).not.toBe('1')
+    expect(localStorage.getItem(PREVIEW_REMOTE_CREW_CHAT)).not.toBe('1')
   })
 
   it('is gone from the Developer page rail', () => {

@@ -7094,8 +7094,6 @@
         "inbound_webhook_tokens_registered_contexts_and_r": "Inbound webhook tokens, registered contexts, and run history. The API works; the page is not finished.",
         "open_webhooks": "Open Webhooks",
         "webhooks": "Webhooks",
-        "remote_instance_sessions": "Remote crew sessions",
-        "merge_a_connected_remote_instances_live_sessions": "Merge a connected remote crew's live sessions into the Sessions list, each marked with its crew's name. A remote crew is another machine you have connected, not your agents. Functional, but not finished.",
         "artifact_deploy": "Artifact Deploy",
         "artifact_deploy_desc": "Publish an artifact to a public HTTPS URL in your own AWS account. Off by default: every deploy spends money in your account and serves the content on the open internet.",
         "open_artifact_deploy": "Open Artifact Deploy"

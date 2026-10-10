@@ -48,7 +48,7 @@ export function isTrustRootPath(pathname: string): boolean {
 export const SENSITIVE_TABS: ReadonlySet<string> = new Set(['security', 'secrets', 'computer-use'])
 /** Settings rows outside those tabs that widen what the agent may do. */
 export const SENSITIVE_IDS: ReadonlySet<string> = new Set([
-  'developer.remote-crew-sessions',
+  'developer.chat-on-a-crew',
   'skills.require-approval-before-generated-skills-go-live',
 ])
 const CREDENTIAL_RE = /token|secret|password|api-key|credential|client-id/i

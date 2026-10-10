@@ -3,8 +3,8 @@ import { ArrowRight } from 'lucide-react'
 
 import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
 import { FeaturePreviewIntroButton, type FeaturePreviewIntro } from '../../components/FeaturePreviewIntroDialog'
-import { usePreviewFlag } from '../../hooks/usePreviewFlag'
-import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREW, PREVIEW_DASHBOARD, PREVIEW_INSTANCE_SESSIONS, PREVIEW_LAYOUT_HARNESS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_WEBHOOKS, setPreviewFlag } from '../../utils/previewFlags'
+import { usePreviewFlag, useRemoteCrewChat } from '../../hooks/usePreviewFlag'
+import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREW, PREVIEW_DASHBOARD, PREVIEW_LAYOUT_HARNESS, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
 import { DecisionsCard } from './DecisionsCard'
 import AutomaticCardSetting from '../chat/command-center/AutomaticCardSetting'
 import { i18nT } from '../../i18n/t'
@@ -132,8 +132,7 @@ export function FeaturePreviewsSection() {
   const artifactDeploy = usePreviewFlag(PREVIEW_ARTIFACT_DEPLOY)
   const webhooks = usePreviewFlag(PREVIEW_WEBHOOKS)
   const crew = usePreviewFlag(PREVIEW_CREW)
-  const remoteCrewChat = usePreviewFlag(PREVIEW_REMOTE_CREW_CHAT)
-  const instanceSessions = usePreviewFlag(PREVIEW_INSTANCE_SESSIONS)
+  const remoteCrewChat = useRemoteCrewChat()
   const layoutHarness = usePreviewFlag(PREVIEW_LAYOUT_HARNESS)
   const dashboard = usePreviewFlag(PREVIEW_DASHBOARD)
 
@@ -249,6 +248,11 @@ export function FeaturePreviewsSection() {
           a chat dispatched to another MACHINE over the instances tunnel. One card
           each keeps a reader from flipping the wrong switch.
 
+          ONE card for both halves of that feature: starting a chat on a crew and
+          listing that crew's sessions in the sidebar. They were two switches, and
+          one on with the other off let a user open a chat on a crew and then find
+          no crew group to return to it from.
+
           NO ingress button, for the same reason as the crew card: turning it on
           puts the create-menu entry back in the same tick, and that menu is
           already in front of the user.
@@ -263,26 +267,9 @@ export function FeaturePreviewsSection() {
       <SettingsCard>
         <SettingsToggle
           label={i18nT('pages.developer.featurePreviewsTab.chat_on_a_crew')}
-          hint={i18nT('pages.developer.featurePreviewsTab.chat_on_a_crew_desc')}
+          description={i18nT('pages.developer.featurePreviewsTab.chat_on_a_crew_desc')}
           checked={remoteCrewChat}
-          onChange={v => setPreviewFlag(PREVIEW_REMOTE_CREW_CHAT, v)}
-        />
-      </SettingsCard>
-      {/* Adjacent to the card above and still SEPARATE from it, because the two
-          point opposite ways across the same tunnel: that flag DISPATCHES a chat
-          to another machine, this one LISTS the sessions that machine already
-          owns. Sharing a card would imply flipping one gets the other.
-
-          NO ingress button, and for a different reason than the crew cards: they
-          omit it because their door is already on screen, whereas this preview
-          has no page of its own at all — it changes the Sessions list every user
-          is already looking at, so the toggle IS the whole affordance. */}
-      <SettingsCard>
-        <SettingsToggle
-          label={i18nT('pages.developer.featurePreviewsTab.remote_instance_sessions')}
-          hint={i18nT('pages.developer.featurePreviewsTab.merge_a_connected_remote_instances_live_sessions')}
-          checked={instanceSessions}
-          onChange={v => setPreviewFlag(PREVIEW_INSTANCE_SESSIONS, v)}
+          onChange={v => setRemoteCrewChat(v)}
         />
       </SettingsCard>
       {/* Dev-only MECHANISM preview, not a shippable surface: the composable-layout

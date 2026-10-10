@@ -12727,12 +12727,10 @@
       },
       "featurePreviewsTab": {
         "chat_on_a_crew": "Discuter sur un Crew",
-        "chat_on_a_crew_desc": "Ajoute «New chat on crew» au menu de création, qui démarre une session sur une crew distante, c’est-à-dire une autre machine que tu as connectée dans Paramètres > Crew distante. Inachevé : la session s’ouvre dans le panneau propre à cette crew et n’apparaît pas encore dans la liste des sessions de ce tableau de bord ; pour y revenir plus tard, passe au panneau de cette crew.",
+        "chat_on_a_crew_desc": "Ajoute «New chat on crew» au menu de création, qui démarre une session sur une crew distante, c’est-à-dire une autre machine que tu as connectée dans Paramètres > Crew distante, et affiche les sessions de chaque crew connectée dans son propre groupe de la liste des sessions. Inachevé.",
         "inbound_webhook_tokens_registered_contexts_and_r": "Jetons de webhooks entrants, contextes enregistrés et historique des exécutions. L'API fonctionne, mais la page n'est pas terminée.",
         "open_webhooks": "Ouvrir Webhooks",
         "webhooks": "Webhooks",
-        "remote_instance_sessions": "Sessions de la crew distante",
-        "merge_a_connected_remote_instances_live_sessions": "Fusionne les sessions actives d’une crew distante connectée dans la liste des sessions, chacune marquée du nom de sa crew. Une crew distante est une autre machine que tu as connectée, pas tes agents. Fonctionnel, mais pas terminé.",
         "intro": {
           "webhooks_summary": "Un autre système (CI, bot de revue, pipeline de déploiement) peut lancer ton agent à ta place en envoyant un message avec un jeton d’accès que tu crées sur la page Webhooks.",
           "webhooks_where": "Une fois activé, le lien « Ouvrir Webhooks » apparaît sur cette carte dans les Réglages ; c’est de là que s’ouvre la nouvelle page Webhooks. Elle n’apparaît pas dans la barre latérale tant qu’elle n’est pas terminée. Le désactiver ne fait que masquer la page à nouveau ; les jetons que tu as créés sont conservés.",

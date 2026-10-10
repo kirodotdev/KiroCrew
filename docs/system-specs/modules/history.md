@@ -268,7 +268,7 @@ turn never folds a `card` row into its steps.
 
 The dashboard's session list, `website/src/pages/ChatSidebar.tsx`, draws two
 projections of this history. The live list shows the open slots. With the
-instance-sessions preview on and a crew group to show, it groups them per machine:
+Chat on a crew preview on and a crew group to show, it groups them per machine:
 `Local` first, then one collapsible group per crew holding that crew's peer rows and
 the local slots whose turns run there, under a badge read from the tunnel state. A
 disconnected crew keeps its last listed rows, dimmed and without live state, until a

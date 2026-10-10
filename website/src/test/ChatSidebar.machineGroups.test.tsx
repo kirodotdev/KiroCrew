@@ -17,7 +17,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createTestStore } from './helpers'
 import { requestSlotReveal } from '../store/chatSlice'
 import { ThemeProvider } from '../hooks/useTheme'
-import { PREVIEW_INSTANCE_SESSIONS } from '../utils/previewFlags'
+import { PREVIEW_INSTANCE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT } from '../utils/previewFlags'
 import en from '../i18n/locales/en.json'
 import enManual from '../i18n/locales/en.manual.json'
 
@@ -157,6 +157,20 @@ describe('ChatSidebar – per-machine groups', () => {
     expect(rowIn(group, 'RELAY slot')).not.toBeNull()
     expect(rowIn(group, 'LOCAL plain slot')).toBeNull()
     expect(screen.getByText('LOCAL plain slot')).toBeInTheDocument()
+  })
+
+  it('shows the crew groups with only Chat on a crew on', async () => {
+    // The two-machine bug: "New chat on crew" was on, the old instance-sessions
+    // switch was off, so the chat opened and the sidebar had no group for it.
+    localStorage.setItem(PREVIEW_REMOTE_CREW_CHAT, '1')
+    renderSidebar({ relay: true })
+
+    // Two chained queries on a cold cache (the instance list, then that crew's
+    // peer slots) before the row renders, so the wait names its own ceiling.
+    const CHAINED_QUERY_TIMEOUT_MS = 5_000
+    const group = await screen.findByTestId('crew-group-inst-a', {}, { timeout: CHAINED_QUERY_TIMEOUT_MS })
+    await waitFor(() => expect(rowIn(group, 'REMOTE peer row')).not.toBeNull(), { timeout: CHAINED_QUERY_TIMEOUT_MS })
+    expect(rowIn(group, 'RELAY slot')).not.toBeNull()
   })
 
   it('keeps the selection when the crew group holding it collapses', async () => {

@@ -682,7 +682,7 @@ def test_instances_settings_are_guidable_and_the_trust_root_is_not() -> None:
     ids = guide_catalog.guidable_settings()
     assert "instances.enable-remote-crew-management" in ids
     assert "instances.auto-connect-crews" in ids
-    assert "developer.remote-crew-sessions" not in ids
+    assert "developer.chat-on-a-crew" not in ids
     assert not any(e["tab"] in {"security", "secrets", "computer-use"} for e in ids.values())
 
 

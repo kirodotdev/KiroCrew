@@ -195,7 +195,7 @@ _EXCLUDED_SETTING_TABS = frozenset({"security", "secrets", "connections", "compu
 #: page then refuses to show.
 _EXCLUDED_SETTING_IDS = frozenset(
     {
-        "developer.remote-crew-sessions",
+        "developer.chat-on-a-crew",
         "skills.require-approval-before-generated-skills-go-live",
     }
 )
