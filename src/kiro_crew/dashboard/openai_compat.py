@@ -32,7 +32,7 @@ from kiro_crew.dashboard.relay_archive import (
     RELAY_ARCHIVE_ERROR,
     is_relay_archive,
 )
-from kiro_crew.dashboard.state import DashboardState, _normalize_slot_key
+from kiro_crew.dashboard.state import DashboardState, _normalize_slot_key, load_window_off_loop
 from kiro_crew.dashboard.turn_dispatch import chat_turn_timeout_secs
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -329,6 +329,11 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
     completion_id = _make_id()
 
     if slot_id:
+        # A thread restored as a sidebar row loads its window here, with the
+        # read off the loop, before the turn below appends to it; the slot is
+        # looked up again after the await.
+        if (_pending := state._slots.get(_normalize_slot_key(slot_id))) is not None:
+            await load_window_off_loop(_pending)
         # Membership must be checked on the canonical (filename-charset) key —
         # get_or_create_slot folds unsafe chars, so a raw slot_id may map to an
         # existing slot even when the raw string is absent from _slots.

@@ -237,10 +237,12 @@ from kiro_crew.dashboard.handlers._shared import (
 )
 from kiro_crew.dashboard.handlers.messaging import _resolve_session_target
 from kiro_crew.dashboard.origin import is_direct_local_request
+from kiro_crew.dashboard.slot_projection import summary_rows
 from kiro_crew.dashboard.state import (  # noqa: F401
     VALID_MEMORY_MODES,
     DashboardState,
     append_and_surface,
+    load_window_off_loop,
 )
 from kiro_crew.doc_blocks import extract_blocks  # noqa: F401
 from kiro_crew.doc_parser import extract_slides, extract_text, join_slides  # noqa: F401
@@ -780,10 +782,19 @@ async def api_outbox_notify(request: web.Request) -> web.Response:
     # webhook session that owns no chat, a closed tab); suppress the card rather
     # than surface it in an unrelated conversation.
     if not active and not session_key and state._slots:
+        # The summary rows, so picking the newest tab does not load every
+        # restored sidebar row's window to read one timestamp.
         active = max(
             state._slots.values(),
-            key=lambda s: s.messages[-1]["ts"] if s.messages else "",
+            key=lambda s: summary_rows(s)[-1]["ts"] if summary_rows(s) else "",
         )
+    if active is not None and getattr(active, "window_pending", False) is True:
+        # The card is appended to the destination's rows: a tab restored as a
+        # sidebar row loads its window first, with the read off the loop, and the
+        # destination is read again after the await.
+        await load_window_off_loop(active)
+        if state.get_slot(active.key) is not active:
+            active = None
     delivered = False
     if active is not None and (active.messages or header_targeted):
         delivered = True

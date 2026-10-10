@@ -372,7 +372,11 @@ class TestEveryRouteForwardsTheCarriedVerdict:
         async def _no_prewarm():
             return None
 
+        async def _no_window_load(_state, _target):
+            return None
+
         monkeypatch.setattr(sc, "prewarm_enabled_check", _no_prewarm)
+        monkeypatch.setattr(sc, "load_target_window", _no_window_load)
         return seen
 
     @pytest.mark.asyncio

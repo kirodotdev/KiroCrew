@@ -224,6 +224,7 @@ from kiro_crew.dashboard.state import (  # noqa: F401
     PERSISTED_SUBAGENT_REPLAY_KEEP,
     PERSISTED_SUBAGENT_REPLAY_MAX_AGE_SECS,
     DashboardState,
+    load_window_off_loop,
 )
 from kiro_crew.dashboard.token_auth import (  # noqa: F401
     LINK_WINDOW_SECS,
@@ -1039,6 +1040,11 @@ async def api_send_message(request: web.Request) -> web.Response:
                 was_loaded = slot is not None
                 if slot is None:
                     slot = await rehydrate_slot_from_history_async(state, slot_key)
+                elif getattr(slot, "window_pending", False) is True:
+                    # A tab restored as a sidebar row loads its window before
+                    # the delivery below appends to it, with the read off the loop.
+                    await load_window_off_loop(slot)
+                    slot = state.get_slot(slot_key)
                 logger.info(
                     "send_message session=origin resolved slot_key=%s job=%s was_loaded=%s rehydrated=%s",
                     slot_key,

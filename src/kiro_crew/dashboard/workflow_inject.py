@@ -22,6 +22,7 @@ from kiro_crew.dashboard.slot_ownership import app_holds_gateway_key
 from kiro_crew.dashboard.state import (
     DashboardState,
     append_and_surface,
+    load_window_off_loop,
     note_crew_log_class,
     row_mid,
 )
@@ -273,6 +274,15 @@ async def inject_bound_workflow_result(
     )
 
     try:
+        # The delivery appends to the originating tab's rows. A tab restored as a
+        # sidebar row loads its window first, with the read off the loop; every
+        # lookup below reads the slot again after this await.
+        origin = snapshot.get("session_key", "")
+        getter = getattr(state, "get_slot", None)
+        if isinstance(origin, str) and origin and callable(getter):
+            live = getter(_slot_key_from_session(origin))
+            if live is not None:
+                await load_window_off_loop(live)
         execution = execution_from_record(snapshot, required=False)
         if execution is None:
             if snapshot.get("memory_store") or snapshot.get("member_id"):

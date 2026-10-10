@@ -732,7 +732,28 @@ reads they share); the reasoning-effort allowlist; the persisted-entry memo
 `_build_message_entry` with its bounds; the private member-store assignment; and
 the request-side retired-mode coercion (`_coerce_requested_mode`). The rules those
 consult live in `dashboard/slot_persistence/`, and each file names the work that
-belongs in it. Both open-tab restore drivers build tabs newest first and stop
+belongs in it. Only the newest `EAGER_WINDOW_RESTORES` open tabs are built with
+their transcript window loaded; every later tab that only a person drives (its own
+dashboard origin, no linked, app, remote or creator binding, not a member or crew-bound
+worker tab, not driven by a loop, and no unsettled local turn or held notes) is built
+from its metadata line and a bounded tail (`LAZY_TAIL_ROWS`), and its window loads on
+the slot's first read of `messages`. The async paths that act on an existing tab await
+`state.load_window_off_loop` first, which reads on a worker thread: every
+`/api/chat/slots/{slot}` route but the close (`slot_ownership.load_routed_slot_window`),
+a send, a session-control send, retry, read or fork, a message, file card, MCP app
+message, OpenAI-compatible turn, script cron result, heartbeat result, loop nudge or
+subagent notice delivered into a session, a workflow result, a resume of the live tab,
+and every consistent-transcript read (`transcript_snapshot.read_consistent_transcript`:
+the slot detail page read, a fork and a peer transfer). A read that reaches a pending
+row on the loop without that still loads it and logs a warning. The sidebar summary,
+the idle sweep, the dashboard-card seed, the OAuth banner sweep, the session-health
+snapshot, a close's hand-over drain and the save path read
+the tail or the window as held (`sidebar_messages`, `loaded_messages`), so none of them forces a load, and a
+pending row's save is the metadata-only merge. The tail keeps only what the summary
+reads (role, time, class, a few `meta` markers, and content bounded to
+`TAIL_TEXT_BOUND` keeping its start and end), with non-user content redacted as the
+window replay redacts it.
+Both open-tab restore drivers build tabs newest first and stop
 building ordinary ones at `slot_retention.RESTORE_SLOT_BUDGET`; pinned,
 foldered, loop-driven and crew-bound tabs are always built, and one notification reports
 the tabs left in history (see the `slot_retention.py` entry in

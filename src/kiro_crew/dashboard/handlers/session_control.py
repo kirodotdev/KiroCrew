@@ -665,8 +665,10 @@ async def api_session_control_read(request: web.Request) -> web.Response:
     # Stays at the top for read alone: everything between here and the gate is
     # synchronous query parsing (`request.query` is already available and
     # `read_messages` does not await), so there is no suspension to invalidate it.
-    await sc.prewarm_enabled_check()
+    # The target's window loads ahead of it, off the loop, for the same reason.
     state: DashboardState = request.app["state"]
+    await sc.load_target_window(state, request.query.get("target") or "")
+    await sc.prewarm_enabled_check()
     try:
         target = (request.query.get("target") or "").strip()
         if not target:

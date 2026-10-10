@@ -1620,6 +1620,40 @@ def stuck_turn_notice(parked_secs: float) -> str:
 
 
 _MAX_SLOT_MESSAGES = 10000  # Keep all messages — virtual scrolling handles performance
+# Serializes the first-read load of a lazily restored slot's window. Re-entrant
+# because the load appends through ``_ChatSlot.messages`` itself; one lock for
+# every slot because a load is rare (once per restored row) and short.
+_LAZY_WINDOW_LOCK = threading.RLock()
+
+
+async def load_window_off_loop(slot: Any) -> None:
+    """Load a restored sidebar row's pending window with its disk reads off the loop.
+
+    Every async path that acts on a live slot it did not just create awaits this
+    before it reads the slot's rows: the per-slot routes, a send, a session-control
+    delivery or read, and a result delivered into an existing tab. The reads run
+    on a worker thread and the apply runs back on the loop, so the first reader
+    never stalls the gateway on a large transcript. A slot that carries its window
+    (every slot but a pending restored row) returns at once, without suspending.
+    When something reads ``messages`` during the await, that read loads the window
+    inline and this result is dropped.
+    """
+    if getattr(slot, "window_pending", False) is not True:
+        return
+    read = getattr(slot._lazy_window, "read", None)
+    if not callable(read):
+        return
+    prefetched = await asyncio.to_thread(read, slot)
+    slot.load_window(*prefetched)
+
+
+def _on_event_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
 
 #: Transient/streaming roles that are never persisted by the save path
 #: (``chat_persistence._build_message_entry`` returns ``None`` for them) and are
@@ -2842,7 +2876,9 @@ class _ChatSlot:
         "_memory_assignment_from_history",
         "project",
         "created_at",
-        "messages",
+        "_messages",
+        "_lazy_window",
+        "_lazy_tail",
         "total_messages",
         "_task",
         "_turn_admission_reserved",
@@ -3202,7 +3238,13 @@ class _ChatSlot:
         # in flight.
         self._turn_in_flight_prompt: dict[str, Any] | None = None
         self.created_at: str = datetime.now(timezone.utc).isoformat()
-        self.messages: list[dict[str, Any]] = []
+        self._messages: list[dict[str, Any]] = []
+        # A restored sidebar row whose transcript window has not been loaded yet:
+        # the loader to run on first read of ``messages``, and the bounded tail
+        # the sidebar summary projects from meanwhile. Both None on every slot
+        # that carries its window. See ``chat_persistence`` lazy restore.
+        self._lazy_window: Callable[[_ChatSlot], None] | None = None
+        self._lazy_tail: list[dict[str, Any]] | None = None
         self._buffers = SlotBufferCoordinator()
         self._projection = SlotProjection()
         self._queue_repository = SlotQueueRepository(
@@ -5810,6 +5852,95 @@ class _ChatSlot:
             ),
             "total": len(links),
         }
+
+    @property
+    def messages(self) -> list[dict[str, Any]]:
+        """The in-memory transcript window, loaded on first read for a lazy row.
+
+        A sidebar row restored at startup carries only its metadata until
+        something needs its rows. Every reader goes through here, so the first
+        one -- opening the tab, a turn, an injected row, a fork -- loads the
+        window before it sees a single row, and no reader can act on the empty
+        list a stub holds. Readers that only need the sidebar summary use
+        :meth:`sidebar_messages`, and the save path uses :meth:`loaded_messages`,
+        so neither forces a load.
+        """
+        if getattr(self, "_lazy_window", None) is not None:
+            self.load_window()
+        return self._messages
+
+    @messages.setter
+    def messages(self, value: list[dict[str, Any]]) -> None:
+        # A wholesale replacement is a decision about the window, so it ends a
+        # pending lazy load rather than letting the load land on top of it.
+        if getattr(self, "_lazy_window", None) is not None:
+            self._lazy_window = None
+            self._lazy_tail = None
+        self._messages = value
+
+    def load_window(self, *prefetched: Any) -> None:
+        """Run a pending window load now; a no-op once the window is loaded.
+
+        *prefetched* are the loader's disk reads when the caller already made
+        them off the loop (:func:`load_window_off_loop`).
+        """
+        with _LAZY_WINDOW_LOCK:
+            loader = getattr(self, "_lazy_window", None)
+            if loader is None:
+                return
+            if not prefetched and _on_event_loop():
+                # The load still runs (a reader must never see the empty stub),
+                # but it reads the transcript on the loop: the path that got
+                # here should have awaited ``load_window_off_loop`` first.
+                logger.warning(
+                    "Loading the transcript window of %s on the event loop; "
+                    "the reader did not await load_window_off_loop first",
+                    self.key,
+                    stack_info=True,
+                )
+            # Cleared before the load so the loader's own appends read the list
+            # it is filling instead of re-entering it.
+            self._lazy_window = None
+            try:
+                loader(self, *prefetched)
+            except BaseException:
+                # Fail closed: the row stays pending and the read raises, so
+                # nothing can append to (and a later save rewrite the
+                # transcript from) a window that never loaded. The next read
+                # retries.
+                self._messages = []
+                self._lazy_window = loader
+                raise
+            self._lazy_tail = None
+
+    @property
+    def window_pending(self) -> bool:
+        """Whether this slot is a restored row whose window is not loaded yet."""
+        return getattr(self, "_lazy_window", None) is not None
+
+    def loaded_messages(self) -> list[dict[str, Any]]:
+        """The window as it is in memory, without loading a pending one.
+
+        Empty for a row whose window was never loaded, which is exactly what the
+        save path needs: such a row holds no rows that are not already on disk,
+        so its save is the metadata-only merge and the transcript is untouched.
+        Taken under the load lock, so a save in the flush thread never snapshots
+        a window that is half replayed.
+        """
+        with _LAZY_WINDOW_LOCK:
+            return self._messages
+
+    def sidebar_messages(self) -> list[dict[str, Any]]:
+        """The rows the sidebar summary projects from, without forcing a load.
+
+        For a row whose window is still pending this is the bounded tail read at
+        restore, which holds everything the summary looks at: the newest row's
+        timestamp, the last conversational message and its options, and whether
+        the last turn was interrupted.
+        """
+        if self.window_pending:
+            return self._lazy_tail or []
+        return self.messages
 
     def _summary_source_links(self) -> list[dict]:
         # Skip extraction itself when the chips are off, not just the two fields

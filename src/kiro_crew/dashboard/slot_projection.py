@@ -11,6 +11,18 @@ from kiro_crew.safety_override import safety_override, yolo_policy_permits
 from kiro_crew.session_lifecycle import STOP_DECLINED_ESCALATION_SECS
 
 
+def summary_rows(slot: Any) -> list[Any]:
+    """The rows a slot's sidebar summary reads, without loading a pending window.
+
+    A restored row whose transcript window is still pending answers with the
+    bounded tail read at restore (``_ChatSlot.sidebar_messages``); every other
+    slot, including a duck-typed one, answers with its window.
+    """
+    if getattr(slot, "window_pending", False) is True:
+        return slot.sidebar_messages()
+    return slot.messages
+
+
 def stop_declined_armed(slot: Any, now: float | None = None) -> bool:
     """Whether a recent declined Stop makes the next press a force stop.
 
@@ -127,7 +139,7 @@ class SlotProjection:
         # Charge every parse attempt, including rejected and duplicate URLs, so
         # one accepted oversized message cannot monopolize the event loop.
         parse_budget = max_links * 64
-        for msg in reversed(slot.messages):
+        for msg in reversed(summary_rows(slot)):
             if len(found) >= max_links or parse_budget <= 0:
                 break
             if not isinstance(msg, dict) or msg.get("role") in non_durable_roles:
@@ -226,10 +238,11 @@ class SlotProjection:
         # gateway restart lacks it. Projecting from one would move ``last_ts``
         # backwards across the restart, and the dashboard stores ``last_ts`` as
         # the unread watermark it can only clear with a covering ``last_ts``.
+        rows = summary_rows(slot)
         last_ts = next(
             (
                 message.get("ts", "")
-                for message in reversed(slot.messages)
+                for message in reversed(rows)
                 if message.get("role") not in transient_roles
             ),
             "",
@@ -242,7 +255,7 @@ class SlotProjection:
         last_conv_role = ""
         last_activity_ts = ""
         found_conv = False
-        for message in reversed(slot.messages):
+        for message in reversed(rows):
             role = message.get("role")
             msg_meta = message.get("meta") or {}
             notice = is_system_notice(role, msg_meta)
@@ -282,7 +295,7 @@ class SlotProjection:
             prompt_ts = next(
                 (
                     message.get("ts") or ""
-                    for message in reversed(slot.messages)
+                    for message in reversed(rows)
                     if message.get("role") in prompt_roles
                 ),
                 "",
@@ -296,18 +309,18 @@ class SlotProjection:
             not slot.turn_running
             and not has_options
             and not pending_approval
-            and bool(slot.messages)
+            and bool(rows)
             and last_conv_role == "assistant"
         )
         needs_input = bool(slot._question_pending)
-        interrupted = not slot.turn_running and is_turn_interrupted(slot.messages)
+        interrupted = not slot.turn_running and is_turn_interrupted(rows)
 
         pending_approval_info: dict[str, str] | None = None
         if slot_pending:
             # The transcript row is consulted only for a SLOT-registry future:
             # a coordinator approval writes no row, and a stale unresolved row
             # from an earlier turn must not describe it.
-            for message in reversed(slot.messages):
+            for message in reversed(rows):
                 if message.get("role") != "permission":
                     continue
                 meta = parse_cls_meta(message.get("cls") or "") or {}
@@ -398,7 +411,7 @@ class SlotProjection:
             "instance_id": slot.instance_id,
             "row_identity": resolved_row_identity(slot),
             "artifact": slot._artifact,
-            "messages": len(slot.messages),
+            "messages": len(rows),
             "running": slot.turn_running,
             # An automatic compaction in flight on this session. Separate from
             # `running` because it is NOT a dashboard turn: the composer reads

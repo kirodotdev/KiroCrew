@@ -39,6 +39,7 @@ from kiro_crew.dashboard.dynamic_cards import (
     CardPublisher,
     normalize_card,
 )
+from kiro_crew.dashboard.slot_projection import summary_rows
 from kiro_crew.dashboard_templates.parity import filled_fields
 from kiro_crew.history import TranscriptBusy, TranscriptWithheld, is_incognito_transcript
 from kiro_crew.llm_helpers import _extract_json_of_type, run_bg_oneliner
@@ -967,7 +968,10 @@ class CardLifecycle:
         # browsing, not activity, and queues no model work.
         if slot.key in getattr(self.state, "_slots_under_construction", ()):
             return
-        if not slot.messages or not self._eligible(slot):
+        # The summary rows, not ``messages``: the post-restore seed asks this of
+        # every slot, and a restored sidebar row answers from its tail without
+        # loading its whole window on the loop.
+        if not summary_rows(slot) or not self._eligible(slot):
             self.publisher.forget(slot.key)
             return
         self.publisher.notify(

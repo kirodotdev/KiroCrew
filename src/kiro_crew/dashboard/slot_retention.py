@@ -29,6 +29,7 @@ from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.dashboard.slot_projection import summary_rows
 from kiro_crew.dashboard.state import MAX_LIVE_SLOTS, _normalize_slot_key
 
 if TYPE_CHECKING:
@@ -144,7 +145,9 @@ def _parse_ts(raw: Any) -> float:
 
 def slot_last_activity(slot: "_ChatSlot") -> float:
     """The epoch of the slot's newest timestamped message, else its creation; 0 if unknown."""
-    for m in reversed(slot.messages or []):
+    # The summary rows, so a sweep over every slot reads a pending restored
+    # row's tail rather than loading its whole window to find one timestamp.
+    for m in reversed(summary_rows(slot) or []):
         ts = m.get("ts", "")
         if not ts:
             continue

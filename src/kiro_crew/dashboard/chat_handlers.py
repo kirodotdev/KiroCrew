@@ -261,6 +261,7 @@ from kiro_crew.dashboard.state import (  # noqa: F401
     durable_row_count,
     is_stop_event_row,
     is_turn_interrupted,
+    load_window_off_loop,
     note_crew_log_class,
     parse_cls_meta,
     request_slot_origin,
@@ -761,6 +762,12 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         )
         if denied is not None:
             return denied
+    # A tab restored as a sidebar row loads its window here, with the transcript
+    # read off the loop, before anything below reads its rows. The live slot is
+    # read again after the await, so a close or a replacement during the load is
+    # what the rest of this handler sees.
+    if _requested_key and (_pending := state._slots.get(_requested_key)) is not None:
+        await load_window_off_loop(_pending)
     existing = state._slots.get(_requested_key) if _requested_key else None
     # An app's auto-created slot must not land on a transcript it does not own:
     # its first save would stamp the app onto that transcript's metadata line.
@@ -2801,7 +2808,13 @@ async def _persist_handover_tail(
     # covered, so the difference is exactly what has never reached disk. ``_dirty``
     # covers the other shape of unsaved state: an in-place edit to a row already
     # persisted leaves the length unchanged.
-    unsaved = max(0, len(slot.messages) - slot._disk_window_len)
+    # A restored sidebar row whose window never loaded holds no row that is not
+    # already on disk, so its window as held (empty) is the whole answer, and
+    # reading ``messages`` would load its transcript on the loop to learn it.
+    window = (
+        slot.loaded_messages() if getattr(slot, "window_pending", False) is True else slot.messages
+    )
+    unsaved = max(0, len(window) - slot._disk_window_len)
     # A queued prompt is unsaved state that changes NEITHER of those: its row is
     # written by the drain, so the window length is unchanged, and an enqueue does
     # not dirty the slot. Reporting a clean hand-over over that state would send

@@ -128,7 +128,11 @@ class DashboardPersistenceCoordinator:
         # still gets no file. Queue drift alone (an enqueue or a cancel) is saved
         # too. A line-less tab writes nothing, and the merge credits the queue
         # witness for it, so the drift does not re-run the save on every tick.
-        force = not slot.messages
+        # The window as held in memory: a restored row whose window is still
+        # pending is message-less here too, and reading ``messages`` would load
+        # its whole transcript in this thread for a metadata-only save.
+        loaded = getattr(slot, "loaded_messages", None)
+        force = not (loaded() if callable(loaded) else slot.messages)
         save_slot_to_history = self._slot_saver_provider()
 
         # Keep the dirty bit true for the whole save. chat_fork treats it as
