@@ -88,6 +88,7 @@ def _grants_path(name=APP):
 def _make_legacy(name=APP):
     """Remove the approved set, as on an install from before it was stored."""
     _grants_path(name).unlink()
+    _edit_record(lambda data: data.pop("approvedGrantsStored", None), name)
 
 
 def _installed_v1(tmp_path):
@@ -229,9 +230,10 @@ def test_pre_field_record_approves_what_its_manifest_declares(tmp_path, app_home
     assert _allowlist() == (OLD_API,)
 
 
-def test_manifest_is_read_before_the_record(tmp_path, app_home):
-    # A widening update landing between the two reads must meet the record it
-    # wrote; read the other way round, a pre-field record would approve it.
+def test_an_update_landing_between_the_reads_grants_nothing(tmp_path, app_home):
+    # A widening update that runs between the manifest read and the record
+    # read leaves reads from two different trees; the read grants nothing
+    # rather than the declared entries the update held back.
     _installed_v1(tmp_path)
     _make_legacy()
 
@@ -239,7 +241,36 @@ def test_manifest_is_read_before_the_record(tmp_path, app_home):
         assert _widen(tmp_path).ok
         return [OLD_API, NEW_API]
 
-    assert staged_app_grants(APP, "api", _update_then_declare) == [OLD_API]
+    assert staged_app_grants(APP, "api", _update_then_declare) == []
+    assert _allowlist() == (OLD_API,)
+
+
+def test_a_read_during_an_update_swap_grants_nothing(tmp_path, app_home):
+    _installed_v1(tmp_path)
+    with manager_mod._tree_swap(APP):
+        assert _allowlist() == ()
+    assert _allowlist() == (OLD_API,)
+
+
+def test_a_pre_set_record_replaced_between_its_reads_grants_nothing(
+    tmp_path, app_home, monkeypatch
+):
+    # Another process swaps the tree: the record read meets the old tree, the
+    # file read meets the gap. The record read again differs from the first.
+    _installed_v1(tmp_path)
+    _make_legacy()
+    real_read = manager_mod._read_installed
+    calls = []
+
+    def _read_then_swap(name):
+        meta = real_read(name)
+        calls.append(meta)
+        if len(calls) == 1:
+            _edit_record(lambda data: data.update(approvedGrantsStored=True))
+        return meta
+
+    monkeypatch.setattr(manager_mod, "_read_installed", _read_then_swap)
+    assert staged_app_grants(APP, "api", lambda: [OLD_API, NEW_API]) == []
 
 
 def test_entries_are_held_back_while_the_new_tree_lands(tmp_path, app_home, monkeypatch):
@@ -432,3 +463,157 @@ def test_approval_against_an_unreadable_manifest_is_refused(tmp_path, app_home):
     manifest_path.write_text(good, encoding="utf-8")
     assert get_app(APP)["approvedGrants"]["api"] == [OLD_API]
     assert _allowlist() == (OLD_API,)
+
+
+def test_a_record_that_stored_a_set_reads_a_missing_file_as_nothing_approved(
+    tmp_path, app_home, monkeypatch
+):
+    # An update moves the tree holding the file aside before the new set is
+    # written. A grant read whose record read lands on the old tree and whose
+    # file read lands after the move finds no file; that must not grant the
+    # declared entries the owner has not approved.
+    _installed_v1(tmp_path)
+    assert _widen(tmp_path).ok
+    assert _allowlist() == (OLD_API,)
+    real_read = manager_mod._read_installed
+
+    def _read_then_swap(name):
+        meta = real_read(name)
+        _grants_path(name).unlink(missing_ok=True)
+        return meta
+
+    monkeypatch.setattr(manager_mod, "_read_installed", _read_then_swap)
+    assert _allowlist() == ()
+    assert _events() == (True, frozenset())
+
+
+def test_a_lost_file_shows_nothing_approved_and_can_be_approved_again(tmp_path, app_home):
+    _installed_v1(tmp_path)
+    _grants_path().unlink()
+
+    assert get_app(APP)["approvedGrants"] == {"api": [], "events": []}
+    assert _allowlist() == ()
+
+    result = enable_app(APP, grants_consent={"api": [OLD_API], "events": ["slots:own"]})
+    assert result.ok
+    assert get_app(APP)["approvedGrants"] == {"api": [OLD_API], "events": ["slots:own"]}
+    assert _allowlist() == (OLD_API,)
+
+
+def test_an_update_records_that_the_set_is_stored(tmp_path, app_home):
+    _installed_v1(tmp_path)
+    _make_legacy()
+    assert manager_mod._read_installed(APP).approvedGrantsStored is False
+
+    assert _widen(tmp_path).ok
+
+    assert manager_mod._read_installed(APP).approvedGrantsStored is True
+
+
+def test_self_registration_records_that_the_set_is_stored(app_home):
+    name = "ext-recorder"
+    manifest = {"name": name, "version": "1.0.0", "permissions": {"api": ["/api/sessions"]}}
+    assert register_external_app(name, "1.0.0", "Recorder", manifest_data=manifest).ok
+    assert manager_mod._read_installed(name).approvedGrantsStored is True
+
+    _grants_path(name).unlink()
+    token_auth._app_perms_cache.clear()
+    assert token_auth._app_api_allowlist(name) == ()
+
+
+@pytest.mark.parametrize("value", ["true", 1, None])
+def test_only_a_literal_true_marks_the_set_as_stored(value):
+    meta = manager_mod.InstalledApp.from_dict({"name": APP, "approvedGrantsStored": value})
+    assert meta.approvedGrantsStored is False
+
+
+def test_a_record_retired_between_the_manifest_and_record_reads_grants_nothing(
+    tmp_path, app_home, monkeypatch
+):
+    # The swap moves the record and manifest together. A reader that read the
+    # old manifest and then finds no tree at all must not grant what it read.
+    _installed_v1(tmp_path)
+    assert _widen(tmp_path).ok
+    retired = app_dir(APP).parent / f".{APP}-update-old-1-abcd"
+
+    def _declare_then_retire():
+        declared = [OLD_API, NEW_API]
+        app_dir(APP).rename(retired)
+        return declared
+
+    try:
+        assert staged_app_grants(APP, "api", _declare_then_retire) == []
+    finally:
+        retired.rename(app_dir(APP))
+
+
+def test_a_stale_pre_flag_record_write_keeps_the_set_marked_stored(tmp_path, app_home):
+    _installed_v1(tmp_path)
+    _make_legacy()
+    stale = manager_mod._read_installed(APP)
+    assert _widen(tmp_path).ok
+
+    manager_mod._write_installed(APP, stale)
+
+    assert manager_mod._read_installed(APP).approvedGrantsStored is True
+
+
+def test_a_record_without_the_flag_is_marked_before_the_tree_moves(tmp_path, app_home, monkeypatch):
+    # A record that has a stored set but predates the flag must carry the flag
+    # before the swap removes the set file, or the swap window grants the
+    # entries an earlier update held back.
+    _installed_v1(tmp_path)
+    assert _widen(tmp_path).ok
+    _edit_record(lambda data: data.pop("approvedGrantsStored", None))
+    assert manager_mod._read_installed(APP).approvedGrantsStored is False
+    seen = []
+    real_copy = manager_mod._copy_app_tree
+
+    def _probe_then_copy(source, dest):
+        retired = next(p for p in app_dir(APP).parent.iterdir() if "-update-old-" in p.name)
+        record = manager_mod.InstalledApp.from_dict(
+            json.loads((retired / INSTALLED_META_FILENAME).read_text(encoding="utf-8"))
+        )
+        seen.append(record.approvedGrantsStored)
+        real_copy(source, dest)
+
+    monkeypatch.setattr(manager_mod, "_copy_app_tree", _probe_then_copy)
+    assert _widen(tmp_path, "v3", "3.0.0").ok
+    assert seen == [True]
+    assert _allowlist() == (OLD_API,)
+
+
+def test_swap_fencing_keeps_a_bounded_record(monkeypatch):
+    monkeypatch.setattr(manager_mod, "_tree_swap_last", manager_mod.OrderedDict())
+    monkeypatch.setattr(manager_mod, "_tree_swaps_active", {})
+    for i in range(manager_mod._TREE_SWAP_LAST_CAP * 2):
+        with manager_mod._tree_swap(f"app-{i}"):
+            pass
+
+    assert len(manager_mod._tree_swap_last) == manager_mod._TREE_SWAP_LAST_CAP
+    assert manager_mod._tree_swaps_active == {}
+
+
+def test_a_swap_whose_record_was_evicted_between_two_reads_is_still_seen(monkeypatch):
+    monkeypatch.setattr(manager_mod, "_tree_swap_last", manager_mod.OrderedDict())
+    monkeypatch.setattr(manager_mod, "_tree_swaps_active", {})
+    before = manager_mod._tree_swap_state(APP)
+    with manager_mod._tree_swap(APP):
+        pass
+    for i in range(manager_mod._TREE_SWAP_LAST_CAP):
+        with manager_mod._tree_swap(f"other-{i}"):
+            pass
+    after = manager_mod._tree_swap_state(APP)
+
+    assert after[1] is None
+    assert manager_mod._tree_swap_spanned(before, after)
+
+
+def test_an_unrelated_app_swap_does_not_fence_a_read(monkeypatch):
+    monkeypatch.setattr(manager_mod, "_tree_swap_last", manager_mod.OrderedDict())
+    monkeypatch.setattr(manager_mod, "_tree_swaps_active", {})
+    before = manager_mod._tree_swap_state(APP)
+    with manager_mod._tree_swap("other-app"):
+        pass
+
+    assert not manager_mod._tree_swap_spanned(before, manager_mod._tree_swap_state(APP))

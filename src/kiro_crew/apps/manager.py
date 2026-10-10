@@ -17,7 +17,9 @@ import os
 import re
 import shutil
 import stat
+import threading
 import time
+from collections import OrderedDict
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, replace
@@ -160,6 +162,13 @@ class InstalledApp:
     # consent moment. Kept separate from ``enabled`` so a normal manual disable
     # never shows the re-consent warning.
     sessionApprovalConsentPending: bool = False  # noqa: N815
+    # True once this app's approved-grants file has been written. That file
+    # sits in the app tree, which an update swaps out before the new set is
+    # written, so a reader can find no file for a moment. A record carrying
+    # this flag reads that absence as "nothing approved"; only a record without
+    # it (an install from before the set was stored) approves what its
+    # manifest declares.
+    approvedGrantsStored: bool = False  # noqa: N815
 
     def validate_fields(self) -> list[str]:
         """Validate classification field values. Returns error list (empty = valid)."""
@@ -197,6 +206,7 @@ class InstalledApp:
             sourceCommit=str(data.get("sourceCommit", "")),
             sourceSigner=str(data.get("sourceSigner", "")),
             sessionApprovalConsentPending=bool(data.get("sessionApprovalConsentPending", False)),
+            approvedGrantsStored=data.get("approvedGrantsStored") is True,
         )
         # Migrate old "managed" field to new classification fields
         if inst.schemaVersion < 2 and "origin" not in data:
@@ -277,12 +287,17 @@ def _write_installed(name: str, meta: InstalledApp) -> None:
     only an explicit remote URI is sanitized; treating arbitrary ``:...@...:``
     text as SCP would corrupt valid POSIX filenames.
 
+    ``approvedGrantsStored`` is kept set while the app's approved-grants file
+    exists, so a writer holding a record read before the set was stored cannot
+    clear it.
+
     The import is deferred because ``apps.registry`` imports this module.
     """
     from kiro_crew.apps.registry import _strip_git_target_userinfo
 
     credential_free_meta = replace(
         meta,
+        approvedGrantsStored=meta.approvedGrantsStored or _approved_grants_path(name).is_file(),
         source=_credential_free_source_metadata(str(meta.source or "")),
         sourceUrl=_strip_git_target_userinfo(str(meta.sourceUrl or "")),
         sourceRegistry=_credential_free_source_metadata(str(meta.sourceRegistry or "")),
@@ -320,9 +335,9 @@ def _approved_grants_path(name: str) -> Path:
 def _read_approved_grants(name: str) -> dict[str, list[str]] | None:
     """Read *name*'s approved api/events set, fresh from disk, failing closed.
 
-    ``None`` means no file: an install from before the set was stored (or a
-    gateway-shipped builtin), which approves what its manifest declares. A file
-    that cannot be read or parsed approves nothing.
+    ``None`` means no file; ``_effective_approved_grants`` decides what that
+    approves for the app's install record. A file that cannot be read or
+    parsed approves nothing.
     """
     path = _approved_grants_path(name)
     try:
@@ -336,6 +351,22 @@ def _read_approved_grants(name: str) -> dict[str, list[str]] | None:
         return _parse_approved_grants(json.loads(text))
     except json.JSONDecodeError:
         return {family: [] for family in STAGED_GRANT_FAMILIES}
+
+
+def _effective_approved_grants(
+    name: str, meta: InstalledApp | None
+) -> dict[str, list[str]] | None:
+    """*name*'s approved set as *meta* (its install record) qualifies it.
+
+    A missing file approves what the manifest declares (``None``) only for a
+    record that has never stored a set. Once one was stored, a missing file
+    approves nothing: it is a file an update's tree swap has not put back yet,
+    or one that was lost, and neither is the owner's approval.
+    """
+    grants = _read_approved_grants(name)
+    if grants is None and meta is not None and meta.approvedGrantsStored:
+        return {family: [] for family in STAGED_GRANT_FAMILIES}
+    return grants
 
 
 def _write_approved_grants(name: str, grants: dict[str, list[str]] | None) -> None:
@@ -409,6 +440,79 @@ def _held_back_entries(
     }
 
 
+def _update_retired_tree_prefix(name: str) -> str:
+    """Name prefix of the tree ``update_app`` moves *name*'s live tree to."""
+    return f".{name}-update-old-"
+
+
+# Tree-swap fencing for this process. ``update_app`` holds a swap open from
+# before it moves an app's tree aside until the moved-aside tree is gone. Each
+# swap start and end takes the next value of a process-wide sequence; an app's
+# last value is kept in a bounded LRU, and its in-flight count only while one
+# is open. A grant read that sees a swap in flight, or a change across its
+# reads, grants nothing.
+_TREE_SWAP_LAST_CAP = 256
+# (swaps in flight, the app's last sequence value, the process sequence)
+_SwapState = tuple[int, int | None, int]
+_tree_swap_guard = threading.Lock()
+_tree_swap_seq = 0
+_tree_swaps_active: dict[str, int] = {}
+_tree_swap_last: OrderedDict[str, int] = OrderedDict()
+
+
+def _tree_swap_mark(name: str, delta: int) -> None:
+    """Record a swap start (+1) or end (-1) for *name*; caller holds the guard."""
+    global _tree_swap_seq
+    _tree_swap_seq += 1
+    active = _tree_swaps_active.get(name, 0) + delta
+    if active > 0:
+        _tree_swaps_active[name] = active
+    else:
+        _tree_swaps_active.pop(name, None)
+    _tree_swap_last[name] = _tree_swap_seq
+    _tree_swap_last.move_to_end(name)
+    while len(_tree_swap_last) > _TREE_SWAP_LAST_CAP:
+        _tree_swap_last.popitem(last=False)
+
+
+@contextmanager
+def _tree_swap(name: str) -> Iterator[None]:
+    with _tree_swap_guard:
+        _tree_swap_mark(name, 1)
+    try:
+        yield
+    finally:
+        with _tree_swap_guard:
+            _tree_swap_mark(name, -1)
+
+
+def _tree_swap_state(name: str) -> _SwapState:
+    """``(in flight, last sequence value, process sequence)`` for *name*."""
+    with _tree_swap_guard:
+        return (_tree_swaps_active.get(name, 0), _tree_swap_last.get(name), _tree_swap_seq)
+
+
+def _tree_swap_spanned(before: _SwapState, after: _SwapState) -> bool:
+    """Whether a swap of the app was in flight at, or ran between, two states.
+
+    An app whose last value is absent at both ends may have had it evicted in
+    between; that takes at least ``_TREE_SWAP_LAST_CAP`` sequence steps.
+    """
+    if before[0] or after[0] or before[1] != after[1]:
+        return True
+    return after[1] is None and after[2] - before[2] >= _TREE_SWAP_LAST_CAP
+
+
+def _update_in_progress(name: str) -> bool:
+    """Whether an update has moved *name*'s tree aside (it may not be back yet)."""
+    parent = app_dir(name).parent
+    prefix = _update_retired_tree_prefix(name)
+    try:
+        return any(entry.name.startswith(prefix) for entry in parent.iterdir())
+    except OSError:
+        return parent.exists()
+
+
 def staged_app_grants(
     name: str, family: str, read_declared: Callable[[], Sequence[str] | None]
 ) -> list[str]:
@@ -418,30 +522,48 @@ def staged_app_grants(
     ``ws_event_scope._read_declared_events``, the hook context) grant exactly
     this: declared by the live manifest (*read_declared*, ``None`` when there is
     none) and in the app's approved-grants file, both read fresh. An install
-    without the file approves what is declared. An app with nothing on disk passes the declared
-    entries unchanged (callers gate on installation themselves); an app
-    directory without a readable record is not evidence of approval and grants
-    nothing.
+    whose record has never stored the file approves what is declared. An app
+    with nothing on disk passes the declared entries unchanged (callers gate on
+    installation themselves); an app directory without a readable record, or
+    a tree an update has moved aside and not yet replaced, is not evidence of
+    approval and grants nothing.
     """
+    swap_before = _tree_swap_state(name)
+    if swap_before[0]:
+        return []
     declared = read_declared()
     if declared is None:
         return []
     meta = _read_installed(name)
     if meta is None:
+        # The moved-aside tree first, then the live one: an update that ends
+        # between the two checks has put the live tree back by the second.
+        if _update_in_progress(name):
+            return []
         root = app_dir(name)
         if (root / INSTALLED_META_FILENAME).exists() or (root / APP_MANIFEST_FILENAME).exists():
             return []
-        return list(declared)
-    grants = _read_approved_grants(name)
-    if grants is None:
-        return list(declared)
-    approved = set(grants.get(family, ()))
-    return [entry for entry in declared if entry in approved]
+        granted = list(declared)
+    else:
+        grants = _effective_approved_grants(name, meta)
+        if grants is None:
+            # No set file beside a record that never stored one. The record
+            # must still be the one read, with still no file, or an update
+            # (in this process or another) moved the tree in between.
+            if _read_installed(name) != meta or _approved_grants_path(name).exists():
+                return []
+            granted = list(declared)
+        else:
+            approved = set(grants.get(family, ()))
+            granted = [entry for entry in declared if entry in approved]
+    if _tree_swap_spanned(swap_before, _tree_swap_state(name)):
+        return []
+    return granted
 
 
 def _approved_grants_row(name: str) -> dict[str, Any]:
     """The ``approvedGrants`` key for an app row, absent when no set is stored."""
-    grants = _read_approved_grants(name)
+    grants = _effective_approved_grants(name, _read_installed(name))
     return {} if grants is None else {"approvedGrants": grants}
 
 
@@ -1237,6 +1359,7 @@ def install_app(
         displayName=manifest.displayName,
         enabled=False,  # installed but not enabled until explicitly enabled
         sessionApprovalConsentPending=bool(manifest.permissions.sessionApproval),
+        approvedGrantsStored=True,
         installedAt=_now_iso(),
         source=str(source),
         # Persist the server-resolved repository at the first durable metadata
@@ -1372,7 +1495,7 @@ def update_app(
     # entry is held back instead of disabling the app: it keeps running on the
     # set the owner approved until they approve the new one.
     # Read before the tree swap: the file lives in the tree the swap retires.
-    existing_approved = _read_approved_grants(name)
+    existing_approved = _effective_approved_grants(name, existing)
     approved_grants = _approved_grants_after_manifest_change(
         existing_approved=existing_approved,
         old_permissions=old_manifest.permissions if old_manifest else None,
@@ -1399,13 +1522,16 @@ def update_app(
         sourceRegistry="",
         sourceCommit="",
         sourceSigner="",
+        approvedGrantsStored=True,
     )
     # Preserve data directory and app secret
     data_dir = dest / "data"
     secret_file = dest / ".app_secret"
     tmp_data = dest.parent / f".{name}-data-tmp"
     tmp_secret = dest.parent / f".{name}-secret-tmp"
-    retired = dest.parent / f".{name}-update-old-{os.getpid()}-{os.urandom(4).hex()}"
+    retired = dest.parent / (
+        f"{_update_retired_tree_prefix(name)}{os.getpid()}-{os.urandom(4).hex()}"
+    )
     preserved_data = False
     preserved_secret = False
 
@@ -1455,74 +1581,80 @@ def update_app(
     if tmp_secret.is_file() and secret_file.is_file():
         tmp_secret.unlink()
 
-    try:
-        if _owned_data_dir(data_dir):
-            shutil.move(str(data_dir), str(tmp_data))
-            preserved_data = True
-        if secret_file.is_file():
-            shutil.move(str(secret_file), str(tmp_secret))
-            preserved_secret = True
-
-        # Keep the complete old tree until the replacement and its metadata are
-        # durable. Source-owned installed.json never reaches the live tree.
-        os.replace(dest, retired)
-        _copy_app_tree(source, dest)
-        # ``.app_secret`` is the gateway's whether or not one is preserved: the
-        # copied entry goes, unfollowed, before the preserved file moves back
-        # (see install_app; the same removal the preview copy applies).
-        _remove_any_shape(dest / ".app_secret")
-
-        if _owned_data_dir(tmp_data):
-            restored = dest / "data"
-            _remove_any_shape(restored)
-            shutil.move(str(tmp_data), str(restored))
-        if tmp_secret.is_file():
-            shutil.move(str(tmp_secret), str(dest / ".app_secret"))
-        # Before the record: a root `data` that is not a directory (nothing
-        # preserved was put back over it) would fail app_data_dir() below, after
-        # the new metadata was durable -- refused here instead, and the rollback
-        # restores the old tree and record (see install_app).
-        refusal = gateway_data_dir_obstruction(dest)
-        if refusal:
-            raise InstalledTreeRefused(refusal)
-        # The new tree carries no set (the copy skips the file); a rollback
-        # restores the old tree's file with it.
-        _write_approved_grants(name, approved_grants)
-        _write_installed(name, meta)
-    except (OSError, shutil.Error, ValueError, InstalledTreeRefused) as exc:
-        rollback_error = ""
+    with _tree_swap(name):
         try:
-            if retired.is_dir():
-                restored_data = dest / "data"
-                restored_secret = dest / ".app_secret"
-                if preserved_data and not _owned_data_dir(tmp_data) and restored_data.is_dir():
-                    shutil.move(str(restored_data), str(tmp_data))
-                if preserved_secret and not tmp_secret.is_file() and restored_secret.is_file():
-                    shutil.move(str(restored_secret), str(tmp_secret))
-                _remove_any_shape(dest)
-                os.replace(retired, dest)
+            # The swap below takes the approved-set file with the old tree. A record
+            # that stored a set must say so before then, or a reader meeting it
+            # beside the missing file would approve everything declared.
+            if not existing.approvedGrantsStored and _approved_grants_path(name).is_file():
+                _write_installed(name, existing)
+            if _owned_data_dir(data_dir):
+                shutil.move(str(data_dir), str(tmp_data))
+                preserved_data = True
+            if secret_file.is_file():
+                shutil.move(str(secret_file), str(tmp_secret))
+                preserved_secret = True
+
+            # Keep the complete old tree until the replacement and its metadata are
+            # durable. Source-owned installed.json never reaches the live tree.
+            os.replace(dest, retired)
+            _copy_app_tree(source, dest)
+            # ``.app_secret`` is the gateway's whether or not one is preserved: the
+            # copied entry goes, unfollowed, before the preserved file moves back
+            # (see install_app; the same removal the preview copy applies).
+            _remove_any_shape(dest / ".app_secret")
+
             if _owned_data_dir(tmp_data):
                 restored = dest / "data"
                 _remove_any_shape(restored)
                 shutil.move(str(tmp_data), str(restored))
             if tmp_secret.is_file():
-                restored_secret = dest / ".app_secret"
-                _remove_any_shape(restored_secret)
-                shutil.move(str(tmp_secret), str(restored_secret))
-            _write_installed(name, existing)
-        except (OSError, shutil.Error, ValueError) as rollback_exc:
-            rollback_error = f"; rollback failed: {rollback_exc}"
-            logger.error("Failed to restore app %s after update error", name, exc_info=True)
-        return AppResult(
-            ok=False,
-            name=name,
-            error=f"failed to update app files: {exc}{rollback_error}",
-        )
+                shutil.move(str(tmp_secret), str(dest / ".app_secret"))
+            # Before the record: a root `data` that is not a directory (nothing
+            # preserved was put back over it) would fail app_data_dir() below, after
+            # the new metadata was durable -- refused here instead, and the rollback
+            # restores the old tree and record (see install_app).
+            refusal = gateway_data_dir_obstruction(dest)
+            if refusal:
+                raise InstalledTreeRefused(refusal)
+            # The new tree carries no set (the copy skips the file); a rollback
+            # restores the old tree's file with it.
+            _write_approved_grants(name, approved_grants)
+            _write_installed(name, meta)
+        except (OSError, shutil.Error, ValueError, InstalledTreeRefused) as exc:
+            rollback_error = ""
+            try:
+                if retired.is_dir():
+                    restored_data = dest / "data"
+                    restored_secret = dest / ".app_secret"
+                    if preserved_data and not _owned_data_dir(tmp_data) and restored_data.is_dir():
+                        shutil.move(str(restored_data), str(tmp_data))
+                    if preserved_secret and not tmp_secret.is_file() and restored_secret.is_file():
+                        shutil.move(str(restored_secret), str(tmp_secret))
+                    _remove_any_shape(dest)
+                    os.replace(retired, dest)
+                if _owned_data_dir(tmp_data):
+                    restored = dest / "data"
+                    _remove_any_shape(restored)
+                    shutil.move(str(tmp_data), str(restored))
+                if tmp_secret.is_file():
+                    restored_secret = dest / ".app_secret"
+                    _remove_any_shape(restored_secret)
+                    shutil.move(str(tmp_secret), str(restored_secret))
+                _write_installed(name, existing)
+            except (OSError, shutil.Error, ValueError) as rollback_exc:
+                rollback_error = f"; rollback failed: {rollback_exc}"
+                logger.error("Failed to restore app %s after update error", name, exc_info=True)
+            return AppResult(
+                ok=False,
+                name=name,
+                error=f"failed to update app files: {exc}{rollback_error}",
+            )
 
-    try:
-        _remove_any_shape(retired)
-    except OSError:
-        logger.warning("Could not remove retired app tree for %s", name, exc_info=True)
+        try:
+            _remove_any_shape(retired)
+        except OSError:
+            logger.warning("Could not remove retired app tree for %s", name, exc_info=True)
 
     # Ensure data directory exists
     app_data_dir(name)
@@ -2472,7 +2604,9 @@ def enable_app(
             error_code="session_approval_consent_required",
         )
 
-    current_grants = _read_approved_grants(name) if grants_consent is not None else None
+    current_grants = (
+        _effective_approved_grants(name, meta) if grants_consent is not None else None
+    )
     approve_grants = grants_consent is not None and current_grants is not None
     if meta.enabled and not approve_grants:
         return AppResult(ok=True, name=name, message=f"{name} is already enabled")
@@ -2498,6 +2632,7 @@ def enable_app(
             approved[family] = kept
             still_staged = still_staged or any(e not in kept for e in declared[family])
         _write_approved_grants(name, approved)
+        meta.approvedGrantsStored = True
         sel().log_api_access(
             caller="app_enable",
             operation="grants_approved",
@@ -3002,12 +3137,12 @@ def register_external_app(
     new_permissions = (
         manifest_data.get("permissions") if isinstance(manifest_data, dict) else None
     )
-    prior_grants = _read_approved_grants(name) if existing else None
+    prior_grants = _effective_approved_grants(name, existing) if existing else None
     prior_grants_present = _approved_grants_path(name).is_file() if existing else False
     approved_grants: dict[str, list[str]] | None
     if not manifest_data:
         if existing:
-            approved_grants = _read_approved_grants(name)
+            approved_grants = _effective_approved_grants(name, existing)
         elif (on_disk := get_app_manifest(name)) is not None:
             approved_grants = _declared_grant_entries(on_disk.permissions)
         else:
@@ -3044,6 +3179,7 @@ def register_external_app(
             ),
             resources=resources,
             lifecycle=lifecycle,
+            approvedGrantsStored=existing.approvedGrantsStored or bool(manifest_data),
         )
         if not preserve_server_provenance:
             if source:
@@ -3077,9 +3213,11 @@ def register_external_app(
         except (OSError, ValueError) as exc:
             rollback_errors: list[str] = []
             try:
-                _write_installed(name, existing)
+                # The set first: the record write keeps the stored flag only
+                # while a set file is present.
                 if manifest_data:
                     _write_approved_grants(name, prior_grants if prior_grants_present else None)
+                _write_installed(name, existing)
             except OSError as rollback_exc:
                 rollback_errors.append(f"metadata rollback failed: {rollback_exc}")
             try:
@@ -3112,6 +3250,7 @@ def register_external_app(
             origin=origin,
             resources=resources,
             lifecycle=lifecycle,
+            approvedGrantsStored=approved_grants is not None,
         )
         if approved_grants is not None:
             _write_approved_grants(name, approved_grants)
