@@ -27,6 +27,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 from pathlib import Path
 
@@ -139,20 +140,164 @@ def _find_python_via_launcher(version: str) -> str | None:
     return out if out and Path(out).is_file() else None
 
 
-def _find_python(version: str = "3.12") -> str | None:
-    """Locate a pythonX.Y interpreter for the venv."""
-    candidates = [
-        Path.home() / ".local" / "bin" / f"python{version}",
-        Path(f"/usr/bin/python{version}"),
-        Path(f"/usr/local/bin/python{version}"),
-    ]
-    for c in candidates:
-        if c.exists() and os.access(c, os.X_OK):
-            return str(c)
-    found = shutil.which(f"python{version}")
-    if found or not platform_compat.IS_WINDOWS:
-        return found
-    return _find_python_via_launcher(version)
+#: The interpreter floor, ``requires-python`` in ``pyproject.toml`` (pinned by
+#: ``test_pod``). A worktree venv on any newer minor is as valid as one on this.
+MIN_PYTHON = (3, 12)
+
+#: Minor versions asked for by name (``python3.N``), after the gateway's own.
+#: Bounded rather than open-ended because a name lookup per minor is the only
+#: way to find a versioned binary; ``python3`` below catches anything newer.
+_NAMED_MINORS = tuple(range(MIN_PYTHON[1], 16))
+
+#: Bound on one candidate probe: a ``venv --without-pip`` into a temp dir plus
+#: one interpreter start. Seconds on any healthy host.
+_PROBE_TIMEOUT_S = 60
+
+#: Variables that can make an interpreter start in the PROBE and not in the
+#: venv the probe vouches for: a relocatable CPython (the Builder Toolbox
+#: build) only finds ``libpython`` through a loader path its launcher passes,
+#: and the provision steps do not carry one.
+_PROBE_DROPPED_ENV = ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "PYTHONHOME", "PYTHONPATH")
+
+#: Runs INSIDE the throwaway venv: the version floor, and ``ensurepip``, which
+#: the pip path needs and a stripped bundled interpreter (the desktop app's)
+#: does not ship.
+_PROBE_SNIPPET = (
+    "import sys, ensurepip; " f"sys.exit(0 if sys.version_info[:2] >= {MIN_PYTHON!r} else 3)"
+)
+
+
+def _python_in(venv_dir: Path) -> Path:
+    """A venv's interpreter, for the venv at *venv_dir* (any name, not just .venv)."""
+    if platform_compat.IS_WINDOWS:
+        return venv_dir / "Scripts" / "python.exe"
+    return venv_dir / "bin" / "python"
+
+
+def _probe_python(candidate: str) -> str | None:
+    """``None`` when *candidate* can build a working venv, else why it cannot.
+
+    Existence and the execute bit prove nothing. A version-manager shim (mise,
+    pyenv, asdf) exists and is executable for a version it has no install for,
+    and fails only when run. A relocatable interpreter starts fine through the
+    wrapper that sets its library path, and the venv built from it does not,
+    because the venv links the real binary. So the probe does what provisioning
+    will do, at the smallest scale: create a venv without pip in a temp dir,
+    then run that venv's own interpreter.
+    """
+    env = {k: v for k, v in os.environ.items() if k not in _PROBE_DROPPED_ENV}
+    with tempfile.TemporaryDirectory(prefix="kc-pyprobe-") as tmp:
+        venv_dir = Path(tmp) / "v"
+        steps = (
+            [candidate, "-I", "-m", "venv", "--without-pip", str(venv_dir)],
+            [str(_python_in(venv_dir)), "-I", "-c", _PROBE_SNIPPET],
+        )
+        for argv in steps:
+            try:
+                proc = subprocess.run(  # nosec B603 - argv list, no shell
+                    argv,
+                    env=env,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    timeout=_PROBE_TIMEOUT_S,
+                    **UTF8_TEXT,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                return f"could not run ({exc.__class__.__name__}: {exc})"
+            if proc.returncode == 3:
+                return f"older than {MIN_PYTHON[0]}.{MIN_PYTHON[1]}"
+            if proc.returncode != 0:
+                lines = [ln for ln in (proc.stderr or "").strip().splitlines() if ln.strip()]
+                detail = lines[-1].strip()[:200] if lines else ""
+                return f"exit {proc.returncode}" + (f": {detail}" if detail else "")
+    return None
+
+
+def _uv_found_python() -> str | None:
+    """The interpreter ``uv python find`` resolves for the floor, or None.
+
+    uv-managed interpreters are standalone builds that venvs work from, which is
+    what a host whose own Python is relocatable or stripped needs. Asked whether
+    or not :data:`USE_UV_ENV` is set: this only FINDS an interpreter, it builds
+    nothing, and it never downloads one (``--no-python-downloads``).
+    """
+    uv = resolve_uv()
+    if not uv:
+        return None
+    try:
+        out = subprocess.check_output(  # nosec B603 - argv list, no shell
+            [uv, "python", "find", "--no-python-downloads", f">={MIN_PYTHON[0]}.{MIN_PYTHON[1]}"],
+            stdin=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=_PROBE_TIMEOUT_S,
+            **UTF8_TEXT,
+        ).strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out or None
+
+
+def _python_candidates():
+    """Interpreters to try, best first, lazily (the uv lookup is a subprocess).
+
+    1. This process's base interpreter -- the gateway's (or the CLI's) own, so a
+       pod runs on the Python version its operator already runs.
+    2. ``python3.N`` by name, the gateway's minor first, then the floor upward,
+       each in the fixed install locations and on ``PATH``; then ``python3``.
+       On Windows, which ships no versioned names, the ``py`` launcher per minor.
+    3. ``uv python find`` for the floor.
+    """
+    base = getattr(sys, "_base_executable", "") or sys.executable
+    if base:
+        yield base
+    own = sys.version_info[1]
+    minors = [own] + [m for m in _NAMED_MINORS if m != own]
+    for minor in minors:
+        name = f"python3.{minor}"
+        for c in (
+            Path.home() / ".local" / "bin" / name,
+            Path("/usr/bin") / name,
+            Path("/usr/local/bin") / name,
+        ):
+            if c.exists() and os.access(c, os.X_OK):
+                yield str(c)
+        found = shutil.which(name)
+        if found:
+            yield found
+    found = shutil.which("python3")
+    if found:
+        yield found
+    if platform_compat.IS_WINDOWS:
+        for minor in minors:
+            found = _find_python_via_launcher(f"3.{minor}")
+            if found:
+                yield found
+    found = _uv_found_python()
+    if found:
+        yield found
+
+
+def _find_python() -> str | None:
+    """The first candidate that can build a working venv, or None.
+
+    Every rejection is said, so a failure lists each interpreter that was tried
+    and why it was refused, rather than claiming none exists.
+    """
+    seen: set[str] = set()
+    for candidate in _python_candidates():
+        # The literal path, not the resolved one: every version-manager shim
+        # resolves to the SAME manager binary, and each one selects a different
+        # interpreter by the name it was invoked as.
+        key = os.path.abspath(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        reason = _probe_python(candidate)
+        if reason is None:
+            return candidate
+        _say(f"[provision] skipping {candidate}: {reason}")
+    return None
 
 
 def venv_bin_dir(checkout: Path) -> Path:
@@ -491,7 +636,11 @@ def ensure_venv(checkout: Path) -> bool:
         return True
     py = _find_python()
     if not py:
-        _say("FATAL: no python3.12 found (need it to build the venv)")
+        _say(
+            f"FATAL: no Python >= {MIN_PYTHON[0]}.{MIN_PYTHON[1]} that can build a venv "
+            "(each candidate tried is listed above). Install one, e.g. "
+            f"`uv python install {MIN_PYTHON[0]}.{MIN_PYTHON[1]}`, and re-run provision"
+        )
         return False
     venv_dir = checkout / ".venv"
     uv = _find_uv()

@@ -2165,75 +2165,242 @@ class TestProvisionBuildPaths:
         monkeypatch.setattr(prov, "build_dist", lambda c: True)
         assert prov.provision(co, build=True) is True
 
-    def test_find_python_via_which(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(prov.Path, "exists", lambda self: False)
-        monkeypatch.setattr(prov.shutil, "which", lambda exe: "/opt/python3.12")
-        assert prov._find_python() == "/opt/python3.12"
+    # --- interpreter selection: probed, not guessed --------------------------
+    @staticmethod
+    def _only_candidates(monkeypatch: pytest.MonkeyPatch, *cands: str) -> None:
+        monkeypatch.setattr(prov, "_python_candidates", lambda: iter(cands))
 
-    def _windows_without_versioned_exe(self, monkeypatch: pytest.MonkeyPatch, launcher: str | None):
-        """A Windows host as python.org leaves it: ``python.exe`` only, never a
-        ``python3.12.exe``, so the versioned name resolves to nothing."""
-        monkeypatch.setattr(prov.platform_compat, "IS_WINDOWS", True)
-        monkeypatch.setattr(prov.Path, "exists", lambda self: False)
-        monkeypatch.setattr(prov.shutil, "which", lambda exe: launcher if exe == "py" else None)
-
-    def test_find_python_asks_the_py_launcher_on_windows(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    def test_find_python_takes_the_first_candidate_that_passes_the_probe(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        real = tmp_path / "Python312" / "python.exe"
-        real.parent.mkdir()
-        real.write_bytes(b"")
-        self._windows_without_versioned_exe(monkeypatch, r"C:\Windows\py.exe")
-        calls: list[list[str]] = []
+        self._only_candidates(monkeypatch, "/shim/python3.12", "/ok/python3.13", "/later")
+        probed: list[str] = []
 
-        def fake_check_output(cmd, **kwargs):
-            calls.append(cmd)
-            return f"{real}\n"
+        def probe(c: str) -> str | None:
+            probed.append(c)
+            return "exit 127: no such version" if c == "/shim/python3.12" else None
 
-        monkeypatch.setattr(prov.subprocess, "check_output", fake_check_output)
-        assert prov._find_python() == str(real)
-        # The launcher is asked for EXACTLY the wanted version: a host with
-        # several interpreters must not hand back whichever is the default.
-        assert calls[0][:2] == [r"C:\Windows\py.exe", "-3.12"]
+        monkeypatch.setattr(prov, "_probe_python", probe)
+        assert prov._find_python() == "/ok/python3.13"
+        assert probed == ["/shim/python3.12", "/ok/python3.13"]
+        # The rejection is said, so a failed provision names what was tried.
+        assert "skipping /shim/python3.12: exit 127: no such version" in capsys.readouterr().err
 
-    def test_find_python_is_none_when_the_launcher_has_no_such_version(
+    def test_find_python_probes_each_path_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._only_candidates(monkeypatch, "/a/python3", "/a/python3", "/b/python3")
+        probed: list[str] = []
+        monkeypatch.setattr(prov, "_probe_python", lambda c: probed.append(c) or "no")
+        assert prov._find_python() is None
+        assert probed == ["/a/python3", "/b/python3"]
+
+    def test_find_python_is_none_when_every_candidate_fails(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        self._windows_without_versioned_exe(monkeypatch, r"C:\Windows\py.exe")
-
-        def no_such_version(cmd, **kwargs):
-            raise prov.subprocess.CalledProcessError(103, cmd)
-
-        monkeypatch.setattr(prov.subprocess, "check_output", no_such_version)
+        self._only_candidates(monkeypatch, "/x")
+        monkeypatch.setattr(prov, "_probe_python", lambda c: "broken")
         assert prov._find_python() is None
 
-    def test_find_python_is_none_when_the_launcher_names_a_missing_file(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    def test_ensure_venv_failure_names_the_floor_not_one_version(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        self._windows_without_versioned_exe(monkeypatch, r"C:\Windows\py.exe")
-        gone = tmp_path / "uninstalled" / "python.exe"
-        monkeypatch.setattr(prov.subprocess, "check_output", lambda cmd, **kw: f"{gone}\n")
-        assert prov._find_python() is None
+        monkeypatch.setattr(prov, "_find_python", lambda: None)
+        assert prov.ensure_venv(tmp_path) is False
+        err = capsys.readouterr().err
+        assert "no Python >= 3.12 that can build a venv" in err
+        assert "uv python install 3.12" in err
 
-    def test_find_python_is_none_on_windows_without_a_launcher(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        self._windows_without_versioned_exe(monkeypatch, None)
-        monkeypatch.setattr(
-            prov.subprocess, "check_output", lambda *a, **k: pytest.fail("no launcher to run")
-        )
-        assert prov._find_python() is None
+    def test_min_python_is_pyproject_requires_python(self) -> None:
+        """The floor the probe enforces is the one the package declares."""
+        import tomllib
 
-    def test_find_python_never_runs_the_launcher_off_windows(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(prov.platform_compat, "IS_WINDOWS", False)
+        root = Path(__file__).resolve().parents[1]
+        declared = tomllib.loads((root / "pyproject.toml").read_text())["project"][
+            "requires-python"
+        ]
+        assert declared == f">={prov.MIN_PYTHON[0]}.{prov.MIN_PYTHON[1]}"
+
+    @staticmethod
+    def _quiet_host(monkeypatch: pytest.MonkeyPatch, *, windows: bool = False) -> None:
+        """No interpreter anywhere but what a test adds."""
+        monkeypatch.setattr(prov.platform_compat, "IS_WINDOWS", windows)
+        monkeypatch.setattr(prov.sys, "_base_executable", "", raising=False)
+        monkeypatch.setattr(prov.sys, "executable", "")
         monkeypatch.setattr(prov.Path, "exists", lambda self: False)
         monkeypatch.setattr(prov.shutil, "which", lambda exe: None)
-        monkeypatch.setattr(
-            prov.subprocess, "check_output", lambda *a, **k: pytest.fail("POSIX must not probe py")
-        )
+        monkeypatch.setattr(prov, "_uv_found_python", lambda: None)
+
+    def test_candidates_start_with_this_processes_own_interpreter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._quiet_host(monkeypatch)
+        monkeypatch.setattr(prov.sys, "_base_executable", "/gw/bin/python3.12", raising=False)
+        monkeypatch.setattr(prov.shutil, "which", lambda exe: f"/path/{exe}")
+        monkeypatch.setattr(prov, "_uv_found_python", lambda: "/uv/python3.13")
+        got = list(prov._python_candidates())
+        assert got[0] == "/gw/bin/python3.12"
+        assert got[-1] == "/uv/python3.13"
+        assert "/path/python3" in got
+
+    def test_candidates_ask_for_the_gateway_minor_first_then_the_floor_upward(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._quiet_host(monkeypatch)
+        monkeypatch.setattr(prov.shutil, "which", lambda exe: f"/path/{exe}")
+        own = f"/path/python3.{sys.version_info[1]}"
+        got = [c for c in prov._python_candidates() if c != "/path/python3"]
+        assert got[0] == own
+        rest = [c for c in got[1:]]
+        assert rest == sorted(rest, key=lambda c: int(c.rsplit(".", 1)[1]))
+        assert rest[0] == ("/path/python3.12" if own != "/path/python3.12" else "/path/python3.13")
+
+    def test_find_python_on_a_host_with_no_python_is_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._quiet_host(monkeypatch)
+        monkeypatch.setattr(prov, "_probe_python", lambda c: pytest.fail("nothing to probe"))
         assert prov._find_python() is None
+
+    def test_candidates_ask_the_py_launcher_per_minor_on_windows(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """python.org on Windows ships ``python.exe`` only, so the launcher is the
+        index of installed versions; it is asked for each minor, own one first."""
+        self._quiet_host(monkeypatch, windows=True)
+        asked: list[str] = []
+        monkeypatch.setattr(
+            prov, "_find_python_via_launcher", lambda v: asked.append(v) or rf"C:\Py\{v}.exe"
+        )
+        got = list(prov._python_candidates())
+        assert asked[0] == f"3.{sys.version_info[1]}"
+        assert "3.12" in asked
+        assert got[0] == rf"C:\Py\3.{sys.version_info[1]}.exe"
+
+    def test_candidates_never_run_the_launcher_off_windows(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._quiet_host(monkeypatch)
+        monkeypatch.setattr(
+            prov, "_find_python_via_launcher", lambda v: pytest.fail("POSIX must not probe py")
+        )
+        assert list(prov._python_candidates()) == []
+
+    def test_the_launcher_answer_must_name_a_real_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(prov.shutil, "which", lambda exe: r"C:\Windows\py.exe")
+        gone = tmp_path / "uninstalled" / "python.exe"
+        monkeypatch.setattr(prov.subprocess, "check_output", lambda cmd, **kw: f"{gone}\n")
+        assert prov._find_python_via_launcher("3.12") is None
+        real = tmp_path / "python.exe"
+        real.write_bytes(b"")
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            prov.subprocess, "check_output", lambda cmd, **kw: calls.append(cmd) or f"{real}\n"
+        )
+        assert prov._find_python_via_launcher("3.13") == str(real)
+        # EXACTLY the wanted version, never whichever is the launcher's default.
+        assert calls[0][:2] == [r"C:\Windows\py.exe", "-3.13"]
+
+    def test_uv_lookup_never_downloads_an_interpreter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(prov, "resolve_uv", lambda: "/bin/uv")
+        seen: list[list[str]] = []
+        monkeypatch.setattr(
+            prov.subprocess, "check_output", lambda cmd, **kw: seen.append(cmd) or "/uv/py\n"
+        )
+        assert prov._uv_found_python() == "/uv/py"
+        assert seen == [["/bin/uv", "python", "find", "--no-python-downloads", ">=3.12"]]
+        monkeypatch.setattr(prov, "resolve_uv", lambda: None)
+        assert prov._uv_found_python() is None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="fake interpreters are POSIX shell scripts")
+class TestProbePythonAgainstRealProcesses:
+    """``_probe_python`` runs the candidate; these candidates are real executables."""
+
+    @staticmethod
+    def _script(path: Path, body: str) -> str:
+        path.write_text("#!/bin/sh\n" + body)
+        path.chmod(0o755)
+        return str(path)
+
+    def test_a_working_interpreter_passes(self) -> None:
+        assert prov._probe_python(sys.executable) is None
+
+    def test_a_shim_with_no_install_behind_it_is_refused_with_its_reason(
+        self, tmp_path: Path
+    ) -> None:
+        """The mise shape: the file exists and is executable, and running it fails."""
+        shim = self._script(
+            tmp_path / "python3.12",
+            'echo "mise ERROR No version is set for python3.12" >&2\nexit 127\n',
+        )
+        reason = prov._probe_python(shim)
+        assert reason is not None and reason.startswith("exit 127")
+        assert "No version is set" in reason
+
+    def test_an_interpreter_that_starts_only_with_a_loader_path_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The relocatable shape: it runs in an environment carrying a library path,
+        which the provision steps do not carry, so the probe must not either."""
+        cand = self._script(
+            tmp_path / "python3",
+            f'[ -n "$LD_LIBRARY_PATH" ] || {{ echo "libpython3.12.so.1.0: cannot open" >&2; exit 127; }}\n'
+            f'exec {sys.executable} "$@"\n',
+        )
+        monkeypatch.setenv("LD_LIBRARY_PATH", str(tmp_path))
+        reason = prov._probe_python(cand)
+        assert reason is not None and "libpython3.12.so.1.0" in reason
+
+    def test_a_venv_whose_interpreter_fails_is_refused(self, tmp_path: Path) -> None:
+        """The base starts, the venv built from it does not: the Toolbox case."""
+        broken_venv_python = (
+            'echo "libpython3.12.so.1.0: cannot open shared object file" >&2; exit 127'
+        )
+        cand = self._script(
+            tmp_path / "python3",
+            'for a; do last="$a"; done\n'
+            'mkdir -p "$last/bin"\n'
+            f"printf '#!/bin/sh\\n{broken_venv_python}\\n' > \"$last/bin/python\"\n"
+            'chmod +x "$last/bin/python"\n',
+        )
+        reason = prov._probe_python(cand)
+        assert reason is not None and reason.startswith("exit 127")
+        assert "libpython3.12.so.1.0" in reason
+
+    def test_an_interpreter_below_the_floor_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            prov, "_PROBE_SNIPPET", prov._PROBE_SNIPPET.replace("(3, 12)", "(9, 99)")
+        )
+        assert prov._probe_python(sys.executable) == "older than 3.12"
+
+    def test_a_missing_file_is_refused_not_raised(self, tmp_path: Path) -> None:
+        reason = prov._probe_python(str(tmp_path / "nope"))
+        assert reason is not None and reason.startswith("could not run")
+
+    def test_a_broken_versioned_shim_on_path_loses_to_a_working_newer_python(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The reported host: mise's ``python3.12`` shim exists with no 3.12 behind
+        it, a 3.13 works, and the gateway's own interpreter cannot build a venv.
+        Selecting by name picked the shim and provisioning died in ensurepip."""
+        bindir = tmp_path / "bin"
+        bindir.mkdir()
+        self._script(bindir / "python3.12", 'echo "No version is set" >&2\nexit 127\n')
+        newer = self._script(bindir / "python3.13", f'exec {sys.executable} "$@"\n')
+        monkeypatch.setenv("PATH", str(bindir))
+        monkeypatch.setattr(prov.Path, "home", lambda: tmp_path / "nohome")
+        monkeypatch.setattr(prov.sys, "_base_executable", str(bindir / "python3.12"), raising=False)
+        # raising=False: the same test runs against the name-only lookup it replaced.
+        monkeypatch.setattr(prov, "_uv_found_python", lambda: None, raising=False)
+        monkeypatch.setattr(prov, "_NAMED_MINORS", (12, 13), raising=False)
+        # The host's own /usr/bin interpreters are not part of this scenario.
+        monkeypatch.setattr(prov.Path, "exists", lambda self: False)
+        assert prov._find_python() == newer
 
 
 class TestProvisionDependencyInstall:
