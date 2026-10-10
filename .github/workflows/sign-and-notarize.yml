@@ -341,14 +341,21 @@ jobs:
     if: needs.sign.outputs.signed_zip_key != ''
     runs-on: macos-15
     # Worst-case wait budget: two notarizations (app, then DMG) at up to
-    # 30m each -- packaging/signing/notarize.sh enforces that 30m as a hard
-    # ceiling over submit + poll INCLUDING any transient-error retries and
-    # backoff, so it cannot grow past the old `--wait --timeout 30m` -- plus
-    # the CDSigner DMG sign task poll at up to 15m = 75m of pure waiting.
-    # The budget must also cover checkout, installs, downloads, DMG build,
-    # staple, attestation, and uploads, or GitHub cancels the job
+    # NOTARIZE_BUDGET_SECS (60m, set in env below) each --
+    # packaging/signing/notarize.sh enforces that as a hard ceiling over
+    # submit + poll INCLUDING any transient-error retries and backoff --
+    # plus the CDSigner DMG sign task poll at up to 15m = 135m of pure
+    # waiting. The budget must also cover checkout, installs, downloads, DMG
+    # build, staple, attestation, and uploads, or GitHub cancels the job
     # mid-publication on a legitimately slow day.
-    timeout-minutes: 90
+    #
+    # Why 60m and not the script's 30m default: the universal app zip is
+    # about 1 GB, twice a single-arch one, and Apple kept it "In Progress"
+    # past 30m on four release attempts in a row (0.9.0-insider.1 and
+    # 0.9.0-insider.2, each with a rerun) while the single-arch legs of the
+    # same runs passed. The budget is a ceiling, so a healthy run is not
+    # slowed by it.
+    timeout-minutes: 150
     # OIDC subject alignment: tag-triggered callers (release.yml) present
     # ref:refs/tags/<tag>, which the signing role does not trust. The prod
     # environment switches the subject to environment:prod, which it does.
@@ -367,6 +374,9 @@ jobs:
       VERSION: ${{ inputs.version }}
       SIGNED_ZIP_KEY: ${{ needs.sign.outputs.signed_zip_key }}
       UNSIGNED_DMG_KEY: ${{ needs.sign.outputs.unsigned_dmg_key }}
+      # Read by packaging/signing/notarize.sh for both submissions (app zip
+      # and DMG). See the timeout-minutes note above for why it is 60m.
+      NOTARIZE_BUDGET_SECS: "3600"
       # Published FILENAMES are pinned to this basename on every channel even
       # though the nightly BUNDLE is "KiroCrew Nightly.app": CDN keys and the
       # latest-DMG permalink (desktop/<channel>/latest/KiroCrew.dmg) are a
@@ -436,7 +446,7 @@ jobs:
 
           # Submit + poll with transient-error retry (a single timed-out
           # status request must not fail the job); fail-closed on
-          # Invalid/Rejected with the itemized Apple log. 30m budget.
+          # Invalid/Rejected with the itemized Apple log. Budget: NOTARIZE_BUDGET_SECS.
           bash packaging/signing/notarize.sh work/signed.zip
 
       - name: Staple and verify

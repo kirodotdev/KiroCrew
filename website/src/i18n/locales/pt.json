@@ -8008,6 +8008,10 @@
       "ttl_time_to_live": "TTL (tempo de vida)",
       "unexpected_response": "Resposta inesperada",
       "via": "via",
+      "confirm_publish_private": "Salvar em privado",
+      "visibility": "Visibilidade",
+      "visibility_private": "Privado (só você)",
+      "visibility_public": "Público (qualquer pessoa com o link)",
       "public_exposure_warning": "Qualquer pessoa com o link publicado pode ver este conteúdo. Ele é servido na internet pública sem autenticação."
     },
     "pullRequestPanel": {

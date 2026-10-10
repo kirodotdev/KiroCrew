@@ -501,6 +501,34 @@ async def publication_guard(slug: str) -> AsyncIterator[None]:
                 _publish_locks.pop(slug, None)
 
 
+#: How wide each visibility reaches, narrowest first. An unknown value ranks as the
+#: widest: a publication of unknown reach is treated as public.
+_VISIBILITY_RANK = {"PRIVATE": 0, "SHARED": 1, "PUBLIC": 2}
+
+
+def _visibility_rank(visibility: str | None) -> int:
+    return _VISIBILITY_RANK.get((visibility or "").upper(), 2)
+
+
+def _narrows(
+    old_visibility: str | None,
+    old_shared_with: list[str] | None,
+    new_visibility: str | None,
+    new_shared_with: list[str] | None,
+) -> bool:
+    """Whether a sharing change takes access away from anyone who has it now.
+
+    A lower rank narrows; so does a shared publication that drops a person, since
+    that person is losing access just the same.
+    """
+    old_rank, new_rank = _visibility_rank(old_visibility), _visibility_rank(new_visibility)
+    if new_rank != old_rank:
+        return new_rank < old_rank
+    if new_rank == _VISIBILITY_RANK["SHARED"]:
+        return not set(new_shared_with or []) >= set(old_shared_with or [])
+    return False
+
+
 async def publish(
     slug: str,
     *,
@@ -570,6 +598,19 @@ async def _publish_unlocked(
     # plus a sharing update, reusing the same destination id/URL — never a
     # second artifact. Use the artifact's existing provider.
     if art.publication is not None:
+        sharing = Capability.SHARING in provider.capabilities()
+        # Order the two steps by direction. Widening pushes first, so the new content
+        # lands while the link is still narrow; narrowing changes sharing first, so the
+        # new content never reaches the wider audience being withdrawn.
+        narrowing = sharing and _narrows(
+            art.publication.visibility,
+            art.publication.shared_with,
+            visibility,
+            shared_with,
+        )
+        if narrowing:
+            await update_sharing(slug, visibility=visibility, shared_with=shared_with)
+            art = await asyncio.to_thread(store.get, slug)
         await push_version(art, force=True)
         # push_version is best-effort and records failures in
         # publication.last_error; update_sharing then clears last_error. Capture
@@ -581,7 +622,7 @@ async def _publish_unlocked(
         # Skip the sharing reconcile for providers whose sharing is not
         # programmable via the API (e.g. a live CRDT provider — web-UI-only). Re-publish is
         # then just a content push; the existing publication summary is returned.
-        if Capability.SHARING in provider.capabilities():
+        if sharing and not narrowing:
             result = await update_sharing(slug, visibility=visibility, shared_with=shared_with)
         else:
             result = (

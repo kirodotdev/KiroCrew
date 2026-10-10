@@ -225,10 +225,15 @@ export function createArtifactsEndpoints({ get, post, del, patch, j, jfetch: fet
      *  Separate from `publishToProvider` on purpose: that one routes at an app's declared
      *  endpoint and falls back to `/api/deploy/deploy`, which is per-artifact deploy
      *  infrastructure -- a different destination, not a different spelling of this one. */
-    publishArtifactToCoreProvider: async (slug: string, providerName: string) => {
+    publishArtifactToCoreProvider: async (
+      slug: string,
+      providerName: string,
+      visibility: 'PRIVATE' | 'SHARED' | 'PUBLIC' = 'PUBLIC',
+      sharedWith: string[] = [],
+    ) => {
       const r = await post(`/api/artifacts/${encodeURIComponent(slug)}/publish`, {
-        visibility: 'PUBLIC',
-        shared_with: [],
+        visibility,
+        shared_with: sharedWith,
         provider: providerName,
       })
       checkSessionExpired(r)

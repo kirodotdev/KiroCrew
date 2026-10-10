@@ -7891,6 +7891,10 @@
       "ttl_time_to_live": "TTL (Lebensdauer)",
       "unexpected_response": "Unerwartete Antwort",
       "via": "über",
+      "confirm_publish_private": "Privat speichern",
+      "visibility": "Sichtbarkeit",
+      "visibility_private": "Privat (nur du)",
+      "visibility_public": "Öffentlich (jeder mit dem Link)",
       "public_exposure_warning": "Jeder mit dem veröffentlichten Link kann diesen Inhalt sehen. Er wird ohne Authentifizierung im öffentlichen Internet bereitgestellt."
     },
     "pullRequestPanel": {

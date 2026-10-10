@@ -298,9 +298,9 @@ async def api_ask_question_pending(request: web.Request) -> web.Response:
     for slot_key, slot in list((getattr(state, "_slots", None) or {}).items()):
         for card_id, rec in list((getattr(slot, "_question_pending", None) or {}).items()):
             # Blocking entries are already listed above, from the authoritative
-            # wait registry; a record with no stored questions predates nothing
-            # renderable, so it is a status-only marker and is skipped rather
-            # than emitted as an empty card.
+            # wait registry; a record with no stored questions has nothing to
+            # render, so it is a status-only marker and is skipped rather than
+            # emitted as an empty card.
             if rec.get("blocking") or not rec.get("questions"):
                 continue
             out.append(
@@ -611,7 +611,8 @@ async def api_agent_ask_open(request: web.Request) -> web.Response:
         return web.json_response({"error": "ask_id must be 32 hex chars", "code": "invalid_ask_id"}, status=400)
     existing = state._agent_asks.get(ask_id)
     if existing is not None:
-        # A retried open whose first response was lost: the card is already up.
+        # The ask is still registered, as when its owner retries an open whose reply was lost.
+        # If its card has ended since, the outcome is kept for the tool's wait to collect.
         if existing["session_key"] != session_key:
             message = "ask_id in use"
             return _denied(
@@ -631,13 +632,17 @@ async def api_agent_ask_open(request: web.Request) -> web.Response:
             {"error": str(exc), "code": "duplicate_question_key"}, status=400
         )
     try:
+        if clients is None:
+            outcome = "capacity"
+        elif clients:
+            outcome = "blocking"
+        else:
+            outcome = "no_client"
         sel().log_tool_invocation(
             session_key=session_key,
             source="mcp",
             tool_name="ask_question",
-            outcome=(
-                "capacity" if clients is None else "blocking" if clients else "no_client"
-            ),
+            outcome=outcome,
             request_id=ask_id,
         )
     except Exception:
