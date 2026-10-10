@@ -39,7 +39,7 @@ reach ``attributable_timeout_rate``; this module only reads the rate.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Mapping
+from typing import Any, Mapping
 
 # Signal names. Closed set: they appear in Decision.reason, the resource_status
 # summary and the audit line, never as free-form text.
@@ -53,6 +53,25 @@ SIGNAL_COMPLETION = "completion_rate"
 SIGNAL_SLOW_KEYS = "slow_keys"
 SIGNAL_GATE_FAILURES = "gate_failures"
 SIGNAL_GATE_SLOW_INITS = "gate_slow_inits"
+
+HEALTH_ACTIVE_SESSIONS = "health_active_sessions"
+HEALTH_CRON_QUEUE = "health_cron_queue"
+HEALTH_CPU = "health_cpu"
+HEALTH_LOOP_LAG = "health_loop_lag"
+HEALTH_SAMPLE_STALE = "health_sample_stale"
+
+HEALTH_SIGNALS = frozenset(
+    {
+        HEALTH_ACTIVE_SESSIONS,
+        HEALTH_CRON_QUEUE,
+        HEALTH_CPU,
+        HEALTH_LOOP_LAG,
+        HEALTH_SAMPLE_STALE,
+    }
+)
+
+HEALTH_STALE_FLOOR_SECS = 15.0
+HEALTH_STALE_CADENCE_MULTIPLE = 3.0
 
 #: Signals the EXECUTION cap never reads: the gateway's own event loop and the
 #: host's free memory. They shape the spawn gate only; the per-start memory
@@ -215,6 +234,16 @@ class Sample:
     #: holds. Defaults to ``demand`` for samples built before the lane folded
     #: in.
     saturating_demand: int = -1
+    active_sessions: int = -1
+    cron_queue_depth: int = -1
+    cpu_pressure: float = -1.0
+    observed_at: float = -1.0
+
+    @property
+    def age_secs(self) -> float:
+        if self.observed_at < 0:
+            return 0.0
+        return max(0.0, self.t - self.observed_at)
 
     @property
     def at_cap_running(self) -> int:
@@ -351,3 +380,70 @@ def _as_int(value: object, default: int = 0) -> int:
         return int(value)  # type: ignore[call-overload]
     except (TypeError, ValueError):
         return default
+
+
+@dataclass(frozen=True)
+class HealthThresholds:
+
+    active_sessions: int = 16
+    cron_queue_depth: int = 8
+    cpu_pressure: float = 0.9
+    loop_lag_ms: float = 250.0
+    sample_max_age_secs: float = HEALTH_STALE_FLOOR_SECS
+
+    @classmethod
+    def for_cadence(cls, sample_secs: float, **over: Any) -> "HealthThresholds":
+        cutoff = max(HEALTH_STALE_FLOOR_SECS, HEALTH_STALE_CADENCE_MULTIPLE * float(sample_secs))
+        return cls(sample_max_age_secs=cutoff, **over)
+
+
+@dataclass(frozen=True)
+class HealthTelemetry:
+
+    signals: frozenset[str]
+    stale: bool
+    age_secs: float
+    cron_collision_suspected: bool
+    renderer_suspected: bool
+
+
+def health_telemetry(
+    sample: Sample, th: HealthThresholds, *, now: float | None = None
+) -> HealthTelemetry:
+    signals: set[str] = set()
+
+    if (
+        sample.active_sessions >= 0
+        and th.active_sessions > 0
+        and sample.active_sessions >= th.active_sessions
+    ):
+        signals.add(HEALTH_ACTIVE_SESSIONS)
+    if (
+        sample.cron_queue_depth >= 0
+        and th.cron_queue_depth > 0
+        and sample.cron_queue_depth >= th.cron_queue_depth
+    ):
+        signals.add(HEALTH_CRON_QUEUE)
+    if sample.cpu_pressure >= 0 and th.cpu_pressure > 0 and sample.cpu_pressure >= th.cpu_pressure:
+        signals.add(HEALTH_CPU)
+    if th.loop_lag_ms > 0 and sample.loop_lag_ms >= th.loop_lag_ms:
+        signals.add(HEALTH_LOOP_LAG)
+
+    age = sample.age_secs
+    if now is not None and sample.observed_at >= 0:
+        age = max(0.0, now - sample.observed_at)
+    stale = th.sample_max_age_secs > 0 and age > th.sample_max_age_secs
+    if stale:
+        signals.add(HEALTH_SAMPLE_STALE)
+
+    contention = HEALTH_CPU in signals or HEALTH_LOOP_LAG in signals
+    cron_collision = (not stale) and HEALTH_CRON_QUEUE in signals and contention
+    renderer = (not stale) and HEALTH_ACTIVE_SESSIONS in signals and HEALTH_LOOP_LAG in signals
+
+    return HealthTelemetry(
+        signals=frozenset(signals),
+        stale=stale,
+        age_secs=age,
+        cron_collision_suspected=cron_collision,
+        renderer_suspected=renderer,
+    )

@@ -201,6 +201,96 @@ async def test_disabled_gateway_constructs_controller_only_on_live_enable(monkey
     factory.assert_called_once()
 
 
+def _started_controller_kwargs(monkeypatch, orch) -> dict:
+    from unittest.mock import MagicMock
+
+    from kiro_crew.adaptive import controller as adaptive_controller
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    orch._adaptive_controller = None
+    orch._cfg = KiroCrewConfig()
+    orch._cfg.agent.adaptive_concurrency = True
+    monkeypatch.setattr(orch, "_wire_overload_health", MagicMock())
+    factory = MagicMock()
+    monkeypatch.setattr(adaptive_controller, "AdaptiveController", factory)
+    monkeypatch.setattr(adaptive_controller, "register", MagicMock())
+    orch._start_adaptive_controller()
+    factory.assert_called_once()
+    assert orch._adaptive_controller is factory.return_value
+    return factory.call_args.kwargs
+
+
+def test_active_session_reader_counts_live_providers_and_never_raises(monkeypatch) -> None:
+    orch = _orch()
+    orch.sessions = None
+    read = _started_controller_kwargs(monkeypatch, orch)["read_active_sessions"]
+    assert read() == -1
+
+    orch.sessions = SimpleNamespace(active_providers=lambda: [object(), object(), object()])
+    assert read() == 3
+
+    def _broken():
+        raise RuntimeError("allocation boundary gone")
+
+    orch.sessions = SimpleNamespace(active_providers=_broken)
+    assert read() == -1
+
+
+def test_cron_queue_reader_is_the_executor_depth(monkeypatch) -> None:
+    from kiro_crew import executors
+
+    orch = _orch()
+    orch.sessions = None
+    read = _started_controller_kwargs(monkeypatch, orch)["read_cron_queue"]
+    monkeypatch.setattr(executors, "cron_queue_depth", lambda: 7)
+    assert read() == 7
+
+
+def test_runner_lane_reader_follows_the_live_admission(monkeypatch) -> None:
+    orch = _orch()
+    orch.sessions = None
+    read = _started_controller_kwargs(monkeypatch, orch)["read_runner_lane"]
+    assert read() is None
+
+    orch._runner_admission = SimpleNamespace(lane=None)
+    assert read() is None
+
+    orch._runner_admission = SimpleNamespace(
+        lane=SimpleNamespace(stats=lambda: {"running": 2, "queued": 1})
+    )
+    assert read() == {"running": 2, "queued": 1}
+
+    def _broken():
+        raise RuntimeError("lane torn down")
+
+    orch._runner_admission = SimpleNamespace(lane=SimpleNamespace(stats=_broken))
+    assert read() is None
+
+
+@pytest.mark.asyncio
+async def test_gate_callbacks_forward_to_the_live_broker_or_report_none(monkeypatch) -> None:
+    orch = _orch()
+    orch.sessions = None
+    orch._mcp_gateway_manager = None
+    kwargs = _started_controller_kwargs(monkeypatch, orch)
+    assert await kwargs["set_gate_capacity"](3) is None
+    assert await kwargs["read_gate_stats"]() == {}
+
+    applied: list[int] = []
+
+    async def set_spawn_capacity(capacity: int) -> int:
+        applied.append(capacity)
+        return capacity
+
+    async def stats() -> dict:
+        return {"admission": {"spawn_gate": {"queued": 4}}}
+
+    orch._mcp_gateway_manager = SimpleNamespace(set_spawn_capacity=set_spawn_capacity, stats=stats)
+    assert await kwargs["set_gate_capacity"](3) == 3
+    assert applied == [3]
+    assert await kwargs["read_gate_stats"]() == {"admission": {"spawn_gate": {"queued": 4}}}
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("no_dashboard", [False, True])
 async def test_run_starts_adaptive_only_after_dashboard_and_taskq_ready(

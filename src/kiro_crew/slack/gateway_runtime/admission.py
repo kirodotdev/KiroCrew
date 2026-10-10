@@ -140,6 +140,21 @@ def _start_adaptive_controller(
     if cfg is None:
         return
     cfg_gw = cfg.mcp_gateway
+
+    def _active_sessions() -> int:
+        sessions = self.sessions
+        if sessions is None:
+            return -1
+        try:
+            return len(sessions.active_providers())
+        except Exception:
+            return -1
+
+    def _cron_queue() -> int:
+        from kiro_crew.executors import cron_queue_depth
+
+        return cron_queue_depth()
+
     try:
         controller = AdaptiveController(
             self.subagent_mgr,
@@ -147,6 +162,8 @@ def _start_adaptive_controller(
             set_gate_capacity=_set_gate,
             read_gate_stats=_gate_stats,
             read_runner_lane=_runner_lane_stats,
+            read_active_sessions=_active_sessions,
+            read_cron_queue=_cron_queue,
             gate_initial=int(getattr(cfg_gw, "spawn_concurrency_initial", 4)),
             gate_floor=int(getattr(cfg_gw, "spawn_concurrency_min", 1)),
             # Derived from config exactly as mcp_broker launches the daemon, so
