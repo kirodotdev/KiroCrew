@@ -17,7 +17,7 @@
  * moment the file lands in this tree, with no edit here.
  */
 import { beforeEach, describe, expect, it } from 'vitest'
-import { existsSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
 import {
@@ -37,13 +37,10 @@ import {
 } from '../pages/members/dashboardBlockPush'
 
 const SRC = resolve(__dirname, '..')
-const PY_PUSH = join(SRC, '../../src/kiro_crew/dashboard/handlers/member_dashboard_push.py')
-/** The document's own bootstrap, which owns the refill message type. Already in
- *  this tree, so the pin on it is hard rather than skipped. */
+/** The document's own bootstrap, which owns the refill message type. It is in
+ *  this tree, so the pin on it is hard. The pins on the controller handler and
+ *  the renderer live with those modules, in the PR that brings them. */
 const PY_FRAME = join(SRC, '../../src/kiro_crew/dashboard_frame.py')
-/** The renderer, which owns the BLOCK-PATCH message type. D1's file; on their
- *  branch today, so the pin on it skips with a reason until it lands. */
-const PY_RENDER = join(SRC, '../../src/kiro_crew/dashboard_package_render.py')
 
 /** The renderer's block-patch type, as `dashboard_package_render` spells it.
  *  Distinct from the full-paint type, which is the whole point. */
@@ -77,26 +74,6 @@ function frame(over: Partial<DashboardBlockPatch> = {}): DashboardBlockPatch {
 }
 
 describe('the wire name is the server\'s', () => {
-  const present = existsSync(PY_PUSH)
-
-  it.skipIf(!present)('equals BLOCK_FRAME in the controller\'s own module', () => {
-    const py = readFileSync(PY_PUSH, 'utf-8')
-    const match = py.match(/^BLOCK_FRAME: Final\[str\] = "([a-z_]+)"/m)
-    expect(match, 'BLOCK_FRAME is gone from the controller module').not.toBeNull()
-    expect(DASHBOARD_BLOCK_PATCH_FRAME).toBe(match![1])
-  })
-
-  it.skipIf(!present)('and so are the two refetch reasons', () => {
-    const py = readFileSync(PY_PUSH, 'utf-8')
-    const reason = (name: string) => {
-      const match = py.match(new RegExp(`^${name}[^=]*= "([a-z_]+)"`, 'm'))
-      expect(match, `${name} is gone from the controller module`).not.toBeNull()
-      return match![1]
-    }
-    expect(PATCH_REASON_LAYOUT).toBe(reason('REASON_LAYOUT'))
-    expect(PATCH_REASON_UNBOUND).toBe(reason('REASON_UNBOUND'))
-  })
-
   it('is recorded here even while the controller module is on another branch', () => {
     // The value this build listens for, stated once so the skip above cannot make
     // this file silently assert nothing at all. Relayed by conductor chat-2620 and
@@ -104,27 +81,22 @@ describe('the wire name is the server\'s', () => {
     expect(DASHBOARD_BLOCK_PATCH_FRAME).toBe('dashboard_block_patch')
   })
 
-  it.skipIf(!existsSync(PY_FRAME))('and the FULL-PAINT type is the document\'s own', () => {
+  it('and the FULL-PAINT type is the document\'s own', () => {
     // The other half of the seam, and the one whose failure is silent: the
     // document's bootstrap compares `data.type` to this exact string and returns
     // without a word otherwise.
+    //
+    // UNCONDITIONAL, and that is the point. Guarding this on the Python source
+    // existing would turn the one failure it exists to catch -- that constant
+    // moving or being renamed -- into a skip instead of a red. `readFileSync`
+    // throwing on an absent source IS the assertion: a cross-language pin may
+    // only tighten, so a missing counterpart is a failure and never a skip.
     const py = readFileSync(PY_FRAME, 'utf-8')
     const match = py.match(/^DATA_MESSAGE_TYPE: Final\[str\] = "([a-z:-]+)"/m)
     expect(match, 'DATA_MESSAGE_TYPE is gone from dashboard_frame').not.toBeNull()
     expect(PAGE_FULL_PAINT_MESSAGE_TYPE).toBe(match![1])
   })
 
-  it.skipIf(!existsSync(PY_RENDER))('and the two python constants differ, as this side assumes', () => {
-    // THE PIN THAT WOULD HAVE CAUGHT THE BUG. This side only forwards the patch
-    // verbatim, so it does not hold the patch type -- but it DOES rely on the two
-    // being different messages, because that is the whole reason a fold push is
-    // not a full paint. Read both out of python and compare them there.
-    const render = readFileSync(PY_RENDER, 'utf-8')
-    const patchType = render.match(/^BLOCK_PATCH_MESSAGE_TYPE: Final\[str\] = "([a-z:-]+)"/m)
-    expect(patchType, 'BLOCK_PATCH_MESSAGE_TYPE is gone from the renderer').not.toBeNull()
-    expect(patchType![1]).toBe(PATCH_TYPE)
-    expect(patchType![1]).not.toBe(PAGE_FULL_PAINT_MESSAGE_TYPE)
-  })
 })
 
 describe('readBlockPatchFrame', () => {

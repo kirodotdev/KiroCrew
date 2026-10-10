@@ -169,13 +169,23 @@ async function spyOnFrame() {
  * assertion placed right after `findByTestId` asks its question one tick too
  * early and passes however the component goes on to behave.
  *
- * A timer rather than a bare microtask flush, because the chain is read commit
- * -> promotion effect -> first-page effect -> render -> mint, and each link is a
- * separate task.
+ * Macrotask TURNS rather than a duration, because the links are what the wait is
+ * about and a millisecond count is a guess at how long they take on the machine
+ * that happens to be running. Each `setTimeout(_, 0)` yields exactly one turn,
+ * so the loop below waits for the chain's length and nothing more -- and it
+ * cannot get faster or slower than the chain it is derived from.
+ *
+ * Every caller of this helper asserts an ABSENCE (no mint, no iframe, no band),
+ * which is the one shape `findBy*` cannot express: there is no element whose
+ * arrival ends the wait, so the wait has to be bounded by the work instead.
  */
+const EFFECT_CHAIN_TURNS = 5
+
 async function flushEffects() {
   await act(async () => {
-    await new Promise(resolve => setTimeout(resolve, 50))
+    for (let turn = 0; turn < EFFECT_CHAIN_TURNS; turn += 1) {
+      await new Promise(resolve => setTimeout(resolve, 0))
+    }
   })
 }
 
@@ -284,6 +294,43 @@ describe('CrewDynamicDashboard', () => {
     await waitFor(() => expect(mints.some((m) => m.includes('31 credits'))).toBe(true))
     // Same layout, so this was never a new page and nothing was withheld.
     expect(screen.queryByTestId('crew-dashboard-kept-band')).not.toBeInTheDocument()
+  })
+
+  it('puts a CHANGED TEMPLATE page on probation, not straight onto the screen', async () => {
+    // A template page has no package, so the package version cannot be what
+    // probation compares: it is 0 for every one of them, which made two
+    // different template pages look like the same page and swapped a changed
+    // one on screen without it proving it loads. Applying or rolling back a
+    // template is an ordinary operation, so this is the common path, and the
+    // page a reader is looking at is what a failed swap costs.
+    const tpl = (over: Record<string, unknown> = {}) => ({
+      state: 'live' as const,
+      instance_version: 3,
+      template: { id: 'project-report', version: 1 },
+      push_version: 0,
+      blocks: {},
+      missing: [],
+      rendered_html: '<!doctype html><title>report</title><p>v1 page</p>',
+      ...over,
+    })
+    const read = vi
+      .spyOn(api, 'memberDashboard')
+      .mockResolvedValueOnce(tpl())
+      .mockResolvedValue(
+        tpl({
+          template: { id: 'project-report', version: 2 },
+          rendered_html: '<!doctype html><title>report</title><p>v2 page</p>',
+        })
+      )
+    const { queryClient } = mount()
+    await waitFor(() => expect(mints.some((m) => m.includes('v1 page'))).toBe(true))
+
+    await queryClient.invalidateQueries({ queryKey: DASHBOARD_KEY })
+    await waitFor(() => expect(read.mock.calls.length).toBeGreaterThan(1))
+    // The new template version IS a new page, so it is minted on probation --
+    // which is observable as the candidate being built and mounted at all.
+    await waitFor(() => expect(mints.some((m) => m.includes('v2 page'))).toBe(true))
+    expect(await screen.findByTestId('crew-dashboard-probe')).toBeInTheDocument()
   })
 
   it('lets the kept-page band\'s Retry promote the page it re-mints', async () => {

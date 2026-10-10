@@ -127,13 +127,13 @@ describe('the committed schema is the generator\'s own output', () => {
     // keyed by `name`. A type added there without regenerating the .json is what
     // this case names.
     expect(field.properties.type.enum.slice().sort()).toEqual(
-      pyNames(py, '_STUB_DATA_TYPES', '_STUB_BLOCK_TYPES'),
+      pyNames(py, '_STUB_DATA_TYPES', '_BLOCK_TYPES'),
     )
   })
 
   it('its block-type enum is view_block_catalog()\'s names', () => {
     expect(block.properties.type.enum.slice().sort()).toEqual(
-      pyNames(py, '_STUB_BLOCK_TYPES', 'def data_type_catalog'),
+      pyNames(py, '_BLOCK_TYPES', 'def data_type_catalog'),
     )
   })
 

@@ -865,3 +865,47 @@ class TestTheBindingLookup:
         # match: the binding still has to be the one asked for.
         self._corrupt(store, tmp_path, bound_to="session:member-atlas")
         assert dp.resolve_bound_slug(BOUND, store=store) == saved.slug
+
+
+class TestSchemaMatchesTheValidator:
+    def test_the_schema_enums_are_the_catalogs(self) -> None:
+        # The schema is a document for consumers; the catalogs are what the
+        # validator reads. A type added to one has to appear in the other, so
+        # the schema is built from them rather than written out beside them.
+        schema = dp.package_json_schema()
+        field_schema = schema["properties"]["model"]["properties"]["types"]["additionalProperties"]
+        assert field_schema["properties"]["type"]["enum"] == sorted(dp.data_type_catalog())
+        block_schema = schema["properties"]["view"]["properties"]["blocks"]["items"]
+        assert block_schema["properties"]["type"]["enum"] == sorted(dp.view_block_catalog())
+
+    def test_the_schema_requires_what_the_validator_requires(self) -> None:
+        schema = dp.package_json_schema()
+        assert schema["required"] == ["kind", "bound_to", "model", "view", "theme"]
+        assert schema["additionalProperties"] is False
+        canonical = dp.validate_package(package())
+        assert sorted(canonical) == sorted(schema["required"])
+
+    def test_the_schema_enums_follow_the_catalogs_they_are_generated_from(self) -> None:
+        # Written against the catalog FUNCTIONS, never a frozen list. The display
+        # line widens the block catalog from this starter set, and a pin naming
+        # today's types would have to be edited on that landing -- at which point
+        # it stops being a check and becomes a copy of whatever the code says.
+        # Phrased this way it keeps holding across every widening.
+        schema = dp.package_json_schema()
+        block_enum = schema["properties"]["view"]["properties"]["blocks"]["items"]["properties"][
+            "type"
+        ]["enum"]
+        assert block_enum == sorted(dp.view_block_catalog())
+        field_enum = schema["properties"]["model"]["properties"]["types"]["additionalProperties"][
+            "properties"
+        ]["type"]["enum"]
+        assert field_enum == sorted(dp.data_type_catalog())
+
+    def test_a_valid_package_satisfies_the_published_schema(self) -> None:
+        # A plain import, not importorskip: jsonschema is a REQUIRED dependency
+        # (setup.cfg, pyproject.toml), so a skip here could only ever hide a
+        # broken install -- it could never mean "this environment legitimately
+        # lacks it".
+        import jsonschema
+
+        jsonschema.validate(dp.validate_package(package()), dp.package_json_schema())

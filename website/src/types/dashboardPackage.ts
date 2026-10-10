@@ -27,7 +27,18 @@ export const DASHBOARD_FIELD_TYPES = ['bool', 'enum', 'number', 'text', 'timesta
 export type DashboardFieldType = (typeof DASHBOARD_FIELD_TYPES)[number]
 
 /** Admissible `view.blocks[*].type`. The schema's enum, which IS `view_block_catalog()`. */
-export const DASHBOARD_BLOCK_TYPES = ['list', 'stat', 'table', 'timeline'] as const
+export const DASHBOARD_BLOCK_TYPES = [
+  'bars',
+  'gauge',
+  'list',
+  'note',
+  'orbit',
+  'pills',
+  'stat',
+  'stat_band',
+  'table',
+  'timeline',
+] as const
 export type DashboardBlockType = (typeof DASHBOARD_BLOCK_TYPES)[number]
 
 /** Admissible `source.fold`. The schema's enum, which IS `fold_names()` -- the

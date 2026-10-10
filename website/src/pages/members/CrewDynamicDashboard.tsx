@@ -132,6 +132,15 @@ interface Loaded {
   /** The package artifact's version, or 0 on the template path. The number a
    *  patch's `layout` must equal. */
   layout: number
+  /** What makes this a DIFFERENT PAGE, for probation only.
+   *
+   *  Not `layout`: that is 0 for every template page, so two template pages
+   *  compare equal and a template apply or rollback -- an ordinary operation --
+   *  would swap straight onto the screen without being asked to prove it loads.
+   *  The package path has one number that moves when the layout moves; the
+   *  template path has the template it copied and the instance version, and
+   *  both of those move when the page a reader sees changes. */
+  revision: string
   blockIds: string[]
 }
 
@@ -275,16 +284,20 @@ export default function CrewDynamicDashboard({ slug, member, displayName, onAct,
       // see `Loaded`.
       pkg: data.package ?? null,
       layout: data.package?.version ?? 0,
+      revision: data.package
+        ? `pkg:${data.package.version}`
+        : `tpl:${data.template?.id ?? ''}@${data.template?.version ?? 0}/${data.instance_version ?? 0}`,
       blockIds: Object.keys(data.blocks ?? {}),
     }
-    // Keyed on the PACKAGE VERSION, not the html: a dashboard artifact versions
-    // only when `model` / `view` / `theme` change, so this number moving IS the
-    // server's statement that the layout is different -- and a different layout is
-    // exactly what probation exists for, because it is the case where a page that
-    // used to load might not any more.
+    // Keyed on the REVISION, not the html: on the package path a dashboard
+    // artifact versions only when `model` / `view` / `theme` change, and on the
+    // template path the template and instance versions move when the page does.
+    // Either way the revision moving IS the server's statement that this is a
+    // different page -- which is exactly what probation exists for, because it
+    // is the case where a page that used to load might not any more.
     setCandidate(prev => {
       if (!prev) return next
-      if (prev.layout !== next.layout) return next
+      if (prev.revision !== next.revision) return next
       return prev.html === next.html ? prev : next
     })
     // A re-render at the SAME version is new VALUES, not a new layout -- which is
@@ -293,7 +306,7 @@ export default function CrewDynamicDashboard({ slug, member, displayName, onAct,
     // withholding its own fresher numbers behind a readiness beacon would freeze
     // the tab on the values it happened to open with.
     setGood(prev => {
-      if (!prev || prev.layout !== next.layout) return prev
+      if (!prev || prev.revision !== next.revision) return prev
       return prev.html === next.html ? prev : next
     })
   }, [data])
@@ -379,7 +392,7 @@ export default function CrewDynamicDashboard({ slug, member, displayName, onAct,
    * unreachable from the parent -- `postMessage` is the only channel, which is the
    * same constraint that makes the height reporter a message rather than a read.
    */
-  const probating = Boolean(candidate && good && candidate.layout !== good.layout)
+  const probating = Boolean(candidate && good && candidate.revision !== good.revision)
   const timer = useRef<number | null>(null)
 
   // A new page must actually be MOUNTED to get the chance to beacon, so the
@@ -493,6 +506,8 @@ export default function CrewDynamicDashboard({ slug, member, displayName, onAct,
       // bound on what that costs is the document itself -- it runs no network
       // (`connect-src 'none'`), carries no agent-authored script, and checks that
       // the sender is its own `parent` before reading a word of this.
+      //
+      // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
       win.postMessage(patch.patch, '*')
       // `held` advances ONLY on an applied frame, which is what makes the strict
       // check above mean anything: the next frame is checked against the last one
@@ -584,13 +599,13 @@ export default function CrewDynamicDashboard({ slug, member, displayName, onAct,
       // crewmate composing a dashboard.
       //
       // UNCONDITIONAL, and that is the whole of v3's "no default page" on this
-      // side. Three ways this branch used to be reachable past a page are now
+      // side. Three ways this branch could still be reached past a page are
       // closed by it: the body's own `rendered_html` cannot promote itself (the
-      // `state !== 'live'` gate above), a held page from an earlier read is
-      // dropped rather than kept (the clearing effect above), and the old
-      // `!shown &&` guard that let either of those win is gone. A dashboard that
-      // was deleted is gone, and a ghost of it under this crewmate's name is the
-      // worst of the three: it reads as current.
+      // gate above), a held page from an earlier read is dropped rather than
+      // kept (the clearing effect above), and no `!shown &&` guard lets either
+      // of those win. A dashboard that was deleted is gone, and a ghost of it
+      // under this crewmate's name is the worst of the three: it reads as
+      // current.
       <div className="p-4 text-sm text-muted" data-testid="crew-dashboard-none">
         {i18nT('pages.membersPage.dashboard_none_yet')}
       </div>

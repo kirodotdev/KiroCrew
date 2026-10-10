@@ -381,6 +381,165 @@ def view_block_catalog() -> Mapping[str, BlockType]:
 
 
 # --------------------------------------------------------------------------- #
+# The JSON schema. A DOCUMENT for consumers (the skill, the tool description,
+# a frontend type generator) built from the same catalogs the validator reads,
+# so the two cannot drift -- test_dashboard_package pins that equality.
+# --------------------------------------------------------------------------- #
+
+
+def package_json_schema() -> dict[str, Any]:
+    """The JSON Schema (draft 2020-12) of a dashboard package.
+
+    Derived from the live catalogs rather than written out beside them: the
+    enums here ARE :func:`data_type_catalog` and :func:`view_block_catalog`, so
+    a type added to a catalog appears in the schema with no second edit. Callers
+    use it to document and to pre-check; the authority is still
+    :func:`validate_package`, which checks the cross-references a schema cannot
+    (a block naming a field the model does not declare).
+    """
+    types = data_type_catalog()
+    blocks = view_block_catalog()
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "https://kirocrew.dev/schemas/artifact-dashboard-package.json",
+        "title": "Dashboard artifact package",
+        "description": (
+            'The content of a kind="dashboard" artifact: layout only. Values are '
+            "never stored here -- they stay in the crew log and reach the page "
+            "through the fold / bus / controller path."
+        ),
+        "type": "object",
+        "required": ["kind", "bound_to", "model", "view", "theme"],
+        "additionalProperties": False,
+        "properties": {
+            "kind": {"const": DASHBOARD_KIND},
+            "bound_to": {
+                "type": "string",
+                "pattern": _BOUND_TO_RE.pattern.replace("\\A", "^").replace("\\Z", "$"),
+                "description": (
+                    "crewmate:<slug> for a crewmate's page, session:<slot key> for a "
+                    "root session slot's. Outside the layout fingerprint: a rebind is "
+                    "not a layout change and does not create a version."
+                ),
+            },
+            "model": {
+                "type": "object",
+                "required": ["types"],
+                "additionalProperties": False,
+                "properties": {
+                    "types": {
+                        "type": "object",
+                        "description": "Field name -> field shape. The page may render these and nothing else.",
+                        "maxProperties": MAX_MODEL_FIELDS,
+                        "propertyNames": {
+                            "pattern": _FIELD_NAME_RE.pattern.replace("\\A", "^").replace(
+                                "\\Z", "$"
+                            )
+                        },
+                        "additionalProperties": {
+                            "type": "object",
+                            "required": ["type", "source"],
+                            "properties": {
+                                "type": {
+                                    "enum": sorted(types),
+                                    "description": "A type name from data_type_catalog().",
+                                },
+                                "source": {
+                                    "description": (
+                                        "Where the value comes from. A fold source is read "
+                                        "from the crew log and no agent can write it; an "
+                                        "agentic source is one the crewmate writes itself."
+                                    ),
+                                    "oneOf": [
+                                        {
+                                            "type": "object",
+                                            "required": ["fold", "path"],
+                                            "additionalProperties": False,
+                                            "properties": {
+                                                "fold": {"enum": sorted(fold_names())},
+                                                "path": {
+                                                    "type": "string",
+                                                    "pattern": _PATH_RE.pattern.replace(
+                                                        "\\A", "^"
+                                                    ).replace("\\Z", "$"),
+                                                },
+                                            },
+                                        },
+                                        {
+                                            "type": "object",
+                                            "required": ["agentic"],
+                                            "additionalProperties": False,
+                                            "properties": {"agentic": {"const": True}},
+                                        },
+                                    ],
+                                },
+                                "label": {"type": "string", "maxLength": MAX_LABEL_LEN},
+                                "description": {"type": "string", "maxLength": MAX_LABEL_LEN},
+                            },
+                        },
+                    }
+                },
+            },
+            "view": {
+                "type": "object",
+                "required": ["blocks"],
+                "additionalProperties": False,
+                "properties": {
+                    "blocks": {
+                        "type": "array",
+                        "maxItems": MAX_VIEW_BLOCKS,
+                        "items": {
+                            "type": "object",
+                            "required": ["id", "type", "fields"],
+                            "properties": {
+                                "id": {
+                                    "type": "string",
+                                    "pattern": _BLOCK_ID_RE.pattern.replace("\\A", "^").replace(
+                                        "\\Z", "$"
+                                    ),
+                                },
+                                "type": {
+                                    "enum": sorted(blocks),
+                                    "description": "A block type from view_block_catalog().",
+                                },
+                                "fields": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": (
+                                        "Model field names this block renders. Every name "
+                                        "must be declared in model.types; this is also the "
+                                        "block's subscription set for the bus."
+                                    ),
+                                },
+                                "title": {"type": "string", "maxLength": MAX_LABEL_LEN},
+                            },
+                        },
+                    }
+                },
+            },
+            "theme": {
+                "type": "object",
+                "required": ["tokens"],
+                "additionalProperties": False,
+                "properties": {
+                    "tokens": {
+                        "type": "object",
+                        "maxProperties": MAX_THEME_TOKENS,
+                        "propertyNames": {
+                            "pattern": _THEME_TOKEN_RE.pattern.replace("\\A", "^").replace(
+                                "\\Z", "$"
+                            )
+                        },
+                        "additionalProperties": {"type": "string", "maxLength": 120},
+                    },
+                    "css": {"type": "string", "maxLength": MAX_THEME_CSS_BYTES},
+                },
+            },
+        },
+    }
+
+
+# --------------------------------------------------------------------------- #
 # Validation
 # --------------------------------------------------------------------------- #
 

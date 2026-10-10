@@ -138,8 +138,14 @@
               },
               "type": {
                 "enum": [
+                  "bars",
+                  "gauge",
                   "list",
+                  "note",
+                  "orbit",
+                  "pills",
                   "stat",
+                  "stat_band",
                   "table",
                   "timeline"
                 ],
