@@ -3060,3 +3060,74 @@ def test_an_append_whose_rollback_also_fails_says_so():
     assert burned
     assert "could not be rolled back" in str(caught.value)
     assert caught.value.written, "the error does not carry what was written"
+
+
+def test_a_retired_entry_type_still_reads_out_of_an_existing_log():
+    """A type whose WRITER is gone must stay declared, or old logs stop reconstructing.
+
+    ``dashboard/instance_changed`` lost its writer when the dashboard's preview and
+    adopt path was removed. Un-declaring it as well is the step that breaks installed
+    gateways: ``KNOWN_TYPES`` is derived from ``SESSION_ENTRY_TYPES``, every fold reads
+    through ``iter_from(known=KNOWN_TYPES)``, and ``store.py``'s check there raises
+    ``unknown_entry_type`` for a non-ignorable type outside that set -- which stops
+    reconstruction AT that row and takes every later entry in the log with it.
+
+    The row this writes is what a crewmate that ever adopted or rolled back a dashboard
+    left behind, and the log it sits in is one a current gateway must still fold. It is
+    appended through the ordinary writer, so the envelope is the real one rather than a
+    hand-built line: the point is that a row written by an earlier build reads now.
+
+    Mutation guard: removing the type from ``SESSION_ENTRY_TYPES`` makes the fold below
+    raise ``unknown_entry_type`` rather than returning. The entry carries no
+    ``ignorable`` flag, which is what denies it the skip path.
+    """
+    session = _session()
+    session.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="acp")
+    session.append(
+        "dashboard/instance_changed",
+        {
+            "slug": "fleet-conductor",
+            "instance_version": 3,
+            "action": "rolled_back",
+            "template_id": "project-report",
+            "template_version": 2,
+            "from_version": 1,
+            "fields": 6,
+            "html_bytes": 1842,
+            "at_ms": 1_759_490_000_000,
+        },
+        src="gateway",
+    )
+    session.append("turn/completed", {"turn": 1, "depth": 0, "stop_reason": "end_turn"}, src="acp")
+
+    from kiro_crew.crew_log.projection import KNOWN_TYPES
+
+    assert "dashboard/instance_changed" in KNOWN_TYPES, (
+        "the type is undeclared, so every fold of a log holding one old row raises "
+        "unknown_entry_type at that row (store.py, the known-type check in iter_from)"
+    )
+
+    # The REFOLD path: a full walk from seq 1 declaring exactly what the readers
+    # declare. This is the call every projection makes, and the one that raises.
+    #
+    # Through the handle this test already holds rather than a second ``CrewLog.open``:
+    # a write lease rides the handle's refcount and the holder table is process-global,
+    # so an extra handle still reachable at return is a lease the next test on this
+    # xdist worker reads as held, which this module's own fixture asserts against.
+    types = [entry.type for entry in session.iter_from(1, known=KNOWN_TYPES)]
+    assert "dashboard/instance_changed" in types, types
+    # The entry AFTER it is what an unknown-type raise would have cost, so its
+    # presence is what proves reconstruction did not stop at the retired row.
+    assert types[-1] == "turn/completed", f"the walk stopped early: {types}"
+
+
+def test_the_retired_type_has_no_writer_left():
+    """The other half: declared for READERS, with nothing in the tree that appends one.
+
+    Without this, keeping the declaration would read as keeping the feature. The
+    emitter is the thing that was removed; the declaration is what lets an old row be
+    read rather than crash a fold.
+    """
+    from kiro_crew.crew_log import emit
+
+    assert not hasattr(emit, "on_dashboard_instance_changed")

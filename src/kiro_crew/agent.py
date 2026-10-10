@@ -5156,32 +5156,22 @@ _MEMBER_DASHBOARD_GRANTS: tuple[str, ...] = _CONDUCTOR_DASHBOARD_GRANTS + (
 #: type-checked against that crewmate's manifest before it lands. A prompt on
 #: either would stall the unattended cycle the dashboard is refreshed from.
 #:
-#: The PAGE's four join them, and the bound is worth stating because these are the
-#: first of this server's verbs that change what a person sees rather than what it
-#: says. ``dashboard_templates`` is a read of the catalog. ``dashboard_preview``
-#: records nothing at all: it stages a page beside the record, moves no version and
-#: writes no history row, so the page somebody is reading is untouched.
-#: ``dashboard_apply`` and ``dashboard_rollback`` do change the page -- and they are
-#: granted rather than prompted on the same ownership test the tuple above is judged
-#: by. The page is the calling crewmate's own, resolved from the calling session and
-#: not from any argument; apply installs the page that was STAGED and takes no
-#: argument at all, so it cannot be pointed at a page nobody looked at; and every
-#: earlier version stays on disk, so the worst case is a crewmate changing its own
-#: page and the person saying "go back".
+#: No verb here CHANGES which page a person is looking at. Every one of the four
+#: either reads the calling crewmate's own state or fills a declared field of it,
+#: so the worst case stays "a member's own surface shows what its own cycle put
+#: there". Swapping the page itself is not a capability this server offers.
 #:
-#: What makes the person's YES part of the flow is the preview/apply SPLIT and the
-#: ``dashboard`` skill that drives it, not an approval dialog: a prompt on apply
-#: would ask the person to confirm a page the agent has not shown them yet, which is
-#: the wrong question at the wrong time.
+#: The tuple is kept in step with ``mcp_panel._tool_definitions`` by a ratchet in
+#: ``test_member_panel_mount.TestPanelGrantSet``, which asserts the two sets EQUAL
+#: rather than one containing the other. Equal in both directions is the point: a
+#: tool added to the server without a grant is silently unreachable, and a grant for
+#: a tool the server does not register is a dangling reference that reads as a
+#: capability nobody can exercise.
 _MEMBER_PANEL_GRANTS: tuple[str, ...] = (
     "@kirocrew-panel/panel_templates",
     "@kirocrew-panel/panel_publish",
     "@kirocrew-panel/dashboard_fields",
     "@kirocrew-panel/dashboard_write",
-    "@kirocrew-panel/dashboard_templates",
-    "@kirocrew-panel/dashboard_preview",
-    "@kirocrew-panel/dashboard_apply",
-    "@kirocrew-panel/dashboard_rollback",
 )
 
 _DASHBOARD_MANAGER_SYSTEM_PROMPT = """# Kiro Crew Dashboard Manager

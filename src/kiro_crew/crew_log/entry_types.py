@@ -243,13 +243,28 @@ PANEL_HISTORY_LIMIT = 50
 PANEL_OWNER_LIMIT = 4
 PANEL_FOLD_NAME = "panel"
 
-#: The dynamic dashboard instance's entry type and its closed action vocabulary, named
-#: here for the reason the panel's are: the instance store matches on this type when it
-#: folds the history, and a type the fold does not match drops a real change with
-#: nothing raised -- so the matched value and the declared one are one constant. The
-#: store imports both rather than restating them, which is also what lets ``action`` be
-#: declared as a CLOSED enum: the writer clamps to exactly this tuple.
+#: The dynamic dashboard instance's entry type, kept as READ-ONLY HISTORY.
+#:
+#: Nothing appends one. The writer was the preview/adopt path, and it is gone.
+#:
+#: The DECLARATION stays because un-declaring a type is not a no-op for logs that
+#: already hold it: ``KNOWN_TYPES`` is derived from :data:`SESSION_ENTRY_TYPES`, every
+#: fold reads through ``iter_from(known=KNOWN_TYPES)``, and the known-type check there
+#: raises ``unknown_entry_type`` for a type outside that set unless the row is marked
+#: ``ignorable``. These rows are not: the type never declared it, so the skip path is
+#: closed to them. Dropping the declaration therefore stops reconstruction AT the first
+#: such row and takes every later entry in that log with it -- for any gateway whose
+#: crewmate ever adopted or rolled back a dashboard.
+#:
+#: So the row stays readable and nothing writes another. Retiring the declaration needs
+#: a migration that rewrites or drops those rows first, which is its own change.
+#: ``test_crew_log_core.test_a_retired_entry_type_still_reads_out_of_an_existing_log``
+#: is what fails if this is removed without one.
 DASHBOARD_INSTANCE_ENTRY_TYPE = "dashboard/instance_changed"
+
+#: The action vocabulary those stored rows carry. Closed, and still declared closed:
+#: the rows on disk were clamped to exactly these three when they were written, so a
+#: reader validating one against a wider set would accept a value no writer produced.
 DASHBOARD_INSTANCE_ACTIONS: tuple[str, ...] = ("adopted", "edited", "rolled_back")
 
 # -- the dynamic dashboard: agentic values and the mistake book ------------- #
@@ -2030,7 +2045,7 @@ _SESSION_TYPES: tuple[EntryType, ...] = (
             "append is best-effort history and a publish with the emitter off still succeeds."
         ),
     ),
-    # -- dashboard ----------------------------------------------------------- #
+    # -- dashboard: READ-ONLY HISTORY, nothing appends one ------------------- #
     EntryType(
         DASHBOARD_INSTANCE_ENTRY_TYPE,
         "One accepted change to a crewmate's own dynamic dashboard.",
@@ -2105,12 +2120,12 @@ _SESSION_TYPES: tuple[EntryType, ...] = (
             Field("at_ms", JSON_INT, note="When the change was accepted, epoch milliseconds."),
         ),
         note=(
-            "One entry per accepted change, appended to the crewmate's own DM session log, "
-            "and the instance's history is a fold over them. The entry carries what CHANGED "
-            "and never the page: the page is kept per version under the member's own space, "
-            "so this entry is bounded by construction and can never be refused for size. "
-            "The record of the current value is that file rather than this log -- so a "
-            "change with the emitter off still succeeds, and this append is history."
+            "One entry per accepted change to a crewmate's dashboard. NOTHING WRITES ONE: "
+            "the preview and adopt path that appended them is gone, and this declaration is "
+            "kept so a log that already holds such a row still reconstructs. An undeclared "
+            "type stops a fold at the row that carries it, and these rows are not ignorable, "
+            "so un-declaring one costs every later entry in that log. Retiring it needs a "
+            "migration over the stored rows first."
         ),
     ),
     # -- the dynamic dashboard ----------------------------------------------- #

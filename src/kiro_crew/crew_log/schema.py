@@ -162,20 +162,17 @@ TYPE_OWNERSHIP: dict[str, frozenset[str]] = {
             # Owned by the session kind because the tool is mounted on nothing but a
             # member's DM session, which is the unit the entry lands in.
             "panel",
-            # The crewmate's own dynamic dashboard. Every accepted change to one
-            # crewmate's dashboard instance appends one ``dashboard/instance_changed``
-            # entry to that member's DM session log, and the instance's history is a
-            # fold over those entries -- so this domain is what makes the history a
-            # projection of the crew log rather than a document beside it. Owned by
-            # the session kind for the reason ``panel`` is: the surface that writes it
-            # is mounted on a member's DM session, which is the unit the entry lands in.
-            #
-            # The same domain also carries the values it writes itself
+            # The crewmate's own dynamic dashboard. The domain carries the values it
+            # writes itself
             # (``dashboard/agentic_value``) and the writes that were refused
             # (``dashboard/agentic_refused``). Both append to the crewmate's own DM
             # session log and both are read only by folding those entries, so this
             # domain is what makes a dashboard value, and a crewmate's mistake book,
             # projections of the crew log rather than stores beside it.
+            #
+            # ``dashboard/instance_changed`` is in this domain too and is READ-ONLY
+            # history: nothing appends one, and the type stays declared so a log that
+            # already holds such a row still reconstructs.
             #
             # Owned by the SESSION kind for ``panel``'s reason -- the tools are
             # mounted on nothing but a member's DM session, which is the unit the

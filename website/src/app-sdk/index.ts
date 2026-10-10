@@ -139,11 +139,6 @@ const WS_GLOBAL_EVENT_TO_SCOPE: Record<string, string> = {
   // A crewmate's dashboard value moved. Metadata only ({slug}), and it rides
   // `panels` for the same reason `panel_published` does.
   dashboard_value_written: 'panels',
-  // A crewmate's dashboard PAGE changed -- a template applied, or a version
-  // rolled back. Metadata only ({slug}) like its sibling above, on `panels` for
-  // the same reason: a client that acts on it re-reads through the dashboard
-  // route, which is owner-gated and re-applies that check.
-  dashboard_instance_changed: 'panels',
   log: 'log',
   browser_event: 'browser',
   // NOTE: `slots` is deliberately absent — the list re-push is always

@@ -50,14 +50,13 @@ on one page in the side panel, next to the chat:
 The page is a template the crewmate adopts, filled from the crew log. The
 crewmate can also write its own values into it, and those are marked as its own.
 
-Every reading this document claims about the page has a render behind it, taken at
+Every reading this document claims about the page had a render behind it, taken at
 the side panel's width and wide, in both themes. They are attached to the pull
-request that carries the pages rather than committed here, because review evidence is
-an attachment in this repository (see `.gitignore`). The recipe is in the tree:
-`scripts/shoot_dashboard_evidence.sh` takes every one of them from a fixture in
-`test/fixtures/dashboard_templates/` through `scripts/render_dashboard_builtin.py`,
-with the clock pinned by the fixture, so a reader can regenerate any picture rather
-than taking it on trust.
+request that carried the pages rather than committed here, because review evidence is
+an attachment in this repository (see `.gitignore`). The recipe was a shooting script
+over a fixture directory, with the clock pinned by the fixture, so a reader could
+regenerate any picture rather than taking it on trust. Both left the tree with the
+pages they rendered.
 
 ## Motivation
 
@@ -196,10 +195,9 @@ time nothing else on it names, so without this the report reads as current forev
 
 One workstream on its own carries all three the same way.
 
-Every render behind the readings above is produced by
-`scripts/shoot_dashboard_evidence.sh` from fixtures in the repository, and each
-fixture pins the page's clock, so two runs on different days render the same picture.
-An image nobody can regenerate is a claim rather than a reading.
+Every render behind the readings above came from a fixture in the repository whose
+clock was pinned, so two runs on different days rendered the same picture. An image
+nobody can regenerate is a claim rather than a reading.
 
 ### One task on its own, and how the work moves
 
@@ -324,10 +322,11 @@ behind the surfaces that call them, because a route with no caller is a surface
 nobody can review against a use -- so they land with their chooser and their export
 button rather than ahead of them.
 
-Built-ins today: `project-report` (the default, shown above), `work-kanban`,
-`goal-board` and `session-ledger`, documented in
-[`../../src/kiro_crew/dashboard_templates/builtin/README.md`](../../src/kiro_crew/dashboard_templates/builtin/README.md).
-`work-kanban` is a stage-column board with one row per work item.
+Built-ins this design proposed: `project-report` (the default, shown above),
+`work-kanban`, `goal-board` and `session-ledger`. `work-kanban` is a stage-column
+board with one row per work item. None of them is in the tree: the no-template
+successor composes a page from a data-type catalog instead, so there is no
+built-in directory for this section to point at.
 
 ### Relationship to the dev-time template package already on main
 
@@ -566,12 +565,10 @@ write path and its refusals by
 [`../../test/test_dynamic_dashboard.py`](../../test/test_dynamic_dashboard.py),
 and the read route by
 [`../../test/test_member_dashboard_routes.py`](../../test/test_member_dashboard_routes.py).
-Each built-in page is pinned by its own file: the default report by
-[`../../test/test_dashboard_template_project-report.py`](../../test/test_dashboard_template_project-report.py)
-and the registry's built-ins together by
-[`../../test/test_dashboard_templates_builtin.py`](../../test/test_dashboard_templates_builtin.py),
-which resolves every declared `{fold, path}` against the eight folds a real pod
-session served. Nothing in `load_template` can tell whether a path EXISTS, so a
+This design also gave each built-in page its own pinning file, plus one that
+resolved every declared `{fold, path}` against the eight folds a real pod session
+served. Those files left the tree with the pages they pinned.
+Nothing in `load_template` can tell whether a path EXISTS, so a
 plausible path that resolves to nothing would otherwise ship and render a blank
 cell forever.
 
@@ -587,10 +584,9 @@ retained task, at least one session billed through two costed rows, and at least
 one task with no cost at all. Without the shared-worker row a union and a sum
 render the same number, so the case asserts the two totals actually differ and
 that the fold's own board total equals the union.
-[`../../scripts/render_dashboard_builtin.py`](../../scripts/render_dashboard_builtin.py)
-renders any built-in from a fixture at both widths and both themes, and
-[`../../scripts/shoot_dashboard_evidence.sh`](../../scripts/shoot_dashboard_evidence.sh)
-reshoots every one of them in one command.
+A render harness drew any built-in from a fixture at both widths and both themes,
+and a shooting script reshot every one of them in one command. Both left the tree
+with the pages they drew.
 
 The route's own masking is checked against the whole rendered document rather
 than the one field a reader would think to look at, because a worker's session

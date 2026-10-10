@@ -4321,31 +4321,6 @@ def panel_entry_fits(data: dict[str, Any]) -> bool:
     return _entry_line_fits("panel/published", data, src=_SRC_GATEWAY)
 
 
-def on_dashboard_instance_changed(session_id: str, data: dict[str, Any]) -> None:
-    """Append ONE ``dashboard/instance_changed`` entry -- a crewmate's dashboard history.
-
-    The history half of the dynamic dashboard instance. The current value is a file
-    under the member's own space and the route has already written it, so this append
-    is the HISTORY: the instance's change log is a fold over these entries.
-
-    Does NOT wait, which is the difference from ``on_panel_published`` and is decided by
-    what the caller can do with the answer. The instance store's caller is told the
-    change landed because the record file landed; the entry is the record of HOW it got
-    there, and a caller that cannot undo the committed version has nothing to do with
-    "the history row is still queued". The store flushes once after the append so the
-    row is durable by the time the call returns in the ordinary case.
-
-    The entry carries what changed and never the page, so it is bounded by construction
-    and no size check is needed beside it -- unlike the ledger's and the panel's, whose
-    payloads are caller-sized.
-
-    *session_id* is the crewmate's own DM session, the unit a dashboard change belongs
-    to. A session with no crew log is a policy no-op here, as it is for every other
-    ``_write``.
-    """
-    _write(session_id, "dashboard/instance_changed", data, src=_SRC_GATEWAY)
-
-
 def on_work_recorded(session_id: str, data: dict[str, Any], *, timeout: float = 5.0) -> bool:
     """One work-board mutation, appended to the ACTING session's log, acknowledged.
 

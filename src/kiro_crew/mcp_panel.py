@@ -34,10 +34,8 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any
-from urllib.parse import quote
 
 from kiro_crew import dashboard_agentic
-from kiro_crew.dashboard_templates.instance import AUTHORED_PAGE_REFUSAL
 from kiro_crew.mcp_core import (
     _get,
     _post,
@@ -188,99 +186,6 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "required": ["field", "value"],
             },
         },
-        {
-            "name": "dashboard_templates",
-            "description": (
-                "List or SEARCH the dashboard pages this gateway can give your "
-                "crewmate, and say which one it is on now. Pass `query` to "
-                "search; it matches a template's name and description AND the "
-                "fold paths its fields read, so asking for `cost` finds the page "
-                "that shows a usage number whether or not its author used that "
-                "word. Omit `query` for all of them. This is the FIRST step of "
-                "'show me another one': list, then dashboard_preview the one that "
-                "fits, then ask the person before you apply it."
-            ),
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "maxLength": 200,
-                        "description": (
-                            "What the page should show, in the person's own words. "
-                            "Every word must match somewhere in the template."
-                        ),
-                    },
-                },
-            },
-        },
-        {
-            "name": "dashboard_preview",
-            "description": (
-                "Stage one of this gateway's templates for the person to LOOK at. "
-                "NOTHING IS RECORDED: their current page is untouched, no version "
-                "is written, and the answer carries a link they open to see it. "
-                "Name a `template_id` from dashboard_templates -- that is the only "
-                "argument. You CANNOT preview a page you wrote yourself: a "
-                "dashboard page runs its own script against this crewmate's task "
-                "titles and summaries in a frame that can navigate itself, so only "
-                "pages that shipped with the product are rendered. Custom "
-                "templates come later. ALWAYS show a preview and ask before you "
-                "apply: the page is the person's, not yours, and a page swapped "
-                "without asking is one they have to undo."
-            ),
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "template_id": {
-                        "type": "string",
-                        "maxLength": 64,
-                        "description": "A template id dashboard_templates listed.",
-                    },
-                },
-                # NOT declared required, even though it is the only argument and an
-                # absent one is refused. A schema-level requirement is reported as a
-                # missing field, and the call this surface most needs to explain is the
-                # one that sent a `manifest` and `html` instead -- that caller has to
-                # read why its page cannot render, not which key it left out.
-            },
-        },
-        {
-            "name": "dashboard_apply",
-            "description": (
-                "Keep the page you previewed. This is the answer to the person "
-                "saying yes, and it takes NO arguments on purpose: what it "
-                "installs is the page that was staged, so it cannot differ from "
-                "the one they were shown. The previous version stays on disk, so "
-                "dashboard_rollback can go back to it."
-            ),
-            "inputSchema": {"type": "object", "properties": {}},
-        },
-        {
-            "name": "dashboard_rollback",
-            "description": (
-                "Go BACK to an earlier version of your crewmate's page -- the "
-                "answer to the person saying 'go back'. dashboard_fields lists the "
-                "versions you can still reach; a version the store has dropped is "
-                "refused, so read that list rather than guessing. A rollback moves "
-                "FORWARD: restoring version 1 over version 2 writes version 3, so "
-                "nothing is lost and you can roll back again."
-            ),
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "to_version": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "description": (
-                            "The version to restore, from dashboard_fields' list of "
-                            "the ones a rollback can reach."
-                        ),
-                    },
-                },
-                "required": ["to_version"],
-            },
-        },
     ]
 
 
@@ -407,164 +312,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             + (" It corrected an earlier refused write." if d.get("corrected") else "")
         )
 
-    if name == "dashboard_templates":
-        query = args.get("query")
-        if query is not None and not isinstance(query, str):
-            return "Error: `query` must be a string"
-        sk, err = _strict_session_key()
-        if err:
-            return err
-        path = "/api/agent-panel/dashboard/templates"
-        if isinstance(query, str) and query.strip():
-            path = f"{path}?query={quote(query.strip(), safe='')}"
-        d = _get(path, session_key=sk)
-        if d.get("error"):
-            return redact(f"Error: {d['error']}")
-        return redact(_render_templates(d))
-
-    if name == "dashboard_preview":
-        template_id = args.get("template_id")
-        if args.get("manifest") is not None or args.get("html") is not None:
-            # Answered HERE as well as by the store, so an agent that wrote a page gets
-            # the reason without a round trip -- and gets the SAME reason either way.
-            return f"Error: {AUTHORED_PAGE_REFUSAL}"
-        if not isinstance(template_id, str) or not template_id.strip():
-            return "Error: nothing to preview -- pass a `template_id` from " "dashboard_templates"
-        sk, err = _strict_session_key()
-        if err:
-            return err
-        staging: dict[str, Any] = {"template_id": template_id}
-        d = _post("/api/agent-panel/dashboard/preview", staging, session_key=sk)
-        api_err = d.get("error")
-        if api_err:
-            # WHOLE, like a refused write: a parity refusal names every field the page
-            # binds that the manifest does not and the other way round, which is the
-            # list an agent fixes the page from. A generic failure would cost a cycle.
-            return redact(f"Error: {api_err}")
-        return redact(_render_preview(d.get("preview") or {}))
-
-    if name == "dashboard_apply":
-        sk, err = _strict_session_key()
-        if err:
-            return err
-        d = _post("/api/agent-panel/dashboard/apply", {}, session_key=sk)
-        api_err = d.get("error")
-        if api_err:
-            return redact(f"Error: {api_err}")
-        return redact(
-            f"Your crewmate's page is now version {d.get('instance_version')}, "
-            f"from template `{d.get('template_id')}`."
-        )
-
-    if name == "dashboard_rollback":
-        to_version = args.get("to_version")
-        if not isinstance(to_version, int) or isinstance(to_version, bool) or to_version < 1:
-            return (
-                "Error: `to_version` must be a positive integer -- dashboard_fields "
-                "lists the versions a rollback can still reach"
-            )
-        sk, err = _strict_session_key()
-        if err:
-            return err
-        d = _post("/api/agent-panel/dashboard/rollback", {"to_version": to_version}, session_key=sk)
-        api_err = d.get("error")
-        if api_err:
-            # The refusal names the versions still kept, which is what an agent that
-            # guessed needs in order not to guess again.
-            return redact(f"Error: {api_err}")
-        return redact(
-            f"Restored version {d.get('restored_from')} as version "
-            f"{d.get('instance_version')} -- a rollback moves forward, so the page you "
-            "were on is still there to go back to."
-        )
-
     return f"Error: unknown tool '{name}'"
-
-
-def _render_templates(payload: dict[str, Any]) -> str:
-    """The catalog as the agent reads it. Prose, like the field list.
-
-    Each row leads with the id, because the id is what dashboard_preview takes, and
-    carries the title and description, because those are what a person recognises. The
-    fields are listed last and the PAGE is never carried: an agent choosing between
-    templates does not read markup, and the catalog's own listing leaves it out for the
-    same reason.
-    """
-    rows = payload.get("templates")
-    query = str(payload.get("query") or "")
-    if not isinstance(rows, list) or not rows:
-        if query:
-            return (
-                f"No dashboard template matches {query!r}. Every word has to match, so "
-                "try fewer or more ordinary ones, or call this again with no `query` to "
-                "see all of them."
-            )
-        return (
-            "This gateway has no dashboard template to offer. Tell the person: there is "
-            "nothing here to adopt, and a page you write yourself cannot be rendered."
-        )
-    current = str(payload.get("current_template_id") or "")
-    lines: list[str] = []
-    lines.append(
-        f"{len(rows)} dashboard template{'' if len(rows) == 1 else 's'}"
-        + (f" matching {query!r}" if query else "")
-        + (f"; your crewmate is on `{current}`." if current else ".")
-    )
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        mark = " (ON NOW)" if row.get("current") else ""
-        lines.append("")
-        lines.append(f"  `{row.get('id')}` v{row.get('version')}{mark} -- {row.get('title')}")
-        lines.append(f"    {row.get('description')}")
-        fields = row.get("fields")
-        if isinstance(fields, list) and fields:
-            lines.append(f"    shows: {', '.join(str(f) for f in fields)}")
-    problems = payload.get("problems")
-    if isinstance(problems, list) and problems:
-        lines.append("")
-        # REPORTED, not hidden. A template somebody saved that will not load is
-        # invisible otherwise, and the person who saved it is the only one who can fix
-        # it -- so the agent they are talking to has to be able to tell them.
-        lines.append("Templates that would not load (tell the human):")
-        for row in problems:
-            if isinstance(row, dict):
-                lines.append(f"  {row.get('template')}: {row.get('problem')}")
-    lines.append("")
-    lines.append(
-        "Next: dashboard_preview the one that fits, show the person the link, and only "
-        "call dashboard_apply once they say yes."
-    )
-    return "\n".join(lines)
-
-
-def _render_preview(preview: dict[str, Any]) -> str:
-    """The staged page, and the sentence that makes the agent ASK before applying.
-
-    The link leads, because it is the only part the person needs. The reminder to ask
-    is last and unconditional: this tool's whole value is that it changes nothing, and
-    an agent that previews and then applies in the same breath has spent the staging
-    step without ever letting anybody look.
-    """
-    fields = preview.get("fields")
-    lines = [
-        f"Staged for a look -- NOTHING has changed yet. Show the person this link: "
-        f"{preview.get('preview_url')}",
-        "",
-    ]
-    lines.append(
-        f"It is template `{preview.get('template_id')}` v"
-        f"{preview.get('template_version')}, titled "
-        f"{str(preview.get('title') or '')!r}."
-    )
-    if isinstance(fields, list) and fields:
-        lines.append(f"It shows: {', '.join(str(f) for f in fields)}.")
-    lines.append("")
-    lines.append(
-        "ASK the person whether to keep it. dashboard_apply if they say yes; stage "
-        "another one if they do not. Do not apply a page nobody has looked at."
-    )
-    return "\n".join(lines)
 
 
 def _render_fields(payload: dict[str, Any]) -> str:
@@ -580,8 +328,8 @@ def _render_fields(payload: dict[str, Any]) -> str:
     lines: list[str] = []
     if not isinstance(template, dict):
         lines.append(
-            "You have no dashboard yet, so there is no field to write. Ask the human "
-            "to adopt a template for you."
+            "You have no dashboard yet, so there is no field to write. Tell the human "
+            "there is nothing here to fill in."
         )
     else:
         lines.append(
@@ -634,27 +382,6 @@ def _render_fields(payload: dict[str, Any]) -> str:
     elif isinstance(template, dict):
         lines.append("")
         lines.append("Your mistake book is empty: no write of yours has been refused.")
-    history = payload.get("history")
-    if isinstance(history, list) and history:
-        lines.append("")
-        lines.append("Your page's history, oldest first:")
-        for row in history:
-            if not isinstance(row, dict):
-                continue
-            lines.append(
-                f"  v{row.get('instance_version')}: {row.get('action')} "
-                f"`{row.get('template_id')}`"
-            )
-    retained = payload.get("rollback_versions")
-    if isinstance(retained, list) and retained:
-        lines.append("")
-        # The RETAINED versions, which is a shorter list than the history above: a
-        # rollback can only reach a payload still on disk, and naming a version the
-        # history mentions but the store has dropped is a refusal an agent can avoid
-        # by reading this line.
-        lines.append(
-            "Versions dashboard_rollback can still reach: " + ", ".join(str(v) for v in retained)
-        )
     budget = payload.get("retry_budget")
     if budget:
         lines.append("")

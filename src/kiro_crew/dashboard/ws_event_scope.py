@@ -419,14 +419,6 @@ _GLOBAL_EVENT_DECLARATIONS: dict[str, str] = {
     # that acts on it re-reads through the panel route, which re-applies the
     # ownership check.
     "dashboard_value_written": "panels",
-    # Metadata only ({slug}) and no slot, on `panels` for its sibling's reasons
-    # above. It says a crewmate's PAGE changed -- a template applied or a version
-    # rolled back -- and nothing about which page or what is on it, so a client that
-    # acts on it re-reads through the dashboard route, which is owner-gated and
-    # re-applies that check. Declared rather than left to a tier for the same
-    # reason: an app has no business learning the crewmate roster from a refresh
-    # ping, and an unclassified event silently never reaches an app token at all.
-    "dashboard_instance_changed": "panels",
     # Privileged
     "log": "log",
     "browser_event": "browser",

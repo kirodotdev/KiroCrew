@@ -197,18 +197,6 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post(
         "/api/agent-panel/dashboard/write", _deferred("agent_panel", "api_dashboard_write")
     )
-    app.router.add_get(
-        "/api/agent-panel/dashboard/templates", _deferred("agent_panel", "api_dashboard_templates")
-    )
-    app.router.add_post(
-        "/api/agent-panel/dashboard/preview", _deferred("agent_panel", "api_dashboard_preview")
-    )
-    app.router.add_post(
-        "/api/agent-panel/dashboard/apply", _deferred("agent_panel", "api_dashboard_apply")
-    )
-    app.router.add_post(
-        "/api/agent-panel/dashboard/rollback", _deferred("agent_panel", "api_dashboard_rollback")
-    )
     app.router.add_get("/api/members/{slug}/panel", _deferred("agent_panel", "api_member_panel"))
     # The crewmate's dynamic dashboard. Registered through the deferred binder for the
     # reason the panel's routes are: calling the module's own

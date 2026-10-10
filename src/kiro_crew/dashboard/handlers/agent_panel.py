@@ -1462,8 +1462,7 @@ def read_instance(slug: str, member: str) -> dashboard_agentic.Instance | None:
     An absent registry is NOT one of those states and is not caught here. The
     registry ships in the same package as this surface, so a build without it is a
     packaging fault, and swallowing the ``ImportError`` would report that fault as
-    ``no_instance`` -- sending every crewmate to adopt a template through a registry
-    the build does not have.
+    ``no_instance`` -- reporting a packaging fault as a crewmate with no dashboard.
     """
     from kiro_crew.dashboard_templates import instance as instance_store
     from kiro_crew.dashboard_templates.manifest import ManifestError, parse_manifest
@@ -1481,11 +1480,10 @@ def read_instance(slug: str, member: str) -> dashboard_agentic.Instance | None:
     #
     # EMPTY resolves to the DEFAULT, because the default is the page that crewmate is
     # actually being shown: `api_member_dashboard` falls back to `default_instance` for
-    # exactly this state, so refusing here made the two paths disagree about which
-    # template is in force. The disagreement was not academic -- the default page's one
-    # agentic field is the "needs you" answer, nothing in P1 calls the adopt route, and
-    # the conductor skill writes that field every cycle, so every write was refused with
-    # a remedy (adopt a template) that has no control to carry it out.
+    # exactly this state, and refusing here makes the two paths disagree about which
+    # template is in force. The default page's one agentic field is the "needs you"
+    # answer and the conductor skill writes it every cycle, so a refusal here costs
+    # that write with no control anywhere that could satisfy it.
     #
     # ERROR stays refused on its own terms: it is the state in which the manifest does
     # not parse, so there is nothing to validate a write against.
@@ -1558,8 +1556,7 @@ async def _resolve_dashboard_caller(
     AND the slug must be this crew's alone. An instance is one directory per slug,
     and slugification is lossy, so two configured names that differ only in case --
     ``Oncall`` and ``oncall`` -- resolve to one directory: either crew could then
-    replace the other's staged or installed page, and a rollback by one would
-    restore a version the other wrote. The browser's own resolver refuses that slug
+    read or fill the other's dashboard. The browser's own resolver refuses that slug
     outright (``member_dashboard._resolve``, ``dashboard_slug_ambiguous``); this
     surface reaches the same files through MCP and therefore owes the same refusal.
     It is asked HERE rather than per route so a route added later inherits it.
@@ -1617,18 +1614,11 @@ async def api_dashboard_fields(request: web.Request) -> web.Response:
     slug, crew_name, slot = resolved
     instance = await asyncio.to_thread(read_instance, slug, crew_name)
     mistakes = await asyncio.to_thread(_mistake_book, slot) if slot else {}
-    # The version history rides along on THIS read rather than having a tool of its
-    # own. An agent that is about to answer "go back" already has to make this call to
-    # know its fields, the rows are capped at ten, and a second round trip for ten rows
-    # is a cycle spent on a payload that fits in this one.
-    rows, retained = await asyncio.to_thread(_instance_history, slug, slot)
     values, written_at = await asyncio.to_thread(_current_values, slug, crew_name, instance)
     return web.json_response(
         dashboard_agentic.fields_for_agent(
             instance,
             mistakes,
-            history=rows,
-            rollback_versions=retained,
             values=values,
             written_at=written_at,
         )
@@ -1805,315 +1795,6 @@ def _record_refusal(state: DashboardState, sk: str, entry: dict[str, Any]) -> bo
         return False
 
 
-def _instance_history(slug: str, slot: str) -> tuple[tuple[dict[str, Any], ...], tuple[int, ...]]:
-    """This instance's history rows and the versions a rollback can still reach.
-
-    TOTAL, like the mistake book beside it: a history that will not load costs the
-    rows and never the read. An agent that cannot see its history is in the position of
-    one whose dashboard has none, and failing the fields read because of it would make
-    the history cost the call it rides on.
-
-    The two halves come from different places on purpose. The ROWS are the fold, capped
-    at :data:`instance.MAX_HISTORY_ROWS`; the VERSIONS are the payloads still on disk,
-    capped lower at :data:`instance.MAX_RETAINED_VERSIONS`. So the fold can name a
-    version a rollback would refuse, and listing only what is retained is what keeps an
-    agent from spending a cycle being told the page it asked for is gone.
-    """
-    from kiro_crew.dashboard_templates import instance as instance_store
-
-    rows: tuple[dict[str, Any], ...] = ()
-    retained: tuple[int, ...] = ()
-    try:
-        rows = instance_store.history(slug, session_id=_history_session(slot))
-    except Exception:
-        logger.warning("the dashboard history for %s is unreadable", slug, exc_info=True)
-    try:
-        retained = instance_store.versions(slug)
-    except Exception:
-        logger.warning("the retained dashboard versions for %s are unreadable", slug)
-    return rows, retained
-
-
-def _history_session(slot: str) -> str:
-    """The session a dashboard change's history entry belongs to: the crewmate's DM log.
-
-    The same derivation ``member_dashboard._write_session`` makes, from the slot this
-    surface already resolved rather than from the member name -- resolving it twice
-    would load the config twice and could answer differently if it changed between.
-
-    "Newest" comes from the DURABLE succession chain and not from a header clock, for
-    the reason that handler gives: a unit's ``createdAt`` is stamped once, so a clock
-    that steps backward between two units of one slot would attribute every later
-    change to a session that is already over.
-
-    Empty when there is none, which is not a failure. The instance record is a file and
-    is committed either way, so a crewmate whose DM thread has never run gets a working
-    dashboard with no history row rather than a refused change.
-    """
-    if not slot:
-        return ""
-    try:
-        from kiro_crew.crew_log.projection import units_in_succession
-
-        units = units_in_succession(slot)
-        return units[-1] if units else ""
-    except Exception:
-        logger.warning("could not resolve the history session for slot %s", slot, exc_info=True)
-        return ""
-
-
-def _instance_refusal(exc: Exception) -> web.Response:
-    """One refused instance write, as the tool's caller reads it.
-
-    A refusal carries the store's own sentence, which is written for an agent: it says
-    what was wrong and what to do instead. An unexpected failure does NOT -- it carries
-    a path or an errno -- so it answers 503 with a fixed sentence and the traceback goes
-    to the log, where an operator reads it and a crewmate cannot.
-    """
-    from kiro_crew.dashboard_templates import instance as instance_store
-
-    if isinstance(exc, instance_store.InstanceRefused):
-        return web.json_response({"error": str(exc), "code": "refused"}, status=400)
-    logger.warning("a dashboard instance call failed", exc_info=True)
-    return web.json_response(
-        {
-            "error": (
-                "this crewmate's dashboard store could not be written; try again on "
-                "your next cycle"
-            ),
-            "code": "store_failed",
-        },
-        status=503,
-    )
-
-
-def _template_matches(listing: Mapping[str, Any], query: str) -> bool:
-    """Whether one catalog listing answers *query*.
-
-    The haystack includes the FOLD NAMES AND FIELD PATHS, not only the title and the
-    description. A person asking for "the one that shows cost" is naming what they want
-    to see, and the template that shows it is the one whose fields READ a usage fold --
-    a word its author may never have put in the title. Matching only the prose would
-    answer "there is none" for a template that does exactly the thing.
-
-    Substring, case-folded, every whitespace-separated word required. Not a ranking:
-    the catalog is a handful of templates, a chooser reads all of them, and a relevance
-    score here would be a number nobody can explain to the person who asked.
-    """
-    haystack = " ".join(
-        str(part).casefold()
-        for part in (
-            listing.get("id", ""),
-            listing.get("title", ""),
-            listing.get("description", ""),
-            " ".join(str(f) for f in listing.get("fields", []) or ()),
-            " ".join(str(f) for f in listing.get("folds", []) or ()),
-            " ".join(str(p) for p in listing.get("paths", []) or ()),
-        )
-    )
-    return all(word in haystack for word in query.casefold().split())
-
-
-def _templates_for_agent(slug: str, query: str) -> dict[str, Any]:
-    """The catalog as a chooser reads it, with this crewmate's current template marked.
-
-    MARKED rather than filtered out. "Show me another" is answered by a list, and a
-    list that silently omits the page already on screen makes the one thing the reader
-    can verify -- that their current page is in there -- look like a missing template.
-
-    ``problems`` is carried through from the scan. A directory that will not load is
-    not this caller's fault and cannot be fixed by it, but a listing that silently drops
-    it is how a template somebody saved stays invisible with nothing anywhere to read.
-    """
-    from kiro_crew.dashboard_templates import catalog
-    from kiro_crew.dashboard_templates import instance as instance_store
-
-    try:
-        current = instance_store.read(slug).template_id
-    except Exception:
-        logger.warning("could not read %s's current template", slug, exc_info=True)
-        current = ""
-    found = catalog.list_templates()
-    rows: list[dict[str, Any]] = []
-    for entry in found.entries:
-        listing = dict(entry.listing())
-        # The paths its fields READ, which `listing()` does not carry: it reports the
-        # fold names, and a path is the half that names the quantity ("usage.cost_usd")
-        # rather than the fold it sits in. Added here, where the search needs it, rather
-        # than widening every reader of a catalog listing.
-        listing["paths"] = sorted(spec.path for spec in entry.manifest.fields.values() if spec.path)
-        if query and not _template_matches(listing, query):
-            continue
-        listing["current"] = entry.id == current and bool(current)
-        rows.append(listing)
-    return {
-        "templates": rows,
-        "current_template_id": current,
-        "query": query,
-        "problems": [{"template": name, "problem": why} for name, why in found.problems],
-    }
-
-
-async def api_dashboard_templates(request: web.Request) -> web.Response:
-    """GET /api/agent-panel/dashboard/templates?query= -- the catalog, searchable.
-
-    On the strict-internal prefix with the rest of this surface. The listing itself is
-    not a crewmate's data, but the body also says which template THIS crewmate is
-    running, and that is state about this crewmate like its refused writes are.
-    """
-    resolved, refusal = await _resolve_dashboard_caller(request, "dashboard_templates")
-    if refusal is not None:
-        return refusal
-    assert resolved is not None
-    slug, _crew_name, _slot = resolved
-    query = str(request.query.get("query") or "").strip()[:200]
-    try:
-        body = await asyncio.to_thread(_templates_for_agent, slug, query)
-    except Exception as exc:
-        return _instance_refusal(exc)
-    return web.json_response(body)
-
-
-async def _instance_body(request: web.Request) -> dict[str, Any] | web.Response:
-    """The request's JSON object, or the response that refuses it."""
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON body", "code": "invalid_json"}, status=400)
-    if not isinstance(body, dict):
-        return web.json_response(
-            {"error": "body must be a JSON object", "code": "invalid_body"}, status=400
-        )
-    return body
-
-
-async def api_dashboard_preview(request: web.Request) -> web.Response:
-    """POST /api/agent-panel/dashboard/preview -- stage a template for a look.
-
-    NOTHING IS RECORDED. The staged page is checked and written beside the record, the
-    instance version does not move, and the body hands back the link a person opens to
-    see it. That split is the feature: an agent can offer a page without having changed
-    the one somebody is currently reading, so "show me another" costs nothing if the
-    answer is no.
-
-    Only a ``template_id`` is accepted. A body carrying ``html`` or ``manifest`` is
-    refused by the store, which owns that refusal so every route into it answers the
-    same way; this handler passes them through rather than dropping them, because a
-    caller that sent a page it wrote has to be TOLD, not silently given a template it
-    did not ask for.
-    """
-    resolved, refusal = await _resolve_dashboard_caller(request, "dashboard_preview")
-    if refusal is not None:
-        return refusal
-    assert resolved is not None
-    slug, _crew_name, _slot = resolved
-    body = await _instance_body(request)
-    if isinstance(body, web.Response):
-        return body
-    template_id = body.get("template_id")
-    html = body.get("html")
-    manifest = body.get("manifest")
-    if template_id is not None and not isinstance(template_id, str):
-        return web.json_response(
-            {"error": "template_id must be a string", "code": "validation_error"}, status=400
-        )
-
-    from kiro_crew.dashboard_templates import instance as instance_store
-
-    def _stage() -> dict[str, Any]:
-        preview = instance_store.stage_preview(
-            slug, template_id=template_id, html=html, manifest=manifest
-        )
-        return preview.wire()
-
-    try:
-        staged = await asyncio.to_thread(_stage)
-    except Exception as exc:
-        return _instance_refusal(exc)
-    return web.json_response({"ok": True, "preview": staged})
-
-
-async def api_dashboard_apply(request: web.Request) -> web.Response:
-    """POST /api/agent-panel/dashboard/apply -- keep the staged page.
-
-    Takes NO arguments, which is what makes it safe to call on a person's "yes": the
-    page it installs is the one that was staged and therefore the one they were shown.
-    A body naming a template here would let the thing applied differ from the thing
-    looked at, and the agent in between is the one place that difference would not be
-    visible to anybody.
-    """
-    resolved, refusal = await _resolve_dashboard_caller(request, "dashboard_apply")
-    if refusal is not None:
-        return refusal
-    assert resolved is not None
-    slug, _crew_name, slot = resolved
-
-    from kiro_crew.dashboard_templates import instance as instance_store
-
-    def _apply() -> Any:
-        return instance_store.apply_preview(slug, session_id=_history_session(slot))
-
-    try:
-        record = await asyncio.to_thread(_apply)
-    except Exception as exc:
-        return _instance_refusal(exc)
-    # Tell an open dashboard its page changed, the same one-key frame the agentic
-    # write broadcasts. The tab refetches the page; this carries the slug only.
-    state: DashboardState = request.app["state"]
-    state.broadcast_ws("dashboard_instance_changed", {"slug": slug})
-    return web.json_response(
-        {
-            "ok": True,
-            "instance_version": record.instance_version,
-            "template_id": record.template_id,
-        }
-    )
-
-
-async def api_dashboard_rollback(request: web.Request) -> web.Response:
-    """POST /api/agent-panel/dashboard/rollback -- go back to a retained version.
-
-    FORWARD, like the store's own rollback: version 1 restored over version 2 becomes
-    version 3. The response says which version is now current rather than echoing the
-    one that was asked for, because those are two different numbers and a caller that
-    reported the second would tell a person they are on a version nobody is on.
-    """
-    resolved, refusal = await _resolve_dashboard_caller(request, "dashboard_rollback")
-    if refusal is not None:
-        return refusal
-    assert resolved is not None
-    slug, _crew_name, slot = resolved
-    body = await _instance_body(request)
-    if isinstance(body, web.Response):
-        return body
-    to_version = body.get("to_version")
-    if not isinstance(to_version, int) or isinstance(to_version, bool) or to_version < 1:
-        return web.json_response(
-            {"error": "to_version must be a positive integer", "code": "validation_error"},
-            status=400,
-        )
-
-    from kiro_crew.dashboard_templates import instance as instance_store
-
-    def _rollback() -> Any:
-        return instance_store.rollback(slug, to_version, session_id=_history_session(slot))
-
-    try:
-        record = await asyncio.to_thread(_rollback)
-    except Exception as exc:
-        return _instance_refusal(exc)
-    state: DashboardState = request.app["state"]
-    state.broadcast_ws("dashboard_instance_changed", {"slug": slug})
-    return web.json_response(
-        {
-            "ok": True,
-            "instance_version": record.instance_version,
-            "restored_from": to_version,
-            "template_id": record.template_id,
-        }
-    )
-
-
 def register_agent_panel_routes(app: web.Application) -> None:
     app.router.add_get("/api/agent-panel/templates", api_agent_panel_templates)
     app.router.add_post("/api/agent-panel/publish", api_agent_panel_publish)
@@ -2125,13 +1806,6 @@ def register_agent_panel_routes(app: web.Application) -> None:
     # caller holding only a dashboard cookie must not reach it.
     app.router.add_get("/api/agent-panel/dashboard/fields", api_dashboard_fields)
     app.router.add_post("/api/agent-panel/dashboard/write", api_dashboard_write)
-    # The page's own four, under the same prefix and so with the same auth. A preview
-    # and an apply reach a crewmate's instance store and its crew log, so a caller
-    # holding only a dashboard cookie must not reach them either.
-    app.router.add_get("/api/agent-panel/dashboard/templates", api_dashboard_templates)
-    app.router.add_post("/api/agent-panel/dashboard/preview", api_dashboard_preview)
-    app.router.add_post("/api/agent-panel/dashboard/apply", api_dashboard_apply)
-    app.router.add_post("/api/agent-panel/dashboard/rollback", api_dashboard_rollback)
     # The drawer's read. NOT under /api/agent-panel: that prefix is
     # strict-internal (MCP-only), and this one is called by the browser.
     app.router.add_get("/api/members/{slug}/panel", api_member_panel)

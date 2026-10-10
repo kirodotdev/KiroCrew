@@ -46,6 +46,20 @@ from kiro_crew.crew_log.store import (
 
 SESSION = "acp-sess-types"
 
+#: Types the registry declares as READ-ONLY HISTORY: nothing appends one, and the
+#: declaration is kept so a log that already holds such a row still reconstructs.
+#:
+#: Exempt from the "every declared type has a writer" column only. That column's
+#: reasoning -- a declaration with no writer states a shape no site produces -- is
+#: about a type whose first emitter has not landed. It inverts for a RETIRED type:
+#: the shape is produced by rows already on disk, and un-declaring it makes every
+#: fold of a log holding one raise ``unknown_entry_type`` at that row, because these
+#: rows are not ignorable and so cannot be skipped.
+#:
+#: Emptying this set is the goal, and it needs a migration over the stored rows
+#: rather than an edit here.
+RETIRED: frozenset[str] = frozenset({"dashboard/instance_changed"})
+
 #: One canonical ``data`` per declared type, spelled the way its writer spells it:
 #: every required field, and the optional fields whose presence a reader depends on.
 #: The set is asserted to COVER the registry, so a type declared without an example
@@ -319,10 +333,9 @@ def test_every_type_written_today_is_declared_and_nothing_else_is():
     # has to be recorded here. It was held in a registry keyed on the run's folder, and
     # when that folder was reclaimed first the dismissed card came back.
     #
-    # The one past THAT is the dynamic dashboard's ``dashboard/instance_changed``. A
-    # crewmate's dashboard instance is a copy it edits and rolls back, so what a reader
-    # needs is the sequence of changes rather than the current page -- and a sequence is
-    # what only an append-only log holds.
+    # The one past THAT is the dynamic dashboard's ``dashboard/instance_changed``,
+    # which is RETIRED: nothing appends one any more and the declaration is kept so a
+    # log that already holds such a row still reconstructs. See ``RETIRED`` above.
     #
     # The two past that are the dynamic dashboard's agentic pair, which join their
     # siblings for a reason the panel entry's own note gives twice over: an agentic
@@ -357,7 +370,13 @@ def test_every_type_written_today_is_declared_and_nothing_else_is():
     # the writers' syntax trees in
     # ``test_the_declared_vocabulary_is_exactly_what_the_writers_append``; this one
     # stays as the cheaper statement of the same half.
-    assert set(SESSION_ENTRY_TYPES) == set(_types_with_a_producing_site())
+    #
+    # ``RETIRED`` is subtracted for the reason stated beside that set: a type whose
+    # writer has been removed still has rows on disk, and un-declaring it stops every
+    # fold of a log holding one. The subtraction is on the DECLARED side only, so a
+    # retired type that regains a writer is caught by the sibling ratchet's own
+    # ``revived`` control rather than slipping through both.
+    assert set(SESSION_ENTRY_TYPES) - RETIRED == set(_types_with_a_producing_site())
 
 
 def test_the_canonical_examples_cover_exactly_the_declared_types():
@@ -411,13 +430,16 @@ def test_only_a_vocabulary_the_writer_clamps_is_enforced():
         # value outside the vocabulary before the entry is built.
         ("work/recorded", "reason"),
         ("work/recorded", "event_kind"),
-        # The dashboard instance store clamps its action the same way, and imports the
-        # vocabulary from the declaration beside the type, so the closed enum and the
-        # writer's set are one tuple.
+        # The dashboard instance rows on disk were clamped to their three actions when
+        # they were written, so the enum stays closed for the reader that validates one
+        # even though nothing appends another.
         ("dashboard/instance_changed", "action"),
     }
     emitted = set(_types_with_a_producing_site())
-    assert {spec_type for spec_type, _ in closed} <= emitted
+    # A RETIRED type is exempt for the reason it is exempt from the completeness
+    # column: the values that reach its closed enum are in rows already written, and
+    # those WERE clamped by the producing site that has since been removed.
+    assert {spec_type for spec_type, _ in closed} <= emitted | RETIRED
 
 
 #: The append primitives in :mod:`kiro_crew.crew_log.emit` and its durable writer,
@@ -574,11 +596,22 @@ def test_the_declared_vocabulary_is_exactly_what_the_writers_append():
     # The writer-side completeness control, and it is what licenses reading the
     # column above as complete: an extractor that misses a call shape under-reports
     # BOTH columns, and this is the one that goes non-empty when it does.
-    never_appended = sorted(declared - set(appended))
+    never_appended = sorted(declared - set(appended) - RETIRED)
     assert not never_appended, (
         "the registry declares these types and no writer appends them, so each states "
         f"a shape no site produces: {never_appended}"
     )
+    # The exemption is not a free pass: a retired type that GAINS a writer has
+    # stopped being retired, and leaving it listed would exempt a live type from the
+    # completeness column above.
+    revived = sorted(RETIRED & set(appended))
+    assert not revived, (
+        "these types are listed as retired history and yet a writer appends one, so "
+        f"they are live and must come off the list: {revived}"
+    )
+    # And a name on the list that is not declared at all is a stale entry rather than
+    # an exemption, which would silently weaken the column for a type nobody reads.
+    assert RETIRED <= declared, sorted(RETIRED - declared)
 
 
 def test_the_sampled_types_are_the_ignorable_ones():

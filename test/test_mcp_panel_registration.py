@@ -291,29 +291,19 @@ class TestWhatThisSetGrants:
     it actually needs.
     """
 
-    #: Widened for contract v3's part 6, which puts the dynamic dashboard's agent
-    #: surface on THIS server rather than a new one. That is the right call under
-    #: this class's own rule and worth saying why: a dashboard field is published
-    #: crew state read in the crewmate's own drawer, which is exactly the class
-    #: ``panel_publish`` already is. The two new tools derive their target from the
-    #: vetted caller like their siblings, write only that caller's own crew log,
-    #: and need no gate this set does not already have -- so putting them in a
-    #: server of their own would ask the user to grant the same thing twice.
-    #: Widened again for the page's own four. They pass this class's rule for the
-    #: reason ``agent._MEMBER_PANEL_GRANTS`` records beside the grant: the target is
-    #: the calling crewmate's own page, derived from the vetted caller like every
-    #: sibling here, ``dashboard_preview`` records nothing at all, and ``apply``
-    #: takes no argument so it cannot be pointed at a page nobody looked at. A
-    #: server of their own would ask the user to grant the same thing twice.
+    #: The dynamic dashboard's agent surface sits on THIS server rather than a new
+    #: one. That is the right call under this class's own rule and worth saying why: a
+    #: dashboard field is published crew state read in the crewmate's own drawer,
+    #: which is exactly the class ``panel_publish`` already is. Both dashboard tools
+    #: derive their target from the vetted caller like their siblings, write only that
+    #: caller's own crew log, and need no gate this set does not already have -- so
+    #: putting them in a server of their own would ask the user to grant the same
+    #: thing twice.
     GRANTED_TOOLS = {
         "panel_publish",
         "panel_templates",
         "dashboard_fields",
         "dashboard_write",
-        "dashboard_templates",
-        "dashboard_preview",
-        "dashboard_apply",
-        "dashboard_rollback",
     }
 
     def test_the_set_is_exactly_the_panel_tools(self) -> None:

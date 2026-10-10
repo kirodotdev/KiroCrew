@@ -713,34 +713,19 @@ def test_auto_improvement_run_archive_is_owner_only(home: Path) -> None:
     assert _mode(root / "candidates" / "c1.diff") == 0o600
 
 
-def test_a_crewmate_dashboard_instance_is_owner_only(
-    home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """``members/<slug>/dashboard/``, its versions, lock and record, from a fresh adopt."""
-    from kiro_crew.dashboard_templates import catalog, instance
+def test_a_crewmate_dashboard_record_sits_under_the_owner_only_roster(home: Path) -> None:
+    """``members/<slug>/dashboard/`` is inside the roster, which is owner-only.
 
-    builtin = tmp_path / "builtin" / "fixture-board"
-    builtin.mkdir(parents=True)
-    manifest = {
-        "id": "fixture-board",
-        "version": 1,
-        "title": "Fixture board",
-        "description": "A template this test owns.",
-        "source": "builtin",
-        "fields": {"phase": {"type": "string", "source": {"agentic": True}}},
-    }
-    (builtin / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-    (builtin / "template.html").write_text(
-        '<div><i data-dashboard-field="phase"></i></div>', encoding="utf-8"
-    )
-    monkeypatch.setattr(catalog, "builtin_dir", lambda: builtin.parent)
+    The path is asserted rather than the mode of a directory this reader creates,
+    because the dashboard record is READ here and never written: the roster's own
+    ``0o700`` is pinned by the member crew-log case below, and what this adds is that
+    the dashboard's directory is resolved INSIDE it -- so a crewmate removed from the
+    roster takes its dashboard with it rather than leaving a readable record behind.
+    """
+    from kiro_crew.dashboard_templates import instance
 
-    instance.adopt("fleet", "fixture-board")
-
-    members = home / "members"
-    assert instance.instance_dir("fleet").parent.parent == members
-    assert _mode(members) == 0o700
-    assert _readable_by_others(members) == []
+    assert instance.instance_dir("fleet").parent.parent == home / "members"
+    assert instance.instance_dir("fleet").name == "dashboard"
 
 
 def test_a_config_write_narrows_an_old_world_readable_config(home: Path) -> None:

