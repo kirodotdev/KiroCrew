@@ -33,6 +33,8 @@ from kiro_crew.config.loader import (
     _VALID_STT_PROVIDERS,
     AUTOCOMPACT_PCT_MAX,
     AUTOCOMPACT_PCT_MIN,
+    CHAT_TURN_TIMEOUT_MAX,
+    CHAT_TURN_TIMEOUT_MIN,
     COMPLETION_KEEP_CHARS_MIN,
     DEDUP_EVERY_N_SWEEPS_MAX,
     EMBED_RATE_LIMIT_MAX,
@@ -2746,6 +2748,13 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "type": "float",
         "min": SOFT_STOP_BUDGET_MIN,
         "max": SOFT_STOP_BUDGET_MAX,
+    },
+    # Same bounds as the load-time clamp, so Settings cannot save a ceiling the
+    # loader would then rewrite. Read on every turn, so the next turn follows it.
+    "agent.chat_turn_timeout_secs": {
+        "type": "int",
+        "min": CHAT_TURN_TIMEOUT_MIN,
+        "max": CHAT_TURN_TIMEOUT_MAX,
     },
     "session.timeout_secs": {"type": "int", "min": SESSION_TIMEOUT_MIN, "max": SESSION_TIMEOUT_MAX},
     # Range shared with the load-time clamp in config/loader.py — one constant

@@ -308,6 +308,25 @@ class TestTimeoutCard:
         """The user's first question is "did I lose my work?"."""
         assert "written to disk is still there" in td.format_turn_timeout_card(7200.0)
 
+    def test_names_the_setting_and_where_it_lives(self) -> None:
+        """A user who hit the limit must be told how to raise it."""
+        card = td.format_turn_timeout_card(14400.0)
+        assert td.TURN_TIME_LIMIT_SETTING in card
+        assert "Settings → Chat → Advanced" in card
+
+    def test_names_the_setting_by_its_settings_label(self) -> None:
+        """The prose must name the row the Settings page actually renders."""
+        import json
+        from pathlib import Path
+
+        import kiro_crew
+
+        registry = Path(kiro_crew.__file__).parent / "docs" / "settings-registry.generated.json"
+        rows = json.loads(registry.read_text(encoding="utf-8"))["settings"]
+        row = next(r for r in rows if r.get("configKey") == "agent.chat_turn_timeout_secs")
+        assert row["label"].startswith(td.TURN_TIME_LIMIT_SETTING)
+        assert row["route"].startswith("/settings/chat/advanced")
+
 
 class TestFinishTurnTask:
     @pytest.mark.asyncio
@@ -351,6 +370,22 @@ class TestFinishTurnTask:
         body = slot.append.call_args_list[0].args[1]
         assert "limit" in body and "⏱️" in body
         assert task not in state._background_tasks
+
+    @pytest.mark.asyncio
+    async def test_timeout_card_carries_the_turn_timeout_kind(self) -> None:
+        """The dashboard keys its settings link on the kind, never on the prose."""
+        state, slot = _state(), _slot()
+
+        async def _forever():
+            await asyncio.Event().wait()
+
+        task = td.spawn_guarded_turn(state, slot, _forever(), timeout_secs=0.01)
+        with pytest.raises((asyncio.TimeoutError, TimeoutError)):
+            await task
+        await asyncio.sleep(0)
+        error_calls = [c for c in slot.append.call_args_list if c.args[0] == "error"]
+        assert len(error_calls) == 1
+        assert error_calls[0].kwargs.get("meta") == {"kind": td.TURN_TIMEOUT_KIND}
 
     @pytest.mark.asyncio
     async def test_deadline_absorbed_by_the_turn_still_renders_a_card(self) -> None:

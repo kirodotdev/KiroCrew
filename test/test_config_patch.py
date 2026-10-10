@@ -1593,3 +1593,39 @@ class TestUpdateNudgeKeys:
         async with TestClient(TestServer(_make_app())) as c:
             rec = {**self._REC, "skipped": "yes"}
             assert (await _patch(c, "dashboard.update_nudge", rec)).status == 400
+
+
+class TestChatTurnTimeout:
+    """Settings → Chat → Advanced → "Turn Time Limit (seconds)".
+
+    The write gate uses the loader's own bounds, so Settings can never save a
+    ceiling the loader would then rewrite, and a saved value loads as written.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_value_inside_the_range_round_trips(self, tmp_config) -> None:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "agent.chat_turn_timeout_secs", 28800)
+            assert resp.status == 200, await resp.text()
+        stored = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert stored["agent"]["chat_turn_timeout_secs"] == 28800
+        assert KiroCrewConfig.load().agent.chat_turn_timeout_secs == 28800
+
+    @pytest.mark.asyncio
+    async def test_both_loader_bounds_are_writable(self, tmp_config) -> None:
+        from kiro_crew.config.sections import CHAT_TURN_TIMEOUT_MAX, CHAT_TURN_TIMEOUT_MIN
+
+        async with TestClient(TestServer(_make_app())) as c:
+            for value in (CHAT_TURN_TIMEOUT_MIN, CHAT_TURN_TIMEOUT_MAX):
+                resp = await _patch(c, "agent.chat_turn_timeout_secs", value)
+                assert resp.status == 200, await resp.text()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", [299, 86401, 0, -1, "four hours"])
+    async def test_a_value_the_loader_would_clamp_is_refused(self, tmp_config, value) -> None:
+        before = tmp_config.read_text(encoding="utf-8")
+        async with TestClient(TestServer(_make_app())) as c:
+            assert (await _patch(c, "agent.chat_turn_timeout_secs", value)).status == 400
+        assert tmp_config.read_text(encoding="utf-8") == before

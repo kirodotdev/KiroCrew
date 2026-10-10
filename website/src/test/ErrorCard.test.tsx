@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 
-import { ErrorCard, isAuthRequired, isCapabilitiesChanged, isModelUnentitled, isSessionStartFailed, isUsageLimit, retryProse, sessionStartFailureStreak } from '../pages/chat/ErrorCard'
+import { ErrorCard, isAuthRequired, isCapabilitiesChanged, isModelUnentitled, isSessionStartFailed, isTurnTimeout, isUsageLimit, retryProse, sessionStartFailureStreak } from '../pages/chat/ErrorCard'
 import type { ChatMessage } from '../types'
 import { FEATURE_REQUEST_FORM_URL } from '../prompts/featureRequest'
 import { i18nT } from '../i18n/t'
@@ -408,5 +408,50 @@ describe('sessionStartFailureStreak mirrors the server scan', () => {
   it('never counts an untagged timeout -- the kind decides, not the prose', () => {
     const untagged = () => row('error', { content: 'Request session/new timed out after 90s' })
     expect(sessionStartFailureStreak([row('user', { content: 'hi' }), untagged(), resumed(), untagged()])).toBe(0)
+  })
+})
+
+/**
+ * A turn stopped at its time limit. Resume still finishes this turn; the
+ * settings button is how the next long turn avoids the cut, so the card offers
+ * both rather than one instead of the other.
+ */
+describe('ErrorCard — turn hit its time limit', () => {
+  it('offers Resume and the turn-limit setting side by side', () => {
+    const onContinue = vi.fn()
+    const onOpenTurnLimit = vi.fn()
+    render(<ErrorCard content="⏱️ This turn hit the 4-hour limit." onContinue={onContinue} onOpenTurnLimit={onOpenTurnLimit} />)
+    const card = screen.getByTestId('error-card')
+    expect(card).toHaveAttribute('data-turn-timeout', 'true')
+    expect(card).toHaveTextContent('This turn hit the 4-hour limit.')
+    const limit = screen.getByTestId('error-card-turn-limit')
+    expect(limit).toHaveTextContent(i18nT('pages.chat.errorCard.turn_limit'))
+    fireEvent.click(limit)
+    expect(onOpenTurnLimit).toHaveBeenCalledTimes(1)
+    expect(onContinue).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByTestId('error-card-continue'))
+    expect(onContinue).toHaveBeenCalledTimes(1)
+    cleanup()
+  })
+
+  it('still links the setting on a settled row with no Resume', () => {
+    render(<ErrorCard content="⏱️ limit" onOpenTurnLimit={() => {}} />)
+    expect(screen.getByTestId('error-card-turn-limit')).toBeVisible()
+    expect(screen.queryByTestId('error-card-continue')).toBeNull()
+    cleanup()
+  })
+
+  it('recognises the turn_timeout kind on both the live and the rebuilt carrier', () => {
+    expect(isTurnTimeout({ kind: 'turn_timeout' })).toBe(true)
+    expect(isTurnTimeout({ meta: { kind: 'turn_timeout' } })).toBe(true)
+    expect(isTurnTimeout({ kind: 'auth_required' })).toBe(false)
+    expect(isTurnTimeout({})).toBe(false)
+  })
+
+  it('renders no settings button on a surface with no settings route', () => {
+    render(<ErrorCard content="⏱️ limit" onContinue={() => {}} />)
+    expect(screen.queryByTestId('error-card-turn-limit')).toBeNull()
+    expect(screen.getByTestId('error-card')).not.toHaveAttribute('data-turn-timeout')
+    cleanup()
   })
 })

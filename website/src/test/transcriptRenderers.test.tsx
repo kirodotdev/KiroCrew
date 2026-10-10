@@ -583,3 +583,27 @@ describe("a guide offer in a crewmate's chat", () => {
   })
 })
 
+describe('a turn that hit its time limit links to the setting', () => {
+  const onOpenTurnLimit = () => undefined
+  const opts = { slot: 's1', continuable: true, interrupted: true, onContinue: () => undefined, onOpenTurnLimit }
+
+  it('hands the settings link to a turn_timeout row, and keeps Resume', () => {
+    const live = msg('error', { content: '⏱️ This turn hit the 4-hour limit.', kind: 'turn_timeout' } as Partial<ChatMessage>)
+    const el = render(live, opts, { index: 0, messages: [live] }) as ReactElement
+    expect(el.type).toBe(ErrorCard)
+    expect(el.props.onOpenTurnLimit).toBe(onOpenTurnLimit)
+    expect(el.props.onContinue).toBeTypeOf('function')
+  })
+
+  it('reads the kind from a rebuilt transcript row too', () => {
+    const restored = msg('error', { content: '⏱️ limit', meta: { kind: 'turn_timeout' } })
+    const el = render(restored, opts, { index: 0, messages: [restored] }) as ReactElement
+    expect(el.props.onOpenTurnLimit).toBe(onOpenTurnLimit)
+  })
+
+  it('withholds the link from every other error row', () => {
+    const other = msg('error', { content: '⏱️ This turn hit the 4-hour limit.' })
+    const el = render(other, opts, { index: 0, messages: [other] }) as ReactElement
+    expect(el.props.onOpenTurnLimit).toBeUndefined()
+  })
+})

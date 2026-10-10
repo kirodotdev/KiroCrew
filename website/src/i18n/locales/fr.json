@@ -10906,6 +10906,8 @@
         "retry_backend_hiccup": "L’agent a rencontré un bref problème — reprends là où ça s’est arrêté.",
         "default_model": "Changer le modèle par défaut",
         "default_model_hint": "Ouvrir Paramètres → Chat → Modèle par défaut. Les nouvelles sessions démarrent avec cette valeur.",
+        "turn_limit": "Modifier la durée maximale d’un tour",
+        "turn_limit_hint": "Ouvre Réglages → Chat → Avancé → Durée maximale d’un tour. Les tours suivants pourront durer jusqu’à cette limite.",
         "pick_model": "Choisir un modèle pour cette session",
         "pick_model_hint": "Ouvrez le sélecteur de modèle, choisissez l’un des modèles accessibles à votre compte, puis renvoyez votre message.",
         "both_hint": "Faites les deux : « {{pick}} » corrige cette session, « {{default}} » empêche les nouvelles sessions de démarrer avec le même modèle s'il est défini par défaut. Puis renvoyez votre message.",
@@ -15628,6 +15630,7 @@
         "a_folder_with_no_chats_takes_one_row_instead_of": "Un dossier sans conversation occupe une ligne au lieu de deux, et son bouton de nouvelle conversation passe sur la ligne du dossier",
         "content_width": "Largeur du contenu",
         "context": "Contexte",
+        "turns": "Tours",
         "context_usage_at_which_auto_compaction_triggers": "% d'utilisation du contexte à partir duquel le compactage automatique se déclenche. Plus bas = compactage plus fréquent, sessions plus longues",
         "data_ml": "Données / ML",
         "default_auto": "Par défaut (auto)",
@@ -15841,7 +15844,11 @@
         "compaction_wait_budget_description": "Durée maximale d'un compactage. 0 = valeur par défaut (300 s). Sinon de 60 à 3 600 s.",
         "compaction_wait_budget_hint": "Au-delà de cette limite, la session redémarre ou un compactage manuel signale qu'il a expiré. Augmente-la si le compactage d'un grand contexte prend souvent plus de 300 secondes.",
         "compaction_wait_budget_clamped": "{{stored}} enregistré. {{requested}} est hors de la plage autorisée ({{min}} à {{max}}).",
-        "failed_to_save_compaction_wait_budget": "Impossible d'enregistrer le délai d'attente du compactage"
+        "turn_time_limit": "Durée maximale d’un tour (secondes)",
+        "turn_time_limit_description": "Durée maximale d’un tour de chat avant son arrêt. De 300 à 86 400 s (24 h). Par défaut 14 400 s (4 h).",
+        "turn_time_limit_hint": "Un tour qui atteint cette limite s’arrête et garde le travail déjà écrit sur le disque ; reprends-le pour continuer. Augmente-la pour les longs tours sans surveillance, comme une suite de tests complète. S’applique dès le tour suivant.",
+        "failed_to_save_compaction_wait_budget": "Impossible d'enregistrer le délai d'attente du compactage",
+        "failed_to_save_turn_time_limit": "Impossible d’enregistrer la durée maximale d’un tour"
       },
       "computerUsePanel": {
         "accessibility": "Accessibilité",

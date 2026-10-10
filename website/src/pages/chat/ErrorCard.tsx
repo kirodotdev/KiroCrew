@@ -57,6 +57,14 @@ const SESSION_START_FAILED_KIND = 'session_start_failed'
 export const isSessionStartFailed = (m: Pick<ChatMessage, 'kind' | 'meta'>): boolean =>
   m.kind === SESSION_START_FAILED_KIND || (m.meta as { kind?: string } | undefined)?.kind === SESSION_START_FAILED_KIND
 
+/** Row kind the backend stamps on the error row a turn that hit its time limit
+ *  leaves (`turn_dispatch.TURN_TIMEOUT_KIND`). The limit is a setting, so the
+ *  row links to it beside Resume. Same two carriers as above. */
+const TURN_TIMEOUT_KIND = 'turn_timeout'
+
+export const isTurnTimeout = (m: Pick<ChatMessage, 'kind' | 'meta'>): boolean =>
+  m.kind === TURN_TIMEOUT_KIND || (m.meta as { kind?: string } | undefined)?.kind === TURN_TIMEOUT_KIND
+
 /** Consecutive tagged session-start failures at which the card stops offering
  *  Resume and the server refuses the re-run (`session_start_repeat`). Two, not
  *  one: a single timed-out start is host weather and the first Resume is the
@@ -218,6 +226,14 @@ export interface ErrorCardProps {
    * Omitted on a surface with no crew editor route (embed, popout).
    */
   onOpenCapabilities?: () => void
+  /**
+   * The fix affordance for a `turn_timeout` row: open Settings → Chat →
+   * Advanced on the Turn Time Limit field, the setting that decides how long
+   * a turn may run. Offered BESIDE Resume, not instead of it: resuming is
+   * still the way to finish this turn, and the setting is how the next long
+   * one avoids the cut. Omitted on a surface with no settings route.
+   */
+  onOpenTurnLimit?: () => void
 }
 
 // No `shrink-0` and no `truncate`: every action sits in a flex row, and a
@@ -284,6 +300,7 @@ export const ErrorCard = memo(function ErrorCard({
   featureRequestFormUrl,
   sessionStartRepeat,
   onOpenCapabilities,
+  onOpenTurnLimit,
 }: ErrorCardProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   // Swap the gateway's "please retry" wording ONLY on a row that renders the
@@ -447,6 +464,48 @@ export const ErrorCard = memo(function ErrorCard({
       </div>
     )
   }
+  const resumeButton = onContinue && (
+    <button
+      type="button"
+      onClick={onContinue}
+      disabled={continuing}
+      className={`${ACTION_BTN} bg-accent text-accent-fg hover:bg-accent-hover`}
+      title={i18nT('pages.chat.errorCard.resume_hint')}
+      data-testid="error-card-continue"
+    >
+      {continuing
+        ? <Loader2 size={12} className="lucide-inline shrink-0 animate-spin" aria-hidden="true" />
+        : <RotateCw size={12} className="lucide-inline shrink-0" aria-hidden="true" />}
+      {i18nT('pages.chat.errorCard.resume')}
+    </button>
+  )
+  if (onOpenTurnLimit) {
+    return (
+      <div
+        className="bg-danger-subtle ring-1 ring-inset forced-colors:border ring-danger/20 rounded-md self-center w-full max-w-full min-w-0 px-3 py-2 flex flex-col gap-2 animate-scale-in"
+        data-testid="error-card"
+        data-turn-timeout="true"
+        data-continuable={onContinue ? 'true' : undefined}
+      >
+        <div className="text-danger text-[13px] leading-5 min-w-0" style={{ overflowWrap: 'anywhere' }}>
+          {withOriginLink(displayText)}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {resumeButton}
+          <button
+            type="button"
+            onClick={onOpenTurnLimit}
+            className={`${ACTION_BTN} bg-transparent text-text ring-1 ring-inset ring-border hover:bg-bg-elevated`}
+            title={i18nT('pages.chat.errorCard.turn_limit_hint')}
+            data-testid="error-card-turn-limit"
+          >
+            <Settings size={12} className="lucide-inline shrink-0" aria-hidden="true" />
+            {i18nT('pages.chat.errorCard.turn_limit')}
+          </button>
+        </div>
+      </div>
+    )
+  }
   if (!onContinue) {
     return (
       <div
@@ -483,19 +542,7 @@ export const ErrorCard = memo(function ErrorCard({
       <div className="text-danger text-[13px] leading-5 flex-1 min-w-0" style={{ overflowWrap: 'anywhere' }}>
         {withOriginLink(displayText)}
       </div>
-      <button
-        type="button"
-        onClick={onContinue}
-        disabled={continuing}
-        className={`${ACTION_BTN} bg-accent text-accent-fg hover:bg-accent-hover`}
-        title={i18nT('pages.chat.errorCard.resume_hint')}
-        data-testid="error-card-continue"
-      >
-        {continuing
-          ? <Loader2 size={12} className="lucide-inline shrink-0 animate-spin" aria-hidden="true" />
-          : <RotateCw size={12} className="lucide-inline shrink-0" aria-hidden="true" />}
-        {i18nT('pages.chat.errorCard.resume')}
-      </button>
+      {resumeButton}
     </div>
   )
 })
