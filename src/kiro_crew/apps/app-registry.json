@@ -16,5 +16,11 @@
     "gitUrl": "https://github.com/LeTeutz/todo-txt",
     "repo": "https://github.com/LeTeutz/todo-txt",
     "branch": "main"
+  },
+  {
+    "name": "usage-lens",
+    "gitUrl": "https://github.com/vokako/kirocrew-usage-lens",
+    "repo": "https://github.com/vokako/kirocrew-usage-lens",
+    "branch": "main"
   }
 ]
