@@ -3957,7 +3957,26 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
     force = request.query.get("force", "").lower() == "true"
-    return web.json_response(await stop_slot_turn(state, slot, force=force, cancel_key=cancel_key))
+    result = await stop_slot_turn(state, slot, force=force, cancel_key=cancel_key)
+    # Cascade the stop to in-flight subagents spawned by this parent session.
+    # The dashboard Stop button is the ONLY caller that should cascade — other
+    # callers of stop_slot_turn (steer-containment, session_control, work-ledger
+    # board) must NOT kill subagents they did not intend to stop.  The cascade
+    # lives here, in the HTTP route, not inside stop_slot_turn.
+    # The existing "Stop all" button (POST /api/spawn/stop-all, run_control.py)
+    # is a separate verb; this makes the turn Stop also cover its subagents so
+    # the user does not need to press both.
+    _subs = getattr(state, "subagents", None)
+    if _subs is not None:
+        try:
+            await _subs.cancel_for_parent(cancel_key)
+        except Exception:
+            logger.debug(
+                "cancel_for_parent failed during stop for slot %s",
+                name,
+                exc_info=True,
+            )
+    return web.json_response(result)
 
 
 async def api_chat_slot_continue(request: web.Request) -> web.Response:

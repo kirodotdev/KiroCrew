@@ -1842,6 +1842,29 @@ then raises that failure; a row whose report raised was removed and counts as
 stopped. Pinned by
 `test_queue_depth_reconcile.py::test_a_row_that_could_not_be_unqueued_fails_the_stop_and_reaps_nothing`.
 
+#### Dashboard Stop button cascade
+
+The dashboard Stop button (`POST /api/chat/slots/{slot}/stop`, `api_chat_slot_stop`)
+also cascades to in-flight subagents after stopping the parent turn.  This is a
+convenience: a user pressing Stop expects the visible work to stop, and subagent
+spinners are visible work.  The cascade calls `cancel_for_parent` in the HTTP
+route handler, NOT inside `stop_slot_turn`, because `stop_slot_turn` is a shared
+helper used by callers that must NOT cancel subagents:
+
+- `session_control.py` agent-driven stop — the agent stopped the session, not
+  the user; subagents the agent started may still be wanted.
+- `session_control.py` steer-containment — a best-effort narrowing of what the
+  turn publishes; its own comment says cancelling work that never received the
+  steer is worse than the exposure.
+- `work_ledger_board.py` board item stop — stops one work item's turn, not its
+  async children.
+
+The interrupt route (`api_chat_slot_interrupt`) does NOT cascade: it promotes a
+queued message, and the user's intent is "run this next", not "stop everything".
+
+Stop all (`POST /api/spawn/stop-all`, `run_control.py`) remains a separate verb
+for explicit bulk cancellation without stopping the parent turn.
+
 ### `cancel_all() -> None`
 Cancels all running subagents, stops the reaper loop, and awaits their cleanup. Handles `CancelledError` gracefully — sessions released, count decremented.
 The shielded terminal reports (`_report_tasks`) are then drained inside ONE
