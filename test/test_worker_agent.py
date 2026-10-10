@@ -2668,7 +2668,7 @@ def test_the_snapshot_never_takes_its_fingerprint_from_the_sidecar():
     assert (
         "get_mirrored_from" not in src
     ), "the snapshot's fingerprint must be of the bytes the gate read, not a recorded value"
-    assert "_spec_fingerprint(" in src
+    assert "_surface_fingerprint(" in src
 
 
 def test_a_default_spec_that_never_settles_refuses_the_spawn(tmp_path, monkeypatch):

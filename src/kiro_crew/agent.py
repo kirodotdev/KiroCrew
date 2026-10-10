@@ -5867,9 +5867,26 @@ def _install_heartbeat_agent() -> None:
     SEL audit logging stays at the gateway side — see
     ``GatewayOrchestrator._heartbeat_approval``.
     """
-    kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
-    path = kiro_agents_dir_path() / _HEARTBEAT_AGENT_FILENAME
+    agents_dir = kiro_agents_dir_path()
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    path = agents_dir / _HEARTBEAT_AGENT_FILENAME
+    model = _background_agent_model()
+    # The read of the main spec and the write of the copy are one critical section under
+    # both writer locks, in the order ``_install_worker_agent`` establishes: the agents
+    # lock outermost, ``kirocrew.json``'s own writer lock innermost. Without it a copy
+    # derived from an older main spec can land after a newer one, and the spawn gate
+    # would have verified the newer copy that kiro-cli then does not read.
+    from kiro_crew.apps.bridges import _mcp_lock  # noqa: PLC0415 - boot path
 
+    with agents_spec_lock(agents_dir), _mcp_lock():
+        _write_heartbeat_spec(path, agents_dir / AGENT_FILENAME, model)
+    # CC model for the heartbeat agent lives in the sidecar, not the kiro spec.
+    agent_state.set_cc_model("kirocrew-heartbeat", _background_cc_model())
+    logger.info("Installed heartbeat agent config: %s", path)
+
+
+def _write_heartbeat_spec(path: Path, main_path: Path, model: str) -> None:
+    """Derive the heartbeat spec from *main_path* and write it to *path*. Caller holds the locks."""
     # Pull the ``kirocrew-core`` entry from the main agent config so the
     # resolved command + skill-paths match the main agent (write-denied
     # commands and security still come from bundled hooks). Strip the main
@@ -5880,40 +5897,12 @@ def _install_heartbeat_agent() -> None:
     # capped reader: a refused main spec degrades as absent, but with an
     # operator-visible signal, because the result is a heartbeat agent with no
     # MCP servers -- a worker that fails every task.
-    main_path = kiro_agents_dir_path() / AGENT_FILENAME
     main_config = _read_spec_capped(main_path)
     if main_config is None and main_path.exists():
         logger.warning(
             "Main agent spec %s unusable; heartbeat agent installs with no MCP servers", main_path
         )
-    main_mcp = (main_config or {}).get("mcpServers", {}) or {}
-
-    _strip_flags = ("--include-tools", "--include-tool-tags", "--exclude-tools")
-    mcp: dict[str, dict] = {}
-    for name in ("kirocrew-core",):
-        entry = main_mcp.get(name)
-        if not isinstance(entry, dict):
-            continue
-        cleaned = dict(entry)
-        args = entry.get("args") or []
-        if isinstance(args, list):
-            filtered: list[str] = []
-            skip_next = False
-            for arg in args:
-                if skip_next:
-                    skip_next = False
-                    continue
-                if not isinstance(arg, str):
-                    filtered.append(arg)
-                    continue
-                if any(arg == f or arg.startswith(f + "=") for f in _strip_flags):
-                    # Form ``--flag=value`` is dropped; bare ``--flag`` consumes
-                    # the next arg too.
-                    skip_next = "=" not in arg
-                    continue
-                filtered.append(arg)
-            cleaned["args"] = filtered
-        mcp[name] = cleaned
+    mcp = worker_agent.heartbeat_mcp_servers(main_config)
 
     config: dict[str, object] = {
         "name": "kirocrew-heartbeat",
@@ -5922,7 +5911,7 @@ def _install_heartbeat_agent() -> None:
             "cycle with a read-only MCP toolset. Tool approval is gated "
             "gateway-side against HEARTBEAT_SAFE_TOOLS."
         ),
-        "model": _background_agent_model(),
+        "model": model,
         "includeMcpJson": False,
         "prompt": _HEARTBEAT_SYSTEM_PROMPT,
         "mcpServers": mcp,
@@ -5933,9 +5922,6 @@ def _install_heartbeat_agent() -> None:
     }
 
     _atomic_json_write(path, config)
-    # CC model for the heartbeat agent lives in the sidecar, not the kiro spec.
-    agent_state.set_cc_model("kirocrew-heartbeat", _background_cc_model())
-    logger.info("Installed heartbeat agent config: %s", path)
 
 
 def sync_aim_packages() -> None:

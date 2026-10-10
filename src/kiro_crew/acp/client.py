@@ -5967,8 +5967,8 @@ class AcpClient:
             except Exception:
                 logger.warning("pre-spawn agent materialization failed", exc_info=True)
             # ALSO not best-effort, and for the same reason as the fork gate below: a
-            # DERIVED spec (kirocrew-worker) that predates the default agent's still
-            # mounts and auto-approves a server the default does not have, so
+            # DERIVED spec (kirocrew-worker, kirocrew-heartbeat) that predates the default
+            # agent's still mounts and auto-approves a server the default does not have, so
             # proceeding would run ungoverned grants. Repairs first and refuses only
             # when it cannot -- a refused dispatch is recoverable and reportable,
             # which a worker running on a revoked server is not.

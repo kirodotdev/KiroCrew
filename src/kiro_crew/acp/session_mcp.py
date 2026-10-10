@@ -660,9 +660,10 @@ def _agent_spec_and_snapshot_for(
     at all, and the claude spawn path -- unlike kiro-cli's ``--agent`` one -- has
     no other reason to write it. Best-effort and never raises.
 
-    A DERIVED agent (``kirocrew-worker``) is answered from the freshness gate's own
-    snapshot and reads nothing here -- see the comment at that branch for why a read
-    after the gate is a second observation rather than a tighter one.
+    A DERIVED agent (``kirocrew-worker``, ``kirocrew-heartbeat``) is answered from the
+    freshness gate's own snapshot and reads nothing here -- see the comment at that
+    branch for why a read after the gate is a second observation rather than a tighter
+    one.
 
     Reads through ``agent_discovery._read_agent_spec``, the module's documented
     ONE reader, rather than parsing the file here: the agents directory is

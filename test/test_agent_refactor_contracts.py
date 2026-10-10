@@ -48,7 +48,7 @@ BASE_SURFACE: dict[str, str] = {
     "CU_MCP_SERVER": "value str a7edc1bcf90cb13f",
     "DEPRECATED_AGENT_SPECS": "value dict 3c349bf8ac509967",
     "DERIVED_KEY": "value str 0c56dd87b525dbd3",
-    "DerivedSpecSnapshot": "class DerivedSpecSnapshot fields=identity,fingerprint,spec",
+    "DerivedSpecSnapshot": "class DerivedSpecSnapshot fields=identity,fingerprint,spec,agent",
     "DerivedSpecStale": "class DerivedSpecStale",
     "FileTooLargeError": "class FileTooLargeError",
     "ForeignAgentSpec": "class ForeignAgentSpec",
