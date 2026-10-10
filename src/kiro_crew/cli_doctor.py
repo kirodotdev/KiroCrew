@@ -2008,6 +2008,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     agents._doctor_deprecated_agent_specs(cfg, issues)
     install._doctor_path_launcher()
     access._doctor_trust_root()
+    access._doctor_signing_key(issues)
     access._doctor_name_grant_platform_scope()
     mcp._doctor_strict_identity(cfg)
     mcp._doctor_mcp_gateway_daemon(issues)

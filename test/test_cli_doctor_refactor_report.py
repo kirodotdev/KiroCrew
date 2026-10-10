@@ -27,6 +27,7 @@ import pytest
 
 from kiro_crew import cli_doctor
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.doctor_checks import access
 from kiro_crew.platform import PlatformCompositionError
 
 pytestmark = pytest.mark.skipif(
@@ -51,6 +52,7 @@ _SECTIONS = (
     "_doctor_deprecated_agent_specs",
     "_doctor_path_launcher",
     "_doctor_trust_root",
+    "_doctor_signing_key",
     "_doctor_name_grant_platform_scope",
     "_doctor_strict_identity",
     "_doctor_mcp_gateway_daemon",
@@ -94,6 +96,12 @@ _TAKES_ISSUES = frozenset(_SECTIONS) - {
     "_doctor_selected_backend_projection",
     "_doctor_overload_resilience",
     "_doctor_source_checkout",
+}
+
+#: Sections defined in a family AFTER the move. The facade forwards only the names
+#: it held before, so these are stubbed on their family module.
+_FAMILY_ONLY = {
+    "_doctor_signing_key": access,
 }
 
 _GATED_OFF = frozenset({"kirocrew-computer"})
@@ -225,6 +233,12 @@ class _Host:
         mp.setitem(sys.modules, "amazon_transcribe.client", None)
         mp.setitem(sys.modules, "boto3", None)
         for name in _SECTIONS:
+            if name in _FAMILY_ONLY:
+                # A section added after the move is not re-exported through the
+                # facade (see test_cli_doctor_refactor_facade), so it is stubbed
+                # on the family that defines it.
+                mp.setattr(_FAMILY_ONLY[name], name, self._marker(name))
+                continue
             mp.setattr(cli_doctor, name, self._marker(name))
 
         self.kiro: str | None = _KIRO
@@ -370,6 +384,7 @@ Configuration
   <<_doctor_deprecated_agent_specs>>
   <<_doctor_path_launcher>>
   <<_doctor_trust_root>>
+  <<_doctor_signing_key>>
   <<_doctor_name_grant_platform_scope>>
   <<_doctor_strict_identity>>
   <<_doctor_mcp_gateway_daemon>>
@@ -533,6 +548,7 @@ Configuration
   <<_doctor_deprecated_agent_specs>>
   <<_doctor_path_launcher>>
   <<_doctor_trust_root>>
+  <<_doctor_signing_key>>
   <<_doctor_name_grant_platform_scope>>
   <<_doctor_strict_identity>>
   <<_doctor_mcp_gateway_daemon>>

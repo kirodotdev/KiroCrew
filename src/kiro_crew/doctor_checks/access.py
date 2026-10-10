@@ -1,7 +1,11 @@
-"""Access rows of ``kirocrew doctor``: session signing, hook auto-approve, credentials.
+"""Access rows of ``kirocrew doctor``: session signing, dashboard signing key, hook
+auto-approve, credentials.
 
-All three are advisory: each fail-closed answer is the intended posture, so none of
-them joins the issues that decide the exit code.
+Three are advisory: each fail-closed answer is the intended posture, so none of
+them joins the issues that decide the exit code. The dashboard signing-key row is
+the exception: its ``short`` state is the one the gateway boot preflight refuses,
+so it joins ``issues`` and ``kirocrew doctor && kirocrew gateway`` stops where the
+boot would.
 """
 
 from __future__ import annotations
@@ -39,6 +43,92 @@ def _doctor_trust_root() -> None:
     print("               Session identities go out unsigned, so sub-agent " "dispatch and memory")
     print("               writes are refused in sandboxed sessions. Restore the " "key file, or")
     print("               restart the gateway if another process relocated it.")
+
+
+def _doctor_signing_key(issues: list[str]) -> None:
+    """Report the dashboard signing key file's shape: present, absent, or too short.
+
+    A ``token_signing.key`` shorter than 32 bytes is never accepted, so the
+    gateway refuses to start on it (see ``slack.gateway.signing_key_preflight``)
+    and prints the manual repair steps. This reports the same state where the
+    operator is already looking, with the same steps.
+
+    Read-only, like the trust-root check above: ``lstat`` only, never creates or
+    moves the file. The macOS kernel's Seatbelt verdict is passed in as extra
+    confinement evidence, because ``cli.main()`` pops the launcher marker before
+    this runs and the key module's own probe covers only Linux.
+    """
+    # Read at call time, not bound at module scope: a family binds no project module
+    # but the facade (test_cli_doctor_refactor_family_reads.py).
+    from kiro_crew.dashboard import token_secret
+
+    state, key_path = token_secret.signing_key_health(
+        confined=cli_doctor.sandbox.agent_confinement_evidence() is not None
+    )
+    if state == "masked":
+        # The agent sandbox bind-mounts an empty file over the key, so a size read
+        # here would say "truncated" about a healthy key and hand back a remedy
+        # that deletes the real one by hand. Say it cannot be seen from here instead.
+        print(
+            f"  signing key: ⏹ {key_path} is masked inside the agent sandbox; run doctor from the host"
+        )
+        return
+    if state == "ok" and token_secret.open_is_denied(key_path):
+        # A whole key this process may not open: the boot's load falls back to an
+        # ephemeral secret on it and the gateway still starts, logging every
+        # dashboard session out at each restart. Doctor counts it so the operator
+        # fixes the mode instead. Never removed.
+        issues.append("token signing key cannot be read; the gateway starts on an ephemeral secret")
+        print(f"  ⚠ signing key: {key_path} exists but this process cannot open it.")
+        print("               The gateway starts on an ephemeral secret instead, which logs")
+        print("               every dashboard session out at each restart. Check its owner")
+        print("               and mode (a regular file, mode 0600, owned by the gateway's user).")
+        return
+    if state == "ok":
+        print(f"  signing key: ✅ {key_path} (regular file, at least 32 bytes)")
+        return
+    if state == "unstatable":
+        # The lstat itself failed (EIO, ESTALE on a network mount). If the boot's
+        # load cannot read past it either, the gateway starts on an ephemeral
+        # secret, so it is counted.
+        issues.append(
+            "token signing key cannot be stat'ed; the gateway may start on an ephemeral secret"
+        )
+        print(f"  ⚠ signing key: {key_path} could not be stat'ed (an I/O or mount error).")
+        print("               If the gateway cannot read the key either, it starts on an")
+        print("               ephemeral secret that logs every dashboard session out.")
+        print("               Check that the data home is reachable, then retry.")
+        return
+    if state == "absent":
+        print(f"  signing key: ⏹ {key_path} not created yet (the gateway writes it on first start)")
+        return
+    if state == "short" and token_secret.open_is_denied(key_path):
+        # Short AND unreadable by this process: inside an agent sandbox whose
+        # confinement signals both missed, this is the mode-0 mask, and a removal
+        # step relayed from here would destroy the healthy host key. On the host
+        # it is a truncated key nobody can read. The two cannot be told apart from
+        # here, so nothing is removed and it is not counted as an issue: counting
+        # it would fail doctor against a healthy key in the sandbox case. The boot
+        # preflight, which runs outside the sandbox, still refuses a real one.
+        print(f"  ⚠ signing key: {key_path} is shorter than 32 bytes and this process")
+        print("               cannot open it. Inside an agent sandbox this is the mask over")
+        print("               the real key: run doctor from the host. On the host, check the")
+        print("               file's owner and mode before changing anything.")
+        return
+    if state == "short":
+        # Counted as an issue so `kirocrew doctor && kirocrew gateway` stops here
+        # with a non-zero exit: this is the exact state the boot preflight refuses.
+        issues.append("token signing key is truncated; the gateway refuses to start on it")
+        print(f"  ⚠ signing key: {key_path} is shorter than 32 bytes (a truncated create or copy).")
+        print("               The gateway refuses to start on it; every restart would otherwise")
+        print("               log every dashboard session out. Repair it by hand:")
+        for step in token_secret.signing_key_remedy(
+            key_path, cli_doctor.common_service.restart_command_hint()
+        ):
+            print(f"               {step}")
+        return
+    print(f"  ⚠ signing key: {key_path} is not a regular file or cannot be read.")
+    print("               Restore the key file, or remove the link or directory at that path.")
 
 
 def _doctor_name_grant_platform_scope() -> None:

@@ -24,6 +24,9 @@ from __future__ import annotations
 import errno
 import logging
 import os
+import platform
+import re
+import shlex
 import stat
 import threading
 import time
@@ -36,6 +39,160 @@ logger = logging.getLogger(__name__)
 
 _SECRET_KEY_FILE = "token_signing.key"
 _MIN_KEY_BYTES = 32
+
+
+def signing_key_remedy(key_path: "Path", restart: str) -> "list[str]":
+    """The manual steps an operator follows when :func:`signing_key_health` answers ``"short"``.
+
+    Steps, not a command. Any printed one-liner that checks the file and then
+    removes it has a gap between the two, and a restore landing in that gap loses
+    the restored key. The steps close the gap at its source instead: the gateway
+    and whatever restores the key are stopped FIRST, so nothing can write the file
+    while a person checks its length and removes it. The file is removed, not moved
+    aside: a copy at any other name sits outside the agent sandbox's exact-leaf
+    mask over ``token_signing.key``, so a truncated key's remaining bytes (31 of 32
+    leave one byte to guess) would become readable by every agent. A truncated key
+    signs nothing, so removing it loses nothing, and the next boot publishes a
+    fresh key through the single-creator election.
+
+    The path in each command goes through :func:`shlex.quote` (PowerShell: a
+    single-quoted literal with embedded quotes doubled) because the commands are
+    printed for pasting and the data home is operator-controlled
+    (``KIROCREW_HOME``): a name carrying a quote, a space or a ``$(...)`` must land
+    in the shell as one literal argument, never as syntax.
+
+    *restart* is the caller's service-aware restart command
+    (``service.common.restart_command_hint``), which picks the system unit, the
+    per-user unit or ``kirocrew restart`` from what is installed; each of those
+    also starts a stopped gateway. A fixed command here would name the wrong
+    manager for a per-user or foreground gateway. It is passed in rather than
+    imported because ``service.common`` imports ``config.loader``, the same
+    circular chain the local import below avoids.
+    """
+    if platform.system() == "Windows":
+        # PowerShell ends a single-quoted string on the ASCII quote AND on the
+        # curly single quotes U+2018..U+201B; each is escaped by doubling it.
+        ps_path = "'" + re.sub("['\u2018\u2019\u201a\u201b]", r"\g<0>\g<0>", str(key_path)) + "'"
+        check = f"(Get-Item -LiteralPath {ps_path}).Length"
+        remove = f"Remove-Item -LiteralPath {ps_path}"
+    else:
+        quoted = shlex.quote(str(key_path))
+        check = f"wc -c < {quoted}"
+        remove = f"rm {quoted}"
+    # Each command ends its line after "Run: ", unwrapped, so a path carrying a
+    # backtick or a quote reaches the terminal exactly as the shell quoting built it.
+    return [
+        "1. Stop the gateway, and anything that may be restoring this file "
+        "(a backup job, a copy from another host).",
+        f"2. Check it is still short. It must print less than {_MIN_KEY_BYTES}, and a "
+        f"result of {_MIN_KEY_BYTES} or more means a restore finished, so skip to step 4. "
+        f"Run: {check}",
+        f"3. Delete it by hand. Run: {remove}",
+        f"4. Start the gateway. Run: {restart}",
+    ]
+
+
+def signing_key_health(
+    key_path: "Path | None" = None, *, confined: bool = False
+) -> "tuple[str, Path]":
+    """Read-only look at the persisted signing key: ``(state, path)``.
+
+    ``state`` is one of:
+
+    * ``"ok"``: a regular file holding at least :data:`_MIN_KEY_BYTES` bytes;
+    * ``"absent"``: no file; the next boot publishes one, nothing is wrong;
+    * ``"short"``: a regular file SHORTER than a key. No boot accepts it, and the
+      loader's fallback for it is an ephemeral secret that a restart cannot
+      reproduce, so every restart logs every dashboard session out and drops every
+      HMAC-certified grant. The gateway refuses to start on it and names
+      :func:`signing_key_remedy`; how it got that way (a killed in-place create, a
+      partial migration copy, a truncated restore) is an operator-visible event;
+    * ``"other"``: present but not a regular file (a symlink, a directory);
+      reported, never repaired here;
+    * ``"unstatable"``: the ``lstat`` itself failed with something other than
+      "no such file" (EIO, ESTALE on a network mount, EACCES on the directory).
+      Whether a key is there is unknown, so the boot preflight still runs the
+      real load and refuses only when that load answers ``"short"``; an
+      ephemeral fallback boots on the loader's WARNING and doctor reports it;
+    * ``"masked"``: this process runs inside a Kiro Crew agent sandbox, where the
+      launcher bind-mounts an EMPTY file over the key (on macOS, denies the
+      ``lstat``), so the size seen here says nothing about the real file. Reading
+      the mask as ``"short"`` would hand an operator a remedy that deletes a
+      healthy key by hand, so the answer is keyed on evidence that the PROCESS
+      is confined, never on the file's shape alone: on Linux the process's cgroup is under
+      ``kirocrew-agents.slice``, and the caller may pass *confined* for evidence
+      this module does not probe itself (``kirocrew doctor`` passes the macOS
+      kernel's Seatbelt verdict from ``sandbox.agent_confinement_evidence``). The
+      launcher's ``KIROCREW_SANDBOX_ACTIVE`` marker counts too, but only as an
+      extra: ``cli.main()`` pops it before any subcommand runs. A file on another
+      device from its directory is NOT evidence on its own: an operator can mount
+      a filesystem at the key leaf on a host, and reading that as a mask would
+      withhold the refusal from a truncated key there.
+
+    Never creates, moves or reads the key bytes: ``lstat`` only, so asking the
+    question from ``doctor`` or a boot preflight has no side effect.
+    """
+    if key_path is None:
+        # Local import for the same reason _load_or_create_secret has one:
+        # config.loader pulls in modules that import token_auth, which re-exports
+        # this module, so a top-level import would be circular.
+        from kiro_crew.config.loader import config_dir
+
+        key_path = config_dir() / _SECRET_KEY_FILE
+    if confined or _inside_agent_sandbox():
+        return "masked", key_path
+    try:
+        info = os.lstat(key_path)
+    except FileNotFoundError:
+        return "absent", key_path
+    except OSError:
+        return "unstatable", key_path
+    if not stat.S_ISREG(info.st_mode):
+        return "other", key_path
+    if info.st_size < _MIN_KEY_BYTES:
+        return "short", key_path
+    return "ok", key_path
+
+
+def open_is_denied(key_path: Path) -> bool:
+    """Whether this process is refused a read-only open of *key_path*.
+
+    The agent sandbox's mask over the key is a mode-0 stand-in, so inside a
+    sandbox the scrubbed environment and the cgroup probe can both miss while an
+    open is still refused; an operator's truncated 0600 key opens. ``doctor``
+    asks this before it prints a removal step for a ``"short"`` key. The open
+    reads no bytes and does not follow a symlink.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(key_path, flags)
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    os.close(fd)
+    return False
+
+
+def _inside_agent_sandbox(cgroup_path: str = "/proc/self/cgroup") -> bool:
+    """Confinement evidence that survives an environment scrub.
+
+    The launcher-only ``KIROCREW_SANDBOX_ACTIVE`` marker is checked first because
+    it is cheap and, in the direction of refusal, harmless when forged (an
+    over-answer of ``"masked"`` withholds a remedy, never hands one out). It is
+    not sufficient: ``cli.main()`` removes it before dispatch. On Linux every
+    agent process is placed under ``kirocrew-agents.slice`` by the sandbox
+    launcher, and ``/proc/self/cgroup`` cannot be edited from inside, so that
+    membership is the durable signal.
+    """
+    if os.environ.get("KIROCREW_SANDBOX_ACTIVE"):
+        return True
+    try:
+        with open(cgroup_path, encoding="utf-8") as fh:
+            return "kirocrew-agents.slice" in fh.read()
+    except OSError:
+        return False
+
 
 #: Directory (a direct child of the crew data home) both gateway auth stores stage their
 #: temp files in: this module's ``token_signing.key`` and ``refresh_tokens``'
@@ -304,10 +461,7 @@ def _unlink_if_same_file(key_path: Path, created_stat: os.stat_result) -> None:
         # Already gone (a sibling cleaned it up, or it never landed) — nothing
         # of ours to remove.
         return
-    if (
-        on_disk.st_dev == created_stat.st_dev
-        and on_disk.st_ino == created_stat.st_ino
-    ):
+    if on_disk.st_dev == created_stat.st_dev and on_disk.st_ino == created_stat.st_ino:
         try:
             os.unlink(key_path)
         except OSError:
@@ -394,9 +548,7 @@ def _create_key_in_place(key_path: Path) -> bytes | None:
         while mv:
             n = os.write(fd, mv)
             if n == 0:
-                raise OSError(
-                    "short write persisting token signing key (wrote 0 bytes)"
-                )
+                raise OSError("short write persisting token signing key (wrote 0 bytes)")
             mv = mv[n:]
         # Cross-restart persistence is the entire reason this file
         # exists, so flush the bytes to stable storage before we treat
@@ -425,8 +577,13 @@ def _create_key_in_place(key_path: Path) -> bytes | None:
     return key
 
 
-def _load_or_create_secret() -> bytes:
+def _load_or_create_secret(outcome: "list[str] | None" = None) -> bytes:
     """Return the HMAC signing secret, persisted across restarts.
+
+    *outcome*, when given, receives ``"ephemeral"`` whenever the secret is an
+    ephemeral fallback rather than a persisted key, and also ``"short"`` if the key
+    file was still truncated at the moment of falling back;
+    :func:`load_boot_secret` reads it. Every other caller passes nothing.
 
     See module docstring for the persistence rationale. Falls back to an
     ephemeral secret if the key file is unwritable — tokens still work within
@@ -744,6 +901,18 @@ def _load_or_create_secret() -> bytes:
         # (works this session, not across restart), matching the
         # unwritable-file fallback below. An operator can remove the stale file
         # to let a fresh key be created cleanly.
+        #
+        # One last read before giving up, and the verdict comes from THAT read.
+        # A sibling's in-place writer can finish between the loop's final read
+        # and this point; a separate lstat taken here would then see a full key
+        # and approve the ephemeral secret this process is about to sign with.
+        # Reading once through one descriptor either returns the finished key
+        # (the same >= _MIN_KEY_BYTES rule every read above applies) or reports
+        # the shortness it actually observed.
+        final, observed_short = _final_key_read(key_path)
+        if final is not None:
+            _enforce_owner_only(key_path)
+            return final
         # Logs only the key PATH (key_path) and an attempt count, never the key
         # bytes; the Semgrep rule fires on the credential-adjacent wording in
         # the static message string, not on any secret value.
@@ -753,15 +922,81 @@ def _load_or_create_secret() -> bytes:
             key_path,
             _CREATE_MAX_ATTEMPTS,
         )
+        if outcome is not None:
+            outcome.append("ephemeral")
+            if observed_short:
+                outcome.append("short")
         return os.urandom(_MIN_KEY_BYTES)
     except OSError:
         # Fall back to an ephemeral secret if the key file is unwritable.
         logger.warning("token signing key not persisted; using ephemeral secret", exc_info=True)
+        if outcome is not None:
+            outcome.append("ephemeral")
         return os.urandom(_MIN_KEY_BYTES)
+
+
+def _final_key_read(key_path: Path) -> tuple[bytes | None, bool]:
+    """Read *key_path* once through one no-follow descriptor.
+
+    Returns ``(key, False)`` when the file holds a full key, ``(None, True)``
+    when it is a regular file under a key's length, and ``(None, False)`` for
+    anything else (absent, not a regular file, a symlink, unreadable). The
+    type check and the bytes come from the same descriptor, so the verdict
+    describes exactly what this read saw.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    try:
+        fd = os.open(key_path, flags)
+    except OSError:
+        return None, False
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None, False
+        chunks: list[bytes] = []
+        while chunk := os.read(fd, 4096):
+            chunks.append(chunk)
+    except OSError:
+        return None, False
+    finally:
+        os.close(fd)
+    data = b"".join(chunks)
+    if len(data) >= _MIN_KEY_BYTES:
+        return data, False
+    return None, True
 
 
 _SECRET: bytes | None = None
 _SECRET_LOCK = threading.Lock()
+
+
+def load_boot_secret() -> str:
+    """Load and memoize this process's signing secret now, and say how it went.
+
+    Returns ``"short"`` when the loader's own read found a truncated key file and
+    it fell back to an ephemeral secret, ``"ephemeral"`` when it fell back for any
+    other reason (an unreadable or unwritable key, whose shape the loader could not
+    confirm), ``"loaded"`` only when the secret is a persisted key (read or
+    first-boot published), and ``"already-loaded"`` when an earlier caller
+    memoized the secret first.
+
+    This is the boot preflight's AUTHORITATIVE check. An ``lstat`` taken before
+    the load can go stale: an in-place rewrite that starts after it and stays
+    under 32 bytes through the loader's retry budget would still end in the
+    ephemeral fallback. Judging the same call whose result is memoized closes
+    that gap, because the bytes the gateway will sign with are the bytes this
+    verdict describes. The loader's degrade-to-ephemeral contract is unchanged
+    for every other caller: only the boot, which can still refuse to bind, acts
+    on the answer.
+    """
+    global _SECRET
+    with _SECRET_LOCK:
+        if _SECRET is not None:
+            return "already-loaded"
+        outcome: list[str] = []
+        _SECRET = _load_or_create_secret(outcome)
+    if "short" in outcome:
+        return "short"
+    return "ephemeral" if "ephemeral" in outcome else "loaded"
 
 
 def _get_secret() -> bytes:
