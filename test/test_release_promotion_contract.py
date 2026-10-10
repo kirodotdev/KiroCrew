@@ -23,6 +23,7 @@ import importlib.util
 from pathlib import Path
 
 import yaml
+from workflow_annotation_helpers import annotation_calls, first_annotation_call
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
@@ -640,7 +641,7 @@ def test_the_draft_probe_never_guesses_from_a_failed_api_call() -> None:
     assert "release not found" in body
     assert "drafted=absent" in body
     # Fails closed, loudly, on anything it cannot classify.
-    assert "::error::" in body
+    assert annotation_calls(body, "error")
     assert "exit 1" in body
 
 
@@ -729,9 +730,9 @@ def test_rerunning_a_completed_stable_publication_is_a_no_op() -> None:
     # A completed rerun is a NOTICE, not a failure: nothing is wrong with it.
     complete = body.index('[ "$drafted" = "false" ] && [ "$marked" = "true" ]')
     anomaly = body.index('elif [ "$drafted" = "false" ]; then')
-    assert complete < body.index("::notice::") < anomaly
+    assert complete < first_annotation_call(body, "notice") < anomaly
     # The only failure here is the anomaly branch, never the rerun branch.
-    assert body.index("::error::") > anomaly
+    assert first_annotation_call(body, "error") > anomaly
 
     for name in (
         "Write the stable publication marker",
@@ -855,7 +856,7 @@ def test_a_published_release_is_never_uploaded_to_again() -> None:
     skip = body.index('if [ "$drafted" = "false" ]; then')
     assert body.index('echo "action=skip" >> "$GITHUB_OUTPUT"') > skip
     assert body.index('if [ "$marked" = "true" ]; then') > skip
-    assert "::warning::" in body, "an unmarked public release must be reported"
+    assert annotation_calls(body, "warning"), "an unmarked public release must be reported"
 
     # The marker predicate is shared with reconciliation so the two cannot drift
     # into two notions of "completed".

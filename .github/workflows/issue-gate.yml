@@ -178,12 +178,15 @@ jobs:
           PENDING_LABEL: "pending-triage"
           TRIAGED_LABEL: "triaged"
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          warn() { printf '::%s::%s\n' warning "$*"; }
+          notice() { printf '::%s::%s\n' notice "$*"; }
           set -uo pipefail
 
           case "$GATE_ENFORCED" in
             true) ;;
             false)
-              echo "::notice::Issue Gate is paused (GATE_ENFORCED is \"false\" in issue-gate.yml); no issue requirement applied to this PR."
+              notice "Issue Gate is paused (GATE_ENFORCED is \"false\" in issue-gate.yml); no issue requirement applied to this PR."
               {
                 echo "### Issue Gate is paused"
                 echo
@@ -193,20 +196,20 @@ jobs:
               exit 0
               ;;
             *)
-              echo "::error::GATE_ENFORCED must be \"true\" or \"false\", got \"$GATE_ENFORCED\". Fix issue-gate.yml."
+              err "GATE_ENFORCED must be \"true\" or \"false\", got \"$GATE_ENFORCED\". Fix issue-gate.yml."
               exit 1
               ;;
           esac
 
           case "$AUTHOR" in
             dependabot\[bot\])
-              echo "::notice::PR author is $AUTHOR; dependency-bump PRs have no issue to point at. Issue requirement not applied."
+              notice "PR author is $AUTHOR; dependency-bump PRs have no issue to point at. Issue requirement not applied."
               exit 0
               ;;
           esac
 
           if [ "$WAIVED" = "true" ]; then
-            echo "::warning::'issue-gate: waived' label present -- issue requirement overridden for this PR by a maintainer."
+            warn "'issue-gate: waived' label present -- issue requirement overridden for this PR by a maintainer."
             exit 0
           fi
 
@@ -235,7 +238,7 @@ jobs:
           }
 
           fail_read() {
-            echo "::error::Could not read $1 from the API after 3 attempts, so this check cannot judge the PR. This is a read failure, not a missing issue -- re-run this job."
+            err "Could not read $1 from the API after 3 attempts, so this check cannot judge the PR. This is a read failure, not a missing issue -- re-run this job."
             {
               echo "### Could not read $1"
               echo
@@ -255,7 +258,7 @@ jobs:
           # grammar script predates this gate. Nothing to judge with; say so
           # and stop.
           if [ ! -f base/.github/scripts/issue_gate_refs.py ]; then
-            echo "::notice::The default branch carries no issue-gate grammar yet (this gate has not merged); nothing to enforce on this PR."
+            notice "The default branch carries no issue-gate grammar yet (this gate has not merged); nothing to enforce on this PR."
             exit 0
           fi
 
@@ -279,13 +282,13 @@ jobs:
             0|3|4) ;;
             *)
               cat grammar-err.txt >&2
-              echo "::error::The reference grammar (default branch's .github/scripts/issue_gate_refs.py -> kirocrew-prepare-pr/scripts/pr_status.py) exited $rc, so this check cannot judge the PR. This is an environment failure, not a missing issue -- see the step log."
+              err "The reference grammar (default branch's .github/scripts/issue_gate_refs.py -> kirocrew-prepare-pr/scripts/pr_status.py) exited $rc, so this check cannot judge the PR. This is an environment failure, not a missing issue -- see the step log."
               exit 1
               ;;
           esac
           if [ "$rc" -eq 4 ]; then
             cat grammar-err.txt >&2
-            echo "::error::This PR's description declares more distinct issues than the gate will read. A PR closing that many issues is a PR to split."
+            err "This PR's description declares more distinct issues than the gate will read. A PR closing that many issues is a PR to split."
             {
               echo "### Too many issues declared"
               echo
@@ -296,7 +299,7 @@ jobs:
             exit 1
           fi
           if [ "$rc" -eq 3 ]; then
-            echo "::error::A closing reference in this PR's description names a number GitHub could never have issued. Fix the issue number."
+            err "A closing reference in this PR's description names a number GitHub could never have issued. Fix the issue number."
             {
               echo "### Malformed issue reference"
               echo
@@ -307,7 +310,7 @@ jobs:
           fi
 
           if [ -z "$refs" ]; then
-            echo "::error::This PR's description declares no issue of this repository. Add 'Closes #N' (closes it on merge) or 'Part of #N' (leaves it open) for the issue this PR implements."
+            err "This PR's description declares no issue of this repository. Add 'Closes #N' (closes it on merge) or 'Part of #N' (leaves it open) for the issue this PR implements."
             {
               echo "### Issue reference required"
               echo
@@ -406,7 +409,7 @@ jobs:
           done
 
           if [ -n "$problems" ]; then
-            echo "::error::This PR references an issue that is not cleared yet. See the job summary."
+            err "This PR references an issue that is not cleared yet. See the job summary."
             {
               echo "### Referenced issue not cleared"
               echo

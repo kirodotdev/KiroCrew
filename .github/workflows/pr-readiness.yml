@@ -335,6 +335,7 @@ jobs:
           RUN_HEAD_REF: ${{ github.event.workflow_run.head_branch }}
           EVENT_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           source "$RUNNER_TEMP/gh-retry.sh"
           case "$EVENT" in
@@ -409,7 +410,7 @@ jobs:
               fi
               ;;
             pull_request_target) PR="$EVENT_PR"; EXPECTED_SHA="$EVENT_SHA" ;;
-            *) echo "::error::unsupported event: $EVENT"; exit 1 ;;
+            *) err "unsupported event: $EVENT"; exit 1 ;;
           esac
 
           pr_json="$(gh_retry gh pr view "$PR" --repo "$REPO" \
@@ -537,6 +538,7 @@ jobs:
           LANE: ${{ github.event.workflow_run.name }}
           RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           source "$RUNNER_TEMP/gh-retry.sh"
           READ_FAILURE_TOKEN="[read-failed]"
@@ -595,7 +597,7 @@ jobs:
             }' > "$RUNNER_TEMP/readiness-hold.json"
           if ! bounded gh api --method POST "repos/$REPO/statuses/$SHA" \
             --input "$RUNNER_TEMP/readiness-hold.json" >/dev/null; then
-            echo "::error::Failed to hold the readiness status for $SHA while" \
+            err "Failed to hold the readiness status for $SHA while" \
               "${LANE:-a monitored lane} re-runs. Not retried (a retry can" \
               "overwrite a concurrent run's newer verdict); the sweep" \
               "recomputes when the lane completes."
@@ -1044,7 +1046,7 @@ jobs:
           #
           # Why the slot is read at all: a lane that computed a verdict it could
           # not publish still completes `success`. Every publish-failure arm of
-          # the lanes' shared upsert emits an `::error::` and then returns 0, so
+          # the lanes' shared upsert emits an error annotation and then returns 0, so
           # the run reports success while the slot still holds the PREVIOUS
           # head's verdict. Counting that lane as passed states the design was
           # reviewed for a head that carries no published review, and reporting
@@ -1823,6 +1825,7 @@ jobs:
           HEAD_REPO: ${{ steps.context.outputs.head_repo }}
           HEAD_REF: ${{ steps.context.outputs.head_ref }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           source "$RUNNER_TEMP/gh-retry.sh"
           # A truncated evaluation that deferred to an existing terminal
@@ -2114,7 +2117,7 @@ jobs:
             }' > "$RUNNER_TEMP/readiness-status.json"
           if ! bounded gh api --method POST "repos/$REPO/statuses/$SHA" \
             --input "$RUNNER_TEMP/readiness-status.json" >/dev/null; then
-            echo "::error::Failed to publish the readiness status for $SHA." \
+            err "Failed to publish the readiness status for $SHA." \
               "The POST is not retried (a retry can overwrite a concurrent" \
               "run's newer verdict); re-run this workflow to re-evaluate" \
               "and republish."

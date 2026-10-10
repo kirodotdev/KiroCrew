@@ -221,6 +221,8 @@ jobs:
           LANE_OCCUPANCY_MAX_READS: "8"
           RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
+          warn() { printf '::%s::%s\n' warning "$*"; }
+          notice() { printf '::%s::%s\n' notice "$*"; }
           set -euo pipefail
           # The first 8 hex digits of the head SHA, read as an integer, modulo
           # the sample rate. Deterministic per commit (see the job comment).
@@ -241,7 +243,7 @@ jobs:
               reason="${reason:+$reason,}content"
             fi
           else
-            echo "::warning::could not read ${BASE_SHA:-<no base>}...${HEAD_SHA}; the content switch is off for this run"
+            warn "could not read ${BASE_SHA:-<no base>}...${HEAD_SHA}; the content switch is off for this run"
           fi
 
           # The ceiling, applied to every switch nobody asked for by hand
@@ -296,7 +298,7 @@ jobs:
                       # repository. Stopping here reports the holders actually
                       # found, which is below the ceiling, so the suite runs --
                       # the same direction as failing open.
-                      echo "::warning::stopped counting macOS lane occupancy after $reads run(s); $live holder(s) found, under the ceiling"
+                      warn "stopped counting macOS lane occupancy after $reads run(s); $live holder(s) found, under the ceiling"
                       break
                     fi
                     reads=$(( reads + 1 ))
@@ -314,7 +316,7 @@ jobs:
                 # allocation choice, not a safety control, and a lane that stops
                 # covering darwin because an API call failed is the worse error.
                 if [ -z "$live" ]; then
-                  echo "::warning::macOS lane occupancy could not be read; running without the ceiling"
+                  warn "macOS lane occupancy could not be read; running without the ceiling"
                 elif [ "$live" -ge "$LANE_MAX_LIVE_RUNS" ]; then
                   capped="$live"
                 fi
@@ -325,11 +327,11 @@ jobs:
           if [ -n "$capped" ]; then
             echo "run=false" >> "$GITHUB_OUTPUT"
             echo "reason=pool-cap" >> "$GITHUB_OUTPUT"
-            echo "::notice::macOS suite skipped on ${HEAD_SHA:0:12} despite $reason: at least $capped live lane run(s) already hold the macOS pool (ceiling $LANE_MAX_LIVE_RUNS). The nightly still covers this change; add the ci:macos label to run it anyway."
+            notice "macOS suite skipped on ${HEAD_SHA:0:12} despite $reason: at least $capped live lane run(s) already hold the macOS pool (ceiling $LANE_MAX_LIVE_RUNS). The nightly still covers this change; add the ci:macos label to run it anyway."
           elif [ -n "$reason" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
             echo "reason=$reason" >> "$GITHUB_OUTPUT"
-            echo "::notice::macOS suite runs on ${HEAD_SHA:0:12}: $reason (sample bucket $bucket of $SAMPLE_ONE_IN)"
+            notice "macOS suite runs on ${HEAD_SHA:0:12}: $reason (sample bucket $bucket of $SAMPLE_ONE_IN)"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
             echo "reason=none" >> "$GITHUB_OUTPUT"

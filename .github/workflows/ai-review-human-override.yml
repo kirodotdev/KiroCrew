@@ -52,6 +52,7 @@ jobs:
           COMMENT_ID: ${{ github.event.comment.id }}
           COMMENT_BODY: ${{ github.event.comment.body }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
 
           post_notice() {
@@ -139,7 +140,7 @@ jobs:
           done
           rm -f "$perm_err"
           if [ -z "$perm_read_ok" ]; then
-            echo "::error::Could not read $ACTOR's collaborator permission after 3 attempts, so this handler cannot tell a non-writer from an unreadable permission API. Refusing the override without recording it."
+            err "Could not read $ACTOR's collaborator permission after 3 attempts, so this handler cannot tell a non-writer from an unreadable permission API. Refusing the override without recording it."
             post_notice "AI-review override not recorded: your repository permission could not be READ (the collaborator-permission API did not answer after 3 attempts). This is not a permission denial -- re-issue the command once the API is healthy."
             exit 1
           fi
@@ -187,6 +188,7 @@ jobs:
           IS_FORK: ${{ steps.context.outputs.fork }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -euo pipefail
 
           post_notice() {
@@ -203,7 +205,7 @@ jobs:
           failed_lanes=""
           rerun_count=0
           fail_lane() {
-            echo "::warning::$2"
+            warn "$2"
             failed_lanes="${failed_lanes:+$failed_lanes, }$1"
           }
 
@@ -456,7 +458,7 @@ jobs:
 
           if [ -n "$failed_lanes" ]; then
             post_notice "Human judgment recorded, but the following reviewer lane(s) could not be re-run automatically: **$failed_lanes**. Re-run the lane's latest workflow run for \`$HEAD\` manually from the Actions tab." \
-              || echo "::warning::could not post the rerun-failure notice"
+              || warn "could not post the rerun-failure notice"
           fi
 
           # PR Readiness recomputes here whenever no lane run is about to
@@ -472,6 +474,6 @@ jobs:
               >/dev/null 2>"$ERR_FILE"; then
               echo "Dispatched PR Readiness for #$PR at $HEAD."
             else
-              echo "::warning::could not dispatch PR Readiness for #$PR at $HEAD ($(read_error)); its next sweep recomputes the verdict."
+              warn "could not dispatch PR Readiness for #$PR at $HEAD ($(read_error)); its next sweep recomputes the verdict."
             fi
           fi

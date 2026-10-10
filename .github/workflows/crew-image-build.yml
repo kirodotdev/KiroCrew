@@ -126,6 +126,7 @@ jobs:
 
       - name: Start the loopback registry
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           # Tag AND digest, like the crew base image's own FROM: the digest is
           # what pins it, the tag is what tells a reader which image it is. This
@@ -140,7 +141,7 @@ jobs:
             fi
             sleep 1
           done
-          echo "::error::the loopback registry never became ready"
+          err "the loopback registry never became ready"
           docker logs "$REGISTRY_CONTAINER"
           exit 1
 
@@ -156,6 +157,7 @@ jobs:
       # the lane rather than being skipped.
       - name: Build every recipe
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           BASE_DIGEST=""
           BUILT=0
@@ -175,19 +177,19 @@ jobs:
                 BASE_DIGEST=$(docker image inspect "$TAG" --format '{{index .RepoDigests 0}}')
                 case "$BASE_DIGEST" in
                   *@sha256:*) ;;
-                  *) echo "::error::no repository digest for ${TAG} after push"; exit 1 ;;
+                  *) err "no repository digest for ${TAG} after push"; exit 1 ;;
                 esac
                 echo "base digest: ${BASE_DIGEST}"
                 ;;
               layer)
                 if [ -z "$BASE_DIGEST" ]; then
-                  echo "::error::${path} needs a digest-pinned base (ARG ${base_arg}) and no base was built first"
+                  err "${path} needs a digest-pinned base (ARG ${base_arg}) and no base was built first"
                   exit 1
                 fi
                 "./${producer}" --base "$BASE_DIGEST" --bundle "${RUNNER_TEMP}/bundle"
                 ;;
               *)
-                echo "::error::${path} has role '${role}', which this lane cannot build. Teach scripts/crew_image_build_plan.py and this workflow together."
+                err "${path} has role '${role}', which this lane cannot build. Teach scripts/crew_image_build_plan.py and this workflow together."
                 exit 1
                 ;;
             esac
@@ -201,14 +203,15 @@ jobs:
       # success -- the failure shape this whole change exists to retire.
       - name: Assert every discovered recipe was built
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           PLANNED=$(wc -l < plan.tsv)
           if [ "$PLANNED" -lt 1 ]; then
-            echo "::error::the plan was empty, so this lane built nothing and proved nothing"
+            err "the plan was empty, so this lane built nothing and proved nothing"
             exit 1
           fi
           if [ "$BUILT" != "$PLANNED" ]; then
-            echo "::error::planned ${PLANNED} recipes but built ${BUILT}"
+            err "planned ${PLANNED} recipes but built ${BUILT}"
             exit 1
           fi
           echo "built all ${BUILT} discovered recipe(s)"

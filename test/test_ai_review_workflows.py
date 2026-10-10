@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from workflow_annotation_helpers import annotation_calls, with_annotation_helpers
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
@@ -872,8 +873,8 @@ class TestHumanOverrideHandler:
         workflow = _workflow("ai-review-human-override.yml")
         script = _step_script(workflow, "Re-run line reviewers with the human decision")
 
-        assert "::error::" not in script
-        assert "::warning::" in script
+        assert not annotation_calls(script, "error")
+        assert annotation_calls(script, "warning")
         assert 'if [ -n "$failed_lanes" ]; then' in script
         assert "post_notice" in script
         assert "could not be re-run automatically" in script
@@ -1851,7 +1852,7 @@ class TestFirstPrinciplesReview:
 
         assert "for attempt in 1 2; do" in finalize
         assert "completing stranded check-run" in finalize
-        assert "::warning::could not complete check-run" in finalize
+        assert 'warn "could not complete check-run' in finalize
 
     def test_sweep_only_completes_check_runs_this_pr_created(self) -> None:
         # Two open PRs can share a head commit, so a check-run of this name on this
@@ -1957,7 +1958,7 @@ class TestFirstPrinciplesReview:
         assert "SKIPPED)" in status
         # Only a real BLOCK turns the check red.
         assert "BLOCK)" in status
-        assert "::error::First-principles review verdict" in status
+        assert 'err "First-principles review verdict' in status
 
     def test_fork_scope_skip_completes_success_not_skipped(self) -> None:
         # pr-readiness.yml reads an only-`skipped` advisory check-run as "the
@@ -2071,7 +2072,7 @@ class TestFirstPrinciplesReview:
             step = _step_script(workflow, "Extract the review contract from the base commit")
             assert 'echo "available=false" >> "$GITHUB_OUTPUT"' in step
             assert "exit 1" not in step
-            assert "::warning::" in step
+            assert annotation_calls(step, "warning")
             # The review only runs against a base-provided contract.
             assert "steps.contract.outputs.available == 'true'" in workflow
             # No head fallback anywhere.
@@ -3506,7 +3507,7 @@ class TestUxReviewReadsTheScreenshotsBlindFirst:
         gate = _step("ux-review.yml", "UX review status (gates on BLOCK)")
         assert gate["env"]["UNFETCHED"] == "${{ steps.evidence.outputs.unfetched }}"
         assert 'if [ "${UNFETCHED:-}" = "true" ]; then' in gate["run"]
-        assert "::error::UX review for $HEAD could not evaluate the change" in gate["run"]
+        assert 'err "UX review for $HEAD could not evaluate the change' in gate["run"]
         assert gate["run"].index('if [ "${UNFETCHED:-}" = "true" ]; then') < gate["run"].index(
             'case "$VERDICT" in'
         )
@@ -5757,7 +5758,7 @@ class TestOpusTwoStageArchitecture:
             assert "TRUNCATED at" not in script, f"{lane}: truncation path survived"
             assert 'head -c "$MAX_CANDIDATE_BYTES"' not in script, lane
             over = script.index('-gt "$MAX_CANDIDATE_BYTES"')
-            assert "::error::" in script[over:], f"{lane}: must error, not warn"
+            assert annotation_calls(script[over:], "error"), f"{lane}: must error, not warn"
             assert "exit 1" in script[over:], f"{lane}: must exit nonzero"
             assert 'MAX_CANDIDATE_BYTES: "200000"' in workflow, lane
 
@@ -5799,9 +5800,9 @@ class TestOpusTwoStageArchitecture:
         """
         for lane in self.LANES:
             script = _step_script(_workflow(lane), "Capture discovery candidates")
-            assert "::error::Discovery produced no [OPUS-DISCOVERY] marker" in script, lane
-            assert "::warning::Discovery produced no" not in script, lane
-            marker_at = script.index("::error::Discovery produced no")
+            assert 'err "Discovery produced no [OPUS-DISCOVERY] marker' in script, lane
+            assert 'warn "Discovery produced no' not in script, lane
+            marker_at = script.index('err "Discovery produced no')
             assert "exit 1" in script[marker_at:], f"{lane}: must exit nonzero"
 
     def test_verdict_is_gated_on_sha_scoped_markers_not_structured_output(self) -> None:
@@ -6392,7 +6393,7 @@ class TestOpusDiscoveryCaptureExecutes:
         the exit, the branch may echo fixed keys and validated tokens only."""
 
         def _code(script: str) -> str:
-            start = script.index("::error::Discovery produced no [OPUS-DISCOVERY] marker")
+            start = script.index('err "Discovery produced no [OPUS-DISCOVERY] marker')
             end = _exit_line_at(script, start)
             return "\n".join(
                 ln for ln in script[start:end].splitlines() if not ln.strip().startswith("#")
@@ -6853,7 +6854,7 @@ class TestOverrideReadFailureFailsClosed:
         script = _step_script(_workflow(lane), "Resolve human override")
         start = script.index('exact="')
         end = script.index('actor="')
-        return script[start:end]
+        return with_annotation_helpers(script, script[start:end])
 
     def _run_read(
         self,
@@ -6994,7 +6995,7 @@ class TestLedgerReadFailureFailsClosed:
         script = _step_script(_workflow("codex-review.yml"), "Write review prompt")
         start = script.index('ledger_comments=""')
         end = script.index('disp_authors="')
-        return script[start:end]
+        return with_annotation_helpers(script, script[start:end])
 
     def _run_read(self, tmp_path: Path, gh_status: int = 0, fail_first: int = 0):
         bash = _bash()
@@ -7178,7 +7179,7 @@ class TestLedgerWriterGateFailsClosed:
         script = _step_script(_workflow("codex-review.yml"), "Write review prompt")
         start = script.index('disp_authors="')
         end = script.index('ledger_full="')
-        return script[start:end]
+        return with_annotation_helpers(script, script[start:end])
 
     def _run_gate(self, tmp_path: Path, perm_mode: str):
         bash = _bash()
@@ -10104,7 +10105,7 @@ class TestReviewLaneVerdictVisibility:
             missed = [
                 n
                 for n, line in enumerate(code)
-                if "::error::" in line
+                if 'err "' in line
                 and (
                     "could not publish" in line
                     or "slot is already taken" in line
@@ -10931,7 +10932,7 @@ class TestGptRefusalTerminalState:
             pytest.skip("classification requires Bash")
         step = self._pass_step("GPT 6.1 review (discovery pass)")
         script = step["run"]
-        snippet = script[script.index('if [ "$rc" -ne 0 ]') :]
+        snippet = with_annotation_helpers(script, script[script.index('if [ "$rc" -ne 0 ]') :])
         runner_temp = tmp_path / "rt"
         runner_temp.mkdir()
         (runner_temp / "codex-pass-1-log.txt").write_text(log, encoding="utf-8")
@@ -11479,7 +11480,7 @@ class TestConcernsIsVisibleInTheChecksUi:
             # PASS|CONCERNS branch, so only BLOCK can fail this gate.
             assert "\n  PASS|CONCERNS)\n" in status, name
             assert '  if [ "$VERDICT" = "CONCERNS" ]; then' in status, name
-            assert "::error::" in status, name
+            assert annotation_calls(status, "error"), name
             block_at = status.index("\n  BLOCK)\n")
             concerns_at = status.index("\n  PASS|CONCERNS)\n")
             assert "exit 1" not in status[concerns_at:block_at], name
@@ -15677,7 +15678,7 @@ class TestNoticeSlotLookupLicensesEveryCreate:
         assert any('[ "$head_now" != "$HEAD" ]' in line for line in code), code
         # Both refusals are visible in the run log, and each names the revision
         # whose notice was withheld.
-        assert sum(1 for line in code if "::warning::" in line) == 2, code
+        assert len(annotation_calls("\n".join(code), "warning")) == 2, code
         assert sum(1 for line in code if "$HEAD" in line) >= 2, code
         # The read carries the same budget as the slot read above it, because the
         # two run inside one exhaustion window: a lane that has just spent up to

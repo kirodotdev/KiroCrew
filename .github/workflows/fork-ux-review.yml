@@ -132,10 +132,11 @@ jobs:
           WR_HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
           WR_HEAD_REF: ${{ github.event.workflow_run.head_branch }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -uo pipefail
           # head_sha from the triggering run is set by GitHub and is authoritative.
           head_sha="$WR_HEAD_SHA"
-          if [ -z "$head_sha" ]; then echo "::error::no workflow_run head_sha"; exit 1; fi
+          if [ -z "$head_sha" ]; then err "no workflow_run head_sha"; exit 1; fi
 
           # Bounded retry for the read-only resolver queries below. A single-shot
           # `gh api` aborts on a transient TLS / 5xx / rate-limit error, and this
@@ -170,7 +171,7 @@ jobs:
           # candidates are ambiguous. This advisory lane still fails closed on
           # identity because selecting another PR would review a different diff.
           if [ -z "$WR_HEAD_REPO" ] || [ -z "$WR_HEAD_REF" ]; then
-            echo "::error::empty workflow_run head identity (repository/ref); failing closed"
+            err "empty workflow_run head identity (repository/ref); failing closed"
             exit 1
           fi
           if ! candidates="$(gh_read gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate \
@@ -181,27 +182,27 @@ jobs:
                            and .head.ref == $ref
                            and .head.sha == $sha)]
               ')"; then
-            echo "::error::could not query open PRs while resolving $head_sha - the query itself failed on all 3 attempts; see the errors above"
+            err "could not query open PRs while resolving $head_sha - the query itself failed on all 3 attempts; see the errors above"
             exit 1
           fi
           candidate_count="$(printf '%s' "$candidates" | jq -r 'length')"
           if [ "$candidate_count" -eq 0 ]; then
-            echo "::error::no open PR has head $head_sha on $WR_HEAD_REPO:$WR_HEAD_REF - superseded or closed while CI was queued; nothing to review"
+            err "no open PR has head $head_sha on $WR_HEAD_REPO:$WR_HEAD_REF - superseded or closed while CI was queued; nothing to review"
             exit 1
           fi
           if [ "$candidate_count" -ne 1 ]; then
-            echo "::error::more than one open PR matches head $head_sha on $WR_HEAD_REPO:$WR_HEAD_REF; refusing to select one"
+            err "more than one open PR matches head $head_sha on $WR_HEAD_REPO:$WR_HEAD_REF; refusing to select one"
             exit 1
           fi
           pr="$(printf '%s' "$candidates" | jq -r '.[0].number')"
 
           # Authoritative base SHA straight from the PR (NOT from the artifact).
           if ! base_sha="$(gh_read gh api "repos/$REPO/pulls/$pr" --jq '.base.sha')"; then
-            echo "::error::could not read base.sha for PR #$pr - the query itself failed on all 3 attempts; see the errors above"
+            err "could not read base.sha for PR #$pr - the query itself failed on all 3 attempts; see the errors above"
             exit 1
           fi
           if [ -z "$base_sha" ] || [ "$base_sha" = "null" ]; then
-            echo "::error::PR #$pr reported an empty base.sha; failing closed"
+            err "PR #$pr reported an empty base.sha; failing closed"
             exit 1
           fi
 
@@ -286,6 +287,7 @@ jobs:
           PR: ${{ steps.pr.outputs.pr }}
           HEAD: ${{ steps.pr.outputs.head_sha }}
         run: |
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -uo pipefail
           exact="<!-- ai-review-human-override target=ux head=$HEAD "
           all="<!-- ai-review-human-override target=all head=$HEAD "
@@ -294,7 +296,7 @@ jobs:
           source=""
           read_ok=""
           if [[ ! "${HEAD:-}" =~ ^[0-9a-f]{40}$ ]] || [[ ! "${PR:-}" =~ ^[0-9]+$ ]]; then
-            echo "::warning::No resolved pull request and head to read an override record for; reviewing normally."
+            warn "No resolved pull request and head to read an override record for; reviewing normally."
           else
             for attempt in 1 2 3; do
               if comments="$(gh api "repos/$REPO/issues/$PR/comments" --paginate)"; then
@@ -307,13 +309,13 @@ jobs:
               fi
             done
             if [ -z "$read_ok" ]; then
-              echo "::warning::Could not read this PR's comments after 3 attempts, so whether a human override is recorded for $HEAD is unknown. Reviewing normally: an unread record is never an accepted one."
+              warn "Could not read this PR's comments after 3 attempts, so whether a human override is recorded for $HEAD is unknown. Reviewing normally: an unread record is never an accepted one."
             elif ! record="$(printf '%s' "$comments" \
               | jq -sr --arg exact "$exact" --arg all "$all" \
                 'add // [] | [.[] | select(.user.login == "github-actions[bot]")
                 | select((.body | startswith($exact)) or (.body | startswith($all)))]
                 | (last.body // "")')"; then
-              echo "::warning::This PR's comments could not be parsed, so whether a human override is recorded for $HEAD is unknown. Reviewing normally: an unread record is never an accepted one."
+              warn "This PR's comments could not be parsed, so whether a human override is recorded for $HEAD is unknown. Reviewing normally: an unread record is never an accepted one."
             else
               actor="$(printf '%s\n' "$record" | sed -nE '1s/^.* actor=([^ ]+) source=([0-9]+) -->$/\1/p')"
               source="$(printf '%s\n' "$record" | sed -nE '1s/^.* actor=([^ ]+) source=([0-9]+) -->$/\2/p')"
@@ -356,6 +358,7 @@ jobs:
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
           PATCH: ${{ runner.temp }}/authentic.patch
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -uo pipefail
           # COMPLETE diff via git, NOT the compare API: the compare endpoint
           # truncates very large diffs, which would let a big fork PR slip a defect
@@ -372,22 +375,22 @@ jobs:
           echo "::add-mask::$auth_b64"  # mask the derived header so it can never surface in logs
           git -c http.extraheader="AUTHORIZATION: basic $auth_b64" \
             fetch --no-tags --quiet origin "refs/pull/$PR/head" \
-            || { echo "::error::could not fetch PR head history for #$PR"; exit 1; }
+            || { err "could not fetch PR head history for #$PR"; exit 1; }
           # Pin to the exact CI-reviewed head SHA; fail closed if it is missing
           # (e.g. the fork rewrote history out from under the review).
           if ! git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
-            echo "::error::head SHA $HEAD_SHA not present after fetch; failing closed."
+            err "head SHA $HEAD_SHA not present after fetch; failing closed."
             exit 1
           fi
           git diff --no-color "$BASE_SHA...$HEAD_SHA" > "$PATCH"
           # git diff has no API size cap, so an oversized diff is a real signal —
           # fail CLOSED rather than review only a prefix.
           if [ "$(wc -c < "$PATCH" 2>/dev/null || echo 0)" -gt 1000000 ]; then
-            echo "::error::authentic diff exceeds 1 MB; failing closed (split the PR)."
+            err "authentic diff exceeds 1 MB; failing closed (split the PR)."
             exit 1
           fi
           if [ ! -s "$PATCH" ]; then
-            echo "::error::empty diff for $BASE_SHA...$HEAD_SHA; failing closed."
+            err "empty diff for $BASE_SHA...$HEAD_SHA; failing closed."
             exit 1
           fi
           # The patch is deliberately NOT applied to the working tree. The checkout
@@ -480,6 +483,7 @@ jobs:
           MAX_SHOTS: "40"
           MAX_CLIPS: "4"
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           rm -rf "$FETCH_DIR" "$ATTACH_DIR"
           mkdir -p "$FETCH_DIR" "$ATTACH_DIR"
@@ -519,7 +523,7 @@ jobs:
           # misapply. A definite 404 is not transport and stays the author's.
           if [ "${failed:-0}" -gt 0 ]; then
             echo "unfetched=true" >> "$GITHUB_OUTPUT"
-            echo "::error::$failed of $fetched attachment download(s) from the PR description failed for a transport reason, so the reviewer cannot see everything the author supplied; this lane cannot evaluate the change on partial evidence and fails rather than read as advisory. Re-run this workflow; if the same downloads fail again, the attachment URLs themselves are the problem -- re-attach the images to the description."
+            err "$failed of $fetched attachment download(s) from the PR description failed for a transport reason, so the reviewer cannot see everything the author supplied; this lane cannot evaluate the change on partial evidence and fails rather than read as advisory. Re-run this workflow; if the same downloads fail again, the attachment URLs themselves are the problem -- re-attach the images to the description."
             exit 1
           fi
           echo "unfetched=false" >> "$GITHUB_OUTPUT"
@@ -1244,6 +1248,9 @@ jobs:
           DESCRIPTION_DIGEST: ${{ steps.intent.outputs.description_digest }}
           EVIDENCE_COUNT: ${{ steps.intent.outputs.evidence_count }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          warn() { printf '::%s::%s\n' warning "$*"; }
+          notice() { printf '::%s::%s\n' notice "$*"; }
           set -uo pipefail
           MARKER="<!-- ux-review -->"
           # Whether this lane's slot is already taken GATES every comment write
@@ -1302,7 +1309,7 @@ jobs:
               if head_now="$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha' 2>/dev/null)" \
                 && [ -n "$head_now" ]; then
                 if [ "$head_now" != "$HEAD" ]; then
-                  echo "::warning::This PR's head is now $head_now, not $HEAD, so this lane's notice was not written: the run for that head owns this lane's slot, and writing would replace its verdict with a superseded revision's notice."
+                  warn "This PR's head is now $head_now, not $HEAD, so this lane's notice was not written: the run for that head owns this lane's slot, and writing would replace its verdict with a superseded revision's notice."
                   return 0
                 fi
                 head_unchanged=1
@@ -1313,7 +1320,7 @@ jobs:
                 sleep "$(( attempt * 5 ))"
               fi
             done
-            echo "::warning::Whether $HEAD is still this PR's head is unreadable after 6 attempts, so this lane's notice was not written. If the head has moved, withholding is what protects the newer revision's verdict, which nothing would restore; if it has not moved, this lane's slot keeps whatever earlier outcome it already held. Re-run this lane to record the notice."
+            warn "Whether $HEAD is still this PR's head is unreadable after 6 attempts, so this lane's notice was not written. If the head has moved, withholding is what protects the newer revision's verdict, which nothing would restore; if it has not moved, this lane's slot keeps whatever earlier outcome it already held. Re-run this lane to record the notice."
             return 0
           }
           if [ -z "${PR:-}" ]; then
@@ -1347,12 +1354,12 @@ jobs:
             find_existing
             if [ "$head_unchanged" -eq 1 ] && [ -n "$existing" ] && [ "$existing" != "null" ]; then
               gh api --method PATCH "repos/$REPO/issues/comments/$existing" --field body="$(cat "${RUNNER_TEMP:-/tmp}/ai-override-note.md")" >/dev/null \
-                || echo "::warning::Could not replace comment #$existing with the human override note for $HEAD. Re-run this lane to record the note."
+                || warn "Could not replace comment #$existing with the human override note for $HEAD. Re-run this lane to record the note."
             elif [ "$head_unchanged" -eq 1 ] && [ "$lookup_ok" -eq 1 ]; then
               gh pr comment "$PR" --body-file "${RUNNER_TEMP:-/tmp}/ai-override-note.md" \
-                || echo "::warning::Could not post the human override note for $HEAD. Re-run this lane to record the note."
+                || warn "Could not post the human override note for $HEAD. Re-run this lane to record the note."
             elif [ "$lookup_ok" -eq 0 ]; then
-              echo "::warning::This lane's slot was unreadable after 6 attempts, so the human override note for $HEAD was not posted. Creating one here can leave two comments in the slot, and the one a later lookup does not pick keeps its own blocking line. Re-run this lane to record the override."
+              warn "This lane's slot was unreadable after 6 attempts, so the human override note for $HEAD was not posted. Creating one here can leave two comments in the slot, and the one a later lookup does not pick keeps its own blocking line. Re-run this lane to record the override."
             fi
             exit 0
           fi
@@ -1386,7 +1393,7 @@ jobs:
               gh pr comment "$PR" --body-file "${RUNNER_TEMP:-/tmp}/ux-comment.md" || true
               echo "Created ux-review skip notice for $HEAD"
             elif [ "$lookup_ok" -eq 0 ]; then
-              echo "::warning::This lane's slot was unreadable after 6 attempts, so the UX skip notice for $HEAD was not written. Re-run this lane to record the notice."
+              warn "This lane's slot was unreadable after 6 attempts, so the UX skip notice for $HEAD was not written. Re-run this lane to record the notice."
             fi
             exit 0
           fi
@@ -1783,7 +1790,7 @@ jobs:
             else
               note="could not confirm whether it published it -- a write was attempted and its absence from the slot was never confirmed, so this record says UNKNOWN rather than claiming non-publication"
             fi
-            echo "::notice::This run computed a verdict for $HEAD and $note (write status $rc). The verdict text is retained in workflow artifact $name, on run ${GITHUB_RUN_ID:-} attempt ${GITHUB_RUN_ATTEMPT:-}. An artifact named withheld-verdict-$HEAD... holds a verdict that EXISTS for this revision, and its receipt's outcome field says whether it reached the comment slot -- neither of which is the same as this revision having no verdict."
+            notice "This run computed a verdict for $HEAD and $note (write status $rc). The verdict text is retained in workflow artifact $name, on run ${GITHUB_RUN_ID:-} attempt ${GITHUB_RUN_ATTEMPT:-}. An artifact named withheld-verdict-$HEAD... holds a verdict that EXISTS for this revision, and its receipt's outcome field says whether it reached the comment slot -- neither of which is the same as this revision having no verdict."
           }
           retry_comment_write() {
             local slot="$1" needle="$2" body_file="$3" target="$4"
@@ -1815,7 +1822,7 @@ jobs:
             # and whether that comment is a verdict for this head. An occupant
             # that is stops this run with success, because the PR does hold a
             # current verdict. An occupant that is not stops it too, and the
-            # caller says so with an ::error:: while its step stays green: these
+            # caller says so with an error annotation while its step stays green: these
             # lanes are advisory, and the readiness aggregator turns a FAILED one
             # into a blocking verdict on the required check, so failing here
             # would invent a BLOCK nobody judged out of an infrastructure fault.
@@ -2120,14 +2127,14 @@ jobs:
               # create path there plants a second marker comment over a
               # possibly-live verdict, which no later run undoes.
               if [ "$lookup_ok" -eq 0 ]; then
-                echo "::warning::Withholding $lane comment for $HEAD ($withhold); the comment lookup also failed, so nothing was posted${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAILURE_NOTE}"
+                warn "Withholding $lane comment for $HEAD ($withhold); the comment lookup also failed, so nothing was posted${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAILURE_NOTE}"
                 if [ -z "$superseded" ]; then
                   retain_unpublished_verdict withheld none "$stamp $HEAD" "$out_file"
                 fi
                 return 0
               fi
               if [ -n "$existing" ] && [ "$existing" != "null" ]; then
-                echo "::warning::Withholding $lane comment for $HEAD ($withhold); left existing comment #$existing untouched"
+                warn "Withholding $lane comment for $HEAD ($withhold); left existing comment #$existing untouched"
                 if [ -z "$superseded" ]; then
                   retain_unpublished_verdict withheld none "$stamp $HEAD" "$out_file"
                 fi
@@ -2145,9 +2152,9 @@ jobs:
               elif [ "$write_rc" -eq 4 ]; then
                 echo "$lane stopped publishing its $HEAD body because this PR has moved to a newer head; the run for that head publishes the verdict that counts, so nothing is missing for it."
               elif [ "$write_rc" -eq 2 ]; then
-                echo "::warning::$lane wrote no $HEAD notice because this lane's slot is already taken; nothing was overwritten.${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAILURE_NOTE}"
+                warn "$lane wrote no $HEAD notice because this lane's slot is already taken; nothing was overwritten.${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAILURE_NOTE}"
               else
-                echo "::error::$lane could not post its $HEAD notice, so this PR carries no $stamp comment at all.${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAILURE_NOTE}"
+                err "$lane could not post its $HEAD notice, so this PR carries no $stamp comment at all.${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAILURE_NOTE}"
               fi
               return 0
             fi
@@ -2163,7 +2170,7 @@ jobs:
               elif [ "$write_rc" -eq 5 ]; then
                 echo "$lane left comment #$existing alone because it carries an accepted human override for this lane; the override stands and this run's verdict is not published."
               else
-                echo "::error::$lane produced a verdict for $HEAD but could not publish it to comment #$existing. That comment still carries an older head, so every marker-freshness check reads this PR as unreviewed for $HEAD.${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAILURE_NOTE}"
+                err "$lane produced a verdict for $HEAD but could not publish it to comment #$existing. That comment still carries an older head, so every marker-freshness check reads this PR as unreviewed for $HEAD.${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAILURE_NOTE}"
               fi
             else
               # No existing comment -- or a lookup that could not confirm one
@@ -2183,9 +2190,9 @@ jobs:
               elif [ "$write_rc" -eq 4 ]; then
                 echo "$lane stopped publishing its $HEAD body because this PR has moved to a newer head; the run for that head publishes the verdict that counts, so nothing is missing for it."
               elif [ "$write_rc" -eq 2 ]; then
-                echo "::error::$lane produced a verdict for $HEAD but this lane's slot is already taken, so nothing was written and nothing was overwritten. The PR carries no verdict for this head; re-run this lane once that comment is not the current one.${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAILURE_NOTE}"
+                err "$lane produced a verdict for $HEAD but this lane's slot is already taken, so nothing was written and nothing was overwritten. The PR carries no verdict for this head; re-run this lane once that comment is not the current one.${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAILURE_NOTE}"
               else
-                echo "::error::$lane produced a verdict for $HEAD but could not publish it, so this run's verdict is not in the slot.${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAILURE_NOTE}"
+                err "$lane produced a verdict for $HEAD but could not publish it, so this run's verdict is not in the slot.${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAILURE_NOTE}"
               fi
             fi
           }
@@ -2253,6 +2260,7 @@ jobs:
           VERDICT: ${{ steps.post.outputs.verdict }}
           UNFETCHED: ${{ steps.attachments.outputs.unfetched }}
         run: |
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -uo pipefail
           lane_text="$(printf 'Lane run: %s/%s/actions/runs/%s\n\n<!-- ai-review-fork-lane run=%s -->' \
             "${GITHUB_SERVER_URL:-}" "$REPO" "${GITHUB_RUN_ID:-}" "${GITHUB_RUN_ID:-}")"
@@ -2339,7 +2347,7 @@ jobs:
               fi
               sleep 5
             done
-            echo "::warning::could not complete check-run $1 for $HEAD"
+            warn "could not complete check-run $1 for $HEAD"
             return 1
           }
           if [ -n "${CHECK_ID:-}" ]; then
@@ -2375,7 +2383,7 @@ jobs:
               -f "output[title]=UX Review — $fb_title" \
               -f "output[summary]=$fb_summary" \
               -f "output[text]=$lane_text" >/dev/null \
-              || echo "::warning::could not post the UX Review check-run for $HEAD"
+              || warn "could not post the UX Review check-run for $HEAD"
           fi
           # Sweep any still-incomplete run of this name that THIS pull request
           # created (ours, if the PATCH above lost both attempts, or one stranded

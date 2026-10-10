@@ -32,10 +32,11 @@ jobs:
           BASE_TIP: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           # base.sha is the base branch tip when the PR event fired, not the
           # branch-off point, so diffing it directly pulls in sibling commits.
           if ! MERGE_BASE=$(git merge-base "$BASE_TIP" "$HEAD_SHA"); then
-            echo "::error::Could not resolve the merge-base of $BASE_TIP and $HEAD_SHA (this job needs fetch-depth: 0)"
+            err "Could not resolve the merge-base of $BASE_TIP and $HEAD_SHA (this job needs fetch-depth: 0)"
             exit 1
           fi
           echo "Diff base: $MERGE_BASE"
@@ -65,6 +66,8 @@ jobs:
           BASE: ${{ steps.diffbase.outputs.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          warn() { printf '::%s::%s\n' warning "$*"; }
           echo "::group::use-lucide-icons — no inline SVGs"
           # website/AUTOSDE.yaml says this gate applies in every .tsx file with
           # no exception (brand marks are image assets). KiroGhost.tsx is the one
@@ -72,7 +75,7 @@ jobs:
           if git diff "$BASE".."$HEAD" -- ':(glob)src/**/*.tsx' \
                ':(exclude)src/components/KiroGhost.tsx' \
              | grep -nP '^\+.*<svg[^>]*viewBox'; then
-            echo "::error::Use lucide-react icons instead of inline SVGs"
+            err "Use lucide-react icons instead of inline SVGs"
             exit 1
           fi
           echo "::endgroup::"
@@ -83,7 +86,7 @@ jobs:
           # The pattern skips comment lines, treats '=>' as part of a tag, and
           # needs whitespace before role=/onClick (so data-role= does not count).
           if git diff "$BASE".."$HEAD" -- ':(glob)src/**/*.tsx' | grep -nP '^\+(?!\s*(?://|/?\*)).*<(div|span)\b(?!(?:=>|[^>])*\srole=)(?:=>|[^>])*\sonClick'; then
-            echo "::error::Use <Clickable> component instead of <div onClick>"
+            err "Use <Clickable> component instead of <div onClick>"
             exit 1
           fi
           echo "::endgroup::"
@@ -93,28 +96,28 @@ jobs:
           # (App.tsx, main.tsx): without it the pathspec needs a second '/'.
           # (?!=) keeps an '===' comparison from tripping the assignment check.
           if git diff "$BASE".."$HEAD" -- ':(glob)src/**/*.tsx' ':(glob)src/**/*.ts' | grep -nP '^\+.*(?:(?:\.|\[\s*['"'"'"])(?:inner|outer)HTML(?:['"'"'"]\s*\])?\s*\+?=(?!=)|\.insertAdjacentHTML\s*\()'; then
-            echo "::error::Never write HTML via innerHTML/outerHTML/insertAdjacentHTML — use textContent, createElement, replaceChildren, or React elements"
+            err "Never write HTML via innerHTML/outerHTML/insertAdjacentHTML — use textContent, createElement, replaceChildren, or React elements"
             exit 1
           fi
           echo "::endgroup::"
 
           echo "::group::frontend-security — Mermaid securityLevel must be 'strict'"
           if git diff "$BASE".."$HEAD" -- ':(glob)src/**/*.tsx' ':(glob)src/**/*.ts' | grep -nP "^\+.*['\"]?securityLevel['\"]?\s*:\s*['\"](?:loose|antiscript)['\"]"; then
-            echo "::error::Mermaid securityLevel must be 'strict' (never 'loose' — it allows JS execution from diagrams)"
+            err "Mermaid securityLevel must be 'strict' (never 'loose' — it allows JS execution from diagrams)"
             exit 1
           fi
           echo "::endgroup::"
 
           echo "::group::page-layout-pattern — no custom max-w wrapper on pages"
           if git diff "$BASE".."$HEAD" -- 'src/pages/*.tsx' | grep -nP '^\+.*max-w-\[(?:9[0-9]{2}|[1-9][0-9]{3,})px\]'; then
-            echo "::error::Dashboard pages must use PageHeader + px-6 pb-8 overflow-y-auto flex-1 min-h-0, not a custom max-w-[>=900px] wrapper"
+            err "Dashboard pages must use PageHeader + px-6 pb-8 overflow-y-auto flex-1 min-h-0, not a custom max-w-[>=900px] wrapper"
             exit 1
           fi
           echo "::endgroup::"
 
           echo "::group::frontend-security (advisory) — dangerouslySetInnerHTML without sanitize/md/DOMPurify"
           if git diff "$BASE".."$HEAD" -- ':(glob)src/**/*.tsx' ':(glob)src/**/*.ts' | grep -nP '^\+.*dangerouslySetInnerHTML' | grep -vP 'sanitize\(|\bmd\(|DOMPurify'; then
-            echo "::warning::dangerouslySetInnerHTML must go through sanitize()/md() (DOMPurify). The Opus 5.5 review will block if unsanitized."
+            warn "dangerouslySetInnerHTML must go through sanitize()/md() (DOMPurify). The Opus 5.5 review will block if unsanitized."
           fi
           echo "::endgroup::"
 
@@ -122,19 +125,19 @@ jobs:
           # a mention in prose does not warn.
           echo "::group::use-design-tokens (advisory) — no hardcoded Tailwind colors"
           if git diff "$BASE".."$HEAD" -- ':(glob)src/**/*.tsx' ':(glob)src/**/*.ts' | grep -nP '^\+(?!\s*(?://|/?\*)).*\b(?:bg|text|border)-(?:gray|slate|zinc|neutral|stone)-\d'; then
-            echo "::warning::Prefer CSS custom property design tokens over hardcoded Tailwind colors"
+            warn "Prefer CSS custom property design tokens over hardcoded Tailwind colors"
           fi
           echo "::endgroup::"
 
           echo "::group::use-framer-motion (advisory) — no new CSS @keyframes"
           if git diff "$BASE".."$HEAD" -- ':(glob)src/**/*.tsx' ':(glob)src/**/*.ts' ':(glob)src/**/*.css' | grep -nP '^\+(?!\s*(?://|/?\*)).*@keyframes'; then
-            echo "::warning::Prefer Framer Motion over CSS @keyframes for component animations"
+            warn "Prefer Framer Motion over CSS @keyframes for component animations"
           fi
           echo "::endgroup::"
 
           echo "::group::no-text-below-minimum (advisory) — no text-[0-9px]"
           if git diff "$BASE".."$HEAD" -- ':(glob)src/**/*.tsx' ':(glob)src/**/*.ts' | grep -nP '^\+(?!\s*(?://|/?\*)).*\btext-\[[0-9](?:\.[0-9]+)?px\]'; then
-            echo "::warning::Minimum usable text size is 10px; text-[0px]..text-[9px] is not accessible"
+            warn "Minimum usable text size is 10px; text-[0px]..text-[9px] is not accessible"
           fi
           echo "::endgroup::"
 
@@ -144,13 +147,14 @@ jobs:
           BASE: ${{ steps.diffbase.outputs.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           echo "::group::sensitive-path reads must go through is_sensitive_path()"
           SENSITIVE_PATHS='\.aws/|\.ssh/|\.gnupg/|\.docker/|\.kube/|\.npmrc|\.pypirc|\.netrc|\.git-credentials|\.kirocrew/security_policy|\.kirocrew/admission_policy|\.kirocrew/\.env|\.kiro/crew/security_policy|\.kiro/crew/admission_policy|\.kiro/crew/\.env'
           # Best-effort: covers open()/Path.open()/read_text()/os.open()/aiofiles.
           # The authoritative control is the security/ package + hooks.py + their unit tests;
           # this grep is a fast pre-filter, not the guarantee.
           if git diff "$BASE".."$HEAD" -- 'src/**/*.py' | grep -nP "^\+.*(open\(|\.open\(|read_text\(|read_bytes\(|os\.open\().*($SENSITIVE_PATHS)"; then
-            echo "::error::Sensitive credential/keystone paths must go through hooks.py is_sensitive_path()"
+            err "Sensitive credential/keystone paths must go through hooks.py is_sensitive_path()"
             exit 1
           fi
           echo "::endgroup::"
@@ -169,11 +173,11 @@ jobs:
           # (_CREW_HOME_PREFIXES). Assert the leaf is in that list; the governance
           # boot tuple carries the resolved ".kiro/crew/denied_commands.json".
           if ! grep -qr '"denied_commands.json"' src/kiro_crew/security/; then
-            echo "::error::denied_commands.json must be in security._SENSITIVE_HOME_DIRS (via _CREW_SECRET_LEAVES; agent must not read/write its own deny ceiling)"
+            err "denied_commands.json must be in security._SENSITIVE_HOME_DIRS (via _CREW_SECRET_LEAVES; agent must not read/write its own deny ceiling)"
             exit 1
           fi
           if ! grep -q '".kiro/crew/denied_commands.json"' src/kiro_crew/platform/governance.py; then
-            echo "::error::denied_commands.json must be in the governance boot-integrity required tuple"
+            err "denied_commands.json must be in the governance boot-integrity required tuple"
             exit 1
           fi
           echo "::endgroup::"
@@ -184,7 +188,7 @@ jobs:
           # (bool("false") is True — would silently disable every protection).
           # (?<![_\w]) so bare ``bool(`` matches but ``_coerce_bool(`` does not.
           if git diff "$BASE".."$HEAD" -- 'src/kiro_crew/hooks.py' 'src/kiro_crew/hook_runtime/' 'src/kiro_crew/dashboard/handlers/security.py' | grep -nP "^\+.*(?<![_\w])bool\(\s*(dc|data|denied)\.get\(\s*['\"](disable_all|auto_approve_subagent|enabled)"; then
-            echo "::error::Parse operator-editable boolean opt-out fields with _coerce_bool(), not bare bool() (bool('false') is truthy)"
+            err "Parse operator-editable boolean opt-out fields with _coerce_bool(), not bare bool() (bool('false') is truthy)"
             exit 1
           fi
           echo "::endgroup::"
@@ -201,7 +205,7 @@ jobs:
                ':(exclude)src/kiro_crew/model_registry.py' \
              | grep -nP "^\+.*(=|\":)\s*[\"'](claude-(opus|sonnet|haiku|fable)|opus-[0-9]|sonnet-[0-9]|haiku-[0-9]|fable-[0-9]|gpt-[0-9])" \
              | grep -vP "_BACKGROUND_CC_MODEL|_FALLBACK_"; then
-            echo "::error::Do not hardcode a model id as a default/fallback. Use \"auto\" or agent.role_models.<role> (see docs/system-specs/common/model-selection.md)."
+            err "Do not hardcode a model id as a default/fallback. Use \"auto\" or agent.role_models.<role> (see docs/system-specs/common/model-selection.md)."
             exit 1
           fi
           echo "::endgroup::"
@@ -229,10 +233,11 @@ jobs:
           BASE_TIP: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           # base.sha is the base branch tip when the PR event fired, not the
           # branch-off point, so diffing it directly pulls in sibling commits.
           if ! MERGE_BASE=$(git merge-base "$BASE_TIP" "$HEAD_SHA"); then
-            echo "::error::Could not resolve the merge-base of $BASE_TIP and $HEAD_SHA (this job needs fetch-depth: 0)"
+            err "Could not resolve the merge-base of $BASE_TIP and $HEAD_SHA (this job needs fetch-depth: 0)"
             exit 1
           fi
           echo "Diff base: $MERGE_BASE"
@@ -266,6 +271,7 @@ jobs:
           BASE: ${{ steps.diffbase.outputs.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           # _vendor is third-party code (llama-cpp-python) whose upstream URLs
           # and identifiers must not be rewritten — mirrors the .woke.yml
           # ignore_files entry (file ignores don't apply to a --stdin scan).
@@ -282,7 +288,7 @@ jobs:
           WOKE_OUT=$(woke -c .woke.yml --stdin < /tmp/diff-added-lines.txt 2>&1) || true
           echo "$WOKE_OUT"
           if echo "$WOKE_OUT" | grep -q "(error)"; then
-            echo "::error::Inclusive language violations found in added lines"
+            err "Inclusive language violations found in added lines"
             exit 1
           fi
 
@@ -325,6 +331,7 @@ jobs:
           BASE_TIP: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           # This job runs in the semgrep container, where the checkout is owned
           # by a different uid than the job user; git refuses to read it
           # ("dubious ownership") without this exemption. The other jobs run
@@ -333,7 +340,7 @@ jobs:
           # base.sha is the base branch tip when the PR event fired, not the
           # branch-off point, so diffing it directly pulls in sibling commits.
           if ! MERGE_BASE=$(git merge-base "$BASE_TIP" "$HEAD_SHA"); then
-            echo "::error::Could not resolve the merge-base of $BASE_TIP and $HEAD_SHA (this job needs fetch-depth: 0)"
+            err "Could not resolve the merge-base of $BASE_TIP and $HEAD_SHA (this job needs fetch-depth: 0)"
             exit 1
           fi
           echo "Diff base: $MERGE_BASE"

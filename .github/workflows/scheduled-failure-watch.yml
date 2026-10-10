@@ -122,6 +122,7 @@ jobs:
           SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           RUN_URL: ${{ github.event.workflow_run.html_url }}
         run: |
+          notice() { printf '::%s::%s\n' notice "$*"; }
           set -euo pipefail
           export TITLE="$SOURCE_NAME scheduled run is failing"
           # One 6-hour window governs both bumps and re-filing after a close.
@@ -137,7 +138,7 @@ jobs:
             --color B60205 \
             --description "A scheduled workflow run failed; filed by scheduled-failure-watch.yml" \
             >/dev/null \
-            || echo "::notice::Could not ensure the scheduled-failure label (continuing); it may already exist or label writes may be refused."
+            || notice "Could not ensure the scheduled-failure label (continuing); it may already exist or label writes may be refused."
           # `--label` reads the issues API directly (no search-index lag); the jq
           # equality selects. Only an open issue whose title IS the fixed title is
           # the tracking issue.

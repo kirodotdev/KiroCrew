@@ -1544,6 +1544,41 @@ nightly HAD one, and was emptied again after it, which is why
 `test_workflow_array_expansion_bash32.py` asks for the local form at the
 expansion instead of reasoning about reachability.
 
+### Assemble an annotation's prefix at runtime, never as a literal
+
+A `run:` block that reports through a workflow command does not write
+`::error::`, `::warning::` or `::notice::` as a literal string. Actions echoes a
+step's whole source into the log before it runs, whether or not the arm holding a
+line ever executes, so a literal prefix inside an `if` branch that did not fire
+is printed by a PASSING run, where it reads as a real annotation and costs every
+reader an investigation to dismiss. Each block instead opens with one-line
+helpers and calls them where the step would have echoed:
+
+```bash
+err() { printf '::%s::%s\n' error "$*"; }
+warn() { printf '::%s::%s\n' warning "$*"; }
+notice() { printf '::%s::%s\n' notice "$*"; }
+# ...
+err "empty diff for $BASE_SHA...HEAD; failing closed."
+```
+
+The output when the arm fires is byte-identical to the `echo` it replaces; only
+the inert source line stops impersonating an annotation. A Python script in a
+quoted heredoc builds the same prefix into an `ERR = "::%s::" % "error"`
+constant after its imports, and a PowerShell step into `$err = '::{0}::' -f
+'error'`. Shell comments inside a `run:` block are echoed too, so they name the
+annotation in prose ("a notice annotation") rather than by its grammar. YAML
+comments and `description:` strings outside any `run:` source never echo and may
+spell the command out. The parameterized form (`::warning title=…::`) is a
+separate grammar and keeps its literal.
+
+Tests follow the same two rules. One that pins a step's SOURCE asserts on the
+helper call (`'err "First-principles review verdict' in status`), not on a
+literal the source does not carry. One that EXECUTES a slice of a step carries
+the block's helper definitions along with the slice, or the slice dies with
+`err: command not found` (exit 127) instead of failing the way the step does;
+`test/workflow_annotation_helpers.py` holds the readers both kinds share.
+
 ## `build.yml`: the artifacts still build
 
 PR-time proof only, no publishing.

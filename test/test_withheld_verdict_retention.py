@@ -39,6 +39,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from workflow_annotation_helpers import annotation_calls, annotation_helpers
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
@@ -345,7 +346,7 @@ class TestTheRecordIsAdditiveAndFindable:
     def test_the_annotation_names_the_artifact(self, lane: str) -> None:
         """And the board carries the pointer while it is still the newest attempt."""
         retain = _shell_function(DISCOVERED[lane][1]["run"], RETAIN)
-        notices = [line for line in retain.split("\n") if "::notice::" in line]
+        notices = annotation_calls(retain, "notice")
         assert len(notices) == 1, notices
         notice = notices[0]
         assert "$name" in notice, notice
@@ -386,7 +387,7 @@ def _slice(script: str, start: str, end: str) -> str:
 def _harness(lane: str) -> str:
     """The lane's real read-error helper, real retention, real write primitive."""
     script = DISCOVERED[lane][1]["run"]
-    return "\n".join(
+    return annotation_helpers(script) + "\n".join(
         (
             _slice(script, 'READ_ERR_FILE="', "}"),
             _shell_function(script, RETAIN),
@@ -901,7 +902,7 @@ UPSERT_PARAMS = [pytest.param(lane, id=lane) for lane in UPSERT_LANES]
 def _upsert_harness(lane: str) -> str:
     """The lane's real read-error helper, retention, write primitive and upsert."""
     script = DISCOVERED[lane][1]["run"]
-    return "\n".join(
+    return annotation_helpers(script) + "\n".join(
         (
             _slice(script, 'READ_ERR_FILE="', "}"),
             _shell_function(script, RETAIN),
