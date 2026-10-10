@@ -125,7 +125,7 @@ _BASE_NAMES = frozenset("""
         cgroup_scope_argv coerce_dict_section config_dir config_loader
         dashboard_slot_key data_home drained_to_thread executors extract_blocks
         extract_pdf_segments extract_slides extract_text file_delivery_consent
-        is_direct_local_request is_sensitive_path is_sensitive_resolved_path
+        is_direct_local_request is_sensitive_canonical_path is_sensitive_path is_sensitive_resolved_path
         is_tracked_channel is_unc_shape join_slides link_pattern_url_ok logger
         materialize_workspace_dir open_access_control_source part_stream
         path_contains_sensitive pinned_fs pinned_parent_replace_supported

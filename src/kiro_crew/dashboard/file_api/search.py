@@ -154,8 +154,12 @@ async def api_file_search(request: web.Request) -> web.Response:
     """
     # Re-imported at call time (not reused from the module-level binding) so a
     # test that stubs ``kiro_crew.security.is_sensitive_path`` is observed by the
-    # project-root rejection below.
-    from kiro_crew.security import is_sensitive_path  # noqa: F811
+    # project-root rejection below, and one that stubs
+    # ``is_sensitive_canonical_path`` by the walk's per-entry check.
+    from kiro_crew.security import (  # noqa: F811
+        is_sensitive_canonical_path,
+        is_sensitive_path,
+    )
 
     owner_denied = await require_owner_dashboard_request(request, "file_search")
     if owner_denied is not None:
@@ -382,8 +386,11 @@ async def api_file_search(request: web.Request) -> web.Response:
                 if score <= 0:
                     continue
                 # Resolve symlinks before the sensitivity check so a link into a
-                # sensitive tree cannot slip through.
-                if is_sensitive_path(os.path.realpath(full)):
+                # sensitive tree cannot slip through. The canonical gate matches
+                # inline on this worker thread instead of submitting one more
+                # resolution per entry to the ``mc-pathres`` pool, whose queue
+                # the event loop's own bounded checks wait behind.
+                if is_sensitive_canonical_path(os.path.realpath(full)):
                     continue
                 try:
                     st = os.stat(full)

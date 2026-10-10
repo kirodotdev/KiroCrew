@@ -96,7 +96,9 @@ class TestBrowseDirs:
         def is_sens(p: str) -> bool:
             return os.path.realpath(p) == os.path.realpath(secret)
 
-        with patch("kiro_crew.dashboard.handlers.files.is_sensitive_path", side_effect=is_sens):
+        with patch(
+            "kiro_crew.dashboard.handlers.files.is_sensitive_canonical_path", side_effect=is_sens
+        ):
             async with TestClient(TestServer(_make_app())) as client:
                 resp = await client.get(f"/api/browse-dirs?path={tmp_path}")
                 names = {d["name"] for d in (await resp.json())["dirs"]}

@@ -273,6 +273,7 @@ from kiro_crew.sandbox import (  # noqa: F401
 )
 from kiro_crew.security import (  # noqa: F401
     BINARY_MIME_ALLOWLIST,
+    is_sensitive_canonical_path,
     is_sensitive_path,
     is_sensitive_resolved_path,
     path_contains_sensitive,

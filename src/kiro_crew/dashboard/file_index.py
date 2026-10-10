@@ -8,7 +8,7 @@ import os
 import time
 
 from kiro_crew import platform_compat
-from kiro_crew.security import is_sensitive_path
+from kiro_crew.security import is_sensitive_canonical_path
 
 logger = logging.getLogger(__name__)
 
@@ -164,8 +164,12 @@ class FileIndex:
                     break
                 dfull = os.path.join(dirpath, dname)
                 # Resolve symlinks before the sensitivity check so a link
-                # pointing into a sensitive tree cannot slip through.
-                if is_sensitive_path(os.path.realpath(dfull)):
+                # pointing into a sensitive tree cannot slip through. The
+                # canonical gate matches inline on this worker thread: the
+                # bounded gate would submit one more resolution per entry to the
+                # small ``mc-pathres`` pool the event loop waits on, and a
+                # rebuild of this size fills its queue.
+                if is_sensitive_canonical_path(os.path.realpath(dfull)):
                     continue
                 try:
                     st = os.stat(dfull)
@@ -184,7 +188,7 @@ class FileIndex:
                 if fname.startswith("."):
                     continue
                 fpath = os.path.join(dirpath, fname)
-                if is_sensitive_path(os.path.realpath(fpath)):
+                if is_sensitive_canonical_path(os.path.realpath(fpath)):
                     continue
                 try:
                     st = os.stat(fpath)

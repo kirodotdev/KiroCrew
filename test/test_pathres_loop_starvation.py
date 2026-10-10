@@ -230,7 +230,12 @@ _EXPECTED_GATE_CALL_SITES: dict[str, int] = {
     # (``_read_agent_spec`` / ``read_agent_spec_strict``, each handing it the
     # ``Path.resolve(strict=True)`` result; the native skill projection reads
     # every spec under ``asyncio.to_thread``, and a stalled pool there dropped
-    # agents silently and surfaced as ``no prepared skill discovery view``).
+    # agents silently and surfaced as ``no prepared skill discovery view``), and
+    # the dashboard's file-search and listing walks (``FileIndex._walk``, the
+    # ``/api/file-search`` fallback walk, ``_browse_dirs_sync`` and
+    # ``_browse_files_sync``), each handing it the ``os.path.realpath`` computed
+    # on the same line from a worker thread; one rebuild of a large index
+    # otherwise queued a pool hop per entry ahead of the loop's own checks.
     # ``test_artifacts_pathres.py`` and ``test_agent_discovery_pathres.py`` pin
     # the canonical spelling and the thread split for each caller. The store's
     # root check and ``source_path`` pointers, and the reader module's project

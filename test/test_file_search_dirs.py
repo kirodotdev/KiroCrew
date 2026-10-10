@@ -199,7 +199,7 @@ class TestFileIndexDirs:
         def fake_sensitive(p):
             return os.path.realpath(p) == real
 
-        with patch("kiro_crew.dashboard.file_index.is_sensitive_path", side_effect=fake_sensitive):
+        with patch("kiro_crew.dashboard.file_index.is_sensitive_canonical_path", side_effect=fake_sensitive):
             entries, _ = idx._walk()
         names = {e[1] for e in entries if e[5] == "dir"}
         assert "widgetslink" not in names
@@ -218,7 +218,7 @@ class TestFileIndexDirs:
         def fake_sensitive(p):
             return os.path.realpath(p) == real
 
-        with patch("kiro_crew.dashboard.file_index.is_sensitive_path", side_effect=fake_sensitive):
+        with patch("kiro_crew.dashboard.file_index.is_sensitive_canonical_path", side_effect=fake_sensitive):
             entries, _ = idx._walk()
         names = {e[1] for e in entries if e[5] == "file"}
         assert "widgetslink.py" not in names
@@ -337,9 +337,9 @@ class TestApiFileSearchDirs:
             return os.path.realpath(p) == real
 
         with patch(
-            # api_file_search imports is_sensitive_path locally from
+            # api_file_search imports its walk gate locally from
             # kiro_crew.security, so the source module is the patch target.
-            "kiro_crew.security.is_sensitive_path",
+            "kiro_crew.security.is_sensitive_canonical_path",
             side_effect=fake_sensitive,
         ):
             async with TestClient(TestServer(_make_app())) as client:
