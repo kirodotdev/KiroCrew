@@ -61,6 +61,7 @@ import NewCrewmateDialog, { type CreatedCrewmate } from './NewCrewmateDialog'
 import { sendTurn } from '../../chat-core/transport/sendTurn'
 import { useTranslation } from 'react-i18next'
 import { api, type CrewTeam, type MemberRosterRow } from '../../api/client'
+import { ApiError } from '../../api/apiError'
 import { crewDisplayName, type KiroCrewAgent } from '../../components/AgentSelector'
 import { isAssistantMember, pendingMate } from '../../lib/assistantMember'
 import { useFirstGreeting } from './useFirstGreeting'
@@ -210,6 +211,18 @@ import { guidePick } from '../../uiLocations/targetRegistry'
  *  comment), and a link that resolved `Oncall` to `oncall`'s thread would be
  *  the silent misroute this page exists to prevent. */
 const MEMBER_PARAM = 'member'
+
+/** The notice for a refused Fresh start, by the route's refusal code: queued
+ *  work says to wait, a turn that would not stop says to stop it first. */
+function freshStartFailureKey(err: unknown): string {
+  let code = ''
+  if (err instanceof ApiError) {
+    try { code = String((JSON.parse(err.body) as { code?: unknown }).code ?? '') } catch { /* not JSON */ }
+  }
+  if (code === 'slot_queue_pending') return 'pages.membersPage.fresh_start_failed_queued'
+  if (code === 'turn_in_flight') return 'pages.membersPage.fresh_start_failed_busy'
+  return 'pages.membersPage.fresh_start_failed'
+}
 /** The last member opened, so returning to the page (or reloading) lands on
  *  the conversation the user left rather than the empty column. Stored by
  *  exact name for the same reason as the URL param. One key per origin is
@@ -2057,6 +2070,43 @@ export default function MembersPage() {
     [orderedMembers, defaultAgent],
   )
   const activeSlot = active ? threadOutcome?.slot_key ?? '' : ''
+  // Fresh start: the server stops any turn and drops the conversation; the
+  // slot key and its transcript stay. Each slot's reset time folds the rows
+  // before it in the pane. Page state only: the rows are still on disk.
+  const [freshStarts, setFreshStarts] = useState<Record<string, string>>({})
+  const [freshStartError, setFreshStartError] = useState<{ slot: string; message: string; report?: ErrorReport } | null>(null)
+  const freshStart = useMutation({
+    mutationFn: ({ slug }: { slug: string; slot: string }) => api.memberFreshStart(slug),
+    onMutate: () => setFreshStartError(null),
+    // Fold only once the conversation is gone. A queued clear (the session was
+    // still busy) says so in the transcript line the clear path writes.
+    onSuccess: (res, { slot }) => { if (res.outcome === 'cleared') setFreshStarts((prev) => ({ ...prev, [slot]: res.reset_at })) },
+    onError: (err: unknown, { slot }) => setFreshStartError({
+      slot,
+      message: t(freshStartFailureKey(err)),
+      report: findReport(err instanceof Error ? err.message : undefined),
+    }),
+  })
+  // The page's themed confirm, as the Schedules guard uses: one ask, naming
+  // what stops and what stays.
+  const { confirm: confirmFreshStart, confirmDialog: freshStartConfirmDialog } = useConfirm()
+  // Fresh start lives in the Profile card. One ask; the card closes on a yes,
+  // so the fold in the chat is what the user sees next.
+  const freshStartMutate = freshStart.mutate
+  const askFreshStart = useCallback(() => {
+    if (!active || !activeSlot) return
+    const slug = active.slug
+    const slot = activeSlot
+    void confirmFreshStart({
+      title: t('pages.membersPage.fresh_start_confirm_title'),
+      body: t('pages.membersPage.fresh_start_confirm_body'),
+      confirmLabel: t('pages.membersPage.fresh_start_confirm_action'),
+    }).then((ok) => {
+      if (!ok) return
+      requestCloseProfile()
+      freshStartMutate({ slug, slot })
+    })
+  }, [active, activeSlot, confirmFreshStart, t, requestCloseProfile, freshStartMutate])
   // The Crewmates preview. Mate is created in the background whatever it says,
   // but nothing about Mate is put in front of the user -- no landing, no
   // welcome -- until the preview is on and the page is opened.
@@ -4458,6 +4508,18 @@ export default function MembersPage() {
                 hand-off: the ChatPane below holds the DM composer draft as
                 unsaved local state (its own notices say the same), and the
                 agent hand-off navigates away, which would unmount it. */}
+            {/* No hand-off: the ChatPane below holds the DM composer draft. */}
+            {freshStartError && freshStartError.slot === activeSlot && (
+              <ErrorNotice
+                message={freshStartError.message}
+                report={freshStartError.report}
+                onDismiss={() => setFreshStartError(null)}
+                askAgent={false}
+                variant="inline"
+                className="mx-4 mb-2"
+                testId="member-fresh-start-error"
+              />
+            )}
             {actionError && (
               <ErrorNotice
                 message={actionError}
@@ -4672,6 +4734,7 @@ export default function MembersPage() {
                     // ready" would contradict it one line down.
                     // A greeting card above already speaks for the empty chat.
                     hideEmptyHint={activeThreadFailed || mateGreeting?.kind === 'cold'}
+                    foldBefore={freshStarts[activeSlot]}
                     // Under the floating header only when nothing sits between
                     // them (see the block above); a card between already paid.
                     topInset={betweenHeaderH > 0 ? 0 : threadHeaderH}
@@ -4966,6 +5029,7 @@ export default function MembersPage() {
               onRequestBack={requestProfileBack}
               onEdit={() => setEditingCrew(active.name)}
               onOpenFiles={() => openCrewView('files')}
+              onFreshStart={activeSlot && !freshStart.isPending ? askFreshStart : undefined}
             />
           ) : null
           // The card is a hover card either way — rounded on every corner, a third
@@ -5231,6 +5295,7 @@ export default function MembersPage() {
           the section's collapse toggle, so it must sit outside the panel subtree the
           answer may unmount. */}
       {schedConfirmDialog}
+      {freshStartConfirmDialog}
       {/* CREW-18688: the bot-edit modal, opened in place by the thread header's
           identity pill (member-identity-pill). Renders nothing until editingCrew is
           set; the hook returns open=false until its roster read resolves the

@@ -106,6 +106,7 @@ import {
 
 
 import { i18nT } from '../i18n/t'
+import { earlierConversationRenderer, foldEarlierConversation } from './EarlierConversation'
 import { answerRejectedMessage } from '../utils/questionAnswers'
 import { fetchDashboardConfig } from '../api/dashboardConfigQuery'
 
@@ -153,6 +154,7 @@ export default function ChatPane({
   sessions,
   activeSession,
   crewmateCreated,
+  foldBefore,
 }: {
   slotKey: string
   onOpenCommandCenter?: () => void
@@ -205,6 +207,10 @@ export default function ChatPane({
    *  above the pane (the Members page's "Couldn't reconnect" notice) sets it,
    *  so the pane does not say "go" one line under a host that says "broken". */
   hideEmptyHint?: boolean
+  /** ISO time of a fresh start on this thread. Rows written before it fold
+   *  under one closed "Earlier conversation" divider the reader can open.
+   *  Display only: the rows stay in the transcript. */
+  foldBefore?: string
   /** Bring a Side Chat surface for this pane's slot on screen. The selection
    *  toolbar offers "Ask" only when the host provides it: the pane owns its
    *  composer (so Quote is always there) but no Side Chat of its own — the
@@ -1573,7 +1579,14 @@ export default function ChatPane({
   const setToolDisclosureFor = useCallback((key: string, expanded: boolean) => {
     setToolDisclosure((prev) => ({ ...prev, [key]: expanded }))
   }, [])
-  const renderers = useMemo(
+  // The fresh-start fold opens per fresh start: a newer one closes it again.
+  const [openFold, setOpenFold] = useState<string | undefined>(undefined)
+  const foldOpen = !!foldBefore && openFold === foldBefore
+  const listMessages = useMemo(
+    () => foldEarlierConversation(messages, foldBefore, foldOpen),
+    [messages, foldBefore, foldOpen],
+  )
+  const baseRenderers = useMemo(
     () => createTranscriptRenderers({
       slot: slotKey,
       toolDisclosure,
@@ -1594,6 +1607,12 @@ export default function ChatPane({
       activeSession,
     }),
     [slotKey, toolDisclosure, setToolDisclosureFor, busyMode, onFileOpen, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession],
+  )
+  const renderers = useMemo(
+    () => (foldBefore
+      ? [earlierConversationRenderer(foldOpen, () => setOpenFold(foldOpen ? undefined : foldBefore)), ...baseRenderers]
+      : baseRenderers),
+    [baseRenderers, foldBefore, foldOpen],
   )
 
   // The composer dock floats over the bottom of the scroller (ChatPage's
@@ -1765,7 +1784,7 @@ export default function ChatPane({
             TranscriptScrollShell for the style contract it enforces. */}
         <ChatMessageList
           ref={listRef}
-          messages={messages}
+          messages={listMessages}
           // The slot's own liveness too, not only this session's stream: a
           // DM/member pane observing a turn driven elsewhere still follows.
           running={running || !!paneSlot?.running}

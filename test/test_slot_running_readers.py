@@ -21,6 +21,8 @@ _BUSY_HELPERS: dict[str, frozenset[str]] = {
     # RESERVATION, because ``slot.running`` is set at dispatch and so sees a
     # cold-starting first turn that no provider has registered yet.
     "_switch_target_busy": frozenset({"running"}),
+    # Member Fresh start: the slot's task or the session's turn.
+    "_turn_busy": frozenset({"running"}),
 }
 
 
@@ -128,6 +130,8 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("mate_welcome.py", "maybe_start_first_greeting"),
                 ("chat_folders.py", "api_chat_slot_mode"),
                 ("chat_handlers.py", "_switch_target_busy"),
+                ("handlers/members.py", "_turn_busy"),
+                ("handlers/members.py", "_turn_ends_within"),
                 # The agent route's transaction; the in-turn /agent command shares it.
                 ("chat_handlers.py", "switch_slot_agent"),
                 ("chat_api/slot_detail.py", "api_chat_slot_detail"),
@@ -150,6 +154,7 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("chat_runner.py", "_prefetch_ttl"),
                 ("handlers/autonudge.py", "api_autonudge_fire"),
                 ("handlers/mcp_apps.py", "api_mcp_apps_message"),
+                ("handlers/members.py", "api_member_fresh_start"),
                 ("handlers/members.py", "api_member_thread"),
                 ("handlers/members.py", "api_members"),
                 ("handlers/messaging.py", "api_send_message"),

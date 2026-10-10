@@ -223,6 +223,12 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, sessio
     // ever, and answers every other case with the outcome that declined it.
     memberGreet: (slug: string) =>
       post('/api/members/' + encodeURIComponent(slug) + '/greet').then(j) as Promise<{ outcome: string }>,
+    // Fresh start on a crewmate's pinned thread: stop any turn, then drop the
+    // conversation so the next turn starts clean. Same slot key; the
+    // transcript stays. `reset_at` is the server's time of the reset; `outcome`
+    // is `queued` when the session was still busy and the clear waits for it.
+    memberFreshStart: (slug: string) =>
+      post('/api/members/' + encodeURIComponent(slug) + '/fresh-start').then(j) as Promise<{ slot: string; reset_at: string; outcome: 'cleared' | 'queued' }>,
     // A member's recent activity pointers (real recorded signal only: session
     // participations and routing decisions). `member` is the exact crew name —
     // slugs are lossy, so the backend filters the shared log by exact name.

@@ -4909,7 +4909,7 @@ async def _slash_command_backend(state: DashboardState, session_key: str) -> str
 
 async def _answer_slash_without_channel(
     state: DashboardState, slot: _ChatSlot, session_key: str, command: str
-) -> None:
+) -> str:
     """Answer a harness command the backend cannot run, as a local command.
 
     ``/clear`` queues the discard ``reset_conversation`` queues and applies it
@@ -4917,6 +4917,9 @@ async def _answer_slash_without_channel(
     conversation. The transcript stays, as it does for that tool. A session that
     refuses the discard (busy, sub-agents attached) keeps it queued for a later
     turn boundary.
+
+    Returns the outcome it records: ``discarded``, ``queued`` or
+    ``unsupported_backend``.
     """
     if command.lower() == "/clear":
         await _reset_conversation(slot, session_key, {})
@@ -4955,6 +4958,7 @@ async def _answer_slash_without_channel(
     )
     slot.append("assistant", text, "msg msg-a")
     state.push_slots_update()
+    return outcome
 
 
 async def _consume_pending_reset(

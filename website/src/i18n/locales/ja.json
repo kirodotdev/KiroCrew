@@ -6241,7 +6241,9 @@
       "split_down": "下に分割",
       "split_right": "右に分割",
       "split_right_d": "右に分割 (⌘D)",
-      "type_to_filter": "フィルタリングするには入力…"
+      "type_to_filter": "フィルタリングするには入力…",
+      "earlier_conversation_show": "{{time}} にリセット · 以前のメッセージを表示 ({{count}})",
+      "earlier_conversation_hide": "{{time}} にリセット · 以前のメッセージを隠す (もう覚えていません)"
     },
     "cliPanel": {
       "copied": "コピーしました",
@@ -17463,7 +17465,15 @@
       "dashboard_render_error": "このダッシュボードを描画できませんでした。",
       "dashboard_frame_title": "{{crew}} のダッシュボード",
       "dashboard_rendering": "ダッシュボードを描画中…",
-      "back_to_roster": "クルーメイト一覧に戻る"
+      "back_to_roster": "クルーメイト一覧に戻る",
+      "fresh_start": "リセットして再開…",
+      "fresh_start_failed": "リセットできませんでした。会話はそのままです。",
+      "fresh_start_confirm_title": "このクルーメイトをリセットして再開しますか？",
+      "fresh_start_confirm_body": "作業中のことは止まり、この会話を忘れます。メッセージは折りたたんでここに残ります。",
+      "fresh_start_confirm_action": "リセットして再開",
+      "fresh_start_hint": "このクルーメイトと新しい会話を始めます。以前のメッセージは表示されたままです。",
+      "fresh_start_failed_queued": "まだキューにメッセージがあります。終わるのを待ってから、もう一度リセットしてください。",
+      "fresh_start_failed_busy": "クルーメイトはまだ作業中で止まりませんでした。先に止めてから、もう一度お試しください。"
     },
     "tasksCapacityCard": {
       "title": "タスクと処理能力",

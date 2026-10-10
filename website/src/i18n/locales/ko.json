@@ -6241,7 +6241,9 @@
       "split_down": "아래로 분할",
       "split_right": "오른쪽으로 분할",
       "split_right_d": "오른쪽으로 분할 (⌘D)",
-      "type_to_filter": "입력하여 필터링…"
+      "type_to_filter": "입력하여 필터링…",
+      "earlier_conversation_show": "{{time}}에 새로 시작 · 이전 메시지 보기 ({{count}})",
+      "earlier_conversation_hide": "{{time}}에 새로 시작 · 이전 메시지 숨기기 (더 이상 기억하지 않음)"
     },
     "cliPanel": {
       "copied": "복사됨",
@@ -17463,7 +17465,15 @@
       "dashboard_render_error": "이 대시보드를 그릴 수 없습니다.",
       "dashboard_frame_title": "{{crew}}의 대시보드",
       "dashboard_rendering": "대시보드 그리는 중…",
-      "back_to_roster": "크루메이트 목록으로"
+      "back_to_roster": "크루메이트 목록으로",
+      "fresh_start": "새로 시작…",
+      "fresh_start_failed": "새로 시작하지 못했어요. 대화는 그대로예요.",
+      "fresh_start_confirm_title": "이 크루메이트를 새로 시작할까요?",
+      "fresh_start_confirm_body": "하던 일은 멈추고 이 대화를 잊어요. 메시지는 접힌 채로 여기 남아요.",
+      "fresh_start_confirm_action": "새로 시작",
+      "fresh_start_hint": "이 크루메이트와 새 대화를 시작해요. 이전 메시지는 계속 보여요.",
+      "fresh_start_failed_queued": "아직 대기 중인 메시지가 있어요. 끝날 때까지 기다린 뒤 새로 시작을 다시 눌러 주세요.",
+      "fresh_start_failed_busy": "크루메이트가 아직 일하고 있고 멈추지 않았어요. 먼저 멈춘 뒤 다시 시도해 주세요."
     },
     "tasksCapacityCard": {
       "title": "작업 및 용량",

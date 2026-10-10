@@ -6443,7 +6443,9 @@
       "split_down": "Diviser vers le bas",
       "split_right": "Diviser vers la droite",
       "split_right_d": "Diviser vers la droite (⌘D)",
-      "type_to_filter": "Saisir pour filtrer…"
+      "type_to_filter": "Saisir pour filtrer…",
+      "earlier_conversation_show": "Reparti à zéro à {{time}} · Afficher les messages précédents ({{count}})",
+      "earlier_conversation_hide": "Reparti à zéro à {{time}} · Masquer les messages précédents (plus en mémoire)"
     },
     "cliPanel": {
       "copied": "Copié",
@@ -17979,7 +17981,15 @@
       "dashboard_render_error": "Ce tableau de bord n'a pas pu etre dessine.",
       "dashboard_frame_title": "Tableau de bord de {{crew}}",
       "dashboard_rendering": "Affichage du tableau de bord…",
-      "back_to_roster": "Retour aux coéquipiers"
+      "back_to_roster": "Retour aux coéquipiers",
+      "fresh_start": "Repartir à zéro…",
+      "fresh_start_failed": "Impossible de repartir à zéro. La conversation est conservée.",
+      "fresh_start_confirm_title": "Faire repartir ce coéquipier à zéro ?",
+      "fresh_start_confirm_body": "Ce qu'il fait s'arrête et il oublie cette conversation. Les messages restent ici, repliés.",
+      "fresh_start_confirm_action": "Repartir à zéro",
+      "fresh_start_hint": "Démarre une nouvelle conversation avec ce coéquipier. Les messages précédents restent visibles.",
+      "fresh_start_failed_queued": "Des messages sont encore en file. Attends qu'ils finissent, puis réessaie Repartir à zéro.",
+      "fresh_start_failed_busy": "Le coéquipier travaille encore et ne s'est pas arrêté. Arrête-le d'abord, puis réessaie."
     },
     "tasksCapacityCard": {
       "title": "Tâches et capacité",

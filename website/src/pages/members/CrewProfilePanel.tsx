@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useRef, useState, type HTMLAttributes, type ReactNode, type Ref, type ForwardedRef } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
-import { AlarmClock, Brain, ChevronLeft, ChevronRight, FolderOpen, Goal, IdCard, NotebookPen, Pencil, Route, X } from 'lucide-react'
+import { AlarmClock, Brain, ChevronLeft, ChevronRight, FolderOpen, Goal, IdCard, NotebookPen, Pencil, RotateCcw, Route, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { MemberRosterRow } from '../../api/client'
 import { crewDisplayName } from '../../components/AgentSelector'
@@ -69,6 +69,9 @@ export interface CrewProfilePanelProps {
   onRequestBack: (proceed: () => void) => void
   onEdit: () => void
   onOpenFiles: () => void
+  /** Fresh start: stop any turn and start a clean conversation on the same
+   *  thread. Absent while the thread is unbound or a reset runs. */
+  onFreshStart?: () => void
 }
 
 const TONE: Record<'accent' | 'ok' | 'warn' | 'info', string> = {
@@ -346,6 +349,12 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
                 <div className="rounded-2xl border border-border bg-bg overflow-hidden">
                   <Row icon={<NotebookPen size={16} />} tone="warn" label={t('pages.membersPage.notes_tab')} sub={t('pages.membersPage.profile_notes_sub')} onClick={() => push('notes')} testId="crew-profile-notes" />
                 </div>
+
+                {p.onFreshStart && (
+                  <div className="rounded-2xl border border-border bg-bg overflow-hidden" data-testid="crew-profile-fresh-start-group">
+                    <Row icon={<RotateCcw size={16} />} tone="info" label={t('pages.membersPage.fresh_start')} sub={t('pages.membersPage.fresh_start_hint')} onClick={p.onFreshStart} testId="crew-profile-fresh-start" />
+                  </div>
+                )}
 
                 {p.settingsBody}
               </div>

@@ -52,6 +52,9 @@ window.addEventListener('capture:frame', (e) => {
     seq?: number
   }>).detail
   if (d.kind === 'busy') store.dispatch(busyFrame(d.slot))
+  // radar's turn has ended (the slots frame a stop delivers): the crewmate
+  // reads idle, for a frame whose action follows a stop.
+  if (d.kind === 'idle') store.dispatch(sseSlots([{ key: d.slot, title: 'Radar', messages: 4, running: false, mode: 'member', agent: 'radar' }]))
   // A pushed `member_projection` roster frame, the way the WebSocket delivers
   // one: this is how a crewmate's recency advances on the user's own send
   // without a roster refetch, so a recording of the Recent sort reordering has

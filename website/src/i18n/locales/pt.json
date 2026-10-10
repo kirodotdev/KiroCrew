@@ -6443,7 +6443,9 @@
       "split_down": "Dividir abaixo",
       "split_right": "Dividir à direita",
       "split_right_d": "Dividir à direita (⌘D)",
-      "type_to_filter": "Digite para filtrar…"
+      "type_to_filter": "Digite para filtrar…",
+      "earlier_conversation_show": "Começou do zero às {{time}} · Mostrar mensagens anteriores ({{count}})",
+      "earlier_conversation_hide": "Começou do zero às {{time}} · Ocultar mensagens anteriores (não lembra mais)"
     },
     "cliPanel": {
       "copied": "Copiado",
@@ -17979,7 +17981,15 @@
       "dashboard_render_error": "Nao foi possivel desenhar este painel.",
       "dashboard_frame_title": "Painel de {{crew}}",
       "dashboard_rendering": "Desenhando o painel…",
-      "back_to_roster": "Voltar aos colegas"
+      "back_to_roster": "Voltar aos colegas",
+      "fresh_start": "Começar do zero…",
+      "fresh_start_failed": "Não deu para começar do zero. A conversa foi mantida.",
+      "fresh_start_confirm_title": "Fazer este colega começar do zero?",
+      "fresh_start_confirm_body": "O que ele estiver fazendo para e ele esquece esta conversa. As mensagens ficam aqui, recolhidas.",
+      "fresh_start_confirm_action": "Começar do zero",
+      "fresh_start_hint": "Começa uma conversa nova com este colega. As mensagens anteriores continuam visíveis.",
+      "fresh_start_failed_queued": "Ainda há mensagens na fila. Espere terminarem e tente Começar do zero de novo.",
+      "fresh_start_failed_busy": "O colega ainda está trabalhando e não parou. Pare-o primeiro e tente de novo."
     },
     "tasksCapacityCard": {
       "title": "Tarefas e capacidade",

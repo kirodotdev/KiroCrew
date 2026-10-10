@@ -6342,7 +6342,9 @@
       "split_down": "Nach unten teilen",
       "split_right": "Nach rechts teilen",
       "split_right_d": "Nach rechts teilen (⌘D)",
-      "type_to_filter": "Zum Filtern tippen…"
+      "type_to_filter": "Zum Filtern tippen…",
+      "earlier_conversation_show": "Um {{time}} neu angefangen · Frühere Nachrichten zeigen ({{count}})",
+      "earlier_conversation_hide": "Um {{time}} neu angefangen · Frühere Nachrichten ausblenden (nicht mehr erinnert)"
     },
     "cliPanel": {
       "copied": "Kopiert",
@@ -17721,7 +17723,15 @@
       "dashboard_render_error": "Dieses Dashboard konnte nicht gezeichnet werden.",
       "dashboard_frame_title": "Dashboard von {{crew}}",
       "dashboard_rendering": "Dashboard wird gezeichnet…",
-      "back_to_roster": "Zurück zu den Crewmates"
+      "back_to_roster": "Zurück zu den Crewmates",
+      "fresh_start": "Neu anfangen…",
+      "fresh_start_failed": "Neu anfangen hat nicht geklappt. Das Gespräch ist noch da.",
+      "fresh_start_confirm_title": "Diesen Crewmate neu anfangen lassen?",
+      "fresh_start_confirm_body": "Woran er gerade arbeitet, stoppt, und er vergisst dieses Gespräch. Die Nachrichten bleiben hier, eingeklappt.",
+      "fresh_start_confirm_action": "Neu anfangen",
+      "fresh_start_hint": "Startet ein neues Gespräch mit diesem Crewmate. Frühere Nachrichten bleiben sichtbar.",
+      "fresh_start_failed_queued": "Es warten noch Nachrichten. Warte, bis sie fertig sind, und versuche Neu anfangen dann erneut.",
+      "fresh_start_failed_busy": "Der Crewmate arbeitet noch und hat nicht gestoppt. Stoppe ihn zuerst und versuche es dann erneut."
     },
     "tasksCapacityCard": {
       "title": "Aufgaben & Kapazität",

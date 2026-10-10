@@ -6241,7 +6241,9 @@
       "split_down": "向下分屏",
       "split_right": "向右分屏",
       "split_right_d": "向右分屏（⌘D）",
-      "type_to_filter": "输入以筛选…"
+      "type_to_filter": "输入以筛选…",
+      "earlier_conversation_show": "{{time}} 重新开始 · 显示之前的消息（{{count}}）",
+      "earlier_conversation_hide": "{{time}} 重新开始 · 隐藏之前的消息（已不再记得）"
     },
     "cliPanel": {
       "copied": "已复制",
@@ -17463,7 +17465,15 @@
       "dashboard_render_error": "无法绘制该仪表板。",
       "dashboard_frame_title": "{{crew}} 的仪表板",
       "dashboard_rendering": "正在绘制仪表板…",
-      "back_to_roster": "返回队友列表"
+      "back_to_roster": "返回队友列表",
+      "fresh_start": "重新开始…",
+      "fresh_start_failed": "重新开始没有完成，对话已保留。",
+      "fresh_start_confirm_title": "让这位队友重新开始吗？",
+      "fresh_start_confirm_body": "它正在做的事会停止，它会忘记这段对话。消息会折叠起来留在这里。",
+      "fresh_start_confirm_action": "重新开始",
+      "fresh_start_hint": "和这位队友开始新的对话。之前的消息仍然可见。",
+      "fresh_start_failed_queued": "还有排队的消息。等它们完成后，再试一次重新开始。",
+      "fresh_start_failed_busy": "队友还在工作，没有停下。先停止它，再试一次。"
     },
     "tasksCapacityCard": {
       "title": "任务与容量",
